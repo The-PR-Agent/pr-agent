@@ -1290,7 +1290,57 @@ class TestGiteaProviderUserFacingLinks:
         provider.base_url = "http://forgejo:3000"
         provider.pr_url = pr_url
         provider.pr = None if pr_html_url is None else MagicMock(html_url=pr_html_url)
+        provider.sha = "head-sha"
+        provider.base_sha = "base-sha"
+        provider.diff_files = None
+        if provider.pr is not None:
+            provider.pr.head.repo.full_name = "owner/repo"
+            provider.pr.merge_base = "merge-base-sha"
         return provider
+
+    def test_reset_diff_cache_clears_link_ref_checks_for_next_command(self):
+        provider = self._provider()
+        provider.diff_files = []
+        provider.file_diffs = {"src/removed.py": "cached patch"}
+        provider._line_link_diff_refs = ("head-sha", "merge-base-sha", "owner/repo")
+        provider._line_link_raw_diff_refs = ("head-sha", "merge-base-sha", "owner/repo")
+        provider._line_link_checked_refs = ("head-sha", "merge-base-sha", "owner/repo")
+        provider._line_link_failed_ref_checks = 2
+
+        provider.reset_diff_cache_for_command()
+
+        assert provider.diff_files is None
+        assert provider._line_link_diff_refs is None
+        assert provider._line_link_raw_diff_refs == ("head-sha", "merge-base-sha", "owner/repo")
+        assert provider._line_link_checked_refs is None
+        assert provider._line_link_failed_ref_checks == 0
+
+    def test_cached_raw_diff_keeps_its_merge_base_across_commands(self):
+        provider = self._provider()
+        provider.file_diffs = {"src/removed.py": "cached patch"}
+        provider._line_link_raw_diff_refs = ("head-sha", "merge-base-sha", "owner/repo")
+
+        provider.reset_diff_cache_for_command()
+        provider.pr.merge_base = "newer-merge-base"
+        provider._get_changed_files = MagicMock(return_value=[])
+        with patch("pr_agent.git_providers.gitea_provider.filter_ignored", return_value=[]):
+            provider.get_diff_files()
+
+        assert provider._line_link_diff_refs == ("head-sha", "merge-base-sha", "owner/repo")
+        assert provider.file_diffs == {"src/removed.py": "cached patch"}
+
+    def test_raw_diff_snapshot_survives_pr_metadata_refresh(self):
+        provider = self._provider()
+        provider.repo_api = SimpleNamespace(get_pull_request_diff=MagicMock(return_value=""))
+        with patch("pr_agent.git_providers.gitea_provider.parse_unified_diff", return_value=[]):
+            provider._GiteaProvider__add_file_diff()
+
+        provider.pr.merge_base = "newer-merge-base"
+        provider._get_changed_files = MagicMock(return_value=[])
+        with patch("pr_agent.git_providers.gitea_provider.filter_ignored", return_value=[]):
+            provider.get_diff_files()
+
+        assert provider._line_link_diff_refs == ("head-sha", "merge-base-sha", "owner/repo")
 
     @staticmethod
     def _settings(web_url="", configured_url=None):
@@ -1369,12 +1419,267 @@ class TestGiteaProviderUserFacingLinks:
         provider.base_url_html = provider._resolve_base_url_html()
         provider.get_pr_branch = MagicMock(return_value="feat/retry")
 
-        prefix = "https://git.example.com/forgejo/owner/repo/src/branch/feat/retry/app/storage.py"
+        prefix = "https://git.example.com/forgejo/owner/repo/src/commit/head-sha/app/storage.py"
         assert provider.get_line_link("app/storage.py", 24) == f"{prefix}#L24"
         assert provider.get_line_link("app/storage.py", 24, 30) == f"{prefix}#L24-L30"
         assert provider.get_line_link("app/storage.py", 24, 20) == f"{prefix}#L24-L24"
         assert provider.get_line_link("app/storage.py", 24, "not-a-number") == f"{prefix}#L24"
         assert provider.get_line_link("app/storage.py", -1) == prefix
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_uses_fork_source_repository_and_commit(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings(web_url="https://git.example.com/forgejo")
+        provider = self._provider()
+        provider.base_url_html = provider._resolve_base_url_html()
+        provider.pr.head.repo.full_name = "contributor/repo"
+        assert provider.get_line_link("src/a #1.py", 7) == (
+            "https://git.example.com/forgejo/contributor/repo/src/commit/head-sha/src/a%20%231.py#L7"
+        )
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_uses_merge_base_for_deleted_file(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings(web_url="https://git.example.com/forgejo")
+        provider = self._provider()
+        provider.base_url_html = provider._resolve_base_url_html()
+        provider.pr.head.repo.full_name = "contributor/repo"
+        provider.diff_files = [SimpleNamespace(
+            filename="src/removed.py", old_filename=None, edit_type=EDIT_TYPE.DELETED,
+        )]
+        get_pull_request = MagicMock(return_value=SimpleNamespace(
+            head=SimpleNamespace(sha="head-sha", repo=SimpleNamespace(full_name="owner/repo")),
+            merge_base="merge-base-sha",
+        ))
+        provider.repo_api = SimpleNamespace(get_pull_request=get_pull_request)
+        assert provider.get_line_link("src/removed.py", 9) == (
+            "https://git.example.com/forgejo/owner/repo/src/commit/merge-base-sha/src/removed.py#L9"
+        )
+        get_pull_request.assert_called_once_with(owner="owner", repo="repo", pr_number=4)
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_with_missing_merge_base_falls_back_to_pr(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings(web_url="https://git.example.com")
+        provider = self._provider()
+        provider.base_url_html = provider._resolve_base_url_html()
+        provider.pr.merge_base = None
+        provider.diff_files = [SimpleNamespace(
+            filename="src/removed.py", old_filename=None, edit_type=EDIT_TYPE.DELETED,
+        )]
+        assert provider.get_line_link("src/removed.py", 7) == (
+            "https://git.example.com/owner/repo/pulls/4"
+        )
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_when_merge_base_moves_falls_back_to_pr(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings(web_url="https://git.example.com")
+        provider = self._provider()
+        provider.base_url_html = provider._resolve_base_url_html()
+        provider.diff_files = [SimpleNamespace(
+            filename="src/removed.py", old_filename=None, edit_type=EDIT_TYPE.DELETED,
+        )]
+        provider.repo_api = SimpleNamespace(get_pull_request=MagicMock(return_value=SimpleNamespace(
+            head=SimpleNamespace(sha="head-sha", repo=SimpleNamespace(full_name="owner/repo")),
+            merge_base="changed-merge-base",
+        )))
+        assert provider.get_line_link("src/removed.py", 7) == (
+            "https://git.example.com/owner/repo/pulls/4"
+        )
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_without_required_sha_falls_back_to_pr(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings(web_url="https://git.example.com/forgejo")
+        provider = self._provider()
+        provider.base_url_html = provider._resolve_base_url_html()
+        provider.sha = ""
+        assert provider.get_line_link("src/app.py", 15) == (
+            "https://git.example.com/forgejo/owner/repo/pulls/4"
+        )
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_without_head_repository_uses_pr_page(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings(web_url="https://git.example.com")
+        provider = self._provider()
+        provider.base_url_html = provider._resolve_base_url_html()
+        provider.pr.head.repo = None
+        assert provider.get_line_link("src/app.py", 2) == (
+            "https://git.example.com/owner/repo/pulls/4"
+        )
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_maps_renamed_old_path_to_new_path(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings(web_url="https://git.example.com")
+        provider = self._provider()
+        provider.base_url_html = provider._resolve_base_url_html()
+        provider.diff_files = [SimpleNamespace(
+            filename="src/new.py", old_filename="src/old.py", edit_type=EDIT_TYPE.RENAMED,
+        )]
+        provider.repo_api = SimpleNamespace(
+            get_pull_request=MagicMock(return_value=SimpleNamespace(
+                head=SimpleNamespace(sha="head-sha", repo=SimpleNamespace(full_name="owner/repo")),
+                merge_base="merge-base-sha",
+            ))
+        )
+        assert provider.get_line_link("src/old.py", 3) == (
+            "https://git.example.com/owner/repo/src/commit/head-sha/src/new.py#L3"
+        )
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_prefers_current_path_when_old_name_is_reused(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings(web_url="https://git.example.com")
+        provider = self._provider()
+        provider.base_url_html = provider._resolve_base_url_html()
+        provider.diff_files = [
+            SimpleNamespace(filename="src/a.py", old_filename="src/z.py", edit_type=EDIT_TYPE.RENAMED),
+            SimpleNamespace(filename="src/z.py", old_filename=None, edit_type=EDIT_TYPE.ADDED),
+        ]
+        provider.repo_api = SimpleNamespace(get_pull_request=MagicMock(return_value=SimpleNamespace(
+            head=SimpleNamespace(sha="head-sha", repo=SimpleNamespace(full_name="owner/repo")),
+            merge_base="merge-base-sha",
+        )))
+        assert provider.get_line_link("src/z.py", 7) == (
+            "https://git.example.com/owner/repo/src/commit/head-sha/src/z.py#L7"
+        )
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_deleted_link_falls_back_after_head_only_update(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings(web_url="https://git.example.com")
+        provider = self._provider()
+        provider.base_url_html = provider._resolve_base_url_html()
+        provider.diff_files = [SimpleNamespace(
+            filename="src/removed.py", old_filename=None, edit_type=EDIT_TYPE.DELETED,
+        )]
+        provider.repo_api = SimpleNamespace(get_pull_request=MagicMock(return_value=SimpleNamespace(
+            head=SimpleNamespace(sha="newer-head", repo=SimpleNamespace(full_name="owner/repo")),
+            merge_base="merge-base-sha",
+        )))
+        assert provider.get_line_link("src/removed.py", 5) == (
+            "https://git.example.com/owner/repo/pulls/4"
+        )
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_keeps_head_link_when_only_merge_base_changes(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings(web_url="https://git.example.com")
+        provider = self._provider()
+        provider.base_url_html = provider._resolve_base_url_html()
+        provider.diff_files = [SimpleNamespace(
+            filename="src/app.py", old_filename=None, edit_type=EDIT_TYPE.MODIFIED,
+        )]
+        get_pull_request = MagicMock(return_value=SimpleNamespace(
+            head=SimpleNamespace(sha="head-sha", repo=SimpleNamespace(full_name="owner/repo")),
+            merge_base="newer-merge-base",
+        ))
+        provider.repo_api = SimpleNamespace(get_pull_request=get_pull_request)
+
+        assert provider.get_line_link("src/app.py", 7) == (
+            "https://git.example.com/owner/repo/src/commit/head-sha/src/app.py#L7"
+        )
+        get_pull_request.assert_called_once_with(owner="owner", repo="repo", pr_number=4)
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_checks_revision_before_diff_files_are_loaded(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings(web_url="https://git.example.com")
+        provider = self._provider()
+        provider.base_url_html = provider._resolve_base_url_html()
+        assert provider.diff_files is None
+        get_pull_request = MagicMock(return_value=SimpleNamespace(
+            head=SimpleNamespace(
+                sha="new-head", repo=SimpleNamespace(full_name="owner/repo"),
+            ),
+            merge_base="merge-base-sha",
+        ))
+        provider.repo_api = SimpleNamespace(get_pull_request=get_pull_request)
+
+        assert provider.get_line_link("src/app.py", 7) == provider.get_pr_url()
+        get_pull_request.assert_called_once_with(owner="owner", repo="repo", pr_number=4)
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_avoids_stale_head_after_push(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings(web_url="https://git.example.com")
+        provider = self._provider()
+        provider.base_url_html = provider._resolve_base_url_html()
+        provider.diff_files = [SimpleNamespace(
+            filename="src/app.py", old_filename=None, edit_type=EDIT_TYPE.MODIFIED,
+        )]
+        get_pull_request = MagicMock(return_value=SimpleNamespace(
+            head=SimpleNamespace(sha="newer-head", repo=SimpleNamespace(full_name="owner/repo")),
+            merge_base="merge-base-sha",
+        ))
+        provider.repo_api = SimpleNamespace(get_pull_request=get_pull_request)
+        assert provider.get_line_link("src/app.py", 7) == (
+            "https://git.example.com/owner/repo/pulls/4"
+        )
+        assert provider.get_line_link("src/app.py", 8) == (
+            "https://git.example.com/owner/repo/pulls/4"
+        )
+        get_pull_request.assert_called_once_with(owner="owner", repo="repo", pr_number=4)
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_retries_transient_ref_check_error(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings(web_url="https://git.example.com")
+        provider = self._provider()
+        provider.base_url_html = provider._resolve_base_url_html()
+        provider.diff_files = [SimpleNamespace(
+            filename="src/app.py", old_filename=None, edit_type=EDIT_TYPE.MODIFIED,
+        )]
+        get_pull_request = MagicMock(side_effect=[
+            ApiException(status=503),
+            SimpleNamespace(
+                head=SimpleNamespace(sha="head-sha", repo=SimpleNamespace(full_name="owner/repo")),
+                merge_base="merge-base-sha",
+            ),
+        ])
+        provider.repo_api = SimpleNamespace(get_pull_request=get_pull_request)
+
+        assert provider.get_line_link("src/app.py", 7) == provider.get_pr_url()
+        assert provider.get_line_link("src/app.py", 8) == (
+            "https://git.example.com/owner/repo/src/commit/head-sha/src/app.py#L8"
+        )
+        assert get_pull_request.call_count == 2
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_rejects_deleted_fork_after_pr_head_repo_disappears(self, mock_settings):
+        mock_settings.return_value = self._settings(web_url="https://git.example.com")
+        provider = self._provider()
+        provider.base_url_html = provider._resolve_base_url_html()
+        provider.pr.head.repo.full_name = "contributor/repo"
+        provider.diff_files = [SimpleNamespace(
+            filename="src/app.py", old_filename=None, edit_type=EDIT_TYPE.MODIFIED,
+        )]
+        provider.repo_api = SimpleNamespace(get_pull_request=MagicMock(return_value=SimpleNamespace(
+            head=SimpleNamespace(sha="head-sha", repo=None), merge_base="merge-base-sha",
+        )))
+        assert provider.get_line_link("src/app.py", 8) == provider.get_pr_url()
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_uses_diff_snapshot_after_pr_metadata_refresh(self, mock_settings):
+        mock_settings.return_value = self._settings(web_url="https://git.example.com")
+        provider = self._provider()
+        provider.base_url_html = provider._resolve_base_url_html()
+        provider.diff_files = [SimpleNamespace(
+            filename="src/removed.py", old_filename=None, edit_type=EDIT_TYPE.DELETED,
+        )]
+        provider._line_link_diff_refs = ("head-sha", "merge-base-sha", "owner/repo")
+        provider.pr.merge_base = "newer-merge-base"
+        provider.repo_api = SimpleNamespace(get_pull_request=MagicMock(return_value=SimpleNamespace(
+            head=SimpleNamespace(sha="head-sha", repo=SimpleNamespace(full_name="owner/repo")),
+            merge_base="newer-merge-base",
+        )))
+        assert provider.get_line_link("src/removed.py", 8) == provider.get_pr_url()
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_handles_transport_failure_without_losing_review(self, mock_settings):
+        from requests.exceptions import Timeout
+
+        mock_settings.return_value = self._settings(web_url="https://git.example.com")
+        provider = self._provider()
+        provider.base_url_html = provider._resolve_base_url_html()
+        provider.diff_files = [SimpleNamespace(
+            filename="src/app.py", old_filename=None, edit_type=EDIT_TYPE.MODIFIED,
+        )]
+        getter = MagicMock(side_effect=Timeout("connection timed out"))
+        provider.repo_api = SimpleNamespace(get_pull_request=getter)
+        for _ in range(5):
+            assert provider.get_line_link("src/app.py", 8) == provider.get_pr_url()
+        assert getter.call_count == 2
 
     @patch("pr_agent.git_providers.gitea_provider.get_settings")
     def test_get_pr_url_uses_user_facing_base_url(self, mock_get_settings):
@@ -1944,6 +2249,10 @@ class TestBaseUrlHtmlIsResolvedOnFirstUse:
         provider.pr_number = 4
         provider.base_url = "http://forgejo:3000"
         provider.pr = MagicMock(html_url="http://forgejo:3000/owner/repo/pulls/4")
+        provider.pr.head.repo.full_name = "owner/repo"
+        provider.sha = "head-sha"
+        provider.base_sha = "base-sha"
+        provider.diff_files = None
         provider.get_pr_branch = MagicMock(return_value="feature")
         return provider
 
@@ -1966,7 +2275,7 @@ class TestBaseUrlHtmlIsResolvedOnFirstUse:
 
         link = provider.get_line_link("src/app.py", 7)
 
-        assert link == "https://git.example.com/owner/repo/src/branch/feature/src/app.py#L7"
+        assert link == "https://git.example.com/owner/repo/src/commit/head-sha/src/app.py#L7"
         assert provider.get_pr_url() == "https://git.example.com/owner/repo/pulls/4"
 
     @patch("pr_agent.git_providers.gitea_provider.get_settings")
@@ -2015,7 +2324,7 @@ class TestGiteaRepoIgnoreRules:
 
         repo_api = mock_repo_api_cls.return_value
         pr = SimpleNamespace(
-            head=SimpleNamespace(sha="head-sha"),
+            head=SimpleNamespace(sha="head-sha", repo=SimpleNamespace(full_name="owner/repo")),
             base=SimpleNamespace(sha="base-sha", ref="main"),
         )
         repo_api.get_pull_request.return_value = pr
@@ -2312,7 +2621,7 @@ class TestGiteaAddedFileBaseFetch:
 
         repo_api = mock_repo_api_cls.return_value
         repo_api.get_pull_request.return_value = SimpleNamespace(
-            head=SimpleNamespace(sha="head-sha"),
+            head=SimpleNamespace(sha="head-sha", repo=SimpleNamespace(full_name="owner/repo")),
             base=SimpleNamespace(sha="base-sha", ref="main"),
         )
         repo_api.get_change_file_pull_request.return_value = files

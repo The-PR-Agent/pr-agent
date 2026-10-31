@@ -6,6 +6,8 @@ from urllib.parse import quote, urlparse
 
 import giteapy
 from giteapy.rest import ApiException
+from requests.exceptions import RequestException
+from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.file_filter import filter_ignored
@@ -160,6 +162,13 @@ class GiteaProvider(GitProvider):
             self.__set_repo_and_owner_from_issue()
             self.enabled_issue = True
 
+    def reset_diff_cache_for_command(self) -> None:
+        super().reset_diff_cache_for_command()
+        self._line_link_diff_refs = None
+        # Keep the raw snapshot in sync with cached file_diffs across commands.
+        self._line_link_checked_refs = None
+        self._line_link_failed_ref_checks = 0
+
     @property
     def base_url_html(self) -> str:
         """User-facing base URL, resolved on first use rather than in the constructor:
@@ -254,6 +263,11 @@ class GiteaProvider(GitProvider):
             )
 
             self.file_diffs = {f.filename: f.patch for f in parse_unified_diff(diff_contents)}
+            pr = getattr(self, "pr", None)
+            head_repo = getattr(getattr(getattr(pr, "head", None), "repo", None), "full_name", None)
+            self._line_link_raw_diff_refs = (
+                getattr(self, "sha", None), getattr(pr, "merge_base", None), head_repo,
+            )
         except Exception as e:
             self.logger.error(f"Error getting diff content: {str(e)}")
 
@@ -710,12 +724,78 @@ class GiteaProvider(GitProvider):
             self.logger.info(f"Filtered out files with invalid extensions: {invalid_files_names}")
 
         self.filtered_diff_file_names = invalid_files_names
+        pr = getattr(self, "pr", None)
+        head_repo = getattr(getattr(getattr(pr, "head", None), "repo", None), "full_name", None)
+        self._line_link_diff_refs = getattr(self, "_line_link_raw_diff_refs", None) or (
+            getattr(self, "sha", None), getattr(pr, "merge_base", None), head_repo,
+        )
+        self._line_link_checked_refs = None
+        self._line_link_failed_ref_checks = 0
         self.diff_files = diff_files
         return diff_files
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
-        encoded_file = quote(relevant_file, safe="/")
-        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{encoded_file}"
+        diff_files = getattr(self, "diff_files", None) or []
+        diff_file = next((file for file in diff_files if file.filename == relevant_file), None)
+        if diff_file is None:
+            diff_file = next((file for file in diff_files if file.old_filename == relevant_file), None)
+        deleted = diff_file is not None and diff_file.edit_type == EDIT_TYPE.DELETED
+        pr = getattr(self, "pr", None)
+        # Use the diff-time refs even if publishing the description later refreshes self.pr.
+        snapshot = getattr(self, "_line_link_diff_refs", None)
+        if snapshot is None:
+            head_repo = getattr(getattr(getattr(pr, "head", None), "repo", None), "full_name", None)
+            snapshot = (getattr(self, "sha", None), getattr(pr, "merge_base", None), head_repo)
+        head_sha, merge_base, head_repo = snapshot
+        sha = merge_base if deleted else head_sha
+        if not isinstance(sha, str) or not sha:
+            return self.get_pr_url()
+
+        if deleted:
+            owner, repo = self.owner, self.repo
+        else:
+            if not isinstance(head_repo, str) or head_repo.count("/") != 1 or not all(head_repo.split("/")):
+                return self.get_pr_url()
+            owner, repo = head_repo.split("/")
+
+        # Check the live PR even before loading diffs, and bound retries on API failures.
+        if getattr(self, "repo_api", None) is not None:
+            checked_refs = getattr(self, "_line_link_checked_refs", None)
+            if checked_refs is None:
+                failures = getattr(self, "_line_link_failed_ref_checks", 0)
+                if failures >= 2:
+                    return self.get_pr_url()
+                try:
+                    latest_pr = self.repo_api.get_pull_request(
+                        owner=self.owner, repo=self.repo, pr_number=self.pr_number
+                    )
+                    latest_head = getattr(latest_pr, "head", None)
+                    latest_repo = getattr(getattr(latest_head, "repo", None), "full_name", None)
+                    checked_refs = (
+                        getattr(latest_head, "sha", None),
+                        getattr(latest_pr, "merge_base", None),
+                        latest_repo,
+                    )
+                except (ApiException, AttributeError, RequestException, Urllib3HTTPError, OSError):
+                    self._line_link_failed_ref_checks = failures + 1
+                    return self.get_pr_url()
+                self._line_link_checked_refs = checked_refs
+            # Check the head for deletions too, as inventory and diff may span separate pushes.
+            if checked_refs[0] != head_sha:
+                return self.get_pr_url()
+            if deleted and checked_refs[1] != merge_base:
+                return self.get_pr_url()
+            if not deleted and checked_refs[2] != head_repo:
+                return self.get_pr_url()
+
+        if diff_file is not None and diff_file.edit_type == EDIT_TYPE.RENAMED:
+            filename = diff_file.filename
+        elif deleted and diff_file.old_filename:
+            filename = diff_file.old_filename
+        else:
+            filename = relevant_file
+        encoded_file = quote(filename, safe="/")
+        link = f"{self.base_url_html}/{quote(owner)}/{quote(repo)}/src/commit/{quote(sha)}/{encoded_file}"
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
@@ -921,6 +1001,9 @@ class GiteaProvider(GitProvider):
                 repo=self.repo,
                 pr_number=self.pr_number
             )
+            # Recheck links after a command changes the PR metadata.
+            self._line_link_checked_refs = None
+            self._line_link_failed_ref_checks = 0
 
     def publish_labels(self, labels: list[int]) -> bool:
         """Publish labels to the PR"""

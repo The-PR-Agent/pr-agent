@@ -341,6 +341,11 @@ class GitLabProvider(GitProvider):
             r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
         self.incremental = incremental
 
+    def reset_diff_cache_for_command(self) -> None:
+        super().reset_diff_cache_for_command()
+        self._line_link_source_lookup_attempts = 0
+        self._line_link_source_web_url = None
+
     # --- submodule expansion helpers (opt-in) ---
     def _get_gitmodules_map(self, diff_refs: dict | None = None) -> dict[str, str]:
         """
@@ -1342,6 +1347,8 @@ class GitLabProvider(GitProvider):
                 return diff_files
         self.diff_files = diff_files
         self._diff_head_sha = head_sha_for_content
+        self._diff_base_sha = base_sha_for_content
+        self._diff_is_incremental = incremental_active
         return diff_files
 
     def get_files(self) -> list:
@@ -2742,22 +2749,75 @@ class GitLabProvider(GitProvider):
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         project_web_url = self._get_project_web_url()
-        encoded_file = quote(relevant_file, safe="/")
+        diff_files = getattr(self, "diff_files", None)
+        diff_file = next((file for file in (diff_files or [])
+                          if file.filename == relevant_file), None)
+        if diff_file is None:
+            diff_file = next((file for file in (diff_files or [])
+                              if file.old_filename == relevant_file), None)
+        deleted = diff_file is not None and diff_file.edit_type == EDIT_TYPE.DELETED
+        ref_key = "base_sha" if deleted else "head_sha"
+        if diff_files is not None:
+            # Pin the file link to the reviewed diff version.
+            sha = getattr(self, "_diff_base_sha" if deleted else "_diff_head_sha", None)
+        else:
+            refs = getattr(self.mr, "diff_refs", None)
+            sha = refs.get(ref_key) if isinstance(refs, dict) else None
+
+        source_id = getattr(self.mr, "source_project_id", None)
+        target_id = getattr(self.mr, "target_project_id", None)
+        projects_known = isinstance(source_id, int) and isinstance(target_id, int)
+        is_fork = projects_known and source_id != target_id
+        if not isinstance(sha, str) or not sha:
+            if deleted or not projects_known or is_fork:
+                return getattr(self.mr, "web_url", "") or self.pr_url
+            # Preserve legacy links for ordinary MRs without usable diff refs.
+            branch = getattr(self.mr, "source_branch", None)
+            if not isinstance(branch, str) or not branch:
+                return getattr(self.mr, "web_url", "") or self.pr_url
+            ref = quote(branch)
+            suffix = "?ref_type=heads"
+        else:
+            if not projects_known and (not deleted or getattr(self, "_diff_is_incremental", False)):
+                # Incremental deletion bases can belong to a removed source fork.
+                return getattr(self.mr, "web_url", "") or self.pr_url
+            ref = quote(sha)
+            suffix = ""
+            if is_fork and (not deleted or getattr(self, "_diff_is_incremental", False)):
+                source_web_url = getattr(self, "_line_link_source_web_url", None)
+                if source_web_url is None:
+                    attempts = getattr(self, "_line_link_source_lookup_attempts", 0)
+                    if attempts >= 2:
+                        return getattr(self.mr, "web_url", "") or self.pr_url
+                    self._line_link_source_lookup_attempts = attempts + 1
+                    try:
+                        source_web_url = self.gl.projects.get(source_id).web_url or ""
+                    except GitlabGetError as exc:
+                        source_web_url = ""
+                        if getattr(exc, "response_code", None) in (403, 404):
+                            self._line_link_source_web_url = ""
+                    except (GitlabError, RequestException):
+                        source_web_url = ""
+                    if isinstance(source_web_url, str) and source_web_url:
+                        self._line_link_source_web_url = source_web_url
+                if not isinstance(source_web_url, str) or not source_web_url:
+                    return getattr(self.mr, "web_url", "") or self.pr_url
+                project_web_url = source_web_url.rstrip("/")
+
+        if diff_file is not None and diff_file.edit_type == EDIT_TYPE.RENAMED:
+            filename = diff_file.filename
+        elif deleted and diff_file.old_filename:
+            filename = diff_file.old_filename
+        else:
+            filename = relevant_file
+        encoded_file = quote(filename, safe="/")
+        link = f"{project_web_url}/-/blob/{ref}/{encoded_file}{suffix}"
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
-        if relevant_line_start == -1:
-            link = f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
-        elif relevant_line_end:
-            link = (
-                f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
-                f"#L{relevant_line_start}-{relevant_line_end}"
-            )
-        else:
-            link = (
-                f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
-                f"#L{relevant_line_start}"
-            )
+        if relevant_line_start != -1:
+            link += (f"#L{relevant_line_start}-{relevant_line_end}"
+                     if relevant_line_end else f"#L{relevant_line_start}")
         return link
 
 

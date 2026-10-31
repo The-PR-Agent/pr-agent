@@ -1138,6 +1138,8 @@ class TestGitLabProvider:
         gitlab_provider.id_project = "group/repo"
         gitlab_provider.mr = MagicMock()
         gitlab_provider.mr.source_branch = "feature/cache"
+        gitlab_provider.mr.source_project_id = 1
+        gitlab_provider.mr.target_project_id = 1
 
         assert gitlab_provider.get_line_link("src/app.py", -1) == (
             "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads"

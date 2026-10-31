@@ -70,6 +70,8 @@ def _gitlab_provider() -> GitLabProvider:
     provider.mr = SimpleNamespace(
         web_url="https://gitlab.example/owner/repo/-/merge_requests/7",
         source_branch=BRANCH,
+        source_project_id=1,
+        target_project_id=1,
     )
     return provider
 
@@ -80,6 +82,9 @@ def _gitea_provider() -> GiteaProvider:
     provider.owner = "owner"
     provider.repo = "repo"
     provider.logger = MagicMock()
+    provider.sha = "head-sha"
+    provider.pr_number = 7
+    provider.pr = SimpleNamespace(head=SimpleNamespace(repo=SimpleNamespace(full_name="owner/repo")))
     provider.get_pr_branch = MagicMock(return_value=BRANCH)
     return provider
 
