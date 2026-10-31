@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pr_agent.algo.language_handler import filter_bad_extensions, is_valid_file
+from pr_agent.algo.language_handler import filter_bad_extensions, is_valid_file, partition_files_by_language_filter
 
 
 class _File:
@@ -23,10 +23,37 @@ def test_lowercase_bad_extension_is_still_dropped(filename):
     assert is_valid_file(filename) is False
 
 
-@pytest.mark.parametrize("filename", ["main.py", "Makefile", "app.SVGZ"])
+@pytest.mark.parametrize(
+    "filename", ["main.py", "Makefile", "app.SVGZ", "app.MIN.JSX", "bundle.JS.MAP.backup", "PACKAGE-LOCK.JSON"]
+)
 def test_reviewable_files_are_kept(filename):
     """Do not widen the filter: only the extension itself is compared."""
     assert is_valid_file(filename) is True
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "app.min.js", "app.MIN.JS",
+        "style.min.css", "style.MiN.CsS",
+        "bundle.js.map", "bundle.JS.MAP",
+        "bundle.ts.map", "bundle.Ts.MaP",
+        "style.css.map", "style.CSS.MAP",
+        "package-lock.json",
+    ],
+)
+def test_generated_files_are_dropped(filename):
+    assert is_valid_file(filename) is False
+
+
+def test_partition_preserves_original_generated_filename_and_valid_file_order():
+    first, last = _File("main.py"), _File("other.py")
+    files = [first, _File("assets/APP.MIN.JS"), last]
+
+    valid_files, filtered_names = partition_files_by_language_filter(files)
+
+    assert valid_files == [first, last]
+    assert filtered_names == ["assets/APP.MIN.JS"]
 
 
 @pytest.mark.parametrize("filename,configured", [("archive.TAR", ["tar"]), ("archive.tar", ["TAR"])])
