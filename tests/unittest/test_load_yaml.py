@@ -426,6 +426,28 @@ class TestLoadYaml:
         finally:
             get_logger().remove(sink_id)
 
+    def test_load_yaml_with_unicode_line_separator_in_block_scalar(self):
+        # U+2028 (LINE SEPARATOR) inside a ``|`` block scalar makes PyYAML end the line early, landing the
+        # remainder at the wrong indent and raising a ScannerError. The sanitizer replaces U+2028/U+2029
+        # with a space so the block scalar stays intact and the whole answer is not dropped.
+        yaml_str = (
+            'review:\n'
+            '  key_issues_to_review:\n'
+            '    - issue_header: |\n'
+            '        Bad line\n'
+            '      issue_content: x\n'
+        )
+        result = load_yaml(yaml_str)
+        assert result != {}
+        assert result['review']['key_issues_to_review'][0]['issue_header'].strip() == 'Bad line'
+        assert result['review']['key_issues_to_review'][0]['issue_content'] == 'x'
+
+    def test_load_yaml_with_paragraph_separator_in_block_scalar(self):
+        yaml_str = 'key: |\n  hello world\n'
+        result = load_yaml(yaml_str)
+        assert result != {}
+        assert result['key'].strip() == 'hello world'
+
     @pytest.mark.parametrize("yaml_text, expected", [
         ("null", None),
         ("~", None),
