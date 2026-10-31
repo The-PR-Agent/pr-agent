@@ -78,7 +78,7 @@ ___
 
 #### Answer:<span style="display:none;">6</span>
 
-Yes. Draft PRs are not reviewed automatically by default, but you can enable it with the `feedback_on_draft_pr` parameter. You can also get feedback on any draft by manually requesting it through [online commenting](../usage-guide/automations_and_usage.md#online-usage).
+Yes. The GitHub App and GitLab webhook skip draft PRs and MRs by default; enable automatic draft feedback with `feedback_on_draft_pr`. The GitHub Action applies this setting to `pull_request_review` events, while Gitea, Azure DevOps, and Bitbucket do not skip drafts automatically. You can also get feedback on a supported draft by manually requesting it through [online commenting](../usage-guide/automations_and_usage.md#online-usage).
 
 For active PRs, you can customize the automatic feedback settings [here](../usage-guide/automations_and_usage.md#pr-agent-automatic-feedback) to match your team's workflow.
 

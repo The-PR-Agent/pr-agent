@@ -140,7 +140,7 @@ This means that when a new PR is opened/reopened or marked as ready for review, 
 
 **Draft PRs:**
 
-By default, draft PRs are not considered for automatic tools, but you can change this by setting the `feedback_on_draft_pr` parameter to `true` in the configuration file.
+By default, the GitHub App does not consider draft PRs for automatic tools. You can change this by setting the `feedback_on_draft_pr` parameter to `true` in the configuration file. The GitHub Action applies the same setting to `pull_request_review` events. The GitLab webhook also skips draft MRs by default, while Gitea, Azure DevOps, and Bitbucket do not apply a draft check.
 When enabled, marking the PR as ready does not run `pr_commands` a second time.
 Because this setting can be overridden per repository, draft PR events, including each `synchronize` event caused by a push, still fetch the repository configuration before being skipped.
 
