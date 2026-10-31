@@ -128,7 +128,19 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
 def is_bot_user(data) -> bool:
     try:
         # logic to ignore bot users (unlike GitHub, no direct flag for bot users in gitlab)
-        sender_name = data.get("user", {}).get("name", "unknown").lower()
+        user = data.get("user") or {}
+        # gitlab.ignore_user_ids may arrive as a list, a single int (GITLAB__IGNORE_USER_IDS=123)
+        # or a single string, so compare every entry as a stripped string.
+        ignored_ids = {
+            str(entry).strip()
+            for entry in normalize_setting_list(get_settings().get("gitlab.ignore_user_ids", []))
+            if entry is not None and str(entry).strip()
+        }
+        sender_id = user.get("id")
+        if ignored_ids and sender_id is not None and str(sender_id).strip() in ignored_ids:
+            get_logger().info(f"Skipping GitLab user with ignored id: {sender_id}")
+            return True
+        sender_name = user.get("name", "unknown").lower()
         # Indicators are sourced from config.bot_user_indicators in configuration.toml so the
         # default list has a single source of truth and can be reused by other providers in
         # the future. Normalize the value defensively: a misconfigured .pr_agent.toml (string

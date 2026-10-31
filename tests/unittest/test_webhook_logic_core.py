@@ -1270,6 +1270,44 @@ def test_gitlab_is_bot_user_skips_non_string_entries(gitlab_webhook_module):
         settings.set("CONFIG.BOT_USER_INDICATORS", original_override)
 
 
+@pytest.mark.parametrize(
+    "ignore_user_ids, user, expected",
+    [
+        ([123], {"id": 123, "name": "Jane Developer"}, True),
+        (["123"], {"id": 123, "name": "Jane Developer"}, True),
+        ([" 123 "], {"id": 123, "name": "Jane Developer"}, True),
+        (123, {"id": 123, "name": "Jane Developer"}, True),
+        ("123", {"id": 123, "name": "Jane Developer"}, True),
+        ([123], {"id": 456, "name": "Jane Developer"}, False),
+        # An unlisted id falls through to the display-name check.
+        ([123], {"id": 456, "name": "release-bot"}, True),
+        # A missing id never matches, even with entries that look empty.
+        ([123, None, ""], {"name": "Jane Developer"}, False),
+        ([], {"id": 123, "name": "Jane Developer"}, False),
+    ],
+)
+def test_gitlab_is_bot_user_honors_ignore_user_ids(gitlab_webhook_module, ignore_user_ids, user, expected):
+    settings = get_settings()
+    original = settings.get("GITLAB.IGNORE_USER_IDS")
+    settings.set("GITLAB.IGNORE_USER_IDS", ignore_user_ids)
+    try:
+        assert gitlab_webhook_module.is_bot_user({"user": user}) is expected
+    finally:
+        settings.set("GITLAB.IGNORE_USER_IDS", original)
+
+
+def test_gitlab_is_bot_user_skips_listed_id_whatever_the_name(gitlab_webhook_module):
+    # A hyphenated surname contains "-bot"; the id rule must not depend on the name at all.
+    settings = get_settings()
+    original = settings.get("GITLAB.IGNORE_USER_IDS")
+    settings.set("GITLAB.IGNORE_USER_IDS", ["42"])
+    try:
+        assert gitlab_webhook_module.is_bot_user({"user": {"id": 42, "name": "Renovate Bot"}}) is True
+        assert gitlab_webhook_module.is_bot_user({"user": {"id": 43, "name": "Renovate Bot"}}) is False
+    finally:
+        settings.set("GITLAB.IGNORE_USER_IDS", original)
+
+
 async def _run_gitlab_update(module, monkeypatch, *, oldrev, draft_ready, handle_push_trigger):
     """Post one merge-request `update` and report which commands ran.
 
