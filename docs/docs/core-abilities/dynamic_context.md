@@ -73,7 +73,7 @@ This balance allows for comprehensive understanding while maintaining efficiency
 [config]
 patch_extension_skip_types =[".md",".txt"]  # Skip files with these extensions when trying to extend the context
 allow_dynamic_context=true                  # Allow dynamic context extension
-max_extra_lines_before_dynamic_context = 8  # will try to include up to X extra lines before the hunk in the patch, until we reach an enclosing function or class
-patch_extra_lines_before = 3                # Number of extra lines (+3 default ones) to include before each hunk in the patch
+max_extra_lines_before_dynamic_context = 10 # will try to include up to X extra lines before the hunk in the patch, until we reach an enclosing function or class
+patch_extra_lines_before = 5                # Number of extra lines (+3 default ones) to include before each hunk in the patch
 patch_extra_lines_after = 1                 # Number of extra lines (+3 default ones) to include after each hunk in the patch
 ```
