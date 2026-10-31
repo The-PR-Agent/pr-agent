@@ -2236,7 +2236,7 @@ def test_load_repo_context_files_expands_single_directory_glob():
 @pytest.mark.parametrize("configured,expected", [(None, 20), (5, 5), (500, 100), ("bad", 20), (-3, 0)])
 def test_load_repo_context_files_caps_glob_matches(monkeypatch, configured, expected):
     if configured is not None:
-        monkeypatch.setattr(get_settings().config, "repo_context_max_glob_matches", configured, raising=False)
+        monkeypatch.setitem(get_settings().config, "repo_context_max_glob_matches", configured)
     else:
         monkeypatch.delattr(get_settings().config, "repo_context_max_glob_matches", raising=False)
     listed = [f"adr/{index:03}.md" for index in range(150)]
@@ -2249,10 +2249,10 @@ def test_load_repo_context_files_caps_glob_matches(monkeypatch, configured, expe
 
 def test_repo_context_cache_key_tracks_glob_limit_only_for_glob_entries(monkeypatch):
     config = get_settings().config
-    monkeypatch.setattr(config, "repo_context_max_glob_matches", 5, raising=False)
+    monkeypatch.setitem(config, "repo_context_max_glob_matches", 5)
     glob_key = repo_context._get_repo_context_cache_key(["docs/adr/*.md"], 500, "ref")
     plain_key = repo_context._get_repo_context_cache_key(["AGENTS.md"], 500, "ref")
-    monkeypatch.setattr(config, "repo_context_max_glob_matches", 50, raising=False)
+    monkeypatch.setitem(config, "repo_context_max_glob_matches", 50)
 
     assert repo_context._get_repo_context_cache_key(["docs/adr/*.md"], 500, "ref") != glob_key
     assert repo_context._get_repo_context_cache_key(["AGENTS.md"], 500, "ref") == plain_key
@@ -2298,9 +2298,9 @@ def test_load_repo_context_files_alternatives_skip_structured_entries_and_duplic
 
 def test_repo_context_cache_key_tracks_glob_limit_for_nested_glob_alternatives(monkeypatch):
     config = get_settings().config
-    monkeypatch.setattr(config, "repo_context_max_glob_matches", 5, raising=False)
+    monkeypatch.setitem(config, "repo_context_max_glob_matches", 5)
     key = repo_context._get_repo_context_cache_key([AGENT_INSTRUCTION_ALTERNATIVES], 500, "ref")
-    monkeypatch.setattr(config, "repo_context_max_glob_matches", 50, raising=False)
+    monkeypatch.setitem(config, "repo_context_max_glob_matches", 50)
 
     assert repo_context._get_repo_context_cache_key([AGENT_INSTRUCTION_ALTERNATIVES], 500, "ref") != key
 

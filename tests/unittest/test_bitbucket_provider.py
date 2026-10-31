@@ -1557,7 +1557,7 @@ class TestBitbucketServerProvider:
     ):
         provider = self._diff_provider(version, changes)
         if ignored:
-            monkeypatch.setattr(global_settings.ignore, "glob", ["ignored.py"])
+            monkeypatch.setitem(global_settings.ignore, "glob", ["ignored.py"])
 
         files = provider.get_diff_files()
 
