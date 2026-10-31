@@ -520,7 +520,8 @@ async def polling_loop():
                                 # Reset conditional-fetch state because an unread notification may
                                 # retain its modification timestamp.
                                 last_modified[0] = None
-                                raise
+                                get_logger().exception("Failed to mark polling notification as read; retrying later")
+                                break
                             handled_ids.add(notification['id'])
                             if output[0]:
                                 _, handled_ids, comment, comment_body, pr_url, user_tag = output
