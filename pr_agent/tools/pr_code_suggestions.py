@@ -377,7 +377,7 @@ class PRCodeSuggestions:
         self._progress_base_body = None
         self._chunk_progress = None
         try:
-            if _supports_code_suggestion_state(self.git_provider):
+            if get_settings().config.publish_output and _supports_code_suggestion_state(self.git_provider):
                 try:
                     fixed = self.git_provider.reconcile_code_suggestion_threads()
                     if fixed:
