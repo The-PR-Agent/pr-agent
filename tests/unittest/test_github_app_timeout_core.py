@@ -451,6 +451,7 @@ def push_trigger_env(monkeypatch):
         github_app=SimpleNamespace(
             handle_push_trigger=True,
             push_trigger_ignore_merge_commits=False,
+            push_trigger_ignore_bot_commits=True,
             push_trigger_pending_tasks_backlog=False,
             push_trigger_pending_tasks_ttl=300,
         )
@@ -484,10 +485,36 @@ def _push_body():
         },
         "before": "sha-before",
         "after": "sha-after",
+        "sender": {"type": "User"},
     }
 
 
 class TestPushTriggerDedupe:
+    def test_skips_bot_commit_when_configured(self, push_trigger_env):
+        body = _push_body()
+        body["sender"]["type"] = "Bot"
+
+        asyncio.run(
+            github_app.handle_push_trigger_for_new_commits(
+                body, "push", "dependabot[bot]", "1", "synchronize", {}, agent=None
+            )
+        )
+
+        assert push_trigger_env["count"] == 0
+
+    def test_processes_bot_commit_when_not_configured(self, push_trigger_env):
+        body = _push_body()
+        body["sender"]["type"] = "Bot"
+        github_app.get_settings().github_app.push_trigger_ignore_bot_commits = False
+
+        asyncio.run(
+            github_app.handle_push_trigger_for_new_commits(
+                body, "push", "dependabot[bot]", "1", "synchronize", {}, agent=None
+            )
+        )
+
+        assert push_trigger_env["count"] == 1
+
     def test_first_event_runs_perform_and_decrements_counter(self, push_trigger_env):
         body = _push_body()
         api_url = body["pull_request"]["url"]

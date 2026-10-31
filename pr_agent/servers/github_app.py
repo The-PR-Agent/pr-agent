@@ -309,6 +309,9 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
     apply_repo_settings(api_url)
     if not get_settings().github_app.handle_push_trigger:
         return {}
+    if get_settings().github_app.push_trigger_ignore_bot_commits and body.get("sender", {}).get("type") == "Bot":
+        get_logger().info(f"Skipping {event}: bot commit detected")
+        return {}
 
     before_sha = body.get("before")
     after_sha = body.get("after")
