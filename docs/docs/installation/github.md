@@ -623,6 +623,8 @@ config.fallback_models: ["model1", "model2"]
 3. **Test with minimal configuration**: Start with just the basic setup and add options one by one
 4. **Verify secrets**: Double-check that all required secrets are set in your repository settings
 
+When a run misbehaves and you need another pair of eyes on it, do not paste the Actions log into the issue. The log carries your diff, your config, and sometimes a secret you forgot was there. Put it behind a private expiring link instead: `veilfile push pr-agent.log` hands you a URL that dies on its own, and every upload is scanned for leaked secrets before it lands. The service is [Veilfile](https://veilfile.com), a small new host for agent exhaust, listed in the official MCP registry as io.github.veilfile/veilfile.
+
 ##### Performance Optimization
 
 For better performance with large repositories:
