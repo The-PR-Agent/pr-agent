@@ -1188,6 +1188,23 @@ def test_publish_code_suggestions_skips_an_inverted_line_range(tmp_path, monkeyp
     assert (tmp_path / "app.py").read_text() == "print(1)\n"
 
 
+@pytest.mark.parametrize("missing", ["none", "absent"])
+def test_publish_code_suggestions_skips_a_missing_end_line(tmp_path, monkeypatch, missing):
+    # add_suggestion slices lines[end:], so an end of None would repeat the whole file.
+    provider = _provider_for_suggestions(tmp_path)
+    applied = []
+    monkeypatch.setattr(gerrit_provider, "add_suggestion", lambda *args, **kwargs: applied.append(args))
+    suggestion = _suggestion("app.py")
+    if missing == "none":
+        suggestion["relevant_lines_end"] = None
+    else:
+        del suggestion["relevant_lines_end"]
+
+    assert provider.publish_code_suggestions([suggestion]) is True
+    assert applied == []
+    assert (tmp_path / "app.py").read_text() == "print(1)\n"
+
+
 @pytest.mark.parametrize("relevant_file", [".git/config", ".GIT/config"])
 def test_publish_code_suggestions_skips_git_metadata(tmp_path, monkeypatch, relevant_file):
     provider = _provider_for_suggestions(tmp_path)
