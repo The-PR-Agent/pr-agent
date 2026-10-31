@@ -280,6 +280,7 @@ class _GitLabIncrementalNote:
 _GITLAB_ACCESS_LEVEL_REPORTER = 20
 
 class GitLabProvider(GitProvider):
+    reuse_for_manual_tool = True
 
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         return policy_metadata(title=self.mr.title, sender=policy_value(self.mr, "author", "username"),

@@ -107,6 +107,8 @@ def _review_comment_root_id(comment) -> int:
 
 
 class GithubProvider(GitProvider):
+    reuse_for_manual_tool = True
+
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         pr = self.pr
         if pr is None:  # Issue commands have no PR-specific policy fields.

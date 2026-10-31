@@ -29,7 +29,7 @@ class _FakeAIHandler:
 
 def _build_line_questions(monkeypatch):
     provider = _FakeProvider()
-    monkeypatch.setattr(pr_line_questions, "get_git_provider", lambda: lambda _url: provider)
+    monkeypatch.setattr(pr_line_questions, "get_git_provider_for_tool", lambda _url: provider)
     monkeypatch.setattr(
         pr_line_questions, "get_skills_context", lambda: "### Skill: security-review", raising=False,
     )
@@ -60,7 +60,7 @@ def test_line_ask_does_not_load_skills_when_disabled(monkeypatch):
         settings.set("skills.enabled", False)
         # Construct directly: _build_line_questions would overwrite the spy with its own stub.
         provider = _FakeProvider()
-        monkeypatch.setattr(pr_line_questions, "get_git_provider", lambda: lambda _url: provider)
+        monkeypatch.setattr(pr_line_questions, "get_git_provider_for_tool", lambda _url: provider)
         monkeypatch.setattr(
             pr_line_questions,
             "get_skills_context",

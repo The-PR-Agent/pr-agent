@@ -19,7 +19,7 @@ from pr_agent.algo.run_output import append_run_details, show_relevant_configura
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import get_git_provider
+from pr_agent.git_providers import get_git_provider_for_tool
 from pr_agent.git_providers.git_provider import FileContentSnapshot, get_main_pr_language
 from pr_agent.log import get_logger
 
@@ -53,7 +53,7 @@ def strip_wrapping_code_fence(text: str) -> str:
 class PRUpdateChangelog:
     def __init__(self, pr_url: str, cli_mode=False, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
 
-        self.git_provider = get_git_provider()(pr_url)
+        self.git_provider = get_git_provider_for_tool(pr_url)
 
         # Determine whether pushing the changelog to the repo is both requested and possible.
         # If a push is requested but not possible — the provider has no push support, or

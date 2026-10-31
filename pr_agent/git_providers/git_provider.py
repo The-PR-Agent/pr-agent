@@ -359,6 +359,9 @@ def _is_line_number(value) -> bool:
 
 
 class GitProvider(ABC):
+    # Keep manual-tool reuse opt-in because providers can retain PR revision state.
+    reuse_for_manual_tool = False
+
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         """Return policy fields; None means unknown, empty values mean not applicable.
 
@@ -382,6 +385,7 @@ class GitProvider(ABC):
         diff cache some providers keep in the starlette context. #3724 introduced this
         for GitHub; the semantics live here so every provider inherits them.
         """
+        self._tool_provider_stale = True
         self.diff_files = None
         if getattr(self, "incremental", None) is not None:
             self.incremental = IncrementalPR(False)

@@ -53,7 +53,7 @@ async def test_run_prepares_diff_with_request_settings(monkeypatch, module, tool
     provider.get_filtered_diff_file_names.return_value = []
     provider.is_supported.return_value = False
     provider.supports_threaded_pr_questions.return_value = False
-    monkeypatch.setattr(module, "get_git_provider", lambda: lambda _url: provider)
+    monkeypatch.setattr(module, "get_git_provider_for_tool", lambda _url: provider)
     handler = SimpleNamespace(chat_completion=AsyncMock(return_value=(response, "stop")))
     started = threading.Event()
     release = threading.Event()
