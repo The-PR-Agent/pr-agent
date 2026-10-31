@@ -895,6 +895,7 @@ def _fix_key_value(key: str, value: str):
 # to run. Stripping these characters up front is a cheap, purely-defensive step: they can never be part of valid
 # YAML content, so removing them cannot turn a correct parse into an incorrect one.
 _YAML_ILLEGAL_CHARS_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+_YAML_LINE_SEPARATOR_RE = re.compile(r'[  ]')
 
 
 def sanitize_yaml_control_chars(text: str, log: bool = True) -> str:
@@ -905,11 +906,17 @@ def sanitize_yaml_control_chars(text: str, log: bool = True) -> str:
     plus DEL. The \\x80-\\x9f C1 range is intentionally preserved because try_fix_yaml's latin-1->utf-8 fallback
     relies on those bytes to repair mojibake; they must survive to reach the repair logic.
 
+    U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH SEPARATOR) are replaced with a space rather than removed: PyYAML
+    treats them as line breaks, which breaks ``|`` block scalars by ending the line early and landing the remainder
+    at the wrong indentation level.
+
     Set log=False to suppress the removal warning, e.g. when sanitizing a second, largely-overlapping copy of
     text that was already sanitized and logged once."""
     if not text:
         return text
     sanitized, count = _YAML_ILLEGAL_CHARS_RE.subn('', text)
+    sanitized, ls_count = _YAML_LINE_SEPARATOR_RE.subn(' ', sanitized)
+    count += ls_count
     if count and log:
         get_logger().warning(
             f"Removed {count} unambiguous illegal control character(s) from AI prediction before YAML parsing")
