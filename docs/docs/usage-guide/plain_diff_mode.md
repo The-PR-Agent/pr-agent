@@ -46,6 +46,9 @@ document to stdout (and to `--output`, if given) instead of as committable inlin
 suggestions. Commands that require live platform interaction (such as
 `update_changelog` or `similar_issue`) are not meaningful in this mode.
 
+By default, `describe` uses `Local diff review` as the title in stdout and `--output`;
+set `pr_description.generate_ai_title=true` to use an AI-generated title.
+
 Existing command variants that publish Markdown without additional platform
 state (`auto_review`, `config`, `settings`, and `help`) also honor `--output`.
 `answer` does not: it requires issue-comment history, which is unavailable when

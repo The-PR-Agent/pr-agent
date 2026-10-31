@@ -359,6 +359,41 @@ def test_auto_review_writes_markdown_artifact_with_stubbed_model(
     assert _REVIEW_MARKER in output.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    ("generate_ai_title", "expected_title"),
+    [(False, "Local diff review"), (True, "Update foo.py")],
+)
+def test_describe_title_in_stdout_and_output_file(
+    generate_ai_title, expected_title, monkeypatch, tmp_path, capsys,
+):
+    async def fake_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
+        return """\
+title: Update foo.py
+type: [Enhancement]
+description: Update the second line.
+pr_files:
+  - filename: foo.py
+    changes_title: Update the second line
+    changes_summary: Replace line2 with line2-changed.
+    label: Enhancement
+""", "stop"
+
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion",
+        fake_chat_completion,
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+    output = tmp_path / "description.md"
+    overrides = ["--pr_description.generate_ai_title=true"] if generate_ai_title else []
+
+    run(inargs=["--stdin", "--output", str(output), "describe", *overrides])
+
+    markdown = output.read_text(encoding="utf-8")
+    assert markdown.startswith(f"{expected_title}\n\n")
+    assert "Update the second line." in markdown
+    assert capsys.readouterr().out == markdown + "\n"
+
 def test_plain_diff_ask_keeps_output_after_command_settings(monkeypatch, tmp_path, capsys):
     async def answer(self, model, system, user, temperature=0.2, **kwargs):
         return "The changed line is correct.", "stop"
