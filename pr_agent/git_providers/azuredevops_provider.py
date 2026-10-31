@@ -575,6 +575,7 @@ class AzureDevopsProvider(GitProvider):
 
     def set_pr(self, pr_url: str):
         self.diff_files = None
+        self._latest_commit_url = None
         self._diff_path_map = None
         self._pr_iteration_changes_cache = None
         self._languages = None
@@ -1886,6 +1887,8 @@ class AzureDevopsProvider(GitProvider):
         return head if isinstance(head, str) else ""
 
     def get_latest_commit_url(self) -> str:
+        if (cached_url := getattr(self, "_latest_commit_url", None)) is not None:
+            return cached_url
         commits = self.azure_devops_client.get_pull_request_commits(self.repo_slug, self.pr_num, self.workspace_slug)
         if not commits:
             # a PR force-pushed back onto its base has zero commits; fall back to the base-class contract
@@ -1896,6 +1899,7 @@ class AzureDevopsProvider(GitProvider):
         workspace = quote(self.workspace_slug, safe='')
         repo = quote(self.repo_slug, safe='')
         url = self.azure_devops_client.normalized_url + "/" + workspace + "/_git/" + repo + "/commit/" + last.commit_id
+        self._latest_commit_url = url
         return url
 
     def get_linked_work_items(self) -> list:
