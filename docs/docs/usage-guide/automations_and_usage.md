@@ -59,7 +59,7 @@ For a quick preflight that needs no token and no PR, run:
 pr-agent doctor
 ```
 
-It checks that `config.model` is set, that the active provider has a real API key, and that a one-token completion against the configured model succeeds. The exit code is `0` only when every check passes, so CI setups can gate on it. It ships with the package, unlike the fuller health check below, which exercises real commands on a real PR.
+It checks that `config.model` is set and that a completion against the configured model succeeds. Where required, it also checks for a real static API key. Azure AD, Bedrock IAM, and custom endpoints defer authentication validation to the completion. The exit code is `0` only when every check passes, so CI setups can gate on it. It ships with the package, unlike the fuller health check below, which exercises real commands on a real PR.
 
 When host-configured `push_outputs` is enabled, `doctor` adds a fourth check for the selected output destinations: registered channel names, a nonempty file path, HTTPS scheme and hostname for webhook/Slack URLs, and a nonempty Telegram token string and a chat ID that is a nonempty string or nonzero integer. An omitted file path uses the normal default. Distinct custom sink names receive recognition-only checks; their private settings are not validated.
 
