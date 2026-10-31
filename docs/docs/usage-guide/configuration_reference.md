@@ -279,7 +279,7 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `suggestions_score_threshold` | 0 | [0-10]\| recommend not to set this value above 8, since above it may clip highly relevant suggestions |
+| `suggestions_score_threshold` | 1 | [0-10]\| 0 is treated as 1; recommend not to set this value above 8, since above it may clip highly relevant suggestions |
 | `score_on_reflection_failure` | 7 | [0-10]\| score assigned when self-reflection fails or its feedback cannot be parsed; set below suggestions_score_threshold to drop unvetted suggestions |
 | `new_score_mechanism` | true |  |
 | `new_score_mechanism_th_high` | 9 |  |
