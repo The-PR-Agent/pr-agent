@@ -2642,7 +2642,11 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         metadata = dict()
         callbacks = litellm.success_callback + litellm.failure_callback + litellm.service_callback
-        if "langfuse" in callbacks:
+        # Both litellm callback names consume the same metadata keys: the OTel integration
+        # ("langfuse_otel", litellm/integrations/langfuse/langfuse_otel.py) maps trace_name,
+        # tags and trace_metadata onto Langfuse span attributes exactly as the legacy
+        # "langfuse" callback does.
+        if "langfuse" in callbacks or "langfuse_otel" in callbacks:
             metadata.update({
                 "trace_name": command,
                 "tags": [git_provider, command, f'version:{get_version()}'],

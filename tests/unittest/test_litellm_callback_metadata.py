@@ -7,10 +7,10 @@ from pr_agent.log import get_logger
 OTHER_PR = "https://github.com/other-org/other-repo/pull/999"
 
 
-@pytest.fixture
-def langfuse_callback():
+@pytest.fixture(params=["langfuse", "langfuse_otel"])
+def langfuse_callback(request):
     original = litellm.success_callback
-    litellm.success_callback = ["langfuse"]
+    litellm.success_callback = [request.param]
     yield
     litellm.success_callback = original
 
@@ -42,6 +42,8 @@ def test_metadata_uses_this_requests_own_context(langfuse_callback):
     with get_logger().contextualize(command="review", pr_url="https://github.com/o/r/pull/1"):
         kwargs = LiteLLMAIHandler.add_litellm_callbacks(object.__new__(LiteLLMAIHandler), {})
 
-    trace_metadata = (kwargs.get("metadata") or {}).get("trace_metadata") or {}
+    metadata = kwargs.get("metadata") or {}
+    assert metadata.get("trace_name") == "review"
+    trace_metadata = metadata.get("trace_metadata") or {}
     assert trace_metadata.get("command") == "review"
     assert trace_metadata.get("pr_url") == "https://github.com/o/r/pull/1"

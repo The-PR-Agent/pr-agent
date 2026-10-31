@@ -11,7 +11,7 @@ import types
 
 import pytest
 
-from pr_agent.mosaico.observability import langfuse_span, mosaico_log_context, parse_observability_metadata
+from pr_agent.mosaico.observability import AGENT_NAME, langfuse_span, mosaico_log_context, parse_observability_metadata
 
 
 class TestParseObservabilityMetadata:
@@ -86,16 +86,18 @@ class TestLangfuseSpanW3CTransform:
 
     Existing tests use non-UUID stubs ("r"/"s") where ``.replace('-','')`` and
     ``[-16:]`` are no-ops, so they do NOT guard the transform. This installs a fake
-    ``langfuse`` module to capture the trace_context/session_id actually passed in."""
+    ``langfuse`` module to capture the trace_context/session_id, propagated trace
+    metadata and observation type actually passed in."""
 
     @pytest.mark.asyncio
     async def test_w3c_transform_locked(self, monkeypatch):
         captured = {}
 
         @contextlib.contextmanager
-        def fake_propagate_attributes(session_id=None, trace_name=None):
+        def fake_propagate_attributes(session_id=None, trace_name=None, metadata=None):
             captured["session_id"] = session_id
             captured["trace_name"] = trace_name
+            captured["metadata"] = metadata
             yield
 
         class FakeClient:
@@ -103,6 +105,7 @@ class TestLangfuseSpanW3CTransform:
             def start_as_current_observation(self, *, as_type=None, name=None, **kwargs):
                 captured["trace_context"] = kwargs.get("trace_context")
                 captured["name"] = name
+                captured["as_type"] = as_type
                 yield
 
         fake_langfuse = types.ModuleType("langfuse")
@@ -128,6 +131,11 @@ class TestLangfuseSpanW3CTransform:
         # A2A context id -> Langfuse session id
         assert captured["session_id"] == "ctx-id-42"
         assert captured["trace_name"] == "root-task"
+        # full parsed metadata propagated as trace-level metadata
+        assert captured["metadata"] == meta
+        # the root observation logs as an agent, not a plain span
+        assert captured["as_type"] == "agent"
+        assert captured["name"] == AGENT_NAME
 
 
 @pytest.mark.parametrize("bad_id", [
