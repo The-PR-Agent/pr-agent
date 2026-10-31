@@ -622,7 +622,7 @@ async def _run_action_and_drain():
 def main():
     # github_app is no longer imported here, so its JSON logging setup does not
     # run; configure logging explicitly so the level and analytics filter work.
-    setup_logger(level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
+    setup_logger(level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
     asyncio.run(_run_action_and_drain())
 
 
