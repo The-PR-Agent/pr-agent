@@ -1101,6 +1101,9 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
         data = _load_yaml_initial(response_text)
     except Exception as e:
         get_logger().warning(f"Initial failure to parse AI prediction: {e}")
+        separators = str.maketrans({"\u2028": " ", "\u2029": " "})
+        response_text = response_text.translate(separators)
+        response_text_original_sanitized = response_text_original_sanitized.translate(separators)
         data = try_fix_yaml(response_text, keys_fix_yaml=keys_fix_yaml, first_key=first_key, last_key=last_key,
                             response_text_original=response_text_original_sanitized)
         if not data:
