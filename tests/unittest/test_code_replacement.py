@@ -10,6 +10,7 @@ from pr_agent.algo.code_replacement import python_replacement_compiles, reindent
         ("        if x:\n            return 1", "    if y:", "    if x:\n        return 1"),
         ("if x:\n    return 1", "\tif y:", "\tif x:\n\t\treturn 1"),
         ("if x:\n\n    return 1", "  if y:", "  if x:\n\n      return 1"),
+        ("x = 1\u2028y = 2", "  x = 0", "  x = 1\u2028y = 2"),
     ],
 )
 def test_reindent_to_line(code, original_line, expected):
