@@ -21,7 +21,7 @@ class KeyIssuesComponentLink(BaseModel):
     issue_content: str
     start_line: int
     end_line: int
-    confidence: float | None = Field(default=None, ge=0, le=100)
+    confidence: int | None = Field(default=None, ge=0, le=10)
 
 
 class TodoSection(BaseModel):
@@ -74,7 +74,7 @@ def parse_failure_modes(value: object) -> list[dict]:
 
 
 def finding_confidence(issue: object) -> float | None:
-    """Return a finding's confidence as a number in 0-100, or None when it is absent or unusable.
+    """Return a finding's confidence as a number in 0-10, or None when it is absent or unusable.
 
     Filtering and rendering share this, so a finding is shown with a confidence exactly when
     the filter compared it.
@@ -86,7 +86,7 @@ def finding_confidence(issue: object) -> float | None:
         confidence = float(str(value).strip())
     except ValueError:
         return None
-    return confidence if 0 <= confidence <= 100 else None  # also rejects NaN
+    return confidence if 0 <= confidence <= 10 else None  # also rejects NaN
 
 
 class Review(BaseModel):

@@ -203,6 +203,14 @@ def replace_suggestion_blocks(body: str, replacement: str) -> str:
     return "".join(parts)
 
 
+def get_min_finding_confidence() -> float:
+    """Return pr_reviewer.min_finding_confidence as a number; 0 (disabled) when unset or not numeric."""
+    try:
+        return float(get_settings().pr_reviewer.get("min_finding_confidence", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def convert_to_markdown_v2(output_data: dict,
                            gfm_supported: bool = True,
                            incremental_review=None,
@@ -456,7 +464,7 @@ def convert_to_markdown_v2(output_data: dict,
                         if issue_header.lower() == 'possible bug':
                             issue_header = 'Possible Issue'  # Make the header less frightening
                         issue_content = issue.get('issue_content', '').strip()
-                        confidence = finding_confidence(issue)
+                        confidence = finding_confidence(issue) if get_min_finding_confidence() > 0 else None
                         if confidence is not None:
                             issue_header = f"{issue_header} (confidence: {confidence:g})"
                         start_line = _as_line(issue.get('start_line')) or 0

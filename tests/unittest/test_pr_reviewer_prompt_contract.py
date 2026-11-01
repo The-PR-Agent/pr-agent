@@ -128,14 +128,17 @@ def test_user_prompt_contributes_variables_of_its_own(monkeypatch):
     assert user_referenced - (set(reviewer.vars) - {dropped}) == {dropped}
 
 
-def test_pr_review_prompt_asks_for_a_confidence_per_finding(monkeypatch):
+@pytest.mark.parametrize("threshold,asks_for_confidence", [(0, False), (5, True)])
+def test_pr_review_prompt_asks_for_a_confidence_only_when_filtering(monkeypatch, threshold, asks_for_confidence):
+    monkeypatch.setattr(get_settings().pr_reviewer, "min_finding_confidence", threshold, raising=False)
     reviewer = _build_reviewer(monkeypatch)
     environment = Environment(autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
 
     rendered = environment.from_string(get_settings().pr_review_prompt.system).render(reviewer.vars)
 
-    assert "confidence: float" in rendered
-    assert "confidence: 85" in rendered
+    assert ("confidence: int" in rendered) is asks_for_confidence
+    assert ("confidence: 8" in rendered) is asks_for_confidence
+    assert "Below 50" not in rendered
 
 
 @pytest.mark.parametrize("enabled", [False, True])

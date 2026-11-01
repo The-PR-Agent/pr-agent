@@ -899,12 +899,12 @@ def _chunk_with_confidences(*confidences):
 
 @pytest.mark.asyncio
 async def test_confidence_filter_runs_before_the_findings_cap_across_chunks(chunking_enabled, monkeypatch):
-    # three 30s in the first chunk would fill num_max_findings and push out the 95 of the second
+    # three 3s in the first chunk would fill num_max_findings and push out the 9 of the second
     get_settings().set("pr_reviewer.num_max_findings", 3)
-    monkeypatch.setattr(get_settings().pr_reviewer, "min_finding_confidence", 70, raising=False)
+    monkeypatch.setattr(get_settings().pr_reviewer, "min_finding_confidence", 7, raising=False)
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(
-        side_effect=[_chunk_with_confidences(30, 30, 30), _chunk_with_confidences(95)])
+        side_effect=[_chunk_with_confidences(3, 3, 3), _chunk_with_confidences(9)])
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
@@ -914,17 +914,17 @@ async def test_confidence_filter_runs_before_the_findings_cap_across_chunks(chun
         await reviewer._prepare_prediction("model")
 
     issues = reviewer.prediction_data["review"]["key_issues_to_review"]
-    assert [issue["confidence"] for issue in issues] == [95]
+    assert [issue["confidence"] for issue in issues] == [9]
     assert reviewer.low_confidence_filtered_count == 3
 
 
 @pytest.mark.asyncio
 async def test_remerging_cached_chunks_keeps_the_low_confidence_count(chunking_enabled, monkeypatch):
     # a fallback attempt reuses the cached chunks, so the count must not depend on the first merge
-    monkeypatch.setattr(get_settings().pr_reviewer, "min_finding_confidence", 70, raising=False)
+    monkeypatch.setattr(get_settings().pr_reviewer, "min_finding_confidence", 7, raising=False)
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(
-        side_effect=[_chunk_with_confidences(30, 30), _chunk_with_confidences(95)])
+        side_effect=[_chunk_with_confidences(3, 3), _chunk_with_confidences(9)])
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
@@ -937,4 +937,4 @@ async def test_remerging_cached_chunks_keeps_the_low_confidence_count(chunking_e
     assert reviewer._merge_cached_review_chunks()
 
     assert reviewer.low_confidence_filtered_count == 2
-    assert [issue["confidence"] for issue in reviewer.prediction_data["review"]["key_issues_to_review"]] == [95]
+    assert [issue["confidence"] for issue in reviewer.prediction_data["review"]["key_issues_to_review"]] == [9]
