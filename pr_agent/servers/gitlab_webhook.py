@@ -515,8 +515,20 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
 def handle_ask_line(body, data):
     try:
-        line_range_ = data['object_attributes']['position']['line_range']
-        if line_range_['start'].get('type', 'new') == 'old':
+        position = data['object_attributes']['position']
+        line_range_ = position.get('line_range')
+        if line_range_ is None:
+            new_line = position.get('new_line')
+            old_line = position.get('old_line')
+            if isinstance(new_line, int) and not isinstance(new_line, bool) and new_line > 0:
+                start_line = end_line = new_line
+                side = 'RIGHT'
+            elif isinstance(old_line, int) and not isinstance(old_line, bool) and old_line > 0:
+                start_line = end_line = old_line
+                side = 'LEFT'
+            else:
+                return body
+        elif line_range_['start'].get('type', 'new') == 'old':
             start_line = line_range_['start']['old_line']
             end_line = line_range_['end']['old_line']
             side = 'LEFT'
@@ -525,7 +537,7 @@ def handle_ask_line(body, data):
             end_line = line_range_['end']['new_line']
             side = 'RIGHT'
         question = body.strip().removeprefix('/ask').strip()
-        path = data['object_attributes']['position']['new_path']
+        path = position['new_path']
         comment_id = data['object_attributes']["discussion_id"]
         get_logger().info("Handling line ")
         body = [
