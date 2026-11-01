@@ -2240,7 +2240,7 @@ async def test_prepare_pr_review_pushes_outputs_when_publishing():
     ],
 )
 def test_filter_low_confidence_findings(monkeypatch, threshold, expected_contents, expected_dropped):
-    monkeypatch.setattr(get_settings().pr_reviewer, "min_finding_confidence", threshold, raising=False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "min_finding_confidence", threshold)
     reviewer = _make_reviewer()
     data = {"review": {"key_issues_to_review": [
         _key_issue(issue_content="high", confidence=9),
@@ -2261,7 +2261,7 @@ def test_filter_low_confidence_findings(monkeypatch, threshold, expected_content
 
 @pytest.mark.parametrize("threshold,rendered", [(5, True), (0, False)])
 def test_convert_to_markdown_renders_the_confidence_the_filter_compares(monkeypatch, threshold, rendered):
-    monkeypatch.setattr(get_settings().pr_reviewer, "min_finding_confidence", threshold, raising=False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "min_finding_confidence", threshold)
     output = {"review": {"key_issues_to_review": [
         _key_issue(issue_content="whole", confidence=8),
         _key_issue(issue_content="fractional", confidence=8.5),

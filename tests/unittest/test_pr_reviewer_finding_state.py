@@ -1844,7 +1844,7 @@ def test_render_previous_findings_uses_exact_json_length_for_unicode_and_escapes
 @pytest.mark.parametrize("threshold,expect_resolution", [(0, True), (5, False)])
 def test_low_confidence_filtering_prevents_resolution(monkeypatch, threshold, expect_resolution):
     settings = _settings(monkeypatch)
-    monkeypatch.setattr(settings.pr_reviewer, "min_finding_confidence", threshold, raising=False)
+    monkeypatch.setitem(settings.pr_reviewer, "min_finding_confidence", threshold)
     previous = reconcile_review_findings(
         None,
         [_finding()],
