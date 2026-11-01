@@ -6,6 +6,10 @@ These tests deliberately avoid any network/GitHub API by instantiating
 the provider via ``__new__`` and exercising only pure helpers, or by
 wiring fake PR/file/repo objects for get_diff_files.
 """
+import hashlib
+import json
+import re
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qsl, urlsplit
@@ -20,6 +24,7 @@ from pr_agent.algo.pr_processing import pr_generate_extended_diff
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers import github_provider
 from pr_agent.git_providers.github_provider import GithubProvider, IncompletePullRequestFilesError
+from pr_agent.log import get_logger
 
 
 def _bare_provider():
@@ -309,6 +314,109 @@ def _make_provider_for_diff(files):
         compare=lambda b, h: SimpleNamespace(
             merge_base_commit=SimpleNamespace(sha="base-sha")
         )
+    )
+    # The batched content read needs a repository name and a GraphQL client; this one finds nothing.
+    p.repo = "owner/repo"
+    p.github_client = SimpleNamespace(_Github__requester=_GraphqlRequester())
+    return p
+
+
+class _GraphqlRequester:
+    """Answer GraphQL file-entry queries from a map of "sha:path" to blob, like PyGithub's requester does.
+
+    `requestJson` returns the HTTP status, the headers and the body text. A blob can carry a "mode" for its
+    tree entry; without one it is a regular file. A blob can instead be {"entry": ...}, a tree entry served
+    as is (a submodule, a directory), or {"commit": None}, a commit that cannot be resolved, whose entry is
+    null without an error. A path that is not in the map is answered the way the real API does: its file is
+    null and a NOT_FOUND error comes back in a 200 response, next to the entries that were found. Only the
+    fields the document selects are returned, so a field missing from the query is missing from the answer.
+
+    Once `fail_after` requests were answered, a call raises `error`, or answers `response` with `status`:
+    a string is sent as is, anything else as JSON.
+    """
+
+    graphql_url = "https://api.github.com/graphql"
+
+    def __init__(self, blobs=None, error=None, fail_after=0, response=None, status=200):
+        self.blobs = blobs or {}
+        self.error = error
+        self.fail_after = fail_after
+        self.response = response
+        self.status = status
+        self.queries = []
+
+    def requestJson(self, method, url, input):  # noqa: N802
+        assert (method, url) == ("POST", self.graphql_url)
+        query, variables = input["query"], input["variables"]
+        self.queries.append((query, variables))
+        failing = len(self.queries) > self.fail_after
+        if self.error and failing:
+            raise self.error
+        if self.response is not None and failing:
+            body = self.response if isinstance(self.response, str) else json.dumps(self.response)
+            return self.status, {}, body
+        aliases = re.findall(r"(\w+): object\(oid: \$(\w+)\) \{ \.\.\. on Commit \{ file\(path: \$(\w+)\)", query)
+        selection = re.search(
+            r"file\(path: \$\w+\)\s*\{\s*(.*?)\s*object\s*\{\s*\.\.\.\s*on Blob\s*\{\s*(.*?)\s*\}", query
+        )
+        assert selection, query
+        entry_fields, blob_fields = (set(fields.split()) for fields in selection.groups())
+        repository, errors = {}, []
+        for alias, oid, path in aliases:
+            commit = self._commit(variables[oid], variables[path], entry_fields, blob_fields)
+            repository[alias] = commit
+            if isinstance(commit, dict) and commit.get("file") is None:
+                errors.append({"type": "NOT_FOUND", "path": ["repository", alias], "message": "Could not resolve"})
+        payload = {"data": {"repository": repository}}
+        if errors:
+            payload["errors"] = errors
+        return 200, {}, json.dumps(payload)
+
+    def _commit(self, oid, path, entry_fields, blob_fields):
+        blob = self.blobs.get(f"{oid}:{path}")
+        if blob is None:
+            return {"file": None}
+        if "commit" in blob:
+            return blob["commit"]
+        if "entry" in blob:
+            return {"file": blob["entry"]}
+        entry = {"object": {k: v for k, v in blob.items() if k in blob_fields}}
+        if "mode" in entry_fields:
+            entry["mode"] = blob.get("mode", 0o100644)
+        return {"file": entry}
+
+    @property
+    def reads(self):
+        return [(variables[key], variables[key.replace("oid", "path")])
+                for _, variables in self.queries for key in variables if key.startswith("oid")]
+
+
+def _blob_id(data: bytes) -> str:
+    return hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
+
+
+def _text_blob(text):
+    return {"text": text, "oid": _blob_id(text.encode()), "isBinary": False, "isTruncated": False}
+
+
+@contextmanager
+def _captured_logs():
+    """Collect the log messages written inside the block."""
+    captured = []
+    sink_id = get_logger().add(lambda message: captured.append(str(message)), format="{message}")
+    try:
+        yield captured
+    finally:
+        get_logger().remove(sink_id)
+
+
+def _make_provider_with_graphql(files, requester, rest=None):
+    """A diff provider that reads contents through a fake GraphQL requester, then a fake REST client."""
+    p = _make_provider_for_diff(files)
+    p.github_client = SimpleNamespace(_Github__requester=requester)
+    p.repo_obj.full_name = "owner/repo"
+    p.repo_obj.get_contents = Mock(
+        side_effect=lambda path, ref: SimpleNamespace(decoded_content=(rest or {}).get((ref, path), b"rest"))
     )
     return p
 
@@ -1322,6 +1430,363 @@ def test_page_and_post_read_failure_share_the_two_attempt_budget(monkeypatch):
     provider._get_pr.assert_called_once()
     assert provider.git_files is None
     assert "git_files" not in request_context
+
+
+@pytest.mark.parametrize("variables,payload", [
+    (None, {"query": "q"}),
+    ({"owner": "o"}, {"query": "q", "variables": {"owner": "o"}}),
+], ids=["without-variables", "with-variables"])
+def test_post_graphql_sends_the_variables_only_when_given(variables, payload):
+    calls = []
+    requester = SimpleNamespace(
+        graphql_url="https://api.github.com/graphql",
+        requestJson=lambda method, url, input: calls.append((method, url, input)) or (200, {}, "{}"),
+    )
+    provider = _bare_provider()
+    provider.github_client = SimpleNamespace(_Github__requester=requester)
+
+    assert provider._post_graphql("q", variables) == (200, {}, "{}")
+    assert calls == [("POST", "https://api.github.com/graphql", payload)]
+
+
+class TestBatchedContentReads:
+    """`get_diff_files` warms the revision-content cache with GraphQL blob reads; REST stays the fallback."""
+
+    @staticmethod
+    def _rest_reads(provider):
+        return [(call.kwargs["ref"], call.args[0]) for call in provider.repo_obj.get_contents.call_args_list]
+
+    @staticmethod
+    def _modified_files(count):
+        return [_make_file(f"f{i}.py", "modified") for i in range(count)]
+
+    def test_modified_files_are_read_in_one_graphql_request(self, patched_helpers):
+        blobs = {f"{sha}:f{i}.py": _text_blob(f"{sha} {i} h\u00e9llo \u20ac")
+                 for i in range(3) for sha in ("head-sha", "base-sha")}
+        requester = _GraphqlRequester(blobs)
+        provider = _make_provider_with_graphql(self._modified_files(3), requester)
+
+        diffs = provider.get_diff_files()
+
+        assert len(requester.queries) == 1
+        query, _ = requester.queries[0]
+        assert "$oid0: GitObjectID!" in query and "$path0: String!" in query
+        assert self._rest_reads(provider) == []
+        assert [(d.head_file, d.base_file) for d in diffs] == [
+            (f"head-sha {i} h\u00e9llo \u20ac", f"base-sha {i} h\u00e9llo \u20ac") for i in range(3)
+        ]
+
+    @pytest.mark.parametrize("statuses,graphql_requests", [
+        (["modified"], 0),
+        (["added", "modified"], 1),
+    ], ids=["two-reads", "three-reads"])
+    def test_batching_starts_at_three_reads(self, patched_helpers, statuses, graphql_requests):
+        files = [_make_file(f"f{i}.py", status) for i, status in enumerate(statuses)]
+        requester = _GraphqlRequester()
+        provider = _make_provider_with_graphql(files, requester)
+
+        provider.get_diff_files()
+
+        assert len(requester.queries) == graphql_requests
+
+    @pytest.mark.parametrize("blob", [
+        None,
+        {"commit": None},
+        {},
+        {"entry": {"mode": 0o160000, "object": None}},
+        {"entry": {"mode": 0o40000, "object": {}}},
+        {**_text_blob("x"), "isBinary": True},
+        {**_text_blob("x"), "isTruncated": True},
+        {**_text_blob("x"), "oid": _blob_id(b"y")},
+        {**_text_blob("a \ufffd byte"), "oid": _blob_id(b"a \xff byte")},
+        {"text": "a\ud800b", "oid": _blob_id(b"a?b"), "isBinary": False, "isTruncated": False},
+        {**_text_blob("# \u4e00\u4e8c\u4e09\u56db\u4e94\n"),
+         "oid": _blob_id(b"\xff\xfe" + "# \u4e00\u4e8c\u4e09\u56db\u4e94\n".encode("utf-16-le"))},
+        {**_text_blob("../target/file.py"), "mode": 0o120000},
+        {**_text_blob("target\nwith a newline"), "mode": 0o120000},
+        {**_text_blob("x"), "mode": None},
+        {"text": None, "oid": _blob_id(b"\xff"), "isBinary": False, "isTruncated": False},
+    ], ids=["missing", "unknown-commit", "not-a-blob", "submodule", "directory", "binary", "truncated",
+            "re-encoded", "replacement-character", "lone-surrogate", "utf-16-of-equal-size", "symlink",
+            "symlink-with-newline", "no-mode", "no-text"])
+    def test_unusable_blob_falls_back_to_its_rest_read(self, patched_helpers, blob):
+        blobs = {
+            "head-sha:f0.py": _text_blob("head 0"), "base-sha:f0.py": _text_blob("base 0"),
+            "head-sha:f1.py": blob, "base-sha:f1.py": _text_blob("base 1"),
+        }
+        provider = _make_provider_with_graphql(
+            self._modified_files(2), _GraphqlRequester(blobs), rest={("head-sha", "f1.py"): b"rest head 1"}
+        )
+
+        diffs = provider.get_diff_files()
+
+        assert self._rest_reads(provider) == [("head-sha", "f1.py")]
+        assert [(d.head_file, d.base_file) for d in diffs] == [("head 0", "base 0"), ("rest head 1", "base 1")]
+
+    @pytest.mark.parametrize("mode", [0o100644, 0o100755], ids=["regular", "executable"])
+    def test_text_without_a_newline_is_served_when_the_file_is_not_a_symlink(self, patched_helpers, mode):
+        blobs = {f"{sha}:f{i}.py": {**_text_blob("1.2.3"), "mode": mode}
+                 for i in range(2) for sha in ("head-sha", "base-sha")}
+        provider = _make_provider_with_graphql(self._modified_files(2), _GraphqlRequester(blobs))
+
+        diffs = provider.get_diff_files()
+
+        assert self._rest_reads(provider) == []
+        assert [(d.head_file, d.base_file) for d in diffs] == [("1.2.3", "1.2.3")] * 2
+
+    def test_empty_file_is_served_without_a_rest_read(self, patched_helpers):
+        blobs = {
+            "head-sha:f0.py": _text_blob(""), "base-sha:f0.py": _text_blob(""),
+            "head-sha:f1.py": _text_blob("head 1"), "base-sha:f1.py": _text_blob(""),
+        }
+        provider = _make_provider_with_graphql(self._modified_files(2), _GraphqlRequester(blobs))
+
+        diffs = provider.get_diff_files()
+
+        assert self._rest_reads(provider) == []
+        assert [(d.head_file, d.base_file) for d in diffs] == [("", ""), ("head 1", "")]
+
+    def test_a_literal_replacement_character_is_served_when_the_blob_id_matches(self, patched_helpers):
+        blobs = {f"{sha}:f{i}.py": _text_blob("a \ufffd byte") for i in range(2) for sha in ("head-sha", "base-sha")}
+        provider = _make_provider_with_graphql(self._modified_files(2), _GraphqlRequester(blobs))
+
+        diffs = provider.get_diff_files()
+
+        assert self._rest_reads(provider) == []
+        assert [(d.head_file, d.base_file) for d in diffs] == [("a \ufffd byte", "a \ufffd byte")] * 2
+
+    @pytest.mark.parametrize("error", [
+        GithubException(502, {"message": "Bad gateway"}, None),
+        RequestsConnectionError("connection reset"),
+        ValueError("invalid JSON"),
+    ], ids=["github", "transport", "malformed-json"])
+    def test_graphql_failure_falls_back_to_rest_reads(self, patched_helpers, error):
+        provider = _make_provider_with_graphql(self._modified_files(2), _GraphqlRequester(error=error))
+
+        diffs = provider.get_diff_files()
+
+        assert len(self._rest_reads(provider)) == 4
+        assert [(d.head_file, d.base_file) for d in diffs] == [("rest", "rest")] * 2
+
+    @pytest.mark.parametrize("status,response", [
+        (200, "<html>sign in</html>"),
+        (200, ""),
+        (200, "null"),
+        (200, '"unexpected"'),
+        (200, ["unexpected"]),
+        (200, {"data": {"repository": None}}),
+        (200, {"data": None}),
+        (200, {"errors": ["boom"]}),
+        (204, ""),
+        (403, {"message": "API rate limit exceeded"}),
+        (502, "<html>Bad gateway</html>"),
+        (502, {"data": {"repository": {f"entry{i}": {"file": {"mode": 0o100644, "object": _text_blob("graphql")}}
+                                       for i in range(4)}}}),
+        (201, {"data": {"repository": {f"entry{i}": {"file": {"mode": 0o100644, "object": _text_blob("graphql")}}
+                                       for i in range(4)}}}),
+    ], ids=["not-json", "empty", "null", "json-string", "not-an-object", "no-repository", "no-data", "odd-error",
+            "no-content", "forbidden", "bad-gateway", "data-with-an-error-status", "data-with-another-status"])
+    def test_unexpected_graphql_payload_falls_back_to_rest_reads(self, patched_helpers, status, response):
+        requester = _GraphqlRequester(response=response, status=status)
+        provider = _make_provider_with_graphql(self._modified_files(2), requester)
+
+        diffs = provider.get_diff_files()
+
+        assert len(self._rest_reads(provider)) == 4
+        assert [(d.head_file, d.base_file) for d in diffs] == [("rest", "rest")] * 2
+
+    @pytest.mark.parametrize("failure", [
+        {"error": GithubException(502, {"message": "Bad gateway"}, None)},
+        {"response": "<html>sign in</html>"},
+    ], ids=["error", "bad-payload"])
+    def test_a_failed_batch_leaves_the_remaining_reads_to_rest(self, patched_helpers, monkeypatch, failure):
+        monkeypatch.setattr(github_provider, "_GRAPHQL_BLOB_BATCH", 3)
+        blobs = {f"{sha}:f{i}.py": _text_blob(f"{sha} {i}") for i in range(4) for sha in ("head-sha", "base-sha")}
+        requester = _GraphqlRequester(blobs, fail_after=1, **failure)
+        provider = _make_provider_with_graphql(self._modified_files(4), requester)
+
+        diffs = provider.get_diff_files()
+
+        assert len(requester.queries) == 2
+        assert len(self._rest_reads(provider)) == 5
+        assert (diffs[0].head_file, diffs[0].base_file) == ("head-sha 0", "base-sha 0")
+        assert (diffs[1].head_file, diffs[1].base_file) == ("head-sha 1", "rest")
+
+    @pytest.mark.parametrize("raised", [True, False], ids=["raised", "returned"])
+    def test_a_failed_batch_logs_the_error_without_the_response(self, patched_helpers, raised):
+        leaked = "API_KEY=do-not-log"
+        partial = {"data": {"repository": {"entry0": {"file": {"object": _text_blob(leaked)}}}},
+                   "errors": [{"type": "TIMEOUT", "message": "timed out"}]}
+        failure = {"error": GithubException(400, partial, None)} if raised else {"response": partial}
+        provider = _make_provider_with_graphql(self._modified_files(2), _GraphqlRequester(**failure))
+        expected = ("GithubException", "status=400") if raised else ("status=200", "TIMEOUT")
+
+        with _captured_logs() as captured:
+            provider.get_diff_files()
+
+        assert any("Batched content read failed" in line and all(part in line for part in expected)
+                   for line in captured)
+        assert not any(leaked in line for line in captured)
+
+    def test_a_response_without_a_repository_is_logged_and_left_to_rest(self, patched_helpers):
+        requester = _GraphqlRequester(response={"data": {"repository": None}})
+        provider = _make_provider_with_graphql(self._modified_files(2), requester)
+
+        with _captured_logs() as captured:
+            provider.get_diff_files()
+
+        assert any("returned no repository" in line for line in captured)
+        assert len(self._rest_reads(provider)) == 4
+
+    def test_several_missing_paths_do_not_discard_the_batch(self, patched_helpers):
+        blobs = {f"{sha}:f{i}.py": _text_blob(f"{sha} {i}") for i in (0, 3) for sha in ("head-sha", "base-sha")}
+        provider = _make_provider_with_graphql(self._modified_files(4), _GraphqlRequester(blobs))
+
+        diffs = provider.get_diff_files()
+
+        assert self._rest_reads(provider) == [
+            ("head-sha", "f1.py"), ("base-sha", "f1.py"), ("head-sha", "f2.py"), ("base-sha", "f2.py"),
+        ]
+        assert [(d.head_file, d.base_file) for d in diffs] == [
+            ("head-sha 0", "base-sha 0"), ("rest", "rest"), ("rest", "rest"), ("head-sha 3", "base-sha 3"),
+        ]
+
+    def test_a_missing_path_next_to_another_error_discards_the_batch(self, patched_helpers):
+        partial = {"data": {"repository": {"entry0": {"file": {"mode": 0o100644, "object": _text_blob("partial")}}}},
+                   "errors": [{"type": "NOT_FOUND", "message": "gone"}, {"type": "TIMEOUT", "message": "slow"}]}
+        requester = _GraphqlRequester(response=partial)
+        provider = _make_provider_with_graphql(self._modified_files(3), requester)
+
+        provider.get_diff_files()
+
+        assert len(requester.queries) == 1
+        assert len(self._rest_reads(provider)) == 6
+
+    @pytest.mark.parametrize("errors", [
+        [{"type": ["NOT_FOUND"]}, "boom", None, {"type": {"k": 1}}, {"type": 5}],
+        {"type": "NOT_FOUND"},
+        "NOT_FOUND",
+        [],
+    ], ids=["odd-items", "dict", "string", "empty"])
+    def test_odd_graphql_error_shapes_fall_back_to_rest_reads(self, patched_helpers, errors):
+        partial = {"data": {"repository": {"entry0": {"file": {"mode": 0o100644, "object": _text_blob("partial")}}}},
+                   "errors": errors}
+        requester = _GraphqlRequester(response=partial)
+        provider = _make_provider_with_graphql(self._modified_files(2), requester)
+
+        provider.get_diff_files()
+
+        assert len(self._rest_reads(provider)) == 4
+
+    def test_unexpected_graphql_error_is_not_swallowed(self, patched_helpers):
+        provider = _make_provider_with_graphql(self._modified_files(2), _GraphqlRequester(error=TypeError("bug")))
+
+        with pytest.raises(TypeError):
+            provider.get_diff_files()
+
+    def test_requests_are_split_into_bounded_batches(self, patched_helpers, monkeypatch):
+        monkeypatch.setattr(github_provider, "_GRAPHQL_BLOB_BATCH", 3)
+        requester = _GraphqlRequester()
+        provider = _make_provider_with_graphql(self._modified_files(4), requester)
+
+        provider.get_diff_files()
+
+        assert [(len(variables) - 2) // 2 for _, variables in requester.queries] == [3, 3, 2]
+
+    def test_paths_travel_as_variables(self, patched_helpers):
+        path = 'dir/we"ird {name} \\ \u00e9.py'
+        files = [_make_file(path, "modified"), _make_file("f1.py", "modified")]
+        blobs = {f"{sha}:{path}": _text_blob(f"{sha} content") for sha in ("head-sha", "base-sha")}
+        requester = _GraphqlRequester(blobs)
+        provider = _make_provider_with_graphql(files, requester)
+
+        diffs = provider.get_diff_files()
+
+        query, _ = requester.queries[0]
+        assert path not in query
+        assert ("head-sha", path) in requester.reads
+        assert (diffs[0].head_file, diffs[0].base_file) == ("head-sha content", "base-sha content")
+
+    def test_batch_requests_the_reads_the_loop_makes(self, patched_helpers, monkeypatch):
+        monkeypatch.setattr(github_provider, "MAX_FILES_ALLOWED_FULL", 5)
+        files = [
+            _make_file("added.py", "added"),
+            _make_file("removed.py", "removed"),
+            _make_file("renamed.py", "renamed", previous_filename="old/renamed.py"),
+            _make_file("modified.py", "modified"),
+            _make_file("invalid.png", "modified"),
+            _make_file("past-limit.py", "modified"),
+            _make_file("past-limit-without-patch.py", "modified", patch=""),
+        ]
+
+        def collect(requester):
+            provider = _make_provider_with_graphql(files, requester)
+            with patch.object(github_provider, "is_valid_file", side_effect=lambda name: name != "invalid.png"):
+                provider.get_diff_files()
+            return provider
+
+        failing = _GraphqlRequester(error=GithubException(502, {"message": "Bad gateway"}, None))
+        loop_reads = set(self._rest_reads(collect(failing)))
+        requester = _GraphqlRequester({f"{ref}:{path}": _text_blob(path) for ref, path in loop_reads})
+
+        provider = collect(requester)
+
+        assert len(loop_reads) == 8
+        assert sorted(requester.reads) == sorted(loop_reads)
+        assert self._rest_reads(provider) == []
+
+    def test_incremental_review_does_not_use_graphql(self, patched_helpers):
+        files = self._modified_files(3)
+        requester = _GraphqlRequester()
+        provider = _make_provider_with_graphql(files, requester)
+        provider.incremental = SimpleNamespace(is_incremental=True, last_seen_commit_sha="prev-sha")
+        provider.unreviewed_files_map = {file.filename: file for file in files}
+
+        provider.get_diff_files()
+
+        assert requester.queries == []
+        assert len(self._rest_reads(provider)) == 6
+
+    def test_patch_reconstruction_uses_the_batched_contents(self, patched_helpers):
+        files = [_make_file(f"f{i}.py", "modified", patch="") for i in range(2)]
+        blobs = {f"{sha}:f{i}.py": _text_blob(f"{sha} {i}") for i in range(2) for sha in ("head-sha", "base-sha")}
+        provider = _make_provider_with_graphql(files, _GraphqlRequester(blobs))
+
+        with patch.object(github_provider, "load_large_diff", return_value="rebuilt") as load_large_diff:
+            provider.get_diff_files()
+
+        assert self._rest_reads(provider) == []
+        assert [call.args for call in load_large_diff.call_args_list] == [
+            ("f0.py", "head-sha 0", "base-sha 0"), ("f1.py", "head-sha 1", "base-sha 1"),
+        ]
+
+    def test_cached_contents_are_not_requested_again(self, patched_helpers):
+        files = self._modified_files(3)
+        blobs = {f"{sha}:f{i}.py": _text_blob(f"{sha} {i}") for i in range(3) for sha in ("head-sha", "base-sha")}
+        requester = _GraphqlRequester(blobs)
+        provider = _make_provider_with_graphql(files, requester)
+        provider.get_diff_files()
+
+        provider.diff_files = None
+        provider.get_diff_files()
+
+        assert len(requester.queries) == 1
+        assert self._rest_reads(provider) == []
+
+    def test_a_recollection_does_not_batch_fewer_than_three_uncached_reads(self, patched_helpers):
+        blobs = {f"{sha}:f{i}.py": _text_blob(f"{sha} {i}") for i in range(3) for sha in ("head-sha", "base-sha")}
+        blobs["head-sha:f0.py"] = {**_text_blob("x"), "isBinary": True}
+        requester = _GraphqlRequester(blobs)
+        provider = _make_provider_with_graphql(
+            self._modified_files(3), requester, rest={("head-sha", "f0.py"): b""}
+        )
+        provider.get_diff_files()
+
+        provider.diff_files = None
+        provider.get_diff_files()
+
+        assert len(requester.queries) == 1
+        assert self._rest_reads(provider) == [("head-sha", "f0.py")] * 2
 
 
 def test_retry_does_not_adopt_a_marker_changed_after_first_capture(monkeypatch):
