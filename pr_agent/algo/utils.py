@@ -468,7 +468,7 @@ def convert_to_markdown_v2(output_data: dict,
                         if confidence is not None:
                             issue_header = f"{issue_header} (confidence: {confidence:g})"
                         suggested_fix = issue.get('suggested_fix')
-                        suggested_fix = suggested_fix.rstrip() if isinstance(suggested_fix, str) else ""
+                        suggested_fix = suggested_fix.rstrip(" \t\r\n") if isinstance(suggested_fix, str) else ""
                         start_line = _as_line(issue.get('start_line')) or 0
                         end_line = _as_line(issue.get('end_line')) or start_line
                         valid_lines = start_line > 0 and end_line >= start_line

@@ -19,6 +19,7 @@ from pr_agent.algo.comment_identity import (
     hidden_marker_forms,
     render_hidden_marker,
 )
+from pr_agent.algo.git_patch_processing import split_diff_lines
 from pr_agent.algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
     InlineCommentStore,
@@ -1562,12 +1563,12 @@ class PRReviewer:
         suggested_fix = issue.get("suggested_fix")
         if not isinstance(suggested_fix, str) or not suggested_fix.strip():
             return "", None
-        suggested_fix = suggested_fix.rstrip()
-        head_lines = file.head_file.splitlines()
+        suggested_fix = suggested_fix.rstrip(" \t\r\n")
+        head_lines = split_diff_lines(file.head_file)
         existing_code = "\n".join(head_lines[start_line - 1:end_line])
         if 0 < start_line <= len(head_lines):
             suggested_fix = reindent_to_line(suggested_fix, head_lines[start_line - 1])
-        if suggested_fix == existing_code.rstrip():
+        if suggested_fix == existing_code.rstrip(" \t\r\n"):
             return "", None
         fence = _get_fence(suggested_fix)
         reason = None

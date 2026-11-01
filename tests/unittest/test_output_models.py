@@ -541,8 +541,8 @@ def test_finding_confidence_of_a_non_finding_is_none():
 
 
 def test_key_issue_accepts_suggested_fix():
-    issue = dict(_review_fixture()["review"]["key_issues_to_review"][0], confidence=85, suggested_fix="x = 1")
+    issue = dict(_review_fixture()["review"]["key_issues_to_review"][0], confidence=8, suggested_fix="x = 1")
 
     parsed = KeyIssuesComponentLink.model_validate(issue)
 
-    assert (parsed.confidence, parsed.suggested_fix) == (85, "x = 1")
+    assert (parsed.confidence, parsed.suggested_fix) == (8, "x = 1")

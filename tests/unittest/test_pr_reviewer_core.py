@@ -2282,7 +2282,7 @@ def test_convert_to_markdown_renders_the_confidence_the_filter_compares(monkeypa
 
 @pytest.fixture
 def suggested_fixes_enabled(monkeypatch):
-    monkeypatch.setattr(get_settings().pr_reviewer, "enable_suggested_fixes", True, raising=False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "enable_suggested_fixes", True)
 
 
 def test_key_issue_suggested_fix_is_published_as_committable_suggestion(suggested_fixes_enabled):
@@ -2301,6 +2301,17 @@ def test_key_issue_suggested_fix_is_published_as_committable_suggestion(suggeste
         "suggestion_content": "The new branch never releases the lock.",
         "label": "Possible Issue",
     }
+
+
+def test_key_issue_suggested_fix_keeps_git_line_numbers_around_unicode_separators(suggested_fixes_enabled):
+    issue = _key_issue(start_line=3, end_line=3, suggested_fix="c = 4")
+    reviewer, data = _reviewer_with_findings(issue, head_file="a = 1\nb = '\u2028'\nc = 3\n")
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion\nc = 4\n```" in comment["body"]
+    assert comment["original_suggestion"]["existing_code"] == "c = 3"
 
 
 def test_key_issue_suggested_fix_with_invalid_python_is_not_committable(suggested_fixes_enabled):
@@ -2344,7 +2355,7 @@ def test_key_issue_without_usable_suggested_fix_has_no_fix_block(suggested_fixes
 
 @pytest.mark.parametrize("value", [False, "false", None])
 def test_disabled_suggested_fixes_are_dropped_from_every_output(monkeypatch, value):
-    monkeypatch.setattr(get_settings().pr_reviewer, "enable_suggested_fixes", value, raising=False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "enable_suggested_fixes", value)
     issue = _key_issue(start_line=2, end_line=2, suggested_fix="two = 2")
     reviewer = _make_reviewer()
     data = {"review": {"key_issues_to_review": [issue, "not a dict"]}}
@@ -2357,7 +2368,7 @@ def test_disabled_suggested_fixes_are_dropped_from_every_output(monkeypatch, val
 
 @pytest.mark.parametrize("value,expected", [(True, True), ("true", True), (False, False), ("false", False)])
 def test_suggested_fixes_are_kept_only_when_enabled(monkeypatch, value, expected):
-    monkeypatch.setattr(get_settings().pr_reviewer, "enable_suggested_fixes", value, raising=False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "enable_suggested_fixes", value)
     reviewer = _make_reviewer()
     data = {"review": {"key_issues_to_review": [_key_issue(suggested_fix="two = 2")]}}
 
