@@ -383,10 +383,12 @@ class GitProvider(ABC):
         different ignore rules), so reset unconditionally rather than only when the
         cached diff is empty. Resets the incremental anchor too, and the request-scoped
         diff cache some providers keep in the starlette context. #3724 introduced this
-        for GitHub; the semantics live here so every provider inherits them.
+        for GitHub; the semantics live here so every provider inherits them. Drop the
+        latest commit URL too, so the next command can see newly pushed commits.
         """
         self._tool_provider_stale = True
         self.diff_files = None
+        self._latest_commit_url = None
         if getattr(self, "incremental", None) is not None:
             self.incremental = IncrementalPR(False)
         if context.exists():
