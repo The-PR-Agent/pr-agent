@@ -79,6 +79,25 @@ from pr_agent.tools.progress_comment import (
 # config_security.PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION, and the deprecation note in
 # docs/docs/tools/improve.mdx. The flag guards the one-off warning it emits.
 _deprecated_spellings_warned = False
+# Self-review marker keys were removed from configuration.toml; keep warning users who still
+# set either one, once per process.
+_self_review_marker_keys_warned = False
+
+
+def _warn_deprecated_self_review_marker_keys() -> None:
+    global _self_review_marker_keys_warned
+    if _self_review_marker_keys_warned:
+        return
+    settings = get_settings().pr_code_suggestions
+    if (settings.get("approve_pr_on_self_review", None) is None
+            and settings.get("fold_suggestions_on_self_review", None) is None):
+        return
+    _self_review_marker_keys_warned = True
+    get_logger().warning(
+        "pr_code_suggestions.approve_pr_on_self_review and "
+        "pr_code_suggestions.fold_suggestions_on_self_review are deprecated and have no effect; "
+        "remove them from your configuration"
+    )
 
 
 def _as_threshold(setting_name: str, default: int, minimum: int) -> int:
@@ -373,6 +392,7 @@ class PRCodeSuggestions:
 
     async def run(self):
         init_run_details()
+        _warn_deprecated_self_review_marker_keys()
         self._output_published = False
         self._progress_base_body = None
         self._chunk_progress = None
@@ -607,16 +627,10 @@ class PRCodeSuggestions:
                 raise
 
     async def add_self_review_text(self, pr_body):
+        _warn_deprecated_self_review_marker_keys()
         text = get_settings().pr_code_suggestions.code_suggestions_self_review_text
         pr_body += f"\n\n- [ ]  {text}"
-        approve_pr_on_self_review = get_settings().pr_code_suggestions.approve_pr_on_self_review
-        fold_suggestions_on_self_review = get_settings().pr_code_suggestions.fold_suggestions_on_self_review
-        if approve_pr_on_self_review and not fold_suggestions_on_self_review:
-            pr_body += ' <!-- approve pr self-review -->'
-        elif fold_suggestions_on_self_review and not approve_pr_on_self_review:
-            pr_body += ' <!-- fold suggestions self-review -->'
-        else:
-            pr_body += ' <!-- approve and fold suggestions self-review -->'
+        pr_body += ' <!-- fold suggestions self-review -->'
         return pr_body
 
     def _get_suggestions_coverage_footer(self, suggestions_present: bool = True) -> str:

@@ -300,8 +300,6 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 | --- | --- | --- |
 | `demand_code_suggestions_self_review` | false | add a checkbox for the author to self-review the code suggestions |
 | `code_suggestions_self_review_text` | "**Author self-review**: I have reviewed the PR code suggestions, and addressed the relevant ones." |  |
-| `approve_pr_on_self_review` | false | no effect: the self-review checkbox is a visual marker only, and PR-Agent does not approve PRs (see the improve docs and the FAQ) |
-| `fold_suggestions_on_self_review` | true | no effect: the self-review checkbox is a visual marker only, and suggestions are not folded when it is ticked |
 
 
 ## `[pr_add_docs]` — /add_docs {#pr_add_docs-add_docs}

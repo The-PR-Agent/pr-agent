@@ -673,7 +673,6 @@ max_number_of_calls = 99
 parallel_calls = true
 max_discussion_context_chars = 999999
 demand_code_suggestions_self_review = true
-approve_pr_on_self_review = true
 
 [pr_similar_issue]
 force_update_dataset = true
@@ -738,11 +737,10 @@ skip_comments = true
         assert get_settings().pr_code_suggestions.parallel_calls is True
         assert get_settings().pr_code_suggestions.max_discussion_context_chars != 999999
 
-    def test_self_review_approval_workflow_stays_root_controlled(self, host_only_keys_applied):
-        # The self-review approval workflow stays root-controlled: a nested file cannot
-        # demand a self-review checklist and then auto-approve on the author's tick.
+    def test_self_review_demand_stays_root_controlled(self, host_only_keys_applied):
+        # The self-review workflow stays root-controlled: a nested file cannot make
+        # /improve demand a self-review checklist.
         assert get_settings().pr_code_suggestions.demand_code_suggestions_self_review is False
-        assert get_settings().pr_code_suggestions.approve_pr_on_self_review is False
 
     def test_ask_conversation_history_stays_root_controlled(self, host_only_keys_applied):
         # Thread-history collection for /ask is root-controlled: a nested file cannot
