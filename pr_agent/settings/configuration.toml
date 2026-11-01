@@ -138,8 +138,8 @@ additional_reasoning_effort_models = []
 no_temperature_models = ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini", "moonshotai.kimi-k3", "us.moonshotai.kimi-k3", "global.moonshotai.kimi-k3", "kimi-k3", "kimi-k3.1-pro", "zai.glm-5"]
 # extended thinking for Claude reasoning models
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
-extended_thinking_budget_tokens = 2048
-extended_thinking_max_output_tokens = 4096
+extended_thinking_budget_tokens = 2048 # Thinking budget used when enable_claude_extended_thinking is true.
+extended_thinking_max_output_tokens = 4096 # Output cap in extended-thinking mode; it replaces max_output_tokens and must be at least the thinking budget.
 # Adaptive thinking for Claude Opus 4.7/4.8 and Claude 5 models. When enabled,
 # these models receive thinking={"type": "adaptive"} and an output_config effort.
 # Do not add adaptive-only models to claude_extended_thinking_models_override;
@@ -243,7 +243,10 @@ use_description_markers=false
 enable_large_pr_handling=true
 include_generated_by_header=true
 #custom_labels = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
+# Host-only. With enable_large_pr_handling on, caps the /describe AI calls for a large PR, with
+# one call reserved for the summary.
 max_ai_calls=4
+# Host-only. Run the /describe calls for a large PR concurrently when enable_large_pr_handling is on.
 async_ai_calls=true
 [pr_questions] # /ask #
 enable_help_text=false
@@ -373,7 +376,12 @@ webhook_delivery_deduplication = false
 handle_push_trigger = false
 push_trigger_ignore_bot_commits = true
 push_trigger_ignore_merge_commits = true
+# GitHub App only. Keep one queued push-trigger task for the same PR instead of dropping it; the
+# GitLab, Gitea, and Bitbucket servers always use allow_backlog=True.
 push_trigger_pending_tasks_backlog = true
+# GitHub App only. Lifetime in seconds for pending push-trigger tasks; the GitLab, Gitea, and
+# Bitbucket servers always use ttl=300. With webhook_delivery_deduplication on, this is also the
+# dedupe window, read at startup.
 push_trigger_pending_tasks_ttl = 300
 push_commands = [
     "/describe",

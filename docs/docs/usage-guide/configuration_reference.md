@@ -135,8 +135,8 @@ to-do list.
 | Key | Default | Description |
 | --- | --- | --- |
 | `enable_claude_extended_thinking` | false | Set to true to enable extended thinking feature |
-| `extended_thinking_budget_tokens` | 2048 |  |
-| `extended_thinking_max_output_tokens` | 4096 |  |
+| `extended_thinking_budget_tokens` | 2048 | Thinking budget used when enable_claude_extended_thinking is true. |
+| `extended_thinking_max_output_tokens` | 4096 | Output cap in extended-thinking mode; it replaces max_output_tokens and must be at least the thinking budget. |
 | `enable_claude_adaptive_thinking` | false | Adaptive thinking for Claude Opus 4.7/4.8 and Claude 5 models. When enabled, these models receive thinking={"type": "adaptive"} and an output_config effort. Do not add adaptive-only models to claude_extended_thinking_models_override; when both features are enabled, adaptive thinking takes precedence. |
 | `claude_adaptive_thinking_models_override` | [] | Optional: list model ids to additionally treat as adaptive-only Claude models. Add opaque Bedrock application inference profile ARNs here while keeping built-in detection for named models. When adaptive thinking is enabled, use the exact request model ids so LiteLLM keeps the adaptive payload instead of converting it to the legacy budget_tokens shape. |
 | `claude_extended_thinking_models_override` | [] | Optional: override the built-in list of Claude models that receive the extended-thinking payload. When non-empty, this list fully replaces the built-in defaults (see CLAUDE_EXTENDED_THINKING_MODELS in pr_agent/algo/__init__.py). Leave empty to use the defaults. |
@@ -244,8 +244,8 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 | `use_description_markers` | false |  |
 | `enable_large_pr_handling` | true |  |
 | `include_generated_by_header` | true |  |
-| `max_ai_calls` | 4 |  |
-| `async_ai_calls` | true |  |
+| `max_ai_calls` | 4 | Host-only. With enable_large_pr_handling on, caps the /describe AI calls for a large PR, with one call reserved for the summary. |
+| `async_ai_calls` | true | Host-only. Run the /describe calls for a large PR concurrently when enable_large_pr_handling is on. |
 
 
 ## `[pr_questions]` — /ask {#pr_questions-ask}
@@ -378,8 +378,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `handle_push_trigger` | false | settings for "pull_request" event with "synchronize" action - used to detect and handle push triggers for new commits |
 | `push_trigger_ignore_bot_commits` | true |  |
 | `push_trigger_ignore_merge_commits` | true |  |
-| `push_trigger_pending_tasks_backlog` | true |  |
-| `push_trigger_pending_tasks_ttl` | 300 |  |
+| `push_trigger_pending_tasks_backlog` | true | GitHub App only. Keep one queued push-trigger task for the same PR instead of dropping it; the GitLab, Gitea, and Bitbucket servers always use allow_backlog=True. |
+| `push_trigger_pending_tasks_ttl` | 300 | GitHub App only. Lifetime in seconds for pending push-trigger tasks; the GitLab, Gitea, and Bitbucket servers always use ttl=300. With webhook_delivery_deduplication on, this is also the dedupe window, read at startup. |
 | `push_commands` | ["/describe", "/review"] |  |
 
 
