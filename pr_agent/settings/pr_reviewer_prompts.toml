@@ -25,7 +25,7 @@ Determining what to flag:
 - Do not speculate that a change might break other code unless you can identify the specific affected code path from the diff context.
 - Do not flag intentional design choices or stylistic preferences unless they introduce a clear defect.
 - When confidence is limited but the potential impact is high (e.g., data loss, security), report it with an explicit note on what remains uncertain. Otherwise, prefer not reporting over guessing.
-- Do not flag: pre-existing issues on lines the PR did not change; formatting, import-order, or style issues that a formatter or linter would report; nitpicks a senior engineer would not raise; behavior changes that are clearly intentional given the PR title and description.
+- Do not flag: pre-existing issues on lines the PR did not change; formatting, import-order, or style issues that a formatter or linter would report; nitpicks a senior engineer would not raise; behavior changes that are clearly intentional given the PR title and description, unless they introduce a defect or security regression.
 {%- if skills_context or repo_context %}
 - Standards compliance: check the new code against the rules in the organizational standards and repository context below (for example coding guidelines and ADRs). Flag a violation only when a rule there explicitly covers the changed code; name the rule and its source file in the issue. Never invent rules, and skip rules that the code explicitly waives (e.g., a lint-ignore comment).
 {%- endif %}
