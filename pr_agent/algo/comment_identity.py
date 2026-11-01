@@ -66,6 +66,31 @@ def _get_configured_heading(setting_name: str, default_heading: str) -> str:
         get_logger().warning(
             f"Invalid {setting_name}; using the default heading"
         )
+
+class PRReviewHeader(StrEnum):
+    REGULAR = "## PR Reviewer Guide"
+    INCREMENTAL = "## Incremental PR Reviewer Guide"
+
+
+class PRReviewIdentity(StrEnum):
+    REGULAR = "<!-- pr-agent:review:full -->"
+    INCREMENTAL = "<!-- pr-agent:review:incremental -->"
+
+
+class PRCodeSuggestionsHeader(StrEnum):
+    SUMMARY = "## PR Code Suggestions ✨"
+
+
+class PRCodeSuggestionsIdentity(StrEnum):
+    SUMMARY = "<!-- pr-agent:improve:summary -->"
+    NO_SUGGESTIONS = "<!-- pr-agent:improve:no-suggestions -->"
+    UNANCHORED = "<!-- pr-agent:improve:unanchored -->"
+
+
+class PRCommandNoticeIdentity(StrEnum):
+    INCOMPLETE_BITBUCKET_FILES = "<!-- pr-agent:bitbucket-incomplete-files -->"
+
+
         configured_heading = default_heading
     return configured_heading.strip()
 
@@ -165,6 +190,28 @@ def add_comment_identity(pr_comment: str, identity_marker: str | None, git_provi
 
 def add_pr_review_identity(pr_comment: str, identity_marker: str | None, git_provider=None) -> str:
     return add_comment_identity(pr_comment, identity_marker, git_provider)
+te() is True
+            and git_provider.is_supported("get_issue_comments") is True
+        )
+    except Exception as error:
+        get_logger().warning(f"Comment authorship is not available, error: {error}")
+        return False
+
+
+def as_review_text(value) -> str:
+    """Flatten a review field the model returned as a list or mapping into readable text.
+
+    The prompt asks for a single string, but a model enumerating several findings commonly
+    answers with a list or a mapping. Rendering those is preferable to losing the review.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        value = [f"{key}: {item}" for key, item in value.items()]
+    if isinstance(value, (list, tuple, set)):
+        entries = [as_review_text(item) for item in value]
+        return "\n".join(f"- {entry}" for entry in entries if entry)
+    return str(value).strip()
 
 
 def comment_authorship_available(git_provider) -> bool:
