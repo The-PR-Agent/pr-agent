@@ -465,9 +465,9 @@ _This section only documents commented-out examples; see the [TOML source](https
 | --- | --- | --- |
 | `enable_callbacks` | false |  |
 | `add_session_id_to_requests` | false | send a stable x-litellm-session-id header derived from the PR URL, so LiteLLM groups every request for the same PR into one session |
-| `success_callback` | [] |  |
-| `failure_callback` | [] |  |
-| `service_callback` | [] |  |
+| `success_callback` | [] | process-wide, so only the deployment's own configuration and environment set it, not a repository's .pr_agent.toml; in the GitHub Action, use a workflow env entry |
+| `failure_callback` | [] | process-wide, set like success_callback |
+| `service_callback` | [] | process-wide, set like success_callback |
 | `turn_off_message_logging` | false | set true to keep prompt/response content (the whole PR diff) out of callback payloads; strongly recommended with the "otel" callback |
 | `custom_llm_provider` | "" | Optional: forward a fixed custom_llm_provider to LiteLLM, so a raw hosted model id (e.g. "claude-sonnet-4-5") reaches the provider unchanged instead of being rewritten by LiteLLM's prefix inference. Empty = let LiteLLM infer the provider from the model name. |
 | `force_streaming_custom_llm_provider` | "" | Force streaming when the request matches this provider AND its api_base contains one of the substrings below. Some OpenAI-compatible endpoints return a response that LiteLLM cannot normalize in non-streaming mode. Both must be set for the workaround to apply. |

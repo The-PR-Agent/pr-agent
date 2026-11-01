@@ -62,7 +62,7 @@ async def test_repository_settings_are_applied_before_key_gate(monkeypatch, acti
     # be applied before the gate judges the active provider's key.
     with pytest.raises(SystemExit):
         await github_action_runner.run_action()
-    assert order == [("repo_settings", "https://github.com/owner/repo/pull/1"), "gate"]
+    assert order == [("repo_settings", "https://api.github.com/repos/owner/repo/pulls/1"), "gate"]
 
 
 @pytest.mark.parametrize(
@@ -78,7 +78,7 @@ async def test_repository_settings_are_applied_before_key_gate(monkeypatch, acti
                     "url": "https://api.github.com/repos/owner/repo/pulls/1",
                 }},
             },
-            "https://github.com/owner/repo/pull/1",
+            "https://api.github.com/repos/owner/repo/pulls/1",
         ),
         (
             "workflow_run",

@@ -137,6 +137,7 @@ class GithubProvider(GitProvider):
         self.github_user_id = None
         self.diff_files = None
         self.git_files = None
+        self._pr_revision_loaded = None
         self.incremental = IncrementalPR(False)
         self._repo_settings_snapshot: tuple[str, str] | None = None
         self._repo_settings_acquired = False
@@ -148,11 +149,8 @@ class GithubProvider(GitProvider):
         resource = self._get_url_resource(pr_url) if pr_url else ""
         if resource in ('pull', 'pulls'):
             self.set_pr(pr_url)
-            self.pr_commits = list(self.pr.get_commits())
-            if self.pr_commits:
-                self.last_commit_id = self.pr_commits[-1]
-            else:
-                self.last_commit_id = self._get_repo().get_commit(self.pr.head.sha)
+            self.pr_commits, self.last_commit_id = self._read_pr_commits(self.pr)
+            self._pr_revision_loaded = self._pr_revision(self.pr)
             # pr_url for github actions can be as api.github.com, so we need to get the url from the pr object
             self.pr_url = self.get_pr_url()
         elif resource == 'issues':
@@ -189,6 +187,46 @@ class GithubProvider(GitProvider):
         if self.incremental.is_incremental:
             self.unreviewed_files_map = dict()
             self._get_incremental_commits()
+
+    def _read_pr_commits(self, pr):
+        """Read the commits of `pr` and the commit its head points to."""
+        commits = list(pr.get_commits())
+        last_commit = commits[-1] if commits else self._get_repo().get_commit(pr.head.sha)
+        return commits, last_commit
+
+    @staticmethod
+    def _pr_revision(pr) -> tuple:
+        return policy_value(pr, "head", "sha"), policy_value(pr, "base", "sha"), getattr(pr, "changed_files", None)
+
+    def refresh_pr_for_command(self) -> None:
+        """Re-read the pull request before the next command of a run that shares this provider.
+
+        A command can change what the next one reads (the labels it published, the title and description, its
+        own comments) and so can a push made meanwhile, so the PR is read again and what was derived from the
+        earlier read is dropped. The commit and file lists are read again only when the PR moved from the
+        revision they were read for, and then the check runs opened on the earlier head are forgotten; file
+        contents are keyed by commit and stay cached. A failed read raises before anything is assigned, so no
+        command runs on a snapshot whose currency could not be established.
+        """
+        if self.pr is None:
+            return
+        pr = self._get_pr()
+        revision = self._pr_revision(pr)
+        moved = revision != getattr(self, "_pr_revision_loaded", None)
+        commits, last_commit = self._read_pr_commits(pr) if moved else (None, None)
+        self.pr = pr
+        self.comments = None
+        self.user_description = None
+        if moved:
+            self.git_files = None
+            if context.exists():
+                context.pop("git_files", None)
+            self.pr_commits, self.last_commit_id = commits, last_commit
+            self._pr_revision_loaded = revision
+            self._check_run_ids = {}
+            self._check_runs_in_progress = set()
+            self._check_run_base_summaries = {}
+            self._check_runs_progress_blocked = set()
 
     def is_supported(self, capability: str) -> bool:
         if capability == "push_code" and get_settings().config.restricted_mode:
