@@ -31,7 +31,7 @@ Temperature support is decided at runtime by probing
 `_litellm_supports_temperature` in `pr_agent/algo/ai_handlers/litellm_ai_handler.py`).
 Models that must never receive the temperature parameter are listed in
 `config.no_temperature_models` in `configuration.toml`; adaptive-thinking Claude
-models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive it.
+models (Opus 4.7/4.8, Opus/Sonnet/Fable 5.x and Haiku 5.5) never receive it.
 
 Context windows are registered in `MAX_TOKENS` in `pr_agent/algo/__init__.py`:
 Claude model families declared in `_CLAUDE_MODEL_FAMILIES` populate their
