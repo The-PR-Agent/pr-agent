@@ -66,6 +66,7 @@ from pr_agent.algo.utils import (
     ModelType,
     _as_line,
     convert_to_markdown_v2,
+    get_min_finding_confidence,
     is_value_no,
     load_yaml,
 )
@@ -264,6 +265,7 @@ class PRReviewer:
             'require_can_be_split_review': get_settings().pr_reviewer.require_can_be_split_review,
             'require_security_review': get_settings().pr_reviewer.require_security_review,
             'require_todo_scan': get_settings().pr_reviewer.get("require_todo_scan", False),
+            'min_finding_confidence': get_min_finding_confidence(),
             'question_str': question_str,
             'answer_str': answer_str,
             "extra_instructions": get_settings().pr_reviewer.extra_instructions,
@@ -1515,10 +1517,7 @@ class PRReviewer:
         issues = review.get("key_issues_to_review") if isinstance(review, dict) else None
         if not isinstance(issues, list):
             return
-        try:
-            threshold = float(get_settings().pr_reviewer.get("min_finding_confidence", 0))
-        except (TypeError, ValueError):
-            threshold = 0
+        threshold = get_min_finding_confidence()
         if threshold <= 0:
             return
         kept = []

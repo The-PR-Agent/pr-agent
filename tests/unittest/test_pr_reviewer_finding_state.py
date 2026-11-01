@@ -1841,7 +1841,7 @@ def test_render_previous_findings_uses_exact_json_length_for_unicode_and_escapes
     assert shorter[0]["issue_content"] == 'A "quoted" line\nEmoji 🙂'
 
 
-@pytest.mark.parametrize("threshold,expect_resolution", [(0, True), (50, False)])
+@pytest.mark.parametrize("threshold,expect_resolution", [(0, True), (5, False)])
 def test_low_confidence_filtering_prevents_resolution(monkeypatch, threshold, expect_resolution):
     settings = _settings(monkeypatch)
     monkeypatch.setattr(settings.pr_reviewer, "min_finding_confidence", threshold, raising=False)
@@ -1859,7 +1859,7 @@ def test_low_confidence_filtering_prevents_resolution(monkeypatch, threshold, ex
     provider.get_diff_files.return_value = []
     provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
     reviewer = _reviewer(provider)
-    low_confidence = {"relevant_file": "other.py", "issue_content": "maybe a problem", "confidence": 10}
+    low_confidence = {"relevant_file": "other.py", "issue_content": "maybe a problem", "confidence": 1}
 
     with (
         patch("pr_agent.tools.pr_reviewer.load_yaml",
