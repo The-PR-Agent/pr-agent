@@ -130,7 +130,7 @@ def test_user_prompt_contributes_variables_of_its_own(monkeypatch):
 
 @pytest.mark.parametrize("threshold,asks_for_confidence", [(0, False), (5, True)])
 def test_pr_review_prompt_asks_for_a_confidence_only_when_filtering(monkeypatch, threshold, asks_for_confidence):
-    monkeypatch.setattr(get_settings().pr_reviewer, "min_finding_confidence", threshold, raising=False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "min_finding_confidence", threshold)
     reviewer = _build_reviewer(monkeypatch)
     environment = Environment(autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
 

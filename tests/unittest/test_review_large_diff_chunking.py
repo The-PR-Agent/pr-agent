@@ -901,7 +901,7 @@ def _chunk_with_confidences(*confidences):
 async def test_confidence_filter_runs_before_the_findings_cap_across_chunks(chunking_enabled, monkeypatch):
     # three 3s in the first chunk would fill num_max_findings and push out the 9 of the second
     get_settings().set("pr_reviewer.num_max_findings", 3)
-    monkeypatch.setattr(get_settings().pr_reviewer, "min_finding_confidence", 7, raising=False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "min_finding_confidence", 7)
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(
         side_effect=[_chunk_with_confidences(3, 3, 3), _chunk_with_confidences(9)])
@@ -921,7 +921,7 @@ async def test_confidence_filter_runs_before_the_findings_cap_across_chunks(chun
 @pytest.mark.asyncio
 async def test_remerging_cached_chunks_keeps_the_low_confidence_count(chunking_enabled, monkeypatch):
     # a fallback attempt reuses the cached chunks, so the count must not depend on the first merge
-    monkeypatch.setattr(get_settings().pr_reviewer, "min_finding_confidence", 7, raising=False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "min_finding_confidence", 7)
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(
         side_effect=[_chunk_with_confidences(3, 3), _chunk_with_confidences(9)])
