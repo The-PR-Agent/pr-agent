@@ -64,8 +64,8 @@ def test_shared_blobs_preserve_each_language_and_path_with_a_reusable_cache(monk
     blobs = {"shared": source, "empty": b""}
     tree = {
         "js/src/a.js": "shared", "js/shared/dep.js": "empty",
-        "ts/src/a.ts": "shared", "ts/shared/dep.ts": "empty",
         "alias/src/b.js": "shared", "alias/shared/dep.js": "empty",
+        "ts/src/a.ts": "shared", "ts/shared/dep.ts": "empty",
     }
     if reverse_order:
         tree = dict(reversed(list(tree.items())))
@@ -83,6 +83,7 @@ def test_shared_blobs_preserve_each_language_and_path_with_a_reusable_cache(monk
     monkeypatch.setattr(producer, "extract_imports", extract_imports)
     cache = {"unrelated": b"keep"}
     graph = producer.ImportGraph(".", tree, cache)
+    assert parses[0][1] == ("typescript" if reverse_order else "javascript")
 
     for root, importer in (("js", "a.js"), ("ts", "a.ts"), ("alias", "b.js")):
         changed = [f"{root}/shared/dep.{root if root == 'ts' else 'js'}"]
