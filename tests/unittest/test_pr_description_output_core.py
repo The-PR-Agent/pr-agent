@@ -604,6 +604,19 @@ class TestProcessPRFilesPrediction:
         obj.git_provider.get_line_link.return_value = "https://example/blob/main/src/app.py#L1"
         return obj
 
+    @pytest.mark.parametrize("collapsible", [True, False, "adaptive"])
+    @pytest.mark.parametrize("groups", [{}, {"backend": [("app.py", "Update app", "Summary")],
+                                          "documentation": [("README.md", "Update docs", "Summary")]}])
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_walkthrough_table_closes_without_extra_row(self, mock_get_settings, collapsible, groups):
+        mock_get_settings.return_value = _settings(collapsible_file_list=collapsible)
+        obj = self._obj(gfm=True)
+
+        body = obj.process_pr_files_prediction("", groups)
+
+        assert body.endswith("</tbody></table>")
+        assert body.count("<tr>") == body.count("</tr>")
+
     @patch("pr_agent.tools.pr_description.get_settings")
     def test_non_gfm_provider_skips_table_rendering(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
