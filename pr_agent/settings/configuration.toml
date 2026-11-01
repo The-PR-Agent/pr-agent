@@ -415,6 +415,10 @@ handle_reviewer_assignment = false
 reviewer_commands = [
     "/review",
 ]
+# Numeric GitLab user IDs whose merge request and note events are skipped, checked before the
+# config.bot_user_indicators display-name match. IDs are stable, unlike display names. Host-only:
+# the check runs before repository settings are loaded (e.g. `GITLAB__IGNORE_USER_IDS=123`).
+ignore_user_ids = []
 
 [gitea]
 url = "https://gitea.com"

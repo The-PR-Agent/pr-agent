@@ -400,6 +400,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `push_commands` | ["/describe", "/review"] |  |
 | `handle_reviewer_assignment` | false | Auto-trigger commands when the bot is assigned as a reviewer on an MR |
 | `reviewer_commands` | ["/review"] |  |
+| `ignore_user_ids` | [] | Numeric GitLab user IDs whose merge request and note events are skipped, checked before the config.bot_user_indicators display-name match. IDs are stable, unlike display names. Host-only: the check runs before repository settings are loaded (e.g. `GITLAB__IGNORE_USER_IDS=123`). |
 
 
 ## `[gitea]` {#gitea}
