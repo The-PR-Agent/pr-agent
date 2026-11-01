@@ -156,7 +156,8 @@ class PlainDiffGitProvider(GitProvider):
             write_review_json_output(review, self.json_output_path)
 
     def publish_description(self, pr_title: str, pr_body: str):
-        self._write_output(f"{pr_title}\n\n{pr_body}")
+        title = self.get_pr_title() if pr_title is None else pr_title
+        self._write_output(f"{title}\n\n{pr_body}")
 
     def is_supported(self, capability: str) -> bool:
         if capability in ["get_issue_comments", "create_inline_comment",
