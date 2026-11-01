@@ -147,6 +147,8 @@ to-do list.
 
 ## `[pr_reviewer]` — /review {#pr_reviewer-review}
 
+See [Review](../tools/review.md).
+
 **enable/disable features**
 
 | Key | Default | Description |
@@ -209,6 +211,8 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 
 ## `[pr_description]` — /describe {#pr_description-describe}
 
+See [Describe](../tools/describe.md).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `publish_labels` | false |  |
@@ -250,6 +254,8 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 
 ## `[pr_questions]` — /ask {#pr_questions-ask}
 
+See [Ask](../tools/ask.md).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `enable_help_text` | false |  |
@@ -260,6 +266,8 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 
 
 ## `[pr_code_suggestions]` — /improve {#pr_code_suggestions-improve}
+
+See [Improve](../tools/improve.mdx).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -306,6 +314,8 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 
 ## `[pr_add_docs]` — /add_docs {#pr_add_docs-add_docs}
 
+See [Add Docs](../tools/add_docs.md).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `extra_instructions` | "" |  |
@@ -313,6 +323,8 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 
 
 ## `[pr_update_changelog]` — /update_changelog {#pr_update_changelog-update_changelog}
+
+See [Update Changelog](../tools/update_changelog.md).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -327,6 +339,8 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
 ## `[pr_help_docs]` {#pr_help_docs}
+
+See [Help Docs](../tools/help_docs.md).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -361,6 +375,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
 ## `[github_app]` {#github_app}
+
+See [GitHub App](../usage-guide/automations_and_usage.md#github-app).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -501,6 +517,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[model_routing]` — send a small pull request to a cheaper primary model (disabled by default) {#model_routing-send a small pull request to a cheaper primary model (disabled by default)}
 
+See [Model routing](../usage-guide/changing_a_model.md#routing-small-pull-requests-to-a-cheaper-model).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `enable` | false | Rules are checked in order; the first one whose limits the pull request fits selects the primary model for the call, and config.fallback_models still apply after it. A pull request that fits no rule uses config.model. Size is measured after the [ignore] rules by diff hunks (max_hunks) and changed files (max_files), which every git provider reports and which do not depend on any model's tokenizer. Only calls that ask for the regular model are routed (/review, /improve, /generate_labels, /add_docs); tools that use model_weak are left alone. With Azure (openai.deployment_id set) a rule also needs its own deployment_id, or it is skipped. |
@@ -523,6 +541,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 
 ## `[pr_similar_issue]` {#pr_similar_issue}
+
+See [Similar Issues](../tools/similar_issues.md).
 
 | Key | Default | Description |
 | --- | --- | --- |

@@ -97,6 +97,27 @@ def test_generator_rejects_a_note_whose_key_is_gone():
         raise AssertionError("render_page accepted a NOTES_AFTER_KEY entry with no matching key")
 
 
+def test_section_docs_links_point_to_existing_files():
+    """Every SECTION_DOCS entry must name a real section and resolve to a
+    real docs file, so the generated "See ..." line never links nowhere.
+    Anchor resolution is left to docs-ci, which fails on broken anchors."""
+    module = _generator()
+    assert module.SECTION_DOCS, "SECTION_DOCS is empty"
+    sections = module.load_sections(CONFIG_TOML.read_text(encoding="utf-8"))
+    names = {section["name"] for section in sections}
+    assert set(module.SECTION_DOCS) <= names, (
+        f"SECTION_DOCS names unknown sections: {sorted(set(module.SECTION_DOCS) - names)}"
+    )
+    docs_root = (ROOT / "docs" / "docs").resolve()
+    reference_dir = docs_root / "usage-guide"
+    for section, (label, link) in module.SECTION_DOCS.items():
+        assert label, f"SECTION_DOCS[{section!r}] has an empty link label"
+        target, _, _anchor = link.partition("#")
+        path = (reference_dir / target).resolve()
+        assert docs_root in path.parents, f"SECTION_DOCS[{section!r}] escapes docs/: {link}"
+        assert path.is_file(), f"SECTION_DOCS[{section!r}] points to a missing file: {link}"
+
+
 @pytest.mark.parametrize(
     "section_name,key,fragments",
     [

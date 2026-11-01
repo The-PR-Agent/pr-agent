@@ -71,6 +71,28 @@ NOTES_AFTER_KEY = {
     },
 }
 
+# Docs pages that explain a configuration section, as (link text, link) pairs.
+# Links are relative to docs/docs/usage-guide/, where the generated page lives,
+# and may carry an anchor. Only sections with an unambiguous explaining page
+# are mapped; extend this map rather than linking a section to a vaguely
+# related page. The docs build fails on broken links and anchors, and the
+# unit test checks that every mapped file exists.
+SECTION_DOCS = {
+    "pr_reviewer": ("Review", "../tools/review.md"),
+    "pr_description": ("Describe", "../tools/describe.md"),
+    "pr_questions": ("Ask", "../tools/ask.md"),
+    "pr_code_suggestions": ("Improve", "../tools/improve.mdx"),
+    "pr_add_docs": ("Add Docs", "../tools/add_docs.md"),
+    "pr_update_changelog": ("Update Changelog", "../tools/update_changelog.md"),
+    "pr_similar_issue": ("Similar Issues", "../tools/similar_issues.md"),
+    "pr_help_docs": ("Help Docs", "../tools/help_docs.md"),
+    "github_app": ("GitHub App", "../usage-guide/automations_and_usage.md#github-app"),
+    "model_routing": (
+        "Model routing",
+        "../usage-guide/changing_a_model.md#routing-small-pull-requests-to-a-cheaper-model",
+    ),
+}
+
 
 def _is_assignment(text: str) -> bool:
     return bool(re.match(r"^[a-zA-Z0-9_\"']+\s*=", text))
@@ -197,6 +219,7 @@ def load_sections(text: str) -> list:
 def render_page(sections: list) -> str:
     out = [PAGE_HEADER.rstrip(), ""]
     rendered_notes = set()
+    rendered_docs = set()
 
     for section in sections:
         keys = section["keys"]
@@ -212,6 +235,11 @@ def render_page(sections: list) -> str:
         heading += f" {{#{anchor}}}"
         out.append(heading)
         out.append("")
+        if section["name"] in SECTION_DOCS:
+            label, link = SECTION_DOCS[section["name"]]
+            out.append(f"See [{label}]({link}).")
+            out.append("")
+            rendered_docs.add(section["name"])
         if not keys:
             out.append("_This section only documents commented-out examples; see the [TOML source]"
                        f"({SOURCE_URL}) for details._")
@@ -254,6 +282,14 @@ def render_page(sections: list) -> str:
             "NOTES_AFTER_KEY refers to keys the generator did not render: "
             + ", ".join(missing)
             + "; update the note or the key it follows"
+        )
+
+    missing_docs = sorted(set(SECTION_DOCS) - rendered_docs)
+    if missing_docs:
+        raise ValueError(
+            "SECTION_DOCS refers to sections the generator did not render: "
+            + ", ".join(missing_docs)
+            + "; update the map or the section it points to"
         )
 
     return "\n".join(out).rstrip("\n") + "\n"
