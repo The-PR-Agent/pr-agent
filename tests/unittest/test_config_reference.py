@@ -58,6 +58,17 @@ def _generator():
     return module
 
 
+def test_config_reference_section_docs_pages_exist():
+    module = _generator()
+    docs_root = ROOT / "docs/docs"
+    missing = [
+        f"[{section}] {page}"
+        for section, (page, _anchor) in module.SECTION_DOCS.items()
+        if not (docs_root / page).is_file()
+    ]
+    assert not missing, "SECTION_DOCS points at missing pages: " + ", ".join(missing)
+
+
 def test_config_reference_page_matches_generator_output():
     """The page is generated, so the committed copy has to equal what the generator produces.
 

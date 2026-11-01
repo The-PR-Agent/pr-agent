@@ -11,6 +11,7 @@ The output path defaults to docs/docs/usage-guide/configuration_reference.md.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 import tomllib
@@ -69,6 +70,51 @@ NOTES_AFTER_KEY = {
     "pr_reviewer": {
         "final_update_message": _AZURE_DISMISSAL_NOTE,
     },
+}
+
+# Section name -> (page under docs/docs, anchor). The reference page links each mapped
+# section to the page that explains it. Keep anchors in sync with the target headings.
+SECTION_DOCS = {
+    "config": ("usage-guide/configuration_options.md", "global-configuration-file"),
+    "pr_reviewer": ("tools/review.md", "configuration-options"),
+    "pr_description": ("tools/describe.md", "configuration-options"),
+    "pr_questions": ("tools/ask.md", "configuration-options"),
+    "pr_code_suggestions": ("tools/improve.mdx", "configuration-options"),
+    "pr_add_docs": ("tools/add_docs.md", "configuration-options"),
+    "pr_update_changelog": ("tools/update_changelog.md", "configuration-options"),
+    "pr_config": ("usage-guide/configuration_options.md", "global-configuration-file"),
+    "pr_help_docs": ("tools/help_docs.md", "configuration-options"),
+    "github": ("installation/github.md", "run-as-a-github-app"),
+    "github_action_config": ("usage-guide/automations_and_usage.md", "github-action"),
+    "github_app": ("usage-guide/automations_and_usage.md", "github-app"),
+    "gitlab": ("usage-guide/automations_and_usage.md", "gitlab-webhook"),
+    "gitea": ("usage-guide/automations_and_usage.md", "gitea-webhook"),
+    "bitbucket": ("usage-guide/automations_and_usage.md", "bitbucket-app"),
+    "bitbucket_app": ("usage-guide/automations_and_usage.md", "bitbucket-app"),
+    "local": ("usage-guide/local_git_provider.md", "when-to-use-it"),
+    "gerrit": ("overview/supported_platforms.md", "gerrit-and-codecommit"),
+    "bitbucket_server": ("usage-guide/automations_and_usage.md", "bitbucket-server-webhook"),
+    "jira": ("core-abilities/fetching_ticket_context.md", "jira-integration"),
+    "litellm": ("usage-guide/changing_a_model.md", "changing-a-model-in-pr-agent"),
+    "bedrock": ("usage-guide/changing_a_model.md", "amazon-bedrock"),
+    "openrouter": ("usage-guide/changing_a_model.md", "openrouter"),
+    "model_routing": (
+        "usage-guide/changing_a_model.md",
+        "routing-small-pull-requests-to-a-cheaper-model",
+    ),
+    "otel": ("usage-guide/additional_configurations.md", "built-in-opentelemetry-command-telemetry"),
+    "pr_similar_issue": ("tools/similar_issues.md", "overview"),
+    "pinecone": ("tools/similar_issues.md", "pinecone-configuration"),
+    "lancedb": ("tools/similar_issues.md", "lancedb-configuration"),
+    "qdrant": ("tools/similar_issues.md", "qdrant-configuration"),
+    "skills": ("core-abilities/agent_skills.md", "configuration"),
+    "artifacts": ("installation/github.md", "ci-artifact-context"),
+    "mosaico": ("installation/mosaico_server.md", "what-the-mode-is"),
+    "asana": ("core-abilities/fetching_ticket_context.md", "asana-integration"),
+    "linear": ("core-abilities/fetching_ticket_context.md", "linear-integration"),
+    "azure_devops": ("usage-guide/automations_and_usage.md", "azure-devops-provider"),
+    "azure_devops_server": ("usage-guide/automations_and_usage.md", "azure-devops-webhook"),
+    "push_outputs": ("usage-guide/push_outputs.md", "configuration"),
 }
 
 
@@ -194,7 +240,15 @@ def load_sections(text: str) -> list:
     return sections
 
 
-def render_page(sections: list) -> str:
+def _section_docs_link(page: str, anchor: str, output: Path) -> str:
+    target = ROOT / "docs" / "docs" / page
+    link = os.path.relpath(target, output.parent).replace(os.sep, "/")
+    label = Path(page).stem.replace("_", " ").replace("-", " ")
+    return f"See [{label}]({link}#{anchor})."
+
+
+def render_page(sections: list, output: Path | None = None) -> str:
+    output = output or DEFAULT_OUTPUT
     out = [PAGE_HEADER.rstrip(), ""]
     rendered_notes = set()
 
@@ -212,6 +266,10 @@ def render_page(sections: list) -> str:
         heading += f" {{#{anchor}}}"
         out.append(heading)
         out.append("")
+        section_doc = SECTION_DOCS.get(section["name"])
+        if section_doc:
+            out.append(_section_docs_link(*section_doc, output))
+            out.append("")
         if not keys:
             out.append("_This section only documents commented-out examples; see the [TOML source]"
                        f"({SOURCE_URL}) for details._")
@@ -270,7 +328,7 @@ def main() -> int:
         print(f"ERROR: rendered {rendered_keys} keys, expected {expected_keys}", file=sys.stderr)
         return 1
 
-    output.write_text(render_page(sections), encoding="utf-8")
+    output.write_text(render_page(sections, output), encoding="utf-8")
     print(f"Wrote {rendered_keys} keys across {len(sections)} sections to {output}")
     return 0
 
