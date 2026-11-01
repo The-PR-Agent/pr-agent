@@ -18,10 +18,10 @@ KEYS = (
 @pytest.fixture(autouse=True)
 def clean_self_review_keys():
     snapshot = snapshot_settings(KEYS)
-    module._self_review_marker_keys_warned = False
+    module._warn_deprecated_self_review_marker_keys._warned = False
     yield
     restore_settings(snapshot)
-    module._self_review_marker_keys_warned = False
+    module._warn_deprecated_self_review_marker_keys._warned = False
 
 
 def _warnings(monkeypatch):

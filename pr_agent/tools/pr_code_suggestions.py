@@ -79,20 +79,18 @@ from pr_agent.tools.progress_comment import (
 # config_security.PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION, and the deprecation note in
 # docs/docs/tools/improve.mdx. The flag guards the one-off warning it emits.
 _deprecated_spellings_warned = False
+
+
 # Self-review marker keys were removed from configuration.toml; keep warning users who still
 # set either one, once per process.
-_self_review_marker_keys_warned = False
-
-
 def _warn_deprecated_self_review_marker_keys() -> None:
-    global _self_review_marker_keys_warned
-    if _self_review_marker_keys_warned:
+    if getattr(_warn_deprecated_self_review_marker_keys, "_warned", False):
         return
     settings = get_settings().pr_code_suggestions
     if (settings.get("approve_pr_on_self_review", None) is None
             and settings.get("fold_suggestions_on_self_review", None) is None):
         return
-    _self_review_marker_keys_warned = True
+    _warn_deprecated_self_review_marker_keys._warned = True
     get_logger().warning(
         "pr_code_suggestions.approve_pr_on_self_review and "
         "pr_code_suggestions.fold_suggestions_on_self_review are deprecated and have no effect; "
