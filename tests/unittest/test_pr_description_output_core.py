@@ -92,6 +92,9 @@ class TestPrepareData:
         ("prediction", "field", "value"),
         [
             ({"type": ["Unknown"], "title": "A title"}, "type.0", "Unknown"),
+            ({"type": [None], "title": "A title"}, "type.0", None),
+            ({"type": [" ", None], "title": "A title"}, "type.0", " "),
+            ({"type": ["Unknown"], "labels": [None], "title": "A title"}, "type.0", "Unknown"),
             ({"type": ["Bug fix"]}, "title", None),
             (
                 {"type": ["Bug fix"], "title": "A title", "pr_files": [{"filename": "app.py", "label": "bug fix"}]},
