@@ -73,24 +73,66 @@ NOTES_AFTER_KEY = {
 
 # Docs pages that explain a configuration section, as (link text, link) pairs.
 # Links are relative to docs/docs/usage-guide/, where the generated page lives,
-# and may carry an anchor. Only sections with an unambiguous explaining page
-# are mapped; extend this map rather than linking a section to a vaguely
-# related page. The docs build fails on broken links and anchors, and the
-# unit test checks that every mapped file exists.
+# and carry the anchor of the explaining section. Every rendered section is
+# mapped; the render guard below fails on a map entry with no rendered section,
+# and the unit tests fail if a section is added without a map entry or if a
+# mapped file or anchor stops existing.
 SECTION_DOCS = {
-    "pr_reviewer": ("Review", "../tools/review.md"),
-    "pr_description": ("Describe", "../tools/describe.md"),
-    "pr_questions": ("Ask", "../tools/ask.md"),
-    "pr_code_suggestions": ("Improve", "../tools/improve.mdx"),
-    "pr_add_docs": ("Add Docs", "../tools/add_docs.md"),
-    "pr_update_changelog": ("Update Changelog", "../tools/update_changelog.md"),
-    "pr_similar_issue": ("Similar Issues", "../tools/similar_issues.md"),
-    "pr_help_docs": ("Help Docs", "../tools/help_docs.md"),
+    "config": (
+        "Configuration options",
+        "../usage-guide/configuration_options.md#global-configuration-file",
+    ),
+    "pr_reviewer": ("Review", "../tools/review.md#configuration-options"),
+    "pr_description": ("Describe", "../tools/describe.md#configuration-options"),
+    "pr_questions": ("Ask", "../tools/ask.md#configuration-options"),
+    "pr_code_suggestions": ("Improve", "../tools/improve.mdx#configuration-options"),
+    "pr_add_docs": ("Add Docs", "../tools/add_docs.md#configuration-options"),
+    "pr_update_changelog": ("Update Changelog", "../tools/update_changelog.md#configuration-options"),
+    "pr_config": (
+        "Configuration options",
+        "../usage-guide/configuration_options.md#global-configuration-file",
+    ),
+    "pr_help_docs": ("Help Docs", "../tools/help_docs.md#configuration-options"),
+    "github": ("GitHub", "../installation/github.md#run-as-a-github-app"),
+    "github_action_config": ("GitHub Actions", "../usage-guide/automations_and_usage.md#github-action"),
     "github_app": ("GitHub App", "../usage-guide/automations_and_usage.md#github-app"),
+    "gitlab": ("GitLab", "../usage-guide/automations_and_usage.md#gitlab-webhook"),
+    "gitea": ("Gitea", "../usage-guide/automations_and_usage.md#gitea-webhook"),
+    "bitbucket": ("Bitbucket", "../usage-guide/automations_and_usage.md#bitbucket-app"),
+    "bitbucket_app": ("Bitbucket App", "../usage-guide/automations_and_usage.md#bitbucket-app"),
+    "local": ("Local git provider", "../usage-guide/local_git_provider.md#when-to-use-it"),
+    "gerrit": ("Supported platforms", "../overview/supported_platforms.md#gerrit-and-codecommit"),
+    "bitbucket_server": (
+        "Bitbucket Server",
+        "../usage-guide/automations_and_usage.md#bitbucket-server-webhook",
+    ),
+    "jira": ("Ticket context", "../core-abilities/fetching_ticket_context.md#jira-integration"),
+    "litellm": ("Changing a model", "../usage-guide/changing_a_model.md#changing-a-model-in-pr-agent"),
+    "bedrock": ("Amazon Bedrock", "../usage-guide/changing_a_model.md#amazon-bedrock"),
+    "openrouter": ("OpenRouter", "../usage-guide/changing_a_model.md#openrouter"),
     "model_routing": (
         "Model routing",
         "../usage-guide/changing_a_model.md#routing-small-pull-requests-to-a-cheaper-model",
     ),
+    "otel": (
+        "Additional configurations",
+        "../usage-guide/additional_configurations.md#built-in-opentelemetry-command-telemetry",
+    ),
+    "pr_similar_issue": ("Similar Issues", "../tools/similar_issues.md#overview"),
+    "pinecone": ("Pinecone", "../tools/similar_issues.md#pinecone-configuration"),
+    "lancedb": ("LanceDB", "../tools/similar_issues.md#lancedb-configuration"),
+    "qdrant": ("Qdrant", "../tools/similar_issues.md#qdrant-configuration"),
+    "skills": ("Agent skills", "../core-abilities/agent_skills.md#configuration"),
+    "artifacts": ("CI artifacts", "../installation/github.md#ci-artifact-context"),
+    "mosaico": ("Mosaico server", "../installation/mosaico_server.md#what-the-mode-is"),
+    "asana": ("Asana", "../core-abilities/fetching_ticket_context.md#asana-integration"),
+    "linear": ("Linear", "../core-abilities/fetching_ticket_context.md#linear-integration"),
+    "azure_devops": ("Azure DevOps", "../usage-guide/automations_and_usage.md#azure-devops-provider"),
+    "azure_devops_server": (
+        "Azure DevOps Server",
+        "../usage-guide/automations_and_usage.md#azure-devops-webhook",
+    ),
+    "push_outputs": ("Push outputs", "../usage-guide/push_outputs.md#configuration"),
 }
 
 

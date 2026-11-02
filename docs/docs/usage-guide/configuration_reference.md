@@ -20,6 +20,8 @@ to-do list.
 
 ## `[config]` {#config}
 
+See [Configuration options](../usage-guide/configuration_options.md#global-configuration-file).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `max_webhook_request_body_bytes` | 5242880 | maximum request body accepted by webhook servers (5 MiB) |
@@ -147,7 +149,7 @@ to-do list.
 
 ## `[pr_reviewer]` — /review {#pr_reviewer-review}
 
-See [Review](../tools/review.md).
+See [Review](../tools/review.md#configuration-options).
 
 **enable/disable features**
 
@@ -211,7 +213,7 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 
 ## `[pr_description]` — /describe {#pr_description-describe}
 
-See [Describe](../tools/describe.md).
+See [Describe](../tools/describe.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -254,7 +256,7 @@ See [Describe](../tools/describe.md).
 
 ## `[pr_questions]` — /ask {#pr_questions-ask}
 
-See [Ask](../tools/ask.md).
+See [Ask](../tools/ask.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -267,7 +269,7 @@ See [Ask](../tools/ask.md).
 
 ## `[pr_code_suggestions]` — /improve {#pr_code_suggestions-improve}
 
-See [Improve](../tools/improve.mdx).
+See [Improve](../tools/improve.mdx#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -314,7 +316,7 @@ See [Improve](../tools/improve.mdx).
 
 ## `[pr_add_docs]` — /add_docs {#pr_add_docs-add_docs}
 
-See [Add Docs](../tools/add_docs.md).
+See [Add Docs](../tools/add_docs.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -324,7 +326,7 @@ See [Add Docs](../tools/add_docs.md).
 
 ## `[pr_update_changelog]` — /update_changelog {#pr_update_changelog-update_changelog}
 
-See [Update Changelog](../tools/update_changelog.md).
+See [Update Changelog](../tools/update_changelog.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -336,11 +338,13 @@ See [Update Changelog](../tools/update_changelog.md).
 
 ## `[pr_config]` — /config {#pr_config-config}
 
+See [Configuration options](../usage-guide/configuration_options.md#global-configuration-file).
+
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
 ## `[pr_help_docs]` {#pr_help_docs}
 
-See [Help Docs](../tools/help_docs.md).
+See [Help Docs](../tools/help_docs.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -353,6 +357,8 @@ See [Help Docs](../tools/help_docs.md).
 
 
 ## `[github]` {#github}
+
+See [GitHub](../installation/github.md#run-as-a-github-app).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -371,6 +377,8 @@ See [Help Docs](../tools/help_docs.md).
 
 
 ## `[github_action_config]` {#github_action_config}
+
+See [GitHub Actions](../usage-guide/automations_and_usage.md#github-action).
 
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
@@ -401,6 +409,8 @@ See [GitHub App](../usage-guide/automations_and_usage.md#github-app).
 
 ## `[gitlab]` {#gitlab}
 
+See [GitLab](../usage-guide/automations_and_usage.md#gitlab-webhook).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `url` | "https://gitlab.com" |  |
@@ -421,6 +431,8 @@ See [GitHub App](../usage-guide/automations_and_usage.md#github-app).
 
 ## `[gitea]` {#gitea}
 
+See [Gitea](../usage-guide/automations_and_usage.md#gitea-webhook).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `url` | "https://gitea.com" |  |
@@ -430,12 +442,16 @@ See [GitHub App](../usage-guide/automations_and_usage.md#github-app).
 
 ## `[bitbucket]` {#bitbucket}
 
+See [Bitbucket](../usage-guide/automations_and_usage.md#bitbucket-app).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `identity_request_timeout` | 30 | positive seconds for authenticated-account verification requests |
 
 
 ## `[bitbucket_app]` {#bitbucket_app}
+
+See [Bitbucket App](../usage-guide/automations_and_usage.md#bitbucket-app).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -447,9 +463,13 @@ See [GitHub App](../usage-guide/automations_and_usage.md#github-app).
 
 ## `[local]` {#local}
 
+See [Local git provider](../usage-guide/local_git_provider.md#when-to-use-it).
+
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
 ## `[gerrit]` {#gerrit}
+
+See [Supported platforms](../overview/supported_platforms.md#gerrit-and-codecommit).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -460,6 +480,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[bitbucket_server]` {#bitbucket_server}
 
+See [Bitbucket Server](../usage-guide/automations_and_usage.md#bitbucket-server-webhook).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `url` | "" | URL to the BitBucket Server instance |
@@ -469,6 +491,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[jira]` {#jira}
 
+See [Ticket context](../core-abilities/fetching_ticket_context.md#jira-integration).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `cloud_id` | "" | optional UUID for scoped tokens; uses the Atlassian API gateway and is host-only |
@@ -477,6 +501,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 
 ## `[litellm]` {#litellm}
+
+See [Changing a model](../usage-guide/changing_a_model.md#changing-a-model-in-pr-agent).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -496,6 +522,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[bedrock]` {#bedrock}
 
+See [Amazon Bedrock](../usage-guide/changing_a_model.md#amazon-bedrock).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `guardrail_identifier` | "" | guardrail ID or ARN; empty = disabled. When set, Bedrock models must use "bedrock/converse/..."; other Bedrock routes fail instead of running unguarded |
@@ -504,6 +532,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 
 ## `[openrouter]` {#openrouter}
+
+See [OpenRouter](../usage-guide/changing_a_model.md#openrouter).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -527,6 +557,8 @@ See [Model routing](../usage-guide/changing_a_model.md#routing-small-pull-reques
 
 ## `[otel]` {#otel}
 
+See [Additional configurations](../usage-guide/additional_configurations.md#built-in-opentelemetry-command-telemetry).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `is_enabled` | false | disabled by default; set to true to enable telemetry |
@@ -542,7 +574,7 @@ See [Model routing](../usage-guide/changing_a_model.md#routing-small-pull-reques
 
 ## `[pr_similar_issue]` {#pr_similar_issue}
 
-See [Similar Issues](../tools/similar_issues.md).
+See [Similar Issues](../tools/similar_issues.md#overview).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -554,6 +586,8 @@ See [Similar Issues](../tools/similar_issues.md).
 
 ## `[pinecone]` {#pinecone}
 
+See [Pinecone](../tools/similar_issues.md#pinecone-configuration).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `cloud` | "aws" | Serverless index deployment for the modern SDK. `cloud` is one of "aws", "gcp" or "azure"; pick a `region` offered by that cloud. |
@@ -562,6 +596,8 @@ See [Similar Issues](../tools/similar_issues.md).
 
 ## `[lancedb]` {#lancedb}
 
+See [LanceDB](../tools/similar_issues.md#lancedb-configuration).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `uri` | "./lancedb" |  |
@@ -569,9 +605,13 @@ See [Similar Issues](../tools/similar_issues.md).
 
 ## `[qdrant]` {#qdrant}
 
+See [Qdrant](../tools/similar_issues.md#qdrant-configuration).
+
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
 ## `[skills]` {#skills}
+
+See [Agent skills](../core-abilities/agent_skills.md#configuration).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -581,6 +621,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 
 ## `[artifacts]` {#artifacts}
+
+See [CI artifacts](../installation/github.md#ci-artifact-context).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -595,6 +637,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[mosaico]` {#mosaico}
 
+See [Mosaico server](../installation/mosaico_server.md#what-the-mode-is).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `bearer_tokens` | {} | principal names to distinct bearer secrets; empty permits anonymous trusted-network use |
@@ -606,12 +650,16 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[asana]` {#asana}
 
+See [Asana](../core-abilities/fetching_ticket_context.md#asana-integration).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `request_timeout` | 10 | seconds allowed for each Asana task API request |
 
 
 ## `[linear]` {#linear}
+
+See [Linear](../core-abilities/fetching_ticket_context.md#linear-integration).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -620,6 +668,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[azure_devops]` {#azure_devops}
 
+See [Azure DevOps](../usage-guide/automations_and_usage.md#azure-devops-provider).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `default_comment_status` | "closed" |  |
@@ -627,12 +677,16 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[azure_devops_server]` {#azure_devops_server}
 
+See [Azure DevOps Server](../usage-guide/automations_and_usage.md#azure-devops-webhook).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `agent_identity` | "" | Host-only identity (email, GUID, or descriptor) PR-Agent posts as on Azure DevOps. Empty discovers the identity from earlier agent comments on the PR. Repository settings and comment arguments cannot change it |
 
 
 ## `[push_outputs]` — push tool outputs to external sinks without calling git-provider APIs (disabled by default) {#push_outputs-push tool outputs to external sinks without calling git-provider APIs (disabled by default)}
+
+See [Push outputs](../usage-guide/push_outputs.md#configuration).
 
 | Key | Default | Description |
 | --- | --- | --- |
