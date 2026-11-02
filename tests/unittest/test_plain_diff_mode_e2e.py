@@ -258,6 +258,72 @@ async def test_commands_through_diff_provider_mocked_llm(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("response,finish_reason,expected_failure", [
+    pytest.param("code_suggestions: []", "stop", False, id="complete-empty"),
+    pytest.param("code_suggestions: []", "length", True, id="truncated-empty"),
+    pytest.param(
+        "code_suggestions:\n- relevant_file: foo.py\n  language: python\n"
+        "  existing_code: line2-changed\n  suggestion_content: Handle the error.\n"
+        "  improved_code: |\n    new(",
+        "length",
+        True,
+        id="truncated-parseable-yaml",
+    ),
+])
+async def test_improve_rejects_truncated_responses_through_diff_provider(
+    tmp_path, monkeypatch, capsys, response, finish_reason, expected_failure
+):
+    """Verify command dispatch rejects truncated suggestions even when YAML parses."""
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    class FakeAiHandler(BaseAiHandler):
+        def __init__(self):
+            pass
+
+        @property
+        def deployment_id(self):
+            return "fake"
+
+        async def chat_completion(self, model: str, system: str, user: str,
+                                  temperature: float = 0.2, img_path: str = None):
+            calls.append(user)
+            return response, finish_reason
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        for key, value in {
+            "config.git_provider": "plain-diff",
+            "config.model": "gpt-4o-mini",
+            "config.model_weak": "gpt-4o-mini",
+            "config.fallback_models": [],
+            "config.repo_context_files": [],
+            "config.publish_output": True,
+            "config.publish_output_progress": False,
+            "config.propagate_tool_errors": False,
+            "config.extra_config_url": "",
+            "plain_diff.content": DIFF,
+            "plain_diff.output_path": None,
+            "plain_diff.json_output_path": None,
+            "pr_code_suggestions.publish_failure_comment": True,
+            "pr_code_suggestions.decouple_hunks": True,
+            "push_outputs.enable": False,
+        }.items():
+            get_settings().set(key, value)
+
+        assert await PRAgent(ai_handler=FakeAiHandler).handle_request("local_diff", "/improve") is True
+        assert command_failed() is expected_failure
+
+    assert len(calls) == 1
+    assert "line2-changed" in calls[0]
+    output = capsys.readouterr().out
+    if expected_failure:
+        assert "Failed to generate code suggestions for PR" in output
+        assert "No code suggestions found for the PR." not in output
+    else:
+        assert "No code suggestions found for the PR." in output
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("decouple_hunks,line_count,max_tokens,remove_calls", [
     pytest.param(True, 1, 32_000, 1, id="decoupled"),
     pytest.param(False, 1, 32_000, 0, id="ordinary-default"),

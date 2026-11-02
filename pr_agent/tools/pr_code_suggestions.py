@@ -1095,6 +1095,9 @@ class PRCodeSuggestions:
             get_settings().system_prompt = system_prompt
             get_settings().user_prompt = user_prompt
 
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"Code suggestions response was truncated by {model}")
+
         # load suggestions from the AI response
         data = self._prepare_pr_code_suggestions(response)
 
