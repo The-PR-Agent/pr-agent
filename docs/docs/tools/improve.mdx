@@ -512,9 +512,12 @@ another retry.
 
 This is recovery within one invocation, not persisted resume across commands. Entirely failed initial
 batches still use the existing whole-batch fallback. Malformed or invalid top-level
-suggestion responses are treated as failed chunks and can use the remaining fallback models.
-A valid empty suggestion list (including `code_suggestions: []`) is a successful result
-and is not retried. Invalid individual suggestions in an otherwise valid list continue to
+suggestion responses, and responses marked as truncated by the model (`finish_reason="length"`),
+are treated as failed chunks and can use the remaining fallback models. A truncated response is
+retried as a whole, including any complete suggestions before the cutoff. If no chunk succeeds
+after the configured fallbacks are exhausted, the command reports failure.
+A valid empty suggestion list (including `code_suggestions: []`) in a complete response is a
+successful result and is not retried. Invalid individual suggestions in an otherwise valid list continue to
 be filtered without retrying that entire chunk.
 An ambiguous repeated model/deployment pair skips partial recovery rather than restarting the chain.
 
