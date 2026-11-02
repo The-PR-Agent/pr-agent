@@ -182,9 +182,9 @@ to-do list.
 
 Azure DevOps also supplies verified PR-Agent inline key issues as dismissed when their status is `wontFix`
 or `byDesign` and differs from `azure_devops.default_comment_status`. Matching defaults, `fixed`, `closed`,
-active, and pending threads do not count as dismissals. This requires a stable
-`azure_devops_server.agent_identity` and infers a human decision from the current configuration; it cannot
-verify the status-changing actor or historical defaults. Dismissed findings share the existing
+active, and pending threads do not count as dismissals. PR-Agent resolves its posting identity through Azure DevOps;
+`azure_devops_server.agent_identity` can override it. This infers a human decision from the current configuration;
+it cannot verify the status-changing actor or historical defaults. Dismissed findings share the existing
 `max_previous_findings_chars` budget and may be reported again if the code makes them worse.
 
 **review labels**
@@ -609,7 +609,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `agent_identity` | "" | Host-only identity (email, GUID, or descriptor) PR-Agent posts as on Azure DevOps. Empty discovers the identity from earlier agent comments on the PR. Repository settings and comment arguments cannot change it |
+| `agent_identity` | "" | Host-only GUID, unique name, descriptor, or list; empty resolves review authorship automatically. See installation/azure.md |
 
 
 ## `[push_outputs]` — push tool outputs to external sinks without calling git-provider APIs (disabled by default) {#push_outputs-push tool outputs to external sinks without calling git-provider APIs (disabled by default)}

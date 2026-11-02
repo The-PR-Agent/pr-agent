@@ -116,7 +116,8 @@ for the authoritative default values.
       are also passed as dismissed when the status differs from <code>azure_devops.default_comment_status</code>.
       A matching default stays an ordinary prior finding. This infers a human decision; Azure does not identify
       the status-changing actor here, and the current default may differ from the default used at creation.
-      Stable <code>azure_devops_server.agent_identity</code> configuration is required.
+      PR-Agent resolves its posting identity through Azure DevOps. Set
+      <code>azure_devops_server.agent_identity</code> to override it or when automatic lookup is unavailable.
     </td>
   </tr>
   <tr>
