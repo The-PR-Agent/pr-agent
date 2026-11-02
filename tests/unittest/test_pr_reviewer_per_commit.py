@@ -15,6 +15,7 @@ from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_reviewer import PRReviewer
 
 COMMITS = [PRCommit("a" * 40, "first\n\nwhy"), PRCommit("b" * 40, "empty"), PRCommit("c" * 40, "third")]
+ALL_MESSAGES = "1. first\n2. empty\n3. third"
 
 
 def _reviewer(provider):
@@ -24,7 +25,7 @@ def _reviewer(provider):
     reviewer.is_answer = False
     reviewer.is_auto = False
     reviewer.incremental = IncrementalPR(False)
-    reviewer.vars = {"diff": "", "commit_under_review": "", "commit_messages_str": "1. first\n2. empty\n3. third"}
+    reviewer.vars = {"diff": "", "commit_under_review": "", "commit_messages_str": ALL_MESSAGES}
     return reviewer
 
 
@@ -60,7 +61,7 @@ async def test_each_commit_with_changes_is_reviewed_with_its_own_message(setting
 
     assert seen == [("a" * 40, "first\n\nwhy", "", ""), ("c" * 40, "third", "", "")]
     assert reviewer._review_commit is None
-    assert reviewer.vars == {"diff": "", "commit_under_review": "", "commit_messages_str": "1. first\n2. empty\n3. third"}
+    assert reviewer.vars == {"diff": "", "commit_under_review": "", "commit_messages_str": ALL_MESSAGES}
     assert not reviewer.incremental.is_incremental
     provider.get_incremental_commits.assert_called_once_with(reviewer.incremental)
 
