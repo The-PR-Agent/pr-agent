@@ -85,7 +85,7 @@ def decode_if_bytes(original_file_str):
 def should_skip_patch(filename):
     patch_extension_skip_types = normalize_setting_list(get_settings().config.patch_extension_skip_types)
     if patch_extension_skip_types and filename:
-        return any(filename.endswith(skip_type) for skip_type in patch_extension_skip_types)
+        return any(filename.lower().endswith(str(skip_type).lower()) for skip_type in patch_extension_skip_types)
     return False
 
 
