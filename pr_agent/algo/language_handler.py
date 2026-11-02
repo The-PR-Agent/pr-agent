@@ -8,6 +8,7 @@ AUTO_GENERATED_FILES_EXACT = frozenset({
     'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'composer.lock', 'Gemfile.lock',
     'poetry.lock', 'go.sum', '.terraform.lock.hcl', 'uv.lock',
     'Cargo.lock', 'Pipfile.lock', 'mix.lock', 'pubspec.lock', 'bun.lockb',
+    'packages.lock.json', 'Package.resolved',
 })
 
 

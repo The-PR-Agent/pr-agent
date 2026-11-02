@@ -40,6 +40,8 @@ def test_reviewable_files_are_kept(filename):
         "bundle.ts.map", "bundle.Ts.MaP",
         "style.css.map", "style.CSS.MAP",
         "package-lock.json",
+        "packages.lock.json",
+        "Package.resolved",
     ],
 )
 def test_generated_files_are_dropped(filename):
