@@ -1389,13 +1389,10 @@ class PRCodeSuggestions:
                     continue
 
                 suggestion_content = suggestion['suggestion_content']
-                if (
-                    'instead' in suggestion_content
-                    and re.search(r"\bconst\b", suggestion_content)
-                    and re.search(r"\blet\b", suggestion_content)
-                ):
+                # Only filter direct advice; preserve reverse or negated recommendations for reflection.
+                if re.match(r"\s*(?i:use)\s+`?\bconst\b`?\s+instead\s+of\s+`?\blet\b", suggestion_content):
                     get_logger().debug(
-                        f"Skipping suggestion {i + 1}, because it uses 'const instead let': {suggestion}")
+                        f"Skipping suggestion {i + 1}, because it recommends 'const instead of let': {suggestion}")
                     continue
 
                 if ('existing_code' in suggestion) and ('improved_code' in suggestion):
