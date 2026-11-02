@@ -3146,7 +3146,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # reasoning_effort gate) and config.no_temperature_models as the operator
                 # override for endpoints litellm does not know or providers that reject
                 # temperature despite the metadata. Adaptive-thinking Claude models
-                # (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive it, matching the
+                # (Opus 4.7/4.8, Opus/Sonnet/Fable 5.x and Haiku 5.5) never receive it, matching the
                 # sampling-parameter removal of _configure_claude_adaptive_thinking.
                 # OpenRouter :nitro/:floor routing shortcuts are ignored for temperature
                 # capability checks; model retains the routed id for the actual request.
