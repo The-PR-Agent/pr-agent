@@ -319,6 +319,29 @@ def test_get_commit_messages_returns_text(tmp_path):
     assert provider.get_commit_messages() == "initial files"
 
 
+@pytest.mark.parametrize("max_tokens", [None, 0, 5])
+def test_get_commit_messages_clips_to_max_commits_tokens(tmp_path, max_tokens):
+    message = "Répare le cache " * 50
+    repo = git.Repo.init(tmp_path)
+    repo.index.commit(message)
+    provider = object.__new__(GerritProvider)
+    provider.repo = repo
+    snapshot = settings_helpers.snapshot_settings(["config.max_commits_tokens"])
+    try:
+        get_settings().set("config.max_commits_tokens", max_tokens)
+        commit_messages = provider.get_commit_messages()
+    finally:
+        settings_helpers.restore_settings(snapshot)
+        repo.close()
+
+    if max_tokens:
+        assert commit_messages.endswith("...(truncated)")
+        assert message.startswith(commit_messages.removesuffix("\n...(truncated)"))
+        assert len(commit_messages) < len(message)
+    else:
+        assert commit_messages == message
+
+
 def test_detached_gerrit_branch_keeps_commit_message_in_jira_context(tmp_path, monkeypatch):
     repo_path = tmp_path / "clone"
     repo = _make_repo(repo_path, ["app.py"])
