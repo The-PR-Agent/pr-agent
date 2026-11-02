@@ -57,6 +57,14 @@ class TestExtendPatch:
         assert extend_patch(original_file_str, patch_str,
                             patch_extra_lines_before=num_lines, patch_extra_lines_after=num_lines) == patch_str
 
+    # Tests that skipped extensions match regardless of case
+    @pytest.mark.parametrize("filename", ["notes.txt", "NOTES.TXT", "Readme.MD"])
+    def test_skip_types_match_any_case(self, filename):
+        original_file_str = 'line1\nline2\nline3\nline4\nline5'
+        patch_str = '@@ -2,2 +2,2 @@ init()\n-line2\n+new_line2\n line3'
+        assert extend_patch(original_file_str, patch_str, patch_extra_lines_before=1,
+                            patch_extra_lines_after=1, filename=filename) == patch_str
+
     # Tests that the function returns the original patch when patch_str contains no hunks
     def test_no_hunks(self):
         original_file_str = 'line1\nline2\nline3\nline4\nline5'
