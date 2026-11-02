@@ -2354,6 +2354,7 @@ def _render_suggestions_user_prompt(prompt_key: str, discussion_context: str) ->
     variables = {
         "title": "Test PR",
         "date": "2024-01-01",
+        "commit_messages_str": "",
         "diff_no_line_numbers": "+value",
         "duplicate_prompt_examples": False,
         "suggestion_discussion_context": discussion_context,
