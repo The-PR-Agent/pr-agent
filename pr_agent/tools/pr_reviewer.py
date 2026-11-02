@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.artifacts import get_artifact_context, resolve_artifact_path
+from pr_agent.algo.artifacts import get_artifact_context, prompt_boundary_markers, resolve_artifact_path
 from pr_agent.algo.comment_identity import (
     PRReviewHeader,
     PRReviewIdentity,
@@ -251,6 +251,7 @@ class PRReviewer:
             get_logger().debug("AI metadata is disabled for this command")
 
         is_ai_metadata = get_settings().get("config.enable_ai_metadata", False)
+        commit_message_begin, commit_message_end = prompt_boundary_markers("COMMIT_MESSAGE")
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -281,6 +282,8 @@ class PRReviewer:
             "previous_findings": previous_findings,
             "commit_messages_str": self.git_provider.get_commit_messages(),
             "commit_under_review": "",
+            "commit_message_begin": commit_message_begin,
+            "commit_message_end": commit_message_end,
             "custom_labels": "",
             "enable_custom_labels": get_settings().config.enable_custom_labels,
             "is_ai_metadata": is_ai_metadata,
@@ -356,7 +359,7 @@ class PRReviewer:
                         continue
                     message = clip_tokens(commit.message, max_message_tokens) if max_message_tokens \
                         else commit.message
-                    self.vars = dict(copy.deepcopy(base_vars), commit_under_review=message)
+                    self.vars = dict(copy.deepcopy(base_vars), commit_under_review=message, commit_messages_str="")
                     self._review_commit = commit
                     get_logger().info(f"Reviewing commit {commit.sha} of PR: {self.pr_url}")
                     await self._run_review()
