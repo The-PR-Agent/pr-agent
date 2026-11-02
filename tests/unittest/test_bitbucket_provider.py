@@ -1793,6 +1793,54 @@ class TestBitbucketServerProvider:
         bitbucket_client.get.assert_called_once_with("rest/api/1.0/application-properties")
         bitbucket_client.get_pull_request.assert_called_once_with(workspace_slug, "repo", pull_request_id=7)
 
+    @pytest.mark.parametrize(
+        ("pr_url", "parsed_pr", "server_url"),
+        [
+            (
+                "https://git.example.com/projects/PROJ/repos/users/pull-requests/7",
+                ("PROJ", "users", 7),
+                "https://git.example.com",
+            ),
+            (
+                "https://git.example.com/projects/~ALICE/repos/users/pull-requests/7",
+                ("~ALICE", "users", 7),
+                "https://git.example.com",
+            ),
+            (
+                "https://git.example.com/users/alice/repos/projects/pull-requests/7",
+                ("~alice", "projects", 7),
+                "https://git.example.com",
+            ),
+            (
+                "https://git.example.com/bitbucket/users/alice/repos/projects/pull-requests/7/overview",
+                ("~alice", "projects", 7),
+                "https://git.example.com/bitbucket",
+            ),
+            (
+                "https://git.example.com/projects/projects/PROJ/repos/repo/pull-requests/7",
+                ("PROJ", "repo", 7),
+                "https://git.example.com/projects",
+            ),
+        ],
+    )
+    def test_parse_urls_with_segments_named_projects_or_users(self, pr_url, parsed_pr, server_url):
+        assert BitbucketServerProvider._parse_pr_url(pr_url) == parsed_pr
+        assert BitbucketServerProvider._parse_bitbucket_server(pr_url) == server_url
+
+    def test_constructor_reads_project_of_repository_named_users(self):
+        bitbucket_client = MagicMock(Bitbucket)
+        bitbucket_client.get.return_value = {"version": "8.16"}
+        bitbucket_client.get_pull_request.return_value = {}
+
+        with patch(
+            "pr_agent.git_providers.bitbucket_server_provider.Bitbucket",
+            return_value=bitbucket_client,
+        ):
+            provider = BitbucketServerProvider("https://git.example.com/projects/PROJ/repos/users/pull-requests/7")
+
+        assert provider.workspace_slug == "PROJ"
+        bitbucket_client.get_pull_request.assert_called_once_with("PROJ", "users", pull_request_id=7)
+
     def test_get_issue_comments_normalizes_top_level_comments_from_all_activities(self):
         provider = self._persistent_provider()
         provider.bitbucket_client.get_pull_requests_activities.return_value = iter([
