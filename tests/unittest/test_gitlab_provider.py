@@ -220,13 +220,14 @@ class TestGitLabProvider:
             gitlab_provider, "_expand_submodule_changes", side_effect=lambda changes, refs: changes
         ), patch(
             f"{mod}.filter_ignored", side_effect=lambda changes, provider: changes[:2]
-        ), patch(f"{mod}.is_valid_file", side_effect=lambda name: name != "pnpm-lock.yaml"), patch.object(
+        ), patch.object(
             gitlab_provider, "get_pr_file_content", return_value="content"
-        ):
+        ) as get_content:
             diffs = gitlab_provider.get_diff_files()
 
         assert [file.filename for file in diffs] == ["package.json"]
         assert gitlab_provider.get_filtered_diff_file_names() == ["pnpm-lock.yaml"]
+        assert [call.args[0] for call in get_content.call_args_list] == ["package.json"] * 2
 
     def test_get_pr_file_content_success(self, gitlab_provider, mock_project):
         mock_file = MagicMock(ProjectFile)
