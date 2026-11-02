@@ -8,6 +8,7 @@ import random
 import re
 import time
 import traceback
+from itertools import islice
 from urllib.parse import quote, urlparse
 
 from github import Auth, Github, GithubException, GithubIntegration, GithubRetry, RateLimitExceededException
@@ -1557,6 +1558,20 @@ class GithubProvider(GitProvider):
 
     def get_issue_comments(self):
         return self.pr.get_issue_comments()
+
+    def get_issue_comments_newest_first(self):
+        """Avoid PyGithub's duplicate first-page GET for short comment threads."""
+        count = getattr(self.pr, "comments", None)
+        if type(count) is int and count >= 0:
+            page_size = self.github_client.per_page
+            if count < page_size:
+                # Bound the probe because the count is only a snapshot.
+                comments = list(islice(self.get_issue_comments(), page_size))
+                if len(comments) < page_size:
+                    comments.reverse()
+                    return comments
+                del comments
+        return super().get_issue_comments_newest_first()
 
     def get_persistent_comment_bodies(self) -> list[str]:
         """Return existing inline review bodies for cross-run deduplication."""
