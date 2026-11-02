@@ -85,7 +85,6 @@ jobs:
           load: true
           tags: pragent/pr-agent:smoke
           cache-from: type=gha,scope=dev
-          cache-to: type=gha,mode=max,scope=dev
           target: github_app
 
       - id: smoke

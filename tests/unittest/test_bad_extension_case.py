@@ -17,14 +17,17 @@ def test_uppercase_bad_extension_is_dropped(filename):
     assert is_valid_file(filename) is False
 
 
-@pytest.mark.parametrize("filename", ["logo.svg", "report.csv", "photo.jpg", "bundle.zip"])
+@pytest.mark.parametrize("filename", ["logo.svg", "report.csv", "photo.jpg", "bundle.zip", "library.jar", "Main.class"])
 def test_lowercase_bad_extension_is_still_dropped(filename):
     """Keep the existing behaviour for the canonical spelling."""
     assert is_valid_file(filename) is False
 
 
 @pytest.mark.parametrize(
-    "filename", ["main.py", "Makefile", "app.SVGZ", "app.MIN.JSX", "bundle.JS.MAP.backup", "PACKAGE-LOCK.JSON"]
+    "filename", [
+        "main.py", "Makefile", "app.SVGZ", "app.MIN.JSX", "bundle.JS.MAP.backup", "PACKAGE-LOCK.JSON",
+        "build.gradle", "settings.gradle", "app/build.gradle", "build.gradle.kts",
+    ]
 )
 def test_reviewable_files_are_kept(filename):
     """Do not widen the filter: only the extension itself is compared."""
@@ -40,6 +43,8 @@ def test_reviewable_files_are_kept(filename):
         "bundle.ts.map", "bundle.Ts.MaP",
         "style.css.map", "style.CSS.MAP",
         "package-lock.json",
+        "packages.lock.json",
+        "Package.resolved",
     ],
 )
 def test_generated_files_are_dropped(filename):
@@ -56,7 +61,9 @@ def test_partition_preserves_original_generated_filename_and_valid_file_order():
     assert filtered_names == ["assets/APP.MIN.JS"]
 
 
-@pytest.mark.parametrize("filename,configured", [("archive.TAR", ["tar"]), ("archive.tar", ["TAR"])])
+@pytest.mark.parametrize("filename,configured", [
+    ("archive.TAR", ["tar"]), ("archive.tar", ["TAR"]), ("build.gradle", ["gradle"]),
+])
 def test_configured_extension_matches_either_case(filename, configured):
     """A user-supplied bad_extensions entry matches regardless of how it is spelled."""
     assert is_valid_file(filename, bad_extensions=configured) is False

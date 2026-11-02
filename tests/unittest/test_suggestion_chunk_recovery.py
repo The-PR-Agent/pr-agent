@@ -44,6 +44,15 @@ def configured():
     restore_settings(snapshot)
 
 
+@pytest.fixture(params=[
+    pytest.param(None, id="invalid-schema"),
+    pytest.param(("code_suggestions:\n- relevant_file: b.py\n  improved_code: |\n    new(", "length"),
+                 id="truncated-yaml"),
+])
+def truncated_response(request):
+    return request.param
+
+
 def make_tool(monkeypatch, failures):
     tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
     tool.git_provider = MagicMock()
@@ -62,6 +71,8 @@ def make_tool(monkeypatch, failures):
             await failure()
         if isinstance(failure, str):
             return failure, "stop"
+        if isinstance(failure, tuple):
+            return failure
         suggestion = {
             "relevant_file": user + ".py", "one_sentence_summary": "Check " + user,
             "label": "possible issue", "suggestion_content": "Handle the error.",
@@ -358,10 +369,11 @@ async def test_empty_prediction_is_a_success_not_a_retry_trigger(configured, mon
 
 
 @pytest.mark.parametrize("parallel", [True, False])
-async def test_invalid_suggestion_response_recovers_only_failed_chunk(configured, monkeypatch, parallel):
+async def test_invalid_suggestion_response_recovers_only_failed_chunk(
+        configured, monkeypatch, parallel, truncated_response):
     get_settings().set("pr_code_suggestions.parallel_calls", parallel)
     tool, calls = make_tool(monkeypatch, {
-        ("gpt-4o", "b"): "code_suggestions: 5",
+        ("gpt-4o", "b"): truncated_response or "code_suggestions: 5",
         ("gpt-4o-mini", "b"): "not a suggestions mapping",
     })
     result = await retry_with_fallback_models(tool.prepare_prediction_main)
@@ -374,9 +386,10 @@ async def test_invalid_suggestion_response_recovers_only_failed_chunk(configured
     ]
 
 
-async def test_invalid_suggestion_response_without_fallback_reports_partial_coverage(configured, monkeypatch):
+async def test_invalid_suggestion_response_without_fallback_reports_partial_coverage(
+        configured, monkeypatch, truncated_response):
     get_settings().set("config.fallback_models", [])
-    tool, calls = make_tool(monkeypatch, {("gpt-4o", "b"): "code_suggestions: null"})
+    tool, calls = make_tool(monkeypatch, {("gpt-4o", "b"): truncated_response or "code_suggestions: null"})
     result = await retry_with_fallback_models(tool.prepare_prediction_main)
     assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "c.py"]
     assert tool.failed_chunk_count == 1
@@ -385,10 +398,11 @@ async def test_invalid_suggestion_response_without_fallback_reports_partial_cove
 
 
 @pytest.mark.parametrize("recover_on_fallback", [True, False])
-async def test_all_invalid_suggestions_use_outer_fallback(configured, monkeypatch, recover_on_fallback):
+async def test_all_invalid_suggestions_use_outer_fallback(
+        configured, monkeypatch, recover_on_fallback, truncated_response):
     invalid_models = ["gpt-4o"] if recover_on_fallback else ["gpt-4o", "gpt-4o-mini", "gpt-4.1"]
     tool, calls = make_tool(monkeypatch, {
-        (model, chunk): "code_suggestions: null"
+        (model, chunk): truncated_response or "code_suggestions: null"
         for model in invalid_models for chunk in "abc"
     })
     if recover_on_fallback:
@@ -402,9 +416,9 @@ async def test_all_invalid_suggestions_use_outer_fallback(configured, monkeypatc
         assert len(calls) == 9
 
 
-async def test_all_invalid_suggestions_mark_the_command_as_failed(configured, monkeypatch):
+async def test_all_invalid_suggestions_mark_the_command_as_failed(configured, monkeypatch, truncated_response):
     invalid = {
-        (model, chunk): "code_suggestions: null"
+        (model, chunk): truncated_response or "code_suggestions: null"
         for model in ["gpt-4o", "gpt-4o-mini", "gpt-4.1"] for chunk in "abc"
     }
     tool, calls = make_tool(monkeypatch, invalid)
