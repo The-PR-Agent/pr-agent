@@ -78,7 +78,7 @@ to-do list.
 | Key | Default | Description |
 | --- | --- | --- |
 | `max_description_tokens` | 500 |  |
-| `max_commits_tokens` | 500 | Token cap on the commit messages sent to the model by /describe, /review, /improve and the other tools. 0 means no limit, and -1 sends no commit messages at all. |
+| `max_commits_tokens` | 500 | Token cap on the commit messages sent to the model by /describe, /review, /improve and other tools. 0 means no limit; -1 sends none. |
 | `max_model_tokens` | 32000 | Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities. |
 | `custom_model_max_tokens` | -1 | Override unknown models or Sol-tier GPT-6 on non-native custom providers. |
 | `max_output_tokens` | 0 | 0 = unset (the provider's own default applies) |
