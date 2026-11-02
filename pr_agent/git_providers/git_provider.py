@@ -1333,7 +1333,7 @@ class GitProvider(ABC):
     #### commits operations ####
     @abstractmethod
     def get_commit_messages(self) -> str:
-        pass
+        return ""
 
     def get_pr_url(self) -> str:
         if hasattr(self, 'pr_url'):

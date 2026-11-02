@@ -2395,6 +2395,10 @@ def test_supports_incremental_kind_defaults_to_false_on_base_provider():
     assert GitProvider.supports_incremental_kind(MagicMock(), "suggestions") is False
 
 
+def test_get_commit_messages_defaults_to_empty_string_on_base_provider():
+    assert GitProvider.get_commit_messages(MagicMock()) == ""
+
+
 def test_supports_code_suggestions_artifact_defaults_to_false_on_base_provider():
     assert GitProvider.supports_code_suggestions_artifact(MagicMock()) is False
 
