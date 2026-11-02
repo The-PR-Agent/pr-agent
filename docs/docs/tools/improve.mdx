@@ -276,7 +276,7 @@ To activate dual publishing mode, use the following setting:
 dual_publishing_score_threshold = x
 ```
 
-Where x represents the minimum score threshold (>=) for suggestions to be presented as committable PR comments in addition to the table. Default is -1 (disabled).
+Where x represents the minimum score threshold (>=) for suggestions to be presented as committable PR comments in addition to the table. Default is -1. Values of -1 or 0 disable dual publishing.
 
 ### Persistent inline comments
 
@@ -417,7 +417,7 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>dual_publishing_score_threshold</b></td>
-    <td>Minimum score threshold for suggestions to be presented as committable PR comments in addition to the table.</td>
+    <td>Minimum score threshold for suggestions to be presented as committable PR comments in addition to the table. Values of -1 or 0 disable dual publishing.</td>
   </tr>
   <tr>
     <td><b>focus_only_on_problems</b></td>

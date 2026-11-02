@@ -445,7 +445,7 @@ def _pack_pr_multi_diffs(file_dict: dict,
         if file_dict[filename].get("content_fetch_failed", False):
             get_logger().warning(f"Unreadable-file notice too large, skipping: {filename}")
             return None
-        if get_settings().config.get("large_patch_policy", "skip") != "clip":
+        if get_settings().config.get("large_patch_policy", "clip") != "clip":
             get_logger().warning(f"Patch too large, skipping: {filename}")
             return None
         patch_tokens = count_chunk([patch])
