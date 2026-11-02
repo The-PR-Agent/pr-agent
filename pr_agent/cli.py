@@ -127,7 +127,7 @@ def set_parser():
     Supported commands:
     - review / review_pr - {COMMAND_DESCRIPTIONS["review"]}
 
-    - doctor - Check the deployment (model configured, provider key, model endpoint) without a PR.
+    - doctor - Check the model/key, ping the model, and check basic settings for enabled output sinks without a PR.
 
     - ask / ask_question [question] - Ask a question about the PR.
 

@@ -1354,6 +1354,8 @@ class PRReviewer:
             system=fitted.system_prompt,
             user=fitted.user_prompt,
         )
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"Review response was truncated by {model}")
 
         return response
 

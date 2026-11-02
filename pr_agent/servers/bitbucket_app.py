@@ -39,7 +39,7 @@ from pr_agent.servers.utils import (
     shared_should_process_pr_logic,
 )
 
-setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
+setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
 router = APIRouter()
 
 

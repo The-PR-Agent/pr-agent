@@ -324,4 +324,4 @@ def post_fork(server, worker):
     from pr_agent.log import LoggingFormat, setup_logger
 
     if get_settings().get("CONFIG.ANALYTICS_FOLDER", ""):
-        setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
+        setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))

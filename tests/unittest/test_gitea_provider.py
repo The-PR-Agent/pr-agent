@@ -1566,6 +1566,22 @@ class TestGiteaProviderInlineCommentStatus:
         assert result is True
         assert provider.repo_api.create_inline_comment.call_count == 3
 
+    def test_publish_code_suggestions_skips_invalid_line_ranges(self):
+        provider = self._provider(create_inline_comment_result=True)
+        suggestions = [
+            {"body": "**Suggestion:** inverted", "relevant_file": "a.py",
+             "relevant_lines_start": 5, "relevant_lines_end": 3},
+            {"body": "**Suggestion:** no line", "relevant_file": "a.py", "relevant_lines_start": 0},
+            {"body": "**Suggestion:** valid", "relevant_file": "a.py",
+             "relevant_lines_start": 3, "relevant_lines_end": 5},
+        ]
+
+        assert provider.publish_code_suggestions(suggestions) is True
+
+        sent = [call.kwargs["comments"][0]["body"]
+                for call in provider.repo_api.create_inline_comment.call_args_list]
+        assert sent == ["**Suggestion:** valid"]
+
     def test_publish_code_suggestions_anchor_to_the_new_file(self):
         # Gitea ignores new_position while old_position is non-zero and anchors the comment
         # to the old side instead (services/pull.CreatePullReview). PR-Agent's relevant lines

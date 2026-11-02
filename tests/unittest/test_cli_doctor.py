@@ -30,8 +30,10 @@ class _FakeHandler:
 
 @pytest.fixture
 def cli_mode_settings():
-    snapshot = snapshot_settings(("config.model", "openai.api_base", "config.cli_mode", "azure_ad.client_id"))
+    snapshot = snapshot_settings(("config.model", "openai.api_base", "config.cli_mode", "azure_ad.client_id",
+                                  "push_outputs"))
     get_settings().set("config.model", "openai/gpt-4o")
+    get_settings().set("push_outputs", {"enable": False})
     try:
         yield get_settings()
     finally:
@@ -45,14 +47,56 @@ def _install_handler(monkeypatch, **kwargs):
 
 
 def test_doctor_passes_and_exits_zero(monkeypatch, cli_mode_settings, capsys):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_KEY", raising=False)
     _install_handler(monkeypatch, key="synthetic-key")
 
     assert cli.run(inargs=["doctor"]) == 0
     out = capsys.readouterr().out
-    assert "✓ config.model = openai/gpt-4o" in out
-    assert "✓ API key for 'openai' found" in out
-    assert "✓ model completion succeeded" in out
-    assert "3 of 3 checks passed" in out
+    assert out == ("✓ config.model = openai/gpt-4o\n"
+                   "✓ API key for 'openai' found (settings)\n"
+                   "✓ model completion succeeded\n"
+                   "3 of 3 checks passed\n")
+
+
+@pytest.mark.parametrize("channels, expected_exit, summary", [
+    (["stdout"], 0, "4 of 4 checks passed"),
+    (["webhook"], 1, "3 of 4 checks passed"),
+])
+def test_doctor_checks_enabled_outputs_after_ping(monkeypatch, cli_mode_settings, capsys,
+                                                channels, expected_exit, summary):
+    cli_mode_settings.set("push_outputs", {"enable": True, "channels": channels})
+    fake = _install_handler(monkeypatch)
+    check = doctor._check_output_sinks
+
+    def after_ping(cfg):
+        assert fake.ping_calls == ["openai/gpt-4o"]
+        return check(cfg)
+
+    monkeypatch.setattr(doctor, "_check_output_sinks", after_ping)
+    assert cli.run(inargs=["doctor"]) == expected_exit
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 5
+    assert lines[2] == "✓ model completion succeeded"
+    assert "push_outputs" in lines[3]
+    assert lines[-1] == summary
+
+
+def test_doctor_contains_settings_operation_errors_after_ping(monkeypatch, cli_mode_settings, capsys):
+    fake = _install_handler(monkeypatch)
+
+    class BrokenSettings:
+        config = cli_mode_settings.config
+
+        def get(self, key, default=None):
+            assert fake.ping_calls == ["openai/gpt-4o"]
+            raise ValueError("synthetic-token https://secret.example/hook /private/path")
+
+    monkeypatch.setattr(doctor, "get_settings", lambda: BrokenSettings())
+    assert cli.run(inargs=["doctor"]) == 1
+    out = capsys.readouterr().out
+    assert out.splitlines()[-2:] == ["✗ push_outputs configuration could not be checked", "3 of 4 checks passed"]
+    assert all(value not in out for value in ("synthetic-token", "secret.example", "/private/path", "ValueError"))
 
 
 def test_missing_key_names_the_env_variable_and_fails(monkeypatch, cli_mode_settings, capsys):

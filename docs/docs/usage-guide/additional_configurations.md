@@ -67,6 +67,8 @@ Notes:
 
 In some cases, you may want to exclude specific files or directories from the analysis performed by PR-Agent. This can be useful, for example, when you have files that are generated automatically or files that shouldn't be reviewed, like vendor code.
 
+The built-in generated-file filter matches `.min.js`, `.min.css`, `.js.map`, `.ts.map`, and `.css.map` suffixes case-insensitively; exact lockfile basenames such as `package-lock.json` keep their existing case-sensitive matching.
+
 You can ignore files or folders using the following methods:
 
 - `IGNORE.GLOB`
@@ -229,10 +231,10 @@ PR-Agent allows you to control the verbosity of logging by using the `log_level`
 
 ```
 [config]
-log_level = "DEBUG"  # Options: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
+log_level = "INFO"  # Options: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
 ```
 
-The default log level is "DEBUG", which provides detailed output of all operations. If you prefer less verbose logs, you can set higher log levels like "INFO" or "WARNING".
+The default log level is "INFO". Set it to "DEBUG" when troubleshooting to include detailed operation logs.
 
 ## Tokenizer files without internet access
 
@@ -572,13 +574,7 @@ To ignore PRs with a specific title such as "[Bump]: ...", you can add the follo
 ignore_pr_title = ["\\[Bump\\]"]
 ```
 
-Where the `ignore_pr_title` is a list of regex patterns to match the PR title you want to ignore. Default is `ignore_pr_title = ["^\\[Auto\\]", "^Auto"]`.
-
-The default `^Auto` pattern also matches ordinary titles such as "Autoscaling fix". Because title
-rules now apply to manual commands too, `/review`, `/ask`, and CLI `--pr_url` commands on such PRs
-are skipped. Set a narrower `ignore_pr_title` pattern or use `ignore_pr_title = []` in your
-configuration if that is not intended. A skipped request is logged without running the tool or
-posting command reactions.
+Where the `ignore_pr_title` is a list of regex patterns to match the PR title you want to ignore. Default is `ignore_pr_title = ["^\\[Auto\\]"]`.
 
 ### Ignoring PRs between specific branches
 

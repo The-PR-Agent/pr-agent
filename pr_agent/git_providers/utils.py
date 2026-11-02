@@ -276,6 +276,9 @@ def apply_host_settings():
     """Merge CONFIG.EXTRA_CONFIG_URL before provider initializers read connection settings."""
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
     extra_source = get_settings().get("CONFIG.EXTRA_CONFIG_URL", None)
+    # The loaded file may clear its own URL; keep the original selection for this request.
+    if context.exists() and isinstance(extra_source, str) and extra_source.strip():
+        context["extra_config_source_seen"] = True
     try:
         if isinstance(extra_source, str) and extra_source.strip():
             extra_path, extra_is_temp = _resolve_extra_config_to_file(extra_source)

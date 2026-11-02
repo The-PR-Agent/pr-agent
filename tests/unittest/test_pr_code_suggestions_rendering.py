@@ -453,6 +453,21 @@ def test_generate_summarized_suggestions_empty_returns_placeholder():
     assert "<table>" not in out
 
 
+@pytest.mark.parametrize("labels", [
+    ["maintainability"],
+    ["maintainability", "maintainability"],
+    ["security", "maintainability"],
+])
+def test_summarized_suggestion_table_closes_without_extra_row(labels):
+    tool = _make_tool(_provider_with_diff_files("app.py"))
+    suggestions = [_suggestion(label=label) for label in labels]
+
+    body = tool.generate_summarized_suggestions({"code_suggestions": suggestions})
+
+    assert body.endswith("</tbody></table>")
+    assert body.count("<tr>") == body.count("</tr>")
+
+
 def test_generate_summarized_suggestions_renders_table_and_sorts_by_score():
     git_provider = _provider_with_diff_files("app.py", "auth.py")
     git_provider.get_line_link.return_value = "https://example.test/app.py#L2"

@@ -183,6 +183,22 @@ def test_base_file_reconstructed_when_run_from_subdirectory(cfg, tmp_path, monke
     ("/review", "review:\n  key_issues_to_review: []\n", "No major issues detected"),
     ("/describe", "title: Update the second line\ndescription: The second line changed.\n"
                   "type: [Enhancement]\npr_files: []\n", "The second line changed."),
+    pytest.param(
+        "/describe",
+        "title: Update the second line\ndescription: The second line changed.\n"
+        "type: [Enhancement, null]\npr_files:\n- filename: foo.py\n"
+        "  changes_title: Update the second line\n  changes_summary: The second line changed.\n"
+        "  label: enhancement\n",
+        "### **PR Type**\nEnhancement\n",
+        id="describe-mixed-type-with-file-summary",
+    ),
+    pytest.param(
+        "/describe --pr_description.publish_labels=true",
+        "title: Update the second line\ndescription: The second line changed.\n"
+        "type: [Enhancement]\nlabels: [Enhancement, null, {name: Enhancement}, 123, false]\npr_files: []\n",
+        "### **Labels**\nEnhancement\n",
+        id="describe-mixed-labels-with-publishing-enabled",
+    ),
 ])
 async def test_commands_through_diff_provider_mocked_llm(
     tmp_path, monkeypatch, capsys, command, response, expected_output

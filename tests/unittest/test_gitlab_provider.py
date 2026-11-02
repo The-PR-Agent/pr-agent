@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -138,6 +139,52 @@ class TestGitLabProvider:
         assert client.http_request.call_count == 2
         assert client.http_request.call_args_list[0].kwargs["per_page"] == 100
         assert client.http_request.call_args_list[1].args[1] == next_url
+
+    def test_latest_commit_url_reuses_api_result_until_command_reset(self, gitlab_provider):
+        client = Gitlab("https://gitlab.example.com", private_token="test-token")
+        gitlab_provider.mr = client.projects.get("target/repo", lazy=True).mergerequests.get(1, lazy=True)
+        url = "https://gitlab.example.com/fork/repo/-/commit/first"
+        response = MagicMock()
+        response.json.return_value = [{"id": "first", "web_url": url}]
+        response.links = {}
+        response.headers = {}
+        client.http_request = MagicMock(return_value=response)
+
+        assert gitlab_provider.get_latest_commit_url() == url
+        assert gitlab_provider.get_latest_commit_url() == url
+        client.http_request.assert_called_once()
+
+        next_url = "https://gitlab.example.com/fork/repo/-/commit/second"
+        response.json.return_value = [{"id": "second", "web_url": next_url}]
+        gitlab_provider.reset_diff_cache_for_command()
+        assert gitlab_provider.get_latest_commit_url() == next_url
+        assert client.http_request.call_count == 2
+
+    @pytest.mark.parametrize("first_result,expected", [
+        (StopIteration(), ""),
+        (GitlabGetError("temporary failure", response_code=503), ""),
+        (RequestException("connection reset"), ""),
+        (SimpleNamespace(), ""),
+        (SimpleNamespace(web_url=""), ""),
+        (SimpleNamespace(web_url=None), None),
+    ])
+    def test_latest_commit_url_retries_unsuccessful_reads(self, gitlab_provider, first_result, expected):
+        url = "https://gitlab.com/test/repo/-/commit/first"
+        gitlab_provider.mr.commits.return_value.next.side_effect = [first_result, SimpleNamespace(web_url=url)]
+
+        assert gitlab_provider.get_latest_commit_url() == expected
+        assert gitlab_provider.get_latest_commit_url() == url
+        assert gitlab_provider.get_latest_commit_url() == url
+        assert gitlab_provider.mr.commits.call_count == 2
+
+    def test_latest_commit_url_resets_for_another_merge_request(self, gitlab_provider):
+        gitlab_provider.mr.commits.return_value.next.return_value.web_url = "https://gitlab.com/test/repo/-/commit/first"
+        assert gitlab_provider.get_latest_commit_url().endswith("/first")
+
+        gitlab_provider._set_merge_request("https://gitlab.com/other/repo/-/merge_requests/2")
+        gitlab_provider.mr.commits.return_value.next.return_value.web_url = "https://gitlab.com/other/repo/-/commit/second"
+        assert gitlab_provider.get_latest_commit_url() == "https://gitlab.com/other/repo/-/commit/second"
+        assert gitlab_provider.mr.commits.call_count == 2
 
     def test_merge_request_changes_are_cached_after_stable_collection(self, gitlab_provider):
         refs = {"base_sha": "base", "head_sha": "head"}

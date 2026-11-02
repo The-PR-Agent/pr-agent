@@ -748,7 +748,7 @@ Allowing you to automate the review process on your private or public repositori
    - Copy your app's private key to the private_key field.
    - Copy your app's ID to the app_id field.
    - Copy your app's webhook secret to the webhook_secret field (required).
-   - Set deployment_type to 'app' in [configuration.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)
+   - The GitHub App sets `deployment_type` to `app` automatically by default. No manual configuration is needed unless `github_app.override_deployment_type` is disabled.
 
     > The local `.secrets.toml` file is excluded from the Docker build context. Never bake secrets into a container image.
     > For container deployments, provide secrets at runtime through environment variables or a mounted secret volume.

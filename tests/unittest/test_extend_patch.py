@@ -160,8 +160,8 @@ class TestExtendPatch:
     @pytest.mark.parametrize("section_header", ["", "   "])
     def test_headerless_hunk_uses_fixed_context_with_new_file(self, monkeypatch, section_header):
         settings = get_settings(use_context=False)
-        monkeypatch.setattr(settings.config, "allow_dynamic_context", True)
-        monkeypatch.setattr(settings.config, "max_extra_lines_before_dynamic_context", 10)
+        monkeypatch.setitem(settings.config, "allow_dynamic_context", True)
+        monkeypatch.setitem(settings.config, "max_extra_lines_before_dynamic_context", 10)
         preceding = [f"    line{i}" for i in range(1, 11)]
         original = "\n".join([*preceding, "old"])
         new = "\n".join([*preceding, "new"])
@@ -176,8 +176,8 @@ class TestExtendPatch:
     @pytest.mark.parametrize("new_header_line", ["anchor", "changed anchor"])
     def test_dynamic_header_missing_or_mismatched_uses_fixed_context(self, monkeypatch, new_header_line):
         settings = get_settings(use_context=False)
-        monkeypatch.setattr(settings.config, "allow_dynamic_context", True)
-        monkeypatch.setattr(settings.config, "max_extra_lines_before_dynamic_context", 10)
+        monkeypatch.setitem(settings.config, "allow_dynamic_context", True)
+        monkeypatch.setitem(settings.config, "max_extra_lines_before_dynamic_context", 10)
         original_lines = ["anchor", *(f"line{i}" for i in range(2, 11)), "old"]
         new_lines = [new_header_line, *original_lines[1:-1], "new"]
         header = "missing" if new_header_line == "anchor" else "anchor"
@@ -191,8 +191,8 @@ class TestExtendPatch:
 
     def test_dynamic_context_resets_for_headerless_second_hunk(self, monkeypatch):
         settings = get_settings(use_context=False)
-        monkeypatch.setattr(settings.config, "allow_dynamic_context", True)
-        monkeypatch.setattr(settings.config, "max_extra_lines_before_dynamic_context", 10)
+        monkeypatch.setitem(settings.config, "allow_dynamic_context", True)
+        monkeypatch.setitem(settings.config, "max_extra_lines_before_dynamic_context", 10)
         original_lines = ["def first():", *(f"line{i}" for i in range(2, 11)), "old1",
                           *(f"line{i}" for i in range(12, 22)), "old2"]
         new_lines = ["new1" if line == "old1" else "new2" if line == "old2" else line

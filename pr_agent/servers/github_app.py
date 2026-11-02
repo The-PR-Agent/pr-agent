@@ -39,7 +39,7 @@ from pr_agent.servers.utils import (
 )
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
-setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
+setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
 base_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 build_number_path = os.path.join(base_path, "build_number.txt")
 if os.path.exists(build_number_path):
@@ -308,6 +308,9 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
     # This is quite expensive - a call to the git provider is made for each PR event.
     apply_repo_settings(api_url)
     if not get_settings().github_app.handle_push_trigger:
+        return {}
+    if get_settings().github_app.push_trigger_ignore_bot_commits and body.get("sender", {}).get("type") == "Bot":
+        get_logger().info(f"Skipping {event}: bot commit detected")
         return {}
 
     before_sha = body.get("before")

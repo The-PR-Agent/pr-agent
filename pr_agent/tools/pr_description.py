@@ -816,6 +816,14 @@ class PRDescription:
         self.data = load_yaml(self.prediction.strip(), keys_fix_yaml=self.keys_fix)
         self._validate_description_schema(self.data)
 
+        # Preserve wholly unusable lists so they retain their existing handling.
+        for field in ("type", "labels"):
+            values = self.data.get(field)
+            if isinstance(values, list):
+                valid_values = [value for value in values if isinstance(value, str)]
+                if any(value.strip() for value in valid_values):
+                    self.data[field] = valid_values
+
         # A separate comment leaves the PR body untouched, so repeating the user text would duplicate it.
         if (get_settings().pr_description.add_original_user_description and self.user_description
                 and not get_settings().pr_description.publish_description_as_comment):
@@ -1145,7 +1153,7 @@ class PRDescription:
                     pr_body += """</table></details></td></tr>"""
                 else:
                     pr_body += """</table></td></tr>"""
-            pr_body += """</tr></tbody></table>"""
+            pr_body += """</tbody></table>"""
 
         except Exception as e:
             get_logger().error(f"Error processing pr files to markdown {self.pr_id}: {str(e)}")

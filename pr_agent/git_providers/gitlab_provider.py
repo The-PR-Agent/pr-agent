@@ -281,6 +281,7 @@ class _GitLabIncrementalNote:
 _GITLAB_ACCESS_LEVEL_REPORTER = 20
 
 class GitLabProvider(GitProvider):
+    reuse_for_manual_tool = True
 
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         return policy_metadata(title=self.mr.title, sender=policy_value(self.mr, "author", "username"),
@@ -822,6 +823,7 @@ class GitLabProvider(GitProvider):
         return self._default_branch
 
     def _set_merge_request(self, merge_request_url: str):
+        self._latest_commit_url = None
         self.id_project, self.id_mr = self._parse_merge_request_url(merge_request_url)
         self.mr = self._get_merge_request()
         try:
@@ -1405,8 +1407,13 @@ class GitLabProvider(GitProvider):
             raise
 
     def get_latest_commit_url(self):
+        if (cached_url := getattr(self, "_latest_commit_url", None)) is not None:
+            return cached_url
         try:
-            return self.mr.commits().next().web_url
+            url = self.mr.commits().next().web_url
+            if isinstance(url, str) and url:
+                self._latest_commit_url = url
+            return url
         except StopIteration: # no commits
             return ""
         except (GitlabError, RequestException, AttributeError) as e:

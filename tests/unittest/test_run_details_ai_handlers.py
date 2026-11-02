@@ -67,10 +67,21 @@ async def test_openai_handler_records_successful_call_with_usage(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_langchain_handler_records_successful_call_without_usage(monkeypatch):
+@pytest.mark.parametrize(
+    ("metadata", "expected_finish_reason"),
+    [
+        (None, "completed"),
+        ({"finish_reason": "stop"}, "stop"),
+        ({"finish_reason": "length"}, "length"),
+        ({"stop_reason": "max_tokens"}, "length"),
+        ({"finishReason": "MAX_TOKENS"}, "length"),
+        ({"finish_reason": "max_output_tokens"}, "length"),
+    ],
+)
+async def test_langchain_handler_records_successful_call_without_usage(monkeypatch, metadata, expected_finish_reason):
     class _FakeRunnable:
         async def ainvoke(self, input):
-            return SimpleNamespace(content="hello")
+            return SimpleNamespace(content="hello", response_metadata=metadata)
 
     langchain_core_messages = ModuleType("langchain_core.messages")
     langchain_core_messages.HumanMessage = lambda content: SimpleNamespace(content=content)
@@ -102,6 +113,6 @@ async def test_langchain_handler_records_successful_call_without_usage(monkeypat
     response = await handler.chat_completion(model="gpt-test", system="sys", user="usr")
 
     details = get_run_details()
-    assert response == ("hello", "completed")
+    assert response == ("hello", expected_finish_reason)
     assert details.num_ai_calls == 1
     assert details.has_token_usage is False

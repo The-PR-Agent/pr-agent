@@ -88,8 +88,8 @@ def test_non_string_generated_code_globs_do_not_disable_other_rules(restore_igno
     settings = restore_ignore
     settings.set("ignore.regex", [r"^vendor/"])
     settings.set("ignore.glob", ["*.lock"])
-    monkeypatch.setattr(settings.config, "ignore_language_framework", ["protobuf"])
-    monkeypatch.setattr(settings.generated_code, "protobuf", [invalid, "*_pb2.py"])
+    monkeypatch.setitem(settings.config, "ignore_language_framework", ["protobuf"])
+    monkeypatch.setitem(settings.generated_code, "protobuf", [invalid, "*_pb2.py"])
 
     kept = filter_ignored([
         _File("vendor/lib.py"), _File("deps.lock"), _File("api_pb2.py"), _File("app.py"),
@@ -128,8 +128,8 @@ def test_a_non_list_generated_code_setting_does_not_disable_other_rules(
     settings = restore_ignore
     settings.set("ignore.regex", [r"^vendor/"])
     settings.set("ignore.glob", ["*.lock"])
-    monkeypatch.setattr(settings.config, "ignore_language_framework", frameworks)
-    monkeypatch.setattr(settings.generated_code, "protobuf", protobuf_globs)
+    monkeypatch.setitem(settings.config, "ignore_language_framework", frameworks)
+    monkeypatch.setitem(settings.generated_code, "protobuf", protobuf_globs)
     files = [_File("vendor/lib.py"), _File("deps.lock"), _File("api_pb2.py"), _File("app.py")]
     result = []
 

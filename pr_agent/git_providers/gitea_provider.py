@@ -498,6 +498,9 @@ class GiteaProvider(GitProvider):
                 self.logger.error("No body provided for the suggestion")
                 continue
 
+            if not self._is_valid_code_suggestion(suggestion):
+                continue
+
             path = suggestion.get("relevant_file","")
             # relevant_lines_start is an absolute position in the new file. Gitea anchors a
             # review comment to the old side whenever old_position is non-zero, ignoring

@@ -53,11 +53,11 @@ def test_the_review_label_matches_the_rendered_bar(score, expected, monkeypatch)
     })()
 
     settings = get_settings(use_context=False)
-    monkeypatch.setattr(settings.pr_reviewer, "enable_review_labels_effort", True)
-    monkeypatch.setattr(settings.pr_reviewer, "enable_review_labels_security", False)
-    monkeypatch.setattr(settings.pr_reviewer, "require_estimate_effort_to_review", True)
-    monkeypatch.setattr(settings.pr_reviewer, "require_security_review", False)
-    monkeypatch.setattr(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.pr_reviewer, "enable_review_labels_effort", True)
+    monkeypatch.setitem(settings.pr_reviewer, "enable_review_labels_security", False)
+    monkeypatch.setitem(settings.pr_reviewer, "require_estimate_effort_to_review", True)
+    monkeypatch.setitem(settings.pr_reviewer, "require_security_review", False)
+    monkeypatch.setitem(settings.config, "publish_output", True)
     reviewer.set_review_labels({"review": {"estimated_effort_to_review_[1-5]": score}})
 
     assert published and published[0] == [f"Review effort {expected}/5"]

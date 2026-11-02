@@ -203,16 +203,8 @@ async def test_large_pr_header_rejects_required_prompt_overflow_before_dispatch(
 async def test_empty_primary_description_diff_uses_fallback_model(monkeypatch):
     obj = _make_large_pr_instance()
     obj._get_prediction = AsyncMock(return_value=_header_prediction())
-    monkeypatch.setattr(
-        get_settings().pr_description,
-        "enable_large_pr_handling",
-        False,
-    )
-    monkeypatch.setattr(
-        get_settings().pr_description,
-        "enable_semantic_files_types",
-        False,
-    )
+    monkeypatch.setitem(get_settings().pr_description, "enable_large_pr_handling", False, )
+    monkeypatch.setitem(get_settings().pr_description, "enable_semantic_files_types", False, )
 
     def get_pr_diff(_provider, _handler, model, **_kwargs):
         if model == "primary-model":
@@ -305,8 +297,8 @@ async def test_describe_skips_when_large_pr_handling_is_off_and_diff_is_empty(mo
     obj = _make_large_pr_instance()
     obj.prediction = None
     obj._get_prediction = AsyncMock(return_value=_header_prediction())
-    monkeypatch.setattr(get_settings().pr_description, "enable_large_pr_handling", False)
-    monkeypatch.setattr(get_settings().pr_description, "enable_semantic_files_types", False)
+    monkeypatch.setitem(get_settings().pr_description, "enable_large_pr_handling", False)
+    monkeypatch.setitem(get_settings().pr_description, "enable_semantic_files_types", False)
 
     with (
         patch("pr_agent.tools.pr_description.get_pr_diff", return_value=("", [])),
@@ -325,8 +317,8 @@ async def test_describe_skips_when_large_pr_handling_is_off_and_diff_is_empty(mo
 @pytest.mark.parametrize("invalid_response", ["null", "{}", "[]", "plain text"])
 async def test_unusable_description_uses_fallback_before_extending_files(monkeypatch, invalid_response):
     obj = _make_large_pr_instance()
-    monkeypatch.setattr(get_settings().pr_description, "enable_large_pr_handling", False)
-    monkeypatch.setattr(get_settings().pr_description, "enable_semantic_files_types", True)
+    monkeypatch.setitem(get_settings().pr_description, "enable_large_pr_handling", False)
+    monkeypatch.setitem(get_settings().pr_description, "enable_semantic_files_types", True)
 
     async def predict(model, *_args, **_kwargs):
         return invalid_response if model == "primary-model" else _header_prediction()
@@ -360,7 +352,7 @@ def test_usable_mapping_still_accepts_custom_description_fields():
 @pytest.mark.asyncio
 async def test_unusable_large_pr_header_retries_before_appending_file_walkthrough(monkeypatch):
     obj = _make_large_pr_instance()
-    monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+    monkeypatch.setitem(get_settings().pr_description, "async_ai_calls", True)
     header_models = []
 
     async def predict(model, patches_diff, prompt="pr_description_prompt"):
@@ -874,7 +866,7 @@ class TestPRDescriptionLargePR:
         obj.git_provider.get_filtered_diff_file_names.return_value = ["pnpm-lock.yaml"]
         obj.token_handler.prompt_tokens = 0
         obj.token_handler.count_tokens.side_effect = lambda value: len(value.split())
-        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", async_calls)
+        monkeypatch.setitem(get_settings().pr_description, "async_ai_calls", async_calls)
 
         recorded_prompts = []
 
@@ -981,7 +973,7 @@ description: |
     ])
     async def test_large_pr_preserves_valid_yaml_chunk_wrappers(self, monkeypatch, prefix, suffix):
         obj = _make_large_pr_instance()
-        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+        monkeypatch.setitem(get_settings().pr_description, "async_ai_calls", True)
 
         async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
             if prompt == "pr_description_only_description_prompts":
@@ -1007,7 +999,7 @@ description: |
     @pytest.mark.parametrize("async_calls", [True, False])
     async def test_large_pr_retains_valid_chunk_when_sibling_raises(self, monkeypatch, async_calls):
         obj = _make_large_pr_instance()
-        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", async_calls)
+        monkeypatch.setitem(get_settings().pr_description, "async_ai_calls", async_calls)
 
         async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
             if prompt == "pr_description_only_description_prompts":
@@ -1044,7 +1036,7 @@ description: |
     async def test_large_pr_retains_valid_chunk_when_sibling_is_malformed(
             self, monkeypatch, malformed_prediction):
         obj = _make_large_pr_instance()
-        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+        monkeypatch.setitem(get_settings().pr_description, "async_ai_calls", True)
 
         async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
             if prompt == "pr_description_only_description_prompts":
@@ -1068,7 +1060,7 @@ description: |
     @pytest.mark.asyncio
     async def test_large_pr_keeps_complete_records_from_mixed_chunk(self, monkeypatch):
         obj = _make_large_pr_instance()
-        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+        monkeypatch.setitem(get_settings().pr_description, "async_ai_calls", True)
 
         async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
             if prompt == "pr_description_only_description_prompts":
@@ -1108,7 +1100,7 @@ description: |
     @pytest.mark.parametrize("async_calls", [True, False])
     async def test_large_pr_all_failed_chunks_raise_for_model_fallback(self, monkeypatch, async_calls):
         obj = _make_large_pr_instance()
-        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", async_calls)
+        monkeypatch.setitem(get_settings().pr_description, "async_ai_calls", async_calls)
         chunk_calls = []
 
         async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
@@ -1127,7 +1119,7 @@ description: |
     @pytest.mark.asyncio
     async def test_large_pr_all_malformed_chunks_raise_for_model_fallback(self, monkeypatch):
         obj = _make_large_pr_instance()
-        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+        monkeypatch.setitem(get_settings().pr_description, "async_ai_calls", True)
 
         obj._get_prediction = AsyncMock(return_value="pr_files:\n- not-a-file-record")
         with patch("pr_agent.tools.pr_description.get_pr_diff", return_value=""), patch(
@@ -1144,7 +1136,7 @@ description: |
     @pytest.mark.asyncio
     async def test_large_pr_empty_chunk_keeps_result_associated_with_its_files(self, monkeypatch):
         obj = _make_large_pr_instance()
-        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+        monkeypatch.setitem(get_settings().pr_description, "async_ai_calls", True)
         chunks = [[], ["diff --git a/src/file2.py b/src/file2.py\n... file2 ..."]]
 
         async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
@@ -1166,7 +1158,7 @@ description: |
     @pytest.mark.asyncio
     async def test_large_pr_chunk_cancellation_propagates(self, monkeypatch):
         obj = _make_large_pr_instance()
-        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+        monkeypatch.setitem(get_settings().pr_description, "async_ai_calls", True)
 
         async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
             if "file2" in patches_diff:
@@ -1183,7 +1175,7 @@ description: |
     @pytest.mark.asyncio
     async def test_large_pr_all_fail_then_fallback_model_keeps_partial_result(self, monkeypatch):
         obj = _make_large_pr_instance()
-        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+        monkeypatch.setitem(get_settings().pr_description, "async_ai_calls", True)
         calls = []
 
         async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):

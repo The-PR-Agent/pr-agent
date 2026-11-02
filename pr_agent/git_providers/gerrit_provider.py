@@ -493,6 +493,11 @@ class GerritProvider(GitProvider):
             except ValueError:
                 get_logger().warning(f"Skipping suggestion with path traversal: {suggestion['relevant_file']}")
                 continue
+            # add_suggestion keeps lines[end:], so an inverted range would repeat lines.
+            # Gerrit, unlike Gitea and CodeCommit, needs the end line: without it the
+            # suggestion is written and then the whole file is repeated.
+            if suggestion.get("relevant_lines_end") is None or not self._is_valid_code_suggestion(suggestion):
+                continue
 
             publishable_count += 1
             description, code = self.split_suggestion(suggestion['body'])

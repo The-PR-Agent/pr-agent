@@ -19,8 +19,8 @@ BODY = "**Possible Issue**\n\nThe lock is never released."
 @pytest.fixture
 def provider(monkeypatch):
     settings = get_settings()
-    monkeypatch.setattr(settings.azure_devops_server, "agent_identity", BOT)
-    monkeypatch.setattr(settings.azure_devops, "default_comment_status", "closed")
+    monkeypatch.setitem(settings.azure_devops_server, "agent_identity", BOT)
+    monkeypatch.setitem(settings.azure_devops, "default_comment_status", "closed")
     instance = AzureDevopsProvider.__new__(AzureDevopsProvider)
     instance._threads_cache = []
     instance.azure_devops_client = MagicMock()
@@ -64,7 +64,7 @@ def test_author_verification_gate_is_computed_once(provider, review, verify_auth
 @pytest.mark.parametrize("status", ["wontFix", "byDesign"])
 @pytest.mark.parametrize("default", ["closed", "wontFix", "byDesign"])
 def test_explicit_dismissal_only_when_different_from_default(provider, monkeypatch, status, default):
-    monkeypatch.setattr(get_settings().azure_devops, "default_comment_status", default)
+    monkeypatch.setitem(get_settings().azure_devops, "default_comment_status", default)
     item = thread(status)
     item["comments"] += [
         {"content": "First reply"}, {"content": " By design: caller releases it. "}, {"content": "  "},
@@ -98,7 +98,7 @@ def test_root_author_must_be_verified(provider, author):
 
 @pytest.mark.parametrize("identity", ["", "PR-Agent"])
 def test_identity_must_be_stable(provider, monkeypatch, identity):
-    monkeypatch.setattr(get_settings().azure_devops_server, "agent_identity", identity)
+    monkeypatch.setitem(get_settings().azure_devops_server, "agent_identity", identity)
     provider._threads_cache = [thread()]
     assert reviewer(provider)._load_dismissed_key_issues() == []
 
@@ -173,11 +173,11 @@ def test_sdk_objects_and_failed_thread_read(provider):
 @pytest.mark.parametrize("default,expected", [("closed", "dismissed"), ("wontFix", "active")])
 def test_previous_findings_context_uses_azure_cached_threads(provider, monkeypatch, default, expected):
     settings = get_settings()
-    monkeypatch.setattr(settings.azure_devops, "default_comment_status", default)
-    monkeypatch.setattr(settings.config, "publish_output", True)
-    monkeypatch.setattr(settings.pr_reviewer, "persistent_comment", True)
-    monkeypatch.setattr(settings.pr_reviewer, "persistent_finding_state", True)
-    monkeypatch.setattr(settings.pr_reviewer, "max_previous_findings_chars", 8000)
+    monkeypatch.setitem(settings.azure_devops, "default_comment_status", default)
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.pr_reviewer, "persistent_comment", True)
+    monkeypatch.setitem(settings.pr_reviewer, "persistent_finding_state", True)
+    monkeypatch.setitem(settings.pr_reviewer, "max_previous_findings_chars", 8000)
     state = reconcile_review_findings(
         None, [{"path": "app.py", "body": BODY, "line_start": 2, "line_end": 2}],
         allow_resolution=False, head_sha="head-1").state
