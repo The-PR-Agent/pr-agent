@@ -37,10 +37,10 @@ def _provider(changed_paths):
 
 @pytest.fixture
 def settings(monkeypatch):
-    monkeypatch.setattr(get_settings().pr_reviewer, "per_commit_review", True, raising=False)
-    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
-    monkeypatch.setattr(get_settings().config, "propagate_tool_errors", False, raising=False)
-    monkeypatch.setattr(get_settings().config, "is_auto_command", False, raising=False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "per_commit_review", True)
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
+    monkeypatch.setitem(get_settings().config, "propagate_tool_errors", False)
+    monkeypatch.setitem(get_settings().config, "is_auto_command", False)
     return get_settings()
 
 
@@ -87,7 +87,7 @@ async def test_a_failing_commit_does_not_stop_the_others_and_marks_the_run_faile
 
 @pytest.mark.asyncio
 async def test_failing_commit_error_propagates_after_the_rest_when_configured(settings, monkeypatch):
-    monkeypatch.setattr(get_settings().config, "propagate_tool_errors", True, raising=False)
+    monkeypatch.setitem(get_settings().config, "propagate_tool_errors", True)
     provider = _provider({})
     provider.set_commit_review_scope.side_effect = [RuntimeError("boom"), ["b.py"], ["c.py"]]
     reviewer = _reviewer(provider)
@@ -134,7 +134,7 @@ async def test_more_commits_than_the_provider_lists_reviews_the_whole_pr_with_a_
 @pytest.mark.parametrize(("max_commits", "per_commit"), [(2, False), (3, True), (0, True), ("2", False)])
 async def test_max_commits_per_review_reviews_the_commits_together_above_the_cap(settings, monkeypatch, max_commits,
                                                                                  per_commit):
-    monkeypatch.setattr(get_settings().pr_reviewer, "max_commits_per_review", max_commits, raising=False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "max_commits_per_review", max_commits)
     provider = _provider({"a" * 40: ["a.py"], "b" * 40: ["b.py"], "c" * 40: ["c.py"]})
     reviewer = _reviewer(provider)
     reviewed = []
@@ -156,7 +156,7 @@ async def test_max_commits_per_review_reviews_the_commits_together_above_the_cap
 
 @pytest.mark.asyncio
 async def test_max_commits_per_review_counts_only_the_new_commits_of_an_incremental_review(settings, monkeypatch):
-    monkeypatch.setattr(get_settings().pr_reviewer, "max_commits_per_review", 2, raising=False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "max_commits_per_review", 2)
     provider = _provider({"b" * 40: ["b.py"], "c" * 40: ["c.py"]})
     reviewer = _reviewer(provider)
     reviewer.incremental = _incremental("b" * 40)
@@ -354,7 +354,7 @@ def _commit_reviewer(monkeypatch, prediction):
 async def test_per_commit_reviews_publish_labelled_incremental_comments_not_the_persistent_one(settings, monkeypatch):
     from pr_agent.algo.comment_identity import PRReviewIdentity
 
-    monkeypatch.setattr(get_settings().pr_reviewer, "inline_key_issues", True, raising=False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "inline_key_issues", True)
     reviewer = _commit_reviewer(monkeypatch, "review:\n  security_concerns: 'SQL injection: raw query'\n"
                                              "  key_issues_to_review:\n  - relevant_file: a.py\n    issue_header: Bug\n"
                                              "    issue_content: Broken\n    start_line: 1\n    end_line: 1\n")
@@ -379,8 +379,8 @@ async def test_per_commit_reviews_publish_labelled_incremental_comments_not_the_
 @pytest.mark.parametrize("publish_no_suggestions", [False, True])
 async def test_commit_without_findings_publishes_only_when_configured(settings, monkeypatch, key_issues,
                                                                       publish_no_suggestions):
-    monkeypatch.setattr(get_settings().pr_reviewer, "publish_output_no_suggestions", publish_no_suggestions)
-    monkeypatch.setattr(get_settings().pr_reviewer, "inline_key_issues", False, raising=False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "publish_output_no_suggestions", publish_no_suggestions)
+    monkeypatch.setitem(get_settings().pr_reviewer, "inline_key_issues", False)
     reviewer = _commit_reviewer(monkeypatch, "review:\n  estimated_effort_to_review_[1-5]: 1\n"
                                              f"  security_concerns: No\n{key_issues}")
     await reviewer.run()
@@ -401,10 +401,10 @@ def _key_issue(start_line, content):
 
 @pytest.fixture
 def inline_settings(monkeypatch):
-    monkeypatch.setattr(get_settings().config, "persistent_inline_comments", False, raising=False)
-    monkeypatch.setattr(get_settings().github, "try_fix_invalid_inline_comments", False, raising=False)
-    monkeypatch.setattr(get_settings().gitlab, "resolve_outdated_inline_threads", True, raising=False)
-    monkeypatch.setattr(get_settings().gitlab, "publish_code_suggestions_as_review", False, raising=False)
+    monkeypatch.setitem(get_settings().config, "persistent_inline_comments", False)
+    monkeypatch.setitem(get_settings().github, "try_fix_invalid_inline_comments", False)
+    monkeypatch.setitem(get_settings().gitlab, "resolve_outdated_inline_threads", True)
+    monkeypatch.setitem(get_settings().gitlab, "publish_code_suggestions_as_review", False)
 
 
 def test_github_inline_findings_anchor_on_the_commit_and_rejected_ones_stay_in_the_summary(inline_settings):
