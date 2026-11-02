@@ -9,6 +9,52 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG_TOML = ROOT / "pr_agent/settings/configuration.toml"
 OUTPUT_PAGE = ROOT / "docs/docs/usage-guide/configuration_reference.md"
 GENERATOR = ROOT / "scripts" / "generate_config_reference.py"
+MAX_DESCRIPTION_LENGTH = 160
+LONG_DESCRIPTION_ALLOWLIST = {
+    ("config", "global_settings_repo"),
+    ("config", "enable_per_directory_settings"),
+    ("config", "per_directory_settings_max_tree_pages"),
+    ("config", "extra_config_url"),
+    ("config", "num_retries"),
+    ("config", "repo_context_max_glob_matches"),
+    ("config", "repo_context_sibling_repos"),
+    ("config", "repo_context_max_sibling_files"),
+    ("config", "model_token_count_estimate_factor"),
+    ("config", "persistent_inline_comments"),
+    ("config", "bot_user_indicators"),
+    ("config", "additional_reasoning_effort_models"),
+    ("config", "no_temperature_models"),
+    ("config", "enable_claude_adaptive_thinking"),
+    ("config", "claude_extended_thinking_models_override"),
+    ("config", "extract_issue_from_branch"),
+    ("config", "branch_issue_regex"),
+    ("config", "description_issue_regex"),
+    ("pr_reviewer", "require_merge_recommendation"),
+    ("pr_reviewer", "max_previous_findings_chars"),
+    ("pr_reviewer", "inline_key_issues"),
+    ("pr_reviewer", "enable_large_pr_chunking"),
+    ("pr_code_suggestions", "max_suggestions_per_file"),
+    ("github", "agent_login"),
+    ("github", "ratelimit_retries"),
+    ("github", "polling_repositories"),
+    ("github_app", "webhook_delivery_deduplication"),
+    ("gitlab", "publish_code_suggestions_as_review"),
+    ("gitlab", "auto_resolve_fixed_inline_threads"),
+    ("gitlab", "ignore_user_ids"),
+    ("gerrit", "command_timeout_seconds"),
+    ("jira", "jira_requirements_field"),
+    ("jira", "project_keys"),
+    ("litellm", "custom_llm_provider"),
+    ("litellm", "force_streaming_custom_llm_provider"),
+    ("litellm", "base_models"),
+    ("litellm", "cache_control_injection_points"),
+    ("openrouter", "reasoning_effort"),
+    ("openrouter", "reasoning_max_tokens"),
+    ("otel", "otlp_timeout"),
+    ("otel", "prometheus_multiproc_dir"),
+    ("artifacts", "truncate_from"),
+    ("azure_devops_server", "agent_identity"),
+}
 
 
 def _toml_keys(text: str) -> Counter:
@@ -111,19 +157,10 @@ def test_generator_rejects_a_note_whose_key_is_gone():
         ("openrouter", "reasoning_effort", (
             "For models not covered by PR-Agent's clamps, do not assume",
         )),
-        ("model_routing", "rules", (
-            "max_patch_chars",
-            "inclusive ceiling",
-            "count unknown",
-            "not tokens or full file/diff size",
-            "append the displaced primary unless already present",
-            'model = "gpt-6-luna"',
-            'model = "gpt-6.1-sol"',
-        )),
     ],
 )
 def test_generator_preserves_reference_description_details(section_name, key, fragments):
-    """Keep page-only description details in the generator's TOML source."""
+    """Keep details in the generator's TOML source only when no docs page holds them."""
     module = _generator()
     sections = module.load_sections(CONFIG_TOML.read_text(encoding="utf-8"))
     rendered = module.render_page(sections)
@@ -131,6 +168,42 @@ def test_generator_preserves_reference_description_details(section_name, key, fr
     row = next(line for line in section.splitlines() if line.startswith(f"| `{key}` |"))
     for fragment in fragments:
         assert fragment in row
+
+
+@pytest.mark.parametrize(
+    "section_name,key,page",
+    [
+        ("config", "repo_context_files", "additional_configurations.md"),
+        ("config", "claude_adaptive_thinking_models_override", "changing_a_model.md"),
+        ("model_routing", "enable", "changing_a_model.md"),
+        ("model_routing", "rules", "changing_a_model.md"),
+        ("skills", "enabled", "agent_skills.md"),
+    ],
+)
+def test_shortened_descriptions_point_to_docs_page(section_name, key, page):
+    module = _generator()
+    sections = module.load_sections(CONFIG_TOML.read_text(encoding="utf-8"))
+    rendered = module.render_page(sections)
+    section = rendered.split(f"## `[{section_name}]`", 1)[1].split("\n## ", 1)[0]
+    row = next(line for line in section.splitlines() if line.startswith(f"| `{key}` |"))
+    assert page in row
+
+
+def test_config_reference_descriptions_stay_short():
+    module = _generator()
+    sections = module.load_sections(CONFIG_TOML.read_text(encoding="utf-8"))
+    too_long = [
+        f"[{section['name']}] {key['key']} ({len(key['desc'])} chars)"
+        for section in sections
+        for key in section["keys"]
+        if key["desc"]
+        and len(key["desc"]) > MAX_DESCRIPTION_LENGTH
+        and (section["name"], key["key"]) not in LONG_DESCRIPTION_ALLOWLIST
+    ]
+    assert not too_long, (
+        f"Descriptions over {MAX_DESCRIPTION_LENGTH} characters need a docs pointer or an allowlist entry: "
+        + ", ".join(too_long)
+    )
 
 
 def test_persistent_inline_comments_description_keeps_skip_phrase():
