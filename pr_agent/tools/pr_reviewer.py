@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.artifacts import get_artifact_context, resolve_artifact_path
+from pr_agent.algo.artifacts import get_artifact_context, prompt_boundary_markers, resolve_artifact_path
 from pr_agent.algo.comment_identity import (
     PRReviewHeader,
     PRReviewIdentity,
@@ -242,6 +242,7 @@ class PRReviewer:
             get_logger().debug("AI metadata is disabled for this command")
 
         is_ai_metadata = get_settings().get("config.enable_ai_metadata", False)
+        commit_messages_begin, commit_messages_end = prompt_boundary_markers("COMMIT_MESSAGES")
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -270,7 +271,9 @@ class PRReviewer:
             "skills_context": get_skills_context(),
             "repo_context": build_repo_context(self.git_provider),
             "previous_findings": previous_findings,
-            "commit_messages_str": self.git_provider.get_commit_messages(),
+            "commit_messages_str": "" if self.incremental.is_incremental else self.git_provider.get_commit_messages(),
+            "commit_messages_begin": commit_messages_begin,
+            "commit_messages_end": commit_messages_end,
             "custom_labels": "",
             "enable_custom_labels": get_settings().config.enable_custom_labels,
             "is_ai_metadata": is_ai_metadata,
@@ -320,6 +323,7 @@ class PRReviewer:
                 if not self.incremental.is_incremental:
                     # Reload the findings the incremental mode left out, for the fallback full review.
                     self.vars["previous_findings"] = self._load_previous_findings_context()
+                    self.vars["commit_messages_str"] = self.git_provider.get_commit_messages()
 
             # if isinstance(self.args, list) and self.args and self.args[0] == 'auto_approve':
             #     get_logger().info(f'Auto approve flow PR: {self.pr_url} ...')

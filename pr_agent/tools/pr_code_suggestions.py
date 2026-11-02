@@ -10,7 +10,7 @@ from functools import partial
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.artifacts import get_artifact_context
+from pr_agent.algo.artifacts import get_artifact_context, prompt_boundary_markers
 from pr_agent.algo.comment_identity import (
     PRCodeSuggestionsHeader,
     PRCodeSuggestionsIdentity,
@@ -296,6 +296,7 @@ class PRCodeSuggestions:
             get_logger().debug("AI metadata is disabled for this command")
 
         is_ai_metadata = get_settings().get("config.enable_ai_metadata", False)
+        commit_messages_begin, commit_messages_end = prompt_boundary_markers("COMMIT_MESSAGES")
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -309,7 +310,9 @@ class PRCodeSuggestions:
             "skills_context": get_skills_context(),
             "repo_context": build_repo_context(self.git_provider),
             "suggestion_discussion_context": self._load_suggestion_discussion_context(),
-            "commit_messages_str": self.git_provider.get_commit_messages(),
+            "commit_messages_str": "" if self.incremental.is_incremental else self.git_provider.get_commit_messages(),
+            "commit_messages_begin": commit_messages_begin,
+            "commit_messages_end": commit_messages_end,
             "relevant_best_practices": "",
             "is_ai_metadata": is_ai_metadata,
             "diff_hunk_format": render_diff_hunk_format(
