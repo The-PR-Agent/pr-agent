@@ -203,6 +203,8 @@ For GitHub Action, settings fall back from `github_action_config.*` to `github_a
 
 This means that when new code is pushed to the PR, PR-Agent will run the `describe` and `review` tools, with the specified parameters.
 
+The `push_trigger_pending_tasks_backlog` and `push_trigger_pending_tasks_ttl` settings apply only to the GitHub App deployment; the GitLab, Gitea and Bitbucket servers use fixed values for the pending-task backlog.
+
 ### GitHub Action
 
 `GitHub Action` is a different way to trigger PR-Agent tools, and uses a different configuration mechanism than `GitHub App`.<br>
