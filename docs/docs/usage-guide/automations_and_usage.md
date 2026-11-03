@@ -59,6 +59,10 @@ For a quick preflight that needs no token and no PR, run:
 pr-agent doctor
 ```
 
+For Docker, use the CLI image (`pragent/pr-agent:<version>` or `pragent/pr-agent:latest`). Service images such as
+`pragent/pr-agent:<version>-github_app` are intended for long-running servers and do not install the `pr-agent`
+console script. To run the check from a service image, use `python -m pr_agent.cli doctor` instead.
+
 It checks that `config.model` is set, that the active provider has a real API key, and that a one-token completion against the configured model succeeds. The exit code is `0` only when every check passes, so CI setups can gate on it. It ships with the package, unlike the fuller health check below, which exercises real commands on a real PR.
 
 When host-configured `push_outputs` is enabled, `doctor` adds a fourth check for the selected output destinations: registered channel names, a nonempty file path, HTTPS scheme and hostname for webhook/Slack URLs, and a nonempty Telegram token string and a chat ID that is a nonempty string or nonzero integer. An omitted file path uses the normal default. Distinct custom sink names receive recognition-only checks; their private settings are not validated.
