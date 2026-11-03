@@ -72,6 +72,18 @@ def get_settings(use_context=True):
     return global_settings
 
 
+DEFAULT_BOT_DISPLAY_NAME = "PR-Agent"
+
+
+def resolve_bot_display_name(value) -> str:
+    """Return the configured display name, falling back to the default for empty or non-string values."""
+    if isinstance(value, str):
+        value = value.strip()
+        if value:
+            return value
+    return DEFAULT_BOT_DISPLAY_NAME
+
+
 def get_verbosity_level() -> int:
     """Return config.verbosity_level as an int, falling back to the quietest level.
 

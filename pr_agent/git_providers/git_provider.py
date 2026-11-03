@@ -26,7 +26,7 @@ from pr_agent.algo.inline_comment_dedup import strip_markers
 from pr_agent.algo.language_handler import build_language_file_matcher, numeric_languages
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import Range, process_description
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import DEFAULT_BOT_DISPLAY_NAME, get_settings, resolve_bot_display_name
 from pr_agent.log import get_logger
 
 
@@ -97,6 +97,14 @@ class IncompleteProviderPullRequestFilesError(RuntimeError):
 
     notice: str
     notice_marker: str
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        bot_display_name = resolve_bot_display_name(
+            get_settings().config.get("bot_display_name", DEFAULT_BOT_DISPLAY_NAME)
+        )
+        if bot_display_name != DEFAULT_BOT_DISPLAY_NAME:
+            self.notice = self.notice.replace(DEFAULT_BOT_DISPLAY_NAME, bot_display_name)
 
 
 class IncompletePullRequestFilesError(IncompleteProviderPullRequestFilesError):

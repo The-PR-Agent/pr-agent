@@ -69,7 +69,7 @@ from pr_agent.algo.utils import (
     is_value_no,
     load_yaml,
 )
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import DEFAULT_BOT_DISPLAY_NAME, get_settings, resolve_bot_display_name
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import (
     DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS,
@@ -160,6 +160,11 @@ def _review_failure_comment(error: Exception) -> str:
         if any(pattern in error_text for pattern in patterns):
             reason = candidate
             break
+    bot_display_name = resolve_bot_display_name(
+        get_settings().config.get("bot_display_name", DEFAULT_BOT_DISPLAY_NAME)
+    )
+    if bot_display_name != DEFAULT_BOT_DISPLAY_NAME:
+        reason = reason.replace(DEFAULT_BOT_DISPLAY_NAME, bot_display_name)
     return f"Failed to review PR\n\n**Reason:** {reason}"
 
 
@@ -577,9 +582,12 @@ class PRReviewer:
             for line in str(pr_review).splitlines()
             if line.strip() not in identity_markers
         ).strip()
+        bot_display_name = resolve_bot_display_name(
+            get_settings().config.get("bot_display_name", DEFAULT_BOT_DISPLAY_NAME)
+        )
         return (
             "## Standalone PR Review\n\n"
-            "_PR-Agent could not safely update the persistent review. "
+            f"_{bot_display_name} could not safely update the persistent review. "
             "This standalone result will not replace the canonical review._\n\n"
             f"{markerless_review}"
         )

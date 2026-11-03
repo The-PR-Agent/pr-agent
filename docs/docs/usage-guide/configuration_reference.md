@@ -23,6 +23,7 @@ to-do list.
 | Key | Default | Description |
 | --- | --- | --- |
 | `max_webhook_request_body_bytes` | 5242880 | maximum request body accepted by webhook servers (5 MiB) |
+| `bot_display_name` | "PR-Agent" | product name shown in user-visible PR comments; defaults to "PR-Agent" |
 **models**
 
 | Key | Default | Description |

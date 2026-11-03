@@ -4,6 +4,7 @@
 
 [config]
 max_webhook_request_body_bytes = 5242880 # maximum request body accepted by webhook servers (5 MiB)
+bot_display_name="PR-Agent" # product name shown in user-visible PR comments; defaults to "PR-Agent"
 # models
 model="gpt-6.1-sol"
 fallback_models=["gpt-6-luna"]

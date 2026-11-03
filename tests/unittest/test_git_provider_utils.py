@@ -122,6 +122,25 @@ def test_handle_configurations_errors_uses_persistent_comment_when_supported():
     assert "<details><summary>Configuration content:</summary>" in comment["body"]
 
 
+def test_handle_configurations_errors_uses_configured_bot_display_name(monkeypatch):
+    provider = FakeMarkdownProvider()
+    monkeypatch.setitem(get_settings().config, "bot_display_name", "Acme Bot")
+
+    handle_configurations_errors([{
+        "settings": b"[config]\nmodel =",
+        "error": "Invalid value",
+        "category": "local",
+    }], provider)
+
+    assert len(provider.persistent_comments) == 1
+    comment = provider.persistent_comments[0]
+    assert comment["initial_header"] == "❌ **Acme Bot failed to apply 'local' repo settings**"
+    assert comment["body"].startswith(
+        "❌ **Acme Bot failed to apply 'local' repo settings**"
+    )
+    assert "PR-Agent failed to apply" not in comment["body"]
+
+
 def test_handle_configurations_errors_keeps_markdown_details_when_persistent_comment_is_missing():
     provider = FakeMarkdownCommentProvider()
 

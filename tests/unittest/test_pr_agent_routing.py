@@ -23,6 +23,26 @@ def _identity_args(args):
     return args
 
 
+@pytest.mark.parametrize(
+    "error_cls",
+    [
+        IncompletePullRequestFilesError,
+        IncompleteBitbucketPullRequestFilesError,
+        gitea_module.IncompleteGiteaPullRequestFilesError,
+        gitlab_module.IncompleteGitLabDiffError,
+    ],
+)
+def test_incomplete_file_notices_use_configured_bot_display_name(monkeypatch, error_cls):
+    monkeypatch.setitem(get_settings().config, "bot_display_name", "Acme Bot")
+
+    error = error_cls("internal detail")
+
+    assert "## Acme Bot command was not run" in error.notice
+    assert "Acme Bot stopped" in error.notice
+    assert "PR-Agent" not in error.notice
+    assert error.notice_marker == error_cls.notice_marker
+
+
 def test_incomplete_file_errors_share_only_provider_neutral_base():
     assert issubclass(IncompletePullRequestFilesError, IncompleteProviderPullRequestFilesError)
     assert issubclass(IncompleteBitbucketPullRequestFilesError, IncompleteProviderPullRequestFilesError)
