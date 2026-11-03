@@ -20,6 +20,8 @@ to-do list.
 
 ## `[config]` {#config}
 
+See [Configuration options](../usage-guide/configuration_options.md#global-configuration-file).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `max_webhook_request_body_bytes` | 5242880 | maximum request body accepted by webhook servers (5 MiB) |
@@ -147,6 +149,8 @@ to-do list.
 
 ## `[pr_reviewer]` — /review {#pr_reviewer-review}
 
+See [Review](../tools/review.md#configuration-options).
+
 **enable/disable features**
 
 | Key | Default | Description |
@@ -209,6 +213,8 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 ## `[pr_description]` — /describe {#pr_description-describe}
 
+See [Describe](../tools/describe.md#configuration-options).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `publish_labels` | false |  |
@@ -250,6 +256,8 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 ## `[pr_questions]` — /ask {#pr_questions-ask}
 
+See [Ask](../tools/ask.md#configuration-options).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `enable_help_text` | false |  |
@@ -260,6 +268,8 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 
 ## `[pr_code_suggestions]` — /improve {#pr_code_suggestions-improve}
+
+See [Improve](../tools/improve.mdx#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -304,6 +314,8 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 ## `[pr_add_docs]` — /add_docs {#pr_add_docs-add_docs}
 
+See [Add Docs](../tools/add_docs.md#configuration-options).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `extra_instructions` | "" |  |
@@ -311,6 +323,8 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 
 ## `[pr_update_changelog]` — /update_changelog {#pr_update_changelog-update_changelog}
+
+See [Update Changelog](../tools/update_changelog.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -322,9 +336,13 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 ## `[pr_config]` — /config {#pr_config-config}
 
+See [Show possible configurations](../usage-guide/additional_configurations.md#show-possible-configurations).
+
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
 ## `[pr_help_docs]` {#pr_help_docs}
+
+See [Help Docs](../tools/help_docs.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -337,6 +355,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 
 ## `[github]` {#github}
+
+See [GitHub](../installation/github.md#run-as-a-github-app).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -356,9 +376,13 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[github_action_config]` {#github_action_config}
 
+See [GitHub Actions](../usage-guide/automations_and_usage.md#github-action).
+
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
 ## `[github_app]` {#github_app}
+
+See [GitHub App](../usage-guide/automations_and_usage.md#github-app).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -383,6 +407,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[gitlab]` {#gitlab}
 
+See [GitLab](../usage-guide/automations_and_usage.md#gitlab-webhook).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `url` | "https://gitlab.com" |  |
@@ -403,6 +429,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[gitea]` {#gitea}
 
+See [Gitea](../usage-guide/automations_and_usage.md#gitea-webhook).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `url` | "https://gitea.com" |  |
@@ -412,12 +440,16 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[bitbucket]` {#bitbucket}
 
+See [Bitbucket](../usage-guide/automations_and_usage.md#bitbucket-app).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `identity_request_timeout` | 30 | positive seconds for authenticated-account verification requests |
 
 
 ## `[bitbucket_app]` {#bitbucket_app}
+
+See [Bitbucket App](../usage-guide/automations_and_usage.md#bitbucket-app).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -429,9 +461,13 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[local]` {#local}
 
+See [Local git provider](../usage-guide/local_git_provider.md#when-to-use-it).
+
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
 ## `[gerrit]` {#gerrit}
+
+See [Supported platforms](../overview/supported_platforms.md#gerrit-and-codecommit).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -442,6 +478,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[bitbucket_server]` {#bitbucket_server}
 
+See [Bitbucket Server](../usage-guide/automations_and_usage.md#bitbucket-server-webhook).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `url` | "" | URL to the BitBucket Server instance |
@@ -451,6 +489,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[jira]` {#jira}
 
+See [Ticket context](../core-abilities/fetching_ticket_context.md#jira-integration).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `cloud_id` | "" | optional UUID for scoped tokens; uses the Atlassian API gateway and is host-only |
@@ -459,6 +499,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 
 ## `[litellm]` {#litellm}
+
+See [Changing a model](../usage-guide/changing_a_model.md#changing-a-model-in-pr-agent).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -478,6 +520,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[bedrock]` {#bedrock}
 
+See [Amazon Bedrock](../usage-guide/changing_a_model.md#amazon-bedrock).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `guardrail_identifier` | "" | guardrail ID or ARN; empty = disabled. When set, Bedrock models must use "bedrock/converse/..."; other Bedrock routes fail instead of running unguarded |
@@ -486,6 +530,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 
 ## `[openrouter]` {#openrouter}
+
+See [OpenRouter](../usage-guide/changing_a_model.md#openrouter).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -499,6 +545,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[model_routing]` — send a small pull request to a cheaper primary model (disabled by default) {#model_routing-send a small pull request to a cheaper primary model (disabled by default)}
 
+See [Model routing](../usage-guide/changing_a_model.md#routing-small-pull-requests-to-a-cheaper-model).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `enable` | false | Set true to route small pull requests to a cheaper primary model. See [changing a model](changing_a_model.md). |
@@ -506,6 +554,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 
 ## `[otel]` {#otel}
+
+See [Additional configurations](../usage-guide/additional_configurations.md#built-in-opentelemetry-command-telemetry).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -522,6 +572,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[pr_similar_issue]` {#pr_similar_issue}
 
+See [Similar Issues](../tools/similar_issues.md#selecting-a-vector-database).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `skip_comments` | false |  |
@@ -532,6 +584,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[pinecone]` {#pinecone}
 
+See [Pinecone](../tools/similar_issues.md#pinecone-configuration).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `cloud` | "aws" | Serverless index deployment for the modern SDK. `cloud` is one of "aws", "gcp" or "azure"; pick a `region` offered by that cloud. |
@@ -540,6 +594,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[lancedb]` {#lancedb}
 
+See [LanceDB](../tools/similar_issues.md#lancedb-configuration).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `uri` | "./lancedb" |  |
@@ -547,9 +603,13 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[qdrant]` {#qdrant}
 
+See [Qdrant](../tools/similar_issues.md#qdrant-configuration).
+
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
 ## `[skills]` {#skills}
+
+See [Agent skills](../core-abilities/agent_skills.md#configuration).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -559,6 +619,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 
 ## `[artifacts]` {#artifacts}
+
+See [CI artifacts](../installation/github.md#ci-artifact-context).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -573,6 +635,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[mosaico]` {#mosaico}
 
+See [Mosaico server](../installation/mosaico_server.md#what-the-mode-is).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `bearer_tokens` | {} | principal names to distinct bearer secrets; empty permits anonymous trusted-network use |
@@ -584,12 +648,16 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[asana]` {#asana}
 
+See [Asana](../core-abilities/fetching_ticket_context.md#asana-integration).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `request_timeout` | 10 | seconds allowed for each Asana task API request |
 
 
 ## `[linear]` {#linear}
+
+See [Linear](../core-abilities/fetching_ticket_context.md#linear-integration).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -598,6 +666,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[azure_devops]` {#azure_devops}
 
+See [Azure DevOps](../usage-guide/automations_and_usage.md#azure-devops-provider).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `default_comment_status` | "closed" |  |
@@ -605,12 +675,16 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[azure_devops_server]` {#azure_devops_server}
 
+See [Azure DevOps Server](../usage-guide/automations_and_usage.md#azure-devops-webhook).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `agent_identity` | "" | Host-only GUID, unique name, descriptor, or list; empty resolves review authorship automatically. See installation/azure.md |
 
 
 ## `[push_outputs]` — push tool outputs to external sinks without calling git-provider APIs (disabled by default) {#push_outputs-push tool outputs to external sinks without calling git-provider APIs (disabled by default)}
+
+See [Push outputs](../usage-guide/push_outputs.md#configuration).
 
 | Key | Default | Description |
 | --- | --- | --- |
