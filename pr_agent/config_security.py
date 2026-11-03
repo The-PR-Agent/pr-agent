@@ -21,11 +21,14 @@
 # supply executable template expressions.
 #
 # bedrock: guardrail settings are host-only so a repository cannot disable or swap the guardrail.
+# custom_labels and config.enable_custom_labels are host-only because every configured custom label
+# is treated as PR-Agent-owned and may be removed when it is absent from the generated label set.
 REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
     "skills": frozenset({"enabled", "max_skills_tokens"}),
     "push_outputs": frozenset(),
     "prompt_fragments": frozenset(),
     "bedrock": frozenset(),
+    "custom_labels": frozenset(),
 }
 
 _CONNECTION_KEY_SUFFIXES = ("url", "base_url", "endpoint", "org", "key", "token", "secret")
@@ -33,7 +36,7 @@ _REPO_OVERRIDABLE_SUFFIX_KEYS_BY_SECTION = {
     "config": frozenset({"progress_gif_url"}),
     "gitea": frozenset({"web_url"}),
 }
-_REPO_OVERRIDABLE_SUFFIX_SECTIONS = frozenset({"custom_labels", "language_extension_map_org"})
+_REPO_OVERRIDABLE_SUFFIX_SECTIONS = frozenset({"language_extension_map_org"})
 
 
 # Keep individual settings in otherwise repository-configurable sections host-only.
@@ -103,6 +106,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "config": frozenset({
         "extra_config_url",
         "description_issue_regex",
+        "enable_custom_labels",
         "global_settings_repo",
         "use_group_settings_file",
         "http_request_timeout",
@@ -117,6 +121,9 @@ def is_repo_host_only_key(section: str, key: str) -> bool:
     """Return whether a repository must not override a setting."""
     section = section.lower()
     key = key.lower()
+    allowed_keys = REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section)
+    if allowed_keys is not None and key not in allowed_keys:
+        return True
     if key in REPO_HOST_ONLY_KEYS_BY_SECTION.get(section, frozenset()):
         return True
     return (
@@ -152,6 +159,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "config": frozenset({
         "branch_issue_regex",
         "ai_timeout",
+        "enable_custom_labels",
         "fallback_models",
         "num_retries",
         "output_relevant_configurations",
