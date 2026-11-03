@@ -19,9 +19,16 @@ from git import Repo
 from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.file_filter import filter_ignored, filter_ignored_with_status
 from pr_agent.algo.language_handler import partition_files_by_language_filter
+from pr_agent.algo.token_budget import clip_tokens
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.git_provider import GitProvider, cache_languages, redact_credentials
+from pr_agent.git_providers.git_provider import (
+    GitProvider,
+    _clone_authorization_header,
+    cache_languages,
+    get_git_ssl_env,
+    redact_credentials,
+)
 from pr_agent.git_providers.local_git_provider import PullRequestMimic
 from pr_agent.git_providers.request_timeout import get_http_request_timeout
 from pr_agent.log import get_logger
@@ -60,17 +67,50 @@ def _call(*command, operation: str, **kwargs) -> str:
     return res.stdout.decode()
 
 
+def _git_url_and_env(url) -> tuple[str, dict[str, str]]:
+    """Keep Gerrit clone credentials out of Git's argv and stored remote URL."""
+    parsed = urllib3.util.parse_url(str(url))
+    if ":" not in (parsed.auth or ""):
+        return str(parsed), get_git_ssl_env()
+
+    username = parsed.auth.partition(":")[0]
+    clean_auth = username or None
+    env = get_git_ssl_env()
+    if parsed.scheme in ("http", "https"):
+        authorization = _clone_authorization_header(str(parsed))
+        if authorization:
+            config_count = int(env.get("GIT_CONFIG_COUNT", "0"))
+            env.update({
+                f"GIT_CONFIG_KEY_{config_count}": "http.extraHeader",
+                f"GIT_CONFIG_VALUE_{config_count}": authorization,
+                "GIT_CONFIG_COUNT": str(config_count + 1),
+            })
+        clean_auth = None
+
+    return str(parsed._replace(auth=clean_auth)), env
+
+
+def _ssh_destination(url) -> str:
+    """Return the Gerrit SSH user and host without any password component."""
+    auth = getattr(url, "auth", None) or ""
+    username = auth.partition(":")[0]
+    return f"{username}@{url.host}" if username else url.host
+
+
 def clone(url, directory):
     get_logger().info("Cloning {} to {}", redact_credentials(url), directory)
-    stdout = _call('git', 'clone', "--depth", "1", url, directory, operation="clone")
+    clean_url, env = _git_url_and_env(url)
+    stdout = _call('git', 'clone', "--depth", "1", clean_url, directory,
+                   operation="clone", env=env)
     get_logger().info(stdout)
 
 
 def fetch(url, refspec, cwd):
     get_logger().info("Fetching {} {}", redact_credentials(url), refspec)
+    clean_url, env = _git_url_and_env(url)
     stdout = _call(
-        'git', 'fetch', '--depth', '2', url, refspec,
-        cwd=cwd, operation="fetch"
+        'git', 'fetch', '--depth', '2', clean_url, refspec,
+        cwd=cwd, operation="fetch", env=env
     )
     get_logger().info(stdout)
 
@@ -106,7 +146,7 @@ def add_comment(url: urllib3.util.Url, refspec, message):
     return _call(
         "ssh",
         "-p", str(url.port),
-        f"{url.auth}@{url.host}",
+        _ssh_destination(url),
         "gerrit", "review",
         "--message", message,
         # "--code-review", score,
@@ -119,7 +159,7 @@ def list_comments(url: urllib3.util.Url, refspec):
     stdout = _call(
         "ssh",
         "-p", str(url.port),
-        f"{url.auth}@{url.host}",
+        _ssh_destination(url),
         "gerrit", "query",
         "--comments",
         "--current-patch-set", patchset,
@@ -298,7 +338,11 @@ class GerritProvider(GitProvider):
             'Removing reactions is not implemented for the gerrit provider')
 
     def get_commit_messages(self) -> str:
-        return self.repo.head.commit.message
+        commit_message = self.repo.head.commit.message
+        max_tokens = get_settings().get("CONFIG.MAX_COMMITS_TOKENS", None)
+        if max_tokens:
+            commit_message = clip_tokens(commit_message, max_tokens)
+        return commit_message
 
     @staticmethod
     def _resolve_settings_entry(settings_tree, settings_path):

@@ -16,7 +16,6 @@ default = [
     'gif',
     'gitignore',
     'glif',
-    'gradle',
     'gz',
     'ico',
     'jar',

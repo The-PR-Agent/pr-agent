@@ -154,7 +154,7 @@ def is_bot_user(data) -> bool:
             raw_indicators = list(raw_indicators)
         except TypeError:
             get_logger().warning(
-                f"Ignoring non-iterable gitlab.bot_user_indicators value: {raw_indicators!r}"
+                f"Ignoring non-iterable config.bot_user_indicators value: {raw_indicators!r}"
             )
             raw_indicators = []
         bot_indicators = [s.lower() for s in raw_indicators if isinstance(s, str)]

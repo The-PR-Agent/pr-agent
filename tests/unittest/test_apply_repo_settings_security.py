@@ -200,6 +200,25 @@ def test_repo_settings_cannot_enable_publish_error_details(monkeypatch, settings
     assert pr_reviewer.get("num_max_findings") == 11
 
 
+def test_repo_settings_cannot_configure_custom_labels(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=(
+            b"[config]\nenable_custom_labels = true\n"
+            b"[custom_labels.approved]\ndescription = 'Workflow approval'\n"
+        )
+    )
+    captured = _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("config.enable_custom_labels", False)
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    assert settings.get("config.enable_custom_labels") is False
+    assert "approved" not in _section(settings, "custom_labels")
+
+
 @pytest.mark.parametrize(
     ("section", "key", "host_value", "repo_value"),
     [
@@ -703,7 +722,7 @@ def test_progress_gif_url_remains_repo_and_cli_configurable():
     assert CliArgs.validate_user_args(["--config.progress_gif_url=https://example.com/progress.gif"])[0] is True
 
 
-def test_repo_settings_apply_section_specific_safe_suffix_keys(monkeypatch, settings_snapshot):
+def test_repo_settings_apply_only_section_specific_safe_overrides(monkeypatch, settings_snapshot):
     provider = FakeGitProvider(repo_settings_bytes=b"""
 [gitea]
 url = "https://repo-api.example"
@@ -730,7 +749,7 @@ description = "Keyboard shortcut"
     assert {key: language_map.get(key) for key in ("AutoHotkey", "Monkey", "Org")} == {
         "AutoHotkey": [".repo-ahk"], "Monkey": [".repo-monkey"], "Org": [".repo-org"]
     }
-    assert set(_section(settings, "custom_labels")) >= {"API key", "Hotkey"}
+    assert not {"API key", "Hotkey"} & set(_section(settings, "custom_labels"))
     assert CliArgs.validate_user_args(["--gitea.web_url=https://comment.example"])[0] is False
 
 

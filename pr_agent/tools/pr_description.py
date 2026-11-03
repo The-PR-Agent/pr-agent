@@ -803,6 +803,8 @@ class PRDescription:
             system=system_prompt,
             user=user_prompt
         )
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"PR description response was truncated by {model}")
 
         return response
 

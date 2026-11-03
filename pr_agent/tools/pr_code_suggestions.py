@@ -10,7 +10,8 @@ from functools import partial
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.artifacts import get_artifact_context
+from pr_agent.algo.artifacts import get_artifact_context, prompt_boundary_markers
+from pr_agent.algo.code_replacement import python_replacement_compiles, reindent_to_line
 from pr_agent.algo.comment_identity import (
     PRCodeSuggestionsHeader,
     PRCodeSuggestionsIdentity,
@@ -79,6 +80,23 @@ from pr_agent.tools.progress_comment import (
 # config_security.PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION, and the deprecation note in
 # docs/docs/tools/improve.mdx. The flag guards the one-off warning it emits.
 _deprecated_spellings_warned = False
+
+
+# Self-review marker keys were removed from configuration.toml; keep warning users who still
+# set either one, once per process.
+def _warn_deprecated_self_review_marker_keys() -> None:
+    if getattr(_warn_deprecated_self_review_marker_keys, "_warned", False):
+        return
+    settings = get_settings().pr_code_suggestions
+    if (settings.get("approve_pr_on_self_review", None) is None
+            and settings.get("fold_suggestions_on_self_review", None) is None):
+        return
+    _warn_deprecated_self_review_marker_keys._warned = True
+    get_logger().warning(
+        "pr_code_suggestions.approve_pr_on_self_review and "
+        "pr_code_suggestions.fold_suggestions_on_self_review are deprecated and have no effect; "
+        "remove them from your configuration"
+    )
 
 
 def _as_threshold(setting_name: str, default: int, minimum: int) -> int:
@@ -296,6 +314,7 @@ class PRCodeSuggestions:
             get_logger().debug("AI metadata is disabled for this command")
 
         is_ai_metadata = get_settings().get("config.enable_ai_metadata", False)
+        commit_messages_begin, commit_messages_end = prompt_boundary_markers("COMMIT_MESSAGES")
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -309,7 +328,9 @@ class PRCodeSuggestions:
             "skills_context": get_skills_context(),
             "repo_context": build_repo_context(self.git_provider),
             "suggestion_discussion_context": self._load_suggestion_discussion_context(),
-            "commit_messages_str": self.git_provider.get_commit_messages(),
+            "commit_messages_str": "" if self.incremental.is_incremental else self.git_provider.get_commit_messages(),
+            "commit_messages_begin": commit_messages_begin,
+            "commit_messages_end": commit_messages_end,
             "relevant_best_practices": "",
             "is_ai_metadata": is_ai_metadata,
             "diff_hunk_format": render_diff_hunk_format(
@@ -373,6 +394,7 @@ class PRCodeSuggestions:
 
     async def run(self):
         init_run_details()
+        _warn_deprecated_self_review_marker_keys()
         self._output_published = False
         self._progress_base_body = None
         self._chunk_progress = None
@@ -607,16 +629,10 @@ class PRCodeSuggestions:
                 raise
 
     async def add_self_review_text(self, pr_body):
+        _warn_deprecated_self_review_marker_keys()
         text = get_settings().pr_code_suggestions.code_suggestions_self_review_text
         pr_body += f"\n\n- [ ]  {text}"
-        approve_pr_on_self_review = get_settings().pr_code_suggestions.approve_pr_on_self_review
-        fold_suggestions_on_self_review = get_settings().pr_code_suggestions.fold_suggestions_on_self_review
-        if approve_pr_on_self_review and not fold_suggestions_on_self_review:
-            pr_body += ' <!-- approve pr self-review -->'
-        elif fold_suggestions_on_self_review and not approve_pr_on_self_review:
-            pr_body += ' <!-- fold suggestions self-review -->'
-        else:
-            pr_body += ' <!-- approve and fold suggestions self-review -->'
+        pr_body += ' <!-- fold suggestions self-review -->'
         return pr_body
 
     def _get_suggestions_coverage_footer(self, suggestions_present: bool = True) -> str:
@@ -1095,6 +1111,9 @@ class PRCodeSuggestions:
             get_settings().system_prompt = system_prompt
             get_settings().user_prompt = user_prompt
 
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"Code suggestions response was truncated by {model}")
+
         # load suggestions from the AI response
         data = self._prepare_pr_code_suggestions(response)
 
@@ -1389,13 +1408,10 @@ class PRCodeSuggestions:
                     continue
 
                 suggestion_content = suggestion['suggestion_content']
-                if (
-                    'instead' in suggestion_content
-                    and re.search(r"\bconst\b", suggestion_content)
-                    and re.search(r"\blet\b", suggestion_content)
-                ):
+                # Only filter direct advice; preserve reverse or negated recommendations for reflection.
+                if re.match(r"\s*(?i:use)\s+`?\bconst\b`?\s+instead\s+of\s+`?\blet\b", suggestion_content):
                     get_logger().debug(
-                        f"Skipping suggestion {i + 1}, because it uses 'const instead let': {suggestion}")
+                        f"Skipping suggestion {i + 1}, because it recommends 'const instead of let': {suggestion}")
                     continue
 
                 if ('existing_code' in suggestion) and ('improved_code' in suggestion):
@@ -1657,30 +1673,8 @@ class PRCodeSuggestions:
                 or not diff_file.head_file
                 or not getattr(diff_file, "head_file_is_complete", True)):
             return None
-
-        try:
-            compile(diff_file.head_file, relevant_file, "exec", dont_inherit=True)
-        except (SyntaxError, ValueError):
-            return None
-        except Exception as e:
-            get_logger().warning(f"Could not validate Python suggestion syntax: {e}")
-            return None
-
-        file_lines = split_diff_lines(diff_file.head_file)
-        if (relevant_lines_start < 1
-                or relevant_lines_end < relevant_lines_start
-                or relevant_lines_end > len(file_lines)):
-            return None
-        file_lines[relevant_lines_start - 1:relevant_lines_end] = split_diff_lines(new_code_snippet)
-
-        try:
-            compile("\n".join(file_lines), relevant_file, "exec", dont_inherit=True)
-        except (SyntaxError, ValueError):
-            return False
-        except Exception as e:
-            get_logger().warning(f"Could not validate Python suggestion syntax: {e}")
-            return None
-        return True
+        return python_replacement_compiles(relevant_file, diff_file.head_file, relevant_lines_start,
+                                           relevant_lines_end, new_code_snippet)
 
     @staticmethod
     def _get_patch_range_lines(patch, relevant_lines_start, relevant_lines_end) -> list[str] | None:
@@ -1744,141 +1738,6 @@ class PRCodeSuggestions:
         return self._suggestion_applyability(relevant_file, relevant_lines_start,
                                              relevant_lines_end, existing_code)[0]
 
-    @staticmethod
-    def _shift_code_indentation(code_snippet: str, delta_spaces: int) -> str:
-        shifted_lines = []
-        for line in split_diff_lines(code_snippet):
-            if not line.strip(" \t"):
-                shifted_lines.append("")
-                continue
-            if delta_spaces > 0:
-                shifted_lines.append(" " * delta_spaces + line)
-            elif delta_spaces < 0:
-                shift = -delta_spaces
-                leading_whitespace = len(line) - len(line.lstrip(" \t"))
-                shifted_lines.append(line[min(shift, leading_whitespace):])
-            else:
-                shifted_lines.append(line)
-        return "\n".join(shifted_lines)
-
-    @staticmethod
-    def _infer_space_indentation_unit(space_deltas: list[int]) -> int:
-        if not space_deltas:
-            return 1
-        unique_deltas = sorted(set(space_deltas))
-        for delta in unique_deltas:
-            if delta * 2 in unique_deltas:
-                return delta
-        return unique_deltas[0]
-
-    @staticmethod
-    def _continuation_space_adjustments(
-        lines: list[str],
-        leading_whitespace: list[str],
-    ) -> list[int]:
-        openers = []
-        adjustments = [0] * len(lines)
-        closer_for = {"(": ")", "[": "]"}
-        for index, (line, prefix) in enumerate(
-            zip(lines, leading_whitespace, strict=True)
-        ):
-            stripped = line.strip(" \t")
-            if not stripped:
-                continue
-            for opener_position in range(len(openers) - 1, -1, -1):
-                opener_index, opener_prefix, closer = openers[opener_position]
-                if prefix == opener_prefix and stripped.startswith(closer):
-                    interior_indexes = [
-                        line_index
-                        for line_index in range(opener_index + 1, index)
-                        if lines[line_index].strip(" \t")
-                    ]
-                    opener_spaces = opener_prefix.count(" ")
-                    positive_offsets = [
-                        leading_whitespace[line_index].count(" ") - opener_spaces
-                        for line_index in interior_indexes
-                        if leading_whitespace[line_index].count(" ") > opener_spaces
-                    ]
-                    if positive_offsets:
-                        continuation_offset = min(positive_offsets)
-                        for line_index in interior_indexes:
-                            if leading_whitespace[line_index].count(" ") > opener_spaces:
-                                adjustments[line_index] += continuation_offset
-                    del openers[opener_position:]
-                    break
-            if stripped[-1] in closer_for:
-                openers.append((index, prefix, closer_for[stripped[-1]]))
-        return adjustments
-
-    @staticmethod
-    def _align_code_with_tabs(code_snippet: str, anchor_prefix: str) -> str:
-        lines = split_diff_lines(code_snippet)
-        if not lines:
-            return code_snippet
-        leading_whitespace = [line[:len(line) - len(line.lstrip(" \t"))] for line in lines]
-        anchor_depth = len(anchor_prefix) - len(anchor_prefix.lstrip("\t"))
-        anchor_alignment = anchor_prefix[anchor_depth:]
-        initial_index, initial_prefix = next(
-            (
-                (index, prefix)
-                for index, (line, prefix) in enumerate(
-                    zip(lines, leading_whitespace, strict=True)
-                )
-                if line.strip(" \t")
-            ),
-            (0, ""),
-        )
-        initial_spaces = initial_prefix.count(" ")
-        initial_tabs = initial_prefix.count("\t")
-        continuation_adjustments = PRCodeSuggestions._continuation_space_adjustments(
-            lines,
-            leading_whitespace,
-        )
-        initial_continuation_adjustment = continuation_adjustments[initial_index]
-        adjusted_initial_spaces = initial_spaces - initial_continuation_adjustment
-        space_deltas = [
-            abs(
-                prefix.count(" ")
-                - continuation_adjustments[index]
-                - adjusted_initial_spaces
-            )
-            for index, (line, prefix) in enumerate(
-                zip(lines, leading_whitespace, strict=True)
-            )
-            if (
-                line.strip(" \t")
-                and prefix.count(" ") - continuation_adjustments[index]
-                != adjusted_initial_spaces
-            )
-        ]
-        space_unit = PRCodeSuggestions._infer_space_indentation_unit(space_deltas)
-        aligned_lines = []
-        for index, (line, prefix) in enumerate(
-            zip(lines, leading_whitespace, strict=True)
-        ):
-            if not line.strip(" \t"):
-                aligned_lines.append("")
-                continue
-            continuation_alignment = (
-                continuation_adjustments[index] - initial_continuation_adjustment
-            )
-            relative_space_depth, alignment_spaces = divmod(
-                prefix.count(" ")
-                - initial_spaces
-                - continuation_alignment,
-                space_unit,
-            )
-            relative_depth = (
-                prefix.count("\t") - initial_tabs
-                + relative_space_depth
-            )
-            aligned_lines.append(
-                "\t" * max(0, anchor_depth + relative_depth)
-                + anchor_alignment
-                + " " * (alignment_spaces + continuation_alignment)
-                + line[len(prefix):]
-            )
-        return "\n".join(aligned_lines).rstrip("\n")
 
     def dedent_code(self, relevant_file, relevant_lines_start, new_code_snippet):
         try:  # dedent code snippet
@@ -1913,18 +1772,7 @@ class PRCodeSuggestions:
                         original_initial_line = patch_lines[0]
                     break
             if original_initial_line:
-                suggested_initial_line = next(
-                    (line for line in split_diff_lines(new_code_snippet) if line.strip(" \t")),
-                    "",
-                )
-                original_initial_spaces = len(original_initial_line) - len(original_initial_line.lstrip(" \t"))
-                suggested_initial_spaces = len(suggested_initial_line) - len(suggested_initial_line.lstrip(" \t"))
-                if original_initial_line.startswith("\t"):
-                    original_prefix = original_initial_line[:original_initial_spaces]
-                    new_code_snippet = self._align_code_with_tabs(new_code_snippet, original_prefix)
-                else:
-                    delta_spaces = original_initial_spaces - suggested_initial_spaces
-                    new_code_snippet = self._shift_code_indentation(new_code_snippet, delta_spaces)
+                new_code_snippet = reindent_to_line(new_code_snippet, original_initial_line)
         except Exception as e:
             get_logger().error(f"Error when dedenting code snippet for file {relevant_file}, error: {e}")
 

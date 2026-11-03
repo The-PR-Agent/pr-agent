@@ -22,6 +22,14 @@ retried on the same model up to `config.num_retries` times (default 4) before th
 are tried, waiting for the provider's `Retry-After` (up to 30 seconds) or with exponential backoff
 between attempts. Set it to `0` to move to the fallback models at once.
 
+`/describe`, `/add_docs`, `/generate_labels`, and `/update_changelog` reject responses with
+`finish_reason="length"` before publication and use the existing failure and fallback handling.
+If every model attempt fails, they do not publish the truncated result. For large-PR `/describe`,
+successful chunks can still produce an output with an incomplete-coverage notice when other chunks
+fail. If all chunks fail or the final description is truncated, the overall attempt must recover
+through a fallback model before publication. Normal completed responses keep the same model-call count;
+fallback attempts can increase latency and token cost.
+
 To see which of these models actually handled a given PR, enable `config.output_run_details` (see [Additional configurations](./additional_configurations.md#showing-the-agent-run-details)).
 To send small pull requests to a cheaper model, see [Routing small pull requests to a cheaper model](#routing-small-pull-requests-to-a-cheaper-model).
 

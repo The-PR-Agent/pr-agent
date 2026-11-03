@@ -251,6 +251,7 @@ class PRReviewer:
             get_logger().debug("AI metadata is disabled for this command")
 
         is_ai_metadata = get_settings().get("config.enable_ai_metadata", False)
+        commit_messages_begin, commit_messages_end = prompt_boundary_markers("COMMIT_MESSAGES")
         commit_message_begin, commit_message_end = prompt_boundary_markers("COMMIT_MESSAGE")
         self.vars = {
             "title": self.git_provider.pr.title,
@@ -280,7 +281,9 @@ class PRReviewer:
             "skills_context": get_skills_context(),
             "repo_context": build_repo_context(self.git_provider),
             "previous_findings": previous_findings,
-            "commit_messages_str": self.git_provider.get_commit_messages(),
+            "commit_messages_str": "" if self.incremental.is_incremental else self.git_provider.get_commit_messages(),
+            "commit_messages_begin": commit_messages_begin,
+            "commit_messages_end": commit_messages_end,
             "commit_under_review": "",
             "commit_message_begin": commit_message_begin,
             "commit_message_end": commit_message_end,
@@ -422,6 +425,7 @@ class PRReviewer:
                 if not self.incremental.is_incremental:
                     # Reload the findings the incremental mode left out, for the fallback full review.
                     self.vars["previous_findings"] = self._load_previous_findings_context()
+                    self.vars["commit_messages_str"] = self.git_provider.get_commit_messages()
 
             # if isinstance(self.args, list) and self.args and self.args[0] == 'auto_approve':
             #     get_logger().info(f'Auto approve flow PR: {self.pr_url} ...')
