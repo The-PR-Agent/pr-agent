@@ -23,8 +23,56 @@ from pr_agent.servers.utils import (
     shared_should_process_pr_logic,
     verify_signature,
 )
-from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
+                provider = context.get("git_provider", {}).get(api_url)
+                reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)
+                if callable(reset_diff_cache):
+                    reset_diff_cache()
+            new_command = prepare_command(command)
+            get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
+            if await agent.handle_request(api_url, new_command) is RequestOutcome.SKIPPED:
+                return RequestOutcome.SKIPPED
+        except Exception as e:
+            get_logger().error(f"Failed to perform command {command}: {e}")
 
+def should_process_pr_logic(body) -> bool:
+    return shared_should_process_pr_logic(body, provider="gitea")
+
+# FastAPI app setup
+middleware = [Middleware(RawContextMiddleware)]
+if prometheus_metrics_enabled():
+    attach_metrics_endpoint(router)
+app = create_server_app(middleware=middleware)
+app.include_router(router)
+
+def start():
+    """Start the Gitea webhook server"""
+    port = int(os.environ.get("PORT", "3000"))
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+        get_pr_commands("gitea")
+        if commands_conf == "pr_commands"
+        else normalize_setting_list(get_settings().get(f"gitea.{commands_conf}"))
+    )
+from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
+t Middleware
+from starlette_context import context
+from starlette_context.middleware import RawContextMiddleware
+
+from pr_agent.agent.pr_agent import PRAgent, prepare_command
+from pr_agent.agent.request_policy import RequestOutcome
+from pr_agent.algo.setting_utils import normalize_setting_list
+from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.git_providers.utils import apply_repo_settings
+from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers.request_body_limit import create_server_app
+from pr_agent.servers.utils import (
+    auto_feedback_disabled,
+    get_pr_commands,
+    is_command_comment,
+    push_trigger_slot,
+    shared_should_process_pr_logic,
+    verify_signature,
 # Setup logging and router
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
 router = APIRouter()
@@ -129,6 +177,32 @@ async def handle_pr_event(body: dict[str, Any], event: str, action: str, agent: 
         # for command in commands_on_push:
         #     await agent.handle_request(api_url, command)
 
+        get_pr_commands("gitea")
+        if commands_conf == "pr_commands"
+        else normalize_setting_list(get_settings().get(f"gitea.{commands_conf}"))
+    )
+    if not commands:
+        get_logger().info("New PR, but no auto commands configured")
+        return
+    get_settings().set("config.is_auto_command", True)
+    for command in commands:
+        try:
+            # Reset diff state between auto commands, like the gitlab/github loops (#4372).
+            if context.exists():
+                provider = context.get("git_provider", {}).get(api_url)
+                reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)
+                if callable(reset_diff_cache):
+                    reset_diff_cache()
+            new_command = prepare_command(command)
+            get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
+            if await agent.handle_request(api_url, new_command) is RequestOutcome.SKIPPED:
+                return RequestOutcome.SKIPPED
+        except Exception as e:
+            get_logger().error(f"Failed to perform command {command}: {e}")
+
+def should_process_pr_logic(body) -> bool:
+    return shared_should_process_pr_logic(body, provider="gitea")
+
 async def handle_comment_event(body: dict[str, Any], event: str, action: str, agent: PRAgent):
     """Handle comment events"""
     comment = body.get("comment", {})
@@ -189,6 +263,32 @@ def start():
     port = int(os.environ.get("PORT", "3000"))
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+        get_pr_commands("gitea")
+        if commands_conf == "pr_commands"
+        else normalize_setting_list(get_settings().get(f"gitea.{commands_conf}"))
+    )
+    if not commands:
+        get_logger().info("New PR, but no auto commands configured")
+        return
+    get_settings().set("config.is_auto_command", True)
+    for command in commands:
+        try:
+            # Reset diff state between auto commands, like the gitlab/github loops (#4372).
+            if context.exists():
+                provider = context.get("git_provider", {}).get(api_url)
+                reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)
+                if callable(reset_diff_cache):
+                    reset_diff_cache()
+            new_command = prepare_command(command)
+            get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
+            if await agent.handle_request(api_url, new_command) is RequestOutcome.SKIPPED:
+                return RequestOutcome.SKIPPED
+        except Exception as e:
+            get_logger().error(f"Failed to perform command {command}: {e}")
+
+def should_process_pr_logic(body) -> bool:
+    return shared_should_process_pr_logic(body, provider="gitea")
 
 if __name__ == "__main__":
     start()
