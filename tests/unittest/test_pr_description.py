@@ -122,13 +122,14 @@ async def test_normal_description_rejects_clipped_packed_diff():
 
 
 @pytest.mark.asyncio
-async def test_large_pr_header_uses_shared_budget_and_allows_walkthrough_truncation():
+@pytest.mark.parametrize("finish_reason", ["stop", "length"])
+async def test_large_pr_header_allows_clipped_input_but_requires_complete_output(finish_reason):
     tool = _make_large_pr_instance()
     header_handler = MagicMock()
     tool._description_prompt_handlers = {
         "pr_description_only_description_prompts": header_handler,
     }
-    tool.ai_handler.chat_completion = AsyncMock(return_value=(_header_prediction(), "stop"))
+    tool.ai_handler.chat_completion = AsyncMock(return_value=(_header_prediction(), finish_reason))
 
     fitted = MagicMock(
         optional_text="trimmed walkthrough\n...(truncated)\n",
@@ -142,11 +143,16 @@ async def test_large_pr_header_uses_shared_budget_and_allows_walkthrough_truncat
         "pr_agent.tools.pr_description.AttemptTokenBudget.for_attempt",
         return_value=budget,
     ) as budget_factory:
-        result = await tool._get_prediction(
-            "fallback-model",
-            "complete walkthrough",
-            prompt="pr_description_only_description_prompts",
-        )
+        if finish_reason == "length":
+            with pytest.raises(FallbackEligibleError, match="truncated"):
+                await tool._get_prediction(
+                    "fallback-model", "complete walkthrough", prompt="pr_description_only_description_prompts",
+                )
+        else:
+            result = await tool._get_prediction(
+                "fallback-model", "complete walkthrough", prompt="pr_description_only_description_prompts",
+            )
+            assert result == _header_prediction()
 
     budget_factory.assert_called_once_with(
         "fallback-model",
@@ -169,7 +175,6 @@ async def test_large_pr_header_uses_shared_budget_and_allows_walkthrough_truncat
         user="fitted user",
     )
     assert tool.variables["diff"] == fitted.optional_text
-    assert result == _header_prediction()
 
 
 @pytest.mark.asyncio
