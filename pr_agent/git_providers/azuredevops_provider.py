@@ -1938,11 +1938,17 @@ class AzureDevopsProvider(GitProvider):
                 get_logger().info(f"Failed to get PR id, error: {e}")
             return ""
 
+    def get_pr_url(self) -> str:
+        parsed = urlparse(getattr(self, "pr_url", "") or "")
+        # Encode each component once, retaining escaped slashes and literal percent signs in names.
+        path = "/".join(quote(unquote(part), safe="") for part in parsed.path.split("/"))
+        return parsed._replace(path=path).geturl()
+
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
-        return f"{self.pr_url}?_a=files&path={quote(relevant_file, safe='')}"
+        return f"{self.get_pr_url()}?_a=files&path={quote(relevant_file, safe='')}"
 
     def get_comment_url(self, comment) -> str:
-        return self.pr_url + "?discussionId=" + str(comment.thread_id)
+        return self.get_pr_url() + "?discussionId=" + str(comment.thread_id)
 
     def get_pr_head_sha(self) -> str:
         # Read the source revision from the same field `reconcile_code_suggestion_threads`
