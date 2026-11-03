@@ -506,7 +506,7 @@ See [Changing a model](../usage-guide/changing_a_model.md#changing-a-model-in-pr
 | --- | --- | --- |
 | `enable_callbacks` | false |  |
 | `add_session_id_to_requests` | false | send a stable x-litellm-session-id header derived from the PR URL, so LiteLLM groups every request for the same PR into one session |
-| `success_callback` | [] | process-wide, so only the deployment's own configuration and environment set it, not a repository's .pr_agent.toml; in the GitHub Action, use a workflow env entry |
+| `success_callback` | [] | process-wide: only the deployment's configuration and environment set it, not a repo's .pr_agent.toml; in the Action, use a workflow env entry |
 | `failure_callback` | [] | process-wide, set like success_callback |
 | `service_callback` | [] | process-wide, set like success_callback |
 | `turn_off_message_logging` | false | set true to keep prompt/response content (the whole PR diff) out of callback payloads; strongly recommended with the "otel" callback |
