@@ -228,7 +228,9 @@ becomes
 The default labels of the describe tool are quite generic, since they are meant to be used in any repo: [`Bug fix`, `Tests`, `Enhancement`, `Documentation`, `Other`].
 
 You can define custom labels that are relevant for your repo and use cases.
-Custom labels can be defined in a configuration file, or directly in the repo's [labels page](#handle-custom-labels-from-the-repos-labels-page).
+Custom labels can be defined in the PR-Agent host configuration, or directly in the repo's
+[labels page](#handle-custom-labels-from-the-repos-labels-page). The host configuration options cannot be set from
+the repository's `.pr_agent.toml` or comment arguments.
 
 Make sure to provide proper title, and a detailed and well-phrased description for each label, so the tool will know when to suggest it.
 Each label description should be a **conditional statement**, that indicates if to add the label to the PR or not, according to the PR content.
@@ -243,7 +245,7 @@ If the custom label is no longer relevant, it will be automatically removed from
 
 ### Handle custom labels from a configuration file
 
-Example for a custom labels configuration setup in a configuration file:
+Example for a custom labels configuration setup in the PR-Agent host configuration:
 
 ```
 [config]
