@@ -533,8 +533,28 @@ class AzureDevopsProvider(GitProvider):
             get_logger().exception(f"Failed to remove comment, error: {e}")
 
     def publish_labels(self, pr_types) -> bool:
+        # pr_types is the complete label set. Azure DevOps has no call that replaces the set, so
+        # remove the current labels that are not in it, then create the ones that are missing.
         try:
+            current_labels = self.azure_devops_client.get_pull_request_labels(
+                project=self.workspace_slug,
+                repository_id=self.repo_slug,
+                pull_request_id=self.pr_num,
+            )
+            for label in current_labels:
+                if label.name not in pr_types:
+                    # By id: names such as "Review effort 2/5" contain a slash, and this call puts
+                    # its label argument in the URL path.
+                    self.azure_devops_client.delete_pull_request_labels(
+                        repository_id=self.repo_slug,
+                        pull_request_id=self.pr_num,
+                        label_id_or_name=label.id,
+                        project=self.workspace_slug,
+                    )
+            current_names = {label.name for label in current_labels}
             for pr_type in pr_types:
+                if pr_type in current_names:
+                    continue
                 self.azure_devops_client.create_pull_request_label(
                     label={"name": pr_type},
                     project=self.workspace_slug,

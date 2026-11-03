@@ -1266,6 +1266,9 @@ class GitProvider(ABC):
     def publish_labels(self, labels) -> bool | None:
         """Acknowledge label publication without guaranteeing remote label equality.
 
+        ``labels`` is the complete set the PR should end up with. Labels missing from it
+        are removed, so callers include the existing labels they want to keep.
+
         Return True on normal completion or a provider-specific no-op, and exact False
         for a known normalized failure. Legacy/custom providers may return None;
         callers must check ``result is False`` to detect an acknowledged failure.
