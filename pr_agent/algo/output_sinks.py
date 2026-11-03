@@ -124,6 +124,66 @@ class TelegramSink:
         _post_json("telegram", url, {"chat_id": chat_id, "text": text})
 
 
+class TeamsSink:
+    message_size_limit = 28 * 1024
+    truncation_marker = "\n\n[Output truncated]"
+
+    @staticmethod
+    def _card(record: dict, markdown: str) -> dict:
+        title = str(record.get("type") or "output").replace("_", " ").title()
+        card = {
+            "type": "message",
+            "attachments": [{
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "contentUrl": None,
+                "content": {
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard",
+                    "version": "1.4",
+                    "body": [
+                        {"type": "TextBlock", "text": f"PR-Agent {title}", "weight": "Bolder", "size": "Medium"},
+                        {"type": "TextBlock", "text": markdown, "wrap": True},
+                    ],
+                },
+            }],
+        }
+        pr = record.get("pr")
+        pr_url = pr.get("url") if isinstance(pr, dict) else ""
+        if not isinstance(pr_url, str):
+            pr_url = ""
+        if pr_url:
+            card["attachments"][0]["content"]["actions"] = [{
+                "type": "Action.OpenUrl", "title": "Open pull request", "url": pr_url,
+            }]
+        return card
+
+    @staticmethod
+    def _serialized_size(card: dict) -> int:
+        return len(json.dumps(card, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+    def send(self, record: dict, cfg: dict) -> None:
+        url = _push_outputs_sink_url(cfg, "teams_webhook_url")
+        if not url:
+            return
+        markdown = record.get("markdown")
+        if markdown is None:
+            markdown = json.dumps(record.get("payload", {}), ensure_ascii=False)
+
+        card = self._card(record, markdown)
+        if self._serialized_size(card) > self.message_size_limit:
+            low, high = 0, len(markdown)
+            while low < high:
+                middle = (low + high + 1) // 2
+                candidate = self._card(record, markdown[:middle] + self.truncation_marker)
+                if self._serialized_size(candidate) <= self.message_size_limit:
+                    low = middle
+                else:
+                    high = middle - 1
+            markdown = markdown[:low] + self.truncation_marker
+            card = self._card(record, markdown)
+        _post_json("teams", url, card)
+
+
 # Keep local channels before network channels, regardless of configuration order.
 # Attempt each selected channel once.
 OUTPUT_SINK_TYPES: dict[str, type[OutputSink]] = {
@@ -132,6 +192,7 @@ OUTPUT_SINK_TYPES: dict[str, type[OutputSink]] = {
     "webhook": WebhookSink,
     "slack": SlackSink,
     "telegram": TelegramSink,
+    "teams": TeamsSink,
 }
 
 
@@ -159,7 +220,9 @@ def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
         path = cfg.get("file_path", "pr-agent-outputs/reviews.jsonl")
         if not isinstance(path, str) or not path:
             return False, "push_outputs.file_path must be a nonempty string"
-    for channel, key in (("webhook", "webhook_url"), ("slack", "slack_webhook_url")):
+    for channel, key in (
+        ("webhook", "webhook_url"), ("slack", "slack_webhook_url"), ("teams", "teams_webhook_url"),
+    ):
         if channel not in selected:
             continue
         url = cfg.get(key)
