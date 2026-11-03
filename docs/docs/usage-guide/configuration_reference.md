@@ -338,7 +338,7 @@ See [Update Changelog](../tools/update_changelog.md#configuration-options).
 
 ## `[pr_config]` — /config {#pr_config-config}
 
-See [Configuration options](../usage-guide/configuration_options.md#global-configuration-file).
+See [Show possible configurations](../usage-guide/additional_configurations.md#show-possible-configurations).
 
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
@@ -574,7 +574,7 @@ See [Additional configurations](../usage-guide/additional_configurations.md#buil
 
 ## `[pr_similar_issue]` {#pr_similar_issue}
 
-See [Similar Issues](../tools/similar_issues.md#overview).
+See [Similar Issues](../tools/similar_issues.md#selecting-a-vector-database).
 
 | Key | Default | Description |
 | --- | --- | --- |
