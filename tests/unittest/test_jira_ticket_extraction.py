@@ -96,6 +96,32 @@ class TestFindJiraTickets:
         )
         assert result == ["GHI-3", "ABC-1", "DEF-2"]
 
+    @pytest.mark.parametrize("text, expected", [
+        ("Fixes AB1-23", ["AB1-23"]),
+        ("feature/p2p-42-retry", ["P2P-42"]),
+        ("see https://acme.atlassian.net/browse/B2B-7 for details", ["B2B-7"]),
+        ("PROJ-12 and DEV2-5", ["PROJ-12", "DEV2-5"]),
+    ])
+    def test_project_key_with_digits(self, text, expected):
+        """Jira Cloud project keys may contain digits after the first letter (AB1, P2P, B2B)."""
+        assert find_jira_tickets(text) == expected
+
+    @pytest.mark.parametrize("text", ["A-1 should not match", "released 2026-11-03"])
+    def test_key_starts_with_a_letter_and_has_two_characters(self, text):
+        """A key is still a letter followed by 1-9 letters or digits, so a one-letter prefix
+        or a date is not a key."""
+        assert find_jira_tickets(text) == []
+
+    @pytest.mark.parametrize("text, expected", [
+        ("request id 4f3a9c1e-2716-4b9a-8e2f-0c6d5b7a9e31", []),
+        ("feature/authentication-2", []),
+        ("feature_abc-123", ["ABC-123"]),
+    ])
+    def test_key_does_not_start_inside_a_word(self, text, expected):
+        """A key cannot start in the middle of a run of letters and digits, so part of a hex ID
+        or of a long word is not a key, while an underscore still separates one."""
+        assert find_jira_tickets(text) == expected
+
 
 class TestExtractJiraTickets:
     """End-to-end extraction: find keys, fetch via the Jira client, map to ticket dicts."""
@@ -342,10 +368,30 @@ class TestExtractJiraTickets:
             extract_jira_tickets("OPS-3 SHA-256 PROJ-4")
         assert [call.args[0] for call in client.issue.call_args_list] == ["OPS-3", "PROJ-4"]
 
+    @pytest.mark.parametrize("entries, looked_up", [
+        (["B2B"], ["B2B-7"]),
+        (["B2B", "PROJ"], ["B2B-7", "PROJ-1"]),
+        ("B2B, PROJ", ["B2B-7", "PROJ-1"]),
+    ])
+    def test_project_keys_with_digits_are_valid_entries(self, entries, looked_up):
+        """Jira Cloud project keys may contain digits after the first letter, so "B2B" filters
+        like any other entry. It is not ignored as malformed, which would disable every lookup
+        when it is the only entry."""
+        self._configure_jira()
+        get_settings().set("JIRA.PROJECT_KEYS", entries)
+        client = self._fake_client()
+        with patch("atlassian.Jira", return_value=client), \
+                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+            result = extract_jira_tickets("B2B-7 uses SHA-256, see PROJ-1")
+        assert [call.args[0] for call in client.issue.call_args_list] == looked_up
+        assert [t["ticket_id"] for t in result] == looked_up
+        get_logger.return_value.warning.assert_not_called()
+
     @pytest.mark.parametrize("bad_entry", [
         "https://acme.atlassian.net/browse/PROJ",  # a URL, not a key
         "PROJ-123",                                # a ticket key, not a project key
         "P",                                       # too short to ever match a ticket
+        "2FA",                                     # starts with a digit, not a letter
         "PROJECT_KEY_TOO_LONG",                    # longer than the ticket pattern allows
         "pro j",                                   # whitespace
     ])
