@@ -166,6 +166,9 @@ class PlainDiffGitProvider(GitProvider):
             return False
         return True
 
+    def get_pr_identity(self) -> dict:
+        return {"url": "", "provider": "plain-diff", "repo": "", "number": "", "head_sha": ""}
+
     def supports_code_suggestions_artifact(self) -> bool:
         return True
 

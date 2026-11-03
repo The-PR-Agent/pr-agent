@@ -1496,7 +1496,9 @@ class PRReviewer:
             return
         self._pending_sink_output = None
         message_type, payload, markdown = pending
-        await push_outputs_async(message_type, payload=payload, markdown=markdown)
+        await push_outputs_async(
+            message_type, payload=payload, markdown=markdown, git_provider=self.git_provider
+        )
 
     def _build_key_issue_comment(self, issue, diff_files: dict) -> dict | None:
         if not isinstance(issue, dict):

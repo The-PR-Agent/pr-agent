@@ -1952,6 +1952,18 @@ class AzureDevopsProvider(GitProvider):
         head = getattr(getattr(self.pr, "last_merge_commit", None), "commit_id", None)
         return head if isinstance(head, str) else ""
 
+    def get_pr_identity(self) -> dict:
+        repo = "/".join(
+            str(part) for part in (self.workspace_slug, self.repo_slug) if part
+        )
+        return {
+            "url": self.get_pr_url() or "",
+            "provider": "azure",
+            "repo": repo,
+            "number": self.pr_num if self.pr_num is not None else "",
+            "head_sha": self.get_pr_head_sha(),
+        }
+
     def get_latest_commit_url(self) -> str:
         if (cached_url := getattr(self, "_latest_commit_url", None)) is not None:
             return cached_url

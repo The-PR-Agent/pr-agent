@@ -1359,6 +1359,20 @@ class GitProvider(ABC):
         """
         return ""
 
+    def get_pr_identity(self) -> dict:
+        """Return the identity external output sinks attach to a run.
+
+        Providers that can expose a stable repository name and PR number override
+        this. Values are always present; an unavailable value is an empty string.
+        """
+        return {
+            "url": self.get_pr_url() or "",
+            "provider": "",
+            "repo": "",
+            "number": "",
+            "head_sha": self.get_pr_head_sha() or "",
+        }
+
     def auto_approve(self) -> bool:
         return False
 

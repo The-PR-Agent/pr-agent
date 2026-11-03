@@ -31,13 +31,71 @@ def github_action_output(output_data: dict, key_name: str):
     return
 
 
-def push_outputs(message_type: str, payload: dict | None = None, markdown: str | None = None) -> None:
+def _identity_text(value) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _normalize_pr_identity(identity: dict) -> dict:
+    number = identity.get("number")
+    if not isinstance(number, int) or isinstance(number, bool):
+        number = _identity_text(number)
+    return {
+        "url": _identity_text(identity.get("url")),
+        "provider": _identity_text(identity.get("provider")),
+        "repo": _identity_text(identity.get("repo")),
+        "number": number,
+        "head_sha": _identity_text(identity.get("head_sha")),
+    }
+
+
+def _pr_identity(git_provider, pr_identity: dict | None) -> dict | None:
+    if isinstance(pr_identity, dict):
+        return _normalize_pr_identity(pr_identity)
+    if git_provider is None:
+        return None
+
+    getter = getattr(git_provider, "get_pr_identity", None)
+    if callable(getter):
+        try:
+            identity = getter()
+        except Exception:
+            identity = None
+        if isinstance(identity, dict):
+            return _normalize_pr_identity(identity)
+
+    # Support provider-like objects from integrations and tests that expose identity
+    # through the same methods and attributes instead of `get_pr_identity()`.
+    url_getter = getattr(git_provider, "get_pr_url", None)
+    head_getter = getattr(git_provider, "get_pr_head_sha", None)
+    provider_name = getattr(git_provider, "provider_name", "")
+    if callable(provider_name):
+        provider_name = provider_name()
+    number = getattr(git_provider, "pr_num", None)
+    if number is None:
+        number = getattr(git_provider, "pr_number", "")
+    return _normalize_pr_identity({
+        "url": url_getter() if callable(url_getter) else getattr(git_provider, "pr_url", ""),
+        "provider": provider_name,
+        "repo": getattr(git_provider, "repo", ""),
+        "number": number,
+        "head_sha": head_getter() if callable(head_getter) else getattr(git_provider, "head_sha", ""),
+    })
+
+
+def push_outputs(
+    message_type: str,
+    payload: dict | None = None,
+    markdown: str | None = None,
+    git_provider=None,
+    pr_identity: dict | None = None,
+) -> None:
     """Emit a tool's output to external sinks, without calling any git-provider API.
 
     Controlled by the [push_outputs] config section (disabled by default). Supported channels:
     "stdout" (one JSON line), "file" (append JSONL), "webhook" (POST the generic record),
     "slack" (POST {"text": ...} to a Slack Incoming Webhook), and "telegram"
-    (sendMessage to a configured chat). Non-fatal: never raises.
+    (sendMessage to a configured chat). The record carries the calling tool's PR identity
+    when one is supplied. Non-fatal: never raises.
     """
     try:
         cfg = get_settings().get("push_outputs", {}) or {}
@@ -54,6 +112,9 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
             "timestamp": datetime.now(UTC).isoformat(),
             "payload": payload or {},
         }
+        identity = _pr_identity(git_provider, pr_identity)
+        if identity is not None:
+            record["pr"] = identity
         if markdown is not None:
             record["markdown"] = markdown
 
@@ -69,14 +130,23 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
         get_logger().warning(f"push_outputs failed: {type(e).__name__}")
 
 
-async def push_outputs_async(message_type: str, payload: dict | None = None, markdown: str | None = None) -> None:
+async def push_outputs_async(
+    message_type: str,
+    payload: dict | None = None,
+    markdown: str | None = None,
+    git_provider=None,
+    pr_identity: dict | None = None,
+) -> None:
     """Emit a tool's output to external sinks without blocking the event loop.
 
     The sinks do blocking HTTP and file I/O, so the delivery runs in a worker thread.
     Awaiting it keeps the event loop free for other work and still delivers the output
     before the command returns.
     """
-    await asyncio.to_thread(push_outputs, message_type, payload=payload, markdown=markdown)
+    await asyncio.to_thread(
+        push_outputs, message_type, payload=payload, markdown=markdown,
+        git_provider=git_provider, pr_identity=pr_identity,
+    )
 
 
 def _render_setting_value(value) -> str:
