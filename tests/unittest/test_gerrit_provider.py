@@ -93,6 +93,21 @@ def test_direct_gerrit_children_use_safe_per_call_timeout(
     assert calls[0][1]["check"] is True
 
 
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_git_url_without_password_keeps_username_and_netrc(monkeypatch, scheme):
+    url = urllib3.util.parse_url(f"{scheme}://secret-user@example.com:29418/project")
+    calls = []
+    monkeypatch.setattr(
+        gerrit_provider.subprocess, "run",
+        lambda command, **kwargs: (calls.append((command, kwargs)), SimpleNamespace(stdout=b"ok"))[1],
+    )
+
+    gerrit_provider.clone(url, "/tmp/project")
+
+    assert calls[0][0] == ("git", "clone", "--depth", "1", str(url), "/tmp/project")
+    assert "GIT_CONFIG_COUNT" not in calls[0][1]["env"]
+
+
 @pytest.mark.parametrize("value", [None, True, False, 0, -2, float("nan"), float("inf"), "private-invalid", {}])
 def test_invalid_gerrit_timeout_falls_back_without_logging_value(monkeypatch, command_timeout_setting, value):
     from loguru import logger as loguru_logger

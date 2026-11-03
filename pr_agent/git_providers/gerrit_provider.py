@@ -69,7 +69,7 @@ def _call(*command, operation: str, **kwargs) -> str:
 def _git_url_and_env(url) -> tuple[str, dict[str, str]]:
     """Keep Gerrit clone credentials out of Git's argv and stored remote URL."""
     parsed = urllib3.util.parse_url(str(url))
-    if not parsed.auth:
+    if ":" not in (parsed.auth or ""):
         return str(parsed), get_git_ssl_env()
 
     username = parsed.auth.partition(":")[0]
