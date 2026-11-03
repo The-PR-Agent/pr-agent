@@ -23,7 +23,7 @@ The commands above assume the `pr_agent` package is importable — use the venv 
 1. In addition to editing your local configuration file, you can also change repository-configurable values by adding them to the command line:
 
    ```
-   python -m pr_agent.cli --pr_url=<pr_url>  /review --pr_reviewer.extra_instructions="focus on the file: ..."
+   python -m pr_agent.cli --pr_url=<pr_url>  review --pr_reviewer.extra_instructions='"focus on the file: ..."'
    ```
 
    Host-controlled values, including provider authentication, TLS, and endpoint settings, are rejected in command arguments. See [Configuration Options](./configuration_options.md#local-configuration-file) for details.
@@ -270,6 +270,8 @@ env:
   github_action_config.review_author_types: '["User"]'
   github_action_config.review_commands: '["/improve"]'
 ```
+
+#### Output and Check Run settings
 
 `github_action_config.enable_output` are used to enable/disable github actions [output parameter](https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#outputs-for-docker-container-and-javascript-actions) (default is `true`).
 Review result is output as JSON to `steps.{step-id}.outputs.review` property.
