@@ -2354,6 +2354,7 @@ def _render_suggestions_user_prompt(prompt_key: str, discussion_context: str) ->
     variables = {
         "title": "Test PR",
         "date": "2024-01-01",
+        "commit_messages_str": "",
         "diff_no_line_numbers": "+value",
         "duplicate_prompt_examples": False,
         "suggestion_discussion_context": discussion_context,
@@ -2392,6 +2393,10 @@ def test_supports_incremental_kind_defaults_to_false_on_base_provider():
     # The base-class default must be "no support" so tools fall back to a full run
     # on providers that never implemented kind-aware incremental anchoring.
     assert GitProvider.supports_incremental_kind(MagicMock(), "suggestions") is False
+
+
+def test_get_commit_messages_defaults_to_empty_string_on_base_provider():
+    assert GitProvider.get_commit_messages(MagicMock()) == ""
 
 
 def test_supports_code_suggestions_artifact_defaults_to_false_on_base_provider():

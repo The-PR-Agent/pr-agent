@@ -19,6 +19,7 @@ from git import Repo
 from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.file_filter import filter_ignored, filter_ignored_with_status
 from pr_agent.algo.language_handler import partition_files_by_language_filter
+from pr_agent.algo.token_budget import clip_tokens
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import (
@@ -337,7 +338,11 @@ class GerritProvider(GitProvider):
             'Removing reactions is not implemented for the gerrit provider')
 
     def get_commit_messages(self) -> str:
-        return self.repo.head.commit.message
+        commit_message = self.repo.head.commit.message
+        max_tokens = get_settings().get("CONFIG.MAX_COMMITS_TOKENS", None)
+        if max_tokens:
+            commit_message = clip_tokens(commit_message, max_tokens)
+        return commit_message
 
     @staticmethod
     def _resolve_settings_entry(settings_tree, settings_path):

@@ -969,6 +969,7 @@ async def test_run_extracts_tickets_only_when_incremental_review_proceeds(monkey
     reviewer.vars = {}
     reviewer.prediction = None
     reviewer._load_previous_findings_context = MagicMock(return_value="Previous findings")
+    git_provider.get_commit_messages.return_value = "1. Fix the parser"
 
     async def extract_tickets(provider, variables):
         variables["related_tickets"] = [{"ticket_url": "https://example/issues/42"}]
@@ -976,6 +977,7 @@ async def test_run_extracts_tickets_only_when_incremental_review_proceeds(monkey
     async def predict(*args, **kwargs):
         extract.assert_awaited_once_with(git_provider, reviewer.vars)
         assert reviewer._raw_prompt_vars["related_tickets"] == reviewer.vars["related_tickets"]
+        assert reviewer._raw_prompt_vars.get("commit_messages_str", "") == ("" if valid_anchor else "1. Fix the parser")
         if not valid_anchor:
             assert reviewer._raw_prompt_vars["previous_findings"] == "Previous findings"
 
