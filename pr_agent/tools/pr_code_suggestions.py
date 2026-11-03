@@ -81,6 +81,11 @@ from pr_agent.tools.progress_comment import (
 # docs/docs/tools/improve.mdx. The flag guards the one-off warning it emits.
 _deprecated_spellings_warned = False
 
+# The self-review keys below never had any effect and were removed from
+# configuration.toml; _warn_on_deprecated_self_review_keys() guards its one-off
+# warning with this flag. TODO: in 1.0, remove the warning as well.
+_deprecated_self_review_keys_warned = False
+
 
 def _as_threshold(setting_name: str, default: int, minimum: int) -> int:
     """Read a score threshold as an int, so a quoted or unusable value cannot fail the run."""
@@ -176,6 +181,35 @@ def get_committable_code_suggestions() -> bool:
             "1.0; rename it to pr_code_suggestions.committable_code_suggestions"
         )
     return deprecated
+
+
+def _warn_on_deprecated_self_review_keys() -> None:
+    """Warn once if a removed self-review key is still set.
+
+    ``approve_pr_on_self_review`` and ``fold_suggestions_on_self_review`` only chose which
+    hidden HTML marker ``add_self_review_text`` appended, and nothing ever read those
+    markers, so both keys were dropped from configuration.toml. A user who still sets
+    either under ``[pr_code_suggestions]`` gets a one-time deprecation warning instead of
+    silence.
+    """
+    global _deprecated_self_review_keys_warned
+    if _deprecated_self_review_keys_warned:
+        return
+    # The keys are absent from configuration.toml, so read them with a default instead of
+    # attribute access.
+    section = get_settings().pr_code_suggestions
+    deprecated_key_set = (
+        section.get("approve_pr_on_self_review", None) is not None
+        or section.get("fold_suggestions_on_self_review", None) is not None
+    )
+    if not deprecated_key_set:
+        return
+    _deprecated_self_review_keys_warned = True
+    get_logger().warning(
+        "pr_code_suggestions.approve_pr_on_self_review and "
+        "pr_code_suggestions.fold_suggestions_on_self_review are deprecated and have no effect; "
+        "they will be removed in 1.0"
+    )
 
 
 def _markdown_code_span(text: str) -> str:
@@ -610,14 +644,8 @@ class PRCodeSuggestions:
     async def add_self_review_text(self, pr_body):
         text = get_settings().pr_code_suggestions.code_suggestions_self_review_text
         pr_body += f"\n\n- [ ]  {text}"
-        approve_pr_on_self_review = get_settings().pr_code_suggestions.approve_pr_on_self_review
-        fold_suggestions_on_self_review = get_settings().pr_code_suggestions.fold_suggestions_on_self_review
-        if approve_pr_on_self_review and not fold_suggestions_on_self_review:
-            pr_body += ' <!-- approve pr self-review -->'
-        elif fold_suggestions_on_self_review and not approve_pr_on_self_review:
-            pr_body += ' <!-- fold suggestions self-review -->'
-        else:
-            pr_body += ' <!-- approve and fold suggestions self-review -->'
+        _warn_on_deprecated_self_review_keys()
+        pr_body += ' <!-- fold suggestions self-review -->'
         return pr_body
 
     def _get_suggestions_coverage_footer(self, suggestions_present: bool = True) -> str:

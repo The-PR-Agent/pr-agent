@@ -43,7 +43,6 @@ FORBIDDEN_ARGS = [
     "--config.enable_auto_approval=true",
     "--config.enable_manual_approval=true",
     "--config.enable_comment_approval=true",
-    "--config.approve_pr_on_self_review=true",
     "--config.override_deployment_type=app",
     # local cache
     "--config.enable_local_cache=true",
