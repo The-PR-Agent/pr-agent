@@ -243,10 +243,9 @@ use_description_markers=false
 enable_large_pr_handling=true
 include_generated_by_header=true
 #custom_labels = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
-# Host-only. With enable_large_pr_handling on, caps the /describe AI calls for a large PR, with
-# one call reserved for the summary.
+# Not settable from a per-directory .pr_agent.toml. Caps the /describe AI calls for a large PR (one is kept for the summary).
 max_ai_calls=4
-# Host-only. Run the /describe calls for a large PR concurrently when enable_large_pr_handling is on.
+# Not settable from a per-directory .pr_agent.toml. Run a large PR's /describe calls concurrently when enable_large_pr_handling is on.
 async_ai_calls=true
 [pr_questions] # /ask #
 enable_help_text=false
@@ -376,12 +375,10 @@ webhook_delivery_deduplication = false
 handle_push_trigger = false
 push_trigger_ignore_bot_commits = true
 push_trigger_ignore_merge_commits = true
-# GitHub App only. Keep one queued push-trigger task for the same PR instead of dropping it; the
-# GitLab, Gitea, and Bitbucket servers always use allow_backlog=True.
+# GitHub App only. Keep one queued push-trigger task per PR instead of dropping it; other servers always queue.
 push_trigger_pending_tasks_backlog = true
-# GitHub App only. Lifetime in seconds for pending push-trigger tasks; the GitLab, Gitea, and
-# Bitbucket servers always use ttl=300. With webhook_delivery_deduplication on, this is also the
-# dedupe window, read at startup.
+# GitHub App only. Seconds idle per-PR push-trigger state is kept (other servers: 300); also the
+# dedupe window when webhook_delivery_deduplication is on.
 push_trigger_pending_tasks_ttl = 300
 push_commands = [
     "/describe",

@@ -244,8 +244,8 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 | `use_description_markers` | false |  |
 | `enable_large_pr_handling` | true |  |
 | `include_generated_by_header` | true |  |
-| `max_ai_calls` | 4 | Host-only. With enable_large_pr_handling on, caps the /describe AI calls for a large PR, with one call reserved for the summary. |
-| `async_ai_calls` | true | Host-only. Run the /describe calls for a large PR concurrently when enable_large_pr_handling is on. |
+| `max_ai_calls` | 4 | Not settable from a per-directory .pr_agent.toml. Caps the /describe AI calls for a large PR (one is kept for the summary). |
+| `async_ai_calls` | true | Not settable from a per-directory .pr_agent.toml. Run a large PR's /describe calls concurrently when enable_large_pr_handling is on. |
 
 
 ## `[pr_questions]` — /ask {#pr_questions-ask}
@@ -378,8 +378,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `handle_push_trigger` | false | settings for "pull_request" event with "synchronize" action - used to detect and handle push triggers for new commits |
 | `push_trigger_ignore_bot_commits` | true |  |
 | `push_trigger_ignore_merge_commits` | true |  |
-| `push_trigger_pending_tasks_backlog` | true | GitHub App only. Keep one queued push-trigger task for the same PR instead of dropping it; the GitLab, Gitea, and Bitbucket servers always use allow_backlog=True. |
-| `push_trigger_pending_tasks_ttl` | 300 | GitHub App only. Lifetime in seconds for pending push-trigger tasks; the GitLab, Gitea, and Bitbucket servers always use ttl=300. With webhook_delivery_deduplication on, this is also the dedupe window, read at startup. |
+| `push_trigger_pending_tasks_backlog` | true | GitHub App only. Keep one queued push-trigger task per PR instead of dropping it; other servers always queue. |
+| `push_trigger_pending_tasks_ttl` | 300 | GitHub App only. Seconds idle per-PR push-trigger state is kept (other servers: 300); also the dedupe window when webhook_delivery_deduplication is on. |
 | `push_commands` | ["/describe", "/review"] |  |
 
 
