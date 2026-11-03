@@ -126,13 +126,14 @@ JIRA_CLOUD_ID_PATTERN = re.compile(
 )
 
 # A Jira project key as configured in jira.project_keys: the "<PROJECT>" in PROJECT-123.
-# Bounded like the prefix in find_jira_tickets (2-10 letters) so an entry can only ever be
+# Jira Cloud keys start with a letter, followed by letters or digits (PROJ, B2B, P2P).
+# Bounded like the prefix in find_jira_tickets (2-10 characters) so an entry can only ever be
 # a plain label, never a URL or a full ticket key. Case-sensitive: Jira project keys are
 # upper case, so a configured "proj" is a typo rather than a spelling variant, and
 # accepting it silently would widen the lookup to a project the repo never named. Keys
 # found in the PR text are still matched case-insensitively and upper-cased
 # (find_jira_tickets) before they are compared.
-JIRA_PROJECT_KEY_PATTERN = re.compile(r"^[A-Z]{2,10}$")
+JIRA_PROJECT_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
 
 
 def _jira_cloud_base_url():
@@ -230,10 +231,12 @@ def _jira_project_keys():
 def find_jira_tickets(text):
     # Regular expression patterns for JIRA tickets. Matching is case-insensitive so
     # lowercased branch names (e.g. bugfix/abc-123-description) are detected; keys are
-    # normalized to upper case to match Jira's canonical form.
+    # normalized to upper case to match Jira's canonical form. A key never starts inside a
+    # run of letters and digits, so part of a hex ID (4f3a9c1e-2716) or of a long word
+    # (authentication-2) is not a key, while an underscore still separates one (feature_abc-123).
     patterns = [
-        r'\b[A-Z]{2,10}-\d{1,7}\b',  # Standard JIRA ticket format (e.g., PROJ-123)
-        r'(?:https?://[^\s/]+/browse/)?([A-Z]{2,10}-\d{1,7})\b'  # JIRA URL or just the ticket
+        r'\b[A-Z][A-Z0-9]{1,9}-\d{1,7}\b',  # Standard JIRA ticket format (e.g., PROJ-123 or B2B-7)
+        r'(?:https?://[^\s/]+/browse/)?(?<![A-Z0-9])([A-Z][A-Z0-9]{1,9}-\d{1,7})\b'  # JIRA URL or just the ticket
     ]
 
     # Preserve first-seen order while de-duplicating, so the MAX_TICKETS cap applied
