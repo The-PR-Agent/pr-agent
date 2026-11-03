@@ -38,6 +38,7 @@ _NON_WHITESPACE_PATTERN = re.compile(r"\S")
 # Imports match Claude Code's CLAUDE.md behavior: a path token outside code spans and fenced
 # code blocks, resolved relative to the file that contains it.
 _MAX_IMPORT_HOPS = 4
+_HARD_MAX_IMPORT_FETCHES = 20
 _FENCE_START_PATTERN = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 _IMPORT_TOKEN_PATTERN = re.compile(r"(?<![\w@._%+-])@")
 _URL_IMPORT_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
@@ -260,7 +261,15 @@ def _mask_inline_code_spans(content: str) -> str:
 def _iter_markdown_import_paths(content: str):
     """Yield @path tokens outside code, honoring a backslash before spaces."""
     masked = _mask_inline_code_spans(_mask_fenced_code_blocks(content))
-    for match in _IMPORT_TOKEN_PATTERN.finditer(masked):
+    index = 0
+    while index < len(masked):
+        if masked[index] != "@":
+            index += 1
+            continue
+        match = _IMPORT_TOKEN_PATTERN.match(masked, index)
+        if match is None:
+            index += 1
+            continue
         index = match.end()
         if index >= len(masked) or masked[index] in "\"'":
             continue
@@ -449,20 +458,37 @@ class _RepoContextLoadState:
     def __init__(self):
         self.had_fetch_error = False
         self.had_content = False
-        self.seen_local_paths = set()
+        self.seen_import_paths = set()
+        self.imported_local_paths = set()
+        self.rendered_local_paths = set()
+        self.import_fetch_attempts = 0
+        self.import_limit_warned = False
 
 
 def _iter_repo_context_imports(
     git_provider, parent_path: str, content: str, from_default_branch: bool,
-    state: _RepoContextLoadState, depth: int,
+    state: _RepoContextLoadState, depth: int, seen_local_paths: set[str],
 ):
     if depth > _MAX_IMPORT_HOPS:
         return
     for path in _iter_markdown_import_paths(content):
         import_path = _resolve_repo_context_import(parent_path, path)
-        if import_path is None or import_path in state.seen_local_paths:
+        if (
+            import_path is None
+            or import_path in state.seen_import_paths
+            or import_path in state.rendered_local_paths
+            or import_path in seen_local_paths
+        ):
             continue
-        state.seen_local_paths.add(import_path)
+        if state.import_fetch_attempts >= _HARD_MAX_IMPORT_FETCHES:
+            if not state.import_limit_warned:
+                state.import_limit_warned = True
+                get_logger().warning(
+                    f"Stopping repo context after {_HARD_MAX_IMPORT_FETCHES} import fetch attempts"
+                )
+            return
+        state.seen_import_paths.add(import_path)
+        state.import_fetch_attempts += 1
         try:
             imported_content = git_provider.get_repo_file_content(
                 import_path, from_default_branch=from_default_branch
@@ -480,10 +506,14 @@ def _iter_repo_context_imports(
             imported_content = imported_content.decode("utf-8", errors="replace")
 
         imported_content = str(imported_content)
+        state.imported_local_paths.add(import_path)
+        state.rendered_local_paths.add(import_path)
+        seen_local_paths.add(import_path)
         state.had_content = True
         yield import_path, imported_content
         yield from _iter_repo_context_imports(
-            git_provider, import_path, imported_content, from_default_branch, state, depth + 1
+            git_provider, import_path, imported_content, from_default_branch, state, depth + 1,
+            seen_local_paths,
         )
 
 
@@ -503,6 +533,7 @@ def _iter_repo_context_files(
     max_siblings = _read_max_sibling_context_files()
     sibling_fetch_attempts = 0
     seen_sibling_pairs = set()
+    seen_local_paths = set()
     for entry in context_files:
         if isinstance(entry, list):
             for alternative in entry:
@@ -512,13 +543,19 @@ def _iter_repo_context_files(
                         artifact={"entry": alternative},
                     )
                     continue
+                _, alternative_path = _parse_repo_context_file_entry(alternative)
+                if alternative_path in state.imported_local_paths:
+                    found_content = True
+                    break
                 found_content = False
                 for label, content in _iter_repo_context_files(
                     git_provider, [alternative], from_default_branch, state=state,
                     expand_imports=expand_imports,
                 ):
                     found_content = True
-                    yield label, content
+                    if label not in seen_local_paths:
+                        seen_local_paths.add(label)
+                        yield label, content
                 if found_content:
                     break
             continue
@@ -567,10 +604,11 @@ def _iter_repo_context_files(
             # Render the file under its sibling path so the model sees where it came from.
             label = f"{repo_id}/{file_path}"
         else:
-            if file_path in state.seen_local_paths:
+            if file_path in seen_local_paths or file_path in state.imported_local_paths:
                 get_logger().debug(f"Skipping duplicate local repo context file: {file_path}")
                 continue
-            state.seen_local_paths.add(file_path)
+            seen_local_paths.add(file_path)
+            state.rendered_local_paths.add(file_path)
             if isinstance(entry, str) and _SIBLING_REPO_SEPARATOR in entry:
                 # A ':' inside a plain local path used to read as a sibling entry. Structured
                 # {"repo_id", "file_path"} dicts are the only sibling form now, so hint at the
@@ -601,7 +639,8 @@ def _iter_repo_context_files(
         yield label, content
         if expand_imports and repo_id is None:
             yield from _iter_repo_context_imports(
-                git_provider, file_path, content, from_default_branch, state, depth=1
+                git_provider, file_path, content, from_default_branch, state, depth=1,
+                seen_local_paths=seen_local_paths,
             )
 
 

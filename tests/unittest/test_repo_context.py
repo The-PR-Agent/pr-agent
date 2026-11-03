@@ -2310,6 +2310,18 @@ def test_repo_context_imports_are_disabled_by_default(repo_context_settings):
     assert provider.requested_paths == ["CLAUDE.md"]
 
 
+def test_repo_context_alternatives_keep_first_available_after_duplicate_entry(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", False)
+    provider = FakeProvider({"AGENTS.md": "agents", "CLAUDE.md": "claude"})
+
+    loaded, _ = repo_context._load_repo_context_files(
+        provider, ["AGENTS.md", ["AGENTS.md", "CLAUDE.md"]], from_default_branch=True
+    )
+
+    assert loaded == [("AGENTS.md", "agents")]
+    assert "CLAUDE.md" not in provider.requested_paths
+
+
 def test_repo_context_expands_imports_relative_to_the_containing_file(repo_context_settings):
     repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
     provider = FakeProvider({
@@ -2357,6 +2369,14 @@ def test_repo_context_import_parsing_skips_code_urls_and_escaping_paths(repo_con
     assert provider.requested_paths == ["CLAUDE.md", "real.md"]
 
 
+def test_repo_context_import_parser_consumes_escaped_space_tokens_once():
+    content = "@first\\ " + "@nested\\ " * 2000 + "last.md"
+
+    paths = list(repo_context._iter_markdown_import_paths(content))
+
+    assert paths == ["first " + "@nested " * 2000 + "last.md"]
+
+
 def test_repo_context_imports_follow_at_most_four_hops(repo_context_settings):
     repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
     provider = FakeProvider({
@@ -2371,6 +2391,18 @@ def test_repo_context_imports_follow_at_most_four_hops(repo_context_settings):
     loaded, _ = repo_context._load_repo_context_files(provider, ["a.md"], from_default_branch=True)
 
     assert [label for label, _ in loaded] == ["a.md", "b.md", "c.md", "d.md", "e.md"]
+
+
+def test_repo_context_import_fetches_have_a_hard_cap(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
+    imports = " ".join(f"@missing-{index}.md" for index in range(30))
+    provider = FakeProvider({"CLAUDE.md": imports})
+
+    loaded, _ = repo_context._load_repo_context_files(provider, ["CLAUDE.md"], from_default_branch=True)
+
+    assert loaded == [("CLAUDE.md", imports)]
+    assert len(provider.requested_paths) == 1 + repo_context._HARD_MAX_IMPORT_FETCHES
+    assert len(set(provider.requested_paths)) == len(provider.requested_paths)
 
 
 def test_repo_context_includes_each_imported_file_once(repo_context_settings):
