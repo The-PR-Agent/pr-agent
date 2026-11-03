@@ -514,6 +514,17 @@ To bound how much of this context is sent to the model, `repo_context_max_lines`
 repo_context_max_lines = 500
 ```
 
+### Expanding @path imports
+
+Local context files can import other repository files with Claude Code's `@path/to/file` syntax. Imports are off by default; enable them with:
+
+```toml
+[config]
+repo_context_expand_imports = true
+```
+
+A file such as `CLAUDE.md` that only contains `@AGENTS.md` then sends the referenced file's content too. Relative paths resolve from the file that contains the import, using the same revision. A backslash escapes a space in the path, as in `@Design\ Docs/rules.md`. Imports inside code spans and fenced code blocks, URL-shaped tokens, and paths that escape the repository root are ignored. Each file is included once, even when several entries reference it, and nesting stops after four hops. Imported lines share `repo_context_max_lines` with the rest of the context. Sibling entries do not expand imports.
+
 ### Context from sibling repositories
 
 The host operator must first approve repositories in the deployment configuration:
