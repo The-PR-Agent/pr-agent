@@ -9,7 +9,12 @@ from dataclasses import dataclass
 import dynaconf
 from starlette_context import context, request_cycle_context
 
-from pr_agent.agent.pr_agent import PRAgent, parse_command, publish_incomplete_files_comment
+from pr_agent.agent.pr_agent import (
+    PRAgent,
+    parse_command,
+    publish_incomplete_files_comment,
+    response_language_instructions,
+)
 from pr_agent.agent.request_policy import RequestOutcome, enforce_request_policy
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
@@ -163,7 +168,8 @@ async def _run_auto_tool(tool_class, pr_url):
     init_run_details()
     _refresh_shared_provider(pr_url)
     try:
-        result = await tool_class(pr_url).run()
+        with response_language_instructions():
+            result = await tool_class(pr_url).run()
     except IncompletePullRequestFilesError as error:
         await asyncio.to_thread(publish_incomplete_files_comment, pr_url, error)
         raise
@@ -353,35 +359,6 @@ async def run_action():
             f"Set {' or '.join(env_var_names)} in this workflow's env. "
             "'pr-agent doctor' preflights the same check by hand."
         )
-
-    # Append the response language in the extra instructions
-    try:
-        response_language = get_settings().config.get('response_language', 'en-us')
-        if response_language.lower() != 'en-us':
-            get_logger().info(f'User has set the response language to: {response_language}')
-
-            lang_instruction_text = (
-                f"Your response MUST be written in the language corresponding to locale code: "
-                f"'{response_language}'. This is crucial. Keep schema control values "
-                f"(such as 'No', 'Yes', 'None', 'false') in their original English form "
-                f"and do not translate them.")
-            separator_text = "\n======\n\nIn addition, "
-
-            for key in get_settings():
-                setting = get_settings().get(key)
-                if isinstance(setting, dynaconf.DataDict):
-                    if key.lower() in ['pr_description', 'pr_code_suggestions', 'pr_reviewer']:
-                        if hasattr(setting, 'extra_instructions'):
-                            extra_instructions = setting.extra_instructions
-
-                            if lang_instruction_text not in str(extra_instructions):
-                                updated_instructions = (
-                                    str(extra_instructions) + separator_text + lang_instruction_text
-                                    if extra_instructions else lang_instruction_text
-                                )
-                                setting.extra_instructions = updated_instructions
-    except Exception as e:
-        get_logger().info(f"github action: failed to apply language-specific instructions: {e}")
 
     # Handle pull request opened event
     if GITHUB_EVENT_NAME == "pull_request" or GITHUB_EVENT_NAME == "pull_request_target":
