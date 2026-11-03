@@ -60,9 +60,9 @@ SECTION_RE = re.compile(r"^\[(?P<name>[^\]]+)\](?:\s*#+\s*(?P<tag>.+?)\s*#*)?$")
 _AZURE_DISMISSAL_NOTE = """\
 Azure DevOps also supplies verified PR-Agent inline key issues as dismissed when their status is `wontFix`
 or `byDesign` and differs from `azure_devops.default_comment_status`. Matching defaults, `fixed`, `closed`,
-active, and pending threads do not count as dismissals. This requires a stable
-`azure_devops_server.agent_identity` and infers a human decision from the current configuration; it cannot
-verify the status-changing actor or historical defaults. Dismissed findings share the existing
+active, and pending threads do not count as dismissals. PR-Agent resolves its posting identity through Azure DevOps;
+`azure_devops_server.agent_identity` can override it. This infers a human decision from the current configuration;
+it cannot verify the status-changing actor or historical defaults. Dismissed findings share the existing
 `max_previous_findings_chars` budget and may be reported again if the code makes them worse."""
 
 NOTES_AFTER_KEY = {
