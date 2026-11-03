@@ -382,15 +382,14 @@ class TestGetDiffFilesEditTypes:
             _make_file("ignored.lock", "modified"),
         ]
         p = _make_provider_for_diff(files)
-        p._get_pr_file_content = lambda file, sha, path=None: "content"
+        p._get_pr_file_content = Mock(return_value="content")
         mod = "pr_agent.git_providers.github_provider"
-        with patch(f"{mod}.filter_ignored", side_effect=lambda entries: entries[:2]), patch(
-            f"{mod}.is_valid_file", side_effect=lambda name: name != "pnpm-lock.yaml"
-        ):
+        with patch(f"{mod}.filter_ignored", side_effect=lambda entries: entries[:2]):
             diffs = p.get_diff_files()
 
         assert [file.filename for file in diffs] == ["package.json"]
         assert p.get_filtered_diff_file_names() == ["pnpm-lock.yaml"]
+        assert [call.args[0].filename for call in p._get_pr_file_content.call_args_list] == ["package.json"] * 2
 
     def test_missing_api_counts_use_lf_boundaries(self, patched_helpers):
         f = _make_file(
