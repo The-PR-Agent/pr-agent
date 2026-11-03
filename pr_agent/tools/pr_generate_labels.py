@@ -207,6 +207,8 @@ class PRGenerateLabels:
             system=self._attempt_system_prompt,
             user=self._attempt_user_prompt,
         )
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"Labels response was truncated by {model}")
 
         return response
 

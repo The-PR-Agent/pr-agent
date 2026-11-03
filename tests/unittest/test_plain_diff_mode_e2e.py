@@ -258,6 +258,103 @@ async def test_commands_through_diff_provider_mocked_llm(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("command,partial,complete,partial_marker,complete_marker", [
+    (
+        "/describe",
+        "type: [Enhancement]\ntitle: Increment\ndescription: TRUNCATED_DESCRIPTION",
+        "type: [Enhancement]\ntitle: Increment\ndescription: COMPLETE_DESCRIPTION\npr_files: []\n",
+        "TRUNCATED_DESCRIPTION", "COMPLETE_DESCRIPTION",
+    ),
+    (
+        "/add_docs",
+        'Code Documentation:\n- relevant file: foo.py\n  relevant line: 1\n  doc placement: after\n'
+        '  documentation: |\n    """\n    TRUNCATED_DOCSTRING\n',
+        'Code Documentation:\n- relevant file: foo.py\n  relevant line: 1\n  doc placement: after\n'
+        '  documentation: |\n    """\n    COMPLETE_DOCSTRING\n    """\n',
+        "TRUNCATED_DOCSTRING", "COMPLETE_DOCSTRING",
+    ),
+    (
+        "/generate_labels", "labels: [Enhancement]\n", "labels: [Bug fix]\n",
+        "## PR Labels:\nEnhancement", "## PR Labels:\nBug fix",
+    ),
+    (
+        "/update_changelog", "### Fixed\n- TRUNCATED_CHANGELOG", "### Fixed\n- COMPLETE_CHANGELOG\n",
+        "TRUNCATED_CHANGELOG", "COMPLETE_CHANGELOG",
+    ),
+], ids=["describe", "add-docs", "generate-labels", "update-changelog"])
+@pytest.mark.parametrize("finish_reasons", [
+    pytest.param(["stop"], id="complete-primary"),
+    pytest.param(["length", "stop"], id="complete-fallback"),
+    pytest.param(["length", "length"], id="fallback-exhausted"),
+])
+async def test_publishing_commands_reject_truncated_responses(
+    tmp_path, monkeypatch, capsys, command, partial, complete, partial_marker, complete_marker, finish_reasons,
+):
+    """Keep parseable truncated output out of publication through the real command flow."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".git").mkdir()
+    head = "def increment(x):\n    return x + 1\n"
+    (tmp_path / "foo.py").write_text(head, encoding="utf-8")
+    diff = (
+        "diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n@@ -1,2 +1,2 @@\n"
+        " def increment(x):\n-    return x\n+    return x + 1\n"
+    )
+    calls = []
+
+    class FakeAiHandler(BaseAiHandler):
+        def __init__(self):
+            pass
+
+        @property
+        def deployment_id(self):
+            return "fake"
+
+        async def chat_completion(self, model, system, user, temperature=0.2, img_path=None):
+            reason = finish_reasons[len(calls)]
+            calls.append((model, user))
+            return (partial if reason == "length" else complete), reason
+
+    succeeded = finish_reasons[-1] == "stop"
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        for key, value in {
+            "config.git_provider": "plain-diff",
+            "config.model": "gpt-4o-mini",
+            "config.model_weak": "gpt-4o-mini",
+            "config.fallback_models": ["gpt-4o"],
+            "config.repo_context_files": [],
+            "config.publish_output": True,
+            "config.publish_output_progress": False,
+            "config.propagate_tool_errors": False,
+            "config.extra_config_url": "",
+            "config.enable_custom_labels": False,
+            "plain_diff.content": diff,
+            "plain_diff.output_path": None,
+            "plain_diff.json_output_path": None,
+            "pr_description.use_description_markers": False,
+            "pr_description.enable_pr_description": True,
+            "pr_description.enable_semantic_files_types": True,
+            "push_outputs.enable": False,
+        }.items():
+            get_settings().set(key, value)
+
+        result = await PRAgent(ai_handler=FakeAiHandler).handle_request("local_diff", command)
+        if succeeded:
+            assert result is True
+            assert command_failed() is False
+        else:
+            assert result is False or command_failed()
+
+    assert [model for model, _ in calls] == ["gpt-4o-mini", "gpt-4o"][:len(finish_reasons)]
+    assert all("return x + 1" in user for _, user in calls)
+    output = capsys.readouterr().out
+    assert partial_marker not in output
+    assert (complete_marker in output) is succeeded
+    if command == "/add_docs" and succeeded:
+        suggestion = output.split("```suggestion\n", 1)[1].split("\n```", 1)[0]
+        compile(suggestion + "\n" + head.split("\n", 1)[1], "foo.py", "exec")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("response,finish_reason,expected_failure", [
     pytest.param("code_suggestions: []", "stop", False, id="complete-empty"),
     pytest.param("code_suggestions: []", "length", True, id="truncated-empty"),
