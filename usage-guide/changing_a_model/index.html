@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">Changing a Model | PR-Agent</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" property="og:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.pr-agent.ai/usage-guide/changing_a_model/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Changing a Model | PR-Agent"><meta data-rh="true" name="description" content="Changing a model in PR-Agent"><meta data-rh="true" property="og:description" content="Changing a model in PR-Agent"><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.pr-agent.ai/usage-guide/changing_a_model/"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/usage-guide/changing_a_model/" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/usage-guide/changing_a_model/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Changing a model","item":"https://docs.pr-agent.ai/usage-guide/changing_a_model"}]}</script><script src="https://widget.kapa.ai/kapa-widget.bundle.js" data-website-id="5c89c0b1-b2ee-43c9-8c6f-43ed762b3c1e" data-project-name="PR-Agent" data-project-color="#2459db" data-project-logo="/img/favicon.svg" data-launcher-button-image="/img/favicon-white.svg" data-color-scheme-selector="[data-theme=&#39;dark&#39;]" async></script><link rel="stylesheet" href="/assets/css/styles.928a3cd8.css">
-<script src="/assets/js/runtime~main.f639050e.js" defer="defer"></script>
+<script src="/assets/js/runtime~main.2034511b.js" defer="defer"></script>
 <script src="/assets/js/main.8693b73f.js" defer="defer"></script>
 </head>
 <body>
@@ -22,6 +22,13 @@ repeats. A request the provider rejects (a 429, a 5xx answer or a connection err
 retried on the same model up to <code>config.num_retries</code> times (default 4) before the fallback models
 are tried, waiting for the provider&#x27;s <code>Retry-After</code> (up to 30 seconds) or with exponential backoff
 between attempts. Set it to <code>0</code> to move to the fallback models at once.</p>
+<p><code>/describe</code>, <code>/add_docs</code>, <code>/generate_labels</code>, and <code>/update_changelog</code> reject responses with
+<code>finish_reason=&quot;length&quot;</code> before publication and use the existing failure and fallback handling.
+If every model attempt fails, they do not publish the truncated result. For large-PR <code>/describe</code>,
+successful chunks can still produce an output with an incomplete-coverage notice when other chunks
+fail. If all chunks fail or the final description is truncated, the overall attempt must recover
+through a fallback model before publication. Normal completed responses keep the same model-call count;
+fallback attempts can increase latency and token cost.</p>
 <p>To see which of these models actually handled a given PR, enable <code>config.output_run_details</code> (see <a class="" href="/usage-guide/additional_configurations/#showing-the-agent-run-details">Additional configurations</a>).
 To send small pull requests to a cheaper model, see <a href="#routing-small-pull-requests-to-a-cheaper-model" class="">Routing small pull requests to a cheaper model</a>.</p>
 <p>PR-Agent supports LiteLLM&#x27;s native model providers and third-party endpoints that implement
