@@ -166,10 +166,13 @@ def test_filtered_file_names_never_append_a_partial_path():
     assert handler.count_tokens(result) <= budget
 
 
-def test_whole_line_metadata_keeps_full_section_with_one_exact_probe():
+@pytest.mark.parametrize(
+    "filename", ["old.py", "src/中文 file.py", "src/a\u2028b.py", "src/a\u0085b.py", "src/a\rb.py"],
+)
+def test_whole_line_metadata_keeps_full_section_with_one_exact_probe(filename):
     handler = CharacterTokenHandler(prompt_tokens=3)
     base = "patch"
-    section = "Deleted files:\n\nold.py"
+    section = f"Deleted files:\n\n{filename}"
     max_tokens = handler.prompt_tokens + len(base + "\n\n" + section)
 
     result, tokens, clipped = pr_processing._append_metadata_section(
@@ -198,6 +201,68 @@ def test_whole_line_metadata_bounds_token_checks_when_many_files_are_omitted():
     assert clipped == retained
     assert tokens == max_tokens
     assert handler.count_calls <= 32  # includes full-section probe and separator
+
+
+@pytest.mark.parametrize(("max_tokens", "retained_count"), [(4, 0), (25, 0), (80, 3)])
+def test_whole_line_metadata_keeps_only_complete_names_within_capacity(max_tokens, retained_count):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    names = [f"src/file_{index:03d}.py" for index in range(40)]
+    section = pr_processing.DELETED_FILES_ + "\n" + "\n".join(names)
+    retained = pr_processing.DELETED_FILES_ + "\n" + "\n".join(names[:retained_count]) if retained_count else ""
+
+    result, tokens, clipped = pr_processing._append_metadata_section(
+        "base", 4, section, max_tokens, handler, whole_lines=True,
+    )
+
+    assert result == "base" + ("\n\n" + retained if retained else "")
+    assert clipped == retained
+    assert tokens == len(result) <= max_tokens
+
+
+@pytest.mark.parametrize("section", ["", pr_processing.DELETED_FILES_, pr_processing.DELETED_FILES_ + "\n"])
+def test_whole_line_metadata_omits_empty_sections_and_headings(section):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+
+    assert pr_processing._append_metadata_section(
+        "base", 4, section, 100, handler, whole_lines=True,
+    ) == ("base", 4, "")
+
+
+@pytest.mark.parametrize("model", ["gpt-4", "gpt-4o"])
+def test_whole_line_metadata_verifies_real_tokenizer_boundaries(model):
+    handler = pr_processing.TokenHandler(model=model)
+    base = "\n source patch \n"
+    names = ["src/中文 file.py", "src/a\u2028b.py", "src/a\u0085b.py", "src/a\rb.py", "last.py"]
+    heading = pr_processing.DELETED_FILES_ + "\n"
+    boundary = base + "\n\n" + heading + "\n".join(names[:3])
+    max_tokens = max(handler.count_tokens(boundary), handler.count_tokens(boundary.strip())) - 1
+
+    result, tokens, clipped = pr_processing._append_metadata_section(
+        base, handler.count_tokens(base), heading + "\n".join(names), max_tokens, handler, whole_lines=True,
+    )
+
+    included = clipped.removeprefix(heading).split("\n")
+    assert 0 < len(included) < len(names)
+    assert included == names[:len(included)]
+    assert result == base + "\n\n" + clipped
+    assert tokens == max(handler.count_tokens(result), handler.count_tokens(result.strip())) <= max_tokens
+
+
+def test_full_diff_keeps_filtered_filename_characters_without_repacking(monkeypatch):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    filename = "assets/中文 a\u2028b\u0085c\rd.map"
+    provider = FakeProvider(_rendered_budget_files()[:1], filtered_names=[filename])
+    patches, _, _ = pr_processing.pr_generate_extended_diff([{"files": provider.files}], handler, False)
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, **kwargs: 10_000)
+
+    def unexpected_repack(*args, **kwargs):
+        pytest.fail("A fitting filtered filename must not trigger compression")
+
+    monkeypatch.setattr(pr_processing, "pr_generate_compressed_diff", unexpected_repack)
+
+    result = pr_processing.get_pr_diff(provider, handler, "model", disable_extra_lines=True)
+
+    assert result == "\n".join(patches) + "\n\n" + pr_processing._filtered_file_section([filename])
 
 
 def test_all_filtered_files_do_not_create_a_review_diff(monkeypatch):
@@ -979,29 +1044,45 @@ def test_append_metadata_sections_keep_complete_diff_within_budget():
 
 
 @pytest.mark.parametrize(
-    ("edit_type", "deleted_files", "heading"),
+    "heading",
     [
-        (EDIT_TYPE.ADDED, [], pr_processing.ADDED_FILES_.strip()),
-        (EDIT_TYPE.MODIFIED, [], pr_processing.MORE_MODIFIED_FILES_.strip()),
-        (EDIT_TYPE.RENAMED, [], pr_processing.MORE_MODIFIED_FILES_.strip()),
-        (EDIT_TYPE.DELETED, [], pr_processing.DELETED_FILES_.strip()),
-        (None, ["metadata.py"], pr_processing.DELETED_FILES_.strip()),
+        pr_processing.ADDED_FILES_,
+        pr_processing.MORE_MODIFIED_FILES_,
+        pr_processing.DELETED_FILES_,
+        pr_processing.FILTERED_FILES_,
     ],
 )
-def test_get_pr_diff_routes_each_metadata_type_through_bounded_append(
-    monkeypatch, edit_type, deleted_files, heading
+def test_append_metadata_section_preserves_trailing_lf_filename_when_fitting(heading):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    section = heading + "\nsrc/trailing-lf.py\n"
+    expected = "base\n\n" + section
+
+    diff, token_count, included = pr_processing._append_metadata_section(
+        "base", 4, section, len(expected), handler, whole_lines=True,
+    )
+
+    assert (diff, token_count, included) == (expected, len(expected), section)
+
+
+@pytest.mark.parametrize(
+    ("edit_type", "from_deleted_list", "heading", "capacity"),
+    [
+        (EDIT_TYPE.ADDED, False, pr_processing.ADDED_FILES_, 500),
+        (EDIT_TYPE.MODIFIED, False, pr_processing.MORE_MODIFIED_FILES_, 500),
+        (EDIT_TYPE.RENAMED, False, pr_processing.MORE_MODIFIED_FILES_, 500),
+        (EDIT_TYPE.DELETED, False, pr_processing.DELETED_FILES_, 500),
+        (EDIT_TYPE.DELETED, True, pr_processing.DELETED_FILES_, 80),
+    ],
+)
+def test_get_pr_diff_preserves_complete_metadata_filenames(
+    monkeypatch, edit_type, from_deleted_list, heading, capacity
 ):
     token_handler = CharacterTokenHandler(prompt_tokens=0)
-    file_dict = {"metadata.py": {"edit_type": edit_type}} if edit_type is not None else {}
-    appended_sections = []
-    original_append_metadata_section = pr_processing._append_metadata_section
-
-    def append_metadata_section(*args, **kwargs):
-        appended_sections.append(args[2])
-        return original_append_metadata_section(*args, **kwargs)
-
-    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 1_500)
-    monkeypatch.setattr(pr_processing, "_append_metadata_section", append_metadata_section)
+    names = [f"src/file_{index:03d}.py" for index in range(40)]
+    deleted_files = names if from_deleted_list else []
+    file_dict = {} if from_deleted_list else {name: {"edit_type": edit_type} for name in names}
+    remaining = [] if edit_type == EDIT_TYPE.DELETED else names.copy()
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, **kwargs: 1_000 + capacity)
     monkeypatch.setattr(
         pr_processing,
         "sort_files_by_main_languages",
@@ -1015,20 +1096,65 @@ def test_get_pr_diff_routes_each_metadata_type_through_bounded_append(
     monkeypatch.setattr(
         pr_processing,
         "pr_generate_compressed_diff",
-        lambda *args, **kwargs: ([["base"]], [1_498], deleted_files, [], file_dict, [[]]),
+        lambda *args, **kwargs: ([["base"]], [4], deleted_files, remaining, file_dict, [[]]),
     )
 
-    diff = pr_processing.get_pr_diff(
-        FakeProvider([]),
-        token_handler,
-        "model",
-        output_token_reserve=lambda model, default: 1,
+    diff, remaining_result = pr_processing.get_pr_diff(
+        FakeProvider([]), token_handler, "model", return_remaining_files=True,
     )
 
-    assert heading in diff
-    assert "metadata.py" in diff
-    assert [section for section in appended_sections if section] == [f"{heading}\n\nmetadata.py"]
-    assert token_handler.prompt_tokens + token_handler.count_tokens(diff) <= 500
+    prefix = "base\n\n" + heading + "\n"
+    assert diff.startswith(prefix)
+    included = diff[len(prefix):].split("\n")
+    assert 0 < len(included) < len(names)
+    assert included == names[:len(included)]
+    assert remaining_result == remaining
+    assert token_handler.count_tokens(diff) <= capacity
+    if from_deleted_list:
+        # Keep the complete prefix that character clipping's marker would discard.
+        assert included == names[:3]
+        assert len(diff) == 69
+
+
+def test_compressed_metadata_preserves_source_order_and_remaining_files(monkeypatch):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    files = [FilePatchInfo("old\n", "new\n", "@@ -1 +1 @@\n-old\n+new\n", "kept.py",
+                           edit_type=EDIT_TYPE.MODIFIED)]
+    large_content = "x" * 2_000 + "\n"
+    for name, edit_type in [("added.py", EDIT_TYPE.ADDED), ("modif.py", EDIT_TYPE.MODIFIED),
+                            ("renam.py", EDIT_TYPE.RENAMED)]:
+        files.append(FilePatchInfo("old\n", large_content, "@@ -1 +1 @@\n-old\n+" + large_content,
+                                   name, edit_type=edit_type))
+    deleted_names = ["src/中文 file.py", "src/a\u2028b.py", "src/a\u0085b.py", "src/a\rb.py"]
+    files.extend(FilePatchInfo(large_content, "", "@@ -1 +0,0 @@\n-" + large_content, name,
+                               edit_type=EDIT_TYPE.DELETED) for name in deleted_names)
+    patches_before = [file.patch for file in files]
+    provider = FakeProvider(files, filtered_names=["asset.map"])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, **kwargs: 1_700)
+    languages = pr_processing.sort_files_by_main_languages(provider.get_languages(), files)
+    pr_processing.pr_generate_extended_diff(languages, handler, False)
+    compressed, _, deleted, remaining, file_dict, _ = pr_processing.pr_generate_compressed_diff(
+        languages, handler, 200, 700, False, False,
+    )
+    assert set(deleted) == set(deleted_names)
+    assert all(name not in file_dict for name in deleted_names)
+
+    diff, remaining_result = pr_processing.get_pr_diff(
+        provider, handler, "model", disable_extra_lines=True, return_remaining_files=True,
+    )
+
+    expected_sections = [
+        "\n".join(compressed[0]),
+        pr_processing.ADDED_FILES_ + "\nadded.py",
+        pr_processing.MORE_MODIFIED_FILES_ + "\nmodif.py\nrenam.py",
+        pr_processing.DELETED_FILES_ + "\n" + "\n".join(deleted),
+        pr_processing._filtered_file_section(["asset.map"]),
+    ]
+    assert diff == "\n\n".join(expected_sections)
+    assert remaining_result == remaining
+    assert set(remaining_result) == {"added.py", "modif.py", "renam.py"}
+    assert [file.patch for file in files] == patches_before
+    assert handler.count_tokens(diff) <= 700
 
 
 def _make_budget_files(tokens_per_file=2_800):
