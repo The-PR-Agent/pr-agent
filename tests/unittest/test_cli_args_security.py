@@ -186,6 +186,12 @@ ALLOWED_ARGS_SINGLE = [
 
 
 HOST_ONLY_ARGS = [
+    "--config.enable_custom_labels=true",
+    "--config__enable_custom_labels=true",
+    '--config={enable_custom_labels: true}',
+    '--custom_labels={"approved": {description: "Workflow approval"}}',
+    "--custom_labels.approved.description=Workflow approval",
+    "--custom_labels__approved__description=Workflow approval",
     "--skills.paths=/etc",
     "--skills__paths=/etc",
     "--skills.unknown=value",
