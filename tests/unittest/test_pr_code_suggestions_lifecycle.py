@@ -85,6 +85,37 @@ def _configure_published_run():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("publish_output", "supports_state"), [(False, True), (True, True), (True, False)])
+async def test_run_reconciles_suggestion_threads_only_when_publishing(monkeypatch, publish_output, supports_state):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS + ("data",))
+    try:
+        provider = MagicMock()
+        provider.get_files.return_value = ["app.py"]
+        provider.supports_code_suggestion_state.return_value = supports_state
+        provider.supports_code_suggestions_artifact.return_value = False
+        provider.reconcile_code_suggestion_threads.return_value = 0
+        tool = _make_tool(provider)
+        prediction = AsyncMock(return_value={"code_suggestions": []})
+        monkeypatch.setattr(tool, "prepare_prediction_main", prediction)
+
+        async def predict_with_fallback(callback, **kwargs):
+            return await callback("test-model")
+
+        monkeypatch.setattr(pr_code_suggestions_module, "retry_with_fallback_models", predict_with_fallback)
+        settings = get_settings()
+        settings.config.publish_output = publish_output
+        settings.config.publish_output_progress = False
+
+        await tool.run()
+
+        assert provider.reconcile_code_suggestion_threads.call_count == int(publish_output and supports_state)
+        prediction.assert_awaited_once_with("test-model")
+        assert command_failed() is False
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("history_len", [0, 4])
 @pytest.mark.parametrize("warning_result", ["comment", "none", "error"])
 async def test_run_records_failed_persistent_update_without_duplicate_summary(

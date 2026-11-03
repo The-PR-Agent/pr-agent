@@ -6,6 +6,9 @@ import re
 from collections.abc import Iterator
 from types import SimpleNamespace
 from urllib.parse import quote, unquote, urlparse
+from uuid import UUID
+
+from requests.exceptions import RequestException
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -95,6 +98,7 @@ try:
     # noinspection PyUnresolvedReferences
     from azure.identity import DefaultAzureCredential
     from msrest.authentication import BasicAuthentication
+    from msrest.exceptions import ClientException
 except ImportError:
     AZURE_DEVOPS_AVAILABLE = False
 
@@ -219,6 +223,8 @@ class AzureDevopsProvider(GitProvider):
                 "Azure DevOps provider is not available. Install it with `pip install 'pr-agent[azure]'`."
             )
 
+        self._azure_devops_connection = None
+        self._authenticated_agent_id = None
         self.azure_devops_client, self.azure_devops_board_client = self._get_azure_devops_client()
         self.diff_files = None
         self._diff_path_map = None
@@ -527,8 +533,28 @@ class AzureDevopsProvider(GitProvider):
             get_logger().exception(f"Failed to remove comment, error: {e}")
 
     def publish_labels(self, pr_types) -> bool:
+        # pr_types is the complete label set. Azure DevOps has no call that replaces the set, so
+        # remove the current labels that are not in it, then create the ones that are missing.
         try:
+            current_labels = self.azure_devops_client.get_pull_request_labels(
+                project=self.workspace_slug,
+                repository_id=self.repo_slug,
+                pull_request_id=self.pr_num,
+            )
+            for label in current_labels:
+                if label.name not in pr_types:
+                    # By id: names such as "Review effort 2/5" contain a slash, and this call puts
+                    # its label argument in the URL path.
+                    self.azure_devops_client.delete_pull_request_labels(
+                        repository_id=self.repo_slug,
+                        pull_request_id=self.pr_num,
+                        label_id_or_name=label.id,
+                        project=self.workspace_slug,
+                    )
+            current_names = {label.name for label in current_labels}
             for pr_type in pr_types:
+                if pr_type in current_names:
+                    continue
                 self.azure_devops_client.create_pull_request_label(
                     label={"name": pr_type},
                     project=self.workspace_slug,
@@ -575,6 +601,7 @@ class AzureDevopsProvider(GitProvider):
 
     def set_pr(self, pr_url: str):
         self.diff_files = None
+        self._latest_commit_url = None
         self._diff_path_map = None
         self._pr_iteration_changes_cache = None
         self._languages = None
@@ -1224,15 +1251,55 @@ class AzureDevopsProvider(GitProvider):
             if self._is_stable_agent_identity(identity)
         }
 
+    def _agent_identities(self) -> set[str]:
+        if self._configured_agent_identities():
+            return self._configured_stable_agent_identities()
+        agent_id = self._resolve_authenticated_agent_id()
+        return {agent_id} if agent_id else set()
+
+    def _resolve_authenticated_agent_id(self) -> str:
+        """Resolve the posting account through the connection used for comment writes."""
+        cached = getattr(self, "_authenticated_agent_id", None)
+        if cached:
+            return cached
+        connection = getattr(self, "_azure_devops_connection", None)
+        if connection is None:
+            return ""
+        try:
+            data = connection.clients.get_location_client().get_connection_data()
+        except (ClientException, RequestException) as error:
+            get_logger().warning(
+                "Could not resolve Azure DevOps agent identity; configure azure_devops_server.agent_identity "
+                f"if identity lookup is unavailable, error: {error}")
+            return ""
+
+        # The authorized user is the effective account when the connection impersonates a user.
+        # Do not trust both identities if it differs from the authenticated account.
+        user = self._value(data, "authorized_user", "authorizedUser")
+        if user is None:
+            user = self._value(data, "authenticated_user", "authenticatedUser")
+        user_id = self._value(user, "id")
+        try:
+            identity = UUID(user_id.strip()) if isinstance(user_id, str) else None
+        except ValueError:
+            identity = None
+        if identity is None or not identity.int:
+            get_logger().warning(
+                "Azure DevOps returned no usable agent identity; configure azure_devops_server.agent_identity")
+            return ""
+        # Cache only success so a transient failure can recover on a later lookup.
+        self._authenticated_agent_id = str(identity)
+        return self._authenticated_agent_id
+
     def supports_review_finding_state(self) -> bool:
-        return bool(self._configured_stable_agent_identities())
+        return bool(self._agent_identities())
 
     def is_comment_authored_by_pr_agent(self, comment) -> bool:
-        identities = self._configured_agent_identities()
-        if not identities:
-            raise RuntimeError("Azure DevOps agent identity is not configured")
-        stable_identities = self._configured_stable_agent_identities()
+        stable_identities = self._agent_identities()
         if not stable_identities:
+            if not self._configured_agent_identities():
+                raise RuntimeError(
+                    "Azure DevOps agent identity cannot be verified; configure azure_devops_server.agent_identity")
             return False
         author = self._value(comment, "author") or self._value(comment, "user")
         if author is None:
@@ -1444,7 +1511,7 @@ class AzureDevopsProvider(GitProvider):
         return comment_matches_any_identity(content.lstrip(), cls._AGENT_COMMENT_IDENTIFIERS)
 
     def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
-        verify_author = bool(self._configured_stable_agent_identities())
+        verify_author = bool(self._agent_identities())
         for thread in reversed(self._get_threads()):
             comments = self._value(thread, "comments") or []
             if not comments:
@@ -1455,7 +1522,7 @@ class AzureDevopsProvider(GitProvider):
             yield self._parse_inline_thread(thread, comments, verify_author)
 
     def _iter_review_threads(self) -> Iterator[CodeSuggestionThread]:
-        verify_author = bool(self._configured_stable_agent_identities())
+        verify_author = bool(self._agent_identities())
         default_status = get_settings().azure_devops.get("default_comment_status", "closed")
         for thread in reversed(self._get_threads()):
             comments = self._value(thread, "comments") or []
@@ -1816,8 +1883,7 @@ class AzureDevopsProvider(GitProvider):
 
         return workspace_slug, repo_slug, pr_number
 
-    @staticmethod
-    def _get_azure_devops_client() -> tuple[GitClient, WorkItemTrackingClient]:
+    def _get_azure_devops_client(self) -> tuple[GitClient, WorkItemTrackingClient]:
         org = get_settings().azure_devops.get("org", None)
         pat = get_settings().azure_devops.get("pat", None)
 
@@ -1841,6 +1907,7 @@ class AzureDevopsProvider(GitProvider):
 
         credentials = BasicAuthentication("", auth_token)
         azure_devops_connection = Connection(base_url=org, creds=credentials)
+        self._azure_devops_connection = azure_devops_connection
         azure_devops_client = azure_devops_connection.clients.get_git_client()
         azure_devops_board_client = azure_devops_connection.clients.get_work_item_tracking_client()
 
@@ -1886,6 +1953,8 @@ class AzureDevopsProvider(GitProvider):
         return head if isinstance(head, str) else ""
 
     def get_latest_commit_url(self) -> str:
+        if (cached_url := getattr(self, "_latest_commit_url", None)) is not None:
+            return cached_url
         commits = self.azure_devops_client.get_pull_request_commits(self.repo_slug, self.pr_num, self.workspace_slug)
         if not commits:
             # a PR force-pushed back onto its base has zero commits; fall back to the base-class contract
@@ -1896,6 +1965,7 @@ class AzureDevopsProvider(GitProvider):
         workspace = quote(self.workspace_slug, safe='')
         repo = quote(self.repo_slug, safe='')
         url = self.azure_devops_client.normalized_url + "/" + workspace + "/_git/" + repo + "/commit/" + last.commit_id
+        self._latest_commit_url = url
         return url
 
     def get_linked_work_items(self) -> list:

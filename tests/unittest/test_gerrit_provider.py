@@ -43,7 +43,7 @@ def command_timeout_setting():
 def test_direct_gerrit_children_use_safe_per_call_timeout(
     monkeypatch, command_timeout_setting, operation, invoke, tmp_path
 ):
-    url = urllib3.util.parse_url("ssh://secret-user:secret-pass@example.com:29418/project")
+    url = urllib3.util.parse_url("https://secret-user:secret-pass@example.com:29418/project")
     ref = "refs/changes/01/1/1"
     calls = []
 
@@ -68,22 +68,44 @@ def test_direct_gerrit_children_use_safe_per_call_timeout(
     ))
     assert len(calls) == 1
     expected = {
-        "clone": ("git", "clone", "--depth", "1", url, tmp_path),
-        "fetch": ("git", "fetch", "--depth", "2", url, ref),
+        "clone": ("git", "clone", "--depth", "1", "https://example.com:29418/project", tmp_path),
+        "fetch": ("git", "fetch", "--depth", "2", "https://example.com:29418/project", ref),
         "checkout": ("git", "checkout", "FETCH_HEAD"),
         "show": ("git", "show", "HEAD"),
         "diff": ("git", "diff", "HEAD"),
         "reset": ("git", "checkout", "--force"),
-        "query": ("ssh", "-p", "29418", "secret-user:secret-pass@example.com", "gerrit", "query",
+        "query": ("ssh", "-p", "29418", "secret-user@example.com", "gerrit", "query",
                   "--comments", "--current-patch-set", "1", "--format", "JSON"),
-        "review": ("ssh", "-p", "29418", "secret-user:secret-pass@example.com", "gerrit", "review",
+        "review": ("ssh", "-p", "29418", "secret-user@example.com", "gerrit", "review",
                    "--message", "'private comment'", "1,1"),
     }
     assert calls[0][0] == expected[operation]
+    assert "secret-pass" not in repr(calls[0][0])
+    if operation in {"clone", "fetch"}:
+        assert any(value == "http.extraHeader" for key, value in calls[0][1]["env"].items()
+                   if key.startswith("GIT_CONFIG_KEY_"))
+        assert any(value.startswith("Authorization: Basic ")
+                   for key, value in calls[0][1]["env"].items()
+                   if key.startswith("GIT_CONFIG_VALUE_"))
     assert calls[0][1].get("cwd") == (None if operation in {"clone", "query", "review"} else tmp_path)
     assert calls[0][1]["timeout"] == 120
     assert calls[0][1]["capture_output"] is True
     assert calls[0][1]["check"] is True
+
+
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_git_url_without_password_keeps_username_and_netrc(monkeypatch, scheme):
+    url = urllib3.util.parse_url(f"{scheme}://secret-user@example.com:29418/project")
+    calls = []
+    monkeypatch.setattr(
+        gerrit_provider.subprocess, "run",
+        lambda command, **kwargs: (calls.append((command, kwargs)), SimpleNamespace(stdout=b"ok"))[1],
+    )
+
+    gerrit_provider.clone(url, "/tmp/project")
+
+    assert calls[0][0] == ("git", "clone", "--depth", "1", str(url), "/tmp/project")
+    assert "GIT_CONFIG_COUNT" not in calls[0][1]["env"]
 
 
 @pytest.mark.parametrize("value", [None, True, False, 0, -2, float("nan"), float("inf"), "private-invalid", {}])
@@ -317,6 +339,29 @@ def test_get_commit_messages_returns_text(tmp_path):
     provider.repo = _make_repo(tmp_path, ["app.py"])
 
     assert provider.get_commit_messages() == "initial files"
+
+
+@pytest.mark.parametrize("max_tokens", [None, 0, 5])
+def test_get_commit_messages_clips_to_max_commits_tokens(tmp_path, max_tokens):
+    message = "Répare le cache " * 50
+    repo = git.Repo.init(tmp_path)
+    repo.index.commit(message)
+    provider = object.__new__(GerritProvider)
+    provider.repo = repo
+    snapshot = settings_helpers.snapshot_settings(["config.max_commits_tokens"])
+    try:
+        get_settings().set("config.max_commits_tokens", max_tokens)
+        commit_messages = provider.get_commit_messages()
+    finally:
+        settings_helpers.restore_settings(snapshot)
+        repo.close()
+
+    if max_tokens:
+        assert commit_messages.endswith("...(truncated)")
+        assert message.startswith(commit_messages.removesuffix("\n...(truncated)"))
+        assert len(commit_messages) < len(message)
+    else:
+        assert commit_messages == message
 
 
 def test_detached_gerrit_branch_keeps_commit_message_in_jira_context(tmp_path, monkeypatch):

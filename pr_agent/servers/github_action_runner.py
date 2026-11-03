@@ -329,11 +329,16 @@ async def run_action():
         settings_provider = None
 
     # Gate on the active provider's key after repo settings are applied (a repo-level
-    # .pr_agent.toml can select a different provider) but before any tool runs: carrying
+    # .pr_agent.toml can select a different provider) but before model-backed tools run: carrying
     # on with the placeholder only fails every call a full run later (#4195, #4324).
     # Keyless providers defer to the run, as in `pr-agent doctor`; so do events with no
-    # PR, which have no repo settings to judge from.
-    missing_key = missing_provider_key_env_vars() if pr_url else None
+    # PR, which have no repo settings to judge from. Bare static commands need no model key.
+    static_comment_command = (
+        GITHUB_EVENT_NAME in ("issue_comment", "pull_request_review_comment")
+        and isinstance(comment_body, str)
+        and comment_body.strip().lower() in {"/help", "/config", "/settings"}
+    )
+    missing_key = missing_provider_key_env_vars() if pr_url and not static_comment_command else None
     if missing_key is not None:
         # Skip ignored automatic PR batches before enforcing a model key they do not need.
         if (GITHUB_EVENT_NAME in ("pull_request", "pull_request_target", "workflow_run")

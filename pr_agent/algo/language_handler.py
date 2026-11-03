@@ -8,6 +8,7 @@ AUTO_GENERATED_FILES_EXACT = frozenset({
     'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'composer.lock', 'Gemfile.lock',
     'poetry.lock', 'go.sum', '.terraform.lock.hcl', 'uv.lock',
     'Cargo.lock', 'Pipfile.lock', 'mix.lock', 'pubspec.lock', 'bun.lockb',
+    'packages.lock.json', 'Package.resolved',
 })
 
 
@@ -52,7 +53,7 @@ def _is_valid_file(filename: str, excluded_extensions: set[str]) -> bool:
     auto_generated_suffixes = ('.min.js', '.min.css', '.js.map', '.ts.map', '.css.map')
     if filename.replace('\\', '/').split('/')[-1] in AUTO_GENERATED_FILES_EXACT:
         return False
-    if filename.endswith(auto_generated_suffixes):
+    if filename.lower().endswith(auto_generated_suffixes):
         return False
 
     # Compare case-insensitively: excluded_extensions already contains lowercase extensions.

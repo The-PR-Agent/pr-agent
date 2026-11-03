@@ -9,7 +9,7 @@ sidebar_position: 6
 
    - PR title and branch name
    - PR original description
-   - Commit messages history
+   - Commit messages history (GitHub, GitLab, Gitea and Gerrit; the other providers send none). `/review` and `/improve` get them too; set `config.max_commits_tokens = -1` to leave them out.
    - PR diff patches, in [hunk diff](https://loicpefferkorn.net/2014/02/diff-files-what-are-hunks-and-how-to-extract-them/) format
    - The entire content of the files that were modified in the PR
 

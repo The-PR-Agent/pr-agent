@@ -7,6 +7,7 @@ via ``__new__`` and only the attributes touched by each helper are set.
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
@@ -484,6 +485,8 @@ code_suggestions:
 @pytest.mark.parametrize(("content", "keep_suggestion"), [
     ("Use const instead of let when not reassigning.", False),
     ("Use `const` instead of `let` when not reassigning.", False),
+    ("use const instead\tof let when not reassigning.", False),
+    ("USE const instead of let when not reassigning.", False),
     ("Create the client once in the constructor instead of deleting and recreating it for every request.", True),
     ("Use the constructor instead of a let binding.", True),
     ("Cache the const binding instead of deleting it on every request.", True),
@@ -513,6 +516,30 @@ code_suggestions:
     summaries = [s["one_sentence_summary"] for s in data["code_suggestions"]]
     expected = ["First suggestion", "Keep this one"] if keep_suggestion else ["Keep this one"]
     assert summaries == expected
+
+
+@pytest.mark.parametrize("content", [
+    "Use let instead of const because the variable needs to be reassigned.",
+    "Use `let` instead of `const` because the variable needs to be reassigned.",
+    "Avoid const; use let instead to allow reassignment.",
+    "Replace const with let because the variable is reassigned later.",
+    "Do not use const instead of let because the variable is reassigned later.",
+])
+def test_prepare_pr_code_suggestions_keeps_const_to_let_fixes(content):
+    tool = _make_tool()
+    suggestion = _valid_suggestion(
+        one_sentence_summary="Allow reassignment",
+        label="possible bug",
+        relevant_file="app.js",
+        relevant_lines_end=2,
+        suggestion_content=content,
+        existing_code="const count = 0;\ncount += 1;",
+        improved_code="let count = 0;\ncount += 1;",
+    )
+
+    data = tool._prepare_pr_code_suggestions(yaml.safe_dump({"code_suggestions": [suggestion]}))
+
+    assert data["code_suggestions"] == [suggestion]
 
 
 def test_prepare_pr_code_suggestions_skips_suggestion_missing_improved_code():

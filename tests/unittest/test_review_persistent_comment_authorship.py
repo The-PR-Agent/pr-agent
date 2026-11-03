@@ -33,6 +33,8 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.tools.pr_reviewer import PRReviewer
+from pr_agent.tools.ticket_pr_compliance_check import extract_and_cache_pr_tickets
+from tests.unittest import _settings_helpers
 
 PR_URL = "https://github.com/org/repo/pull/1"
 HEAD_FILE = "def retry():\n    attempts = 0\n    while attempts < 3:\n        pass\n"
@@ -205,6 +207,16 @@ def review_settings(monkeypatch):
     return settings
 
 
+@pytest.fixture
+def jira_review_settings():
+    snapshot = _settings_helpers.snapshot_settings([
+        "jira.jira_site", "jira.jira_api_email", "jira.jira_api_token", "jira.cloud_id",
+        "jira.project_keys", "jira.jira_requirements_field", "related_tickets",
+    ])
+    yield
+    _settings_helpers.restore_settings(snapshot)
+
+
 def _previous_persistent_review(body_text="previous review body"):
     finding = {"path": "src/app.py", "body": "**Possible Issue**\n\nOld wording of the finding.",
                "line_start": 3, "line_end": 4}
@@ -286,6 +298,88 @@ async def test_azure_devops_without_configured_identity_creates_the_persistent_r
 
     assert not any(body.startswith(STANDALONE_HEADING) for body in calls["plain"])
     assert len(calls["persistent"]) == 1
+
+
+@pytest.mark.parametrize("jira_enabled", [False, True])
+async def test_azure_auto_rerun_resolves_identity_and_edits_review(
+    monkeypatch, review_settings, jira_review_settings, jira_enabled
+):
+    """Separate automatic runs update one review, with or without freshly fetched Jira context."""
+    bot_id = "11111111-1111-1111-1111-111111111111"
+    monkeypatch.setitem(review_settings.config, "git_provider", "azure")
+    monkeypatch.setitem(review_settings.config, "is_auto_command", True)
+    monkeypatch.setitem(review_settings.azure_devops, "org", "https://dev.azure.com/test")
+    monkeypatch.setitem(review_settings.azure_devops, "pat", "test-pat")
+    monkeypatch.setitem(review_settings.pr_reviewer, "require_ticket_analysis_review", True)
+    for key, value in {
+        "jira_site": "example" if jira_enabled else "",
+        "jira_api_email": "test@example.test" if jira_enabled else "",
+        "jira_api_token": "test-token" if jira_enabled else "",
+        "cloud_id": "",
+        "project_keys": ["*"],
+        "jira_requirements_field": "",
+    }.items():
+        review_settings.set(f"jira.{key}", value)
+    if jira_enabled:
+        monkeypatch.setattr(FakeAIHandler, "response", REVIEW_YAML.replace("review:\n", """review:
+  ticket_compliance_check:
+    - ticket_url: https://example.atlassian.net/browse/ABC-123
+      ticket_requirements: Retry failed requests.
+      fully_compliant_requirements: ""
+      not_compliant_requirements: The retry loop never increments attempts.
+      requires_further_human_verification: ""
+""", 1))
+    jira_client = MagicMock()
+    jira_client.issue.return_value = {"fields": {
+        "summary": "Add retry loop", "description": "Retry failed requests.", "labels": []}}
+    monkeypatch.setattr("atlassian.Jira", lambda **kwargs: jira_client)
+    connection = MagicMock()
+    connection.clients.get_location_client.return_value.get_connection_data.return_value = SimpleNamespace(
+        authorized_user=SimpleNamespace(id=bot_id))
+    monkeypatch.setattr("pr_agent.git_providers.azuredevops_provider.Connection", lambda **kwargs: connection)
+    client = connection.clients.get_git_client.return_value
+    threads = []
+    client.get_threads.return_value = threads
+
+    def create_thread(comment_thread, **kwargs):
+        comment_thread.id = len(threads) + 1
+        comment_thread.comments[0].id = 1
+        comment_thread.comments[0].author = SimpleNamespace(id=bot_id)
+        threads.append(comment_thread)
+        return comment_thread
+
+    def update_comment(comment, thread_id, comment_id, **kwargs):
+        existing = next(thread for thread in threads if thread.id == thread_id).comments[0]
+        assert existing.id == comment_id
+        existing.content = comment.content
+        return existing
+
+    client.create_thread.side_effect = create_thread
+    client.update_comment.side_effect = update_comment
+    for _ in range(2):
+        # Model separate workflow invocations, with no cached identity or ticket context.
+        review_settings.set("related_tickets", [])
+        provider = AzureDevopsProvider()
+        _stub_pr_data(provider, FakePR([], "pr-agent"))
+        provider.pr.description = "Implements ABC-123."
+        provider.workspace_slug = "project"
+        provider.repo_slug = "repo"
+        provider.get_linked_work_items = lambda: []
+        provider.get_latest_commit_url = lambda: "https://example.test/commit/abc123"
+        _wire_reviewer(monkeypatch, provider)
+        monkeypatch.setattr("pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets", extract_and_cache_pr_tickets)
+        reviewer = PRReviewer(PR_URL, ai_handler=FakeAIHandler)
+        await reviewer.run()
+        if jira_enabled:
+            assert reviewer.vars["related_tickets"][0]["ticket_id"] == "ABC-123"
+
+    assert jira_client.issue.call_count == (2 if jira_enabled else 0)
+    assert len(threads) == 1
+    assert client.update_comment.call_count == 1
+    assert not threads[0].comments[0].content.startswith(STANDALONE_HEADING)
+    assert "pr-agent-review-state:v1" in threads[0].comments[0].content
+    if jira_enabled:
+        assert "https://example.atlassian.net/browse/ABC-123" in threads[0].comments[0].content
 
 
 async def test_control_github_pat_rerun_edits_the_previous_review(monkeypatch, review_settings):

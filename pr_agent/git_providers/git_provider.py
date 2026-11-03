@@ -383,10 +383,12 @@ class GitProvider(ABC):
         different ignore rules), so reset unconditionally rather than only when the
         cached diff is empty. Resets the incremental anchor too, and the request-scoped
         diff cache some providers keep in the starlette context. #3724 introduced this
-        for GitHub; the semantics live here so every provider inherits them.
+        for GitHub; the semantics live here so every provider inherits them. Drop the
+        latest commit URL too, so the next command can see newly pushed commits.
         """
         self._tool_provider_stale = True
         self.diff_files = None
+        self._latest_commit_url = None
         if getattr(self, "incremental", None) is not None:
             self.incremental = IncrementalPR(False)
         if context.exists():
@@ -1264,6 +1266,9 @@ class GitProvider(ABC):
     def publish_labels(self, labels) -> bool | None:
         """Acknowledge label publication without guaranteeing remote label equality.
 
+        ``labels`` is the complete set the PR should end up with. Labels missing from it
+        are removed, so callers include the existing labels they want to keep.
+
         Return True on normal completion or a provider-specific no-op, and exact False
         for a known normalized failure. Legacy/custom providers may return None;
         callers must check ``result is False`` to detect an acknowledged failure.
@@ -1331,7 +1336,7 @@ class GitProvider(ABC):
     #### commits operations ####
     @abstractmethod
     def get_commit_messages(self) -> str:
-        pass
+        return ""
 
     def get_pr_url(self) -> str:
         if hasattr(self, 'pr_url'):
