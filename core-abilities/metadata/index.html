@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">Local and global metadata injection with multi-stage analysis | PR-Agent</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" property="og:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.pr-agent.ai/core-abilities/metadata/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Local and global metadata injection with multi-stage analysis | PR-Agent"><meta data-rh="true" name="description" content="Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps, Gitea"><meta data-rh="true" property="og:description" content="Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps, Gitea"><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.pr-agent.ai/core-abilities/metadata/"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/core-abilities/metadata/" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/core-abilities/metadata/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Local and global metadata","item":"https://docs.pr-agent.ai/core-abilities/metadata"}]}</script><script src="https://widget.kapa.ai/kapa-widget.bundle.js" data-website-id="5c89c0b1-b2ee-43c9-8c6f-43ed762b3c1e" data-project-name="PR-Agent" data-project-color="#2459db" data-project-logo="/img/favicon.svg" data-launcher-button-image="/img/favicon-white.svg" data-color-scheme-selector="[data-theme=&#39;dark&#39;]" async></script><link rel="stylesheet" href="/assets/css/styles.928a3cd8.css">
-<script src="/assets/js/runtime~main.051ea1be.js" defer="defer"></script>
+<script src="/assets/js/runtime~main.163404fd.js" defer="defer"></script>
 <script src="/assets/js/main.8693b73f.js" defer="defer"></script>
 </head>
 <body>
@@ -18,7 +18,7 @@
 <ul>
 <li class="">PR title and branch name</li>
 <li class="">PR original description</li>
-<li class="">Commit messages history</li>
+<li class="">Commit messages history (GitHub, GitLab, Gitea and Gerrit; the other providers send none). <code>/review</code> and <code>/improve</code> get them too; set <code>config.max_commits_tokens = -1</code> to leave them out.</li>
 <li class="">PR diff patches, in <a href="https://loicpefferkorn.net/2014/02/diff-files-what-are-hunks-and-how-to-extract-them/" target="_blank" rel="noopener noreferrer" class="">hunk diff</a> format</li>
 <li class="">The entire content of the files that were modified in the PR</li>
 </ul>
