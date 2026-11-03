@@ -5,6 +5,7 @@ from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
+from pr_agent.tools.pr_add_docs import PRAddDocs
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
@@ -148,13 +149,14 @@ def test_get_files_returns_new_path_for_renamed_file(tmp_path):
 
 
 def test_local_diff_applies_ignore_rules_to_files_and_patches(tmp_path):
-    repo = _make_repo(tmp_path, ["generated/schema.py", "src/app.py"])
+    names = ["generated/schema.py", "generated/uv.lock", "src/app.py", "yarn.lock"]
+    repo = _make_repo(tmp_path, names)
     target_branch_name = repo.active_branch.name
     repo.git.checkout("-b", "feature")
-    for name in ("generated/schema.py", "src/app.py"):
+    for name in names:
         (tmp_path / name).write_text("changed\n")
-    repo.index.add(["generated/schema.py", "src/app.py"])
-    repo.index.commit("change both files")
+    repo.index.add(names)
+    repo.index.commit("change files")
 
     provider = object.__new__(LocalGitProvider)
     provider.repo = repo
@@ -164,8 +166,28 @@ def test_local_diff_applies_ignore_rules_to_files_and_patches(tmp_path):
     try:
         get_settings().set("IGNORE.GLOB", ["generated/**"])
         get_settings().set("IGNORE.REGEX", [])
-        assert provider.get_files() == ["src/app.py"]
-        assert [file.filename for file in provider.get_diff_files()] == ["src/app.py"]
+        first = provider.get_diff_files()
+        assert provider.get_files() == ["src/app.py", "yarn.lock"]
+        assert provider.get_filtered_diff_file_names() == ["yarn.lock"]
+        assert provider.get_diff_files() is first
+        assert first[1].head_file == "changed\n"
+        assert first[1].patch
+
+        get_settings().set("IGNORE.GLOB", ["*.lock"])
+        assert provider.get_diff_files() is first
+        assert provider.get_filtered_diff_file_names() == ["yarn.lock"]
+        get_settings().set("IGNORE.GLOB", [])
+        get_settings().set("IGNORE.REGEX", ["["])
+        provider.reset_diff_cache_for_command()
+        assert [file.filename for file in provider.get_diff_files()] == names
+        assert provider.get_filtered_diff_file_names() == []
+        get_settings().set("IGNORE.GLOB", ["*.lock"])
+        get_settings().set("IGNORE.REGEX", [])
+        provider.reset_diff_cache_for_command()
+        second = provider.get_diff_files()
+        assert [file.filename for file in second] == ["generated/schema.py", "src/app.py"]
+        assert second is not first
+        assert provider.get_filtered_diff_file_names() == []
     finally:
         restore_settings(snapshot)
 
@@ -414,6 +436,42 @@ def test_publish_description_writes_utf8_regardless_of_locale(tmp_path, monkeypa
 
     provider.publish_description("my-branch", "✨ Describe tool usage guide")
     assert description_path.read_text(encoding="utf-8") == "my-branch\n✨ Describe tool usage guide"
+
+
+@pytest.mark.parametrize(
+    "tool, output_attr",
+    [("improve", "improve_path"), ("describe", "description_path"), ("add_docs", "improve_path")],
+)
+def test_publish_tool_failure_keeps_review_file(tmp_path, tool, output_attr):
+    # A failed /improve, /describe or /add_docs must not overwrite the persisted /review result.
+    review_path = tmp_path / "review.md"
+    review_path.write_text("previous review")
+    provider = object.__new__(LocalGitProvider)
+    provider.review_path = review_path
+    provider.improve_path = tmp_path / "improve.md"
+    provider.description_path = tmp_path / "description.md"
+
+    provider.publish_tool_failure(tool, "Failed")
+
+    assert review_path.read_text() == "previous review"
+    assert getattr(provider, output_attr).read_text() == "Failed"
+
+
+def test_add_docs_empty_result_keeps_review_file(tmp_path):
+    review_path = tmp_path / "review.md"
+    review_path.write_text("previous review")
+    provider = object.__new__(LocalGitProvider)
+    provider.review_path = review_path
+    provider.improve_path = tmp_path / "improve.md"
+    provider.description_path = tmp_path / "description.md"
+    tool = PRAddDocs.__new__(PRAddDocs)
+    tool.git_provider = provider
+
+    result = tool.push_inline_docs({"Code Documentation": []})
+
+    assert result is None
+    assert review_path.read_text() == "previous review"
+    assert provider.improve_path.read_text() == "No code documentation found to improve this PR."
 
 
 def test_init_on_detached_head_falls_back_to_commit_sha(tmp_path, monkeypatch):

@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+import importlib.util
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +13,28 @@ from tiktoken import encoding_for_model, get_encoding
 
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
+
+
+def _use_bundled_tiktoken_files() -> None:
+    """Point tiktoken at LiteLLM's bundled encoding files unless the host chose a cache directory.
+
+    LiteLLM only does this once its encoding module is imported, so tiktoken could otherwise download.
+    """
+    if "TIKTOKEN_CACHE_DIR" in os.environ or "DATA_GYM_CACHE_DIR" in os.environ:
+        return
+    custom_dir = os.environ.get("CUSTOM_TIKTOKEN_CACHE_DIR")
+    if custom_dir:
+        os.environ["TIKTOKEN_CACHE_DIR"] = custom_dir
+        return
+    spec = importlib.util.find_spec("litellm")
+    if spec is None or not spec.submodule_search_locations:
+        return
+    bundled_dir = os.path.join(spec.submodule_search_locations[0], "litellm_core_utils", "tokenizers")
+    if os.path.isdir(bundled_dir):
+        os.environ["TIKTOKEN_CACHE_DIR"] = bundled_dir
+
+
+_use_bundled_tiktoken_files()
 
 
 def _await_coroutine(coro):
@@ -308,16 +331,9 @@ class TokenHandler:
         Returns:
             int: The calculated token count.
         """
-        return self._resolve_accurate_count(_await_coroutine(self._acount_tokens(patch)), default_estimate)
-
-    async def _aget_token_count_by_model_type(self, patch: str, default_estimate: int) -> int:
-        """Async ``_get_token_count_by_model_type`` that awaits the provider count on the running loop."""
-        return self._resolve_accurate_count(await self._acount_tokens(patch), default_estimate)
-
-    def _resolve_accurate_count(self, accurate_count: int, default_estimate: int) -> int:
-        """Return the provider count, or the estimate (scaled when needed) if none was produced."""
         model_name = str(getattr(self, "model", None) or get_settings().config.model).lower()
 
+        accurate_count = _await_coroutine(self._acount_tokens(patch))
         if accurate_count > 0:
             return accurate_count
         if ModelTypeValidator.is_openai_model(model_name) and get_settings().get("OPENAI.KEY"):
@@ -344,10 +360,3 @@ class TokenHandler:
             return encoder_estimate
 
         return self._get_token_count_by_model_type(patch, encoder_estimate)
-
-    async def acount_tokens(self, patch: str, force_accurate: bool = False) -> int:
-        """Async ``count_tokens``: awaits the provider count on the running loop instead of a worker thread."""
-        encoder_estimate = len(self.encoder.encode(patch, disallowed_special=()))
-        if not force_accurate:
-            return encoder_estimate
-        return await self._aget_token_count_by_model_type(patch, encoder_estimate)

@@ -110,6 +110,57 @@ OUTPUT_SINK_TYPES: dict[str, type[OutputSink]] = {
 }
 
 
+def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
+    """Check basic enabled destination settings without constructing sinks or probing resources."""
+    enable = cfg.get("enable", False)
+    if isinstance(enable, str):
+        enable = enable.lower().strip() not in ("false", "0", "no", "")
+    if not enable:
+        return None
+
+    channels = cfg.get("channels", [])
+    if isinstance(channels, str):
+        selected = [name for name in OUTPUT_SINK_TYPES if name in channels]
+    elif isinstance(channels, (list, tuple)):
+        if any(not isinstance(name, str) or name not in OUTPUT_SINK_TYPES for name in channels):
+            return False, "push_outputs.channels must select registered output sinks"
+        selected = [name for name in OUTPUT_SINK_TYPES if name in channels]
+    else:
+        return False, "push_outputs.channels must select registered output sinks"
+    if not selected:
+        return False, "push_outputs.channels must select registered output sinks"
+
+    if "file" in selected:
+        path = cfg.get("file_path", "pr-agent-outputs/reviews.jsonl")
+        if not isinstance(path, str) or not path:
+            return False, "push_outputs.file_path must be a nonempty string"
+    for channel, key in (("webhook", "webhook_url"), ("slack", "slack_webhook_url")):
+        if channel not in selected:
+            continue
+        url = cfg.get(key)
+        valid = False
+        if isinstance(url, str):
+            try:
+                parsed = urlparse(url)
+                valid = parsed.scheme == "https" and bool(parsed.hostname)
+            except ValueError:
+                # Malformed URLs use the same value-free failure message below.
+                pass
+        if not valid:
+            return False, f"push_outputs.{key} must be an absolute https:// URL with a host"
+    if "telegram" in selected:
+        for key in ("telegram_bot_token", "telegram_chat_id"):
+            value = cfg.get(key)
+            if key == "telegram_chat_id" and isinstance(value, int) and not isinstance(value, bool):
+                value = str(value or "")
+            if not isinstance(value, str) or not value.strip():
+                if key == "telegram_chat_id":
+                    return False, "push_outputs.telegram_chat_id must be a nonempty string or nonzero integer"
+                return False, f"push_outputs.{key} must be a nonempty string"
+    # Distinct custom names are recognized only; their private configuration is not inspected.
+    return True, "push_outputs basic destination settings checked (custom sinks: recognition only)"
+
+
 def create_output_sink(channel: str) -> OutputSink:
     """Instantiate a registered strategy without doing I/O or reading global settings."""
     return OUTPUT_SINK_TYPES[channel]()

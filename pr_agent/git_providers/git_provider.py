@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import time
 from abc import ABC, abstractmethod
+from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from functools import wraps
@@ -351,7 +352,16 @@ def get_git_ssl_env() -> dict[str, str]:
     return returned_env
 
 
+def _is_line_number(value) -> bool:
+    # bool is an int subclass; a string or float would fail the comparisons or
+    # break slicing in the providers that apply suggestions themselves.
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 class GitProvider(ABC):
+    # Keep manual-tool reuse opt-in because providers can retain PR revision state.
+    reuse_for_manual_tool = False
+
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         """Return policy fields; None means unknown, empty values mean not applicable.
 
@@ -373,9 +383,12 @@ class GitProvider(ABC):
         different ignore rules), so reset unconditionally rather than only when the
         cached diff is empty. Resets the incremental anchor too, and the request-scoped
         diff cache some providers keep in the starlette context. #3724 introduced this
-        for GitHub; the semantics live here so every provider inherits them.
+        for GitHub; the semantics live here so every provider inherits them. Drop the
+        latest commit URL too, so the next command can see newly pushed commits.
         """
+        self._tool_provider_stale = True
         self.diff_files = None
+        self._latest_commit_url = None
         if getattr(self, "incremental", None) is not None:
             self.incremental = IncrementalPR(False)
         if context.exists():
@@ -706,14 +719,18 @@ class GitProvider(ABC):
         return suggestion
 
     def _is_valid_code_suggestion(self, suggestion: dict) -> bool:
-        relevant_lines_start = suggestion["relevant_lines_start"]
-        relevant_lines_end = suggestion["relevant_lines_end"]
-        if not relevant_lines_start or relevant_lines_start == -1:
+        # .get(): Gitea and CodeCommit anchor on the start line alone, so their
+        # suggestions may carry no end line.
+        relevant_lines_start = suggestion.get("relevant_lines_start")
+        relevant_lines_end = suggestion.get("relevant_lines_end")
+        if not _is_line_number(relevant_lines_start) or relevant_lines_start < 1:
             self._log_invalid_code_suggestion(
                 f"Failed to publish code suggestion, relevant_lines_start is {relevant_lines_start}"
             )
             return False
-        if relevant_lines_end < relevant_lines_start:
+        if relevant_lines_end is not None and (
+            not _is_line_number(relevant_lines_end) or relevant_lines_end < relevant_lines_start
+        ):
             self._log_invalid_code_suggestion(
                 f"Failed to publish code suggestion, relevant_lines_end is {relevant_lines_end} and "
                 f"relevant_lines_start is {relevant_lines_start}"
@@ -733,6 +750,32 @@ class GitProvider(ABC):
     @abstractmethod
     def get_languages(self):
         pass
+
+    @staticmethod
+    def _language_percentages(paths: Iterable[str]) -> dict[str, float]:
+        """Return {language name: percentage} over the recognised files in `paths`.
+
+        Keys are language NAMES (e.g. "Python"), not raw extensions: the consumer
+        sort_files_by_main_languages() maps each name back to its extensions, so
+        returning extensions ("py") silently drops every file into the "Other"
+        bucket and defeats the hunk prioritisation this exists for. The shared
+        configured filename matcher applies the same full-filename,
+        multipart-extension, and case-sensitive rules for every provider. Empty
+        paths are skipped.
+        """
+        lang_map = get_settings().get("language_extension_map_org", {}) or {}
+        get_language = build_language_file_matcher(lang_map)
+
+        lang_count = Counter()
+        for path in paths:
+            if not path:
+                continue
+            language = get_language(path)
+            if language:
+                lang_count[language] += 1
+
+        total = sum(lang_count.values()) or 1
+        return {lang: count / total * 100 for lang, count in lang_count.items()}
 
     @abstractmethod
     def get_pr_branch(self):
@@ -1010,6 +1053,10 @@ class GitProvider(ABC):
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         pass
 
+    def publish_tool_failure(self, tool: str, message: str):
+        """Report that `tool` ("describe", "improve") failed. Providers with per-tool outputs override this."""
+        return self.publish_comment(message)
+
     def should_publish_review_as_thread(self) -> bool:
         return False
 
@@ -1216,7 +1263,16 @@ class GitProvider(ABC):
 
     #### labels operations ####
     @abstractmethod
-    def publish_labels(self, labels):
+    def publish_labels(self, labels) -> bool | None:
+        """Acknowledge label publication without guaranteeing remote label equality.
+
+        ``labels`` is the complete set the PR should end up with. Labels missing from it
+        are removed, so callers include the existing labels they want to keep.
+
+        Return True on normal completion or a provider-specific no-op, and exact False
+        for a known normalized failure. Legacy/custom providers may return None;
+        callers must check ``result is False`` to detect an acknowledged failure.
+        """
         pass
 
     @abstractmethod
@@ -1280,7 +1336,7 @@ class GitProvider(ABC):
     #### commits operations ####
     @abstractmethod
     def get_commit_messages(self) -> str:
-        pass
+        return ""
 
     def get_pr_url(self) -> str:
         if hasattr(self, 'pr_url'):

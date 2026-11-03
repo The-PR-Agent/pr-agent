@@ -1,9 +1,16 @@
-"""The runner's provider-key gate: stop before any tool runs (#4324)."""
+"""Verify the runner's model-key gate while allowing bare static commands (#4324)."""
 
+import copy
 import json
+from unittest.mock import Mock
 
 import pytest
+from starlette_context import request_cycle_context
 
+from pr_agent import git_providers
+from pr_agent.agent import pr_agent as pr_agent_module
+from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.servers import github_action_runner
 
 
@@ -30,6 +37,85 @@ def action_env(action_env_factory):
             "url": "https://api.github.com/repos/owner/repo/pulls/1",
         },
     }, "pull_request")
+
+
+@pytest.fixture
+def pr_comment_env(action_env_factory):
+    def _factory(body, event_name):
+        pr = {
+            "html_url": "https://github.com/owner/repo/pull/1",
+            "url": "https://api.github.com/repos/owner/repo/pulls/1",
+        }
+        event = {
+            "action": "created", "sender": {"type": "User"},
+            "comment": {"body": body, "id": 123, "pull_request_url": pr["url"]},
+        }
+        if event_name == "issue_comment":
+            event["issue"] = {"pull_request": pr}
+        else:
+            event["pull_request"] = pr
+        action_env_factory(event, event_name)
+
+    return _factory
+
+
+@pytest.mark.parametrize("event_name", ["issue_comment", "pull_request_review_comment"])
+@pytest.mark.parametrize("body", ["/help", "/config", "/settings", " \t/HELP \n", " /CoNfIg \t", "\n/SETTINGS "])
+async def test_static_pr_comments_render_without_model_key(monkeypatch, pr_comment_env, event_name, body):
+    class StaticProvider(GithubProvider):
+        def __init__(self, pr_url=None):
+            super().__init__(None)
+            self.pr_url = pr_url
+
+        publish_comment = Mock()
+        remove_initial_comment = Mock()
+        add_eyes_reaction = Mock()
+
+        def get_request_policy_metadata(self, required_fields):
+            return {"title": "Test PR"}
+
+    gate = Mock(return_value=("openai", ("OPENAI_API_KEY",)))
+    ai_init = Mock(side_effect=AssertionError("Static commands must not initialize an AI handler"))
+    monkeypatch.setattr(github_action_runner, "missing_provider_key_env_vars", gate)
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda url: None)
+    monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda url: None)
+    monkeypatch.setattr(pr_agent_module.LiteLLMAIHandler, "__init__", ai_init)
+    monkeypatch.setitem(git_providers._GIT_PROVIDERS, "github", StaticProvider)
+    monkeypatch.setitem(get_settings().config, "git_provider", "github")
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
+    pr_comment_env(body, event_name)
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        await github_action_runner.run_action()
+
+    gate.assert_not_called()
+    ai_init.assert_not_called()
+    StaticProvider.publish_comment.assert_called_once()
+    expected = "PR Agent Walkthrough" if body.strip().lower() == "/help" else "config.model ="
+    assert expected in StaticProvider.publish_comment.call_args.args[0]
+
+
+@pytest.mark.parametrize("event_name", ["issue_comment", "pull_request_review_comment"])
+@pytest.mark.parametrize("body", ["/help How do I configure reviews?", "/review", "/configuration", "/config typo"])
+async def test_other_pr_commands_still_require_model_key(monkeypatch, pr_comment_env, event_name, body):
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda url: None)
+    monkeypatch.setattr(
+        github_action_runner, "missing_provider_key_env_vars",
+        lambda: ("openai", ("OPENAI_API_KEY",)),
+    )
+    pr_comment_env(body, event_name)
+
+    with pytest.raises(SystemExit, match="Stopping before any tool runs.*OPENAI_API_KEY"):
+        await github_action_runner.run_action()
+
+
+@pytest.mark.parametrize("event_name", ["issue_comment", "pull_request_review_comment"])
+async def test_static_pr_comments_still_require_github_token(monkeypatch, pr_comment_env, event_name):
+    pr_comment_env("/help", event_name)
+    monkeypatch.delenv("GITHUB_TOKEN")
+
+    with pytest.raises(SystemExit, match="GITHUB_TOKEN not set"):
+        await github_action_runner.run_action()
 
 
 async def test_missing_key_stops_before_tools_naming_the_env_variable(
@@ -62,7 +148,7 @@ async def test_repository_settings_are_applied_before_key_gate(monkeypatch, acti
     # be applied before the gate judges the active provider's key.
     with pytest.raises(SystemExit):
         await github_action_runner.run_action()
-    assert order == [("repo_settings", "https://github.com/owner/repo/pull/1"), "gate"]
+    assert order == [("repo_settings", "https://api.github.com/repos/owner/repo/pulls/1"), "gate"]
 
 
 @pytest.mark.parametrize(
@@ -78,7 +164,7 @@ async def test_repository_settings_are_applied_before_key_gate(monkeypatch, acti
                     "url": "https://api.github.com/repos/owner/repo/pulls/1",
                 }},
             },
-            "https://github.com/owner/repo/pull/1",
+            "https://api.github.com/repos/owner/repo/pulls/1",
         ),
         (
             "workflow_run",

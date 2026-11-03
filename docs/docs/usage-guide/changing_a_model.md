@@ -17,7 +17,10 @@ fallback_models = ["..."]
 
 Keep `fallback_models` different from `model`, or set it to `[]` for no backup model. Listing the
 primary model again only runs a failed call on the same model, so each fallback-eligible failure
-repeats. For extra attempts on the primary model instead, set `config.num_retries`.
+repeats. A request the provider rejects (a 429, a 5xx answer or a connection error) is already
+retried on the same model up to `config.num_retries` times (default 4) before the fallback models
+are tried, waiting for the provider's `Retry-After` (up to 30 seconds) or with exponential backoff
+between attempts. Set it to `0` to move to the fallback models at once.
 
 To see which of these models actually handled a given PR, enable `config.output_run_details` (see [Additional configurations](./additional_configurations.md#showing-the-agent-run-details)).
 To send small pull requests to a cheaper model, see [Routing small pull requests to a cheaper model](#routing-small-pull-requests-to-a-cheaper-model).
@@ -534,6 +537,19 @@ To route Bedrock traffic through a VPC interface endpoint instead of the public 
 [aws]
 AWS_BEDROCK_RUNTIME_ENDPOINT="https://bedrock-runtime.us-east-1.amazonaws.com"
 ```
+
+#### Guardrails
+
+To apply an [Amazon Bedrock Guardrail](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-use-converse-api.html) to every request, use a `bedrock/converse/` model and set:
+
+```toml
+[bedrock]
+guardrail_identifier = "your-guardrail-id"
+guardrail_version = "1"
+guardrail_trace = "disabled" # or "enabled" / "enabled_full"
+```
+
+or the equivalent environment variables `BEDROCK__GUARDRAIL_IDENTIFIER` and `BEDROCK__GUARDRAIL_VERSION`. The `[bedrock]` section is host-only and cannot be overridden from a repository's `.pr_agent.toml`. When a guardrail is configured, every Bedrock model (including fallback models) must use the explicit `bedrock/converse/` prefix; other Bedrock routes (`bedrock/invoke/`, unprefixed `bedrock/<model>`, `bedrock_mantle/`) fail instead of running without the guardrail. A fallback model on a non-Bedrock provider runs without the guardrail.
 
 See [litellm](https://docs.litellm.ai/docs/providers/bedrock#usage) documentation for more information about the environment variables required for Amazon Bedrock.
 

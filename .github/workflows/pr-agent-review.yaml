@@ -180,8 +180,8 @@ jobs:
           # The default "only critical problems" filter returns an empty list on most PRs here,
           # which made 90 of 99 /improve comments say "No code suggestions found" (#4161).
           PR_CODE_SUGGESTIONS__FOCUS_ONLY_ON_PROBLEMS: 'false'
-          # With suggestions flowing again, drop the empty-list comments instead of posting them.
-          PR_CODE_SUGGESTIONS__PUBLISH_OUTPUT_NO_SUGGESTIONS: 'false'
+          # Confirm that /improve ran even when no suggestions remain after filtering.
+          PR_CODE_SUGGESTIONS__PUBLISH_OUTPUT_NO_SUGGESTIONS: 'true'
           GITHUB_ACTION_CONFIG__AUTO_DESCRIBE: 'true'
           GITHUB_ACTION_CONFIG__AUTO_REVIEW: 'true'
           GITHUB_ACTION_CONFIG__AUTO_IMPROVE: 'true'

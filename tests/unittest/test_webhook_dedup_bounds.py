@@ -75,8 +75,11 @@ class TestBoundedDefaultDictWithTimeout:
         assert set(d) == {"a", "c", "d"}
 
     @pytest.mark.parametrize("insert", ["factory", "setdefault"])
-    def test_factory_and_setdefault_inserts_are_bounded(self, fake_clock, insert):
-        d = DefaultDictWithTimeout(int, ttl=1000, refresh_interval=1000, max_size=100)
+    @pytest.mark.parametrize("update_on_get", [True, False])
+    def test_factory_and_setdefault_inserts_are_bounded(self, fake_clock, insert, update_on_get):
+        d = DefaultDictWithTimeout(
+            int, ttl=1000, refresh_interval=1000, max_size=100, update_key_time_on_get=update_on_get
+        )
         for i in range(250):
             if insert == "factory":
                 _ = d[i]

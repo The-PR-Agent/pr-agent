@@ -139,7 +139,9 @@ class GiteaProvider(GitProvider):
         self.last_commit = None
         self.last_commit_id = None
 
-        if "pulls" in url:
+        url_path_parts = self._url_path_parts(url)
+        resource = url_path_parts[2] if len(url_path_parts) > 2 else ""
+        if resource == "pulls":
             self.pr_url = url
             self.__set_repo_and_owner_from_pr()
             self.enabled_pr = True
@@ -153,7 +155,7 @@ class GiteaProvider(GitProvider):
             self.last_commit_id = self.last_commit
             self.base_sha = self.pr.base.sha or ""
             self.base_ref = self.pr.base.ref or ""
-        elif "issues" in url:
+        elif resource == "issues":
             self.issue_url = url
             self.__set_repo_and_owner_from_issue()
             self.enabled_issue = True
@@ -496,6 +498,9 @@ class GiteaProvider(GitProvider):
                 self.logger.error("No body provided for the suggestion")
                 continue
 
+            if not self._is_valid_code_suggestion(suggestion):
+                continue
+
             path = suggestion.get("relevant_file","")
             # relevant_lines_start is an absolute position in the new file. Gitea anchors a
             # review comment to the old side whenever old_position is non-zero, ignoring
@@ -797,24 +802,29 @@ class GiteaProvider(GitProvider):
 
         return self.pr.body or ""
 
-    def get_pr_labels(self,update=False) -> list[str]:
+    def get_pr_labels(self, update=False) -> list[str] | None:
         """Get labels assigned to the PR"""
-        if not update:
-            if not self.pr.labels:
-                self.logger.error("Failed to get PR labels")
-                return []
-            return [label.name for label in self.pr.labels]
+        if update:
+            try:
+                labels = self.repo_api.get_issue_labels(
+                    owner=self.owner,
+                    repo=self.repo,
+                    issue_number=self.pr_number
+                )
+            except ApiException as e:
+                self.logger.error(f"Failed to get PR labels: {e}")
+                return None
+        else:
+            labels = self.pr.labels
 
-        labels = self.repo_api.get_issue_labels(
-            owner=self.owner,
-            repo=self.repo,
-            issue_number=self.pr_number
-        )
-        if not labels:
-            self.logger.error("Failed to get PR labels")
-            return []
-
-        return [label.name for label in labels]
+        if not isinstance(labels, list):
+            self.logger.error("Failed to read PR labels: expected a list")
+            return None
+        names = [getattr(label, "name", None) for label in labels]
+        if not all(isinstance(name, str) and name for name in names):
+            self.logger.error("Failed to read PR labels: expected non-empty label names")
+            return None
+        return names
 
     def get_repo_settings(self):
         """Get repository settings (org/global first, then repo-local)."""
@@ -912,21 +922,55 @@ class GiteaProvider(GitProvider):
                 pr_number=self.pr_number
             )
 
-    def publish_labels(self, labels: list[int]) -> None:
-        """Publish labels to the PR"""
-        if not labels:
-            self.logger.error("No labels provided to publish")
-            return None
+    def publish_labels(self, labels: list[str]) -> bool:
+        """Set the PR labels to the given set: remove the labels left out of it, then add the missing ones"""
+        issue_number = self.pr_number if self.enabled_pr else self.issue_number
+        try:
+            current_labels = self.repo_api.get_issue_labels(
+                owner=self.owner,
+                repo=self.repo,
+                issue_number=issue_number
+            )
+            if not isinstance(current_labels, list) or not all(
+                isinstance(getattr(label, "id", None), int) and isinstance(getattr(label, "name", None), str)
+                for label in current_labels
+            ):
+                self.logger.error("Failed to publish labels: the current labels could not be read")
+                return False
 
-        response = self.repo_api.add_labels(
-            owner=self.owner,
-            repo=self.repo,
-            issue_number=self.pr_number if self.enabled_pr else self.issue_number,
-            labels=labels
-        )
+            # Compare names case-insensitively, as get_user_labels does, so that a human "enhancement"
+            # is not removed in favour of an "Enhancement" the repository may not have.
+            requested = {name.lower() for name in labels}
+            kept_ids = [label.id for label in current_labels if label.name.lower() in requested]
+            if len(kept_ids) < len(current_labels):
+                if kept_ids:
+                    # By id, not name: Gitea 1.22 resolves names in the repository only, and a replace by
+                    # name drops the organization labels it cannot resolve. Not a delete per label either:
+                    # current Forgejo (15.0.10+, 16.0.6+, 17.x) finds a numeric label id among the
+                    # repository's own labels only.
+                    self.repo_api.replace_labels(
+                        owner=self.owner,
+                        repo=self.repo,
+                        issue_number=issue_number,
+                        label_ids=kept_ids
+                    )
+                else:
+                    self.repo_api.clear_labels(owner=self.owner, repo=self.repo, issue_number=issue_number)
 
-        if response:
-            self.logger.info("Labels added successfully")
+            current_names = {label.name.lower() for label in current_labels}
+            missing_names = [name for name in labels if name.lower() not in current_names]
+            if missing_names:
+                self.repo_api.add_labels(
+                    owner=self.owner,
+                    repo=self.repo,
+                    issue_number=issue_number,
+                    labels=missing_names
+                )
+        except ApiException as e:
+            self.logger.error(f"Failed to publish labels: {e}")
+            return False
+
+        return True
 
     def remove_comment(self, comment) -> None:
         """Remove a specific comment"""
@@ -1391,7 +1435,7 @@ class RepoApi(giteapy.RepositoryApi):
             auth_settings=['AuthorizationHeaderToken']
         )
 
-    def add_labels(self, owner: str, repo: str, issue_number: int, labels: list[int]):
+    def add_labels(self, owner: str, repo: str, issue_number: int, labels: list[str]):
         body = {
             "labels": labels
         }
@@ -1400,6 +1444,21 @@ class RepoApi(giteapy.RepositoryApi):
             repo=repo,
             index=issue_number,
             body=body
+        )
+
+    def replace_labels(self, owner: str, repo: str, issue_number: int, label_ids: list[int]):
+        return self.issue.issue_replace_labels(
+            owner=owner,
+            repo=repo,
+            index=issue_number,
+            body={"labels": label_ids}
+        )
+
+    def clear_labels(self, owner: str, repo: str, issue_number: int):
+        return self.issue.issue_clear_labels(
+            owner=owner,
+            repo=repo,
+            index=issue_number
         )
 
     def get_pr_commits(self, owner: str, repo: str, pr_number: int):

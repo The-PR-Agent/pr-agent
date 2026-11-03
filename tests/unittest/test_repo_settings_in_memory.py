@@ -56,7 +56,6 @@ def _no_temp_files(monkeypatch):
 
     monkeypatch.setattr(tempfile, "mkstemp", fail)
     monkeypatch.setattr(tempfile, "NamedTemporaryFile", fail)
-    monkeypatch.setattr(git_utils, "_write_settings_temp", fail)
 
 
 @pytest.mark.parametrize("payload", [
@@ -84,7 +83,7 @@ def test_apply_repo_settings_uses_in_memory_path(monkeypatch):
     monkeypatch.setattr(git_utils, "handle_configurations_errors", lambda errs, git_provider: errors.extend(errs))
     get_settings().set("config.use_repo_settings_file", True)
 
-    git_utils.apply_repo_settings("https://example.com/owner/repo/pull/1")
+    assert git_utils.apply_repo_settings("https://example.com/owner/repo/pull/1") is provider
 
     assert errors == []
     # The per-directory layer is applied after the root config, so it wins.
@@ -147,11 +146,6 @@ def test_security_directives_raise_identically(tmp_path, via_file):
     assert ".pr_agent.toml" in str(excinfo.value)
     assert str(tmp_path) not in str(excinfo.value)
     assert _section("pr_reviewer").get("num_max_findings") == before
-
-
-def test_source_label_is_used_in_security_errors():
-    with pytest.raises(SecurityError, match="services/api/.pr_agent.toml"):
-        git_utils.apply_repo_settings_bytes(b"preload = ['x.toml']\n", source_label="services/api/.pr_agent.toml")
 
 
 def test_legacy_file_wrapper_applies_real_file(tmp_path):

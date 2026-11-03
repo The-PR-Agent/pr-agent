@@ -449,9 +449,15 @@ async def test_polling_loop_keeps_notification_unread_when_drift_retry_times_out
     mark_read.assert_not_awaited()
 
 
-@pytest.mark.parametrize("valid_command", [True, False], ids=["valid-command", "invalid-notification"])
+@pytest.mark.parametrize(("comment_body", "expected_request"), [
+    ("@bot /review", "/review"),
+    ("No mention", None),
+    ("@bot /ask Why does @bot appear here?", "/ask Why does @bot appear here?"),
+    ('@bot /ask "Why does @bot appear here?"', '/ask "Why does @bot appear here?"'),
+], ids=["valid-command", "invalid-notification", "repeated-mention", "quoted-repeated-mention"])
 @pytest.mark.asyncio
-async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monkeypatch, valid_command):
+async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monkeypatch, comment_body, expected_request):
+    valid_command = expected_request is not None
     settings = SimpleNamespace(
         github=SimpleNamespace(deployment_type="user", user_token="test-token"), set=MagicMock()
     )
@@ -470,7 +476,7 @@ async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monke
         "repository": {"full_name": "owner/repo"},
         "subject": {"type": "PullRequest", "url": pr_url, "latest_comment_url": latest_url},
     }
-    comment = {"id": 99, "body": "@bot /review" if valid_command else "No mention", "user": {"login": "human"}}
+    comment = {"id": 99, "body": comment_body, "user": {"login": "human"}}
     latest_comment = {"id": 100, "body": "Other discussion", "user": {"login": "human"}}
     expected_comment_ids = {99, 100} if valid_command else {100}
     large_preexisting_ids = set(range(10_000, 20_000))
@@ -572,7 +578,8 @@ async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monke
     assert mark_attempts == 3
     assert len(requests) == 2
     assert "If-Modified-Since" not in requests[1]["headers"]
-    assert dispatched == ([(github_polling.process_comment_sync, (pr_url, "/review", 99))] if valid_command else [])
+    expected_dispatch = [(github_polling.process_comment_sync, (pr_url, expected_request, 99))] if valid_command else []
+    assert dispatched == expected_dispatch
     assert large_preexisting_ids <= handled_references[-1]
     assert {preexisting_notification["id"], notification["id"]} | expected_comment_ids <= handled_references[-1]
 
@@ -663,6 +670,83 @@ async def test_polling_loop_shares_capacity_between_batches(workers, monkeypatch
         task.cancel()
         result, = await asyncio.gather(task, return_exceptions=True)
     assert isinstance(result, asyncio.CancelledError)
+
+
+@pytest.mark.asyncio
+async def test_polling_loop_preserves_queued_work_when_mark_read_fails(workers, monkeypatch):
+    created, _ = workers
+    settings = SimpleNamespace(
+        github=SimpleNamespace(deployment_type="user", user_token="test-token"), set=MagicMock()
+    )
+    monkeypatch.setattr(github_polling, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        github_polling, "get_git_provider", lambda: lambda: SimpleNamespace(get_user_id=lambda: "bot")
+    )
+    requests = []
+    marked = set()
+    mark_attempts = []
+    worker_counts_at_mark = []
+    pr_url = "https://api.github.com/repos/owner/repo/pulls"
+
+    class Session:
+        headers = {"Last-Modified": "unchanged-notifications"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def get(self, url, **kwargs):
+            self.status = 200
+            if url == github_polling.NOTIFICATION_URL:
+                requests.append(kwargs)
+                self.body = [
+                    {
+                        "id": str(number), "reason": "mention", "repository": {"full_name": "owner/repo"},
+                        "subject": {
+                            "type": "PullRequest", "url": f"{pr_url}/{number}",
+                            "latest_comment_url": (
+                                f"https://api.github.com/repos/owner/repo/issues/comments/{100 + number}"
+                            ),
+                        },
+                    }
+                    for number in (1, 2, 3) if number not in marked
+                ]
+            else:
+                self.body = {
+                    "id": int(url.rsplit("/", 1)[1]), "body": "@bot /review", "user": {"login": "human"}
+                }
+            return self
+
+        def patch(self, url, **kwargs):
+            number = int(url.rsplit("/", 1)[1])
+            mark_attempts.append(number)
+            worker_counts_at_mark.append(sum(process.pid is not None for process in created))
+            if mark_attempts == [1, 2]:
+                raise ConnectionError("temporary PATCH failure")
+            marked.add(number)
+            self.status = 205
+            return self
+
+        async def json(self):
+            return self.body
+
+    sleep = AsyncMock(side_effect=[None, None, None, asyncio.CancelledError])
+    monkeypatch.setattr(github_polling, "aiohttp", SimpleNamespace(ClientSession=Session))
+    monkeypatch.setattr(github_polling, "asyncio", SimpleNamespace(sleep=sleep))
+    with pytest.raises(asyncio.CancelledError):
+        await github_polling.polling_loop()
+
+    assert [process.args for process in created] == [
+        (f"{pr_url}/{number}", "/review", 100 + number) for number in (1, 2, 3)
+    ]
+    assert all(process.target is github_polling.process_comment_sync for process in created)
+    assert all(process.pid is not None for process in created)
+    assert mark_attempts == [1, 2, 2, 3]
+    assert worker_counts_at_mark == [0, 0, 1, 1]
+    assert "If-Modified-Since" not in requests[1]["headers"]
+    assert requests[2]["headers"]["If-Modified-Since"] == "unchanged-notifications"
 
 
 @pytest.mark.asyncio

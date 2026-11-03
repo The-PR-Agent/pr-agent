@@ -173,3 +173,49 @@ def test_get_line_link_encodes_source_branch(branch, expected):
     assert provider.get_line_link("src/app.py", 42) == (
         f"https://gitlab.example.com/group/project/-/blob/{expected}/src/app.py?ref_type=heads#L42"
     )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://gitlab.example.com/grp/my-issues/-/merge_requests/1",
+        "https://gitlab.example.com/grp/my-issues/-/issues/3",
+        "https://gitlab.example.com/grp/my-issues/issues/3",
+    ],
+)
+def test_git_repo_url_of_a_project_named_like_a_resource(url):
+    assert _provider().get_git_repo_url(url) == "https://gitlab.example.com/grp/my-issues.git"
+
+
+def test_git_repo_url_keeps_the_instance_sub_path():
+    provider = _provider("https://example.com/gitlab")
+
+    assert provider.get_git_repo_url(
+        "https://example.com/gitlab/grp/merge_requests-bot/-/issues/3"
+    ) == "https://example.com/gitlab/grp/merge_requests-bot.git"
+
+
+def test_parse_merge_request_url_of_a_project_named_merge_requests():
+    project, mr_id = _provider()._parse_merge_request_url(
+        "https://gitlab.example.com/grp/merge_requests/-/merge_requests/5"
+    )
+
+    assert project == "grp/merge_requests"
+    assert mr_id == 5
+
+
+def test_parse_merge_request_url_rejects_an_issue_of_a_project_named_merge_requests():
+    with pytest.raises(ValueError):
+        _provider()._parse_merge_request_url("https://gitlab.example.com/grp/merge_requests/-/issues/5")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://gitlab.example.com/grp/my-issues/merge_requests/42/diffs",
+        "https://gitlab.example.com/grp/my-issues/-/merge_requests/42/diffs",
+    ],
+)
+def test_merge_request_url_with_a_tab_suffix(url):
+    assert _provider()._parse_merge_request_url(url) == ("grp/my-issues", 42)
+    assert _provider().get_git_repo_url(url) == "https://gitlab.example.com/grp/my-issues.git"

@@ -41,6 +41,8 @@ Thank you for your interest in contributing to the PR-Agent project!
 3. Update the README.md if needed
 4. Wait for review from maintainers
 
+`Build-and-test` cancels earlier first-attempt CI runs for a pull request when a new push supersedes them. Runs on `main` and manual reruns remain independent.
+
 ## Questions or Need Help?
 
 - Ask questions or start a discussion in [GitHub Discussions](https://github.com/the-pr-agent/pr-agent/discussions)

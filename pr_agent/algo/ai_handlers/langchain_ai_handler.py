@@ -101,7 +101,15 @@ class LangChainOpenAIHandler(BaseAiHandler):
                 get_logger().info(f"Using simplified ainvoke for {type(llm)}")
                 resp = await llm.ainvoke(input=messages)
 
-            finish_reason = "completed"
+            metadata = getattr(resp, "response_metadata", None)
+            if isinstance(metadata, dict):
+                reason = (metadata.get("finish_reason") or metadata.get("stop_reason")
+                          or metadata.get("finishReason"))
+            else:
+                reason = None
+            finish_reason = str(reason).lower() if reason else "completed"
+            if finish_reason in ("max_tokens", "max-tokens", "max_tokens_reached", "max_output_tokens"):
+                finish_reason = "length"
             # Count the call but not its tokens. Langchain reports usage under key names of its
             # own (input_tokens/output_tokens) rather than the ones the collector reads, so
             # forwarding it unmapped would render zeros. Mapping them is not worth it while this

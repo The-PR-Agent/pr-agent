@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -139,6 +140,52 @@ class TestGitLabProvider:
         assert client.http_request.call_args_list[0].kwargs["per_page"] == 100
         assert client.http_request.call_args_list[1].args[1] == next_url
 
+    def test_latest_commit_url_reuses_api_result_until_command_reset(self, gitlab_provider):
+        client = Gitlab("https://gitlab.example.com", private_token="test-token")
+        gitlab_provider.mr = client.projects.get("target/repo", lazy=True).mergerequests.get(1, lazy=True)
+        url = "https://gitlab.example.com/fork/repo/-/commit/first"
+        response = MagicMock()
+        response.json.return_value = [{"id": "first", "web_url": url}]
+        response.links = {}
+        response.headers = {}
+        client.http_request = MagicMock(return_value=response)
+
+        assert gitlab_provider.get_latest_commit_url() == url
+        assert gitlab_provider.get_latest_commit_url() == url
+        client.http_request.assert_called_once()
+
+        next_url = "https://gitlab.example.com/fork/repo/-/commit/second"
+        response.json.return_value = [{"id": "second", "web_url": next_url}]
+        gitlab_provider.reset_diff_cache_for_command()
+        assert gitlab_provider.get_latest_commit_url() == next_url
+        assert client.http_request.call_count == 2
+
+    @pytest.mark.parametrize("first_result,expected", [
+        (StopIteration(), ""),
+        (GitlabGetError("temporary failure", response_code=503), ""),
+        (RequestException("connection reset"), ""),
+        (SimpleNamespace(), ""),
+        (SimpleNamespace(web_url=""), ""),
+        (SimpleNamespace(web_url=None), None),
+    ])
+    def test_latest_commit_url_retries_unsuccessful_reads(self, gitlab_provider, first_result, expected):
+        url = "https://gitlab.com/test/repo/-/commit/first"
+        gitlab_provider.mr.commits.return_value.next.side_effect = [first_result, SimpleNamespace(web_url=url)]
+
+        assert gitlab_provider.get_latest_commit_url() == expected
+        assert gitlab_provider.get_latest_commit_url() == url
+        assert gitlab_provider.get_latest_commit_url() == url
+        assert gitlab_provider.mr.commits.call_count == 2
+
+    def test_latest_commit_url_resets_for_another_merge_request(self, gitlab_provider):
+        gitlab_provider.mr.commits.return_value.next.return_value.web_url = "https://gitlab.com/test/repo/-/commit/first"
+        assert gitlab_provider.get_latest_commit_url().endswith("/first")
+
+        gitlab_provider._set_merge_request("https://gitlab.com/other/repo/-/merge_requests/2")
+        gitlab_provider.mr.commits.return_value.next.return_value.web_url = "https://gitlab.com/other/repo/-/commit/second"
+        assert gitlab_provider.get_latest_commit_url() == "https://gitlab.com/other/repo/-/commit/second"
+        assert gitlab_provider.mr.commits.call_count == 2
+
     def test_merge_request_changes_are_cached_after_stable_collection(self, gitlab_provider):
         refs = {"base_sha": "base", "head_sha": "head"}
         changes = [{"new_path": "src/app.py", "old_path": "src/app.py"}]
@@ -173,13 +220,14 @@ class TestGitLabProvider:
             gitlab_provider, "_expand_submodule_changes", side_effect=lambda changes, refs: changes
         ), patch(
             f"{mod}.filter_ignored", side_effect=lambda changes, provider: changes[:2]
-        ), patch(f"{mod}.is_valid_file", side_effect=lambda name: name != "pnpm-lock.yaml"), patch.object(
+        ), patch.object(
             gitlab_provider, "get_pr_file_content", return_value="content"
-        ):
+        ) as get_content:
             diffs = gitlab_provider.get_diff_files()
 
         assert [file.filename for file in diffs] == ["package.json"]
         assert gitlab_provider.get_filtered_diff_file_names() == ["pnpm-lock.yaml"]
+        assert [call.args[0] for call in get_content.call_args_list] == ["package.json"] * 2
 
     def test_get_pr_file_content_success(self, gitlab_provider, mock_project):
         mock_file = MagicMock(ProjectFile)
@@ -2056,7 +2104,7 @@ class TestGitLabProvider:
     def test_publish_labels_noop_when_sets_equal(self, gitlab_provider):
         gitlab_provider.mr = self._real_mr(["bug", "review effort 3/5"])
 
-        gitlab_provider.publish_labels(["bug", "review effort 3/5"])
+        assert gitlab_provider.publish_labels(["bug", "review effort 3/5"]) is True
 
         gitlab_provider.mr.manager.update.assert_not_called()
 
@@ -2065,7 +2113,7 @@ class TestGitLabProvider:
             ["bug"], update_result={"iid": 1, "labels": ["bug", "review effort 3/5"]}
         )
 
-        gitlab_provider.publish_labels(["bug", "review effort 3/5"])
+        assert gitlab_provider.publish_labels(["bug", "review effort 3/5"]) is True
 
         payload = self._wire_payload(gitlab_provider.mr)
         assert payload["add_labels"] == "review effort 3/5"
@@ -2118,7 +2166,7 @@ class TestGitLabProvider:
         # publish_description() saves the same object right afterwards.
         gitlab_provider.mr = self._real_mr(["bug"])
 
-        gitlab_provider.publish_labels(["bug"])
+        assert gitlab_provider.publish_labels(["bug"]) is True
 
         assert gitlab_provider.mr._get_updated_data() == {}
 
@@ -2138,13 +2186,14 @@ class TestGitLabProvider:
 
         assert gitlab_provider.get_pr_labels() == ["bug"]
 
-    def test_publish_labels_drops_pending_diff_when_save_fails(self, gitlab_provider):
+    @pytest.mark.parametrize("error", [RequestException("network blip"), GitlabUpdateError("rejected")])
+    def test_publish_labels_drops_pending_diff_when_save_fails(self, gitlab_provider, error):
         # save() clears pending attributes itself, but only when it succeeds. If they
         # survive a failure, the next save() on this MR — publish_description() runs
         # one moments later — resends the label diff.
-        gitlab_provider.mr = self._real_mr(["bug"], update_error=RequestException("network blip"))
+        gitlab_provider.mr = self._real_mr(["bug"], update_error=error)
 
-        gitlab_provider.publish_labels(["review effort 3/5"])
+        assert gitlab_provider.publish_labels(["review effort 3/5"]) is False
 
         assert gitlab_provider.mr.manager.update.call_count == 1
         assert gitlab_provider.mr._get_updated_data() == {}
@@ -3169,6 +3218,30 @@ class TestGitLabCapabilities:
         provider.mr.notes.list.return_value = ["newest", "middle", "oldest"]
 
         assert provider.get_issue_comments() == ["oldest", "middle", "newest"]
+
+    def test_get_issue_comments_reads_all_notes_with_larger_pages(self):
+        provider = self._provider()
+        client = Gitlab("https://gitlab.example.com", private_token="test-token")
+        provider.mr = client.projects.get("test/repo", lazy=True).mergerequests.get(1, lazy=True)
+        next_url = (
+            "https://gitlab.example.com/api/v4/projects/test%2Frepo/"
+            "merge_requests/1/notes?page=2&per_page=100"
+        )
+        responses = []
+        for start, stop, next_link in [(101, 1, next_url), (1, 0, None)]:
+            response = MagicMock()
+            response.json.return_value = [{"id": index} for index in range(start, stop, -1)]
+            response.links = {"next": {"url": next_link}} if next_link else {}
+            response.headers = {}
+            responses.append(response)
+        client.http_request = MagicMock(side_effect=responses)
+
+        comments = provider.get_issue_comments()
+
+        assert [comment.id for comment in comments] == list(range(1, 102))
+        assert client.http_request.call_count == 2
+        assert client.http_request.call_args_list[0].kwargs["per_page"] == 100
+        assert client.http_request.call_args_list[1].args[1] == next_url
 
     def test_persistent_state_ownership_uses_authenticated_user_id(self):
         provider = self._provider()

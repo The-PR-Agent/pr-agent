@@ -276,6 +276,9 @@ def apply_host_settings():
     """Merge CONFIG.EXTRA_CONFIG_URL before provider initializers read connection settings."""
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
     extra_source = get_settings().get("CONFIG.EXTRA_CONFIG_URL", None)
+    # The loaded file may clear its own URL; keep the original selection for this request.
+    if context.exists() and isinstance(extra_source, str) and extra_source.strip():
+        context["extra_config_source_seen"] = True
     try:
         if isinstance(extra_source, str) and extra_source.strip():
             extra_path, extra_is_temp = _resolve_extra_config_to_file(extra_source)
@@ -295,6 +298,7 @@ def apply_host_settings():
 
 
 def apply_repo_settings(pr_url):
+    """Apply repository overrides and return the provider that loaded them."""
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
     _restore_per_directory_settings()
 
@@ -344,6 +348,7 @@ def apply_repo_settings(pr_url):
                 handle_configurations_errors(config_errors, git_provider)
         except Exception as e:
             get_logger().exception("Failed to apply repo settings", e)
+    return git_provider
 
 
 def _restore_per_directory_settings():
@@ -363,21 +368,6 @@ def _restore_per_directory_settings():
             settings.set(section, contents, merge=False)
 
 
-def _write_settings_temp(settings_content, repo_settings_files: list) -> str:
-    """Write a settings payload (str or bytes) to a temp .toml file registered for cleanup.
-
-    os.fdopen takes ownership of the fd (closes it) and write() writes all bytes,
-    avoiding a silently-truncated file from a partial os.write.
-    """
-    fd, repo_settings_file = tempfile.mkstemp(suffix='.toml')
-    repo_settings_files.append(repo_settings_file)
-    if isinstance(settings_content, str):
-        settings_content = settings_content.encode("utf-8")
-    with os.fdopen(fd, "wb") as settings_file_handle:
-        settings_file_handle.write(settings_content)
-    return repo_settings_file
-
-
 def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
     """Backward-compatible wrapper: read a settings file and delegate to apply_repo_settings_bytes."""
     # Check the size before reading so an oversized file is never loaded into memory.
@@ -389,8 +379,7 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
         apply_repo_settings_bytes(f.read(), repo_settings_scope=repo_settings_scope)
 
 
-def apply_repo_settings_bytes(settings_content: str | bytes, repo_settings_scope: str = "repo",
-                              source_label: str = ".pr_agent.toml") -> None:
+def apply_repo_settings_bytes(settings_content: str | bytes, repo_settings_scope: str = "repo") -> None:
     """Parse a repo settings TOML payload in memory and merge its allowed keys into the global settings.
 
     Enforces the per-repo host-key restrictions and logs only section names (values may contain
@@ -414,7 +403,7 @@ def apply_repo_settings_bytes(settings_content: str | bytes, repo_settings_scope
     parsed_toml = tomllib.loads(raw_bytes.decode("utf-8"))
     # Use a generic label (never a filesystem path) so a SecurityError message can't leak the
     # server's internal paths into the PR configuration-error comment.
-    validate_file_security(parsed_toml, source_label)
+    validate_file_security(parsed_toml, ".pr_agent.toml")
 
     # Apply the already-parsed data directly instead of re-reading the file through Dynaconf, which
     # would parse the same TOML a second time. Section names are matched case-insensitively (Dynaconf

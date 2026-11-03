@@ -2,10 +2,13 @@ import builtins
 import io
 
 import pytest
+from git import Repo
 
+from pr_agent import git_providers
 from pr_agent.algo.artifacts import get_artifact_context
 from pr_agent.cli import _resolve_output_option, commands, run, set_parser
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.local_git_provider import LocalGitProvider
 
 # Keys run() mutates on the process-wide settings singleton, directly or via the
 # diff-mode CLI path. Snapshotted and restored around every test (autouse) so
@@ -354,6 +357,114 @@ def test_auto_review_writes_markdown_artifact_with_stubbed_model(
     run(inargs=["--stdin", "--output", str(output), "auto_review"])
 
     assert _REVIEW_MARKER in output.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("generate_ai_title", "expected_title"),
+    [(False, "Local diff review"), (True, "Update foo.py")],
+)
+def test_describe_title_in_stdout_and_output_file(
+    generate_ai_title, expected_title, monkeypatch, tmp_path, capsys,
+):
+    async def fake_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
+        return """\
+title: Update foo.py
+type: [Enhancement]
+description: Update the second line.
+pr_files:
+  - filename: foo.py
+    changes_title: Update the second line
+    changes_summary: Replace line2 with line2-changed.
+    label: Enhancement
+""", "stop"
+
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion",
+        fake_chat_completion,
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+    output = tmp_path / "description.md"
+    overrides = ["--pr_description.generate_ai_title=true"] if generate_ai_title else []
+
+    run(inargs=["--stdin", "--output", str(output), "describe", *overrides])
+
+    markdown = output.read_text(encoding="utf-8")
+    assert markdown.startswith(f"{expected_title}\n\n")
+    assert "Update the second line." in markdown
+    assert capsys.readouterr().out == markdown + "\n"
+
+def test_plain_diff_ask_keeps_output_after_command_settings(monkeypatch, tmp_path, capsys):
+    async def answer(self, model, system, user, temperature=0.2, **kwargs):
+        return "The changed line is correct.", "stop"
+
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion", answer,
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+    output = tmp_path / "answer.md"
+
+    run(inargs=["--stdin", "--output", str(output), "ask", "Explain.", "--config.publish_output=false"])
+
+    assert "The changed line is correct." in output.read_text(encoding="utf-8")
+    assert "The changed line is correct." in capsys.readouterr().out
+
+
+def test_plain_diff_ask_applies_command_ignore_filter(monkeypatch):
+    diff = (
+        "diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-old\n+new\n"
+        "diff --git a/bar.py b/bar.py\n--- a/bar.py\n+++ b/bar.py\n@@ -1 +1 @@\n-old\n+new\n"
+    )
+    seen = []
+
+    async def capture(self):
+        seen.extend(f.filename for f in self.git_provider.get_diff_files())
+
+    monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions.run", capture)
+    monkeypatch.setattr("sys.stdin", io.StringIO(diff))
+    run(inargs=["--stdin", "ask", "Explain.", '--ignore.glob=["foo.py"]'])
+
+    assert seen == ["bar.py"]
+
+
+@pytest.mark.parametrize("registered_provider", [False, True])
+def test_local_git_ask_applies_command_ignore_filter(monkeypatch, tmp_path, cfg, registered_provider):
+    repo = Repo.init(tmp_path, initial_branch="main")
+    with repo.config_writer() as config:
+        config.set_value("user", "name", "Test User")
+        config.set_value("user", "email", "test@example.com")
+
+    for filename in ("foo.py", "bar.py"):
+        (tmp_path / filename).write_text("old\n", encoding="utf-8")
+    repo.index.add(["foo.py", "bar.py"])
+    repo.index.commit("base")
+
+    repo.git.checkout("-b", "feature")
+    for filename in ("foo.py", "bar.py"):
+        (tmp_path / filename).write_text("new\n", encoding="utf-8")
+    repo.index.add(["foo.py", "bar.py"])
+    repo.index.commit("change")
+
+    provider_id = "local"
+    if registered_provider:
+        class RegisteredLocalProvider(LocalGitProvider):
+            pass
+
+        provider_id = "registered-local"
+        monkeypatch.setitem(git_providers._GIT_PROVIDERS, provider_id, RegisteredLocalProvider)
+
+    cfg("config.git_provider", provider_id)
+    cfg("plain_diff.content", None)
+    monkeypatch.chdir(tmp_path)
+    seen = []
+
+    async def capture(self):
+        seen.extend(f.filename for f in self.git_provider.get_diff_files())
+
+    monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions.run", capture)
+    run(inargs=["--pr_url", "main", "ask", "Explain.", '--ignore.glob=["foo.py"]'])
+
+    assert seen == ["bar.py"]
 
 
 def test_answer_output_is_rejected_without_creating_artifact(monkeypatch, tmp_path, capsys):

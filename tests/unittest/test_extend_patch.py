@@ -57,6 +57,14 @@ class TestExtendPatch:
         assert extend_patch(original_file_str, patch_str,
                             patch_extra_lines_before=num_lines, patch_extra_lines_after=num_lines) == patch_str
 
+    # Tests that skipped extensions match regardless of case
+    @pytest.mark.parametrize("filename", ["notes.txt", "NOTES.TXT", "Readme.MD"])
+    def test_skip_types_match_any_case(self, filename):
+        original_file_str = 'line1\nline2\nline3\nline4\nline5'
+        patch_str = '@@ -2,2 +2,2 @@ init()\n-line2\n+new_line2\n line3'
+        assert extend_patch(original_file_str, patch_str, patch_extra_lines_before=1,
+                            patch_extra_lines_after=1, filename=filename) == patch_str
+
     # Tests that the function returns the original patch when patch_str contains no hunks
     def test_no_hunks(self):
         original_file_str = 'line1\nline2\nline3\nline4\nline5'
@@ -66,15 +74,16 @@ class TestExtendPatch:
         assert extend_patch(original_file_str, patch_str, num_lines) == expected_output
 
     # Tests that the function extends a patch with a single hunk correctly
-    def test_single_hunk(self):
+    @pytest.mark.parametrize("num_lines", [1, 2, 3])
+    def test_single_hunk(self, num_lines):
         original_file_str = 'line1\nline2\nline3\nline4\nline5'
         patch_str = '@@ -2,3 +2,3 @@ init()\n-line2\n+new_line2\n line3\n line4'
 
-        for num_lines in [1, 2, 3]:  # still works if extra lines exceed the file
-            expected_output = '\n@@ -1,5 +1,5 @@ init()\n line1\n-line2\n+new_line2\n line3\n line4\n line5'
-            actual_output = extend_patch(original_file_str, patch_str,
+        # still works if extra lines exceed the file
+        expected_output = '\n@@ -1,5 +1,5 @@ init()\n line1\n-line2\n+new_line2\n line3\n line4\n line5'
+        actual_output = extend_patch(original_file_str, patch_str,
                                          patch_extra_lines_before=num_lines, patch_extra_lines_after=num_lines)
-            assert actual_output == expected_output
+        assert actual_output == expected_output
 
     def test_head_context_does_not_split_unneeded_file_tail(self, monkeypatch):
         base = "\n".join(["first", "second", "old", *(f"tail {i}" for i in range(500))])
@@ -159,8 +168,8 @@ class TestExtendPatch:
     @pytest.mark.parametrize("section_header", ["", "   "])
     def test_headerless_hunk_uses_fixed_context_with_new_file(self, monkeypatch, section_header):
         settings = get_settings(use_context=False)
-        monkeypatch.setattr(settings.config, "allow_dynamic_context", True)
-        monkeypatch.setattr(settings.config, "max_extra_lines_before_dynamic_context", 10)
+        monkeypatch.setitem(settings.config, "allow_dynamic_context", True)
+        monkeypatch.setitem(settings.config, "max_extra_lines_before_dynamic_context", 10)
         preceding = [f"    line{i}" for i in range(1, 11)]
         original = "\n".join([*preceding, "old"])
         new = "\n".join([*preceding, "new"])
@@ -175,8 +184,8 @@ class TestExtendPatch:
     @pytest.mark.parametrize("new_header_line", ["anchor", "changed anchor"])
     def test_dynamic_header_missing_or_mismatched_uses_fixed_context(self, monkeypatch, new_header_line):
         settings = get_settings(use_context=False)
-        monkeypatch.setattr(settings.config, "allow_dynamic_context", True)
-        monkeypatch.setattr(settings.config, "max_extra_lines_before_dynamic_context", 10)
+        monkeypatch.setitem(settings.config, "allow_dynamic_context", True)
+        monkeypatch.setitem(settings.config, "max_extra_lines_before_dynamic_context", 10)
         original_lines = ["anchor", *(f"line{i}" for i in range(2, 11)), "old"]
         new_lines = [new_header_line, *original_lines[1:-1], "new"]
         header = "missing" if new_header_line == "anchor" else "anchor"
@@ -190,8 +199,8 @@ class TestExtendPatch:
 
     def test_dynamic_context_resets_for_headerless_second_hunk(self, monkeypatch):
         settings = get_settings(use_context=False)
-        monkeypatch.setattr(settings.config, "allow_dynamic_context", True)
-        monkeypatch.setattr(settings.config, "max_extra_lines_before_dynamic_context", 10)
+        monkeypatch.setitem(settings.config, "allow_dynamic_context", True)
+        monkeypatch.setitem(settings.config, "max_extra_lines_before_dynamic_context", 10)
         original_lines = ["def first():", *(f"line{i}" for i in range(2, 11)), "old1",
                           *(f"line{i}" for i in range(12, 22)), "old2"]
         new_lines = ["new1" if line == "old1" else "new2" if line == "old2" else line
@@ -362,15 +371,15 @@ class TestOmittedHunkCount:
             RE_HUNK_HEADER.match("@@ -10,7 +12 @@"))
         assert (start1, size1, start2, size2) == (10, 7, 12, 1)
 
-    def test_single_line_hunk_does_not_resurrect_the_deleted_line(self):
+    @pytest.mark.parametrize("expected", [" l2", " l3", " l4"])
+    def test_single_line_hunk_does_not_resurrect_the_deleted_line(self, expected):
         original = "".join(f"l{i}\n" for i in range(1, 9))
         new = "CHANGED\n" + "".join(f"l{i}\n" for i in range(2, 9))
         extended = extend_patch(original, "@@ -1 +1 @@\n-l1\n+CHANGED",
                                 patch_extra_lines_before=0, patch_extra_lines_after=3,
                                 filename="m.py", new_file_str=new)
         assert "\n l1" not in extended
-        for expected in (" l2", " l3", " l4"):
-            assert expected in extended
+        assert expected in extended
 
     def test_hunk_line_range_excludes_the_line_after_the_hunk(self):
         patch = ("@@ -10,1 +12 @@\n-old\n+only_line\n"

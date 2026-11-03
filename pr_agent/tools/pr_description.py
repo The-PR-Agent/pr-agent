@@ -27,7 +27,6 @@ from pr_agent.algo.run_details import get_run_details, init_run_details, record_
 from pr_agent.algo.run_output import push_outputs_async, show_relevant_configurations, show_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
-from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
     filter_generated_labels,
@@ -64,32 +63,19 @@ def _build_unprocessed_files_block(file_list: list, label: str, max_files: int =
 
 
 class PRDescription:
-    # True so instances built without __init__ (e.g. via __new__) never trigger prepare() from run()
-    _prepared = True
+    COLLAPSIBLE_FILE_LIST_THRESHOLD = 8
 
     def __init__(self, pr_url: str, args: list = None,
-                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, *, _defer_prepare: bool = False):
+                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         """
         Initialize the PRDescription object with the necessary attributes and objects for generating a PR description
         using an AI model.
         Args:
             pr_url (str): The URL of the pull request.
             args (list, optional): List of arguments passed to the PRDescription class. Defaults to None.
-            _defer_prepare (bool, optional): Skip the git provider and PR context loading until prepare() or
-                run() is called. Defaults to False.
         """
-        self.pr_url = pr_url
-        self._ai_handler_factory = ai_handler
-        self._prepared = False
-        if not _defer_prepare:
-            self.prepare()
-
-    def prepare(self) -> None:
-        """Load the git provider, PR context, prompt vars and TokenHandler. Runs once; later calls are no-ops."""
-        if self._prepared:
-            return
         # Initialize the git provider and main PR language
-        self.git_provider = get_git_provider_with_context(self.pr_url)
+        self.git_provider = get_git_provider_with_context(pr_url)
         self.main_pr_language = get_main_pr_language(
             self.git_provider.get_languages(), self.git_provider.get_files()
         )
@@ -102,7 +88,7 @@ class PRDescription:
             get_settings().pr_description.enable_semantic_files_types = False
 
         # Initialize the AI handler
-        self.ai_handler = self._ai_handler_factory()
+        self.ai_handler = ai_handler()
         self.ai_handler.main_pr_language = self.main_pr_language
 
         # Initialize the variables dictionary
@@ -128,9 +114,7 @@ class PRDescription:
             "enable_semantic_files_types": get_settings().pr_description.enable_semantic_files_types,
             "related_tickets": "",
             "related_tickets_omitted": 0,
-            "include_file_summary_changes": (
-                len(self.git_provider.get_diff_files()) <= self.COLLAPSIBLE_FILE_LIST_THRESHOLD
-            ),
+            "include_file_summary_changes": True,
             "duplicate_prompt_examples": get_settings().config.get("duplicate_prompt_examples", False),
             "enable_pr_diagram": enable_pr_diagram,
             "enable_pr_description": get_settings().pr_description.get("enable_pr_description", True),
@@ -138,19 +122,10 @@ class PRDescription:
 
         self.user_description = self.git_provider.get_user_description()
 
-        # Initialize the token handler
-        self.token_handler = TokenHandler(
-            self.git_provider.pr,
-            self.vars,
-            get_settings().pr_description_prompt.system,
-            get_settings().pr_description_prompt.user,
-        )
-
         # Initialize patches_diff and prediction attributes
         self.patches_diff = None
         self.prediction = None
         self.file_label_dict = None
-        self._prepared = True
 
     @staticmethod
     def _write_json_output(data: dict) -> None:
@@ -168,8 +143,6 @@ class PRDescription:
         write_review_json_output({**data, "usage": usage})
 
     async def run(self):
-        if not getattr(self, "_prepared", False):
-            self.prepare()
         init_run_details()
         self.progress_response = None
         try:
@@ -180,6 +153,12 @@ class PRDescription:
             if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
                 self.progress_response = self.git_provider.publish_comment(
                     DESCRIBE_PROGRESS_COMMENT, is_temporary=True)
+
+            # PyGithub fetches diff files synchronously; keep large fetches off the webhook event loop.
+            diff_files = await asyncio.to_thread(self.git_provider.get_diff_files)
+            self.vars["include_file_summary_changes"] = (
+                len(diff_files) <= self.COLLAPSIBLE_FILE_LIST_THRESHOLD
+            )
 
             # ticket extraction if exists
             await extract_and_cache_pr_tickets(self.git_provider, self.vars)
@@ -311,7 +290,7 @@ class PRDescription:
                         self.git_provider.publish_description(title_to_publish, pr_body)
                     except Exception:
                         try:
-                            self.git_provider.publish_comment("Failed to update PR description")
+                            self.git_provider.publish_tool_failure("describe", "Failed to update PR description")
                         except Exception as publication_error:
                             get_logger().exception(
                                 f"Failed to publish PR description failure result, error: {publication_error}"
@@ -410,7 +389,8 @@ class PRDescription:
         output_token_reserve_kwargs = (
             {"output_token_reserve": output_token_reserve} if callable(output_token_reserve) else {}
         )
-        output = get_pr_diff(
+        output = await asyncio.to_thread(
+            get_pr_diff,
             self.git_provider,
             self.token_handler,
             model,
@@ -466,7 +446,8 @@ class PRDescription:
                 token_handler_only_files_prompt
             )
             (patches_compressed_list, total_tokens_list, deleted_files_list, remaining_files_list, file_dict,
-             files_in_patches_list) = get_pr_diff_multiple_patchs(
+             files_in_patches_list) = await asyncio.to_thread(
+                get_pr_diff_multiple_patchs,
                 self.git_provider,
                 token_handler_only_files_prompt,
                 model,
@@ -722,8 +703,8 @@ class PRDescription:
                     new_yaml = yaml.dump(original_prediction_dict)
                     if load_yaml(new_yaml, keys_fix_yaml=self.keys_fix):
                         prediction = new_yaml
-                if isinstance(original_prediction, list):
-                    prediction = yaml.dump(original_prediction_dict["pr_files"])
+                        if isinstance(original_prediction_loaded, list):
+                            prediction = yaml.dump(original_prediction_dict["pr_files"])
 
             return prediction
         except Exception as e:
@@ -835,6 +816,14 @@ class PRDescription:
         self.data = load_yaml(self.prediction.strip(), keys_fix_yaml=self.keys_fix)
         self._validate_description_schema(self.data)
 
+        # Preserve wholly unusable lists so they retain their existing handling.
+        for field in ("type", "labels"):
+            values = self.data.get(field)
+            if isinstance(values, list):
+                valid_values = [value for value in values if isinstance(value, str)]
+                if any(value.strip() for value in valid_values):
+                    self.data[field] = valid_values
+
         # A separate comment leaves the PR body untouched, so repeating the user text would duplicate it.
         if (get_settings().pr_description.add_original_user_description and self.user_description
                 and not get_settings().pr_description.publish_description_as_comment):
@@ -931,7 +920,9 @@ class PRDescription:
 
         body = self.user_description
         if get_settings().pr_description.include_generated_by_header:
-            ai_header = f"### 🤖 Generated by PR Agent at {self.git_provider.last_commit_id.sha}\n\n"
+            head_sha = self.git_provider.get_pr_head_sha()
+            commit_suffix = f" at {head_sha}" if head_sha else ""
+            ai_header = f"### 🤖 Generated by PR Agent{commit_suffix}\n\n"
         else:
             ai_header = ""
 
@@ -1162,7 +1153,7 @@ class PRDescription:
                     pr_body += """</table></details></td></tr>"""
                 else:
                     pr_body += """</table></td></tr>"""
-            pr_body += """</tr></tbody></table>"""
+            pr_body += """</tbody></table>"""
 
         except Exception as e:
             get_logger().error(f"Error processing pr files to markdown {self.pr_id}: {str(e)}")

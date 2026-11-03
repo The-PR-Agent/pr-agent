@@ -153,8 +153,8 @@ def settings_snapshot():
 async def test_string_request_applies_quoted_overrides(monkeypatch, settings_snapshot, argument, key, expected):
     review = Mock(return_value=AsyncMock())
 
-    async def run_sync(func):
-        func()
+    async def run_sync(func, *args, **kwargs):
+        return func(*args, **kwargs)
 
     monkeypatch.setattr(agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(agent_module, "enforce_request_policy", lambda pr_url: None)

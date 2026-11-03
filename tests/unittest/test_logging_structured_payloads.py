@@ -134,10 +134,10 @@ def no_sleep(monkeypatch):
 @pytest.fixture
 def publishing(monkeypatch):
     settings = get_settings()
-    monkeypatch.setattr(settings.config, "publish_output", True)
-    monkeypatch.setattr(settings.config, "publish_output_progress", True)
-    monkeypatch.setattr(settings.config, "is_auto_command", False, raising=False)
-    monkeypatch.setattr(settings.config, "propagate_tool_errors", False, raising=False)
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.config, "publish_output_progress", True)
+    monkeypatch.setitem(settings.config, "is_auto_command", False)
+    monkeypatch.setitem(settings.config, "propagate_tool_errors", False)
     return settings
 
 
@@ -245,7 +245,7 @@ async def test_improve_reports_a_provider_error_to_the_pr(publishing):
 
     await tool.run()
 
-    provider.publish_comment.assert_called_once_with("Failed to generate code suggestions for PR")
+    provider.publish_tool_failure.assert_called_once_with("improve", "Failed to generate code suggestions for PR")
 
 
 async def test_one_unreadable_ticket_link_keeps_the_others(monkeypatch):

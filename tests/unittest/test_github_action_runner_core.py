@@ -1,23 +1,31 @@
 import copy
+import io
 import json
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from github import GithubException
+from starlette_context import context
 
 import pr_agent.agent.pr_agent as pr_agent_module
 import pr_agent.servers.github_action_runner as github_action_runner
+from pr_agent import config_loader
+from pr_agent.agent.request_policy import enforce_request_policy
 from pr_agent.algo import artifacts
 from pr_agent.algo.run_details import command_failed, get_run_details, record_command_failure
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import _GIT_PROVIDERS, get_git_provider_with_context
 from pr_agent.git_providers import utils as git_utils
-from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
+from pr_agent.git_providers.github_provider import GithubProvider, IncompletePullRequestFilesError
 
 
 @pytest.fixture(autouse=True)
 def _provider_key_gate_passes(monkeypatch):
-    """These flows test tools, not credentials; the key gate has its own test file.
-    Tests that need the gate can override the attribute again."""
+    """Isolate unrelated routing tests from credential/policy I/O.
+    Tests of either gate override the corresponding attribute again."""
     monkeypatch.setattr(github_action_runner, "missing_provider_key_env_vars", lambda: None)
+    monkeypatch.setattr(github_action_runner, "enforce_request_policy", lambda *_args, **_kwargs: True)
 
 
 def test_is_true_accepts_bool_and_case_insensitive_true_string():
@@ -84,7 +92,7 @@ async def test_direct_auto_tool_publishes_and_preserves_error_when_comment_decod
     provider = Mock()
     provider.get_issue_comments_newest_first.return_value = [object()]
     provider._get_comment_body.side_effect = RuntimeError("comment decoding failed")
-    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _url: provider)
 
     class IncompleteTool:
@@ -285,6 +293,10 @@ def _write_review_comment_event_with_body(tmp_path, body):
     event_path = tmp_path / "event.json"
     event_path.write_text(json.dumps({
         "action": "created",
+        "pull_request": {
+            "url": "https://api.github.com/repos/org/repo/pulls/1",
+            "html_url": "https://github.com/org/repo/pull/1",
+        },
         "comment": {
             "body": body,
             "id": 123,
@@ -311,7 +323,7 @@ def _patch_issue_comment_deps(monkeypatch, handled):
         def add_eyes_reaction(self, comment_id, disable_eyes=False):
             return None
 
-    monkeypatch.setattr(github_action_runner, "get_git_provider", lambda: FakeProvider)
+    monkeypatch.setattr(github_action_runner, "get_git_provider_with_context", FakeProvider)
 
     class FakeAgent:
         async def handle_request(self, url, body, notify=None):
@@ -564,8 +576,8 @@ async def test_review_comment_with_review_command_mentioning_ask_stays_review(
 ):
     handled = []
     _patch_issue_comment_deps(monkeypatch, handled)
-    monkeypatch.setattr(github_action_runner, "get_git_provider",
-                        lambda: pytest.fail("line comment should not construct a provider"))
+    monkeypatch.setattr(github_action_runner, "get_git_provider_with_context",
+                        lambda _url: pytest.fail("line comment should not construct a provider"))
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request_review_comment")
     monkeypatch.setenv(
         "GITHUB_EVENT_PATH",
@@ -679,6 +691,71 @@ def _install_action_env(monkeypatch, tmp_path, event_path, event_name="pull_requ
     monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
     monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+
+@pytest.mark.parametrize("event_name", ["pull_request", "pull_request_target", "workflow_run"])
+@pytest.mark.parametrize("missing_model_key", [False, True])
+@pytest.mark.parametrize("title,repo_settings,allowed", [
+    ("[Auto] Refresh docs", b"", False),
+    ("Regular change", b"", True),
+    ("[Auto] Refresh docs", b"[config]\nignore_pr_title = []\n", True),
+    ("Regular change", b'[config]\nignore_pr_labels = ["skip-review"]\n', False),
+])
+async def test_auto_actions_apply_policy_after_repo_settings_without_rebuilding_provider(
+    monkeypatch, tmp_path, event_name, missing_model_key, title, repo_settings, allowed,
+):
+    # Keep the Action's real settings/provider path; mock only SDK I/O and tools.
+    get_settings().get("config")  # Initialize Dynaconf before copying its loaded sections.
+    settings = copy.deepcopy(get_settings())
+    monkeypatch.setenv("AUTO_CAST_FOR_DYNACONF", "false")
+    monkeypatch.setattr(config_loader, "global_settings", settings)
+    monkeypatch.setattr(github_action_runner, "enforce_request_policy", enforce_request_policy)
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+    monkeypatch.setattr(
+        github_action_runner, "missing_provider_key_env_vars",
+        lambda: ("openai", ("OPENAI_KEY",)) if missing_model_key else None,
+    )
+    settings.set("config.git_provider", "github")
+    settings.set("config.ignore_pr_title", ["^\\[Auto\\]", "^Auto"])
+    settings.set("github_action_config.pr_actions", ["opened"])
+    pr = SimpleNamespace(
+        title=title, html_url="https://github.com/org/repo/pull/1",
+        user=SimpleNamespace(login="author"), head=SimpleNamespace(ref="feature"),
+        base=SimpleNamespace(ref="main"), labels=[SimpleNamespace(name="skip-review")],
+        get_commits=Mock(return_value=[SimpleNamespace(sha="head")]),
+    )
+    repo = Mock(full_name="org/repo", default_branch="main")
+    repo.get_pull.return_value = pr
+    repo.get_contents.return_value = SimpleNamespace(decoded_content=repo_settings)
+    client = Mock()
+    client.get_repo.return_value = repo
+    monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: client)
+    tools = [Mock(return_value=SimpleNamespace(run=AsyncMock())) for _ in range(3)]
+    for name, tool in zip(("PRDescription", "PRReviewer", "PRCodeSuggestions"), tools, strict=True):
+        monkeypatch.setattr(github_action_runner, name, tool)
+    event = (_write_workflow_run_event(tmp_path) if event_name == "workflow_run"
+             else _write_pull_request_opened_event(tmp_path))
+    _install_action_env(monkeypatch, tmp_path, event, event_name)
+    _patch_env_settings(monkeypatch, {
+        "GITHUB_ACTION.AUTO_DESCRIBE": True, "GITHUB_ACTION.AUTO_REVIEW": True, "GITHUB_ACTION.AUTO_IMPROVE": True,
+    })
+
+    # Verify that ignored batches succeed without a model key, while allowed ones still require it.
+    if missing_model_key and allowed:
+        with pytest.raises(SystemExit, match="no usable API key"):
+            await github_action_runner._run_action_and_drain()
+    else:
+        await github_action_runner._run_action_and_drain()
+
+    for tool in tools:
+        expected_calls = int(allowed and not missing_model_key)
+        assert tool.call_count == expected_calls
+        assert tool.return_value.run.await_count == expected_calls
+    # The policy reuses the instance that already loaded .pr_agent.toml; each tool that runs re-reads the PR once.
+    client.get_repo.assert_called_once_with("org/repo")
+    assert repo.get_pull.call_count == 1 + sum(tool.call_count for tool in tools)
+    pr.get_commits.assert_called_once()
+    repo.get_contents.assert_called_once()
 
 
 def _patch_env_settings(monkeypatch, overrides=None):
@@ -890,7 +967,7 @@ def test_comment_argument_cannot_disable_recorded_failure_check(monkeypatch, tmp
     monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
-    monkeypatch.setattr(github_action_runner, "get_git_provider", lambda: FakeProvider)
+    monkeypatch.setattr(github_action_runner, "get_git_provider_with_context", FakeProvider)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
     monkeypatch.setitem(pr_agent_module.command2class, "review", FailingReviewer)
     monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
@@ -984,7 +1061,8 @@ def test_successful_dispatched_command_stays_green(monkeypatch, tmp_path, restor
     assert captured["status"].failed is False
 
 
-def test_plain_non_command_comment_stays_green(monkeypatch, tmp_path, restore_github_settings):
+@pytest.mark.parametrize("github_token", ["token", ""])
+def test_plain_non_command_comment_stays_green(monkeypatch, tmp_path, restore_github_settings, github_token):
     handled = []
     _patch_issue_comment_deps(monkeypatch, handled)
     event_path = tmp_path / "event.json"
@@ -998,6 +1076,7 @@ def test_plain_non_command_comment_stays_green(monkeypatch, tmp_path, restore_gi
         "sender": {"type": "User"},
     }))
     _install_action_env(monkeypatch, tmp_path, event_path, event_name="issue_comment")
+    monkeypatch.setenv("GITHUB_TOKEN", github_token)
 
     captured = _capture_action_status(monkeypatch)
 
@@ -1007,12 +1086,14 @@ def test_plain_non_command_comment_stays_green(monkeypatch, tmp_path, restore_gi
     assert captured["status"].failed is False
 
 
-def test_bot_comment_event_stays_green(monkeypatch, tmp_path, restore_github_settings):
+@pytest.mark.parametrize("github_token", ["token", ""])
+def test_bot_comment_event_stays_green(monkeypatch, tmp_path, restore_github_settings, github_token):
     handled = []
     _patch_issue_comment_deps(monkeypatch, handled)
     _install_action_env(
         monkeypatch, tmp_path, _write_issue_comment_event(tmp_path, "Bot"), event_name="issue_comment"
     )
+    monkeypatch.setenv("GITHUB_TOKEN", github_token)
 
     captured = _capture_action_status(monkeypatch)
 
@@ -1205,8 +1286,8 @@ async def test_issue_comment_not_starting_with_slash_is_skipped(
 async def test_issue_comment_on_plain_issue_is_dispatched(monkeypatch, tmp_path, restore_github_settings):
     handled = []
     _patch_issue_comment_deps(monkeypatch, handled)
-    monkeypatch.setattr(github_action_runner, "get_git_provider",
-                        lambda: pytest.fail("plain issue should not construct a provider"))
+    monkeypatch.setattr(github_action_runner, "get_git_provider_with_context",
+                        lambda _url: pytest.fail("plain issue should not construct a provider"))
     monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_plain_issue_comment_event(tmp_path)))
     monkeypatch.setenv("GITHUB_TOKEN", "token")
@@ -1292,12 +1373,13 @@ async def test_workflow_run_runs_auto_tools(monkeypatch, tmp_path, restore_githu
 
 
 @pytest.mark.asyncio
-async def test_workflow_run_skips_non_pull_request_origin(monkeypatch, tmp_path, restore_github_settings):
+@pytest.mark.parametrize("github_token", ["token", ""])
+async def test_workflow_run_skips_non_pull_request_origin(monkeypatch, tmp_path, restore_github_settings, github_token):
     runs = []
     _patch_workflow_run_deps(monkeypatch, runs)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, originating_event="push")))
-    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_TOKEN", github_token)
 
     await github_action_runner.run_action()
 
@@ -1305,12 +1387,15 @@ async def test_workflow_run_skips_non_pull_request_origin(monkeypatch, tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_workflow_run_skips_when_pull_requests_empty(monkeypatch, tmp_path, restore_github_settings):
+@pytest.mark.parametrize("github_token", ["token", ""])
+async def test_workflow_run_skips_when_pull_requests_empty(
+    monkeypatch, tmp_path, restore_github_settings, github_token
+):
     runs = []
     _patch_workflow_run_deps(monkeypatch, runs)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, pull_requests=[])))
-    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_TOKEN", github_token)
 
     await github_action_runner.run_action()
 
@@ -1379,6 +1464,34 @@ def _write_plain_issue_comment_event(tmp_path):
         "sender": {"type": "User"},
     }))
     return event_path
+
+@pytest.mark.parametrize("github_token", [None, ""], ids=["missing", "empty"])
+@pytest.mark.parametrize("event_name, write_event", [
+    ("pull_request", _write_pull_request_opened_event),
+    ("pull_request_target", _write_pull_request_opened_event),
+    ("workflow_run", _write_workflow_run_event),
+    ("pull_request_review", _write_review_event),
+    ("issue_comment", lambda path: _write_issue_comment_event(path, "User")),
+    ("issue_comment", _write_plain_issue_comment_event),
+    ("pull_request_review_comment", lambda path: _write_review_comment_event_with_body(path, "/review")),
+])
+def test_missing_github_token_fails_before_repository_access(
+    monkeypatch, tmp_path, restore_github_settings, github_token, event_name, write_event,
+):
+    _install_action_env(monkeypatch, tmp_path, write_event(tmp_path), event_name)
+    if github_token is None:
+        monkeypatch.delenv("GITHUB_TOKEN")
+    else:
+        monkeypatch.setenv("GITHUB_TOKEN", github_token)
+    apply_settings = Mock()
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", apply_settings)
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+
+    with pytest.raises(SystemExit, match="GITHUB_TOKEN not set.*workflow's env"):
+        github_action_runner.main()
+
+    apply_settings.assert_not_called()
+
 
 @pytest.mark.asyncio
 async def test_issue_comment_body_reaches_the_agent_with_its_case_preserved(
@@ -1583,3 +1696,283 @@ async def test_non_pr_action_routes_do_not_read_artifacts(
         "GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, originating_event="push"))
     )
     await github_action_runner.run_action()
+
+
+class _ScopeProbeProvider:
+    """Stand in for the GitHub provider and record how one Action run reuses it."""
+
+    created = []
+    failing_refresh = None
+
+    def __init__(self, pr_url):
+        self.diff_resets = 0
+        self.pr_refreshes = 0
+        self.repo_settings_reads = 0
+        self.reactions = []
+        type(self).created.append(self)
+
+    def get_repo_settings(self):
+        self.repo_settings_reads += 1
+        return ""
+
+    def reset_diff_cache_for_command(self):
+        self.diff_resets += 1
+
+    def refresh_pr_for_command(self):
+        self.pr_refreshes += 1
+        if self.pr_refreshes == type(self).failing_refresh:
+            raise GithubException(502, {"message": "Bad Gateway"}, {})
+
+    def add_eyes_reaction(self, comment_id, disable_eyes=False):
+        self.reactions.append((comment_id, disable_eyes))
+
+
+def _use_scope_probe_provider(monkeypatch):
+    # Other tests leave a different config.git_provider on the shared settings; pin this test's own copy.
+    get_settings().get("config")  # Initialize Dynaconf before copying its loaded sections.
+    settings = copy.deepcopy(get_settings())
+    monkeypatch.setattr(config_loader, "global_settings", settings)
+    settings.set("config.git_provider", "github")
+    _ScopeProbeProvider.created = []
+    monkeypatch.setitem(_GIT_PROVIDERS, "github", _ScopeProbeProvider)
+    return _ScopeProbeProvider.created
+
+
+def _stub_auto_tools(monkeypatch, tmp_path):
+    """Set up an opened-PR run whose three tools record what the shared probe provider showed them."""
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+    _install_action_env(monkeypatch, tmp_path, _write_pull_request_opened_event(tmp_path))
+    _patch_env_settings(monkeypatch, {
+        "GITHUB_ACTION.AUTO_DESCRIBE": True, "GITHUB_ACTION.AUTO_REVIEW": True, "GITHUB_ACTION.AUTO_IMPROVE": True,
+    })
+    created = _use_scope_probe_provider(monkeypatch)
+    runs = []
+
+    def make_tool(name):
+        class ProviderTool:
+            def __init__(self, pr_url):
+                self.provider = get_git_provider_with_context(pr_url)
+
+            async def run(self):
+                runs.append((name, self.provider.diff_resets, self.provider.pr_refreshes))
+
+        return ProviderTool
+
+    monkeypatch.setattr(github_action_runner, "PRDescription", make_tool("describe"))
+    monkeypatch.setattr(github_action_runner, "PRReviewer", make_tool("review"))
+    monkeypatch.setattr(github_action_runner, "PRCodeSuggestions", make_tool("improve"))
+    return created, runs
+
+
+def _stub_push_commands(monkeypatch, tmp_path):
+    """Set up a synchronize run of three push commands that record what the shared probe provider showed them."""
+    handled = []
+    _patch_synchronize_deps(monkeypatch, handled, ["/describe", "/review", "/improve"])
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    # The real settings step builds the provider the commands then reuse, so even the first refresh is checked.
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", git_utils.apply_repo_settings)
+    created = _use_scope_probe_provider(monkeypatch)
+
+    class FakeAgent:
+        async def handle_request(self, url, body, notify=None):
+            provider = get_git_provider_with_context(url)
+            handled.append((body[0], provider.diff_resets, provider.pr_refreshes))
+
+    monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
+    return created, handled
+
+
+def test_auto_tools_share_one_provider_and_refresh_it_before_each_tool(monkeypatch, tmp_path, restore_github_settings):
+    created, runs = _stub_auto_tools(monkeypatch, tmp_path)
+
+    github_action_runner.main()
+
+    # The repo-settings step builds the provider every tool then reuses; each tool resets its diff and re-reads
+    # the PR first.
+    assert len(created) == 1
+    assert runs == [("describe", 1, 1), ("review", 2, 2), ("improve", 3, 3)]
+
+
+def test_auto_tools_end_the_run_when_the_pull_request_cannot_be_read_before_a_tool(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    _, runs = _stub_auto_tools(monkeypatch, tmp_path)
+    monkeypatch.setattr(_ScopeProbeProvider, "failing_refresh", 2)
+
+    with pytest.raises(GithubException):
+        github_action_runner.main()
+
+    # As on main, where a tool whose provider cannot read the PR does not run, the tools after it do not either.
+    assert runs == [("describe", 1, 1)]
+
+
+def test_push_commands_share_one_provider_and_refresh_it_before_each_command(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    created, handled = _stub_push_commands(monkeypatch, tmp_path)
+
+    github_action_runner.main()
+
+    assert len(created) == 1
+    assert handled == [("/describe", 1, 1), ("/review", 2, 2), ("/improve", 3, 3)]
+
+
+def test_push_commands_skip_a_command_whose_pull_request_cannot_be_read(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    _, handled = _stub_push_commands(monkeypatch, tmp_path)
+    monkeypatch.setattr(_ScopeProbeProvider, "failing_refresh", 2)
+
+    with pytest.raises(SystemExit) as exit_info:
+        github_action_runner.main()
+
+    # The command fails the run without being run, and the next one reads the PR for itself.
+    assert exit_info.value.code == 1
+    assert handled == [("/describe", 1, 1), ("/improve", 3, 3)]
+
+
+@pytest.mark.asyncio
+async def test_comment_command_builds_one_provider_for_settings_reaction_and_command(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({
+        "action": "created",
+        "comment": {"body": "/review", "id": 123},
+        "issue": {
+            "pull_request": {
+                "url": "https://api.github.com/repos/org/repo/pulls/1",
+                "html_url": "https://github.com/org/repo/pull/1",
+            },
+            "url": "https://api.github.com/repos/org/repo/issues/1",
+        },
+        "sender": {"type": "User"},
+    }))
+    _install_action_env(monkeypatch, tmp_path, event_path, "issue_comment")
+    created = _use_scope_probe_provider(monkeypatch)
+    real_apply_repo_settings = github_action_runner.apply_repo_settings
+    applied = []
+
+    def apply_repo_settings(pr_url):
+        applied.append(real_apply_repo_settings(pr_url))
+        return applied[-1]
+
+    class FakeAgent:
+        async def handle_request(self, url, body, notify=None):
+            apply_repo_settings(url)  # PRAgent applies the repo settings again before it runs a command
+            notify()  # and acknowledges the comment once it accepts the command
+
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
+
+    await github_action_runner._run_action_and_drain()
+
+    assert len(created) == 1
+    assert len(applied) == 2
+    assert applied[0] is applied[1] is created[0]
+    assert created[0].repo_settings_reads == 1
+    assert created[0].reactions == [(123, False)]
+
+
+@pytest.mark.parametrize("event_name,payload,expected", [
+    ("pull_request", {"pull_request": {"url": "api-url", "html_url": "html-url"}}, "api-url"),
+    ("pull_request", {"pull_request": {"html_url": "html-url"}}, "html-url"),
+    ("issue_comment", {"issue": {"pull_request": {"url": "api-url", "html_url": "html-url"}}}, "api-url"),
+    ("workflow_run", {"workflow_run": {"event": "pull_request", "pull_requests": [{"url": "api-url"}]}}, "api-url"),
+])
+def test_repo_settings_load_from_the_url_the_tools_use(event_name, payload, expected):
+    assert github_action_runner._settings_pr_url(payload, event_name) == expected
+
+
+@pytest.mark.asyncio
+async def test_callback_drain_reads_the_settings_the_run_applied(monkeypatch):
+    # Repository settings are applied to the run's settings; the teardown must read the same ones.
+    get_settings().get("config")  # Initialize Dynaconf before copying its loaded sections.
+    settings = copy.deepcopy(get_settings())
+    monkeypatch.setattr(config_loader, "global_settings", settings)
+    drain = AsyncMock()
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: True)
+    monkeypatch.setattr(github_action_runner, "drain_litellm_callbacks", drain)
+
+    async def run_action():
+        get_settings().set("litellm.callback_timeout_seconds", 7)
+
+    monkeypatch.setattr(github_action_runner, "run_action", run_action)
+
+    await github_action_runner._run_action_and_drain()
+
+    drain.assert_awaited_once_with(7)
+    assert settings.litellm.get("callback_timeout_seconds") != 7
+
+
+@pytest.mark.asyncio
+async def test_trusted_host_settings_reach_the_settings_the_run_is_copied_from(monkeypatch):
+    # The options LiteLLM reads from the process-wide settings must still see the trusted host layer,
+    # and the run's own apply_repo_settings() must reuse the payload instead of fetching it again.
+    get_settings().get("config")  # Initialize Dynaconf before copying its loaded sections.
+    settings = copy.deepcopy(get_settings())
+    monkeypatch.setattr(config_loader, "global_settings", settings)
+    monkeypatch.setenv("AUTO_CAST_FOR_DYNACONF", "false")  # apply_host_settings sets it; restore it afterwards
+    host_url = "https://config.example.test/host.toml"
+    settings.set("config.extra_config_url", host_url)
+    fetches = []
+
+    def urlopen(request, timeout):
+        fetches.append(request.full_url)
+        return io.BytesIO(b'[litellm]\nsuccess_callback = ["langsmith"]\n')
+
+    monkeypatch.setattr(git_utils, "urlopen", urlopen)
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+    seen = []
+
+    async def run_action():
+        git_utils.apply_host_settings()  # apply_repo_settings() applies the host layer first
+        seen.append(get_settings().litellm.get("success_callback"))
+
+    monkeypatch.setattr(github_action_runner, "run_action", run_action)
+
+    await github_action_runner._run_action_and_drain()
+
+    assert seen == [["langsmith"]]
+    assert settings.litellm.get("success_callback") == ["langsmith"]
+    assert fetches == [host_url]
+
+
+@pytest.mark.asyncio
+async def test_unusable_host_settings_do_not_abort_the_run(monkeypatch):
+    get_settings().get("config")  # Initialize Dynaconf before copying its loaded sections.
+    settings = copy.deepcopy(get_settings())
+    monkeypatch.setattr(config_loader, "global_settings", settings)
+    monkeypatch.setenv("AUTO_CAST_FOR_DYNACONF", "false")  # apply_host_settings sets it; restore it afterwards
+    settings.set("config.extra_config_url", "http://[invalid")  # urlparse() raises a ValueError for it
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+    ran = []
+
+    async def run_action():
+        ran.append(True)
+
+    monkeypatch.setattr(github_action_runner, "run_action", run_action)
+
+    await github_action_runner._run_action_and_drain()
+
+    assert ran == [True]
+
+
+@pytest.mark.asyncio
+async def test_failed_run_resets_the_request_scope(monkeypatch):
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+
+    async def run_action():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(github_action_runner, "run_action", run_action)
+    assert not context.exists()
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await github_action_runner._run_action_and_drain()
+
+    assert not context.exists()

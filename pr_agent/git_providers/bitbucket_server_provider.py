@@ -1,6 +1,5 @@
 import difflib
 import subprocess
-from collections import Counter
 from types import SimpleNamespace
 from urllib.parse import quote, quote_plus, urlparse
 
@@ -11,8 +10,8 @@ from requests.exceptions import HTTPError
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 
 from ..algo.file_filter import filter_ignored
-from ..algo.git_patch_processing import decode_if_bytes
-from ..algo.language_handler import build_language_file_matcher, is_valid_file
+from ..algo.git_patch_processing import count_patch_lines, decode_if_bytes
+from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.utils import find_line_number_of_relevant_line_in_file, load_large_diff, replace_suggestion_blocks
 from ..config_loader import get_settings, get_verbosity_level
@@ -365,7 +364,7 @@ class BitbucketServerProvider(GitProvider):
             patch = "" if content_fetch_failed else load_large_diff(
                 file_path, new_file_content_str, original_file_content_str, show_warning=False)
 
-            patch_lines = patch.splitlines(keepends=True)
+            num_plus_lines, num_minus_lines = count_patch_lines(patch)
             diff_files.append(
                 FilePatchInfo(
                     original_file_content_str,
@@ -374,8 +373,8 @@ class BitbucketServerProvider(GitProvider):
                     file_path,
                     edit_type=edit_type,
                     old_filename=old_filename,
-                    num_plus_lines=len([line for line in patch_lines if line.startswith('+')]),
-                    num_minus_lines=len([line for line in patch_lines if line.startswith('-')]),
+                    num_plus_lines=num_plus_lines,
+                    num_minus_lines=num_minus_lines,
                     content_fetch_failed=content_fetch_failed,
                 )
             )
@@ -554,20 +553,7 @@ class BitbucketServerProvider(GitProvider):
 
     @cache_languages
     def get_languages(self):
-        # Return {language name: percentage}, like the other providers.
-        lang_map = get_settings().get("language_extension_map_org", {}) or {}
-        get_language = build_language_file_matcher(lang_map)
-
-        lang_count = Counter()
-        for filename in self.get_files():
-            if not filename:
-                continue
-            language = get_language(filename)
-            if language:
-                lang_count[language] += 1
-
-        total = sum(lang_count.values()) or 1
-        return {lang: count / total * 100 for lang, count in lang_count.items()}
+        return self._language_percentages(self.get_files())
 
     def get_pr_branch(self):
         return self.pr.fromRef['displayId']
@@ -644,14 +630,23 @@ class BitbucketServerProvider(GitProvider):
         return True
 
     @staticmethod
+    def _pr_path_index(path_parts: list[str]) -> int | None:
+        # Index of the segment that starts {projects|users}/{owner}/repos/{repo}/pull-requests/{id}, so a context
+        # path, project, user or repository named "projects" or "users" is not taken for it.
+        for index, part in enumerate(path_parts[:-5]):
+            if (part in ("projects", "users") and path_parts[index + 2] == "repos"
+                    and path_parts[index + 4] == "pull-requests"):
+                return index
+        return None
+
+    @staticmethod
     def _parse_bitbucket_server(url: str) -> str:
         # PR URLs use either projects/{project} or users/{user} after the Bitbucket Server base URL.
         parsed_url = urlparse(url)
-        server_path = parsed_url.path.split("/projects/", maxsplit=1)
-        if len(server_path) == 1:
-            server_path = parsed_url.path.split("/users/", maxsplit=1)
-        if len(server_path) > 1:
-            server_path = server_path[0].strip("/")
+        path_parts = parsed_url.path.split("/")
+        pr_path_index = BitbucketServerProvider._pr_path_index(path_parts)
+        if pr_path_index is not None:
+            server_path = "/".join(path_parts[:pr_path_index]).strip("/")
             return f"{parsed_url.scheme}://{parsed_url.netloc}/{server_path}".strip("/")
         return f"{parsed_url.scheme}://{parsed_url.netloc}"
 
@@ -661,32 +656,13 @@ class BitbucketServerProvider(GitProvider):
         parsed_url = urlparse(pr_url)
 
         path_parts = parsed_url.path.strip("/").split("/")
-
-        try:
-            projects_index = path_parts.index("projects")
-        except ValueError:
-            projects_index = -1
-
-        try:
-            users_index = path_parts.index("users")
-        except ValueError:
-            users_index = -1
-
-        if projects_index == -1 and users_index == -1:
+        pr_path_index = BitbucketServerProvider._pr_path_index(path_parts)
+        if pr_path_index is None:
             raise ValueError(f"The provided URL '{pr_url}' does not appear to be a Bitbucket PR URL")
 
-        if projects_index != -1:
-            path_parts = path_parts[projects_index:]
-        else:
-            path_parts = path_parts[users_index:]
-
-        if len(path_parts) < 6 or path_parts[2] != "repos" or path_parts[4] != "pull-requests":
-            raise ValueError(
-                f"The provided URL '{pr_url}' does not appear to be a Bitbucket PR URL"
-            )
-
+        path_parts = path_parts[pr_path_index:]
         workspace_slug = path_parts[1]
-        if users_index != -1:
+        if path_parts[0] == "users":
             workspace_slug = f"~{workspace_slug}"
         repo_slug = path_parts[3]
         try:

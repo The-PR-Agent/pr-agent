@@ -8,8 +8,6 @@ stay isolated between concurrent requests.
 """
 
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -101,17 +99,6 @@ def init_run_details() -> RunDetails:
     details = RunDetails()
     _run_details.set(details)
     return details
-
-
-@contextmanager
-def scoped_run_details() -> Iterator[RunDetails]:
-    """Install a fresh collector for the ``with`` block and restore the previous one on exit."""
-    details = RunDetails()
-    token = _run_details.set(details)
-    try:
-        yield details
-    finally:
-        _run_details.reset(token)
 
 
 def get_run_details() -> RunDetails | None:

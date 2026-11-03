@@ -8,7 +8,7 @@ from starlette_context import request_cycle_context
 
 from pr_agent import git_providers
 from pr_agent.agent import pr_agent as agent
-from pr_agent.agent.request_policy import RULE_FIELDS, RequestOutcome
+from pr_agent.agent.request_policy import RULE_FIELDS, RequestOutcome, enforce_request_policy
 from pr_agent.config_loader import global_settings
 
 URL = "https://github.com/org/repo/pull/7"
@@ -137,6 +137,37 @@ async def test_provider_without_metadata_uses_empty_default(environment, monkeyp
     monkeypatch.setitem(agent.command2class, "review", Mock(return_value=tool))
     assert await agent.PRAgent().handle_request(URL, "/review") is True
     tool.run.assert_awaited_once()
+
+
+@pytest.mark.parametrize("provider_kind", ["current", "unrelated", "subclass"])
+def test_policy_reuses_only_the_current_provider_class(environment, monkeypatch, provider_kind):
+    settings, _ = environment
+    settings.set("config.ignore_pr_title", ["Regular"])
+    constructed = []
+
+    class SelectedProvider:
+        def __init__(self, url):
+            constructed.append(self)
+
+        def get_request_policy_metadata(self, required):
+            assert required == {"title"}
+            return METADATA
+
+    class StaleSubclass(SelectedProvider):
+        def get_request_policy_metadata(self, required):
+            return {**METADATA, "title": "Unmatched"}
+
+    current = SelectedProvider(URL)
+    provider = {"current": current, "unrelated": object(), "subclass": StaleSubclass(URL)}[provider_kind]
+    lookup = Mock(return_value=provider)
+    monkeypatch.setattr(git_providers, "get_git_provider_with_context", lookup)
+    monkeypatch.setattr(git_providers, "get_git_provider", lambda: SelectedProvider)
+
+    assert enforce_request_policy(URL, provider=provider) is False
+
+    lookup.assert_not_called()
+    expected_constructions = 1 if provider_kind == "current" else 2
+    assert sum(type(instance) is SelectedProvider for instance in constructed) == expected_constructions
 
 
 def test_every_builtin_and_mosaico_provider_implements_policy_contract():

@@ -38,9 +38,8 @@ class _FakeAIHandler:
 
 def _build_pr_questions(monkeypatch):
     provider = _FakeProvider()
-    monkeypatch.setattr(pr_questions, "get_git_provider", lambda: lambda _url: provider)
+    monkeypatch.setattr(pr_questions, "get_git_provider_for_tool", lambda _url: provider)
     monkeypatch.setattr(pr_questions, "get_main_pr_language", lambda _languages, _files: "Python")
-    monkeypatch.setattr(pr_questions, "TokenHandler", lambda *_args: object())
     monkeypatch.setattr(pr_questions, "get_skills_context", lambda: "### Skill: security-review", raising=False)
     return pr_questions.PRQuestions(
         "https://github.com/example/repo/pull/1",
@@ -69,9 +68,8 @@ def test_top_level_ask_does_not_load_skills_when_disabled(monkeypatch):
         settings.set("skills.enabled", False)
         # Construct directly: _build_pr_questions would overwrite the spy with its own stub.
         provider = _FakeProvider()
-        monkeypatch.setattr(pr_questions, "get_git_provider", lambda: lambda _url: provider)
+        monkeypatch.setattr(pr_questions, "get_git_provider_for_tool", lambda _url: provider)
         monkeypatch.setattr(pr_questions, "get_main_pr_language", lambda _languages, _files: "Python")
-        monkeypatch.setattr(pr_questions, "TokenHandler", lambda *_args: object())
         monkeypatch.setattr(
             pr_questions,
             "get_skills_context",

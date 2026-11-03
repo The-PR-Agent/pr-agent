@@ -61,5 +61,5 @@ line-range filters still determine whether a suggestion can be published.
 
 ```toml
 [pr_code_suggestions]
-suggestions_score_threshold = 0 # Filter out suggestions with a score below this threshold (0-10)
+suggestions_score_threshold = 1 # Filter out suggestions with a score below this threshold (0-10); 0 is treated as 1
 ```

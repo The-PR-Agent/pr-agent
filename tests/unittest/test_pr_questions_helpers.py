@@ -106,9 +106,8 @@ def raw_question_tools(monkeypatch):
 
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
-    monkeypatch.setattr("pr_agent.tools.pr_questions.get_git_provider", lambda: lambda _url: provider)
+    monkeypatch.setattr("pr_agent.tools.pr_questions.get_git_provider_for_tool", lambda _url: provider)
     monkeypatch.setattr("pr_agent.tools.pr_questions.get_main_pr_language", lambda *_args: "Python")
-    monkeypatch.setattr("pr_agent.tools.pr_questions.TokenHandler", lambda *_args: None)
     monkeypatch.setattr(PRQuestions, "run", capture_question)
 
     with request_cycle_context({"settings": deepcopy(get_settings())}):
@@ -1506,8 +1505,7 @@ async def test_line_question_only_reads_diff_when_hunk_is_missing(
         monkeypatch.setattr(plq, "build_language_file_matcher",
                             MagicMock(side_effect=TypeError("invalid extension map")))
 
-    monkeypatch.setattr(plq, "get_git_provider", lambda: lambda _url: provider)
-    monkeypatch.setattr(plq, "TokenHandler", lambda *_args, **_kwargs: MagicMock())
+    monkeypatch.setattr(plq, "get_git_provider_for_tool", lambda _url: provider)
     extract_hunk = MagicMock(return_value=("@@ -1 +1 @@\n-old\n+new", "new"))
     monkeypatch.setattr(plq, "extract_hunk_lines_from_patch", extract_hunk)
     prediction = AsyncMock(return_value="answer")
@@ -1537,8 +1535,7 @@ def _construct_line_question(monkeypatch, factory):
     provider.get_pr_branch.return_value = "main"
     provider.supports_thread_resolution.return_value = False
     provider.supports_line_question_history.return_value = False
-    monkeypatch.setattr(plq, "get_git_provider", lambda: lambda _url: provider)
-    monkeypatch.setattr(plq, "TokenHandler", lambda *_args, **_kwargs: MagicMock())
+    monkeypatch.setattr(plq, "get_git_provider_for_tool", lambda _url: provider)
     return plq.PR_LineQuestions("https://github.com/org/repo/pull/1", ["why?"], ai_handler=factory)
 
 

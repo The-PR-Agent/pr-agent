@@ -10,11 +10,13 @@ from functools import partial
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.artifacts import get_artifact_context
+from pr_agent.algo.artifacts import get_artifact_context, prompt_boundary_markers
+from pr_agent.algo.code_replacement import python_replacement_compiles, reindent_to_line
 from pr_agent.algo.comment_identity import (
     PRCodeSuggestionsHeader,
     PRCodeSuggestionsIdentity,
     add_comment_identity,
+    comment_authorship_available,
     comment_matches_identity,
     format_pr_code_suggestions_header,
     hidden_marker_forms,
@@ -78,6 +80,23 @@ from pr_agent.tools.progress_comment import (
 # config_security.PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION, and the deprecation note in
 # docs/docs/tools/improve.mdx. The flag guards the one-off warning it emits.
 _deprecated_spellings_warned = False
+
+
+# Self-review marker keys were removed from configuration.toml; keep warning users who still
+# set either one, once per process.
+def _warn_deprecated_self_review_marker_keys() -> None:
+    if getattr(_warn_deprecated_self_review_marker_keys, "_warned", False):
+        return
+    settings = get_settings().pr_code_suggestions
+    if (settings.get("approve_pr_on_self_review", None) is None
+            and settings.get("fold_suggestions_on_self_review", None) is None):
+        return
+    _warn_deprecated_self_review_marker_keys._warned = True
+    get_logger().warning(
+        "pr_code_suggestions.approve_pr_on_self_review and "
+        "pr_code_suggestions.fold_suggestions_on_self_review are deprecated and have no effect; "
+        "remove them from your configuration"
+    )
 
 
 def _as_threshold(setting_name: str, default: int, minimum: int) -> int:
@@ -244,32 +263,20 @@ def _edit_comment_safely(git_provider, comment, body: str) -> bool:
 
 
 class PRCodeSuggestions:
-    # True so instances built without __init__ (e.g. via __new__) never trigger prepare() from run()
-    _prepared = True
-
     def __init__(self, pr_url: str, cli_mode=False, args: list = None,
-                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, *, _defer_prepare: bool = False):
+                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
+
+        self.git_provider = get_git_provider_with_context(pr_url)
         self.pr_url = pr_url  # set early so the no-op log line in `run()` can reference it
         self.args = args
-        self.cli_mode = cli_mode
-        self._ai_handler_factory = ai_handler
-        self._prepared = False
-        if not _defer_prepare:
-            self.prepare()
-
-    def prepare(self) -> None:
-        """Load the git provider, PR context, prompt vars and TokenHandler. Runs once; later calls are no-ops."""
-        if self._prepared:
-            return
-        self.git_provider = get_git_provider_with_context(self.pr_url)
-        self.incremental = self._parse_incremental(self.args)
+        self.incremental = self._parse_incremental(args)
         self._incremental_empty_scope = False
         # When invoked as `/improve -i`, narrow `git_provider.get_diff_files()` to the files
         # changed since the previous suggestions pass. Falls back to full when the provider
         # doesn't support incremental scope or no prior suggestion comment exists.
         self._setup_incremental_scope()
         # If incremental is active but the scope came back empty (no files changed since the
-        # previous suggestions pass), short-circuit prepare() now. `run()` checks the same flag and
+        # previous suggestions pass), short-circuit init now. `run()` checks the same flag and
         # exits without touching the model. This avoids a wasted full MR-diff retrieval via
         # `get_files()` — when `unreviewed_files_map` is `{}` it's falsy and `get_files()` falls
         # back to the full MR file list, which is pure waste on the "nothing new" path.
@@ -277,7 +284,6 @@ class PRCodeSuggestions:
                 and hasattr(self.git_provider, "unreviewed_files_map")
                 and not self.git_provider.unreviewed_files_map):
             self._incremental_empty_scope = True
-            self._prepared = True
             return
         self.main_language = get_main_pr_language(
             self.git_provider.get_languages(), self.git_provider.get_files()
@@ -292,10 +298,11 @@ class PRCodeSuggestions:
                 f"num_code_suggestions_per_chunk is not a number ({raw_num_code_suggestions!r}), "
                 f"using {num_code_suggestions}")
 
-        self.ai_handler = self._ai_handler_factory()
+        self.ai_handler = ai_handler()
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
         self.prediction = None
+        self.cli_mode = cli_mode
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
         if (self.pr_description_files and get_settings().get("config.is_auto_command", False) and
@@ -307,6 +314,7 @@ class PRCodeSuggestions:
             get_logger().debug("AI metadata is disabled for this command")
 
         is_ai_metadata = get_settings().get("config.enable_ai_metadata", False)
+        commit_messages_begin, commit_messages_end = prompt_boundary_markers("COMMIT_MESSAGES")
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -320,7 +328,9 @@ class PRCodeSuggestions:
             "skills_context": get_skills_context(),
             "repo_context": build_repo_context(self.git_provider),
             "suggestion_discussion_context": self._load_suggestion_discussion_context(),
-            "commit_messages_str": self.git_provider.get_commit_messages(),
+            "commit_messages_str": "" if self.incremental.is_incremental else self.git_provider.get_commit_messages(),
+            "commit_messages_begin": commit_messages_begin,
+            "commit_messages_end": commit_messages_end,
             "relevant_best_practices": "",
             "is_ai_metadata": is_ai_metadata,
             "diff_hunk_format": render_diff_hunk_format(
@@ -349,7 +359,6 @@ class PRCodeSuggestions:
         # The body actually published above; chunk progress is appended to it in place.
         self._progress_base_body = None
         self._chunk_progress = None
-        self._prepared = True
 
     def _load_suggestion_discussion_context(self) -> str:
         if not _supports_code_suggestion_state(self.git_provider):
@@ -384,14 +393,13 @@ class PRCodeSuggestions:
             self.incremental = IncrementalPR(False)
 
     async def run(self):
-        if not getattr(self, "_prepared", False):
-            self.prepare()
         init_run_details()
+        _warn_deprecated_self_review_marker_keys()
         self._output_published = False
         self._progress_base_body = None
         self._chunk_progress = None
         try:
-            if _supports_code_suggestion_state(self.git_provider):
+            if get_settings().config.publish_output and _supports_code_suggestion_state(self.git_provider):
                 try:
                     fixed = self.git_provider.reconcile_code_suggestion_threads()
                     if fixed:
@@ -402,7 +410,7 @@ class PRCodeSuggestions:
                     get_logger().warning(f"Failed to reconcile code suggestion threads: {e}")
 
             if getattr(self, "_incremental_empty_scope", False):
-                # Set by `prepare()` when incremental anchored cleanly but no files changed
+                # Set by `__init__` when incremental anchored cleanly but no files changed
                 # since the previous suggestions pass. Skip silently — re-running on the
                 # full MR diff here would just re-post the same inline suggestions.
                 get_logger().info(
@@ -414,6 +422,8 @@ class PRCodeSuggestions:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping code suggestions")
                 return None
+
+            await asyncio.to_thread(self.git_provider.get_diff_files)
 
             get_logger().info('Generating code suggestions for PR...')
             relevant_configs = {'pr_code_suggestions': dict(get_settings().pr_code_suggestions),
@@ -607,7 +617,7 @@ class PRCodeSuggestions:
                     try:
                         if not self.progress_response:
                             self.git_provider.remove_initial_comment()
-                        self.git_provider.publish_comment("Failed to generate code suggestions for PR")
+                        self.git_provider.publish_tool_failure("improve", "Failed to generate code suggestions for PR")
                     except Exception as publish_error:
                         get_logger().exception(f"Failed to update persistent review, error: {publish_error}")
             # The status of the whole run must not read as success just because the error stopped here.
@@ -619,16 +629,10 @@ class PRCodeSuggestions:
                 raise
 
     async def add_self_review_text(self, pr_body):
+        _warn_deprecated_self_review_marker_keys()
         text = get_settings().pr_code_suggestions.code_suggestions_self_review_text
         pr_body += f"\n\n- [ ]  {text}"
-        approve_pr_on_self_review = get_settings().pr_code_suggestions.approve_pr_on_self_review
-        fold_suggestions_on_self_review = get_settings().pr_code_suggestions.fold_suggestions_on_self_review
-        if approve_pr_on_self_review and not fold_suggestions_on_self_review:
-            pr_body += ' <!-- approve pr self-review -->'
-        elif fold_suggestions_on_self_review and not approve_pr_on_self_review:
-            pr_body += ' <!-- fold suggestions self-review -->'
-        else:
-            pr_body += ' <!-- approve and fold suggestions self-review -->'
+        pr_body += ' <!-- fold suggestions self-review -->'
         return pr_body
 
     def _get_suggestions_coverage_footer(self, suggestions_present: bool = True) -> str:
@@ -823,6 +827,8 @@ class PRCodeSuggestions:
             if git_provider._publish_check_run(pr_comment, name):
                 return progress_response if _clean_up_progress_note() else None
 
+        require_agent_authorship = comment_authorship_available(git_provider)
+
         if _supports_code_suggestion_state(git_provider) and max_previous_comments <= 0:
             result = GitProvider.publish_persistent_comment_full(
                 git_provider,
@@ -834,6 +840,7 @@ class PRCodeSuggestions:
                 as_thread=as_thread,
                 identity_marker=identity_marker,
                 legacy_initial_header=legacy_initial_header,
+                require_agent_authorship=require_agent_authorship,
                 fallback_on_error=False,
             )
             if result is not None:
@@ -895,15 +902,20 @@ class PRCodeSuggestions:
                 legacy_comment = None
                 for candidate in git_provider.get_issue_comments_newest_first():
                     body = _comment_body(candidate)
-                    if identity_marker:
-                        if comment_matches_identity(body, identity_marker):
-                            comment = candidate
-                            break
-                        if legacy_comment is None and _is_legacy_suggestions_comment(body):
-                            legacy_comment = candidate
-                    elif comment_matches_identity(body, initial_header):
+                    matches_identity = comment_matches_identity(body, identity_marker or initial_header)
+                    matches_legacy = (
+                        identity_marker
+                        and legacy_comment is None
+                        and _is_legacy_suggestions_comment(body)
+                    )
+                    if not (matches_identity or matches_legacy):
+                        continue
+                    if require_agent_authorship and not git_provider.is_comment_authored_by_pr_agent(candidate):
+                        continue
+                    if matches_identity:
                         comment = candidate
                         break
+                    legacy_comment = candidate
                 if comment is None and identity_marker:
                     comment = legacy_comment
                 if comment:
@@ -1033,12 +1045,15 @@ class PRCodeSuggestions:
             OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
             preserve_minimum=True,
         )
-        self.patches_diff = get_pr_diff(self.git_provider,
-                                        self._suggestion_attempt_budget.token_handler,
-                                        model,
-                                        add_line_numbers_to_hunks=True,
-                                        disable_extra_lines=False,
-                                        output_token_reserve=output_token_reserve)
+        self.patches_diff = await asyncio.to_thread(
+            get_pr_diff,
+            self.git_provider,
+            self._suggestion_attempt_budget.token_handler,
+            model,
+            add_line_numbers_to_hunks=True,
+            disable_extra_lines=False,
+            output_token_reserve=output_token_reserve,
+        )
         self.patches_diff_list = [self.patches_diff]
         self.patches_diff_no_line_number = self.remove_line_numbers([self.patches_diff])[0]
 
@@ -1095,6 +1110,9 @@ class PRCodeSuggestions:
         if not get_settings().config.publish_output:
             get_settings().system_prompt = system_prompt
             get_settings().user_prompt = user_prompt
+
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"Code suggestions response was truncated by {model}")
 
         # load suggestions from the AI response
         data = self._prepare_pr_code_suggestions(response)
@@ -1333,7 +1351,8 @@ class PRCodeSuggestions:
                                            'relevant_lines_end': relevant_lines_end})
             return False
         if diff_file.head_file and getattr(diff_file, "head_file_is_complete", True):
-            range_resolvable = relevant_lines_end <= len(split_diff_lines(diff_file.head_file))
+            line_count = diff_file.head_file.count("\n") + (not diff_file.head_file.endswith("\n"))
+            range_resolvable = relevant_lines_end <= line_count
         else:
             range_resolvable = self._get_patch_range_lines(
                 diff_file.patch, relevant_lines_start, relevant_lines_end) is not None
@@ -1388,10 +1407,11 @@ class PRCodeSuggestions:
                     get_logger().debug(f"Skipping suggestion {i + 1}, because it is a duplicate: {suggestion}")
                     continue
 
-                if 'const' in suggestion['suggestion_content'] and 'instead' in suggestion[
-                    'suggestion_content'] and 'let' in suggestion['suggestion_content']:
+                suggestion_content = suggestion['suggestion_content']
+                # Only filter direct advice; preserve reverse or negated recommendations for reflection.
+                if re.match(r"\s*(?i:use)\s+`?\bconst\b`?\s+instead\s+of\s+`?\blet\b", suggestion_content):
                     get_logger().debug(
-                        f"Skipping suggestion {i + 1}, because it uses 'const instead let': {suggestion}")
+                        f"Skipping suggestion {i + 1}, because it recommends 'const instead of let': {suggestion}")
                     continue
 
                 if ('existing_code' in suggestion) and ('improved_code' in suggestion):
@@ -1502,7 +1522,7 @@ class PRCodeSuggestions:
                 relevant_lines_start = int(d['relevant_lines_start'])  # absolute position
                 relevant_lines_end = int(d['relevant_lines_end'])
                 content = d['suggestion_content'].rstrip()
-                new_code_snippet = (d.get("improved_code") or "").rstrip()
+                new_code_snippet = (d.get("improved_code") or "").rstrip(" \t\r\n")
                 existing_code = d.get("existing_code")
                 if not isinstance(existing_code, str):
                     raise TypeError("existing_code must be a string")
@@ -1653,30 +1673,8 @@ class PRCodeSuggestions:
                 or not diff_file.head_file
                 or not getattr(diff_file, "head_file_is_complete", True)):
             return None
-
-        try:
-            compile(diff_file.head_file, relevant_file, "exec", dont_inherit=True)
-        except (SyntaxError, ValueError):
-            return None
-        except Exception as e:
-            get_logger().warning(f"Could not validate Python suggestion syntax: {e}")
-            return None
-
-        file_lines = split_diff_lines(diff_file.head_file)
-        if (relevant_lines_start < 1
-                or relevant_lines_end < relevant_lines_start
-                or relevant_lines_end > len(file_lines)):
-            return None
-        file_lines[relevant_lines_start - 1:relevant_lines_end] = new_code_snippet.splitlines()
-
-        try:
-            compile("\n".join(file_lines), relevant_file, "exec", dont_inherit=True)
-        except (SyntaxError, ValueError):
-            return False
-        except Exception as e:
-            get_logger().warning(f"Could not validate Python suggestion syntax: {e}")
-            return None
-        return True
+        return python_replacement_compiles(relevant_file, diff_file.head_file, relevant_lines_start,
+                                           relevant_lines_end, new_code_snippet)
 
     @staticmethod
     def _get_patch_range_lines(patch, relevant_lines_start, relevant_lines_end) -> list[str] | None:
@@ -1723,8 +1721,8 @@ class PRCodeSuggestions:
 
         if not existing_code:
             return False, "the existing code is unavailable", True
-        anchored_lines = [line.rstrip() for line in textwrap.dedent("\n".join(anchored_lines)).split("\n")]
-        existing_lines = [line.rstrip() for line in textwrap.dedent(existing_code).splitlines()]
+        anchored_lines = [line.rstrip(" \t") for line in textwrap.dedent("\n".join(anchored_lines)).split("\n")]
+        existing_lines = [line.rstrip(" \t") for line in split_diff_lines(textwrap.dedent(existing_code))]
         if existing_lines != anchored_lines:
             return False, "the existing code does not match the anchored range", True
         return True, "", True
@@ -1740,141 +1738,6 @@ class PRCodeSuggestions:
         return self._suggestion_applyability(relevant_file, relevant_lines_start,
                                              relevant_lines_end, existing_code)[0]
 
-    @staticmethod
-    def _shift_code_indentation(code_snippet: str, delta_spaces: int) -> str:
-        shifted_lines = []
-        for line in code_snippet.splitlines():
-            if not line.strip():
-                shifted_lines.append("")
-                continue
-            if delta_spaces > 0:
-                shifted_lines.append(" " * delta_spaces + line)
-            elif delta_spaces < 0:
-                shift = -delta_spaces
-                leading_whitespace = len(line) - len(line.lstrip())
-                shifted_lines.append(line[min(shift, leading_whitespace):])
-            else:
-                shifted_lines.append(line)
-        return "\n".join(shifted_lines)
-
-    @staticmethod
-    def _infer_space_indentation_unit(space_deltas: list[int]) -> int:
-        if not space_deltas:
-            return 1
-        unique_deltas = sorted(set(space_deltas))
-        for delta in unique_deltas:
-            if delta * 2 in unique_deltas:
-                return delta
-        return unique_deltas[0]
-
-    @staticmethod
-    def _continuation_space_adjustments(
-        lines: list[str],
-        leading_whitespace: list[str],
-    ) -> list[int]:
-        openers = []
-        adjustments = [0] * len(lines)
-        closer_for = {"(": ")", "[": "]"}
-        for index, (line, prefix) in enumerate(
-            zip(lines, leading_whitespace, strict=True)
-        ):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            for opener_position in range(len(openers) - 1, -1, -1):
-                opener_index, opener_prefix, closer = openers[opener_position]
-                if prefix == opener_prefix and stripped.startswith(closer):
-                    interior_indexes = [
-                        line_index
-                        for line_index in range(opener_index + 1, index)
-                        if lines[line_index].strip()
-                    ]
-                    opener_spaces = opener_prefix.count(" ")
-                    positive_offsets = [
-                        leading_whitespace[line_index].count(" ") - opener_spaces
-                        for line_index in interior_indexes
-                        if leading_whitespace[line_index].count(" ") > opener_spaces
-                    ]
-                    if positive_offsets:
-                        continuation_offset = min(positive_offsets)
-                        for line_index in interior_indexes:
-                            if leading_whitespace[line_index].count(" ") > opener_spaces:
-                                adjustments[line_index] += continuation_offset
-                    del openers[opener_position:]
-                    break
-            if stripped[-1] in closer_for:
-                openers.append((index, prefix, closer_for[stripped[-1]]))
-        return adjustments
-
-    @staticmethod
-    def _align_code_with_tabs(code_snippet: str, anchor_prefix: str) -> str:
-        lines = code_snippet.splitlines()
-        if not lines:
-            return code_snippet
-        leading_whitespace = [line[:len(line) - len(line.lstrip())] for line in lines]
-        anchor_depth = len(anchor_prefix) - len(anchor_prefix.lstrip("\t"))
-        anchor_alignment = anchor_prefix[anchor_depth:]
-        initial_index, initial_prefix = next(
-            (
-                (index, prefix)
-                for index, (line, prefix) in enumerate(
-                    zip(lines, leading_whitespace, strict=True)
-                )
-                if line.strip()
-            ),
-            (0, ""),
-        )
-        initial_spaces = initial_prefix.count(" ")
-        initial_tabs = initial_prefix.count("\t")
-        continuation_adjustments = PRCodeSuggestions._continuation_space_adjustments(
-            lines,
-            leading_whitespace,
-        )
-        initial_continuation_adjustment = continuation_adjustments[initial_index]
-        adjusted_initial_spaces = initial_spaces - initial_continuation_adjustment
-        space_deltas = [
-            abs(
-                prefix.count(" ")
-                - continuation_adjustments[index]
-                - adjusted_initial_spaces
-            )
-            for index, (line, prefix) in enumerate(
-                zip(lines, leading_whitespace, strict=True)
-            )
-            if (
-                line.strip()
-                and prefix.count(" ") - continuation_adjustments[index]
-                != adjusted_initial_spaces
-            )
-        ]
-        space_unit = PRCodeSuggestions._infer_space_indentation_unit(space_deltas)
-        aligned_lines = []
-        for index, (line, prefix) in enumerate(
-            zip(lines, leading_whitespace, strict=True)
-        ):
-            if not line.strip():
-                aligned_lines.append("")
-                continue
-            continuation_alignment = (
-                continuation_adjustments[index] - initial_continuation_adjustment
-            )
-            relative_space_depth, alignment_spaces = divmod(
-                prefix.count(" ")
-                - initial_spaces
-                - continuation_alignment,
-                space_unit,
-            )
-            relative_depth = (
-                prefix.count("\t") - initial_tabs
-                + relative_space_depth
-            )
-            aligned_lines.append(
-                "\t" * max(0, anchor_depth + relative_depth)
-                + anchor_alignment
-                + " " * (alignment_spaces + continuation_alignment)
-                + line[len(prefix):]
-            )
-        return "\n".join(aligned_lines).rstrip("\n")
 
     def dedent_code(self, relevant_file, relevant_lines_start, new_code_snippet):
         try:  # dedent code snippet
@@ -1909,18 +1772,7 @@ class PRCodeSuggestions:
                         original_initial_line = patch_lines[0]
                     break
             if original_initial_line:
-                suggested_initial_line = next(
-                    (line for line in new_code_snippet.splitlines() if line.strip()),
-                    "",
-                )
-                original_initial_spaces = len(original_initial_line) - len(original_initial_line.lstrip())
-                suggested_initial_spaces = len(suggested_initial_line) - len(suggested_initial_line.lstrip())
-                if original_initial_line.startswith("\t"):
-                    original_prefix = original_initial_line[:original_initial_spaces]
-                    new_code_snippet = self._align_code_with_tabs(new_code_snippet, original_prefix)
-                else:
-                    delta_spaces = original_initial_spaces - suggested_initial_spaces
-                    new_code_snippet = self._shift_code_indentation(new_code_snippet, delta_spaces)
+                new_code_snippet = reindent_to_line(new_code_snippet, original_initial_line)
         except Exception as e:
             get_logger().error(f"Error when dedenting code snippet for file {relevant_file}, error: {e}")
 
@@ -1958,7 +1810,7 @@ class PRCodeSuggestions:
         try:
             self.patches_diff_list_no_line_numbers = []
             for patches_diff in self.patches_diff_list:
-                patches_diff_lines = patches_diff.splitlines()
+                patches_diff_lines = split_diff_lines(patches_diff)
                 for i, line in enumerate(patches_diff_lines):
                     if line.strip():
                         if line.isnumeric():
@@ -2167,7 +2019,8 @@ class PRCodeSuggestions:
         # get PR diff
         deleted_files = []
         if get_settings().pr_code_suggestions.decouple_hunks:
-            packed_diffs = get_pr_multi_diffs(
+            packed_diffs = await asyncio.to_thread(
+                get_pr_multi_diffs,
                 self.git_provider, attempt_token_handler, model,
                 max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                 add_line_numbers=True, return_coverage=True,
@@ -2178,7 +2031,8 @@ class PRCodeSuggestions:
 
         else:
             # non-decoupled hunks
-            packed_diffs = get_pr_multi_diffs(
+            packed_diffs = await asyncio.to_thread(
+                get_pr_multi_diffs,
                 self.git_provider, attempt_token_handler, model,
                 max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                 add_line_numbers=False, return_coverage=True,
@@ -2193,7 +2047,8 @@ class PRCodeSuggestions:
             if not self.patches_diff_list:
                 # fallback to decoupled hunks
                 deleted_files.clear()
-                packed_diffs = get_pr_multi_diffs(
+                packed_diffs = await asyncio.to_thread(
+                    get_pr_multi_diffs,
                     self.git_provider, attempt_token_handler, model,
                     max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                     add_line_numbers=True, return_coverage=True,
@@ -2403,11 +2258,11 @@ class PRCodeSuggestions:
                     CHAR_LIMIT_PER_LINE = 84
                     suggestion_content = insert_br_after_x_chars(suggestion_content, CHAR_LIMIT_PER_LINE)
                     # pr_body += f"<tr><td><details><summary>{suggestion_content}</summary>"
-                    existing_code = suggestion["existing_code"].rstrip()
+                    existing_code = suggestion["existing_code"].rstrip(" \t\r\n")
                     if existing_code:
                         existing_code = self.dedent_code(relevant_file, relevant_lines_start, existing_code)
                     existing_code += "\n"
-                    improved_code = suggestion["improved_code"].rstrip()
+                    improved_code = suggestion["improved_code"].rstrip(" \t\r\n")
                     if improved_code:
                         improved_code = self.dedent_code(relevant_file, relevant_lines_start, improved_code)
                     improved_code += "\n"
@@ -2415,11 +2270,11 @@ class PRCodeSuggestions:
                     diff = difflib.unified_diff(existing_code.split('\n'),
                                                 improved_code.split('\n'), n=999)
                     patch_orig = "\n".join(diff)
-                    patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
+                    patch = "\n".join(split_diff_lines(patch_orig)[5:]).strip('\n').rstrip(" \t\r\n")
 
                     fence = get_suggestion_fence(patch)
                     example_code = ""
-                    example_code += f"{fence}diff\n{patch.rstrip()}\n{fence}\n"
+                    example_code += f"{fence}diff\n{patch}\n{fence}\n"
                     if i == 0:
                         pr_body += """<td>\n\n"""
                     else:
@@ -2459,7 +2314,7 @@ class PRCodeSuggestions:
 
                 # pr_body += "</details>"
                 # pr_body += """</td></tr>"""
-            pr_body += """</tr></tbody></table>"""
+            pr_body += """</tbody></table>"""
             return pr_body
         except Exception as e:
             # Returning "" here is not a safe "no suggestions" answer: the caller appends the

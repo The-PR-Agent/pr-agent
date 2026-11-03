@@ -632,6 +632,25 @@ index 1111111..2222222 100644
             "+diff --git added literal\n"
         )
 
+    _CRLF_DIFF_WITH_PREAMBLE = (
+        "Bitbucket generated diff\r\n"
+        "\r\n"
+        "diff --git a/src/first.py b/src/first.py\r\n"
+        "index 1111111..2222222 100644\r\n"
+        "--- a/src/first.py\r\n"
+        "+++ b/src/first.py\r\n"
+        "@@ -1 +1 @@\r\n"
+        "-old first\r\n"
+        "+new first\r\n"
+        "diff --git a/src/second.py b/src/second.py\r\n"
+        "index 3333333..4444444 100644\r\n"
+        "--- a/src/second.py\r\n"
+        "+++ b/src/second.py\r\n"
+        "@@ -1 +1 @@\r\n"
+        "-old second\r\n"
+        "+new second\r\n"
+    )
+
     def test_get_diff_files_splits_crlf_headers_after_preamble_in_diffstat_order(self):
         provider = BitbucketProvider.__new__(BitbucketProvider)
         provider.diff_files = None
@@ -649,24 +668,7 @@ index 1111111..2222222 100644
 
         diffstats = [first, second]
         provider.pr.diffstat.return_value = diffstats
-        provider.pr.diff.return_value = (
-            "Bitbucket generated diff\r\n"
-            "\r\n"
-            "diff --git a/src/first.py b/src/first.py\r\n"
-            "index 1111111..2222222 100644\r\n"
-            "--- a/src/first.py\r\n"
-            "+++ b/src/first.py\r\n"
-            "@@ -1 +1 @@\r\n"
-            "-old first\r\n"
-            "+new first\r\n"
-            "diff --git a/src/second.py b/src/second.py\r\n"
-            "index 3333333..4444444 100644\r\n"
-            "--- a/src/second.py\r\n"
-            "+++ b/src/second.py\r\n"
-            "@@ -1 +1 @@\r\n"
-            "-old second\r\n"
-            "+new second\r\n"
-        )
+        provider.pr.diff.return_value = self._CRLF_DIFF_WITH_PREAMBLE
 
         settings = MagicMock()
         settings.get.return_value = True
@@ -1555,7 +1557,7 @@ class TestBitbucketServerProvider:
     ):
         provider = self._diff_provider(version, changes)
         if ignored:
-            monkeypatch.setattr(global_settings.ignore, "glob", ["ignored.py"])
+            monkeypatch.setitem(global_settings.ignore, "glob", ["ignored.py"])
 
         files = provider.get_diff_files()
 
@@ -1790,6 +1792,54 @@ class TestBitbucketServerProvider:
         assert bitbucket_class.call_args.kwargs["url"] == server_url
         bitbucket_client.get.assert_called_once_with("rest/api/1.0/application-properties")
         bitbucket_client.get_pull_request.assert_called_once_with(workspace_slug, "repo", pull_request_id=7)
+
+    @pytest.mark.parametrize(
+        ("pr_url", "parsed_pr", "server_url"),
+        [
+            (
+                "https://git.example.com/projects/PROJ/repos/users/pull-requests/7",
+                ("PROJ", "users", 7),
+                "https://git.example.com",
+            ),
+            (
+                "https://git.example.com/projects/~ALICE/repos/users/pull-requests/7",
+                ("~ALICE", "users", 7),
+                "https://git.example.com",
+            ),
+            (
+                "https://git.example.com/users/alice/repos/projects/pull-requests/7",
+                ("~alice", "projects", 7),
+                "https://git.example.com",
+            ),
+            (
+                "https://git.example.com/bitbucket/users/alice/repos/projects/pull-requests/7/overview",
+                ("~alice", "projects", 7),
+                "https://git.example.com/bitbucket",
+            ),
+            (
+                "https://git.example.com/projects/projects/PROJ/repos/repo/pull-requests/7",
+                ("PROJ", "repo", 7),
+                "https://git.example.com/projects",
+            ),
+        ],
+    )
+    def test_parse_urls_with_segments_named_projects_or_users(self, pr_url, parsed_pr, server_url):
+        assert BitbucketServerProvider._parse_pr_url(pr_url) == parsed_pr
+        assert BitbucketServerProvider._parse_bitbucket_server(pr_url) == server_url
+
+    def test_constructor_reads_project_of_repository_named_users(self):
+        bitbucket_client = MagicMock(Bitbucket)
+        bitbucket_client.get.return_value = {"version": "8.16"}
+        bitbucket_client.get_pull_request.return_value = {}
+
+        with patch(
+            "pr_agent.git_providers.bitbucket_server_provider.Bitbucket",
+            return_value=bitbucket_client,
+        ):
+            provider = BitbucketServerProvider("https://git.example.com/projects/PROJ/repos/users/pull-requests/7")
+
+        assert provider.workspace_slug == "PROJ"
+        bitbucket_client.get_pull_request.assert_called_once_with("PROJ", "users", pull_request_id=7)
 
     def test_get_issue_comments_normalizes_top_level_comments_from_all_activities(self):
         provider = self._persistent_provider()

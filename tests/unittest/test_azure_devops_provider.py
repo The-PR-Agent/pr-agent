@@ -1,7 +1,7 @@
 import json
 from datetime import UTC
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from azure.devops.exceptions import AzureDevOpsServiceError
@@ -61,6 +61,97 @@ def test_publish_description_propagates_update_failure():
 
     with pytest.raises(RuntimeError, match="permission denied"):
         provider.publish_description("AI title", "Updated description")
+
+
+class TestAzureDevopsProviderLabels:
+    @pytest.fixture
+    def provider(self):
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.workspace_slug = "my-project"
+        provider.repo_slug = "my-repo"
+        provider.pr_num = 1
+        provider.azure_devops_client = MagicMock()
+        provider.azure_devops_client.get_pull_request_labels.return_value = []
+        return provider
+
+    @pytest.mark.parametrize("labels", [[], ["Bug fix", "triaged"]])
+    def test_publish_labels_acknowledges_completed_loop(self, provider, labels):
+        assert provider.publish_labels(labels) is True
+
+        assert provider.azure_devops_client.create_pull_request_label.call_args_list == [
+            call(label={"name": label}, project="my-project", repository_id="my-repo", pull_request_id=1)
+            for label in labels
+        ]
+
+    def test_publish_labels_stops_after_partial_failure(self, provider):
+        create = provider.azure_devops_client.create_pull_request_label
+        create.side_effect = [None, RuntimeError("rejected"), None]
+
+        assert provider.publish_labels(["Bug fix", "Tests", "triaged"]) is False
+
+        assert [call.kwargs["label"] for call in create.call_args_list] == [{"name": "Bug fix"}, {"name": "Tests"}]
+
+    def test_publish_labels_removes_labels_left_out_of_the_set(self, provider):
+        client = provider.azure_devops_client
+        client.get_pull_request_labels.return_value = [
+            SimpleNamespace(id="id-1", name="team-backend"),
+            SimpleNamespace(id="id-2", name="Review effort 2/5"),
+            SimpleNamespace(id="id-3", name="Possible security concern"),
+        ]
+
+        assert provider.publish_labels(["Review effort 4/5", "team-backend"]) is True
+
+        assert client.mock_calls == [
+            call.get_pull_request_labels(project="my-project", repository_id="my-repo", pull_request_id=1),
+            call.delete_pull_request_labels(repository_id="my-repo", pull_request_id=1, label_id_or_name="id-2",
+                                            project="my-project"),
+            call.delete_pull_request_labels(repository_id="my-repo", pull_request_id=1, label_id_or_name="id-3",
+                                            project="my-project"),
+            call.create_pull_request_label(label={"name": "Review effort 4/5"}, project="my-project",
+                                           repository_id="my-repo", pull_request_id=1),
+        ]
+
+    def test_publish_labels_with_an_empty_set_removes_every_label(self, provider):
+        client = provider.azure_devops_client
+        client.get_pull_request_labels.return_value = [SimpleNamespace(id="id-1", name="Possible security concern")]
+
+        assert provider.publish_labels([]) is True
+
+        client.delete_pull_request_labels.assert_called_once_with(
+            repository_id="my-repo", pull_request_id=1, label_id_or_name="id-1", project="my-project",
+        )
+        client.create_pull_request_label.assert_not_called()
+
+    def test_publish_labels_writes_nothing_when_the_labels_cannot_be_read(self, provider):
+        client = provider.azure_devops_client
+        client.get_pull_request_labels.side_effect = RuntimeError("read rejected")
+
+        assert provider.publish_labels(["Bug fix"]) is False
+
+        client.delete_pull_request_labels.assert_not_called()
+        client.create_pull_request_label.assert_not_called()
+
+    def test_publish_labels_reports_a_failed_removal(self, provider):
+        client = provider.azure_devops_client
+        client.get_pull_request_labels.return_value = [SimpleNamespace(id="id-1", name="Review effort 2/5")]
+        client.delete_pull_request_labels.side_effect = RuntimeError("rejected")
+
+        assert provider.publish_labels(["Review effort 4/5"]) is False
+
+        client.create_pull_request_label.assert_not_called()
+
+    @pytest.mark.parametrize("names", [[], ["triaged"]])
+    def test_get_pr_labels_keeps_valid_empty_reads(self, provider, names):
+        provider.azure_devops_client.get_pull_request_labels.return_value = [
+            SimpleNamespace(name=name) for name in names
+        ]
+
+        assert provider.get_pr_labels(update=True) == names
+
+    def test_get_pr_labels_reports_unavailable_read(self, provider):
+        provider.azure_devops_client.get_pull_request_labels.side_effect = RuntimeError("read rejected")
+
+        assert provider.get_pr_labels(update=True) is None
 
 
 def test_azure_supports_thread_resolution():
@@ -674,6 +765,16 @@ class TestAzureDevopsProviderFiles:
         diff_file = provider.get_diff_files()[0]
 
         assert diff_file.patch.endswith(f"+value{whitespace}")
+
+    def test_get_diff_files_counts_unicode_separators_as_source_content(self):
+        provider = self._provider_with_pull_request_diff(
+            SimpleNamespace(content="value = 'before\u2028+after\u2029-continued'\n"),
+            SimpleNamespace(content="value = 'old'\n"),
+        )
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert (diff_file.num_plus_lines, diff_file.num_minus_lines) == (1, 1)
 
     def test_get_diff_files_keeps_file_when_original_content_fetch_fails(self):
         provider = self._provider_with_pull_request_diff(

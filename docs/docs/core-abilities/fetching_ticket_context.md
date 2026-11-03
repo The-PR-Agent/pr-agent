@@ -121,6 +121,11 @@ description. Ticket lookup limits are separate from the sibling-file limit. PyGi
 but results from a different repository are discarded before prompt use. Reference a transferred issue by its
 current repository and number.
 
+For GitHub, PR-Agent skips sub-issue lookup only when the parent issue's fetched summary explicitly reports zero
+sub-issues; nonzero, missing, or invalid totals use the usual lookup.
+This uses the parent response as a snapshot, so a stale zero count or sub-issues added after that read may leave
+child tickets out of the current run's context.
+
 ## Linear Integration
 
 PR-Agent reads Linear issue links from the user-written PR description and includes their titles, descriptions,

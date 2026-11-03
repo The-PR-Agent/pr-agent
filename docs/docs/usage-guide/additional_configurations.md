@@ -67,12 +67,20 @@ Notes:
 
 In some cases, you may want to exclude specific files or directories from the analysis performed by PR-Agent. This can be useful, for example, when you have files that are generated automatically or files that shouldn't be reviewed, like vendor code.
 
+The built-in generated-file filter matches `.min.js`, `.min.css`, `.js.map`, `.ts.map`, and `.css.map` suffixes case-insensitively; exact lockfile basenames such as `package-lock.json` keep their existing case-sensitive matching.
+
+Gradle build scripts (`build.gradle`, `settings.gradle`, and `build.gradle.kts`) are eligible for analysis by default,
+at the repository root and in subdirectories. Explicit ignore rules and custom extension exclusions still apply.
+For example, `ignore.glob = ['*.gradle', '*.gradle.kts']` excludes both script forms at any depth.
+
 You can ignore files or folders using the following methods:
 
 - `IGNORE.GLOB`
 - `IGNORE.REGEX`
 
 which you can edit to ignore files or folders based on glob or regex patterns.
+
+Pattern list entries must be strings. A non-string entry in `ignore.regex`, `ignore.glob`, or an enabled generated-code glob list is skipped with a warning; the remaining valid rules still apply.
 
 ### Example usage
 
@@ -227,10 +235,16 @@ PR-Agent allows you to control the verbosity of logging by using the `log_level`
 
 ```
 [config]
-log_level = "DEBUG"  # Options: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
+log_level = "INFO"  # Options: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
 ```
 
-The default log level is "DEBUG", which provides detailed output of all operations. If you prefer less verbose logs, you can set higher log levels like "INFO" or "WARNING".
+The default log level is "INFO". Set it to "DEBUG" when troubleshooting to include detailed operation logs.
+
+## Tokenizer files without internet access
+
+PR-Agent counts tokens with [tiktoken](https://github.com/openai/tiktoken), which normally downloads its encoding files from `openaipublic.blob.core.windows.net`. Unless `TIKTOKEN_CACHE_DIR`, `DATA_GYM_CACHE_DIR` or `CUSTOM_TIKTOKEN_CACHE_DIR` is set, PR-Agent points tiktoken at the `o200k_base` and `cl100k_base` files bundled with LiteLLM, so no download is needed.
+
+If you use your own cache directory, set `CUSTOM_TIKTOKEN_CACHE_DIR` (LiteLLM overwrites `TIKTOKEN_CACHE_DIR`) and place the encoding files there yourself; tiktoken names each file after the SHA-1 of its original download URL.
 
 ## Attributing requests to a PR on the provider side
 
@@ -254,9 +268,27 @@ add_user_to_requests = true
 The setting is disabled by default, since it shares request-attribution data with the model
 provider: enabling it is an explicit operator choice.
 
+## Grouping requests by PR in LiteLLM
+
+When `add_session_id_to_requests` is enabled, PR-Agent sends a stable
+`x-litellm-session-id` header with every request. LiteLLM stores the value in the
+`session_id` column of its spend logs, so all commands run against the same PR can be
+found and grouped together, even when they arrive as separate requests.
+
+```
+[litellm]
+add_session_id_to_requests = true
+```
+
+The value is derived from the PR URL and normalized to the character set LiteLLM accepts,
+for example `pr-agent-github-com-owner-repo-pull-123-b065a0b1d1c7b721`. A header set explicitly through
+`LITELLM.EXTRA_HEADERS` takes precedence, and the setting is disabled by default.
+
 ## Integrating with Logging Observability Platforms
 
 Various logging observability tools can be used out-of-the box when using the default LiteLLM AI Handler. Simply configure the LiteLLM callback settings in `configuration.toml` and set environment variables according to the LiteLLM [documentation](https://docs.litellm.ai/docs/).
+
+> The callback lists are process-wide LiteLLM settings, so only the deployment's own configuration and environment set them; a repository's `.pr_agent.toml` does not. In the GitHub Action, set them as `env` entries in the workflow, for example `LITELLM.SUCCESS_CALLBACK: '["langsmith"]'` and `LITELLM.FAILURE_CALLBACK: '["langsmith"]'`.
 
 For example, to use [LangSmith](https://www.langchain.com/langsmith) you can add the following to your `configuration.toml` file:
 
@@ -536,6 +568,9 @@ comment commands such as `/review` and `/ask`, and to CLI `--pr_url` runs. In th
 request exits successfully without running the tool. Plain-diff CLI inputs (`--diff-file` and
 `--stdin`) have no PR metadata and are not excluded by these rules.
 
+For GitHub Actions, matching PRs also skip automatic review, description, and improve commands
+on `pull_request`, `pull_request_target`, and `workflow_run` events.
+
 ### Ignoring PRs with specific titles
 
 To ignore PRs with a specific title such as "[Bump]: ...", you can add the following to your `configuration.toml` file:
@@ -545,13 +580,7 @@ To ignore PRs with a specific title such as "[Bump]: ...", you can add the follo
 ignore_pr_title = ["\\[Bump\\]"]
 ```
 
-Where the `ignore_pr_title` is a list of regex patterns to match the PR title you want to ignore. Default is `ignore_pr_title = ["^\\[Auto\\]", "^Auto"]`.
-
-The default `^Auto` pattern also matches ordinary titles such as "Autoscaling fix". Because title
-rules now apply to manual commands too, `/review`, `/ask`, and CLI `--pr_url` commands on such PRs
-are skipped. Set a narrower `ignore_pr_title` pattern or use `ignore_pr_title = []` in your
-configuration if that is not intended. A skipped request is logged without running the tool or
-posting command reactions.
+Where the `ignore_pr_title` is a list of regex patterns to match the PR title you want to ignore. Default is `ignore_pr_title = ["^\\[Auto\\]"]`.
 
 ### Ignoring PRs between specific branches
 

@@ -87,6 +87,11 @@ def is_ask_command_comment(body) -> bool:
     return stripped.split(maxsplit=1)[0] in ("/ask", "/ask_line")
 
 
+def auto_feedback_disabled() -> bool:
+    """Whether config.disable_auto_feedback stops every auto command (pr_commands, push_commands, ...)."""
+    return bool(get_settings().get("config.disable_auto_feedback", False))
+
+
 def get_pr_commands(provider: str) -> Sequence[str]:
     """Return an explicit provider override or a fresh copy of its default profile."""
     configured = get_settings().get(f"{provider}.pr_commands", _MISSING)
@@ -200,8 +205,15 @@ class DefaultDictWithTimeout(defaultdict):
             self.__key_times.pop(__key, None)
             raise
 
+    def __missing__(self, __key):
+        # Native defaultdict inserts can bypass __setitem__ on newer Python versions.
+        if self.default_factory is None:
+            raise KeyError(__key)
+        value = self.default_factory()
+        self[__key] = value
+        return value
+
     def __setitem__(self, __key, __value):
-        # Also reached from defaultdict.__missing__ and setdefault, so every insert is bounded here.
         self.__key_times.pop(__key, None)
         if not super().__contains__(__key):
             self.__enforce_max_size()

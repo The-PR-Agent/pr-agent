@@ -80,6 +80,28 @@ def test_patch_fallback_preserves_embedded_line_separators(separator):
     assert result == f"```javascript\nconst kept = true;\n{line}\n\n```"
 
 
+@pytest.mark.parametrize(("head_file", "start_line", "end_line", "expected"), [
+    ("first\n\nlast\n", 1, 3, "first\n\nlast"),
+    ("first\n\nlast", 2, 3, "\nlast"),
+    ("first\r\n\r\nlast\r\n", 2, 3, "\nlast"),
+    ("first\r\nlast\r", 2, 2, "last"),
+    ("first\r\r\nlast", 1, 1, "first\r"),
+    ("first\n\n", 2, 2, ""),
+    ("first\nlast\n", 3, 3, ""),
+    ("first\nlast", 2, 10**100, "last"),
+    ("first\nlast", 10**100, 10**100, ""),
+    ("first\nlast", 0, 2, "last"),
+    ("first\nlast", 2, 1, ""),
+    ("ignored\n \tbefore\u2028after\u2029end\f \t\nignored", 2, 2, " \tbefore\u2028after\u2029end\f \t"),
+])
+def test_head_file_preserves_line_range_semantics(head_file, start_line, end_line, expected):
+    file = _make_file("src/foo.py", head_file)
+
+    result = extract_relevant_lines_str(end_line, [file], "src/foo.py", start_line)
+
+    assert result == (f"```python\n{expected}\n```" if expected else "")
+
+
 class TestExtractRelevantLinesStr:
     def test_returns_empty_when_no_files(self):
         result = extract_relevant_lines_str(end_line=5, files=None, relevant_file="src/foo.py", start_line=1)

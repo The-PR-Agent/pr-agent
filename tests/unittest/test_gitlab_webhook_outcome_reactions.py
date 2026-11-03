@@ -108,7 +108,7 @@ def run_comment(monkeypatch):
                            ("reaction_on_success", success),
                            ("reaction_on_failure", failure)):
             if value is not None:
-                monkeypatch.setattr(get_settings().config, key, value, raising=False)
+                monkeypatch.setitem(get_settings().config, key, value)
 
         async def handle_request(api_url, request, log_context, sender_id, notify=None):
             dispatched.append(request)
@@ -194,7 +194,7 @@ async def test_outcome_reaction_preserves_settings_without_blocking_the_event_lo
     with request_cycle_context({}):
         await gitlab_webhook.gitlab_webhook(background, request)
         # Override the request-scoped copy installed by the webhook.
-        monkeypatch.setattr(get_settings().config, "reaction_on_success", "hooray", raising=False)
+        monkeypatch.setitem(get_settings().config, "reaction_on_success", "hooray")
         observer = asyncio.create_task(release_reaction())
         try:
             await background()
@@ -246,6 +246,36 @@ def test_a_command_the_dispatcher_rewrote_still_gets_its_outcome(run_comment):
     assert provider.dispatched[0][0] == "/ask_line", "the rewrite has to have run"
     assert provider.reactions == [(COMMENT_ID, "eyes"), (COMMENT_ID, "hooray")]
     assert provider.removed == [(COMMENT_ID, 1)]
+
+
+@pytest.mark.parametrize("position, expected_line, expected_side", [
+    ({"new_line": 12, "old_line": None}, 12, "RIGHT"),
+    ({"new_line": 12, "old_line": 9, "line_range": None}, 12, "RIGHT"),
+    ({"new_line": None, "old_line": 9, "line_range": None}, 9, "LEFT"),
+    ({"position_type": "file", "line_range": None}, None, None),
+])
+def test_single_line_diff_note_dispatch(run_comment, position, expected_line, expected_side):
+    question = "explain --file_name=question-text and keep /ask intact"
+    body = f"/ask {question}"
+    payload = _diff_note_event(body)
+    payload["object_attributes"]["position"] = {
+        "new_path": "new/src/app.py", "old_path": "old/src/app.py", **position,
+    }
+
+    provider = run_comment(payload=payload)
+
+    if expected_line is None:
+        assert provider.dispatched == [body]
+    else:
+        assert provider.dispatched == [[
+            "/ask_line",
+            f"--line_start={expected_line}",
+            f"--line_end={expected_line}",
+            f"--side={expected_side}",
+            "--file_name=new/src/app.py",
+            "--comment_id=abc123",
+            question,
+        ]]
 
 
 def test_a_command_with_quoted_arguments_gets_its_outcome(run_comment):

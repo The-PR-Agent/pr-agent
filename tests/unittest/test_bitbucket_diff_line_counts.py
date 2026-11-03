@@ -76,6 +76,16 @@ index 0000000..3333333
 +three
 """
 
+UNICODE_RAW_DIFF = (
+    "diff --git a/src/example.py b/src/example.py\n"
+    "index 1111111..2222222 100644\n"
+    "--- a/src/example.py\n"
+    "+++ b/src/example.py\n"
+    "@@ -1 +1 @@\n"
+    "-old\n"
+    "+new\u2028+continued\u2029-continued\n"
+)
+
 REMOVED_RAW_DIFF = """diff --git a/src/legacy.py b/src/legacy.py
 deleted file mode 100644
 index 4444444..0000000
@@ -158,6 +168,39 @@ index 1111111..2222222 100644
 
         assert diff_file.num_plus_lines == 2
         assert diff_file.num_minus_lines == 1
+
+    def test_fallback_does_not_count_unicode_separators_as_diff_lines(self):
+        diff_file = _cloud_diff_file(UNICODE_RAW_DIFF, drop_diffstat_counts=True)
+
+        assert (diff_file.num_plus_lines, diff_file.num_minus_lines) == (1, 1)
+
+    def test_partially_populated_diffstat_keeps_its_reported_side_with_unicode(self):
+        diff_file = _cloud_diff_file(UNICODE_RAW_DIFF, lines_added=7, drop_diffstat_removed=True)
+
+        assert (diff_file.num_plus_lines, diff_file.num_minus_lines) == (7, 1)
+
+    @pytest.mark.parametrize(
+        ("lines_added", "lines_removed", "expected"),
+        [
+            (-1, 7, (2, 7)),
+            (7, -2, (7, 1)),
+            (float("inf"), 7, (2, 7)),
+            (7, float("-inf"), (7, 1)),
+            (1.5, 7, (2, 7)),
+            (7, 2.5, (7, 1)),
+            (True, 7, (2, 7)),
+            (7, False, (7, 1)),
+        ],
+    )
+    def test_invalid_diffstat_count_falls_back_per_side(self, lines_added, lines_removed, expected):
+        diff_file = _cloud_diff_file(MODIFIED_RAW_DIFF, lines_added=lines_added, lines_removed=lines_removed)
+
+        assert (diff_file.num_plus_lines, diff_file.num_minus_lines) == expected
+
+    def test_zero_and_numeric_string_diffstat_counts_remain_valid(self):
+        diff_file = _cloud_diff_file(MODIFIED_RAW_DIFF, lines_added=0, lines_removed="7")
+
+        assert (diff_file.num_plus_lines, diff_file.num_minus_lines) == (0, 7)
 
     def test_a_partially_populated_diffstat_falls_back_per_side(self):
         # `lines_added` is present and authoritative; `lines_removed` is absent, so only that
@@ -255,6 +298,11 @@ class TestBitbucketServerLineCounts:
         assert diff_file.num_plus_lines == 2
         assert diff_file.num_minus_lines == 1
         assert diff_file.edit_type == EDIT_TYPE.MODIFIED
+
+    def test_unicode_separators_within_source_lines_do_not_inflate_counts(self):
+        diff_file = self._server_diff_file("old\n", "new\u2028+continued\u2029-continued\n")
+
+        assert (diff_file.num_plus_lines, diff_file.num_minus_lines) == (1, 1)
 
     def test_added_file_reports_only_additions(self):
         diff_file = self._server_diff_file("", "one\ntwo\n", change_type="ADD")

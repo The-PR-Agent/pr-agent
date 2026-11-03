@@ -63,6 +63,7 @@ SNAPSHOT_SECTIONS = (
     "CUSTOM_SECTION_FOR_TEST",
     "OPENAI",
     "AZURE_AD",
+    "AZURE_DEVOPS_SERVER",
     "HUGGINGFACE",
     "OLLAMA",
     "MOONSHOT",
@@ -199,6 +200,79 @@ def test_repo_settings_cannot_enable_publish_error_details(monkeypatch, settings
     assert pr_reviewer.get("num_max_findings") == 11
 
 
+def test_repo_settings_cannot_configure_custom_labels(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=(
+            b"[config]\nenable_custom_labels = true\n"
+            b"[custom_labels.approved]\ndescription = 'Workflow approval'\n"
+        )
+    )
+    captured = _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("config.enable_custom_labels", False)
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    assert settings.get("config.enable_custom_labels") is False
+    assert "approved" not in _section(settings, "custom_labels")
+
+
+@pytest.mark.parametrize(
+    ("section", "key", "host_value", "repo_value"),
+    [
+        ("github", "seconds_between_requests", 0, 10),
+        ("github", "seconds_between_writes", 0, 10),
+        ("github", "api_retries", 0, 10),
+        ("github", "ratelimit_retries", 5, 10),
+    ],
+)
+def test_repo_settings_cannot_override_host_only_pacing_and_call_limits(
+    monkeypatch, settings_snapshot, section, key, host_value, repo_value
+):
+    provider = FakeGitProvider(repo_settings_bytes=f"[{section}]\n{key} = {repo_value}\n".encode())
+    captured = _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set(f"{section}.{key}", host_value)
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    assert settings.get(f"{section}.{key}") == host_value
+
+
+def test_repo_settings_can_override_ai_timeout(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(repo_settings_bytes=b"[config]\nai_timeout = 600\n")
+    captured = _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("config.ai_timeout", 120)
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    assert settings.get("config.ai_timeout") == 600
+
+
+def test_repo_settings_cannot_set_structural_reach_input_file(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=b'[pr_reviewer]\nstructural_reach_input_file = "/etc/secrets.json"\nnum_max_findings = 11\n'
+    )
+    _install_provider(monkeypatch, provider)
+
+    get_settings().set("config.use_repo_settings_file", True)
+    settings = get_settings()
+    input_file_before = _section(settings, "pr_reviewer").get("structural_reach_input_file")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    pr_reviewer = _section(settings, "pr_reviewer")
+    assert pr_reviewer.get("structural_reach_input_file") == input_file_before
+    assert pr_reviewer.get("num_max_findings") == 11
+
+
 def test_repo_settings_cannot_override_prompt_fragments(monkeypatch, settings_snapshot):
     provider = FakeGitProvider(repo_settings_bytes=b'[prompt_fragments]\ndiff_hunk_format = "UNTRUSTED-FRAGMENT"\n')
     captured = _install_provider(monkeypatch, provider)
@@ -314,7 +388,7 @@ def test_forbidden_directive_publishes_one_local_error(monkeypatch, settings_sna
     assert ".pr_agent.toml" in error_text
 
 
-def test_temp_file_is_removed_after_successful_apply(monkeypatch, tmp_path, settings_snapshot):
+def test_successful_apply_does_not_leave_a_temp_file(monkeypatch, tmp_path, settings_snapshot):
     provider = FakeGitProvider(repo_settings_bytes=b"[pr_reviewer]\nnum_max_findings = 5\n")
     _install_provider(monkeypatch, provider)
     get_settings().set("config.use_repo_settings_file", True)
@@ -329,19 +403,11 @@ def test_temp_file_is_removed_after_successful_apply(monkeypatch, tmp_path, sett
 
     apply_repo_settings("https://example.com/owner/repo/pull/1")
 
-    assert not known_path.exists(), "Temp settings file must be removed after successful apply"
+    assert not known_path.exists(), "In-memory repo settings apply must not create a temp file"
 
 
-def test_temp_file_is_removed_after_failed_apply(monkeypatch, tmp_path, settings_snapshot):
-    """The temp file must be removed even when the Dynaconf load step raises.
-
-    We use *valid* TOML bytes (so the failure cannot be confused with the
-    silent-swallow malformed-TOML path) and force the failure by replacing
-    the ``Dynaconf`` symbol bound inside ``pr_agent.git_providers.utils``
-    with a stub that raises *after* ``mkstemp`` has been called. We do not
-    patch the external ``dynaconf`` module — only the imported reference
-    that ``apply_repo_settings`` actually uses.
-    """
+def test_failed_apply_does_not_create_a_temp_file(monkeypatch, tmp_path, settings_snapshot):
+    """Report validation failures without creating a temporary settings file."""
     valid_toml = b"[pr_reviewer]\nnum_max_findings = 3\n"
     provider = FakeGitProvider(repo_settings_bytes=valid_toml)
     captured = _install_provider(monkeypatch, provider)
@@ -360,7 +426,7 @@ def test_temp_file_is_removed_after_failed_apply(monkeypatch, tmp_path, settings
     def exploding_validate(*args, **kwargs):
         raise RuntimeError("boom")
 
-    # Force a failure during apply (validate_file_security runs after mkstemp/parse).
+    # Force a failure after parsing valid TOML.
     monkeypatch.setattr(git_utils, "validate_file_security", exploding_validate)
 
     apply_repo_settings("https://example.com/owner/repo/pull/1")
@@ -454,6 +520,7 @@ def test_repo_settings_filter_provider_credentials_but_apply_safe_keys(monkeypat
         ("gerrit", "webhook_username"),
         ("azure_devops", "org"),
         ("azure_devops", "pat"),
+        ("azure_devops_server", "agent_identity"),
         ("aws", "aws_access_key_id"),
         ("aws", "aws_region_name"),
         ("anthropic", "key"),
@@ -484,6 +551,28 @@ def test_repo_settings_cannot_override_gerrit_command_timeout(
 
     assert _section(settings, "gerrit")["command_timeout_seconds"] == 21
     assert is_repo_host_only_key("gerrit", "command_timeout_seconds")
+
+
+@pytest.mark.parametrize("repo_settings_bytes", [
+    b"[azure_devops_server]\nagent_identity = 'attacker'\n",
+    b"[azure_devops_server.agent_identity]\nx = 'attacker'\n",
+    b"[azure_devops_server__agent_identity]\nx = 'attacker'\n",
+])
+def test_repo_settings_cannot_override_azure_devops_server_agent_identity(
+    monkeypatch, settings_snapshot, repo_settings_bytes
+):
+    provider = FakeGitProvider(repo_settings_bytes=repo_settings_bytes)
+    _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("azure_devops_server.agent_identity", "operator-agent")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert _section(settings, "azure_devops_server")["agent_identity"] == "operator-agent"
+    assert is_repo_host_only_key("azure_devops_server", "agent_identity")
+    assert CliArgs.validate_user_args(["--azure_devops_server.agent_identity=attacker"])[0] is False
+    assert CliArgs.validate_user_args(["--azure_devops_server__agent_identity=attacker"])[0] is False
 
 
 def test_polling_repositories_is_host_only_for_repo_and_cli():
@@ -625,7 +714,7 @@ def test_progress_gif_url_remains_repo_and_cli_configurable():
     assert CliArgs.validate_user_args(["--config.progress_gif_url=https://example.com/progress.gif"])[0] is True
 
 
-def test_repo_settings_apply_section_specific_safe_suffix_keys(monkeypatch, settings_snapshot):
+def test_repo_settings_apply_only_section_specific_safe_overrides(monkeypatch, settings_snapshot):
     provider = FakeGitProvider(repo_settings_bytes=b"""
 [gitea]
 url = "https://repo-api.example"
@@ -652,7 +741,7 @@ description = "Keyboard shortcut"
     assert {key: language_map.get(key) for key in ("AutoHotkey", "Monkey", "Org")} == {
         "AutoHotkey": [".repo-ahk"], "Monkey": [".repo-monkey"], "Org": [".repo-org"]
     }
-    assert set(_section(settings, "custom_labels")) >= {"API key", "Hotkey"}
+    assert not {"API key", "Hotkey"} & set(_section(settings, "custom_labels"))
     assert CliArgs.validate_user_args(["--gitea.web_url=https://comment.example"])[0] is False
 
 

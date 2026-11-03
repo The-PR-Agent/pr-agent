@@ -931,7 +931,7 @@ async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
 
     monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
     monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", AsyncMock())
-    monkeypatch.setattr(get_settings().config, "publish_output", False)
+    monkeypatch.setitem(get_settings().config, "publish_output", False)
 
     run = asyncio.create_task(reviewer.run())
     try:
@@ -969,6 +969,7 @@ async def test_run_extracts_tickets_only_when_incremental_review_proceeds(monkey
     reviewer.vars = {}
     reviewer.prediction = None
     reviewer._load_previous_findings_context = MagicMock(return_value="Previous findings")
+    git_provider.get_commit_messages.return_value = "1. Fix the parser"
 
     async def extract_tickets(provider, variables):
         variables["related_tickets"] = [{"ticket_url": "https://example/issues/42"}]
@@ -976,6 +977,7 @@ async def test_run_extracts_tickets_only_when_incremental_review_proceeds(monkey
     async def predict(*args, **kwargs):
         extract.assert_awaited_once_with(git_provider, reviewer.vars)
         assert reviewer._raw_prompt_vars["related_tickets"] == reviewer.vars["related_tickets"]
+        assert reviewer._raw_prompt_vars.get("commit_messages_str", "") == ("" if valid_anchor else "1. Fix the parser")
         if not valid_anchor:
             assert reviewer._raw_prompt_vars["previous_findings"] == "Previous findings"
 
@@ -984,10 +986,10 @@ async def test_run_extracts_tickets_only_when_incremental_review_proceeds(monkey
     monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", extract)
     monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", retry)
     settings = get_settings()
-    monkeypatch.setattr(settings.config, "publish_output", True)
-    monkeypatch.setattr(settings.config, "is_auto_command", False, raising=False)
-    monkeypatch.setattr(settings.config, "propagate_tool_errors", True, raising=False)
-    monkeypatch.setattr(settings.pr_reviewer, "minimal_commits_for_incremental_review", 0)
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.config, "is_auto_command", False)
+    monkeypatch.setitem(settings.config, "propagate_tool_errors", True)
+    monkeypatch.setitem(settings.pr_reviewer, "minimal_commits_for_incremental_review", 0)
 
     await reviewer.run()
 
@@ -1727,10 +1729,10 @@ def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels(re
     ids=["labels-disabled", "estimate-disabled", "missing", "invalid", "unchanged"],
 )
 def test_set_review_labels_keeps_effort_label_without_replacement(
-    review_label_settings, disabled_setting, effort
+    monkeypatch, review_label_settings, disabled_setting, effort
 ):
     if disabled_setting:
-        setattr(get_settings().pr_reviewer, disabled_setting, False)
+        monkeypatch.setitem(get_settings().pr_reviewer, disabled_setting, False)
     git_provider = MagicMock()
     git_provider.get_pr_labels.return_value = ["Review effort 4/5", "keep-me"]
     reviewer = _make_reviewer(git_provider)
@@ -2040,7 +2042,6 @@ def test_init_maps_user_question_and_answer_to_correct_prompt_vars(monkeypatch):
 
     monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
     monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
-    monkeypatch.setattr(pr_reviewer_module, "TokenHandler", MagicMock())
 
     reviewer = PRReviewer(
         "https://example/pr/1",
@@ -2072,7 +2073,6 @@ def _build_answer_mode_reviewer(monkeypatch, issue_comments, *, newest_first=Non
 
     monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
     monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
-    monkeypatch.setattr(pr_reviewer_module, "TokenHandler", MagicMock())
 
     return PRReviewer(
         "https://example/pr/1",

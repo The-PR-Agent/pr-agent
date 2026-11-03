@@ -301,6 +301,190 @@ def test_gitea_publish_description_raises_when_update_returns_no_response():
         provider.publish_description("AI title", "Updated description")
 
 
+class _IssueLabelServer:
+    """Answers the giteapy HTTP layer like Gitea's label endpoints for issue 1 of owner/repo.
+
+    `labels` maps label ids to names, and `org_labels` holds the ids of organization labels.
+    Integer ids resolve to any label. Names match exactly, in the repository only before Gitea
+    1.23 and in the organization too since 1.23 (`org_names`). A `rejected` method gets a 422.
+    """
+
+    def __init__(self, request, labels, applied, *, org_labels=(), org_names=True, rejected=None):
+        self.labels = labels
+        self.applied = list(applied)
+        self.resolvable_by_name = [i for i in labels if org_names or i not in org_labels]
+        self.rejected = rejected
+        self.requests = []
+        request.side_effect = self.respond
+
+    @property
+    def names(self):
+        return sorted(self.labels[i] for i in self.applied)
+
+    def respond(self, method, url, body=None, **kwargs):
+        assert urlsplit(url).path == "/api/v1/repos/owner/repo/issues/1/labels"
+        payload = json.loads(body) if body else None
+        self.requests.append((method, payload))
+        if method == self.rejected:
+            return _guidance_response(b'{"message": "rejected"}', status=422, reason="Unprocessable Entity")
+        if method == "DELETE":
+            self.applied = []
+            return _guidance_response(status=204)
+        if method in ("PUT", "POST"):
+            wanted = payload["labels"]
+            if all(isinstance(item, int) for item in wanted):
+                resolved = [i for i in wanted if i in self.labels]
+            else:
+                resolved = [i for i in self.resolvable_by_name if self.labels[i] in wanted]
+            if method == "PUT":
+                self.applied = resolved
+            else:
+                self.applied += [i for i in resolved if i not in self.applied]
+        return _guidance_response(json.dumps([{"id": i, "name": self.labels[i]} for i in self.applied]).encode())
+
+
+class TestGiteaProviderLabels:
+    LABELS = {3: "team-backend", 5: "enhancement", 7: "triaged", 11: "Review effort 2/5",
+              12: "Possible security concern", 13: "Bug fix", 14: "Review effort 4/5"}
+
+    @pytest.fixture
+    def provider(self):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.repo_api = MagicMock()
+        provider.repo_api.get_issue_labels.return_value = []
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.pr_number = 1
+        provider.issue_number = 2
+        provider.enabled_pr = True
+        provider.pr = SimpleNamespace(labels=[])
+        provider.logger = MagicMock()
+        return provider
+
+    @pytest.mark.parametrize("org_names", [False, True], ids=["gitea-1.22-names", "gitea-1.23-names"])
+    def test_publish_labels_replaces_by_id_then_adds_only_the_missing_names(self, provider, guidance_raw_api,
+                                                                          org_names):
+        provider.repo_api, request = guidance_raw_api
+        # team-backend and "Possible security concern" are organization labels.
+        server = _IssueLabelServer(request, self.LABELS, applied=[3, 7, 11, 12], org_labels={3, 12},
+                                   org_names=org_names)
+
+        assert provider.publish_labels(["Review effort 4/5", "team-backend", "triaged"]) is True
+
+        assert server.requests == [
+            ("GET", None),
+            ("PUT", {"labels": [3, 7]}),
+            ("POST", {"labels": ["Review effort 4/5"]}),
+        ]
+        assert server.names == ["Review effort 4/5", "team-backend", "triaged"]
+
+    def test_publish_labels_with_an_empty_set_removes_every_label(self, provider, guidance_raw_api):
+        provider.repo_api, request = guidance_raw_api
+        server = _IssueLabelServer(request, self.LABELS, applied=[11, 12], org_labels={12})
+
+        assert provider.publish_labels([]) is True
+
+        assert server.requests == [("GET", None), ("DELETE", None)]
+        assert server.names == []
+
+    @pytest.mark.parametrize("applied,labels", [
+        ([7, 11], ["Review effort 2/5", "triaged"]),
+        # get_user_labels drops a human "enhancement" as the bot's "Enhancement". Removing it to add
+        # "Enhancement", a name this repository does not have, would leave the PR without either.
+        ([5], ["Enhancement"]),
+    ], ids=["same-names", "names-differ-only-in-case"])
+    def test_publish_labels_writes_nothing_when_the_labels_already_match(self, provider, guidance_raw_api,
+                                                                       applied, labels):
+        provider.repo_api, request = guidance_raw_api
+        server = _IssueLabelServer(request, self.LABELS, applied=applied)
+
+        assert provider.publish_labels(labels) is True
+
+        assert server.requests == [("GET", None)]
+
+    @pytest.mark.parametrize("status,body", [
+        (503, b'{"message": "unavailable"}'),
+        (200, b"null"),
+        (200, b'[{"name": "triaged"}]'),
+    ], ids=["rejected-read", "null-read", "label-without-id"])
+    def test_publish_labels_writes_nothing_when_the_labels_cannot_be_read(self, provider, guidance_raw_api,
+                                                                        status, body):
+        provider.repo_api, request = guidance_raw_api
+        request.return_value = _guidance_response(body, status=status)
+
+        assert provider.publish_labels(["Enhancement"]) is False
+
+        assert [c.args[0] for c in request.call_args_list] == ["GET"]
+
+    @pytest.mark.parametrize("applied,labels,rejected", [
+        ([7, 11], ["Bug fix", "triaged"], "PUT"),
+        ([11], [], "DELETE"),
+        ([], ["Bug fix"], "POST"),
+    ], ids=["replace", "clear", "add"])
+    def test_publish_labels_reports_a_rejected_write(self, provider, guidance_raw_api, applied, labels, rejected):
+        provider.repo_api, request = guidance_raw_api
+        server = _IssueLabelServer(request, self.LABELS, applied=applied, rejected=rejected)
+
+        assert provider.publish_labels(labels) is False
+
+        assert [method for method, _ in server.requests] == ["GET", rejected]
+
+    @pytest.mark.parametrize("response", [[SimpleNamespace(name="Bug fix")], [], None])
+    def test_publish_labels_acknowledges_nonraising_sdk_completion(self, provider, response):
+        provider.repo_api.add_labels.return_value = response
+
+        assert provider.publish_labels(["Bug fix"]) is True
+
+        provider.repo_api.add_labels.assert_called_once_with(
+            owner="owner", repo="repo", issue_number=1, labels=["Bug fix"],
+        )
+
+    def test_publish_labels_reports_only_known_sdk_failure(self, provider):
+        provider.repo_api.add_labels.side_effect = ApiException(status=403, reason="rejected")
+
+        assert provider.publish_labels(["Bug fix"]) is False
+        provider.repo_api.add_labels.assert_called_once()
+
+    def test_publish_labels_preserves_unrelated_errors(self, provider):
+        provider.repo_api.add_labels.side_effect = RuntimeError("unexpected failure")
+
+        with pytest.raises(RuntimeError, match="unexpected failure"):
+            provider.publish_labels(["Bug fix"])
+
+    @pytest.mark.parametrize("update,payload,expected", [
+        (False, [], []),
+        (True, [SimpleNamespace(name="triaged")], ["triaged"]),
+        (True, [], []),
+        (False, None, None),
+        (True, None, None),
+        (True, "not a list", None),
+        (True, [SimpleNamespace()], None),
+        (False, [SimpleNamespace(name=None)], None),
+        (True, [SimpleNamespace(name="")], None),
+        (True, [SimpleNamespace(name=7)], None),
+    ])
+    def test_get_pr_labels_validates_returned_and_cached_payloads(self, provider, update, payload, expected):
+        provider.pr.labels = payload
+        provider.repo_api.get_issue_labels.return_value = payload
+
+        assert provider.get_pr_labels(update=update) == expected
+        if update:
+            provider.repo_api.get_issue_labels.assert_called_once_with(owner="owner", repo="repo", issue_number=1)
+        else:
+            provider.repo_api.get_issue_labels.assert_not_called()
+
+    def test_get_pr_labels_reports_known_sdk_failure(self, provider):
+        provider.repo_api.get_issue_labels.side_effect = ApiException(status=503, reason="unavailable")
+
+        assert provider.get_pr_labels(update=True) is None
+
+    def test_get_pr_labels_preserves_unrelated_errors(self, provider):
+        provider.repo_api.get_issue_labels.side_effect = RuntimeError("unexpected failure")
+
+        with pytest.raises(RuntimeError, match="unexpected failure"):
+            provider.get_pr_labels(update=True)
+
+
 def test_gitea_get_issue_comments_returns_empty_list_when_no_comments():
     provider = GiteaProvider.__new__(GiteaProvider)
     provider.enabled_issue = False
@@ -1366,6 +1550,28 @@ class TestGiteaProviderUrlParsing:
             with pytest.raises(ValueError):
                 provider._parse_pr_url("https://host/gitea/owner/repo/pulls/1")
 
+    @staticmethod
+    def _construct(url):
+        settings = {"GITEA.URL": "https://gitea.example.com", "GITEA.PERSONAL_ACCESS_TOKEN": "token"}
+        with patch("pr_agent.git_providers.gitea_provider.get_settings") as mock_get_settings, \
+                patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient"), \
+                patch("pr_agent.git_providers.gitea_provider.RepoApi") as mock_repo_api_cls:
+            mock_get_settings.return_value.get.side_effect = lambda key, default=None: settings.get(key, default)
+            return GiteaProvider(url), mock_repo_api_cls.return_value
+
+    def test_issue_in_a_repository_named_like_pulls_is_an_issue(self):
+        provider, repo_api = self._construct("https://gitea.example.com/owner/pulls-helper/issues/7")
+
+        assert (provider.enabled_issue, provider.enabled_pr) == (True, False)
+        assert (provider.owner, provider.repo, provider.issue_number) == ("owner", "pulls-helper", 7)
+        repo_api.get_pull_request.assert_not_called()
+
+    def test_pull_request_in_a_repository_named_like_issues_is_a_pull_request(self):
+        provider, repo_api = self._construct("https://gitea.example.com/owner/issues-tracker/pulls/3")
+
+        assert (provider.enabled_pr, provider.enabled_issue) == (True, False)
+        repo_api.get_pull_request.assert_called_once_with(owner="owner", repo="issues-tracker", pr_number=3)
+
 
 class TestGiteaProviderInlineCommentStatus:
     """Regression tests for the ``/improve`` inline-comment path:
@@ -1469,6 +1675,22 @@ class TestGiteaProviderInlineCommentStatus:
 
         assert result is True
         assert provider.repo_api.create_inline_comment.call_count == 3
+
+    def test_publish_code_suggestions_skips_invalid_line_ranges(self):
+        provider = self._provider(create_inline_comment_result=True)
+        suggestions = [
+            {"body": "**Suggestion:** inverted", "relevant_file": "a.py",
+             "relevant_lines_start": 5, "relevant_lines_end": 3},
+            {"body": "**Suggestion:** no line", "relevant_file": "a.py", "relevant_lines_start": 0},
+            {"body": "**Suggestion:** valid", "relevant_file": "a.py",
+             "relevant_lines_start": 3, "relevant_lines_end": 5},
+        ]
+
+        assert provider.publish_code_suggestions(suggestions) is True
+
+        sent = [call.kwargs["comments"][0]["body"]
+                for call in provider.repo_api.create_inline_comment.call_args_list]
+        assert sent == ["**Suggestion:** valid"]
 
     def test_publish_code_suggestions_anchor_to_the_new_file(self):
         # Gitea ignores new_position while old_position is non-zero and anchors the comment

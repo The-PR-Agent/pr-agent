@@ -221,8 +221,10 @@ async def test_add_docs_removes_temporary_comment_after_terminal_failure(monkeyp
 
     assert tool.git_provider.publish_comment.call_args_list == [
         call("Generating Documentation...", is_temporary=True),
-        call("Failed to generate code documentation for this PR."),
     ]
+    tool.git_provider.publish_tool_failure.assert_called_once_with(
+        "add_docs", "Failed to generate code documentation for this PR."
+    )
     tool.git_provider.remove_initial_comment.assert_called_once_with()
 
 

@@ -132,7 +132,7 @@ def emitted(monkeypatch):
 
     monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.push_outputs_async", record)
     monkeypatch.setattr("pr_agent.tools.pr_description.push_outputs_async", record)
-    monkeypatch.setattr(get_settings().config, "publish_output", True)
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
     return calls
 
 

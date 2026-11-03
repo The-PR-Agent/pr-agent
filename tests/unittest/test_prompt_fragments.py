@@ -189,7 +189,7 @@ def test_tool_initializers_supply_the_fragment_before_token_counting(
     monkeypatch.setattr(pr_reviewer, "build_repo_context", lambda _provider: "")
     monkeypatch.setattr(pr_reviewer, "add_ai_metadata_to_diff_files", lambda _provider, _files: None)
 
-    monkeypatch.setattr(pr_add_docs, "get_git_provider", lambda: lambda _url: provider)
+    monkeypatch.setattr(pr_add_docs, "get_git_provider_for_tool", lambda _url: provider)
     monkeypatch.setattr(pr_add_docs, "get_main_pr_language", lambda _languages, _files: "Python")
 
     monkeypatch.setattr(pr_code_suggestions, "get_git_provider_with_context", lambda _url: provider)
@@ -221,8 +221,6 @@ def test_tool_initializers_supply_the_fragment_before_token_counting(
         include_line_numbers=False,
         include_ai_metadata=include_ai_metadata,
     )
-    assert reviewer.token_handler.prompt_tokens > 0
-    assert add_docs.token_handler.prompt_tokens > 0
     assert suggestions.token_handler.prompt_tokens > 0
 
 

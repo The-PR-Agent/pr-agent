@@ -6,7 +6,7 @@ import copy
 import json
 import os
 import re
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import quote, urlsplit
 
 import uvicorn
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -28,10 +28,10 @@ from pr_agent.git_providers.azuredevops_provider import AZURE_AGENT_RESPONSE_MAR
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.request_body_limit import create_server_app
-from pr_agent.servers.utils import basic_auth_matches, get_pr_commands
+from pr_agent.servers.utils import auto_feedback_disabled, basic_auth_matches, get_pr_commands
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
-setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
+setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
 security = HTTPBasic(auto_error=False)
 router = APIRouter()
 available_commands_rgx = re.compile(r"^\/(" + "|".join(command2class.keys()) + r")\s*")
@@ -212,7 +212,7 @@ def authorize(credentials: HTTPBasicCredentials = Depends(security)):  # noqa: B
 async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: str, log_context: dict):
     apply_repo_settings(api_url)
     # auto commands for PR, and auto feedback is disabled
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:
+    if auto_feedback_disabled():
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}", **log_context)
         return
     commands = (
@@ -256,7 +256,7 @@ def _created_event_pr_url(data):
     if not isinstance(href, str):
         return None
     if href:
-        return unquote(href.replace("_apis/git/repositories", "_git"))
+        return href.replace("_apis/git/repositories", "_git")
 
     repository = resource["repository"]
     project = repository["project"]["name"]
@@ -300,7 +300,7 @@ async def handle_request_azure(data, log_context):
                 and (available_commands_rgx.match(comment_content) or extract_azure_mention(comment_content))):
             if data["resourceVersion"] == "2.0":
                 repo = data["resource"]["pullRequest"]["repository"]["webUrl"]
-                pr_url = unquote(f'{repo}/pullrequest/{data["resource"]["pullRequest"]["pullRequestId"]}')
+                pr_url = f'{repo}/pullrequest/{data["resource"]["pullRequest"]["pullRequestId"]}'
                 action = comment["content"]
                 thread_url = comment["_links"]["threads"]["href"]
                 thread_id = int(thread_url.split("/")[-1])

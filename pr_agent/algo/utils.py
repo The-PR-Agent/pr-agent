@@ -7,12 +7,13 @@ import re
 import textwrap
 from enum import StrEnum
 from io import StringIO
+from itertools import islice
 from typing import Any, TypedDict
 from urllib.parse import quote, unquote
 
 import html2text
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from yaml.tokens import (
     BlockEndToken,
     BlockEntryToken,
@@ -36,7 +37,8 @@ from pr_agent.algo.git_patch_processing import (
     to_hunk_only_patch,
 )
 from pr_agent.algo.language_handler import build_language_file_matcher
-from pr_agent.algo.output_models import PRType, parse_failure_modes
+from pr_agent.algo.output_models import PRType, SubPR, parse_failure_modes
+from pr_agent.algo.structural_reach import render_structural_reach
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
@@ -330,6 +332,8 @@ def convert_to_markdown_v2(output_data: dict,
                     value = _ci.emphasize_header(
                         value.strip(), only_markdown=True) if isinstance(value, str) else _ci.as_review_text(value)
                     markdown_text += f"{value}\n\n"
+        elif key.lower() == 'structural_reach':
+            markdown_text += render_structural_reach(value, gfm_supported)
         elif 'risk level' in key_nice.lower():
             risk_value = str(value).strip().lower().replace("_", " ")
             risk_display = risk_value.capitalize() if risk_value else "Unknown"
@@ -418,7 +422,8 @@ def convert_to_markdown_v2(output_data: dict,
         elif 'can be split' in key_nice.lower():
             if gfm_supported:
                 markdown_text += "<tr><td>"
-                markdown_text += process_can_be_split(emoji, value)
+            markdown_text += process_can_be_split(emoji, value, gfm_supported)
+            if gfm_supported:
                 markdown_text += "</td></tr>\n"
         elif 'key issues to review' in key_nice.lower():
             # value is a list of issues
@@ -515,6 +520,24 @@ def convert_to_markdown_v2(output_data: dict,
     return markdown_text
 
 
+def _extract_line_range(content: str, start_line: int, end_line: int) -> str:
+    """Extract LF-delimited lines without splitting unrelated file content."""
+    if start_line < 1 or end_line < start_line:
+        return "\n".join(split_diff_lines(content)[start_line - 1:end_line])
+
+    newlines = re.finditer("\n", content)
+    offset = 0
+    # Cap skipped matches to keep oversized line numbers within islice's limits.
+    if start_line > 1:
+        before = next(islice(newlines, min(start_line - 2, len(content)), None), None)
+        if before is None:
+            return ""
+        offset = before.end()
+    after = next(islice(newlines, min(end_line - start_line, len(content)), None), None)
+    stop = after.end() if after is not None else len(content)
+    return "\n".join(split_diff_lines(content[offset:stop]))
+
+
 def extract_relevant_lines_str(end_line, files, relevant_file, start_line, dedent=False) -> str:
     """
     Finds 'relevant_file' in 'files', and extracts the lines from 'start_line' to 'end_line' str from the file content.
@@ -543,8 +566,7 @@ def extract_relevant_lines_str(end_line, files, relevant_file, start_line, deden
                                 continue
                             relevant_lines_str += line[1:] + '\n'
                     else:
-                        relevant_file_lines = split_diff_lines(file.head_file)
-                        relevant_lines_str = "\n".join(relevant_file_lines[start_line - 1:end_line])
+                        relevant_lines_str = _extract_line_range(file.head_file, start_line, end_line)
 
                     if dedent and relevant_lines_str:
                         # Remove the longest leading string of spaces and tabs common to all lines.
@@ -673,7 +695,7 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
     return markdown_text
 
 
-def process_can_be_split(emoji, value):
+def process_can_be_split(emoji, value, gfm_supported=True):
     try:
         # key_nice = "Can this PR be split?"
         key_nice = "Multiple PR themes"
@@ -683,18 +705,35 @@ def process_can_be_split(emoji, value):
         if not value or isinstance(value, dict) or isinstance(value, list) and len(value) <= 1:
             # markdown_text += f"<tr><td> {emoji}&nbsp;<strong>{key_nice}</strong></td><td>\n\n{value}\n\n</td></tr>\n"
             # markdown_text += f"### {emoji} No multiple PR themes\n\n"
-            markdown_text += f"{emoji} <strong>No multiple PR themes</strong>\n\n"
+            if gfm_supported:
+                markdown_text += f"{emoji} <strong>No multiple PR themes</strong>\n\n"
         elif isinstance(value, list):
-            markdown_text += f"{emoji} <strong>{key_nice}</strong><br><br>\n\n"
+            if not gfm_supported:
+                if len(value) > 3:
+                    return ""
+                try:
+                    value = [SubPR.model_validate(split).model_dump() for split in value]
+                except ValidationError:
+                    return ""
+            if gfm_supported:
+                markdown_text += f"{emoji} <strong>{key_nice}</strong><br><br>\n\n"
+            else:
+                markdown_text += f"### {emoji} {key_nice}\n\n"
             for split in value:
                 title = split.get('title', '')
                 relevant_files = split.get('relevant_files', [])
-                markdown_text += f"<details><summary>\nSub-PR theme: <b>{title}</b></summary>\n\n"
-                markdown_text += "___\n\nRelevant files:\n\n"
+                if gfm_supported:
+                    markdown_text += f"<details><summary>\nSub-PR theme: <b>{title}</b></summary>\n\n"
+                    markdown_text += "___\n\nRelevant files:\n\n"
+                else:
+                    markdown_text += f"#### Sub-PR theme: {title}\n\nRelevant files:\n\n"
                 for file in relevant_files:
                     markdown_text += f"- {file}\n"
-                markdown_text += "___\n\n"
-                markdown_text += "</details>\n\n"
+                if gfm_supported:
+                    markdown_text += "___\n\n"
+                    markdown_text += "</details>\n\n"
+                else:
+                    markdown_text += "\n"
 
                 # markdown_text += f"#### Sub-PR theme: {title}\n\n"
                 # markdown_text += f"Relevant files:\n\n"
@@ -802,8 +841,37 @@ def update_settings_from_args(args: list[str]) -> list[str]:
                     other_args.append(arg)
                     continue
                 key, value = _fix_key_value(*vals)
-                get_settings().set(key, value)
-                get_logger().info(f'Updated setting {key} to: "{value}"')
+                if '.' not in key:
+                    # A section-level argument targets a whole settings table.
+                    existing = get_settings().as_dict().get(key, None)
+                    if isinstance(value, dict):
+                        # Merge a mapping into the existing section, as repository
+                        # settings do: a plain set() would replace the whole section
+                        # (e.g. 23 keys -> 1), dropping every other configured key.
+                        if isinstance(existing, dict):
+                            merged = copy.deepcopy(existing)
+                            for new_key, new_value in value.items():
+                                for old_key in [k for k in merged if k.lower() == new_key.lower()]:
+                                    del merged[old_key]
+                                merged[new_key] = new_value
+                            get_settings().unset(key)
+                            get_settings().set(key, merged, merge=False)
+                            get_logger().info(f'Merged keys {sorted(value.keys())} into section {key}')
+                        else:
+                            get_settings().set(key, value)
+                            get_logger().info(f'Updated setting {key} to: "{value}"')
+                    elif isinstance(existing, dict):
+                        # A non-mapping section value would replace the whole table
+                        # with a scalar, breaking every attribute read on it.
+                        raise ValueError(
+                            f"Invalid argument format: section-level setting '{key}' requires a mapping value"
+                        )
+                    else:
+                        get_settings().set(key, value)
+                        get_logger().info(f'Updated setting {key} to: "{value}"')
+                else:
+                    get_settings().set(key, value)
+                    get_logger().info(f'Updated setting {key} to: "{value}"')
             else:
                 other_args.append(arg)
     return other_args
@@ -1033,6 +1101,9 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
         data = _load_yaml_initial(response_text)
     except Exception as e:
         get_logger().warning(f"Initial failure to parse AI prediction: {e}")
+        separators = str.maketrans({"\u2028": " ", "\u2029": " "})
+        response_text = response_text.translate(separators)
+        response_text_original_sanitized = response_text_original_sanitized.translate(separators)
         data = try_fix_yaml(response_text, keys_fix_yaml=keys_fix_yaml, first_key=first_key, last_key=last_key,
                             response_text_original=response_text_original_sanitized)
         if not data:

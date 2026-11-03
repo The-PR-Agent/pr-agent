@@ -43,7 +43,6 @@ FORBIDDEN_ARGS = [
     "--config.enable_auto_approval=true",
     "--config.enable_manual_approval=true",
     "--config.enable_comment_approval=true",
-    "--config.approve_pr_on_self_review=true",
     "--config.override_deployment_type=app",
     # local cache
     "--config.enable_local_cache=true",
@@ -90,6 +89,14 @@ FORBIDDEN_ARGS = [
     "--config.repo_context_sibling_repos=[]",
     "--config__repo_context_sibling_repos=[]",
     '--config={"repo_context_sibling_repos": []}',
+    # GitHub client pacing and retries affect host worker occupancy and API load, so they are
+    # operator-controlled for both repository settings and comment arguments.
+    "--github.seconds_between_requests=1",
+    "--github__seconds_between_writes=1",
+    "--github.api_retries=3",
+    '--github={"ratelimit_retries": 3}',
+    "--config.ai_timeout=300",
+    "--pr_code_suggestions.max_number_of_calls=10",
     # description_issue_regex is compiled and run with finditer over the whole pull-request
     # description. An ambiguous pattern backtracks exponentially, so a commenter who can choose
     # it can burn a worker on a short body; it stays an operator choice.
@@ -114,6 +121,11 @@ FORBIDDEN_ARGS = [
     "--gerrit.command_timeout_seconds=600",
     "--gerrit__command_timeout_seconds=600",
     '--gerrit={"command_timeout_seconds": 600}',
+    # agent_identity decides which Azure DevOps comments PR-Agent treats as its own and may edit,
+    # so comment arguments must not be able to choose it.
+    "--azure_devops_server.agent_identity=attacker",
+    "--azure_devops_server__agent_identity=attacker",
+    '--azure_devops_server={"agent_identity": "attacker"}',
     # fail_on_tool_errors decides whether a recorded tool failure fails the GitHub Action, so a
     # commenter must not be able to turn it off for their own command.
     "--github_action_config.fail_on_tool_errors=false",
@@ -156,6 +168,7 @@ ALLOWED_ARGS_SINGLE = [
     "--skills.enabled=true",
     "--skills.max_skills_tokens=1000",
     "--config.response_language=zh-tw",
+    "--config.approve_pr_on_self_review=true",
     "--pr_description.publish_labels=false",
     # a mapping value whose nested keys are all allowed stays accepted
     "--qdrant={timeout: 5, prefer_grpc: true}",
@@ -173,6 +186,12 @@ ALLOWED_ARGS_SINGLE = [
 
 
 HOST_ONLY_ARGS = [
+    "--config.enable_custom_labels=true",
+    "--config__enable_custom_labels=true",
+    '--config={enable_custom_labels: true}',
+    '--custom_labels={"approved": {description: "Workflow approval"}}',
+    "--custom_labels.approved.description=Workflow approval",
+    "--custom_labels__approved__description=Workflow approval",
     "--skills.paths=/etc",
     "--skills__paths=/etc",
     "--skills.unknown=value",

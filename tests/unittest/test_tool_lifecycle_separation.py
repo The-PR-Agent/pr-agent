@@ -1,7 +1,9 @@
+import threading
 from types import SimpleNamespace
 
 import pytest
 
+import pr_agent.agent.pr_agent as pr_agent_module
 from pr_agent.tools import pr_code_suggestions, pr_description, pr_reviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
@@ -41,6 +43,12 @@ class FakeGitProvider:
     def get_num_of_files(self):
         return 1
 
+    def get_issue_comments_newest_first(self):
+        return []
+
+    def supports_review_finding_state(self):
+        return False
+
     def is_supported(self, capability):
         return True
 
@@ -75,57 +83,46 @@ def _make_tool(module, **kwargs):
 
 
 @pytest.mark.parametrize("module", TOOL_MODULES)
-def test_deferred_init_does_no_provider_io(module, provider_calls):
-    tool = _make_tool(module, _defer_prepare=True)
-
-    assert provider_calls == []
-    assert tool._prepared is False
-    assert not hasattr(tool, "git_provider")
-    assert not hasattr(tool, "vars")
-    assert not hasattr(tool, "token_handler")
-
-
-@pytest.mark.parametrize("module", TOOL_MODULES)
-def test_prepare_initializes_context_once(module, provider_calls):
-    tool = _make_tool(module, _defer_prepare=True)
-
-    tool.prepare()
-    git_provider, token_handler = tool.git_provider, tool.token_handler
-    tool.prepare()
-
-    assert provider_calls == [PR_URL]
-    assert tool._prepared is True
-    assert isinstance(git_provider, FakeGitProvider)
-    assert tool.vars["title"] == "A pull request"
-    assert tool.token_handler is token_handler
-    assert token_handler.prompt_tokens > 0
-
-
-@pytest.mark.parametrize("module", TOOL_MODULES)
-def test_default_init_prepares_eagerly(module, provider_calls):
+def test_default_init_loads_pr_context(module, provider_calls):
     tool = _make_tool(module)
 
     assert provider_calls == [PR_URL]
-    assert tool._prepared is True
+    assert isinstance(tool.git_provider, FakeGitProvider)
     assert tool.vars["title"] == "A pull request"
-    assert tool.token_handler.prompt_tokens > 0
-
-    tool.prepare()
-    assert provider_calls == [PR_URL]
 
 
-@pytest.mark.parametrize("module", TOOL_MODULES)
-async def test_run_prepares_a_deferred_tool(module, provider_calls, monkeypatch):
-    tool = _make_tool(module, _defer_prepare=True)
+@pytest.mark.parametrize("module, command", [
+    (pr_reviewer, "/review"),
+    (pr_reviewer, "/answer"),
+    (pr_reviewer, "/auto_review"),
+    (pr_description, "/describe"),
+    (pr_code_suggestions, "/improve"),
+])
+async def test_dispatch_constructs_tools_off_the_event_loop(module, command, provider_calls, monkeypatch):
+    loop_thread = threading.get_ident()
+    provider_threads = []
 
-    # Stop run() right after its prepare() step; the rest of run() is covered by the tools' own tests.
-    def stop():
-        raise RuntimeError("stop")
+    def get_provider(pr_url):
+        provider_threads.append(threading.get_ident())
+        return FakeGitProvider()
 
-    monkeypatch.setattr(module, "init_run_details", stop)
+    async def run(tool):
+        assert threading.get_ident() == loop_thread
+        assert tool.vars["title"] == "A pull request"
+        if module is pr_reviewer:
+            assert tool.is_answer is (command == "/answer")
+            assert tool.is_auto is (command == "/auto_review")
 
-    with pytest.raises(RuntimeError, match="stop"):
-        await tool.run()
+    tool_class = {
+        pr_reviewer: pr_reviewer.PRReviewer,
+        pr_description: pr_description.PRDescription,
+        pr_code_suggestions: pr_code_suggestions.PRCodeSuggestions,
+    }[module]
+    monkeypatch.setattr(module, "get_git_provider_with_context", get_provider)
+    monkeypatch.setattr(tool_class, "run", run)
+    monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
 
-    assert provider_calls == [PR_URL]
-    assert tool._prepared is True
+    agent = pr_agent_module.PRAgent(ai_handler=lambda: SimpleNamespace())
+    assert await agent.handle_request(PR_URL, command) is True
+    assert provider_threads and loop_thread not in provider_threads

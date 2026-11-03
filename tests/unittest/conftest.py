@@ -1,4 +1,5 @@
 import os
+import sys
 
 import pytest
 
@@ -20,3 +21,18 @@ def isolate_run_details():
     token = run_details._run_details.set(None)
     yield
     run_details._run_details.reset(token)
+
+
+@pytest.fixture(autouse=True)
+def skip_llm_retry_waits(monkeypatch):
+    """Keep chat_completion's same-model retry attempts, without the waits between them.
+
+    Applies once the LiteLLM handler module is imported, which test modules do at collection.
+    """
+    handler_module = sys.modules.get("pr_agent.algo.ai_handlers.litellm_ai_handler")
+    if handler_module is not None:
+
+        async def no_sleep(seconds):
+            pass
+
+        monkeypatch.setattr(handler_module.LiteLLMAIHandler._chat_completion_with_retry.retry, "sleep", no_sleep)

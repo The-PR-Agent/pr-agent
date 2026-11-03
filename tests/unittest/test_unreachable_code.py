@@ -17,6 +17,8 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 PR_AGENT_SOURCE = ROOT / "pr_agent"
 SEARCH_ROOTS = (ROOT / "pr_agent", ROOT / "tests", ROOT / "docs")
@@ -105,12 +107,27 @@ def _is_referenced(name: str, corpus: list[str]) -> bool:
         r"[ \t]*(?:async[ \t]+)?(?:def|class)[ \t]+" + re.escape(name) + r"\b"
     )
     for text in corpus:
+        if name not in text:
+            continue
         for match in occurrence.finditer(text):
             line_start = text.rfind("\n", 0, match.start()) + 1
             if definition.match(text, line_start):
                 continue
             return True
     return False
+
+
+@pytest.mark.parametrize(("corpus", "expected"), [
+    (["other()"], False),
+    (["def target(): pass\nasync def target(): pass\nclass target: pass\n"], False),
+    (["target_helper() _target() target2()"], False),
+    (["étarget() targeté()"], False),
+    (["target()"], True),
+    (["other()", "def target(): pass\n", "target()"], True),
+    (["def target():\r\n    return target()\r\n"], True),
+])
+def test_is_referenced_preserves_match_rules(corpus, expected):
+    assert _is_referenced("target", corpus) is expected
 
 
 def test_every_definition_is_reachable_or_allowlisted():

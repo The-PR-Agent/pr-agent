@@ -157,7 +157,7 @@ def test_safe_pr_agent_config_does_not_raise():
         },
     }
     # Should not raise.
-    validate_file_security(data, "safe.toml")
+    assert validate_file_security(data, "safe.toml") is None
 
 
 # ---------------------------------------------------------------------------

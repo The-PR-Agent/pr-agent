@@ -30,6 +30,7 @@ from pr_agent.servers.github_common import matches_review_state as matches_revie
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     DefaultDictWithTimeout,
+    auto_feedback_disabled,
     get_pr_commands,
     is_ask_command_comment,
     push_trigger_slot,
@@ -38,7 +39,7 @@ from pr_agent.servers.utils import (
 )
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
-setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
+setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
 base_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 build_number_path = os.path.join(base_path, "build_number.txt")
 if os.path.exists(build_number_path):
@@ -308,6 +309,9 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
     apply_repo_settings(api_url)
     if not get_settings().github_app.handle_push_trigger:
         return {}
+    if get_settings().github_app.push_trigger_ignore_bot_commits and body.get("sender", {}).get("type") == "Bot":
+        get_logger().info(f"Skipping {event}: bot commit detected")
+        return {}
 
     before_sha = body.get("before")
     after_sha = body.get("after")
@@ -484,8 +488,8 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
     if is_draft and not feedback_on_draft:
         get_logger().info(f"Skipping draft PR {api_url=}")
         return
-    if commands_conf in ("pr_commands", "review_commands") and get_settings().config.disable_auto_feedback:
-        # auto commands for PR/review, and auto feedback is disabled
+    if auto_feedback_disabled():
+        # auto commands, and auto feedback is disabled
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
         return
     if not should_process_pr_logic(body): # Here we already updated the configuration with the repo settings

@@ -8,11 +8,12 @@ from pydantic import ValidationError
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.artifacts import get_artifact_context
+from pr_agent.algo.artifacts import get_artifact_context, prompt_boundary_markers, resolve_artifact_path
 from pr_agent.algo.comment_identity import (
     PRReviewHeader,
     PRReviewIdentity,
     add_pr_review_identity,
+    comment_authorship_available,
     get_pr_review_comment_identifiers,
     hidden_marker_forms,
     render_hidden_marker,
@@ -59,8 +60,8 @@ from pr_agent.algo.run_output import (
 )
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.skills_loader import get_skills_context
+from pr_agent.algo.structural_reach import build_structural_reach
 from pr_agent.algo.token_budget import AttemptTokenBudget
-from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
     _as_line,
@@ -168,6 +169,11 @@ _STATE_BLOCK_REVIEW_DATA = "review_data"
 _STATE_BLOCK_SIZE = "state_size"
 
 
+def _is_structural_reach_key(key) -> bool:
+    """Whether a review key would render like the deterministic structural reach row, whatever its separators."""
+    return re.sub(r"[^a-z0-9]", "", str(key).lower()) == "structuralreach"
+
+
 class PRReviewer:
     """
     The PRReviewer class is responsible for reviewing a pull request and generating feedback using an AI model.
@@ -183,11 +189,9 @@ class PRReviewer:
     review_all_issues = None
     review_chunk_hit_limit = None
     partial_files_list = ()
-    # True so instances built without __init__ (e.g. via __new__) never trigger prepare() from run()
-    _prepared = True
 
     def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
-                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, *, _defer_prepare: bool = False):
+                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         """
         Initialize the PRReviewer object with the necessary attributes and objects to review a pull request.
 
@@ -197,34 +201,23 @@ class PRReviewer:
             is_auto (bool, optional): Indicates whether the review is being done in automatic mode. Defaults to False.
             ai_handler (BaseAiHandler): The AI handler to be used for the review. Defaults to None.
             args (list, optional): List of arguments passed to the PRReviewer class. Defaults to None.
-            _defer_prepare (bool, optional): Skip the git provider and PR context loading until prepare() or
-                run() is called. Defaults to False.
         """
-        self.pr_url = pr_url
+        self.git_provider = get_git_provider_with_context(pr_url)
         self.args = args
-        self.is_answer = is_answer
-        self.is_auto = is_auto
-        self._ai_handler_factory = ai_handler
-        self._prepared = False
-        if not _defer_prepare:
-            self.prepare()
-
-    def prepare(self) -> None:
-        """Load the git provider, PR context, prompt vars and TokenHandler. Runs once; later calls are no-ops."""
-        if self._prepared:
-            return
-        self.git_provider = get_git_provider_with_context(self.pr_url)
-        self.incremental = self.parse_incremental(self.args)  # -i command
+        self.incremental = self.parse_incremental(args)  # -i command
         if self.incremental and self.incremental.is_incremental:
             self.git_provider.get_incremental_commits(self.incremental)
 
         self.main_language = get_main_pr_language(
             self.git_provider.get_languages(), self.git_provider.get_files()
         )
+        self.pr_url = pr_url
+        self.is_answer = is_answer
+        self.is_auto = is_auto
 
         if self.is_answer and not self.git_provider.is_supported("get_issue_comments"):
             raise Exception(f"Answer mode is not supported for {get_settings().config.git_provider} for now")
-        self.ai_handler = self._ai_handler_factory()
+        self.ai_handler = ai_handler()
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
         self.remaining_files_list = []
@@ -249,6 +242,7 @@ class PRReviewer:
             get_logger().debug("AI metadata is disabled for this command")
 
         is_ai_metadata = get_settings().get("config.enable_ai_metadata", False)
+        commit_messages_begin, commit_messages_end = prompt_boundary_markers("COMMIT_MESSAGES")
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -277,7 +271,9 @@ class PRReviewer:
             "skills_context": get_skills_context(),
             "repo_context": build_repo_context(self.git_provider),
             "previous_findings": previous_findings,
-            "commit_messages_str": self.git_provider.get_commit_messages(),
+            "commit_messages_str": "" if self.incremental.is_incremental else self.git_provider.get_commit_messages(),
+            "commit_messages_begin": commit_messages_begin,
+            "commit_messages_end": commit_messages_end,
             "custom_labels": "",
             "enable_custom_labels": get_settings().config.enable_custom_labels,
             "is_ai_metadata": is_ai_metadata,
@@ -291,14 +287,6 @@ class PRReviewer:
             "date": datetime.datetime.now().strftime('%Y-%m-%d'),
         }
 
-        self.token_handler = TokenHandler(
-            self.git_provider.pr,
-            self.vars,
-            get_settings().pr_review_prompt.system,
-            get_settings().pr_review_prompt.user
-        )
-        self._prepared = True
-
     def parse_incremental(self, args: list[str]):
         is_incremental = False
         if args and len(args) >= 1:
@@ -309,8 +297,6 @@ class PRReviewer:
         return incremental
 
     async def run(self) -> None:
-        if not getattr(self, "_prepared", False):
-            self.prepare()
         init_run_details()
         self.partial_files_list = []
         for name in ("_chunked_patches_diff_list", "_chunked_remaining_files_list", "_chunked_partial_files_list",
@@ -337,6 +323,7 @@ class PRReviewer:
                 if not self.incremental.is_incremental:
                     # Reload the findings the incremental mode left out, for the fallback full review.
                     self.vars["previous_findings"] = self._load_previous_findings_context()
+                    self.vars["commit_messages_str"] = self.git_provider.get_commit_messages()
 
             # if isinstance(self.args, list) and self.args and self.args[0] == 'auto_approve':
             #     get_logger().info(f'Auto approve flow PR: {self.pr_url} ...')
@@ -654,19 +641,7 @@ class PRReviewer:
             return None
 
     def _review_comment_authorship_available(self) -> bool:
-        provider = getattr(self, "git_provider", None)
-        if provider is None:
-            return False
-        try:
-            return (
-                provider.supports_review_finding_state() is True
-                and provider.is_supported("get_issue_comments") is True
-            )
-        except Exception as error:
-            get_logger().warning(
-                f"Review comment authorship is not available, error: {error}"
-            )
-            return False
+        return comment_authorship_available(getattr(self, "git_provider", None))
 
     def _load_review_finding_state(self):
         identifiers = get_pr_review_comment_identifiers(full=True, incremental=False)
@@ -1283,6 +1258,8 @@ class PRReviewer:
             system=fitted.system_prompt,
             user=fitted.user_prompt,
         )
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"Review response was truncated by {model}")
 
         return response
 
@@ -1356,6 +1333,8 @@ class PRReviewer:
         if isinstance(data, dict) and isinstance(data.get("review"), dict):
             if not getattr(self, "vars", {}).get("require_failure_modes", False):
                 data["review"].pop("failure_modes", None)
+            for key in [k for k in data["review"] if _is_structural_reach_key(k)]:
+                data["review"].pop(key)
         if self.prediction_data is None:
             self._validate_review_schema(data)
         if isinstance(data, dict) and isinstance(data.get("review"), dict) and "failure_modes" in data["review"]:
@@ -1369,6 +1348,10 @@ class PRReviewer:
                 get_logger().warning("Review data is invalid; preserving persistent finding state")
             get_logger().exception("Failed to parse review data", artifact={"data": data})
             return ""
+
+        structural_reach = build_structural_reach(resolve_artifact_path)
+        if structural_reach:
+            data["review"] = {"structural_reach": structural_reach, **data["review"]}
 
         structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
         if callable(structured_publisher) or review_json_output_path.get():

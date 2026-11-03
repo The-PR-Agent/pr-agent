@@ -45,6 +45,9 @@ class StubProvider:
         self.html_lists_queries += 1
         return self._html_lists
 
+    def get_diff_files(self):
+        return []
+
     def publish_description(self, title: str, body: str):
         self.descriptions.append((title, body))
 

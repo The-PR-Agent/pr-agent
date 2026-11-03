@@ -445,7 +445,7 @@ def _pack_pr_multi_diffs(file_dict: dict,
         if file_dict[filename].get("content_fetch_failed", False):
             get_logger().warning(f"Unreadable-file notice too large, skipping: {filename}")
             return None
-        if get_settings().config.get("large_patch_policy", "skip") != "clip":
+        if get_settings().config.get("large_patch_policy", "clip") != "clip":
             get_logger().warning(f"Patch too large, skipping: {filename}")
             return None
         patch_tokens = count_chunk([patch])
@@ -844,6 +844,13 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, soft_token_bud
     return total_tokens, patches, remaining_files_list_new, files_in_patch_list
 
 
+async def run_diff_preparation(f: Callable, *args, **kwargs):
+    """Offload diff work only when settings are isolated from global state."""
+    if get_settings() is get_settings(use_context=False):
+        return f(*args, **kwargs)
+    return await asyncio.to_thread(f, *args, **kwargs)
+
+
 async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelType.REGULAR,
                                      git_provider: GitProvider | None = None):
     all_models = _get_all_models(model_type)
@@ -852,7 +859,12 @@ async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelT
     # the existing retry loop, which stops as soon as the first successful model returns.
     configured_chain = tuple(zip(all_models, all_deployments[:len(all_models)], strict=True))
     effective_chain = configured_chain
-    routed = route_primary_model(model_type, git_provider)
+    if (model_type == ModelType.REGULAR and git_provider is not None
+            and get_settings().get("model_routing.enable", False)):
+        # Offload routing because it may fetch the diff before prediction preparation.
+        routed = await run_diff_preparation(route_primary_model, model_type, git_provider)
+    else:
+        routed = route_primary_model(model_type, git_provider)
     if routed:
         effective_chain = (routed, *configured_chain[1:])
         # Routing treats empty deployment IDs as absent; compare equivalent endpoint pairs.

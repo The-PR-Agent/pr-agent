@@ -164,11 +164,8 @@ def test_store_load_failure_degrades_to_empty():
 def test_iter_unsupported_provider_raises():
     class FooProvider:
         pass
-    try:
+    with pytest.raises(NotImplementedError):
         list(d.iter_existing_inline_comment_bodies(FooProvider()))
-        raise AssertionError("expected NotImplementedError")
-    except NotImplementedError:
-        pass
 
 
 def test_iter_provider_with_persistent_comment_capability():

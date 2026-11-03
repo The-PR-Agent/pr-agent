@@ -41,7 +41,9 @@ You can use our pre-built GitHub Action Docker image to run PR-Agent as a GitHub
    Secret = <your key>
    ```
 
-   The GITHUB_TOKEN secret is automatically created by GitHub.
+   The `GITHUB_TOKEN` secret is automatically created by GitHub, but you must pass it to the action through `env` as shown above.
+   If it is missing or empty, events with a PR or issue target fail with a nonzero exit status and a `GITHUB_TOKEN not set` message.
+   Ignored comments and events without a target still skip successfully.
 
 3. Merge this change to your main branch.
    When you open your next PR, you should see a comment from `github-actions` bot with a review of your PR, and instructions on how to use the rest of the tools.
@@ -541,7 +543,7 @@ Remember these key points about environment variables:
 
 ##### Rate Limiting
 
-If you encounter rate limiting:
+If you encounter rate limiting (HTTP 429 responses):
 
 ```yaml
       env:
@@ -549,12 +551,17 @@ If you encounter rate limiting:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Add a fallback model for better reliability
         config.fallback_models: '["your-fallback-model"]'
-        # Increase timeout for slower models
+        # Same-model retries of a 429, 5xx or connection error before fallback_models (default 4, max 10),
+        # each waiting for the provider's Retry-After or backing off. A quota error is retried but never recovers.
+        config.num_retries: "6"
+        # Increase timeout for slower models (does not help pure 429 rate-limit responses)
         config.ai_timeout: "300"
         github_action_config.auto_review: "true"
         github_action_config.auto_describe: "true"
         github_action_config.auto_improve: "true"
 ```
+
+A 429 is returned immediately; raising `config.ai_timeout` only bounds the duration of each individual request and does not change rate-limit behavior. Use `config.num_retries` (see `pr_agent/settings/configuration.toml`) for transient provider errors. Each model listed in `config.fallback_models` receives its own independent retry budget.
 
 ##### Common Error Messages and Solutions
 
@@ -566,14 +573,15 @@ If you encounter rate limiting:
 - **Note**: For non-OpenAI models (Gemini, Claude, etc.), you only need the model-specific API key, not `OPENAI_KEY`
 
 **Error: "Incorrect API key provided: dummy_key"**
-- **Cause**: No usable key for the active model's provider reached the run. The step log now shows `Stopping before any tool runs` with the missing variable named, and the job fails at once; older versions logged `OPENAI_KEY not set` near the top and carried on, so the request went out with PR-Agent's placeholder key instead and failed a full run later.
+- **Cause**: No usable key for the active model's provider reached the run. For automatic runs and commands other than bare `/help`, `/config`, or `/settings`, the step log now shows `Stopping before any tool runs` with the missing variable named, and the job fails at once; older versions logged `OPENAI_KEY not set` near the top and carried on, so the request went out with PR-Agent's placeholder key instead and failed a full run later.
+- **Note**: For PR `issue_comment` and `pull_request_review_comment` events, bare `/help`, `/config`, and `/settings` skip this model-key check (ignoring case and surrounding whitespace). They still need `GITHUB_TOKEN`; commands with arguments, including `/help <question>`, retain the check.
 - **Solution**: Check which of the three causes applies:
     - **The run gets no secrets.** On the `pull_request` event, runs triggered from a fork receive no repository secrets, so `${{ secrets.OPENAI_KEY }}` is empty. Use the [`pull_request_target` setup](#using-with-pull_request_target-forkcontribution-support) instead. Dependabot pull requests are the same case: their secrets live under Dependabot secrets, not Actions secrets, and the `github.event.sender.type != 'Bot'` condition in the examples above keeps those runs from starting at all.
     - **The secret is missing or misnamed.** A reference to a secret that does not exist expands to an empty string rather than failing the workflow, so compare the name in the repository secrets with the one used in `env`.
     - **Another provider's key is set, but the model is not.** Keys alone do not switch provider: set `config.model` (and `config.fallback_models`) as well, otherwise the default OpenAI model is used and only an OpenAI key counts. See [Changing a model in PR-Agent](../usage-guide/changing_a_model.md).
 
 **Error: "Rate limit exceeded"**
-- **Solution**: Add fallback models or increase the `config.ai_timeout` value
+- **Solution**: Add fallback models and/or set `config.num_retries` (recommended for transient 429s). Raising `config.ai_timeout` only helps with timeouts, not pure rate-limit responses. For a manual `/review` failure, you can also set `pr_reviewer.publish_error_details: "true"` in the workflow `env` (it cannot be enabled via `.pr_agent.toml`) to surface a sanitized failure reason. See the [Review tool docs](../tools/review.md).
 
 **Error: "Permission denied"**
 - **Solution**: Ensure your workflow has the correct permissions set:
@@ -741,7 +749,7 @@ Allowing you to automate the review process on your private or public repositori
    - Copy your app's private key to the private_key field.
    - Copy your app's ID to the app_id field.
    - Copy your app's webhook secret to the webhook_secret field (required).
-   - Set deployment_type to 'app' in [configuration.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)
+   - The GitHub App sets `deployment_type` to `app` automatically by default. No manual configuration is needed unless `github_app.override_deployment_type` is disabled.
 
     > The local `.secrets.toml` file is excluded from the Docker build context. Never bake secrets into a container image.
     > For container deployments, provide secrets at runtime through environment variables or a mounted secret volume.

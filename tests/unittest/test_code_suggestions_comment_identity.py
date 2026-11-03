@@ -15,30 +15,35 @@ from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
-def test_custom_suggestions_heading_changes_presentation_only():
+@pytest.fixture
+def restore_suggestions_heading():
     snapshot = snapshot_settings(["pr_code_suggestions.suggestions_heading"])
-    try:
-        get_settings().set(
-            "pr_code_suggestions.suggestions_heading",
-            "Guideline Improvement Suggestions",
-        )
+    yield
+    restore_settings(snapshot)
 
-        header = format_pr_code_suggestions_header()
-    finally:
-        restore_settings(snapshot)
+
+@pytest.fixture
+def restore_check_run_setting():
+    snapshot = snapshot_settings(["github.publish_as_check_run"])
+    yield
+    restore_settings(snapshot)
+
+def test_custom_suggestions_heading_changes_presentation_only(restore_suggestions_heading):
+    get_settings().set(
+        "pr_code_suggestions.suggestions_heading",
+        "Guideline Improvement Suggestions",
+    )
+
+    header = format_pr_code_suggestions_header()
 
     assert header == "## Guideline Improvement Suggestions ✨"
     assert "<!-- pr-agent:improve" not in header
 
 
-def test_suggestions_heading_is_trimmed():
-    snapshot = snapshot_settings(["pr_code_suggestions.suggestions_heading"])
-    try:
-        get_settings().set("pr_code_suggestions.suggestions_heading", "  Team Suggestions  ")
+def test_suggestions_heading_is_trimmed(restore_suggestions_heading):
+    get_settings().set("pr_code_suggestions.suggestions_heading", "  Team Suggestions  ")
 
-        header = format_pr_code_suggestions_header()
-    finally:
-        restore_settings(snapshot)
+    header = format_pr_code_suggestions_header()
 
     assert header == "## Team Suggestions ✨"
 
@@ -51,13 +56,9 @@ def test_default_suggestions_heading_is_unchanged():
     "invalid_heading",
     [None, "", "  ", "first\nsecond", "first\rsecond", "first\u2028second", 42],
 )
-def test_invalid_suggestions_heading_falls_back_to_default(invalid_heading):
-    snapshot = snapshot_settings(["pr_code_suggestions.suggestions_heading"])
-    try:
-        get_settings().set("pr_code_suggestions.suggestions_heading", invalid_heading)
-        header = format_pr_code_suggestions_header()
-    finally:
-        restore_settings(snapshot)
+def test_invalid_suggestions_heading_falls_back_to_default(invalid_heading, restore_suggestions_heading):
+    get_settings().set("pr_code_suggestions.suggestions_heading", invalid_heading)
+    header = format_pr_code_suggestions_header()
 
     assert header == "## PR Code Suggestions ✨"
 
@@ -86,15 +87,11 @@ def test_suggestions_identity_is_bounded_and_does_not_match_quoted_marker():
     assert not comment_matches_identity(late, marker)
 
 
-def test_summarized_artifact_uses_custom_heading_without_identity():
-    snapshot = snapshot_settings(["pr_code_suggestions.suggestions_heading"])
+def test_summarized_artifact_uses_custom_heading_without_identity(restore_suggestions_heading):
     tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    try:
-        get_settings().set("pr_code_suggestions.suggestions_heading", "Team Suggestions")
+    get_settings().set("pr_code_suggestions.suggestions_heading", "Team Suggestions")
 
-        artifact = tool.generate_summarized_suggestions({"code_suggestions": []})
-    finally:
-        restore_settings(snapshot)
+    artifact = tool.generate_summarized_suggestions({"code_suggestions": []})
 
     assert artifact.startswith("## Team Suggestions ✨\n\n")
     assert "<!-- pr-agent:improve" not in artifact
@@ -131,24 +128,20 @@ async def test_no_suggestions_uses_custom_heading_with_separate_result_identity(
     assert PRCodeSuggestionsIdentity.SUMMARY.value not in published
 
 
-def test_github_check_run_receives_configured_presentation_without_identity():
-    snapshot = snapshot_settings(["github.publish_as_check_run"])
+def test_github_check_run_receives_configured_presentation_without_identity(restore_check_run_setting):
     provider = MagicMock()
     provider._publish_check_run.return_value = True
     comment = "## Team Suggestions ✨\n\n<table>suggestions</table>"
-    try:
-        get_settings().set("github.publish_as_check_run", True)
+    get_settings().set("github.publish_as_check_run", True)
 
-        PRCodeSuggestions.publish_persistent_comment_with_history(
-            provider,
-            comment,
-            initial_header="## Team Suggestions ✨",
-            name="suggestions",
-            identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
-            legacy_initial_header="## PR Code Suggestions ✨",
-        )
-    finally:
-        restore_settings(snapshot)
+    PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        comment,
+        initial_header="## Team Suggestions ✨",
+        name="suggestions",
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header="## PR Code Suggestions ✨",
+    )
 
     provider._publish_check_run.assert_called_once_with(comment, "suggestions")
     provider.get_issue_comments.assert_not_called()

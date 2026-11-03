@@ -40,7 +40,7 @@ class TestParseObservabilityMetadata:
     def test_never_raises(self):
         # Exhaustive no-raise check across odd inputs.
         for bad in (None, {}, {"x": "y"}, [1, 2], "str", 0, object()):
-            parse_observability_metadata(bad)
+            assert parse_observability_metadata(bad) == {}
 
 
 class TestLangfuseSpanNoOpSafety:
@@ -51,8 +51,10 @@ class TestLangfuseSpanNoOpSafety:
         assert ran["v"] is True
 
     def test_none_meta_is_noop(self):
+        ran = {"v": False}
         with langfuse_span(None, "ctx"):
-            pass  # must not raise
+            ran["v"] = True
+        assert ran["v"] is True
 
     def test_partial_meta_does_not_raise_when_langfuse_unavailable(self, monkeypatch):
         # Simulate langfuse import failure inside the CM; it must degrade to untraced.
@@ -71,10 +73,12 @@ class TestLangfuseSpanNoOpSafety:
         assert ran["v"] is True  # body still executed despite langfuse failure
 
     def test_log_context_partial_and_empty(self):
+        executed = []
         with mosaico_log_context({"mosaico-root-task-id": "r"}, "ctx"):
-            pass
+            executed.append("partial")
         with mosaico_log_context({}, None):
-            pass
+            executed.append("empty")
+        assert executed == ["partial", "empty"]
 
 
 class TestLangfuseSpanW3CTransform:

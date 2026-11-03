@@ -39,6 +39,9 @@ the results.
 
 These keys live under the `[pr_similar_issue]` section. Each backend section below describes its own configuration and re-run behaviour.
 
+If the embedding service rejects the credentials (HTTP 401) or denies access (HTTP 403), indexing stops immediately on every vector database backend.
+Correct the embedding API key or access permissions before running the tool again; other embedding errors retain the existing batch and per-item fallback behavior.
+
 ### Selecting a Vector Database
 
 Configure your preferred database by setting the `vectordb` parameter under `[pr_similar_issue]` in `configuration.toml`:

@@ -1,7 +1,5 @@
 import asyncio
-import contextvars
 import copy
-import inspect
 import json
 import shlex
 from dataclasses import dataclass
@@ -19,7 +17,7 @@ from pr_agent.algo.comment_identity import (
     add_comment_identity,
     comment_matches_identity,
 )
-from pr_agent.algo.run_details import get_run_details, init_run_details
+from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
 from pr_agent.algo.utils import _fix_key_value, update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
@@ -385,25 +383,6 @@ def _record_token_metrics(action: str, git_provider: str) -> None:
         get_ai_calls_counter().add(details.num_ai_calls, labels)
 
 
-async def _run_in_context_thread(func, *args, **kwargs):
-    """Run blocking ``func`` in a worker thread with this task's context vars (settings, RunDetails)."""
-    ctx = contextvars.copy_context()
-    return await asyncio.to_thread(partial(ctx.run, func, *args, **kwargs))
-
-
-async def _create_tool(tool_class, *args, **kwargs):
-    """Construct a tool, running a deferrable tool's blocking ``prepare()`` off the event loop."""
-    try:
-        deferrable = "_defer_prepare" in inspect.signature(tool_class).parameters
-    except (TypeError, ValueError):
-        deferrable = False
-    if not deferrable:
-        return tool_class(*args, **kwargs)
-    tool = tool_class(*args, _defer_prepare=True, **kwargs)
-    await _run_in_context_thread(tool.prepare)
-    return tool
-
-
 class PRAgent:
     def __init__(self, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         self.ai_handler = ai_handler  # handler factory passed to each tool when it is instantiated
@@ -454,7 +433,7 @@ class PRAgent:
     ) -> bool | RequestOutcome:
         # Evaluate repository policy before command overrides, notifications or tools.
         # Off the event loop: it fetches the repo's settings file over the network.
-        await _run_in_context_thread(apply_repo_settings, pr_url)
+        await asyncio.to_thread(apply_repo_settings, pr_url)
         if enforce_request_policy(pr_url) is False:
             span.set_attribute("pr_agent.request.ignored", True)
             return RequestOutcome.SKIPPED
@@ -503,8 +482,6 @@ class PRAgent:
                                 setting.extra_instructions = lang_instruction_text
                         # If lang_instruction_text is already present, do nothing.
 
-        action = action.lstrip("/").lower()
-
         span.set_attribute("pr_agent.args_count", len(args))
         _git_provider = get_settings().config.git_provider
         span.set_attribute("vcs.provider.name", _git_provider)
@@ -539,23 +516,31 @@ class PRAgent:
                 if action == "answer":
                     if notify:
                         notify()
-                    tool = await _create_tool(PRReviewer, pr_url, is_answer=True, args=args, ai_handler=self.ai_handler)
+                    tool = await asyncio.to_thread(
+                        PRReviewer, pr_url, is_answer=True, args=args, ai_handler=self.ai_handler
+                    )
                     await tool.run()
                 elif action == "auto_review":
-                    tool = await _create_tool(PRReviewer, pr_url, is_auto=True, args=args, ai_handler=self.ai_handler)
+                    tool = await asyncio.to_thread(
+                        PRReviewer, pr_url, is_auto=True, args=args, ai_handler=self.ai_handler
+                    )
                     await tool.run()
                 else:
                     if notify:
                         notify()
 
-                    tool = await _create_tool(command2class[action], pr_url, ai_handler=self.ai_handler, args=args)
+                    tool = await asyncio.to_thread(command2class[action], pr_url, ai_handler=self.ai_handler, args=args)
                     result = await tool.run()
                     if action == "add_docs" and result is False:
                         span.set_status(StatusCode.ERROR)
                         span.set_attribute("error.type", "documentation_publication_failed")
                         return False
 
-                span.set_status(StatusCode.OK)
+                if command_failed():
+                    span.set_status(StatusCode.ERROR)
+                    span.set_attribute("error.type", "tool_execution_failed")
+                else:
+                    span.set_status(StatusCode.OK)
                 return True
         finally:
             _record_token_metrics(action, _git_provider)
