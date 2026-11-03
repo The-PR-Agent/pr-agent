@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">Configuration Reference | PR-Agent</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" property="og:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.pr-agent.ai/usage-guide/configuration_reference/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Configuration Reference | PR-Agent"><meta data-rh="true" name="description" content="This page is auto-generated and should not be edited by hand."><meta data-rh="true" property="og:description" content="This page is auto-generated and should not be edited by hand."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.pr-agent.ai/usage-guide/configuration_reference/"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/usage-guide/configuration_reference/" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/usage-guide/configuration_reference/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Configuration reference","item":"https://docs.pr-agent.ai/usage-guide/configuration_reference"}]}</script><script src="https://widget.kapa.ai/kapa-widget.bundle.js" data-website-id="5c89c0b1-b2ee-43c9-8c6f-43ed762b3c1e" data-project-name="PR-Agent" data-project-color="#2459db" data-project-logo="/img/favicon.svg" data-launcher-button-image="/img/favicon-white.svg" data-color-scheme-selector="[data-theme=&#39;dark&#39;]" async></script><link rel="stylesheet" href="/assets/css/styles.928a3cd8.css">
-<script src="/assets/js/runtime~main.8d278df7.js" defer="defer"></script>
+<script src="/assets/js/runtime~main.c1eb0e2b.js" defer="defer"></script>
 <script src="/assets/js/main.8693b73f.js" defer="defer"></script>
 </head>
 <body>
@@ -23,6 +23,7 @@ list for easy searching and linking.</p>
 They are listed deliberately rather than hidden, so the gaps double as the documentation
 to-do list.</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="config"><code>[config]</code><a href="#config" class="hash-link" aria-label="Direct link to config" title="Direct link to config" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/configuration_options/#global-configuration-file">Configuration options</a>.</p>
 
 
 
@@ -604,6 +605,7 @@ to-do list.</p>
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>enable_claude_extended_thinking</code></td><td>false</td><td>Set to true to enable extended thinking feature</td></tr><tr><td><code>extended_thinking_budget_tokens</code></td><td>2048</td><td></td></tr><tr><td><code>extended_thinking_max_output_tokens</code></td><td>4096</td><td></td></tr><tr><td><code>enable_claude_adaptive_thinking</code></td><td>false</td><td>Adaptive thinking for Claude Opus 4.7/4.8 and Claude 5 models. When enabled, these models receive thinking={&quot;type&quot;: &quot;adaptive&quot;} and an output_config effort. Do not add adaptive-only models to claude_extended_thinking_models_override; when both features are enabled, adaptive thinking takes precedence.</td></tr><tr><td><code>claude_adaptive_thinking_models_override</code></td><td>[]</td><td>Optional model ids to treat as adaptive-only Claude models, including opaque Bedrock ARNs. See <a class="" href="/usage-guide/changing_a_model/">changing a model</a>.</td></tr><tr><td><code>claude_extended_thinking_models_override</code></td><td>[]</td><td>Optional: override the built-in list of Claude models that receive the extended-thinking payload. When non-empty, this list fully replaces the built-in defaults (see CLAUDE_EXTENDED_THINKING_MODELS in pr_agent/algo/<strong>init</strong>.py). Leave empty to use the defaults.</td></tr><tr><td><code>extract_issue_from_branch</code></td><td>true</td><td>Extract issue number from PR source branch name (e.g. feature/1-auth-google -&gt; issue #1). When true, branch-derived issue URLs are merged with tickets from the PR description for compliance. Set to false to restore description-only behaviour. Note: Branch-name extraction is GitHub-only for now; other providers planned for later.</td></tr><tr><td><code>branch_issue_regex</code></td><td>&quot;&quot;</td><td>Optional: custom regex with one or more capturing groups for the issue number (validated at runtime); only the first group is used. If the regex has no capturing group, the default pattern is used; if it does not compile, no branch tickets are extracted. If empty, uses default pattern: first 1-6 digits at start of branch or after a slash, followed by hyphen or end (e.g. feature/1-test, 123-fix). GitHub only; other providers planned for later.</td></tr><tr><td><code>description_issue_regex</code></td><td>&quot;&quot;</td><td>Configure a regex replacing bare #N references, with exactly one capturing group for an ASCII issue number. Leave empty for default matching (up to six digits); fall back with a warning on invalid patterns. Set the custom digit limit in the pattern; use only integer-parseable captures. Keep full URLs and owner/repo#N references. Use TOML literal quotes to preserve backslashes, e.g. description_issue_regex = &#x27;(?i)(?:fixes|closes|resolves)\s+#(\d+)&#x27;</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="pr_reviewer-review"><code>[pr_reviewer]</code> — /review<a href="#pr_reviewer-review" class="hash-link" aria-label="Direct link to pr_reviewer-review" title="Direct link to pr_reviewer-review" translate="no">​</a></h2>
+<p>See <a class="" href="/tools/review/#configuration-options">Review</a>.</p>
 <p><strong>enable/disable features</strong></p>
 
 
@@ -837,6 +839,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>require_all_thresholds_for_incremental_review</code></td><td>false</td><td></td></tr><tr><td><code>minimal_commits_for_incremental_review</code></td><td>0</td><td></td></tr><tr><td><code>minimal_minutes_for_incremental_review</code></td><td>0</td><td></td></tr><tr><td><code>enable_intro_text</code></td><td>true</td><td></td></tr><tr><td><code>enable_help_text</code></td><td>false</td><td>Determines whether to include help text in the PR review.</td></tr><tr><td><code>enable_review_coverage_footer</code></td><td>true</td><td></td></tr><tr><td><code>enable_large_pr_chunking</code></td><td>false</td><td>large-diff chunking (opt-in). When the token budget leaves files out of the review, split the diff into chunks, review each chunk, and merge the per-chunk results into one review.</td></tr><tr><td><code>max_number_of_calls</code></td><td>3</td><td>maximum number of chunk review calls, used only when enable_large_pr_chunking is true</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="pr_description-describe"><code>[pr_description]</code> — /describe<a href="#pr_description-describe" class="hash-link" aria-label="Direct link to pr_description-describe" title="Direct link to pr_description-describe" translate="no">​</a></h2>
+<p>See <a class="" href="/tools/describe/#configuration-options">Describe</a>.</p>
 
 
 
@@ -1012,6 +1015,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>use_description_markers</code></td><td>false</td><td></td></tr><tr><td><code>enable_large_pr_handling</code></td><td>true</td><td></td></tr><tr><td><code>include_generated_by_header</code></td><td>true</td><td>Add a &quot;Generated by PR Agent&quot; header (with the head SHA when available). Only read when use_description_markers is true.</td></tr><tr><td><code>max_ai_calls</code></td><td>4</td><td></td></tr><tr><td><code>async_ai_calls</code></td><td>true</td><td></td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="pr_questions-ask"><code>[pr_questions]</code> — /ask<a href="#pr_questions-ask" class="hash-link" aria-label="Direct link to pr_questions-ask" title="Direct link to pr_questions-ask" translate="no">​</a></h2>
+<p>See <a class="" href="/tools/ask/#configuration-options">Ask</a>.</p>
 
 
 
@@ -1049,6 +1053,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>enable_help_text</code></td><td>false</td><td></td></tr><tr><td><code>use_conversation_history</code></td><td>true</td><td></td></tr><tr><td><code>ask_heading</code></td><td>&quot;Ask&quot;</td><td>Set the plain-text heading for top-level /ask answers; provider-specific presentation is added automatically.</td></tr><tr><td><code>resolve_threads</code></td><td>false</td><td>Enable to let /ask_line resolve the review thread when the LLM judges the issue addressed. Note: also resolves threads started by human reviewers.</td></tr><tr><td><code>extra_instructions</code></td><td>&quot;&quot;</td><td></td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="pr_code_suggestions-improve"><code>[pr_code_suggestions]</code> — /improve<a href="#pr_code_suggestions-improve" class="hash-link" aria-label="Direct link to pr_code_suggestions-improve" title="Direct link to pr_code_suggestions-improve" translate="no">​</a></h2>
+<p>See <a class="" href="/tools/improve/#configuration-options">Improve</a>.</p>
 
 
 
@@ -1234,6 +1239,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>demand_code_suggestions_self_review</code></td><td>false</td><td>add a checkbox for the author to self-review the code suggestions</td></tr><tr><td><code>code_suggestions_self_review_text</code></td><td>&quot;<strong>Author self-review</strong>: I have reviewed the PR code suggestions, and addressed the relevant ones.&quot;</td><td></td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="pr_add_docs-add_docs"><code>[pr_add_docs]</code> — /add_docs<a href="#pr_add_docs-add_docs" class="hash-link" aria-label="Direct link to pr_add_docs-add_docs" title="Direct link to pr_add_docs-add_docs" translate="no">​</a></h2>
+<p>See <a class="" href="/tools/add_docs/#configuration-options">Add Docs</a>.</p>
 
 
 
@@ -1256,6 +1262,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>extra_instructions</code></td><td>&quot;&quot;</td><td></td></tr><tr><td><code>docs_style</code></td><td>&quot;Sphinx&quot;</td><td>&quot;Google Style with Args, Returns, Attributes...etc&quot;, &quot;Numpy Style&quot;, &quot;Sphinx Style&quot;, &quot;PEP257&quot;, &quot;reStructuredText&quot;</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="pr_update_changelog-update_changelog"><code>[pr_update_changelog]</code> — /update_changelog<a href="#pr_update_changelog-update_changelog" class="hash-link" aria-label="Direct link to pr_update_changelog-update_changelog" title="Direct link to pr_update_changelog-update_changelog" translate="no">​</a></h2>
+<p>See <a class="" href="/tools/update_changelog/#configuration-options">Update Changelog</a>.</p>
 
 
 
@@ -1288,8 +1295,10 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>push_changelog_changes</code></td><td>false</td><td></td></tr><tr><td><code>extra_instructions</code></td><td>&quot;&quot;</td><td></td></tr><tr><td><code>add_pr_link</code></td><td>true</td><td></td></tr><tr><td><code>skip_ci_on_push</code></td><td>true</td><td></td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="pr_config-config"><code>[pr_config]</code> — /config<a href="#pr_config-config" class="hash-link" aria-label="Direct link to pr_config-config" title="Direct link to pr_config-config" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/additional_configurations/#show-possible-configurations">Show possible configurations</a>.</p>
 <p><em>This section only documents commented-out examples; see the <a href="https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml" target="_blank" rel="noopener noreferrer" class="">TOML source</a> for details.</em></p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="pr_help_docs"><code>[pr_help_docs]</code><a href="#pr_help_docs" class="hash-link" aria-label="Direct link to pr_help_docs" title="Direct link to pr_help_docs" translate="no">​</a></h2>
+<p>See <a class="" href="/tools/help_docs/#configuration-options">Help Docs</a>.</p>
 
 
 
@@ -1332,6 +1341,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>repo_url</code></td><td>&quot;&quot;</td><td>If not overwritten, will use the repo from where the context came from (issue or PR)</td></tr><tr><td><code>repo_default_branch</code></td><td>&quot;main&quot;</td><td></td></tr><tr><td><code>docs_path</code></td><td>&quot;docs&quot;</td><td></td></tr><tr><td><code>exclude_root_readme</code></td><td>false</td><td></td></tr><tr><td><code>supported_doc_exts</code></td><td>[&quot;.md&quot;, &quot;.mdx&quot;, &quot;.rst&quot;]</td><td></td></tr><tr><td><code>enable_help_text</code></td><td>false</td><td></td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="github"><code>[github]</code><a href="#github" class="hash-link" aria-label="Direct link to github" title="Direct link to github" translate="no">​</a></h2>
+<p>See <a class="" href="/installation/github/#run-as-a-github-app">GitHub</a>.</p>
 
 
 
@@ -1404,8 +1414,10 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>deployment_type</code></td><td>&quot;user&quot;</td><td>The type of deployment to create. Valid values are &#x27;app&#x27; or &#x27;user&#x27;.</td></tr><tr><td><code>agent_login</code></td><td>&quot;&quot;</td><td>Host-only login PR-Agent posts as when its token cannot call <code>GET /user</code>, e.g. <code>&lt;app-slug&gt;[bot]</code> for a GitHub App installation token in GitHub Actions. Empty falls back to <code>github-actions[bot]</code> under Actions. Repository settings and comment arguments cannot change it</td></tr><tr><td><code>ratelimit_retries</code></td><td>5</td><td>Host-only total attempts for retryable GitHub diff collection failures, including rate limits and transient API errors. Integer-valued floats and integer strings are accepted. Zero returns None without collecting a diff. A negative integer attempt limit retries indefinitely. Boolean, non-finite, non-integral float, and unparseable values fall back to 5 with a warning.</td></tr><tr><td><code>seconds_between_requests</code></td><td>0</td><td>seconds between API requests; 0 = no pacing (1.59 behaviour)</td></tr><tr><td><code>seconds_between_writes</code></td><td>0</td><td>seconds between write calls; 0 = no pacing (1.59 behaviour)</td></tr><tr><td><code>api_retries</code></td><td>0</td><td>max retries per request with backoff; 0 = no retries (1.59 behaviour)</td></tr><tr><td><code>polling_request_timeout</code></td><td>10</td><td>total seconds for comment-history fallback; positive values capped at 60</td></tr><tr><td><code>polling_repositories</code></td><td>[]</td><td>Host-only allowlist of GitHub repositories (&quot;owner/repo&quot;) whose mention notifications polling may process. Empty disables all polling notifications. Repository settings and comment arguments cannot change this list</td></tr><tr><td><code>base_url</code></td><td>&quot;<a href="https://api.github.com" target="_blank" rel="noopener noreferrer" class="">https://api.github.com</a>&quot;</td><td></td></tr><tr><td><code>try_fix_invalid_inline_comments</code></td><td>true</td><td></td></tr><tr><td><code>ignore_bot_pr</code></td><td>true</td><td></td></tr><tr><td><code>publish_as_check_run</code></td><td>false</td><td>when true, publish review/description/improve output as GitHub Checks instead of PR comments</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="github_action_config"><code>[github_action_config]</code><a href="#github_action_config" class="hash-link" aria-label="Direct link to github_action_config" title="Direct link to github_action_config" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/automations_and_usage/#github-action">GitHub Actions</a>.</p>
 <p><em>This section only documents commented-out examples; see the <a href="https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml" target="_blank" rel="noopener noreferrer" class="">TOML source</a> for details.</em></p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="github_app"><code>[github_app]</code><a href="#github_app" class="hash-link" aria-label="Direct link to github_app" title="Direct link to github_app" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/automations_and_usage/#github-app">GitHub App</a>.</p>
 
 
 
@@ -1499,6 +1511,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>handle_pr_actions</code></td><td>[&quot;opened&quot;, &quot;reopened&quot;, &quot;ready_for_review&quot;]</td><td></td></tr><tr><td><code>feedback_on_draft_pr</code></td><td>false</td><td></td></tr><tr><td><code>review_states</code></td><td>[&quot;changes_requested&quot;]</td><td>A submitted GitHub review can optionally trigger these commands. The empty default preserves current behavior.</td></tr><tr><td><code>review_author_types</code></td><td>[&quot;User&quot;]</td><td></td></tr><tr><td><code>review_commands</code></td><td>[]</td><td></td></tr><tr><td><code>webhook_delivery_deduplication</code></td><td>false</td><td>Opt in to in-memory deduplication by X-GitHub-Delivery within each worker process. Active work stays protected; completed IDs expire after the deployment&#x27;s push_trigger_pending_tasks_ttl (read at startup, 300 seconds by default). Failed or cancelled work can retry immediately. Repeated deliveries do not extend the TTL. Manual redeliveries are also suppressed during this window. State is cleared on restart and is not shared across workers or replicas.</td></tr><tr><td><code>handle_push_trigger</code></td><td>false</td><td>settings for &quot;pull_request&quot; event with &quot;synchronize&quot; action - used to detect and handle push triggers for new commits</td></tr><tr><td><code>push_trigger_ignore_bot_commits</code></td><td>true</td><td></td></tr><tr><td><code>push_trigger_ignore_merge_commits</code></td><td>true</td><td></td></tr><tr><td><code>push_trigger_pending_tasks_backlog</code></td><td>true</td><td></td></tr><tr><td><code>push_trigger_pending_tasks_ttl</code></td><td>300</td><td></td></tr><tr><td><code>push_commands</code></td><td>[&quot;/describe&quot;, &quot;/review&quot;]</td><td></td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="gitlab"><code>[gitlab]</code><a href="#gitlab" class="hash-link" aria-label="Direct link to gitlab" title="Direct link to gitlab" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/automations_and_usage/#gitlab-webhook">GitLab</a>.</p>
 
 
 
@@ -1581,6 +1594,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>url</code></td><td>&quot;<a href="https://gitlab.com" target="_blank" rel="noopener noreferrer" class="">https://gitlab.com</a>&quot;</td><td></td></tr><tr><td><code>expand_submodule_diffs</code></td><td>false</td><td>Submodule targets must also be listed in config.repo_context_sibling_repos.</td></tr><tr><td><code>feedback_on_draft_pr</code></td><td>false</td><td></td></tr><tr><td><code>publish_review_as_thread</code></td><td>false</td><td>Post the /review summary as a resolvable thread (discussion) instead of a plain note.</td></tr><tr><td><code>publish_improve_as_thread</code></td><td>false</td><td>Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note.</td></tr><tr><td><code>reply_to_trigger_comment</code></td><td>false</td><td>On GitLab, reply to the triggering note&#x27;s discussion for <code>/review</code> and <code>/improve</code> output when a discussion ID is available.</td></tr><tr><td><code>publish_code_suggestions_as_review</code></td><td>false</td><td>When pr_code_suggestions.committable_code_suggestions is true, queue each suggestion as a GitLab draft note and publish them all together in one batch (like GitLab&#x27;s own &quot;start a review&quot; flow) instead of posting each as its own live discussion - and its own notification - as soon as it&#x27;s created.</td></tr><tr><td><code>resolve_outdated_inline_threads</code></td><td>false</td><td>Resolve the bot&#x27;s own inline threads that a later push left on an outdated diff version.</td></tr><tr><td><code>auto_resolve_fixed_inline_threads</code></td><td>false</td><td>Resolve the bot&#x27;s own inline threads whose flagged line was modified after the comment was posted - i.e. the diff between the comment&#x27;s head sha and the current head sha removes/replaces that line. Unlike resolve_outdated_inline_threads this is content-based: threads on lines nobody touched (or merely shifted by unrelated insertions) stay open.</td></tr><tr><td><code>handle_push_trigger</code></td><td>false</td><td></td></tr><tr><td><code>push_commands</code></td><td>[&quot;/describe&quot;, &quot;/review&quot;]</td><td></td></tr><tr><td><code>handle_reviewer_assignment</code></td><td>false</td><td>Auto-trigger commands when the bot is assigned as a reviewer on an MR</td></tr><tr><td><code>reviewer_commands</code></td><td>[&quot;/review&quot;]</td><td></td></tr><tr><td><code>ignore_user_ids</code></td><td>[]</td><td>Numeric GitLab user IDs whose merge request and note events are skipped, checked before the config.bot_user_indicators display-name match. IDs are stable, unlike display names. Host-only: the check runs before repository settings are loaded (e.g. <code>GITLAB__IGNORE_USER_IDS=123</code>).</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="gitea"><code>[gitea]</code><a href="#gitea" class="hash-link" aria-label="Direct link to gitea" title="Direct link to gitea" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/automations_and_usage/#gitea-webhook">Gitea</a>.</p>
 
 
 
@@ -1608,6 +1622,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>url</code></td><td>&quot;<a href="https://gitea.com" target="_blank" rel="noopener noreferrer" class="">https://gitea.com</a>&quot;</td><td></td></tr><tr><td><code>handle_push_trigger</code></td><td>false</td><td></td></tr><tr><td><code>push_commands</code></td><td>[&quot;/describe&quot;, &quot;/review&quot;]</td><td></td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="bitbucket"><code>[bitbucket]</code><a href="#bitbucket" class="hash-link" aria-label="Direct link to bitbucket" title="Direct link to bitbucket" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/automations_and_usage/#bitbucket-app">Bitbucket</a>.</p>
 
 
 
@@ -1625,6 +1640,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>identity_request_timeout</code></td><td>30</td><td>positive seconds for authenticated-account verification requests</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="bitbucket_app"><code>[bitbucket_app]</code><a href="#bitbucket_app" class="hash-link" aria-label="Direct link to bitbucket_app" title="Direct link to bitbucket_app" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/automations_and_usage/#bitbucket-app">Bitbucket App</a>.</p>
 
 
 
@@ -1657,8 +1673,10 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>avoid_full_files</code></td><td>false</td><td></td></tr><tr><td><code>request_timeout</code></td><td>30</td><td>positive seconds for connection and response-read inactivity timeouts</td></tr><tr><td><code>handle_push_trigger</code></td><td>false</td><td>run push_commands when new commits are pushed to an open PR</td></tr><tr><td><code>push_commands</code></td><td>[]</td><td></td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="local"><code>[local]</code><a href="#local" class="hash-link" aria-label="Direct link to local" title="Direct link to local" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/local_git_provider/#when-to-use-it">Local git provider</a>.</p>
 <p><em>This section only documents commented-out examples; see the <a href="https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml" target="_blank" rel="noopener noreferrer" class="">TOML source</a> for details.</em></p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="gerrit"><code>[gerrit]</code><a href="#gerrit" class="hash-link" aria-label="Direct link to gerrit" title="Direct link to gerrit" translate="no">​</a></h2>
+<p>See <a class="" href="/overview/supported_platforms/#gerrit-and-codecommit">Supported platforms</a>.</p>
 
 
 
@@ -1686,6 +1704,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>command_timeout_seconds</code></td><td>120</td><td>Host-only limit for each direct git or SSH child; use a positive finite number of seconds. Coordinate larger values with the deployment worker timeout. No whole-request or process-tree limit; timed-out SSH review writes are not retried because Gerrit may have accepted them.</td></tr><tr><td><code>webhook_username</code></td><td>&quot;&quot;</td><td>both are required: the gerrit webhook endpoint rejects every call until they are set</td></tr><tr><td><code>webhook_password</code></td><td>&quot;&quot;</td><td></td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="bitbucket_server"><code>[bitbucket_server]</code><a href="#bitbucket_server" class="hash-link" aria-label="Direct link to bitbucket_server" title="Direct link to bitbucket_server" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/automations_and_usage/#bitbucket-server-webhook">Bitbucket Server</a>.</p>
 
 
 
@@ -1713,6 +1732,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>url</code></td><td>&quot;&quot;</td><td>URL to the BitBucket Server instance</td></tr><tr><td><code>handle_push_trigger</code></td><td>false</td><td>run push_commands when new commits are pushed to an open PR</td></tr><tr><td><code>push_commands</code></td><td>[]</td><td></td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="jira"><code>[jira]</code><a href="#jira" class="hash-link" aria-label="Direct link to jira" title="Direct link to jira" translate="no">​</a></h2>
+<p>See <a class="" href="/core-abilities/fetching_ticket_context/#jira-integration">Ticket context</a>.</p>
 
 
 
@@ -1740,6 +1760,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>cloud_id</code></td><td>&quot;&quot;</td><td>optional UUID for scoped tokens; uses the Atlassian API gateway and is host-only</td></tr><tr><td><code>jira_requirements_field</code></td><td>&quot;&quot;</td><td>Custom field id holding acceptance criteria / requirements, mapped to the ticket &quot;requirements&quot; section. Instance-specific (e.g. &quot;customfield_10127&quot;); empty disables it.</td></tr><tr><td><code>project_keys</code></td><td>[&quot;*&quot;]</td><td>Optional allowlist of Jira project keys, e.g. [&quot;PROJ&quot;, &quot;OPS&quot;]. When non-empty, key-shaped text with another prefix (&quot;SHA-256&quot;, &quot;UTF-8&quot;, &quot;ISO-8601&quot;) is dropped before any lookup, so it no longer costs an authenticated 404 each. Entries must be plain upper-case keys; a supplied list with no valid entry disables the lookup rather than widening it. Wildcard [&quot;*&quot;] (default) looks up every key found. An empty list ([]) disables Jira ticket lookups. Host-only, like jira_site and jira_api_email: repository settings and comment arguments cannot change them.</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="litellm"><code>[litellm]</code><a href="#litellm" class="hash-link" aria-label="Direct link to litellm" title="Direct link to litellm" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/changing_a_model/#changing-a-model-in-pr-agent">Changing a model</a>.</p>
 
 
 
@@ -1812,6 +1833,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>enable_callbacks</code></td><td>false</td><td></td></tr><tr><td><code>add_session_id_to_requests</code></td><td>false</td><td>send a stable x-litellm-session-id header derived from the PR URL, so LiteLLM groups every request for the same PR into one session</td></tr><tr><td><code>success_callback</code></td><td>[]</td><td></td></tr><tr><td><code>failure_callback</code></td><td>[]</td><td></td></tr><tr><td><code>service_callback</code></td><td>[]</td><td></td></tr><tr><td><code>turn_off_message_logging</code></td><td>false</td><td>set true to keep prompt/response content (the whole PR diff) out of callback payloads; strongly recommended with the &quot;otel&quot; callback</td></tr><tr><td><code>custom_llm_provider</code></td><td>&quot;&quot;</td><td>Optional: forward a fixed custom_llm_provider to LiteLLM, so a raw hosted model id (e.g. &quot;claude-sonnet-4-5&quot;) reaches the provider unchanged instead of being rewritten by LiteLLM&#x27;s prefix inference. Empty = let LiteLLM infer the provider from the model name.</td></tr><tr><td><code>force_streaming_custom_llm_provider</code></td><td>&quot;&quot;</td><td>Force streaming when the request matches this provider AND its api_base contains one of the substrings below. Some OpenAI-compatible endpoints return a response that LiteLLM cannot normalize in non-streaming mode. Both must be set for the workaround to apply.</td></tr><tr><td><code>force_streaming_api_base_substrings</code></td><td>[]</td><td></td></tr><tr><td><code>callback_timeout_seconds</code></td><td>30</td><td>max seconds to wait for pending litellm callbacks to flush before exiting</td></tr><tr><td><code>base_models</code></td><td>{}</td><td>Optional: map an opaque request model id (for example a Bedrock application inference profile ARN) to a LiteLLM-priced model id, so run cost is reported instead of unavailable. Default empty; named models are priced by LiteLLM directly and need no entry here.</td></tr><tr><td><code>cache_control_injection_points</code></td><td>[]</td><td>Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = &quot;message&quot;, role = &quot;system&quot;}] (<a href="https://docs.litellm.ai/docs/tutorials/prompt_caching" target="_blank" rel="noopener noreferrer" class="">https://docs.litellm.ai/docs/tutorials/prompt_caching</a>). PR-Agent forwards these points only for models whose name contains &quot;claude&quot; or that are listed in a Claude thinking override; LiteLLM adds the cache_control blocks. LiteLLM&#x27;s own default injection (litellm.enable_anthropic_prompt_caching, env LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING, off by default) applies only when no points are configured here, so the two never double-inject. A warning is logged once per process when the points cannot take effect (non-Anthropic model, no prompt-cache support, or a prefix below the model&#x27;s minimum).</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="bedrock"><code>[bedrock]</code><a href="#bedrock" class="hash-link" aria-label="Direct link to bedrock" title="Direct link to bedrock" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/changing_a_model/#amazon-bedrock">Amazon Bedrock</a>.</p>
 
 
 
@@ -1839,6 +1861,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>guardrail_identifier</code></td><td>&quot;&quot;</td><td>guardrail ID or ARN; empty = disabled. When set, Bedrock models must use &quot;bedrock/converse/...&quot;; other Bedrock routes fail instead of running unguarded</td></tr><tr><td><code>guardrail_version</code></td><td>&quot;&quot;</td><td>e.g. &quot;1&quot; or &quot;DRAFT&quot;; required when guardrail_identifier is set</td></tr><tr><td><code>guardrail_trace</code></td><td>&quot;disabled&quot;</td><td>&quot;enabled&quot;, &quot;enabled_full&quot; or &quot;disabled&quot;</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="openrouter"><code>[openrouter]</code><a href="#openrouter" class="hash-link" aria-label="Direct link to openrouter" title="Direct link to openrouter" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/changing_a_model/#openrouter">OpenRouter</a>.</p>
 
 
 
@@ -1881,6 +1904,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>provider_only</code></td><td>[]</td><td>restrict routing to these upstream providers only, a hard allowlist (e.g. [&quot;z-ai&quot;]); empty = OpenRouter default routing</td></tr><tr><td><code>provider_order</code></td><td>[]</td><td>preferred provider order; ignored when provider_only is set; empty = unset</td></tr><tr><td><code>allow_fallbacks</code></td><td>true</td><td>when provider_order is set, allow routing beyond the listed providers</td></tr><tr><td><code>reasoning_effort</code></td><td>&quot;&quot;</td><td>Invalid reasoning_effort values are warned about and treated as unset. Empty inherits config.reasoning_effort for reasoning-capable models (probed against litellm&#x27;s bundled reasoning metadata or the Grok registry, or listed in additional_reasoning_effort_models). Valid values: &quot;none&quot;, &quot;minimal&quot;, &quot;low&quot;, &quot;medium&quot;, &quot;high&quot;, &quot;xhigh&quot;, &quot;max&quot;. OpenRouter normalizes &quot;max&quot; to &quot;xhigh&quot; for LiteLLM/OpenRouter compatibility. Model-specific support varies. For models not covered by PR-Agent&#x27;s clamps, do not assume &quot;none&quot; disables reasoning; check the selected model and provider&#x27;s support.</td></tr><tr><td><code>reasoning_max_tokens</code></td><td>0</td><td>Use a positive value to override global effort and non-none OpenRouter-specific efforts. Keep reasoning disabled for explicit openrouter.reasoning_effort = &quot;none&quot;, except on Grok 4.5/4.6, Gemini 3.7/3.8 Flash, and the GPT-6 models whose pages omit &quot;none&quot; (GPT-6 Astra and GPT-6.1 Sol). Clamp &quot;none&quot; to the lowest supported effort there before applying the budget, so a positive budget wins. Keep max_tokens greater than the reasoning budget where the provider requires it.</td></tr><tr><td><code>max_tokens</code></td><td>0</td><td>hard cap on completion tokens for the request; 0 = unset</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="model_routing-send a small pull request to a cheaper primary model (disabled by default)"><code>[model_routing]</code> — send a small pull request to a cheaper primary model (disabled by default)<a href="#model_routing-send a small pull request to a cheaper primary model (disabled by default)" class="hash-link" aria-label="Direct link to model_routing-send a small pull request to a cheaper primary model (disabled by default)" title="Direct link to model_routing-send a small pull request to a cheaper primary model (disabled by default)" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/changing_a_model/#routing-small-pull-requests-to-a-cheaper-model">Model routing</a>.</p>
 
 
 
@@ -1903,6 +1927,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>enable</code></td><td>false</td><td>Set true to route small pull requests to a cheaper primary model. See <a class="" href="/usage-guide/changing_a_model/">changing a model</a>.</td></tr><tr><td><code>rules</code></td><td>[]</td><td>Ordered rules using max_hunks, max_files, max_patch_chars, model, and deployment_id. See <a class="" href="/usage-guide/changing_a_model/">changing a model</a>.</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="otel"><code>[otel]</code><a href="#otel" class="hash-link" aria-label="Direct link to otel" title="Direct link to otel" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/additional_configurations/#built-in-opentelemetry-command-telemetry">Additional configurations</a>.</p>
 
 
 
@@ -1960,6 +1985,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>is_enabled</code></td><td>false</td><td>disabled by default; set to true to enable telemetry</td></tr><tr><td><code>exporter_type</code></td><td>&quot;console&quot;</td><td>&quot;console&quot;, &quot;otlp&quot;, &quot;prometheus&quot;, or &quot;none&quot;</td></tr><tr><td><code>service_name</code></td><td>&quot;pr-agent&quot;</td><td></td></tr><tr><td><code>environment</code></td><td>&quot;development&quot;</td><td>&quot;development&quot;, &quot;staging&quot;, &quot;production&quot;, etc.</td></tr><tr><td><code>otlp_timeout</code></td><td>3</td><td>seconds; hard deadline per OTLP export call (incl. retries). Bounds CLI-exit/request stalls when the collector is unreachable; batches slower than this are dropped.</td></tr><tr><td><code>otlp_protocol</code></td><td>&quot;http&quot;</td><td>&quot;http&quot; (default; exporter ships with pr-agent) or &quot;grpc&quot; (requires the otel-grpc extra: pip install pr-agent[otel-grpc])</td></tr><tr><td><code>prometheus_multiproc_dir</code></td><td>&quot;/tmp/pr-agent-prometheus&quot;</td><td>shared dir for the prometheus exporter&#x27;s per-worker state files; required when exporter_type = &quot;prometheus&quot; (multiprocess gunicorn deployments); created 0700 and must stay owned by the run user (symlink or foreign-owner paths are refused)</td></tr><tr><td><code>include_pr_url</code></td><td>false</td><td>set to true to attach PR URLs to spans (may expose private repo names)</td></tr><tr><td><code>include_error_details</code></td><td>false</td><td>set to true to attach exception messages and rejected-command text to spans (may expose PR URLs, repo names, or other request content)</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="pr_similar_issue"><code>[pr_similar_issue]</code><a href="#pr_similar_issue" class="hash-link" aria-label="Direct link to pr_similar_issue" title="Direct link to pr_similar_issue" translate="no">​</a></h2>
+<p>See <a class="" href="/tools/similar_issues/#selecting-a-vector-database">Similar Issues</a>.</p>
 
 
 
@@ -1992,6 +2018,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>skip_comments</code></td><td>false</td><td></td></tr><tr><td><code>force_update_dataset</code></td><td>false</td><td></td></tr><tr><td><code>max_issues_to_scan</code></td><td>500</td><td></td></tr><tr><td><code>vectordb</code></td><td>&quot;lancedb&quot;</td><td>options: &quot;pinecone&quot;, &quot;lancedb&quot;, &quot;qdrant&quot;</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="pinecone"><code>[pinecone]</code><a href="#pinecone" class="hash-link" aria-label="Direct link to pinecone" title="Direct link to pinecone" translate="no">​</a></h2>
+<p>See <a class="" href="/tools/similar_issues/#pinecone-configuration">Pinecone</a>.</p>
 
 
 
@@ -2014,6 +2041,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>cloud</code></td><td>&quot;aws&quot;</td><td>Serverless index deployment for the modern SDK. <code>cloud</code> is one of &quot;aws&quot;, &quot;gcp&quot; or &quot;azure&quot;; pick a <code>region</code> offered by that cloud.</td></tr><tr><td><code>region</code></td><td>&quot;us-east-1&quot;</td><td></td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="lancedb"><code>[lancedb]</code><a href="#lancedb" class="hash-link" aria-label="Direct link to lancedb" title="Direct link to lancedb" translate="no">​</a></h2>
+<p>See <a class="" href="/tools/similar_issues/#lancedb-configuration">LanceDB</a>.</p>
 
 
 
@@ -2031,8 +2059,10 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>uri</code></td><td>&quot;./lancedb&quot;</td><td></td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="qdrant"><code>[qdrant]</code><a href="#qdrant" class="hash-link" aria-label="Direct link to qdrant" title="Direct link to qdrant" translate="no">​</a></h2>
+<p>See <a class="" href="/tools/similar_issues/#qdrant-configuration">Qdrant</a>.</p>
 <p><em>This section only documents commented-out examples; see the <a href="https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml" target="_blank" rel="noopener noreferrer" class="">TOML source</a> for details.</em></p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="skills"><code>[skills]</code><a href="#skills" class="hash-link" aria-label="Direct link to skills" title="Direct link to skills" translate="no">​</a></h2>
+<p>See <a class="" href="/core-abilities/agent_skills/#configuration">Agent skills</a>.</p>
 
 
 
@@ -2060,6 +2090,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>enabled</code></td><td>false</td><td>Enable agent skills (SKILL.md) discovery and prompt injection. See <a class="" href="/core-abilities/agent_skills/">agent skills</a>.</td></tr><tr><td><code>paths</code></td><td>[]</td><td>directories to scan recursively for &quot;*/SKILL.md&quot;; supports ~ and $VAR</td></tr><tr><td><code>max_skills_tokens</code></td><td>8000</td><td>token budget for the combined skills_context block</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="artifacts"><code>[artifacts]</code><a href="#artifacts" class="hash-link" aria-label="Direct link to artifacts" title="Direct link to artifacts" translate="no">​</a></h2>
+<p>See <a class="" href="/installation/github/#ci-artifact-context">CI artifacts</a>.</p>
 
 
 
@@ -2107,6 +2138,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>enable</code></td><td>false</td><td>Enable artifact injection into tool prompts (off by default; auto-enabled when artifact_path input is set)</td></tr><tr><td><code>artifact_path</code></td><td>&quot;&quot;</td><td>File path or list of paths to artifacts (relative to GITHUB_WORKSPACE, or absolute)</td></tr><tr><td><code>artifact_instructions</code></td><td>&quot;&quot;</td><td>Analysis guidance rendered separately before the untrusted artifact label and content (leave empty for a sensible default)</td></tr><tr><td><code>artifact_label</code></td><td>&quot;&quot;</td><td>Label shown to the AI — defaults to the filename when empty.</td></tr><tr><td><code>target_tools</code></td><td>[&quot;pr_reviewer&quot;, &quot;pr_description&quot;, &quot;pr_code_suggestions&quot;, &quot;pr_questions&quot;]</td><td>Which supported tools receive artifact context; unsupported names are skipped with a warning.</td></tr><tr><td><code>max_artifact_size</code></td><td>50000</td><td>Max artifact size in characters (content is truncated if exceeded)</td></tr><tr><td><code>truncate_from</code></td><td>&quot;start&quot;</td><td>Which end of the file to keep when truncating: &quot;start&quot; (default, keeps the beginning) or &quot;end&quot; (keeps the tail, where build logs carry their verdict - failure, plan summary or test result).</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="mosaico"><code>[mosaico]</code><a href="#mosaico" class="hash-link" aria-label="Direct link to mosaico" title="Direct link to mosaico" translate="no">​</a></h2>
+<p>See <a class="" href="/installation/mosaico_server/#what-the-mode-is">Mosaico server</a>.</p>
 
 
 
@@ -2144,6 +2176,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>bearer_tokens</code></td><td>{}</td><td>principal names to distinct bearer secrets; empty permits anonymous trusted-network use</td></tr><tr><td><code>routing_scan_max_chars</code></td><td>65536</td><td>positive character limit for PR URL and command detection; does not truncate diffs</td></tr><tr><td><code>health_timeout_seconds</code></td><td>10</td><td>finite positive seconds for cooperative health-probe work; excludes synchronous initialization and blocking SDK work</td></tr><tr><td><code>context_history_max_tasks</code></td><td>100</td><td>maximum prior tasks considered for a context follow-up; set from 1 to 1000</td></tr><tr><td><code>task_store_max_tasks_per_owner</code></td><td>1000</td><td>maximum retained MOSAICO tasks per owner; evicted tasks lose follow-up history</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="asana"><code>[asana]</code><a href="#asana" class="hash-link" aria-label="Direct link to asana" title="Direct link to asana" translate="no">​</a></h2>
+<p>See <a class="" href="/core-abilities/fetching_ticket_context/#asana-integration">Asana</a>.</p>
 
 
 
@@ -2161,6 +2194,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>request_timeout</code></td><td>10</td><td>seconds allowed for each Asana task API request</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="linear"><code>[linear]</code><a href="#linear" class="hash-link" aria-label="Direct link to linear" title="Direct link to linear" translate="no">​</a></h2>
+<p>See <a class="" href="/core-abilities/fetching_ticket_context/#linear-integration">Linear</a>.</p>
 
 
 
@@ -2178,6 +2212,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>request_timeout</code></td><td>10</td><td>seconds allowed for each Linear issue API request</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="azure_devops"><code>[azure_devops]</code><a href="#azure_devops" class="hash-link" aria-label="Direct link to azure_devops" title="Direct link to azure_devops" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/automations_and_usage/#azure-devops-provider">Azure DevOps</a>.</p>
 
 
 
@@ -2195,6 +2230,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>default_comment_status</code></td><td>&quot;closed&quot;</td><td></td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="azure_devops_server"><code>[azure_devops_server]</code><a href="#azure_devops_server" class="hash-link" aria-label="Direct link to azure_devops_server" title="Direct link to azure_devops_server" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/automations_and_usage/#azure-devops-webhook">Azure DevOps Server</a>.</p>
 
 
 
@@ -2212,6 +2248,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 <table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>agent_identity</code></td><td>&quot;&quot;</td><td>Host-only GUID, unique name, descriptor, or list; empty resolves review authorship automatically. See installation/azure.md</td></tr></tbody></table>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="push_outputs-push tool outputs to external sinks without calling git-provider APIs (disabled by default)"><code>[push_outputs]</code> — push tool outputs to external sinks without calling git-provider APIs (disabled by default)<a href="#push_outputs-push tool outputs to external sinks without calling git-provider APIs (disabled by default)" class="hash-link" aria-label="Direct link to push_outputs-push tool outputs to external sinks without calling git-provider APIs (disabled by default)" title="Direct link to push_outputs-push tool outputs to external sinks without calling git-provider APIs (disabled by default)" translate="no">​</a></h2>
+<p>See <a class="" href="/usage-guide/push_outputs/#configuration">Push outputs</a>.</p>
 
 
 
