@@ -64,6 +64,26 @@ from .git_provider import (
     redact_credentials,
 )
 
+# Blob reads per GraphQL request when `_get_diff_files` warms the revision-content cache.
+_GRAPHQL_BLOB_BATCH = 25
+# One GraphQL round trip costs about as much as two REST content reads, so smaller sets stay on REST.
+_GRAPHQL_MIN_BLOBS = 3
+# The tree entry mode of a symlink, whose blob is its link target while the REST content read follows the link.
+_SYMLINK_MODE = 0o120000
+
+
+def _graphql_error_types(response) -> list:
+    """List the `type` of each error in a decoded GraphQL response; none when it has no `errors` or a null one.
+
+    Any other `errors` value that is not a non-empty list of objects counts as one untyped error.
+    """
+    errors = response.get("errors") if isinstance(response, dict) else None
+    if errors is None:
+        return []
+    if not isinstance(errors, list) or not errors:
+        return [None]
+    return [item.get("type") if isinstance(item, dict) else None for item in errors]
+
 
 def _next_page_url(headers: dict) -> str:
     link = next((value for key, value in headers.items() if key.lower() == "link"), "")
@@ -138,6 +158,7 @@ class GithubProvider(GitProvider):
         self.github_user_id = None
         self.diff_files = None
         self.git_files = None
+        self._pr_revision_loaded = None
         self.incremental = IncrementalPR(False)
         self._repo_settings_snapshot: tuple[str, str] | None = None
         self._repo_settings_acquired = False
@@ -149,11 +170,8 @@ class GithubProvider(GitProvider):
         resource = self._get_url_resource(pr_url) if pr_url else ""
         if resource in ('pull', 'pulls'):
             self.set_pr(pr_url)
-            self.pr_commits = list(self.pr.get_commits())
-            if self.pr_commits:
-                self.last_commit_id = self.pr_commits[-1]
-            else:
-                self.last_commit_id = self._get_repo().get_commit(self.pr.head.sha)
+            self.pr_commits, self.last_commit_id = self._read_pr_commits(self.pr)
+            self._pr_revision_loaded = self._pr_revision(self.pr)
             # pr_url for github actions can be as api.github.com, so we need to get the url from the pr object
             self.pr_url = self.get_pr_url()
         elif resource == 'issues':
@@ -190,6 +208,46 @@ class GithubProvider(GitProvider):
         if self.incremental.is_incremental:
             self.unreviewed_files_map = dict()
             self._get_incremental_commits()
+
+    def _read_pr_commits(self, pr):
+        """Read the commits of `pr` and the commit its head points to."""
+        commits = list(pr.get_commits())
+        last_commit = commits[-1] if commits else self._get_repo().get_commit(pr.head.sha)
+        return commits, last_commit
+
+    @staticmethod
+    def _pr_revision(pr) -> tuple:
+        return policy_value(pr, "head", "sha"), policy_value(pr, "base", "sha"), getattr(pr, "changed_files", None)
+
+    def refresh_pr_for_command(self) -> None:
+        """Re-read the pull request before the next command of a run that shares this provider.
+
+        A command can change what the next one reads (the labels it published, the title and description, its
+        own comments) and so can a push made meanwhile, so the PR is read again and what was derived from the
+        earlier read is dropped. The commit and file lists are read again only when the PR moved from the
+        revision they were read for, and then the check runs opened on the earlier head are forgotten; file
+        contents are keyed by commit and stay cached. A failed read raises before anything is assigned, so no
+        command runs on a snapshot whose currency could not be established.
+        """
+        if self.pr is None:
+            return
+        pr = self._get_pr()
+        revision = self._pr_revision(pr)
+        moved = revision != getattr(self, "_pr_revision_loaded", None)
+        commits, last_commit = self._read_pr_commits(pr) if moved else (None, None)
+        self.pr = pr
+        self.comments = None
+        self.user_description = None
+        if moved:
+            self.git_files = None
+            if context.exists():
+                context.pop("git_files", None)
+            self.pr_commits, self.last_commit_id = commits, last_commit
+            self._pr_revision_loaded = revision
+            self._check_run_ids = {}
+            self._check_runs_in_progress = set()
+            self._check_run_base_summaries = {}
+            self._check_runs_progress_blocked = set()
 
     def is_supported(self, capability: str) -> bool:
         if capability == "push_code" and get_settings().config.restricted_mode:
@@ -546,8 +604,9 @@ class GithubProvider(GitProvider):
 
             # Resolve the merge base only when pre-change content is needed.
             merge_base_commit = None
-            repo = self.repo_obj
-            pr = self.pr
+            if not self.incremental.is_incremental:
+                # Read the contents below in a few batched requests; this also resolves the merge base they need.
+                merge_base_commit = self._prefetch_diff_file_contents(files)
 
             counter_valid = 0
             for file in files:
@@ -592,16 +651,7 @@ class GithubProvider(GitProvider):
                             original_file_content_str = ""
                         else:
                             if merge_base_commit is None:
-                                # Use the merge base instead of a potentially advanced target branch.
-                                try:
-                                    compare = repo.compare(pr.base.sha, pr.head.sha)
-                                    merge_base_commit = compare.merge_base_commit
-                                except (GithubException, RequestException) as e:
-                                    get_logger().error(f"Failed to get merge base commit: {e}")
-                                    merge_base_commit = pr.base
-                                if merge_base_commit.sha != pr.base.sha:
-                                    get_logger().info(
-                                        f"Using merge base commit {merge_base_commit.sha} instead of base commit ")
+                                merge_base_commit = self._get_merge_base_commit()
                             original_file_content_str = self._get_pr_file_content(
                                 file, merge_base_commit.sha, path=old_filename, **read_options)
 
@@ -671,6 +721,121 @@ class GithubProvider(GitProvider):
             get_logger().error(f"Failing to get diff files: {e}",
                                artifact={"traceback": traceback.format_exc()})
             raise
+
+    def _get_merge_base_commit(self):
+        """Resolve the PR's merge base, falling back to its base commit when it cannot be resolved.
+
+        Diffing against the merge base keeps a target branch that advanced after the PR was opened out of the diff.
+        """
+        try:
+            merge_base_commit = self.repo_obj.compare(self.pr.base.sha, self.pr.head.sha).merge_base_commit
+        except (GithubException, RequestException) as e:
+            get_logger().error(f"Failed to get merge base commit: {e}")
+            return self.pr.base
+        if merge_base_commit.sha != self.pr.base.sha:
+            get_logger().info(f"Using merge base commit {merge_base_commit.sha} instead of base commit ")
+        return merge_base_commit
+
+    def _prefetch_diff_file_contents(self, files):
+        """Warm the content cache with the reads `_get_diff_files` makes for a full (non-incremental) diff.
+
+        Mirror the loop: read the head content unless the file was removed and the merge-base content (under
+        the previous name for a rename) unless it was added, and skip the valid files that carry a patch from
+        the MAX_FILES_ALLOWED_FULL-th on. Return the merge base resolved on the way, so the caller resolves it
+        only once.
+        """
+        merge_base_commit = None
+        reads = []
+        counter_valid = 0
+        for file in files:
+            if not is_valid_file(file.filename):
+                continue
+            counter_valid += 1
+            if counter_valid >= MAX_FILES_ALLOWED_FULL and file.patch:
+                continue
+            if file.status != "removed":
+                reads.append((self.pr.head.sha, file.filename))
+            if file.status != "added":
+                if merge_base_commit is None:
+                    merge_base_commit = self._get_merge_base_commit()
+                old_filename = getattr(file, "previous_filename", None) if file.status == "renamed" else None
+                reads.append((merge_base_commit.sha, old_filename or file.filename))
+        self._prefetch_revision_contents(reads)
+        return merge_base_commit
+
+    def _prefetch_revision_contents(self, reads: list[tuple[str, str]]) -> None:
+        """Cache file contents for (sha, path) reads with batched GraphQL requests instead of one REST call each.
+
+        Cache a blob only when it is complete UTF-8 text that the REST read returns unchanged, an empty file
+        included. Leave every other blob to the REST read in `_get_pr_file_content`: a missing, binary or
+        truncated one, text GitHub re-encoded or altered, and a symlink, which REST follows.
+        """
+        if len(reads) < _GRAPHQL_MIN_BLOBS:
+            return
+        cache = getattr(self, "_revision_file_contents", None)
+        if cache is None:
+            cache = self._revision_file_contents = {}
+        wanted = [read for read in dict.fromkeys(reads) if (self.repo, *read) not in cache]
+        if len(wanted) < _GRAPHQL_MIN_BLOBS:
+            return
+        owner, name = self.repo.split("/", 1)
+        file_fields = "{ mode object { ... on Blob { oid isBinary isTruncated text } } }"
+        for start in range(0, len(wanted), _GRAPHQL_BLOB_BATCH):
+            batch = wanted[start:start + _GRAPHQL_BLOB_BATCH]
+            variables = {"owner": owner, "name": name}
+            for i, (sha, path) in enumerate(batch):
+                variables[f"oid{i}"] = sha
+                variables[f"path{i}"] = path
+            declarations = "".join(f", $oid{i}: GitObjectID!, $path{i}: String!" for i in range(len(batch)))
+            entries = " ".join(
+                f"entry{i}: object(oid: $oid{i}) {{ ... on Commit {{ file(path: $path{i}) {file_fields} }} }}"
+                for i in range(len(batch))
+            )
+            query = (f"query($owner: String!, $name: String!{declarations}) "
+                     f"{{ repository(owner: $owner, name: $name) {{ {entries} }} }}")
+            try:
+                status, _, body = self._post_graphql(query, variables)
+                response = json.loads(body) if status == 200 else None
+            except (GithubException, RequestException, ValueError) as e:
+                # Not `{e}`: a GithubException carries the whole response, which can hold blob contents.
+                get_logger().info(
+                    f"Batched content read failed, reading files one by one: {type(e).__name__}, "
+                    f"status={getattr(e, 'status', None)}"
+                )
+                return
+            error_types = _graphql_error_types(response)
+            # A path that does not exist at its commit comes back as NOT_FOUND next to the entries that were found.
+            if status != 200 or any(error_type != "NOT_FOUND" for error_type in error_types):
+                get_logger().info(
+                    f"Batched content read failed, reading files one by one: status={status}, "
+                    f"errors={sorted({str(error_type) for error_type in error_types})}"
+                )
+                return
+            data = response.get("data") if isinstance(response, dict) else None
+            repository = data.get("repository") if isinstance(data, dict) else None
+            if not isinstance(repository, dict):
+                get_logger().info("Batched content read returned no repository, reading files one by one")
+                return
+            for i, (sha, path) in enumerate(batch):
+                commit = repository.get(f"entry{i}")
+                entry = commit.get("file") if isinstance(commit, dict) else None
+                if not isinstance(entry, dict):
+                    continue
+                blob, mode = entry.get("object"), entry.get("mode")
+                if not isinstance(blob, dict) or not isinstance(mode, int) or mode == _SYMLINK_MODE:
+                    continue  # not a blob, or a symlink, which the REST read follows
+                if blob.get("isBinary") or blob.get("isTruncated"):
+                    continue
+                text = blob.get("text")
+                if not isinstance(text, str):
+                    continue
+                try:
+                    data = text.encode("utf-8")
+                except UnicodeEncodeError:
+                    continue  # a lone surrogate cannot come from a file's bytes
+                # The blob id hashes the stored bytes, so text GitHub re-encoded or repaired does not match it.
+                if hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest() == blob.get("oid"):
+                    cache[(self.repo, sha, path)] = text
 
     def publish_description(self, pr_title: str, pr_body: str):
         if pr_title is None:
@@ -1155,15 +1320,16 @@ class GithubProvider(GitProvider):
     def supports_thread_resolution(self) -> bool:
         return True
 
-    def _post_graphql(self, query: str) -> tuple[int, dict, str]:
-        """POST a GraphQL document and return PyGithub's raw ``(status, headers, body)``.
+    def _post_graphql(self, query: str, variables: dict | None = None) -> tuple[int, dict, str]:
+        """POST a GraphQL document, with its variables if any, and return PyGithub's raw ``(status, headers, body)``.
 
         PyGithub resolves a relative path under the REST prefix, so "/graphql" becomes "/api/v3/graphql"
         on GitHub Enterprise Server. ``graphql_url`` is the endpoint PyGithub derives from ``base_url``
         instead: "/api/graphql" there and "/graphql" on github.com.
         """
         requester = self.github_client._Github__requester
-        return requester.requestJson("POST", requester.graphql_url, input={"query": query})
+        payload = {"query": query} if variables is None else {"query": query, "variables": variables}
+        return requester.requestJson("POST", requester.graphql_url, input=payload)
 
     def _review_thread_nodes(self, *, root_only: bool = False):
         """List review threads, optionally fetching only their root comment IDs."""

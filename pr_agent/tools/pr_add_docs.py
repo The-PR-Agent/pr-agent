@@ -175,6 +175,8 @@ class PRAddDocs:
             get_logger().info(f"\nUser prompt:\n{user_prompt}")
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"Code documentation response was truncated by {model}")
 
         return response
 

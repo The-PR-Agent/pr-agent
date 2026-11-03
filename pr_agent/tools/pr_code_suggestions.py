@@ -10,7 +10,7 @@ from functools import partial
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.artifacts import get_artifact_context
+from pr_agent.algo.artifacts import get_artifact_context, prompt_boundary_markers
 from pr_agent.algo.code_replacement import python_replacement_compiles, reindent_to_line
 from pr_agent.algo.comment_identity import (
     PRCodeSuggestionsHeader,
@@ -80,6 +80,23 @@ from pr_agent.tools.progress_comment import (
 # config_security.PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION, and the deprecation note in
 # docs/docs/tools/improve.mdx. The flag guards the one-off warning it emits.
 _deprecated_spellings_warned = False
+
+
+# Self-review marker keys were removed from configuration.toml; keep warning users who still
+# set either one, once per process.
+def _warn_deprecated_self_review_marker_keys() -> None:
+    if getattr(_warn_deprecated_self_review_marker_keys, "_warned", False):
+        return
+    settings = get_settings().pr_code_suggestions
+    if (settings.get("approve_pr_on_self_review", None) is None
+            and settings.get("fold_suggestions_on_self_review", None) is None):
+        return
+    _warn_deprecated_self_review_marker_keys._warned = True
+    get_logger().warning(
+        "pr_code_suggestions.approve_pr_on_self_review and "
+        "pr_code_suggestions.fold_suggestions_on_self_review are deprecated and have no effect; "
+        "remove them from your configuration"
+    )
 
 
 def _as_threshold(setting_name: str, default: int, minimum: int) -> int:
@@ -297,6 +314,7 @@ class PRCodeSuggestions:
             get_logger().debug("AI metadata is disabled for this command")
 
         is_ai_metadata = get_settings().get("config.enable_ai_metadata", False)
+        commit_messages_begin, commit_messages_end = prompt_boundary_markers("COMMIT_MESSAGES")
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -310,7 +328,9 @@ class PRCodeSuggestions:
             "skills_context": get_skills_context(),
             "repo_context": build_repo_context(self.git_provider),
             "suggestion_discussion_context": self._load_suggestion_discussion_context(),
-            "commit_messages_str": self.git_provider.get_commit_messages(),
+            "commit_messages_str": "" if self.incremental.is_incremental else self.git_provider.get_commit_messages(),
+            "commit_messages_begin": commit_messages_begin,
+            "commit_messages_end": commit_messages_end,
             "relevant_best_practices": "",
             "is_ai_metadata": is_ai_metadata,
             "diff_hunk_format": render_diff_hunk_format(
@@ -374,6 +394,7 @@ class PRCodeSuggestions:
 
     async def run(self):
         init_run_details()
+        _warn_deprecated_self_review_marker_keys()
         self._output_published = False
         self._progress_base_body = None
         self._chunk_progress = None
@@ -608,16 +629,10 @@ class PRCodeSuggestions:
                 raise
 
     async def add_self_review_text(self, pr_body):
+        _warn_deprecated_self_review_marker_keys()
         text = get_settings().pr_code_suggestions.code_suggestions_self_review_text
         pr_body += f"\n\n- [ ]  {text}"
-        approve_pr_on_self_review = get_settings().pr_code_suggestions.approve_pr_on_self_review
-        fold_suggestions_on_self_review = get_settings().pr_code_suggestions.fold_suggestions_on_self_review
-        if approve_pr_on_self_review and not fold_suggestions_on_self_review:
-            pr_body += ' <!-- approve pr self-review -->'
-        elif fold_suggestions_on_self_review and not approve_pr_on_self_review:
-            pr_body += ' <!-- fold suggestions self-review -->'
-        else:
-            pr_body += ' <!-- approve and fold suggestions self-review -->'
+        pr_body += ' <!-- fold suggestions self-review -->'
         return pr_body
 
     def _get_suggestions_coverage_footer(self, suggestions_present: bool = True) -> str:

@@ -409,7 +409,7 @@ async def test_created_event_nonempty_web_link_retains_legacy_precedence():
             patch.object(webhook, "PRAgent"):
         await webhook.handle_request_azure(data, {})
     perform.assert_awaited_once()
-    assert perform.await_args.args[2] == unquote(href.replace("_apis/git/repositories", "_git"))
+    assert perform.await_args.args[2] == href.replace("_apis/git/repositories", "_git")
 
 
 @pytest.mark.parametrize(("path", "value"), [

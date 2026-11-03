@@ -281,6 +281,8 @@ class PRUpdateChangelog:
         user_prompt = self._attempt_user_prompt
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, system=system_prompt, user=user_prompt, temperature=get_settings().config.temperature)
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"Changelog response was truncated by {model}")
 
         # post-process the response
         response = response.strip()

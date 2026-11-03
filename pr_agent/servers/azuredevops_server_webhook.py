@@ -6,7 +6,7 @@ import copy
 import json
 import os
 import re
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import quote, urlsplit
 
 import uvicorn
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -256,7 +256,7 @@ def _created_event_pr_url(data):
     if not isinstance(href, str):
         return None
     if href:
-        return unquote(href.replace("_apis/git/repositories", "_git"))
+        return href.replace("_apis/git/repositories", "_git")
 
     repository = resource["repository"]
     project = repository["project"]["name"]
@@ -300,7 +300,7 @@ async def handle_request_azure(data, log_context):
                 and (available_commands_rgx.match(comment_content) or extract_azure_mention(comment_content))):
             if data["resourceVersion"] == "2.0":
                 repo = data["resource"]["pullRequest"]["repository"]["webUrl"]
-                pr_url = unquote(f'{repo}/pullrequest/{data["resource"]["pullRequest"]["pullRequestId"]}')
+                pr_url = f'{repo}/pullrequest/{data["resource"]["pullRequest"]["pullRequestId"]}'
                 action = comment["content"]
                 thread_url = comment["_links"]["threads"]["href"]
                 thread_id = int(thread_url.split("/")[-1])

@@ -43,7 +43,6 @@ FORBIDDEN_ARGS = [
     "--config.enable_auto_approval=true",
     "--config.enable_manual_approval=true",
     "--config.enable_comment_approval=true",
-    "--config.approve_pr_on_self_review=true",
     "--config.override_deployment_type=app",
     # local cache
     "--config.enable_local_cache=true",
@@ -169,6 +168,7 @@ ALLOWED_ARGS_SINGLE = [
     "--skills.enabled=true",
     "--skills.max_skills_tokens=1000",
     "--config.response_language=zh-tw",
+    "--config.approve_pr_on_self_review=true",
     "--pr_description.publish_labels=false",
     # a mapping value whose nested keys are all allowed stays accepted
     "--qdrant={timeout: 5, prefer_grpc: true}",
@@ -186,6 +186,12 @@ ALLOWED_ARGS_SINGLE = [
 
 
 HOST_ONLY_ARGS = [
+    "--config.enable_custom_labels=true",
+    "--config__enable_custom_labels=true",
+    '--config={enable_custom_labels: true}',
+    '--custom_labels={"approved": {description: "Workflow approval"}}',
+    "--custom_labels.approved.description=Workflow approval",
+    "--custom_labels__approved__description=Workflow approval",
     "--skills.paths=/etc",
     "--skills__paths=/etc",
     "--skills.unknown=value",

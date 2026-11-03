@@ -84,12 +84,12 @@ _REDACTION_LOOKAHEAD = 512
 _INCOMPLETE_USERINFO_RE = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://[^/@\s:]+:[^/@\s]+(?=\s*\Z)")
 
 
-def _artifact_boundary_markers() -> tuple[str, str]:
-    """Build unpredictable prompt boundaries for one artifact payload."""
+def prompt_boundary_markers(name: str) -> tuple[str, str]:
+    """Build unpredictable prompt boundaries for one untrusted payload."""
     nonce = secrets.token_hex(16)
     return (
-        f"<<<CI_ARTIFACT_{nonce}_BEGIN>>>",
-        f"<<<CI_ARTIFACT_{nonce}_END>>>",
+        f"<<<{name}_{nonce}_BEGIN>>>",
+        f"<<<{name}_{nonce}_END>>>",
     )
 
 
@@ -237,7 +237,7 @@ def load_artifact_context() -> ArtifactPromptContext | None:
             or _single_line_artifact_label(artifact_path.name)
             or "CI artifact"
         )
-        start_marker, end_marker = _artifact_boundary_markers()
+        start_marker, end_marker = prompt_boundary_markers("CI_ARTIFACT")
         instructions = entry.get(
             "artifact_instructions",
             entry.get("instructions", artifacts_settings.get("artifact_instructions", "")),

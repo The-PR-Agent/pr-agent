@@ -143,6 +143,85 @@ def test_generator_rejects_a_note_whose_key_is_gone():
         raise AssertionError("render_page accepted a NOTES_AFTER_KEY entry with no matching key")
 
 
+def _docs_anchors(path: Path) -> set:
+    """Anchors a docs page actually offers: explicit {#...} markers plus
+    GitHub-style slugs of its headings, skipping fenced code blocks."""
+    anchors = set()
+    counts = {}
+    in_fence = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        for marker in re.finditer(r"\{#([A-Za-z0-9_-]+)\}", line):
+            anchors.add(marker.group(1))
+        heading = re.match(r"#{1,6}\s+(.*)", stripped)
+        if heading:
+            text = re.sub(r"\s*\{#([A-Za-z0-9_-]+)\}\s*$", "", heading.group(1)).strip()
+            text = re.sub(r"<[^>]+>", "", text)
+            slug = re.sub(r"\s+", "-", re.sub(r"[^\w\s-]", "", text.lower()).strip())
+            if not slug:
+                continue
+            count = counts.get(slug, 0)
+            counts[slug] = count + 1
+            anchors.add(slug if count == 0 else f"{slug}-{count}")
+    return anchors
+
+
+def test_section_docs_links_point_to_existing_files():
+    """Every SECTION_DOCS entry must name a real section and resolve to a
+    real docs file with a real anchor, so the generated "See ..." line never
+    links nowhere. The docs build is a second net, not the only one."""
+    module = _generator()
+    assert module.SECTION_DOCS, "SECTION_DOCS is empty"
+    sections = module.load_sections(CONFIG_TOML.read_text(encoding="utf-8"))
+    names = {section["name"] for section in sections}
+    assert set(module.SECTION_DOCS) <= names, (
+        f"SECTION_DOCS names unknown sections: {sorted(set(module.SECTION_DOCS) - names)}"
+    )
+    docs_root = (ROOT / "docs" / "docs").resolve()
+    reference_dir = docs_root / "usage-guide"
+    for section, (label, link) in module.SECTION_DOCS.items():
+        assert label, f"SECTION_DOCS[{section!r}] has an empty link label"
+        target, _, anchor = link.partition("#")
+        path = (reference_dir / target).resolve()
+        assert docs_root in path.parents, f"SECTION_DOCS[{section!r}] escapes docs/: {link}"
+        assert path.is_file(), f"SECTION_DOCS[{section!r}] points to a missing file: {link}"
+        if anchor:
+            assert anchor in _docs_anchors(path), (
+                f"SECTION_DOCS[{section!r}] points to a missing anchor: {link}"
+            )
+
+
+def test_section_docs_covers_every_rendered_section():
+    """The map is the whole point of the reference links, so a section added
+    without a map entry must fail loudly instead of silently losing its link."""
+    module = _generator()
+    sections = module.load_sections(CONFIG_TOML.read_text(encoding="utf-8"))
+    names = {section["name"] for section in sections}
+    assert set(module.SECTION_DOCS) == names, (
+        f"sections without a docs link: {sorted(names - set(module.SECTION_DOCS))}; "
+        f"map entries with no section: {sorted(set(module.SECTION_DOCS) - names)}"
+    )
+
+
+def test_render_page_rejects_a_section_docs_entry_with_no_section():
+    """The render guard must catch a stale map entry instead of silently
+    dropping its link from the regenerated page."""
+    module = _generator()
+    sections = module.load_sections(CONFIG_TOML.read_text(encoding="utf-8"))
+    module.SECTION_DOCS = {**module.SECTION_DOCS, "no_such_section": ("Nowhere", "../nowhere.md")}
+    try:
+        module.render_page(sections)
+    except ValueError as exc:
+        assert "no_such_section" in str(exc)
+    else:
+        raise AssertionError("render_page accepted a SECTION_DOCS entry with no rendered section")
+
+
 @pytest.mark.parametrize(
     "section_name,key,fragments",
     [
