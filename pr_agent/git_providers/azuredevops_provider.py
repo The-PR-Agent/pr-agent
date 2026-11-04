@@ -274,9 +274,9 @@ class AzureDevopsProvider(GitProvider):
 
     @staticmethod
     def _render_suggestion_as_diff(body: str, original_suggestion: dict | None) -> str:
-        """Azure DevOps has no committable suggestion blocks, so a ```suggestion fence is
-        published verbatim and renders as an uneditable raw block. Replace it with a diff
-        block, the same way the Bitbucket providers do."""
+        """Replace the ```suggestion fence with a diff block, for comments that are not
+        anchored to lines. Inline threads keep the fence because Azure DevOps renders it with
+        an "Apply change" button, but a PR-level comment has no lines to replace."""
         if not original_suggestion:
             return body
         try:
@@ -387,8 +387,10 @@ class AzureDevopsProvider(GitProvider):
 
             has_suggestion_fence = "```suggestion" in body
             raw_body = body
-            body = self._render_suggestion_as_diff(body, suggestion.get("original_suggestion"))
-            suggestion = {**suggestion, "body": body}
+            # Inline threads keep the ```suggestion fence, which Azure DevOps renders with an
+            # "Apply change" button. A PR-level comment has no lines to replace, so the fallback
+            # routes below publish a diff block instead.
+            fallback_body = self._render_suggestion_as_diff(body, suggestion.get("original_suggestion"))
 
             publishable_count += 1
             fallback_to_pr_comment = suggestion.get("fallback_to_pr_comment", True)
@@ -412,14 +414,13 @@ class AzureDevopsProvider(GitProvider):
 
             resolved_file = self._resolve_diff_file_path(relevant_file)
             if not resolved_file:
-                if should_mark:
-                    published_body = body_with_markers(body, body_fp, code_fp)
                 if fallback_to_pr_comment:
                     local_fingerprints.update(fingerprints)
                     get_logger().warning(f"Could not match '{relevant_file}' to a file in the PR diff, "
                                          f"publishing the suggestion as a PR-level comment")
                     fallback_suggestion = dict(suggestion)
-                    fallback_suggestion["body"] = published_body
+                    fallback_suggestion["body"] = (
+                        body_with_markers(fallback_body, body_fp, code_fp) if should_mark else fallback_body)
                     fallback_suggestions.append(
                         (fallback_suggestion, "could not be anchored to a file in the PR diff")
                     )
@@ -433,13 +434,13 @@ class AzureDevopsProvider(GitProvider):
                 if end_offset is None:
                     if fallback_to_pr_comment:
                         if should_mark:
-                            published_body = body_with_markers(body, body_fp, code_fp)
                             local_fingerprints.update(fingerprints)
                         get_logger().warning(
                             f"Could not resolve the full suggestion range in '{resolved_file}', "
                             f"publishing the suggestion as a PR-level comment")
                         fallback_suggestion = dict(suggestion)
-                        fallback_suggestion["body"] = published_body
+                        fallback_suggestion["body"] = (
+                            body_with_markers(fallback_body, body_fp, code_fp) if should_mark else fallback_body)
                         fallback_suggestions.append(
                             (fallback_suggestion, "could not resolve the complete line range in the PR diff"))
                     else:
@@ -472,7 +473,8 @@ class AzureDevopsProvider(GitProvider):
                 )
                 if fallback_to_pr_comment:
                     fallback_suggestion = dict(suggestion)
-                    fallback_suggestion["body"] = published_body
+                    fallback_suggestion["body"] = (
+                        body_with_markers(fallback_body, body_fp, code_fp) if should_mark else fallback_body)
                     fallback_suggestions.append(
                         (fallback_suggestion, "could not be published as an inline comment")
                     )

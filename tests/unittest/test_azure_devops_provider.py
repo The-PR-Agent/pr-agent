@@ -2996,9 +2996,9 @@ class TestAzureDevopsFailuresAreReported:
 
 
 class TestAzureDevopsProviderSuggestionFence:
-    """Regression tests for #2110: Azure DevOps has no committable suggestion blocks, so the
-    ```suggestion fence /improve emits was published verbatim and rendered as a raw block.
-    """
+    """Azure DevOps renders the ```suggestion fence in an inline thread with an "Apply change"
+    button, so inline /improve comments keep it. A PR-level comment is not anchored to lines,
+    so the fallback routes publish a diff block instead."""
 
     @staticmethod
     def _committable_suggestion(relevant_file="/src/app.py"):
@@ -3010,17 +3010,15 @@ class TestAzureDevopsProviderSuggestionFence:
         }
         return suggestion
 
-    def test_suggestion_fence_is_published_as_a_diff_block(self):
+    def test_inline_thread_keeps_the_suggestion_fence(self):
         provider = _provider_with_diff("/src/app.py")
+        suggestion = self._committable_suggestion()
 
-        provider.publish_code_suggestions([self._committable_suggestion()])
+        provider.publish_code_suggestions([suggestion])
 
         body = _created_threads(provider)[-1].comments[0].content
-        assert "```suggestion" not in body
-        assert "```diff" in body
-        assert "-values = []" in body
-        assert "+values = set()" in body
-        assert body.startswith("**Suggestion:** use a set [best practice]")
+        assert body == suggestion["body"]
+        assert "```diff" not in body
 
     def test_body_is_left_alone_when_there_is_no_original_suggestion(self):
         provider = _provider_with_diff("/src/app.py")
@@ -3050,7 +3048,8 @@ class TestAzureDevopsProviderSuggestionFence:
 
     def test_backslashes_in_proposed_code_are_preserved(self):
         provider = _provider_with_diff("/src/app.py")
-        suggestion = self._committable_suggestion()
+        provider.publish_comment = MagicMock()
+        suggestion = self._committable_suggestion("/src/removed.py")
         suggestion["original_suggestion"] = {
             "existing_code": "print(1)",
             "improved_code": "print(\t\\1\\d)",
@@ -3058,9 +3057,22 @@ class TestAzureDevopsProviderSuggestionFence:
 
         provider.publish_code_suggestions([suggestion])
 
-        body = _created_threads(provider)[-1].comments[0].content
-        assert "```diff" in body
-        assert "+print(\t\\1\\d)" in body
+        published = provider.publish_comment.call_args[0][0]
+        assert "```diff" in published
+        assert "+print(\t\\1\\d)" in published
+
+    def test_failed_inline_thread_falls_back_to_a_diff_block(self):
+        provider = _provider_with_diff("/src/app.py")
+        provider.publish_comment = MagicMock()
+        provider.azure_devops_client.create_thread.side_effect = RuntimeError("request failed")
+
+        provider.publish_code_suggestions([self._committable_suggestion()])
+
+        published = provider.publish_comment.call_args[0][0]
+        assert "```diff" in published
+        assert "-values = []" in published
+        assert "+values = set()" in published
+        assert "```suggestion" not in published
 
     def test_invalid_range_still_falls_back_to_pr_comment(self):
         provider = _provider_with_diff("/src/app.py")
