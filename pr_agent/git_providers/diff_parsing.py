@@ -4,6 +4,7 @@ import re
 from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
 
+from pr_agent.algo.git_patch_processing import split_diff_lines
 from pr_agent.algo.git_patch_processing import to_hunk_only_patch as _to_hunk_only_patch
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.log import get_logger
@@ -104,7 +105,7 @@ def reconstruct_base_file_checked(head_file_str: str, patch_str: str) -> str | N
     if len(patch_set) != 1:
         return None
 
-    head_lines = head_file_str.splitlines()
+    head_lines = split_diff_lines(head_file_str)
     base_lines: list[str] = []
     head_idx = 0  # 0-based cursor into head_lines
 
@@ -119,7 +120,7 @@ def reconstruct_base_file_checked(head_file_str: str, patch_str: str) -> str | N
         head_idx = hunk_head_start
 
         for line in hunk:
-            value = line.value.rstrip("\r\n")
+            value = line.value.removesuffix("\n").removesuffix("\r")
             if line.is_context:
                 if head_idx >= len(head_lines) or head_lines[head_idx] != value:
                     return None
