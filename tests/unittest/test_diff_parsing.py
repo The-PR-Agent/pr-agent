@@ -1,3 +1,5 @@
+import pytest
+
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file
 
@@ -203,3 +205,26 @@ def test_reconstruct_base_file_emptied():
     # Every line removed but the file kept: `+0,0` must not be read as out of bounds.
     # (Only the lines are checked; the trailing newline follows the EOF handling.)
     assert reconstruct_base_file("", _EMPTIED_FILE_PATCH).splitlines() == ["a", "b"]
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x85", "\f", "\v", "\x1c", "\r"])
+def test_reverse_patch_preserves_non_lf_characters_inside_physical_lines(separator):
+    head = f"first{separator}continued\nnew\nlast\n"
+    patch = ("--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n"
+             f" first{separator}continued\n-old\n+new\n last\n")
+
+    assert reconstruct_base_file(head, patch) == f"first{separator}continued\nold\nlast\n"
+
+
+def test_reverse_patch_preserves_a_non_lf_separator_outside_the_hunk():
+    head = "first\u2028continued\nunchanged\nnew\n"
+    patch = "--- a/f.txt\n+++ b/f.txt\n@@ -3 +3 @@\n-old\n+new\n"
+
+    assert reconstruct_base_file(head, patch) == "first\u2028continued\nunchanged\nold\n"
+
+
+def test_reverse_patch_does_not_strip_multiple_carriage_returns_from_line_content():
+    head = "first\r\r\nnew\n"
+    patch = "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n first\r\r\n-old\n+new\n"
+
+    assert reconstruct_base_file(head, patch) == "first\r\nold\n"
