@@ -274,9 +274,9 @@ class AzureDevopsProvider(GitProvider):
 
     @staticmethod
     def _render_suggestion_as_diff(body: str, original_suggestion: dict | None) -> str:
-        """Azure DevOps has no committable suggestion blocks, so a ```suggestion fence is
-        published verbatim and renders as an uneditable raw block. Replace it with a diff
-        block, the same way the Bitbucket providers do."""
+        """A PR-level comment has no lines for a ```suggestion fence to replace, so Azure DevOps
+        shows the fence as a raw block. Replace it with a diff block, the same way the Bitbucket
+        providers do."""
         if not original_suggestion:
             return body
         try:
@@ -313,6 +313,8 @@ class AzureDevopsProvider(GitProvider):
         prepared = []
         for suggestion, reason in suggestions:
             try:
+                suggestion = {**suggestion, "body": self._render_suggestion_as_diff(
+                    suggestion["body"], suggestion.get("original_suggestion"))}
                 prepared.append((suggestion, self._fallback_suggestion_section(suggestion, reason)))
             except (KeyError, TypeError) as e:
                 get_logger().warning(f"Could not format Azure code suggestion fallback, error: {e}")
@@ -386,9 +388,6 @@ class AzureDevopsProvider(GitProvider):
                 continue
 
             has_suggestion_fence = "```suggestion" in body
-            raw_body = body
-            body = self._render_suggestion_as_diff(body, suggestion.get("original_suggestion"))
-            suggestion = {**suggestion, "body": body}
 
             publishable_count += 1
             fallback_to_pr_comment = suggestion.get("fallback_to_pr_comment", True)
@@ -400,8 +399,8 @@ class AzureDevopsProvider(GitProvider):
             should_mark = store is not None and not has_marker(body)
             fingerprints = set()
             if should_mark:
-                body_fp = full_body_fingerprint(fingerprint_file, fingerprint_anchor, raw_body)
-                code_fp = code_fingerprint(fingerprint_file, fingerprint_anchor, raw_body)
+                body_fp = full_body_fingerprint(fingerprint_file, fingerprint_anchor, body)
+                code_fp = code_fingerprint(fingerprint_file, fingerprint_anchor, body)
                 fingerprints.add(body_fp)
                 if code_fp is not None:
                     fingerprints.add(code_fp)
