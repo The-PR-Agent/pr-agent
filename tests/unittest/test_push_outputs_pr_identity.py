@@ -6,6 +6,8 @@ import pytest
 from pr_agent.algo import output_sinks
 from pr_agent.algo.run_output import push_outputs
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.github_provider import GithubProvider
+from pr_agent.tools.pr_reviewer import PRReviewer
 
 PR_IDENTITY = {
     "url": "https://github.com/org/repo/pull/123",
@@ -45,16 +47,36 @@ def test_record_carries_the_calling_providers_identity(tmp_path):
     assert record["pr"] == PR_IDENTITY
 
 
-def test_review_identity_can_be_passed_directly(tmp_path):
+async def test_reviewer_sink_uses_provider_identity_and_redacts_url_credentials(tmp_path, monkeypatch):
     out = tmp_path / 'out.jsonl'
     get_settings().set('PUSH_OUTPUTS.ENABLE', True)
     get_settings().set('PUSH_OUTPUTS.CHANNELS', ['file'])
     get_settings().set('PUSH_OUTPUTS.FILE_PATH', str(out))
 
-    push_outputs("review", payload={"a": 1}, markdown="hi", pr_identity=PR_IDENTITY)
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "org/repo"
+    provider.pr_num = 123
+    provider.pr_url = "https://user:secret@github.com/org/repo/pull/123"
+    provider.pr = SimpleNamespace(
+        html_url="https://user:secret@github.com/org/repo/pull/123",
+        head=SimpleNamespace(sha="9fceb02"),
+    )
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = provider
+    reviewer._pending_sink_output = ("review", {"a": 1}, "hi")
+
+    async def deliver(message_type, **kwargs):
+        push_outputs(message_type, **kwargs)
+
+    monkeypatch.setattr("pr_agent.tools.pr_reviewer.push_outputs_async", deliver)
+    await reviewer._deliver_sink_output()
 
     record = json.loads(out.read_text(encoding='utf-8'))
-    assert record["pr"] == PR_IDENTITY
+    assert record["pr"] == {
+        **PR_IDENTITY,
+        "url": "https://github.com/org/repo/pull/123",
+    }
+    assert "secret" not in out.read_text(encoding='utf-8')
 
 
 def test_record_without_a_provider_keeps_its_previous_shape(tmp_path):
