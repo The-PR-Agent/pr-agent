@@ -221,40 +221,24 @@ def _mask_fenced_code_blocks(content: str) -> str:
 def _mask_inline_code_spans(content: str) -> str:
     """Blank Markdown code spans so @tokens inside backticks stay literal."""
     characters = list(content)
-    index = 0
-    length = len(content)
-    while index < length:
-        if content[index] != "`":
-            index += 1
+    runs = [(match.start(), match.end()) for match in re.finditer(r"`+", content)]
+    next_same_length = [None] * len(runs)
+    last_by_length = {}
+    for position in range(len(runs) - 1, -1, -1):
+        run_length = runs[position][1] - runs[position][0]
+        next_same_length[position] = last_by_length.get(run_length)
+        last_by_length[run_length] = position
+
+    position = 0
+    while position < len(runs):
+        closing = next_same_length[position]
+        if closing is None:
+            position += 1
             continue
-
-        opening_end = index
-        while opening_end < length and content[opening_end] == "`":
-            opening_end += 1
-        run_length = opening_end - index
-
-        search_from = opening_end
-        closing_end = None
-        while search_from < length:
-            found = content.find("`", search_from)
-            if found == -1:
-                break
-            candidate_end = found
-            while candidate_end < length and content[candidate_end] == "`":
-                candidate_end += 1
-            if candidate_end - found == run_length:
-                closing_end = candidate_end
-                break
-            search_from = candidate_end
-
-        if closing_end is None:
-            index = opening_end
-            continue
-
-        for position in range(opening_end, closing_end - run_length):
-            if characters[position] not in "\r\n":
-                characters[position] = " "
-        index = closing_end
+        for offset in range(runs[position][1], runs[closing][0]):
+            if characters[offset] not in "\r\n":
+                characters[offset] = " "
+        position = closing + 1
     return "".join(characters)
 
 
