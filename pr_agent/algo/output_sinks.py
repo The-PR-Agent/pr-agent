@@ -159,7 +159,8 @@ class TeamsSink:
 
     @staticmethod
     def _serialized_size(card: dict) -> int:
-        return len(json.dumps(card, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        # Measure the default JSON encoding used by requests.post(json=card).
+        return len(json.dumps(card).encode("utf-8"))
 
     def send(self, record: dict, cfg: dict) -> None:
         url = _push_outputs_sink_url(cfg, "teams_webhook_url")

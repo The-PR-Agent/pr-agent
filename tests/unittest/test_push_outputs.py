@@ -203,11 +203,12 @@ class TestPushOutputs:
                             lambda url, **kwargs: posts.append(kwargs['json']) or SimpleNamespace(status_code=200))
 
         output_sinks.TeamsSink().send(
-            {"type": "review", "markdown": "x" * 40000}, get_settings().get('push_outputs')
+            {"type": "review", "markdown": "漢🙂" * 5000}, get_settings().get('push_outputs')
         )
 
         card = posts[0]
         assert output_sinks.TeamsSink._serialized_size(card) <= 28 * 1024
+        assert len(json.dumps(card).encode('utf-8')) <= 28 * 1024
         assert card['attachments'][0]['content']['body'][1]['text'].endswith('[Output truncated]')
 
     def test_telegram_channel_posts_to_configured_chat(self, monkeypatch):
