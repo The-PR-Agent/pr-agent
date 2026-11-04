@@ -30,7 +30,14 @@ You can run `/ask` on specific lines of code in the PR from the PR's diff view. 
 
 If no matching diff hunk is found for the selected lines, the tool explains this without calling a model.
 
-Note that the tool does not have "memory" of previous questions, and answers each question independently.
+In GitHub Actions, `/ask` comments attached to an entire file use that file's complete diff as context.
+The existing file filters and input budgets still apply. If the file has no analyzable diff, or the question cannot
+be prepared within the configured input budget, the tool explains this without calling a model.
+The answer is posted in the original file-comment thread with a link to the question.
+Earlier replies are included when `pr_questions.use_conversation_history` is enabled and the input budget allows.
+Text resembling command options is treated as part of the question.
+
+Questions in separate threads are answered independently.
 
 ## Ask on images
 
