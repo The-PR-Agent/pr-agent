@@ -399,6 +399,52 @@ def test_a_ticket_that_matches_no_related_ticket_keeps_its_own_url():
     assert merged["review"]["ticket_compliance_check"][0]["ticket_url"] == "https://tracker/99"
 
 
+@pytest.mark.parametrize("other_url", [
+    "https://github.com/acme/gadgets/issues/12",
+    "https://gitlab.com/acme/widgets/-/issues/12",
+    "https://tracker.example/browse/ABC-12",
+])
+def test_distinct_full_ticket_urls_with_the_same_number_are_not_rewritten(other_url):
+    canonical = "https://github.com/acme/widgets/issues/12"
+    merged = merge_review_chunks([
+        _chunk(ticket_compliance_check=[_ticket_entry(canonical, "- A")]),
+        _chunk(ticket_compliance_check=[_ticket_entry(other_url, "- B")]),
+    ], related_tickets=[{"ticket_id": 12, "ticket_url": canonical}])
+
+    assert [entry["ticket_url"] for entry in merged["review"]["ticket_compliance_check"]] == [
+        canonical, other_url]
+
+
+def test_shortened_ticket_url_on_a_different_host_is_not_rewritten():
+    other_url = "https://gitlab.com/.../issues/12"
+    merged = merge_review_chunks([
+        _chunk(ticket_compliance_check=[_ticket_entry(other_url, "- A")]),
+    ], related_tickets=[{"ticket_id": 12, "ticket_url": "https://github.com/acme/widgets/issues/12"}])
+
+    assert merged["review"]["ticket_compliance_check"][0]["ticket_url"] == other_url
+
+
+@pytest.mark.parametrize("ticket_ref", [
+    "XYZ-12", "https://github.com/.../pull/12", "https://[bad/12", "http://github.com/.../issues/12",
+])
+def test_named_ticket_identity_is_not_replaced_by_a_matching_number(ticket_ref):
+    merged = merge_review_chunks([
+        _chunk(ticket_compliance_check=[_ticket_entry(ticket_ref, "- A")]),
+    ], related_tickets=[{"ticket_id": 12, "ticket_url": "https://github.com/acme/widgets/issues/12"}])
+
+    assert merged["review"]["ticket_compliance_check"][0]["ticket_url"] == ticket_ref
+
+
+def test_a_jira_key_keeps_its_project_identity():
+    merged = merge_review_chunks([
+        _chunk(ticket_compliance_check=[_ticket_entry("ABC-12", "- A")]),
+        _chunk(ticket_compliance_check=[_ticket_entry("XYZ-12", "- B")]),
+    ], related_tickets=[{"ticket_id": "ABC-12", "ticket_url": "https://tracker.example/browse/ABC-12"}])
+
+    assert [entry["ticket_url"] for entry in merged["review"]["ticket_compliance_check"]] == [
+        "https://tracker.example/browse/ABC-12", "XYZ-12"]
+
+
 def test_a_shared_trailing_number_does_not_merge_unrelated_tickets():
     related = [
         {"ticket_id": 12, "ticket_url": "https://github.com/acme/widgets/issues/12"},
