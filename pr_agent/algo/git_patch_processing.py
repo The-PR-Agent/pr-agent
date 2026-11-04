@@ -337,6 +337,8 @@ def omit_deletion_hunks(patch_lines) -> str:
     - A string representing the modified patch with deletion hunks omitted
     """
 
+    preamble = []
+    seen_hunk_boundary = False
     temp_hunk = []
     added_patched = []
     add_hunk = False
@@ -344,6 +346,7 @@ def omit_deletion_hunks(patch_lines) -> str:
 
     for line in patch_lines:
         if line.startswith('@@'):
+            seen_hunk_boundary = True
             # Every hunk boundary ends the prior hunk, including unsupported
             # combined or malformed headers whose bodies must not leak into it.
             if inside_hunk and add_hunk:
@@ -357,10 +360,12 @@ def omit_deletion_hunks(patch_lines) -> str:
             temp_hunk.append(line)
             if line.startswith('+'):
                 add_hunk = True
+        elif not seen_hunk_boundary:
+            preamble.append(line)
     if inside_hunk and add_hunk:
         added_patched.extend(temp_hunk)
 
-    return '\n'.join(added_patched)
+    return '\n'.join(preamble + added_patched) if added_patched else ''
 
 
 def handle_patch_deletions(patch: str, original_file_content_str: str,

@@ -104,11 +104,11 @@ def test_unified_file_headers_do_not_turn_a_deletion_into_an_addition():
     assert omit_deletion_hunks(patch) == ""
 
 
-def test_file_metadata_is_not_included_in_a_retained_hunk():
+def test_file_metadata_is_preserved_for_a_retained_hunk():
     patch = ["diff --git a/f.py b/f.py", "--- a/f.py", "+++ b/f.py",
              "@@ -0,0 +1,1 @@", "+added"]
 
-    assert omit_deletion_hunks(patch) == "@@ -0,0 +1,1 @@\n+added"
+    assert omit_deletion_hunks(patch) == "\n".join(patch)
 
 
 def test_combined_hunk_additions_do_not_retain_previous_deletion_only_hunk():

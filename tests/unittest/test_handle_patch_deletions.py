@@ -66,7 +66,9 @@ class TestHandlePatchDeletions:
         original_file_content_str = 'foo\nbar\n'
         new_file_content_str = 'foo\nbaz\n'
         file_name = 'file.py'
-        expected_patch = '--- a/file.py\n+++ b/file.py\n@@ -1,2 +1,2 @@\n-foo\n-bar'
+        # No retained hunk means the original fallback patch stays byte-for-byte,
+        # rather than file metadata falsely making it look like an addition.
+        expected_patch = patch
         assert handle_patch_deletions(patch, original_file_content_str, new_file_content_str,
                                       file_name) == expected_patch
 
