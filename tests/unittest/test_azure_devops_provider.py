@@ -1225,6 +1225,18 @@ class TestAzureDevopsProviderSuggestionAnchoring:
         context = _created_threads(provider)[0].thread_context
         assert context.right_file_end.offset == 12
 
+    @pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x85", "\f", "\v", "\x1c", "\r"])
+    def test_suggestion_end_offset_counts_git_lines_before_unicode_content(self, separator):
+        provider = _provider_with_diff("/src/app.py")
+        lines = [f"line {line}" for line in range(1, 12)] + ["return '😀'"]
+        lines[0] += separator + "continued"
+        provider.diff_files[0].head_file = "\n".join(lines)
+
+        provider.publish_code_suggestions([_suggestion("/src/app.py")])
+
+        context = _created_threads(provider)[0].thread_context
+        assert context.right_file_end.offset == 12
+
     def test_suggestion_with_unavailable_final_line_becomes_a_pr_level_comment(self):
         provider = _provider_with_diff("/src/app.py")
         provider.diff_files[0].head_file = "line 1"
@@ -1994,6 +2006,21 @@ class TestAzureDevopsProviderSuggestionReconciliation:
 
         updated = provider.azure_devops_client.update_thread.call_args.args[0]
         assert updated.status == "fixed"
+
+    @pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x85", "\f", "\v", "\x1c", "\r"])
+    def test_reconciles_at_git_line_after_non_lf_separator(self, separator):
+        provider = self._provider(self._thread(self._marked_body()),
+                                  content=f"before{separator}continued\nvalue = 1\nafter")
+
+        assert provider.reconcile_code_suggestion_threads() == 1
+
+    @pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x85", "\f", "\v", "\x1c", "\r"])
+    def test_non_lf_separator_does_not_falsely_satisfy_a_multiline_suggestion(self, separator):
+        provider = self._provider(self._thread(self._marked_body("value = 1\nafter")),
+                                  content=f"before\nvalue = 1{separator}after\n")
+
+        assert provider.reconcile_code_suggestion_threads() == 0
+        provider.azure_devops_client.update_thread.assert_not_called()
 
     def test_marks_closed_suggestion_fixed(self):
         provider = self._provider(self._thread(self._marked_body(), status="closed"))

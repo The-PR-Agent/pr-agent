@@ -23,7 +23,7 @@ from ..algo.comment_identity import (
     get_pr_review_comment_identifiers,
 )
 from ..algo.file_filter import filter_ignored
-from ..algo.git_patch_processing import count_patch_lines
+from ..algo.git_patch_processing import count_patch_lines, split_diff_lines
 from ..algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
     body_with_markers,
@@ -265,7 +265,7 @@ class AzureDevopsProvider(GitProvider):
         for file in self.diff_files or []:
             if file.filename != relevant_file or not isinstance(file.head_file, str):
                 continue
-            lines = file.head_file.splitlines()
+            lines = split_diff_lines(file.head_file)
             if relevant_lines_end > len(lines):
                 return None
             line = lines[relevant_lines_end - 1]
@@ -1768,14 +1768,14 @@ class AzureDevopsProvider(GitProvider):
                     content = getattr(item, "content", None)
                     if not isinstance(content, str):
                         raise TypeError("Azure DevOps returned non-string file content")
-                    file_lines[path] = content.splitlines()
+                    file_lines[path] = split_diff_lines(content)
                 except Exception as e:
                     get_logger().warning(f"Failed to read {path} while reconciling code suggestions: {e}")
                     file_lines[path] = None
             lines = file_lines[path]
             if lines is None:
                 continue
-            suggested_lines = suggestion_code.splitlines()
+            suggested_lines = split_diff_lines(suggestion_code)
             if lines[start - 1:start - 1 + len(suggested_lines)] != suggested_lines:
                 continue
             thread_id = self._value(thread, "id")
