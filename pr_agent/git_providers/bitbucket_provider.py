@@ -86,12 +86,13 @@ def _paths_from_patch_headers(patch: str) -> tuple[str, str] | None:
     rename_old = rename_new = None
     file_old = file_new = None
     for line in patch.split("\n"):
+        line = line.removesuffix("\r")
         if line.startswith("@@"):
             break
         if line.startswith("rename from "):
-            rename_old = line[len("rename from "):].strip()
+            rename_old = line[len("rename from "):]
         elif line.startswith("rename to "):
-            rename_new = line[len("rename to "):].strip()
+            rename_new = line[len("rename to "):]
         elif line.startswith("--- "):
             file_old = line[len("--- "):].split("\t", 1)[0]
         elif line.startswith("+++ "):

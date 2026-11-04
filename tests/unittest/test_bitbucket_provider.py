@@ -1,3 +1,5 @@
+import os
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
@@ -3060,3 +3062,45 @@ def test_a_failed_file_read_is_reported(failure):
 
     assert read() == ""
     assert f"Failed to read {link!r}" in _capture_logs(read)
+
+
+@pytest.mark.parametrize("old,new", [
+    (" old.py", "new.py"), ("old.py ", "new.py"),
+    ("old.py", " new.py"), ("old.py", "new.py "),
+])
+@pytest.mark.parametrize("crlf", [False, True])
+def test_significant_rename_spaces_stay_aligned_with_the_changed_file_inventory(old, new, crlf):
+    raw = (f"diff --git a/{old} b/{new}\nsimilarity index 100%\n"
+           f"rename from {old}\nrename to {new}\n")
+    if crlf:
+        raw = raw.replace("\n", "\r\n")
+
+    diff_file = TestBitbucketProvider._get_single_diff_file(raw, "renamed", 0, 0, new, old)
+
+    assert diff_file.filename == new
+    assert _diff_header_paths(raw) == (old, new)
+    assert diff_file.edit_type == EDIT_TYPE.RENAMED
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows cannot create all significant-space filenames")
+@pytest.mark.parametrize("old,new", [
+    (" old.py", "new.py"), ("old.py ", "new.py"),
+    ("old.py", " new.py"), ("old.py", "new.py "),
+])
+def test_paths_preserve_spaces_in_actual_git_rename_output(tmp_path, old, new):
+    environment = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-C", str(tmp_path), *args],
+            env=environment, stderr=subprocess.PIPE, text=True,
+        )
+
+    git("init", "-q")
+    (tmp_path / old).write_text("sample\n", encoding="utf-8")
+    git("add", "--all")
+    git("-c", "user.name=Regression", "-c", "user.email=regression@example.invalid", "commit", "-qm", "baseline")
+    git("mv", "--", old, new)
+    raw_diff = git("diff", "--cached", "--no-ext-diff", "--find-renames")
+
+    assert _diff_header_paths(raw_diff) == (old, new)
