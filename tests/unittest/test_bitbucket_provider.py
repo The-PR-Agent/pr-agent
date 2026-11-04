@@ -3088,7 +3088,8 @@ def test_significant_rename_spaces_stay_aligned_with_the_changed_file_inventory(
     ("old.py", " new.py"), ("old.py", "new.py "),
 ])
 def test_paths_preserve_spaces_in_actual_git_rename_output(tmp_path, old, new):
-    environment = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    environment.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
 
     def git(*args):
         return subprocess.check_output(
