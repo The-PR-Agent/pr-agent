@@ -257,6 +257,7 @@ def restore_artifact_action_settings():
 
 
 @pytest.mark.parametrize("event_name", ["pull_request", "pull_request_target"])
+@pytest.mark.parametrize("include_opened", [True, False])
 @pytest.mark.parametrize(
     "created_at,updated_at,expected_batches",
     [
@@ -269,7 +270,7 @@ def restore_artifact_action_settings():
     ],
 )
 async def test_first_open_review_request_stream(
-    monkeypatch, tmp_path, restore_github_settings, event_name, created_at, updated_at, expected_batches
+    monkeypatch, tmp_path, restore_github_settings, event_name, include_opened, created_at, updated_at, expected_batches
 ):
     pr_url = "https://api.github.com/repos/org/repo/pulls/1"
     pull_request = {"url": pr_url}
@@ -287,7 +288,8 @@ async def test_first_open_review_request_stream(
         github_action_runner, "get_setting_or_env",
         lambda key, default=None: True if key.startswith("GITHUB_ACTION.AUTO_") else default,
     )
-    get_settings().set("GITHUB_ACTION_CONFIG.PR_ACTIONS", ["opened", "review_requested"])
+    actions = ["opened", "review_requested"] if include_opened else ["review_requested"]
+    get_settings().set("GITHUB_ACTION_CONFIG.PR_ACTIONS", actions)
     run_tool = AsyncMock()
     monkeypatch.setattr(github_action_runner, "_run_auto_tool", run_tool)
 
@@ -299,7 +301,7 @@ async def test_first_open_review_request_stream(
         github_action_runner.PRDescription,
         github_action_runner.PRReviewer,
         github_action_runner.PRCodeSuggestions,
-    ] * expected_batches
+    ] * (expected_batches if include_opened else 1)
     assert [invocation.args[0] for invocation in run_tool.await_args_list] == expected_tools
     assert all(invocation.args[1] == pr_url for invocation in run_tool.await_args_list)
 
