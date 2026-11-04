@@ -183,7 +183,7 @@ def _merge_effort(values: list[Any]) -> Any:
 def _merge_score(values: list[Any]) -> Any:
     """Lowest score wins: a clean chunk must not raise the grade of a bad one."""
     scored = [(number, value) for number, value in ((_as_int(value), value) for value in values)
-              if number is not None]
+              if number is not None and 0 <= number <= 100]
     if not scored:
         return _first_non_empty(values)
     return min(scored, key=lambda pair: pair[0])[1]
