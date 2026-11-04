@@ -23,6 +23,7 @@ from requests.exceptions import RequestException
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.git_providers.diff_parsing import to_hunk_only_patch
 
 from ..algo.comment_identity import (
     PRCodeSuggestionsHeader,
@@ -1322,7 +1323,12 @@ class GitLabProvider(GitProvider):
                 patch = load_large_diff(filename, new_file_content_str, original_file_content_str)
 
 
-            num_plus_lines, num_minus_lines = count_patch_lines(patch)
+            # GitLab returns the full unified diff including the `---`/`+++`
+            # file headers, which are not changed source lines (# see Bitbucket
+            # sibling: to_hunk_only_patch + line-count contract test).
+            num_plus_lines, num_minus_lines = count_patch_lines(
+                to_hunk_only_patch(patch)
+            )
             diff_files.append(
                 FilePatchInfo(original_file_content_str, new_file_content_str,
                               patch=patch,
