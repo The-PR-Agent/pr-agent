@@ -2114,6 +2114,9 @@ class GitLabProvider(GitProvider):
         patch_lines = split_diff_lines(patch)
         in_hunk = False
         fallback = None
+        source_needle = (relevant_line_in_file[1:] if relevant_line_in_file.startswith(('+', '-', ' '))
+                         else relevant_line_in_file)
+        allow_substring_fallback = bool(source_needle.strip())
         for line in patch_lines:
             if line.startswith('@@'):
                 match = self.RE_HUNK_HEADER.match(line)
@@ -2139,7 +2142,7 @@ class GitLabProvider(GitProvider):
                 found = True
                 edit_type = self.get_edit_type(line)
                 break
-            if fallback is None and (relevant_line_in_file in line or (
+            if allow_substring_fallback and fallback is None and (relevant_line_in_file in line or (
                     relevant_line_in_file.startswith('+') and relevant_line_in_file[1:].lstrip() in line)):
                 # Keep the legacy substring fallback only if no exact source line
                 # is found later in the patch.

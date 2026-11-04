@@ -123,3 +123,19 @@ def test_exact_source_match_takes_priority_over_an_earlier_substring(source, pat
 
     assert result[1] is True
     assert result[4] == expected_cursor
+
+
+@pytest.mark.parametrize("source", ["+", "+ ", "   ", "-"])
+def test_blank_source_needle_does_not_match_a_nonblank_diff_line(source):
+    patch = "@@ -1,2 +1,2 @@\n context\n-old\n+new\n"
+
+    assert _provider([FilePatchInfo("", "", patch, "a.py")]).search_line("a.py", source)[1] is False
+
+
+@pytest.mark.parametrize("source, patch", [
+    ("+", "@@ -0,0 +1 @@\n+\n"),
+    ("+ ", "@@ -0,0 +1 @@\n+ \n"),
+    ("-", "@@ -1 +0,0 @@\n-\n"),
+])
+def test_blank_source_line_still_resolves_an_exact_diff_match(source, patch):
+    assert _provider([FilePatchInfo("", "", patch, "a.py")]).search_line("a.py", source)[1] is True
