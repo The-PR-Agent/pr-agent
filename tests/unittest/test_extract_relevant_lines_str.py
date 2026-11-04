@@ -446,3 +446,17 @@ class TestConvertToMarkdownV2ThreeIssues:
         assert "~~~markdown\n" in result
         # No <pre> blocks anywhere — fenced syntax only
         assert "<pre>" not in result
+
+
+@pytest.mark.parametrize("start", [1, 100])
+def test_incomplete_head_content_uses_verified_patch_anchors(start):
+    file = _make_file(
+        "app.py", "unrelated partial excerpt\n",
+        patch=f"@@ -{start} +{start} @@\n-old value\n+verified value\n",
+    )
+    file.head_file_is_complete = False
+
+    result = extract_relevant_lines_str(start, [file], "app.py", start)
+
+    assert "verified value" in result
+    assert "unrelated partial excerpt" not in result

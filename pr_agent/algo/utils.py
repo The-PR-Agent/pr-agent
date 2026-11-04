@@ -548,11 +548,11 @@ def extract_relevant_lines_str(end_line, files, relevant_file, start_line, deden
             files = set_file_languages(files)
             for file in files:
                 if file.filename.strip() == relevant_file:
-                    if not file.head_file:
-                        # as a fallback, extract relevant lines directly from patch
+                    if not file.head_file or not getattr(file, "head_file_is_complete", True):
+                        # Partial provider content is not indexed from the start of the file.
                         patch = file.patch
                         get_logger().info(
-                            f"No content found in file: '{file.filename}' for 'extract_relevant_lines_str'. "
+                            f"No complete content found in file: '{file.filename}' for 'extract_relevant_lines_str'. "
                             f"Using patch instead")
                         _, selected_lines = extract_hunk_lines_from_patch(
                             patch, file.filename, start_line, end_line,side="right")
