@@ -68,13 +68,14 @@ class DiffNotFoundError(Exception):
 class IncompleteGitLabDiffError(DiffNotFoundError, IncompleteProviderPullRequestFilesError):
     """Represent an incomplete GitLab merge-request diff response."""
 
-    notice = (
-        "## PR-Agent command was not run\n\n"
-        "GitLab returned an incomplete or inconsistent merge-request diff, so PR-Agent stopped "
+    notice_template = (
+        "## {bot_name} command was not run\n\n"
+        "GitLab returned an incomplete or inconsistent merge-request diff, so {bot_name} stopped "
         "instead of analyzing only part of it.\n\n"
         "Retry the command in a few minutes. If the problem persists, check the merge request diff in GitLab or "
         "split an unusually large merge request into smaller ones."
     )
+    notice = notice_template.format(bot_name="PR-Agent")
     notice_marker = "<!-- pr-agent:gitlab-incomplete-diff -->"
 
 

@@ -14,7 +14,7 @@ from dynaconf import Dynaconf
 from dynaconf.loaders import env_loader
 from starlette_context import context
 
-from pr_agent.config_loader import DEFAULT_BOT_DISPLAY_NAME, get_settings, resolve_bot_display_name
+from pr_agent.config_loader import DEFAULT_BOT_DISPLAY_NAME, get_bot_display_name, get_settings
 from pr_agent.config_security import (
     PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION,
     REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION,
@@ -820,9 +820,7 @@ def handle_configurations_errors(config_errors, git_provider):
                     "Invalid shared configuration; check the settings repository and server logs for details."
                     if config_type in {"global", "group"} else err['error']
                 )
-                bot_display_name = resolve_bot_display_name(
-                    get_settings().config.get("bot_display_name", DEFAULT_BOT_DISPLAY_NAME)
-                )
+                bot_display_name = get_bot_display_name()
                 header = f"❌ **{bot_display_name} failed to apply '{config_type}' repo settings**"
                 body = (
                     f"{header}\n\nThe configuration file needs to be a valid "
@@ -861,7 +859,10 @@ def handle_configurations_errors(config_errors, git_provider):
                                                             initial_header=header,
                                                             update_header=False,
                                                             final_update_message=False,
-                                                            name=f"config-errors-{config_type}")
+                                                            name=f"config-errors-{config_type}",
+                                                            legacy_initial_header=(
+                                                                f"❌ **{DEFAULT_BOT_DISPLAY_NAME} failed to apply "
+                                                                f"'{config_type}' repo settings**"))
                 else:
                     git_provider.publish_comment(body)
     except Exception as e:

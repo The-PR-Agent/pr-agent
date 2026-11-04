@@ -69,7 +69,7 @@ from pr_agent.algo.utils import (
     is_value_no,
     load_yaml,
 )
-from pr_agent.config_loader import DEFAULT_BOT_DISPLAY_NAME, get_settings, resolve_bot_display_name
+from pr_agent.config_loader import get_bot_display_name, get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import (
     DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS,
@@ -99,7 +99,7 @@ _REVIEW_FAILURE_REASONS = (
     ),
     (
         ("authenticationerror", "authentication error", "invalid api key", "invalid x-api-key"),
-        "PR-Agent could not authenticate with the model provider. Check the configured API credentials, then retry.",
+        "{bot_name} could not authenticate with the model provider. Check the configured API credentials, then retry.",
     ),
     (
         ("ratelimiterror", "rate limit", "too many requests"),
@@ -116,15 +116,15 @@ _REVIEW_FAILURE_REASONS = (
     ),
     (
         ("apiconnectionerror", "connection error"),
-        "PR-Agent could not reach the model provider. Check provider availability and network access, then retry.",
+        "{bot_name} could not reach the model provider. Check provider availability and network access, then retry.",
     ),
     (
         ("failed to generate prediction with any model",),
-        "Every configured model attempt failed. Check the PR-Agent service logs for the provider error, then retry.",
+        "Every configured model attempt failed. Check the {bot_name} service logs for the provider error, then retry.",
     ),
 )
 _UNKNOWN_REVIEW_FAILURE_REASON = (
-    "PR-Agent encountered an unexpected internal error. Check the PR-Agent service logs for details."
+    "{bot_name} encountered an unexpected internal error. Check the {bot_name} service logs for details."
 )
 
 
@@ -160,11 +160,7 @@ def _review_failure_comment(error: Exception) -> str:
         if any(pattern in error_text for pattern in patterns):
             reason = candidate
             break
-    bot_display_name = resolve_bot_display_name(
-        get_settings().config.get("bot_display_name", DEFAULT_BOT_DISPLAY_NAME)
-    )
-    if bot_display_name != DEFAULT_BOT_DISPLAY_NAME:
-        reason = reason.replace(DEFAULT_BOT_DISPLAY_NAME, bot_display_name)
+    reason = reason.format(bot_name=get_bot_display_name())
     return f"Failed to review PR\n\n**Reason:** {reason}"
 
 
@@ -586,9 +582,7 @@ class PRReviewer:
             for line in str(pr_review).splitlines()
             if line.strip() not in identity_markers
         ).strip()
-        bot_display_name = resolve_bot_display_name(
-            get_settings().config.get("bot_display_name", DEFAULT_BOT_DISPLAY_NAME)
-        )
+        bot_display_name = get_bot_display_name()
         return (
             "## Standalone PR Review\n\n"
             f"_{bot_display_name} could not safely update the persistent review. "
@@ -1816,5 +1810,8 @@ class PRReviewer:
                 self.git_provider.publish_comment("Auto-approved PR")
         else:
             get_logger().info("Auto-approval option is disabled")
-            self.git_provider.publish_comment("Auto-approval option for PR-Agent is disabled. "
-                                              "You can enable it via a [configuration file](https://docs.pr-agent.ai/usage-guide/configuration_reference/#config)")
+            bot_display_name = get_bot_display_name()
+            self.git_provider.publish_comment(
+                f"Auto-approval option for {bot_display_name} is disabled. "
+                "You can enable it via a [configuration file](https://docs.pr-agent.ai/usage-guide/configuration_reference/#config)"
+            )

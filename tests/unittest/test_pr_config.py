@@ -158,3 +158,9 @@ def test_config_output_has_no_declaration_note_when_shipped_loading_fails(monkey
         "<details> <summary><strong>🛠️ PR-Agent Configurations:</strong></summary> \n\n"
         "\n\n```yaml\n\n\n```\n</details>\n"
     )
+
+    monkeypatch.setitem(config_loader.get_settings().config, "bot_display_name", "Acme Bot")
+    custom_output = PRConfig.__new__(PRConfig)._prepare_pr_configs()
+    assert custom_output.startswith(
+        "<details> <summary><strong>🛠️ Acme Bot Configurations:</strong></summary> \n\n"
+    )

@@ -157,6 +157,12 @@ def test_review_failure_comment_uses_configured_bot_display_name(monkeypatch):
 
 
 def test_non_authoritative_review_uses_configured_bot_display_name(monkeypatch):
+    default_review = PRReviewer._as_non_authoritative_review("## Review\n\nBody")
+    assert (
+        "_PR-Agent could not safely update the persistent review. "
+        "This standalone result will not replace the canonical review._"
+    ) in default_review
+
     monkeypatch.setitem(get_settings().config, "bot_display_name", "Acme Bot")
 
     review = PRReviewer._as_non_authoritative_review("## Review\n\nBody")
@@ -165,6 +171,21 @@ def test_non_authoritative_review_uses_configured_bot_display_name(monkeypatch):
     assert "PR-Agent" not in review
     assert review.startswith("## Standalone PR Review\n\n")
     assert review.endswith("## Review\n\nBody")
+
+
+def test_auto_approve_disabled_comment_uses_configured_bot_display_name(monkeypatch):
+    published = []
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = SimpleNamespace(publish_comment=published.append)
+    monkeypatch.setitem(get_settings().config, "enable_auto_approval", False)
+    monkeypatch.setitem(get_settings().config, "bot_display_name", "Acme Bot")
+
+    reviewer.auto_approve_logic()
+
+    assert published == [
+        "Auto-approval option for Acme Bot is disabled. "
+        "You can enable it via a [configuration file](https://docs.pr-agent.ai/usage-guide/configuration_reference/#config)"
+    ]
 
 
 def test_review_failure_comment_treats_quoted_false_as_disabled():

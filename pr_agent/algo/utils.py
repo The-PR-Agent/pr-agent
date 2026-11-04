@@ -40,7 +40,7 @@ from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.output_models import PRType, SubPR, parse_failure_modes
 from pr_agent.algo.structural_reach import render_structural_reach
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.config_loader import get_settings, get_verbosity_level
+from pr_agent.config_loader import get_bot_display_name, get_settings, get_verbosity_level
 from pr_agent.log import get_logger
 
 _ENCODED_USER_TEXT_PREFIX = "__pr_agent_encoded_text__:"
@@ -239,7 +239,8 @@ def convert_to_markdown_v2(output_data: dict,
     markdown_text = ""
     markdown_text += f"{_ci.format_pr_review_header(incremental=bool(incremental_review))}\n\n"
     if incremental_review:
-        markdown_text += f"⏮️ Review for commits since previous PR-Agent review {incremental_review}.\n\n"
+        bot_display_name = get_bot_display_name()
+        markdown_text += f"⏮️ Review for commits since previous {bot_display_name} review {incremental_review}.\n\n"
     if not output_data or not output_data.get('review', {}):
         return ""
 

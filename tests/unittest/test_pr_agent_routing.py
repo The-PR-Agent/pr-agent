@@ -24,15 +24,16 @@ def _identity_args(args):
 
 
 @pytest.mark.parametrize(
-    "error_cls",
+    ("error_cls", "expected_marker"),
     [
-        IncompletePullRequestFilesError,
-        IncompleteBitbucketPullRequestFilesError,
-        gitea_module.IncompleteGiteaPullRequestFilesError,
-        gitlab_module.IncompleteGitLabDiffError,
+        (IncompletePullRequestFilesError, "<!-- pr-agent:github-incomplete-files -->"),
+        (IncompleteBitbucketPullRequestFilesError, "<!-- pr-agent:bitbucket-incomplete-files -->"),
+        (gitea_module.IncompleteGiteaPullRequestFilesError, "<!-- pr-agent:gitea-incomplete-files -->"),
+        (gitlab_module.IncompleteGitLabDiffError, "<!-- pr-agent:gitlab-incomplete-diff -->"),
+        (gitlab_module.GitLabDiffNotReadyError, "<!-- pr-agent:gitlab-incomplete-diff -->"),
     ],
 )
-def test_incomplete_file_notices_use_configured_bot_display_name(monkeypatch, error_cls):
+def test_incomplete_file_notices_use_configured_bot_display_name(monkeypatch, error_cls, expected_marker):
     monkeypatch.setitem(get_settings().config, "bot_display_name", "Acme Bot")
 
     error = error_cls("internal detail")
@@ -40,7 +41,7 @@ def test_incomplete_file_notices_use_configured_bot_display_name(monkeypatch, er
     assert "## Acme Bot command was not run" in error.notice
     assert "Acme Bot stopped" in error.notice
     assert "PR-Agent" not in error.notice
-    assert error.notice_marker == error_cls.notice_marker
+    assert error.notice_marker == expected_marker
 
 
 def test_incomplete_file_errors_share_only_provider_neutral_base():
