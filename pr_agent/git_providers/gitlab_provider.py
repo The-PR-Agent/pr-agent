@@ -1739,6 +1739,7 @@ class GitLabProvider(GitProvider):
         seen = set(bodies)
         if self.mr is None:
             return bodies
+        # Discussions include standalone notes as individual_note entries.
         for discussion in self.mr.discussions.list(get_all=True, per_page=100):
             attrs = getattr(discussion, "attributes", None) or {}
             for note in attrs.get("notes", []) or []:
@@ -1747,11 +1748,6 @@ class GitLabProvider(GitProvider):
                     if body and body not in seen:
                         bodies.append(body)
                         seen.add(body)
-        for note in self.mr.notes.list(get_all=True, per_page=100):
-            body = getattr(note, "body", "") or ""
-            if body and body not in seen:
-                bodies.append(body)
-                seen.add(body)
         try:
             for draft in self.mr.draft_notes.list(get_all=True, per_page=100):
                 body = getattr(draft, "note", "") or ""
