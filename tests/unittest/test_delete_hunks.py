@@ -95,3 +95,35 @@ class TestOmitDeletionHunks:
         assert omit_deletion_hunks(patch_lines) == (
             "@@ -10,0 +10,1 @@\n\n+added line\n"
         )
+
+
+def test_unified_file_headers_do_not_turn_a_deletion_into_an_addition():
+    patch = ["diff --git a/f.py b/f.py", "--- a/f.py", "+++ b/f.py",
+             "@@ -1,1 +0,0 @@", "-deleted"]
+
+    assert omit_deletion_hunks(patch) == ""
+
+
+def test_file_metadata_is_not_included_in_a_retained_hunk():
+    patch = ["diff --git a/f.py b/f.py", "--- a/f.py", "+++ b/f.py",
+             "@@ -0,0 +1,1 @@", "+added"]
+
+    assert omit_deletion_hunks(patch) == "@@ -0,0 +1,1 @@\n+added"
+
+
+def test_combined_hunk_additions_do_not_retain_previous_deletion_only_hunk():
+    patch = ["@@ -1,1 +0,0 @@", "-deleted", "@@@ -2,1 -2,1 +2,1 @@@", "+unsupported"]
+
+    assert omit_deletion_hunks(patch) == ""
+
+
+def test_malformed_hunk_body_does_not_join_previous_valid_hunk():
+    patch = ["@@ -1,0 +1,1 @@", "+valid", "@@ malformed @@", "+unsupported"]
+
+    assert omit_deletion_hunks(patch) == "@@ -1,0 +1,1 @@\n+valid"
+
+
+def test_valid_hunks_resume_after_unsupported_hunk():
+    patch = ["@@ malformed @@", "+unsupported", "@@ -1,0 +1,1 @@", "+valid"]
+
+    assert omit_deletion_hunks(patch) == "@@ -1,0 +1,1 @@\n+valid"

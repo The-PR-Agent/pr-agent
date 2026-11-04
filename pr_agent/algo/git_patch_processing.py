@@ -344,24 +344,19 @@ def omit_deletion_hunks(patch_lines) -> str:
 
     for line in patch_lines:
         if line.startswith('@@'):
-            match = RE_HUNK_HEADER.match(line)
-            if match:
-                # finish previous hunk: keep it only if it had additions,
-                # otherwise drop it entirely (a deletion-only hunk must not
-                # leak into the next hunk's output)
-                if inside_hunk:
-                    if add_hunk:
-                        added_patched.extend(temp_hunk)
-                    temp_hunk = []
-                    add_hunk = False
+            # Every hunk boundary ends the prior hunk, including unsupported
+            # combined or malformed headers whose bodies must not leak into it.
+            if inside_hunk and add_hunk:
+                added_patched.extend(temp_hunk)
+            temp_hunk = []
+            add_hunk = False
+            inside_hunk = RE_HUNK_HEADER.match(line) is not None
+            if inside_hunk:
                 temp_hunk.append(line)
-                inside_hunk = True
-        else:
+        elif inside_hunk:
             temp_hunk.append(line)
-            if line:
-                edit_type = line[0]
-                if edit_type == '+':
-                    add_hunk = True
+            if line.startswith('+'):
+                add_hunk = True
     if inside_hunk and add_hunk:
         added_patched.extend(temp_hunk)
 
