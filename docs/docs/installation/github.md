@@ -42,8 +42,8 @@ You can use our pre-built GitHub Action Docker image to run PR-Agent as a GitHub
    ```
 
    The `GITHUB_TOKEN` secret is automatically created by GitHub, but you must pass it to the action through `env` as shown above.
-   If it is missing or empty, events with a PR or issue target fail with a nonzero exit status and a `GITHUB_TOKEN not set` message.
-   Ignored comments and events without a target still skip successfully.
+   If it is missing or empty, actionable events with a PR or issue target fail with a nonzero exit status and a `GITHUB_TOKEN not set` message.
+   Ignored comments, duplicate initial review requests, and events without a target still skip successfully.
 
 3. Merge this change to your main branch.
    When you open your next PR, you should see a comment from `github-actions` bot with a review of your PR, and instructions on how to use the rest of the tools.
@@ -59,6 +59,12 @@ You can use our pre-built GitHub Action Docker image to run PR-Agent as a GitHub
    ```
 
 See detailed usage instructions in the [USAGE GUIDE](../usage-guide/automations_and_usage.md#github-action)
+
+When a PR opens with a reviewer already requested, GitHub can send both `opened` and
+`review_requested`. The Action skips the initial `review_requested` event when the PR's
+creation and update timestamps match, so the tools run once for the opening event stream.
+Later review requests still run the enabled tools when `review_requested` is listed in
+`github_action_config.pr_actions`. This applies to both `pull_request` and `pull_request_target`.
 
 ### Using with pull_request_target (fork/contribution support)
 

@@ -289,6 +289,15 @@ async def run_action():
         print(f"Failed to parse JSON: {e}")
         return
 
+    if GITHUB_EVENT_NAME in ("pull_request", "pull_request_target"):
+        pull_request = event_payload.get("pull_request") or {}
+        created_at = pull_request.get("created_at")
+        if (event_payload.get("action") == "review_requested"
+                and created_at and created_at == pull_request.get("updated_at")):
+            # The opened event already runs the initial automatic tool batch.
+            get_logger().info("Skipping initial review_requested event")
+            return
+
     # Skip ignored comments before loading repository settings or checking a model API key.
     if GITHUB_EVENT_NAME in ("issue_comment", "pull_request_review_comment"):
         if event_payload.get("action") not in ("created", "edited"):
