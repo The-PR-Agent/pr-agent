@@ -158,7 +158,7 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>min_finding_confidence</b></td>
-    <td>When above 0, the model reports an integer confidence from 0 to 10 for each finding, shown in its header. Findings below this value are dropped before publishing, and in a chunked review they are dropped before the <code>num_max_findings</code> cut, so they cannot displace a more confident finding. A run that dropped findings does not mark earlier findings as resolved. A missing or out-of-range confidence is treated as absent: the finding is kept. Default is 0: keep all findings, and the model is not asked for a confidence.</td>
+    <td>When above 0, the model reports an integer confidence from 0 to 10 for each finding, shown in its header in the review summary (inline comments do not show it). Findings below this value are dropped before publishing, and in a chunked review they are dropped before the <code>num_max_findings</code> cut, so they cannot displace a more confident finding. A run that dropped findings does not mark earlier findings as resolved. A missing or out-of-range confidence is treated as absent: the finding is kept. Default is 0: keep all findings, and the model is not asked for a confidence.</td>
   </tr>
 </table>
 
