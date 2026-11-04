@@ -14,7 +14,7 @@ from pr_agent.algo.pr_processing import (
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.run_details import record_command_failure
 from pr_agent.algo.token_budget import AttemptTokenBudget
-from pr_agent.algo.utils import get_suggestion_fence, load_yaml
+from pr_agent.algo.utils import _as_line, get_suggestion_fence, load_yaml
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider_for_tool
 from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError, get_main_pr_language
@@ -200,13 +200,9 @@ class PRAddDocs:
                 return False
             if not all(isinstance(entry[field], str) for field in ('relevant file', 'doc placement', 'documentation')):
                 return False
-            if not entry['relevant file'].strip() or not entry['doc placement'].strip():
+            if not entry['relevant file'].strip() or entry['doc placement'].strip() not in {"before", "after"}:
                 return False
-            try:
-                int(entry['relevant line'])
-            except (TypeError, ValueError, OverflowError):
-                return False
-            return True
+            return _as_line(entry['relevant line']) is not None
 
         if data['Code Documentation'] and not any(has_usable_fields(entry) for entry in data['Code Documentation']):
             raise FallbackEligibleError("The model did not return any documentation entries")
@@ -226,9 +222,13 @@ class PRAddDocs:
                 if get_verbosity_level() >= 2:
                     get_logger().info(f"add_docs: {d}")
                 relevant_file = d['relevant file'].strip()
-                relevant_line = int(d['relevant line'])  # absolute position
+                relevant_line = _as_line(d['relevant line'])  # absolute position
+                if relevant_line is None:
+                    continue
                 documentation = d['documentation']
                 doc_placement = d['doc placement'].strip()
+                if doc_placement not in {"before", "after"}:
+                    continue
                 if documentation:
                     new_code_snippet = self.dedent_code(relevant_file, relevant_line, documentation, doc_placement,
                                                         add_original_line=True)
