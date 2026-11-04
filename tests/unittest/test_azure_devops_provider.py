@@ -2996,8 +2996,9 @@ class TestAzureDevopsFailuresAreReported:
 
 
 class TestAzureDevopsProviderSuggestionFence:
-    """Regression tests for #2110: Azure DevOps has no committable suggestion blocks, so the
-    ```suggestion fence /improve emits was published verbatim and rendered as a raw block.
+    """Azure DevOps renders a ```suggestion fence in a line-anchored thread as an applicable
+    change (#4655), so inline threads keep it. A PR-level comment has no lines to replace,
+    so the fallback renders the suggestion as a diff block instead (#2110).
     """
 
     @staticmethod
@@ -3010,17 +3011,16 @@ class TestAzureDevopsProviderSuggestionFence:
         }
         return suggestion
 
-    def test_suggestion_fence_is_published_as_a_diff_block(self):
+    def test_inline_thread_keeps_the_applicable_suggestion_fence(self):
         provider = _provider_with_diff("/src/app.py")
 
         provider.publish_code_suggestions([self._committable_suggestion()])
 
-        body = _created_threads(provider)[-1].comments[0].content
-        assert "```suggestion" not in body
-        assert "```diff" in body
-        assert "-values = []" in body
-        assert "+values = set()" in body
-        assert body.startswith("**Suggestion:** use a set [best practice]")
+        thread = _created_threads(provider)[-1]
+        assert thread.comments[0].content == (
+            "**Suggestion:** use a set [best practice]\n```suggestion\nvalues = set()\n```"
+        )
+        assert thread.thread_context.right_file_end.offset == len("line 12") + 1
 
     def test_body_is_left_alone_when_there_is_no_original_suggestion(self):
         provider = _provider_with_diff("/src/app.py")
@@ -3037,6 +3037,19 @@ class TestAzureDevopsProviderSuggestionFence:
 
         published = provider.publish_comment.call_args[0][0]
         assert "```diff" in published
+        assert "-values = []" in published
+        assert "+values = set()" in published
+        assert "```suggestion" not in published
+
+    def test_failed_inline_thread_falls_back_to_the_diff_block(self):
+        provider = _provider_with_diff("/src/app.py")
+        provider.publish_comment = MagicMock()
+        provider.azure_devops_client.create_thread.side_effect = RuntimeError("create failed")
+
+        provider.publish_code_suggestions([self._committable_suggestion()])
+
+        published = provider.publish_comment.call_args[0][0]
+        assert "```diff" in published
         assert "```suggestion" not in published
 
     def test_unusable_original_suggestion_keeps_the_suggestion(self):
@@ -3050,7 +3063,8 @@ class TestAzureDevopsProviderSuggestionFence:
 
     def test_backslashes_in_proposed_code_are_preserved(self):
         provider = _provider_with_diff("/src/app.py")
-        suggestion = self._committable_suggestion()
+        provider.publish_comment = MagicMock()
+        suggestion = self._committable_suggestion("/src/removed.py")
         suggestion["original_suggestion"] = {
             "existing_code": "print(1)",
             "improved_code": "print(\t\\1\\d)",
@@ -3058,9 +3072,9 @@ class TestAzureDevopsProviderSuggestionFence:
 
         provider.publish_code_suggestions([suggestion])
 
-        body = _created_threads(provider)[-1].comments[0].content
-        assert "```diff" in body
-        assert "+print(\t\\1\\d)" in body
+        published = provider.publish_comment.call_args[0][0]
+        assert "```diff" in published
+        assert "+print(\t\\1\\d)" in published
 
     def test_invalid_range_still_falls_back_to_pr_comment(self):
         provider = _provider_with_diff("/src/app.py")
@@ -3075,7 +3089,8 @@ class TestAzureDevopsProviderSuggestionFence:
         assert "```diff" in published
         assert "```suggestion" not in published
 
-    def test_rendered_thread_still_feeds_the_next_run(self):
+    @pytest.mark.parametrize("legacy_diff", [False, True], ids=["suggestion-fence", "diff-block-before-4655"])
+    def test_published_thread_still_feeds_the_next_run(self, legacy_diff):
         provider = _provider_with_diff("/src/app.py")
         suggestion = self._committable_suggestion()
         suggestion["relevant_lines_start"] = suggestion["relevant_lines_end"] = 2
@@ -3085,6 +3100,10 @@ class TestAzureDevopsProviderSuggestionFence:
             )
             settings.return_value.azure_devops.get.return_value = "active"
             provider.publish_code_suggestions([suggestion])
+            if legacy_diff:
+                published = _created_threads(provider)[0].comments[0]
+                published.content = AzureDevopsProvider._render_suggestion_as_diff(
+                    published.content, suggestion["original_suggestion"])
             stored = SimpleNamespace(
                 id=17,
                 status="active",
@@ -3106,14 +3125,19 @@ class TestAzureDevopsProviderSuggestionFence:
             assert "Not doing this." in provider.get_code_suggestion_thread_context()
             assert provider.reconcile_code_suggestion_threads() == 1
 
-    def test_rendered_thread_without_markers_is_not_reposted(self):
+    @pytest.mark.parametrize("legacy_diff", [False, True], ids=["suggestion-fence", "diff-block-before-4655"])
+    def test_thread_without_markers_is_not_reposted(self, legacy_diff):
         """A thread published before persistent_inline_comments was enabled carries no
-        dedup marker, but the fingerprint bootstrap must still recognize its rendered
-        diff block so the suggestion is not re-posted once the feature is switched on.
+        dedup marker, but the fingerprint bootstrap must still recognize its code, in either
+        form, so the suggestion is not re-posted once the feature is switched on.
         """
         suggestion = self._committable_suggestion()
         first_run = _provider_with_diff("/src/app.py")
         first_run.publish_code_suggestions([suggestion])
+        if legacy_diff:
+            published = _created_threads(first_run)[0].comments[0]
+            published.content = AzureDevopsProvider._render_suggestion_as_diff(
+                published.content, suggestion["original_suggestion"])
         stored = SimpleNamespace(
             thread_context=SimpleNamespace(
                 file_path="/src/app.py",
