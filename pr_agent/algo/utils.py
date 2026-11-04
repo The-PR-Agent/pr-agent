@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import copy
 import difflib
 import html
@@ -1467,12 +1468,35 @@ def get_user_labels(current_labels: list[str] = None):
 
 def replace_code_tags(text):
     """
-    Replace odd instances of ` with <code> and even instances of ` with </code>
+    Turn backtick code spans into <code> elements after HTML-escaping the text.
+
+    As in Markdown, a span opens with a run of backticks and closes at the next
+    run of the same length, so ``a`b`` keeps its inner backtick. A run with no
+    matching closer stays a literal backtick instead of turning the rest of the
+    text into code.
     """
     text = html.escape(text)
-    parts = text.split('`')
-    for i in range(1, len(parts), 2):
-        parts[i] = '<code>' + parts[i] + '</code>'
+    runs = list(re.finditer(r"`+", text))
+    runs_by_length = {}
+    for index, run in enumerate(runs):
+        runs_by_length.setdefault(len(run.group()), []).append(index)
+    parts = []
+    position = 0
+    i = 0
+    while i < len(runs):
+        opener = runs[i]
+        same_length = runs_by_length[len(opener.group())]
+        next_same = bisect.bisect_right(same_length, i)
+        if next_same == len(same_length):
+            i += 1
+            continue
+        closer_index = same_length[next_same]
+        closer = runs[closer_index]
+        parts.append(text[position:opener.start()])
+        parts.append('<code>' + text[opener.end():closer.start()] + '</code>')
+        position = closer.end()
+        i = closer_index + 1
+    parts.append(text[position:])
     return ''.join(parts)
 
 
