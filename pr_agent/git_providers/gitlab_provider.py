@@ -2092,6 +2092,8 @@ class GitLabProvider(GitProvider):
         target_line_no = 0
         target_file = None
 
+        if not isinstance(relevant_line_in_file, str) or not relevant_line_in_file:
+            return 'context', False, source_line_no, target_file, target_line_no
         edit_type = self.get_edit_type(relevant_line_in_file)
         for file in self.get_diff_files():
             if file.filename == relevant_file:
@@ -2107,15 +2109,22 @@ class GitLabProvider(GitProvider):
         found = False
         target_file = file
         patch = file.patch
-        patch_lines = patch.splitlines()
+        if not isinstance(relevant_line_in_file, str) or not relevant_line_in_file:
+            return edit_type, found, source_line_no, target_file, target_line_no
+        patch_lines = split_diff_lines(patch)
+        in_hunk = False
+        fallback = None
         for line in patch_lines:
             if line.startswith('@@'):
                 match = self.RE_HUNK_HEADER.match(line)
+                in_hunk = match is not None
                 if not match:
                     continue
                 start_old, size_old, start_new, size_new, _ = match.groups()
                 source_line_no = int(start_old)
                 target_line_no = int(start_new)
+                continue
+            if not in_hunk or line == r'\ No newline at end of file':
                 continue
             if line.startswith('-'):
                 source_line_no += 1
@@ -2124,16 +2133,20 @@ class GitLabProvider(GitProvider):
             elif line.startswith(' '):
                 source_line_no += 1
                 target_line_no += 1
-            if relevant_line_in_file in line:
+            if not line:
+                continue
+            if line == relevant_line_in_file or line[1:] == relevant_line_in_file:
                 found = True
                 edit_type = self.get_edit_type(line)
                 break
-            elif relevant_line_in_file[0] == '+' and relevant_line_in_file[1:].lstrip() in line:
-                # The model often adds a '+' to the beginning of the relevant_line_in_file even if originally
-                # it's a context line
-                found = True
-                edit_type = self.get_edit_type(line)
-                break
+            if fallback is None and (relevant_line_in_file in line or (
+                    relevant_line_in_file.startswith('+') and relevant_line_in_file[1:].lstrip() in line)):
+                # Keep the legacy substring fallback only if no exact source line
+                # is found later in the patch.
+                fallback = self.get_edit_type(line), source_line_no, target_line_no
+        if not found and fallback is not None:
+            edit_type, source_line_no, target_line_no = fallback
+            found = True
         return edit_type, found, source_line_no, target_file, target_line_no
 
     def get_edit_type(self, relevant_line_in_file):
