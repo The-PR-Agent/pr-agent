@@ -95,7 +95,11 @@ def _neutralize_gitlab_mentions(text: str) -> str:
     if not text:
         return text
 
-    mention = re.compile(r"@(?=[\w-])", re.UNICODE)
+    mention = re.compile(r"(?<![\w/])@(?=[\w-])", re.UNICODE)
+    last_tick_run: dict[int, int] = {}
+    for run in re.finditer(r"`+", text):
+        last_tick_run[len(run.group())] = run.start()
+
     output = []
     index = 0
     fence_char = None
@@ -104,6 +108,12 @@ def _neutralize_gitlab_mentions(text: str) -> str:
     line_start = True
 
     while index < len(text):
+        if text[index] == "\n":
+            output.append("\n")
+            index += 1
+            line_start = True
+            continue
+
         if line_start and not inline_ticks:
             line_end = text.find("\n", index)
             if line_end < 0:
@@ -117,6 +127,11 @@ def _neutralize_gitlab_mentions(text: str) -> str:
                 elif marker[0] == fence_char and len(marker) >= fence_size:
                     fence_char = None
                     fence_size = 0
+                output.append(line)
+                index = line_end
+                line_start = False
+                continue
+            if line.startswith("    ") or line.startswith("\t"):
                 output.append(line)
                 index = line_end
                 line_start = False
@@ -135,20 +150,7 @@ def _neutralize_gitlab_mentions(text: str) -> str:
                 end += 1
             ticks = end - index
             if not inline_ticks:
-                closer = end
-                found_closer = False
-                while closer < len(text):
-                    closer = text.find("`", closer)
-                    if closer < 0:
-                        break
-                    run_end = closer + 1
-                    while run_end < len(text) and text[run_end] == "`":
-                        run_end += 1
-                    if run_end - closer == ticks:
-                        found_closer = True
-                        break
-                    closer = run_end
-                if found_closer:
+                if last_tick_run.get(ticks, -1) >= end:
                     inline_ticks = ticks
             elif ticks == inline_ticks:
                 inline_ticks = 0
@@ -168,7 +170,8 @@ def _neutralize_gitlab_mentions(text: str) -> str:
         while next_special < len(text) and text[next_special] not in "@`\n":
             next_special += 1
         chunk = text[index:next_special]
-        output.append(mention.sub("@\u200b", chunk))
+        prefix = text[index - 1:index] if index else ""
+        output.append(mention.sub("@\u200b", prefix + chunk)[len(prefix):])
         index = next_special
         if index < len(text) and text[index] == "\n":
             output.append("\n")
@@ -1855,7 +1858,6 @@ class GitLabProvider(GitProvider):
             get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
             return False
         else:
-            body = _neutralize_gitlab_mentions(body)
             store = None
             body_fp = code_fp = None
             if get_settings().get("config.persistent_inline_comments", False):
@@ -1871,8 +1873,11 @@ class GitLabProvider(GitProvider):
                         f"Persistent inline comments: skipping duplicate inline "
                         f"comment on {relevant_file}:{anchor_line}")
                     return None
+                body = _neutralize_gitlab_mentions(body)
                 body = body_with_markers(
                     body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
+            else:
+                body = _neutralize_gitlab_mentions(body)
             # in order to have exact sha's we have to find correct diff for this change
             diff = self.get_relevant_diff(relevant_file, relevant_line_in_file)
             if diff is None:
