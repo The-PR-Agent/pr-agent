@@ -100,7 +100,7 @@ def _warn_deprecated_self_review_marker_keys() -> None:
 
 
 def _as_threshold(setting_name: str, default: int, minimum: int) -> int:
-    """Read a score threshold as an int, so a quoted or unusable value cannot fail the run."""
+    """Read an integer setting, retaining its default when the configured value is unusable."""
     value = get_settings().get(setting_name, default)
     try:
         return max(minimum, int(value))
