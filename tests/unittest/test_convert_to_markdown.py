@@ -492,8 +492,11 @@ class TestConvertToMarkdown:
         )
         mode = {"what": "Partial write", "where": "app.py:save", "trigger": "Write fails",
                 "detected_by": "Write failure test", "covered_in_this_pr": False}
-        markdown = convert_to_markdown_v2({"review": {"failure_modes": [mode] * 4}}, gfm_supported=gfm_supported)
+        modes = [{**mode, "what": f"Partial write {index}"} for index in range(1, 5)]
+        markdown = convert_to_markdown_v2({"review": {"failure_modes": modes}}, gfm_supported=gfm_supported)
         assert markdown.count("Partial write") == 3
+        assert all(f"Partial write {index}" in markdown for index in range(1, 4))
+        assert "Partial write 4" not in markdown
 
     # Tests that the function works correctly with an empty dictionary input
     def test_empty_dictionary_input(self):

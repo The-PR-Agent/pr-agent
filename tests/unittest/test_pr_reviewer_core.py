@@ -418,7 +418,8 @@ async def test_failure_modes_reach_output_consumers_only_when_enabled(enabled):
     reviewer.vars = {"require_failure_modes": enabled}
     mode = {"what": "Partial write", "where": "app.py:save", "trigger": "Write fails",
             "detected_by": "Write failure test", "covered_in_this_pr": False}
-    raw_modes = [{**mode, "covered_in_this_pr": "false"}, "bad", mode, mode, mode, mode]
+    modes = [{**mode, "what": name} for name in ("Partial write", "Stale read", "Lost retry", "Missing receipt")]
+    raw_modes = [{**mode, "covered_in_this_pr": "false"}, "bad", modes[0], modes[0], *modes[1:]]
     reviewer.prediction = "unused prediction"
     data = {"review": {"key_issues_to_review": [], "failure_modes": raw_modes}}
     reviewer.git_provider.get_diff_files.return_value = []
@@ -438,7 +439,7 @@ async def test_failure_modes_reach_output_consumers_only_when_enabled(enabled):
     if push.called:
         assert ("failure_modes" in push.call_args.kwargs["payload"]) is enabled
     if enabled:
-        expected = [mode] * 3
+        expected = modes[:3]
         assert action_output.call_args.args[0]["review"]["failure_modes"] == expected
         assert reviewer.git_provider.publish_structured_review.call_args.args[0]["review"]["failure_modes"] == expected
         assert render.call_args.args[0]["review"]["failure_modes"] == expected
