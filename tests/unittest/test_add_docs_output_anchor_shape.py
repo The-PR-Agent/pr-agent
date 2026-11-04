@@ -39,3 +39,13 @@ def test_direct_doc_publication_does_not_coerce_fractional_anchors():
     }]})
     tool.dedent_code.assert_not_called()
     tool.git_provider.publish_code_suggestions.assert_not_called()
+
+
+@pytest.mark.parametrize("line", [1, "1"])
+def test_add_docs_preserves_positive_integer_anchor_compatibility(line):
+    tool = object.__new__(PRAddDocs)
+    tool.prediction = yaml.safe_dump({"Code Documentation": [{
+        "relevant file": "app.py", "relevant line": line,
+        "doc placement": "before", "documentation": "Explain the function.",
+    }]})
+    assert tool._prepare_pr_code_docs()["Code Documentation"][0]["relevant line"] == line
