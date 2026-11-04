@@ -104,3 +104,27 @@ def test_write_through_a_dangling_symlink_creates_its_target(tmp_path):
 
     assert output.is_symlink()
     assert json.loads(target.read_text(encoding="utf-8")) == {"new": True}
+
+
+@pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 0)() == 0,
+                    reason="POSIX permission check requires a non-root user")
+def test_read_only_output_is_not_replaced(tmp_path):
+    output = tmp_path / "review.json"
+    output.write_text("previous", encoding="utf-8")
+    output.chmod(0o444)
+    try:
+        with pytest.raises(PermissionError):
+            review_json_output.write_review_json_output({"new": True}, output)
+        assert output.read_text(encoding="utf-8") == "previous"
+    finally:
+        output.chmod(0o600)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX null-device destination")
+def test_explicit_device_destination_is_written_without_replacing_it(monkeypatch):
+    def unexpected_replace(*args):
+        pytest.fail("A device output must not be replaced")
+
+    monkeypatch.setattr(os, "replace", unexpected_replace)
+
+    review_json_output.write_review_json_output({"new": True}, os.devnull)

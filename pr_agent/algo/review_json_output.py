@@ -20,6 +20,22 @@ def write_review_json_output(review: dict, path: str | None = None) -> None:
         # Follow output symlinks as open(..., "w") does, but publish the completed
         # file only after serialization and closing have both succeeded.
         destination = os.path.realpath(path)
+        try:
+            destination_stat = os.stat(destination)
+        except FileNotFoundError:
+            destination_stat = None
+        if destination_stat is not None and not stat.S_ISREG(destination_stat.st_mode):
+            # Keep explicit streams such as /dev/stdout and named pipes as
+            # streams; replacing a device or FIFO would change the destination.
+            with open(destination, "w", encoding="utf-8") as fh:
+                json.dump(review, fh, indent=2)
+                fh.write("\n")
+            return
+        if destination_stat is not None:
+            # Replacing an inode only needs directory permission; retain the
+            # original writer's refusal to overwrite a read-only destination.
+            existing_descriptor = os.open(destination, os.O_WRONLY)
+            os.close(existing_descriptor)
         candidate_path = os.path.join(os.path.dirname(destination), f".pr-agent-review-{secrets.token_hex(16)}.tmp")
         # Exclusive creation prevents collisions and keeps open(..., "w")'s
         # umask-derived permissions for a new output rather than forcing 0600.
