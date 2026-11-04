@@ -60,6 +60,14 @@ You can use our pre-built GitHub Action Docker image to run PR-Agent as a GitHub
 
 See detailed usage instructions in the [USAGE GUIDE](../usage-guide/automations_and_usage.md#github-action)
 
+When a PR opens with a reviewer already requested, GitHub can send both `opened` and
+`review_requested`. With both actions enabled, the Action skips the initial
+`review_requested` event when the PR's creation and update timestamps match, so the
+tools run once for the opening event stream. A configuration that enables only
+`review_requested` still runs that event.
+Later review requests still run the enabled tools when `review_requested` is listed in
+`github_action_config.pr_actions`. This applies to both `pull_request` and `pull_request_target`.
+
 ### Using with pull_request_target (fork/contribution support)
 
 By default, the `pull_request` event does not have access to repository or organization secrets when the PR originates from a forked repository, which means PR-Agent won't be able to access secrets such as `OPENAI_KEY`. The workflow still receives a `GITHUB_TOKEN`, but it has read-only permissions for fork pull requests by default. For private repositories, administrators can enable **Send secrets to workflows from pull requests** to make secrets available, but doing so exposes those secrets to workflows triggered by fork pull requests.

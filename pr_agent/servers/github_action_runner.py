@@ -420,7 +420,14 @@ async def run_action():
                         return
                 return
         if action in pr_actions:
-            pr_url = event_payload.get("pull_request", {}).get("url")
+            pull_request = event_payload.get("pull_request") or {}
+            created_at = pull_request.get("created_at")
+            if (action == "review_requested" and "opened" in pr_actions
+                    and created_at and created_at == pull_request.get("updated_at")):
+                # The configured opened event already runs the initial automatic tool batch.
+                get_logger().info("Skipping initial review_requested event")
+                return
+            pr_url = pull_request.get("url")
             if pr_url:
                 allowed = enforce_request_policy(pr_url, provider=settings_provider)
                 del settings_provider

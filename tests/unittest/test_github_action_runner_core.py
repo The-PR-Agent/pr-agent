@@ -256,6 +256,56 @@ def restore_artifact_action_settings():
     settings.set("CONFIG.USE_REPO_SETTINGS_FILE", original_use_repo_settings)
 
 
+@pytest.mark.parametrize("event_name", ["pull_request", "pull_request_target"])
+@pytest.mark.parametrize("include_opened", [True, False])
+@pytest.mark.parametrize(
+    "created_at,updated_at,expected_batches",
+    [
+        ("2026-11-04T12:00:00Z", "2026-11-04T12:00:00Z", 1),
+        ("2026-11-04T12:00:00Z", "2026-11-04T12:01:00Z", 2),
+        (None, None, 2),
+        ("2026-11-04T12:00:00Z", None, 2),
+        (None, "2026-11-04T12:00:00Z", 2),
+        ("", "", 2),
+    ],
+)
+async def test_first_open_review_request_stream(
+    monkeypatch, tmp_path, restore_github_settings, event_name, include_opened, created_at, updated_at, expected_batches
+):
+    pr_url = "https://api.github.com/repos/org/repo/pulls/1"
+    pull_request = {"url": pr_url}
+    if created_at is not None:
+        pull_request["created_at"] = created_at
+    if updated_at is not None:
+        pull_request["updated_at"] = updated_at
+    event_path = tmp_path / "event.json"
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", "unit-test-token")
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(github_action_runner, "_inject_artifact_context", lambda: None)
+    monkeypatch.setattr(
+        github_action_runner, "get_setting_or_env",
+        lambda key, default=None: True if key.startswith("GITHUB_ACTION.AUTO_") else default,
+    )
+    actions = ["opened", "review_requested"] if include_opened else ["review_requested"]
+    get_settings().set("GITHUB_ACTION_CONFIG.PR_ACTIONS", actions)
+    run_tool = AsyncMock()
+    monkeypatch.setattr(github_action_runner, "_run_auto_tool", run_tool)
+
+    for action in ("opened", "review_requested"):
+        event_path.write_text(json.dumps({"action": action, "pull_request": pull_request}))
+        await github_action_runner.run_action()
+
+    expected_tools = [
+        github_action_runner.PRDescription,
+        github_action_runner.PRReviewer,
+        github_action_runner.PRCodeSuggestions,
+    ] * (expected_batches if include_opened else 1)
+    assert [invocation.args[0] for invocation in run_tool.await_args_list] == expected_tools
+    assert all(invocation.args[1] == pr_url for invocation in run_tool.await_args_list)
+
+
 def _write_synchronize_event(tmp_path, before_sha="abc", after_sha="def", merge_commit_sha=None, sender_type="User"):
     payload = {
         "action": "synchronize",
