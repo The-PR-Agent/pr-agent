@@ -1,7 +1,7 @@
 import json
 import os
+import secrets
 import stat
-import tempfile
 from contextlib import suppress
 from contextvars import ContextVar
 
@@ -15,15 +15,18 @@ def write_review_json_output(review: dict, path: str | None = None) -> None:
     if not path:
         return
     temporary_path = None
+    descriptor = None
     try:
         # Follow output symlinks as open(..., "w") does, but publish the completed
         # file only after serialization and closing have both succeeded.
         destination = os.path.realpath(path)
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=os.path.dirname(destination),
-            prefix=".pr-agent-review-", suffix=".tmp", delete=False,
-        ) as fh:
-            temporary_path = fh.name
+        candidate_path = os.path.join(os.path.dirname(destination), f".pr-agent-review-{secrets.token_hex(16)}.tmp")
+        # Exclusive creation prevents collisions and keeps open(..., "w")'s
+        # umask-derived permissions for a new output rather than forcing 0600.
+        descriptor = os.open(candidate_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        temporary_path = candidate_path
+        with os.fdopen(descriptor, "w", encoding="utf-8") as fh:
+            descriptor = None
             try:
                 os.chmod(temporary_path, stat.S_IMODE(os.stat(destination).st_mode))
             except FileNotFoundError:
@@ -36,6 +39,9 @@ def write_review_json_output(review: dict, path: str | None = None) -> None:
         get_logger().error(f"Failed to write structured review to {path}: {error}")
         raise
     finally:
+        if descriptor is not None:
+            with suppress(OSError):
+                os.close(descriptor)
         if temporary_path is not None:
             with suppress(OSError):
                 os.unlink(temporary_path)

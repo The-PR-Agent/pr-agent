@@ -82,3 +82,25 @@ def test_write_failure_preserves_existing_review_and_cleans_temporary_file(monke
 
     assert json.loads(output.read_text(encoding="utf-8")) == {"previous": True}
     assert list(tmp_path.iterdir()) == [output]
+
+
+def test_new_output_uses_the_same_umask_permissions_as_an_ordinary_write(tmp_path):
+    control = tmp_path / "control.json"
+    control.write_text("ordinary write", encoding="utf-8")
+    output = tmp_path / "review.json"
+
+    review_json_output.write_review_json_output({"new": True}, output)
+
+    assert stat.S_IMODE(output.stat().st_mode) == stat.S_IMODE(control.stat().st_mode)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation may require elevated Windows privileges")
+def test_write_through_a_dangling_symlink_creates_its_target(tmp_path):
+    target = tmp_path / "target.json"
+    output = tmp_path / "review.json"
+    output.symlink_to(target)
+
+    review_json_output.write_review_json_output({"new": True}, output)
+
+    assert output.is_symlink()
+    assert json.loads(target.read_text(encoding="utf-8")) == {"new": True}
