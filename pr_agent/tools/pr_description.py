@@ -39,6 +39,7 @@ from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError, get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
+from pr_agent.tools.pr_update_changelog import strip_wrapping_code_fence
 from pr_agent.tools.progress_comment import ChunkProgressReporter
 from pr_agent.tools.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
@@ -596,9 +597,12 @@ class PRDescription:
             prediction_headers = await self._get_prediction(model, patches_diff=files_walkthrough_prompt,
                                                             prompt="pr_description_only_description_prompts")
             if isinstance(prediction_headers, str):
-                prediction_headers = re.sub(
-                    r'^```[ \t]*(?:(?i:yaml|yml)[ \t]*)?(?=\r?\n)', '', prediction_headers.strip()
-                ).strip('`').strip()
+                # Fence-aware stripping: `str.strip("`")` removes characters
+                # rather than the fence, mangling answers that end in an
+                # inline code span (the #3083 family, large-PR headers path).
+                prediction_headers = strip_wrapping_code_fence(
+                    prediction_headers.strip()
+                ).strip()
             self._require_usable_prediction(prediction_headers)
 
             # extend the tables with the files not shown
