@@ -1718,8 +1718,8 @@ def process_description(description_full: str) -> tuple[str, list]:
 
 def set_file_languages(diff_files) -> list[FilePatchInfo]:
     try:
-        # if the language is already set, do not change it
-        if hasattr(diff_files[0], 'language') and diff_files[0].language:
+        # Providers may populate only part of a file list; preserve each known language.
+        if not diff_files or all(getattr(file, "language", None) for file in diff_files):
             return diff_files
 
         # Reuse the shared classifier. Matching on the last suffix alone missed every
@@ -1727,6 +1727,8 @@ def set_file_languages(diff_files) -> list[FilePatchInfo]:
         # ".bsl" where the map stores "*.bsl") and every uppercase suffix (handler.PY).
         get_language = build_language_file_matcher(get_settings().language_extension_map_org)
         for file in diff_files:
+            if getattr(file, "language", None):
+                continue
             language_name = get_language(file.filename)
             file.language = (language_name or "txt").lower()
     except Exception as e:

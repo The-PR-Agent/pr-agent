@@ -98,3 +98,14 @@ def test_get_main_pr_language_prefers_the_diff_over_the_repository_ranking():
 
 def test_get_main_pr_language_is_empty_when_no_file_is_recognised():
     assert get_main_pr_language({"CMake": 900}, ["data/table.unknownext"]) == ""
+
+
+@pytest.mark.parametrize("manual_first", [True, False])
+def test_partial_language_cache_preserves_existing_and_fills_missing(manual_first):
+    manual, missing = _files(["handwritten.py", "handler.PY"])
+    manual.language = "manual-language"
+    files = [manual, missing] if manual_first else [missing, manual]
+
+    assert set_file_languages(files) is files
+    assert manual.language == "manual-language"
+    assert missing.language == "python"
