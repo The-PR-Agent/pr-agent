@@ -391,6 +391,8 @@ async def test_extract_tickets_linked_work_item_failure_preserves_other_context(
 @pytest.mark.asyncio
 async def test_extract_and_cache_linked_failure_leaves_ticket_context_empty(monkeypatch):
     provider = _CustomAzureSubstitute(error=RuntimeError("provider detail"))
+    fetch = MagicMock(wraps=provider.get_linked_work_items)
+    monkeypatch.setattr(provider, "get_linked_work_items", fetch)
     vars_ = {}
     cached = []
     settings = MagicMock()
@@ -398,13 +400,14 @@ async def test_extract_and_cache_linked_failure_leaves_ticket_context_empty(monk
         "pr_reviewer.require_ticket_analysis_review": True,
         "related_tickets": cached,
     }.get(key, default)
-    monkeypatch.setattr("pr_agent.tools.ticket_pr_compliance_check.get_settings", lambda: settings)
+    monkeypatch.setattr("pr_agent.tools.ticket_pr_compliance_check.get_settings", lambda use_context=True: settings)
 
     assert await extract_and_cache_pr_tickets(provider, vars_) is None
 
     assert cached == []
     assert vars_ == {}
     settings.set.assert_not_called()
+    fetch.assert_called_once_with()
 
 
 @pytest.mark.asyncio
