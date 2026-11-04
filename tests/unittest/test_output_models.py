@@ -265,6 +265,64 @@ def test_assembled_description_validates_all_files_without_changing_prompt_limit
     assert error.value.errors()[0]["loc"] == ("pr_files", 20, "changes_title")
 
 
+@pytest.mark.parametrize(
+    "model",
+    [PRDescription, PRDescriptionHeaders, PRDescriptionAssembled],
+)
+@pytest.mark.parametrize(
+    "raw_item",
+    [
+        "Enhancement\n",    # literal block scalar (|)
+        "Enhancement\n\n",  # literal keep (|+)
+        "Enhancement ",     # single-quoted trailing space
+        "  Enhancement",    # leading whitespace
+        "  Enhancement\n",  # leading whitespace plus block-scalar newline
+        "Enhancement\t",    # trailing tab
+        "Bug fix\n",
+        "Tests\n",
+        "Documentation\n",
+        "Other\n",
+    ],
+)
+def test_description_type_items_strip_scalar_whitespace(model, raw_item):
+    assert model.model_validate({"type": [raw_item], "title": "x"}).type == [PRType(raw_item.strip())]
+
+
+def test_description_type_strips_each_item_in_multi_item_list():
+    for model in (PRDescription, PRDescriptionHeaders, PRDescriptionAssembled):
+        assert model.model_validate(
+            {"type": ["Bug fix\n", "Tests "], "title": "x"}
+        ).type == [PRType.BUG_FIX, PRType.TESTS]
+
+
+def test_description_type_accepts_block_scalar_item_from_load_yaml():
+    # The describe prompt asks for block scalars, so load_yaml reads a type
+    # item as "Enhancement\n"; the schema must accept that valid output.
+    data = load_yaml("type:\n- |\n  Enhancement\ntitle: |\n  Add retry\n", keys_fix_yaml=["title:"])
+    assert data == {"type": ["Enhancement\n"], "title": "Add retry"}
+    for model in (PRDescription, PRDescriptionHeaders, PRDescriptionAssembled):
+        assert model.model_validate(data).type == [PRType.ENHANCEMENT]
+
+
+@pytest.mark.parametrize(
+    "model",
+    [PRDescription, PRDescriptionHeaders, PRDescriptionAssembled],
+)
+@pytest.mark.parametrize("raw_item", ["NotAType", "NotAType\n", "   ", "", 123, None])
+def test_description_type_items_reject_invalid_values(model, raw_item):
+    with pytest.raises(ValueError):
+        model.model_validate({"type": [raw_item], "title": "x"})
+
+
+@pytest.mark.parametrize(
+    "model",
+    [PRDescription, PRDescriptionHeaders, PRDescriptionAssembled],
+)
+def test_description_type_leaves_non_list_input_untouched(model):
+    with pytest.raises(ValueError):
+        model.model_validate({"type": "Enhancement", "title": "x"})
+
+
 def test_review_failure_modes_are_optional_and_bounded():
     mode = {"what": "Partial write", "where": "app.py:save", "trigger": "Disk full",
             "detected_by": "Write failure test", "covered_in_this_pr": False}

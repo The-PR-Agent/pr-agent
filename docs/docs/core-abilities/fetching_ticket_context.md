@@ -291,7 +291,8 @@ or a comment command cannot change them.
 project_keys = ["PROJ", "OPS"]
 ```
 
-Entries are plain upper-case project keys (letters only, as Jira writes them) or `"*"` to allow all keys.
+Entries are plain upper-case project keys as Jira writes them (a letter, then letters or digits,
+such as `PROJ` or `B2B`) or `"*"` to allow all keys.
 Anything else (a lower-case label, a full ticket key, a URL, a blank entry) is ignored with a
 warning. If the list is set but none of its entries is valid, no Jira lookup is made at all
 until it is fixed, so a typo cannot silently widen the lookup again.

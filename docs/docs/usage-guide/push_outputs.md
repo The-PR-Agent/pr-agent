@@ -25,6 +25,13 @@ A record is a JSON object:
   "type": "review",
   "timestamp": "2026-09-08T14:03:21+00:00",
   "payload": {},
+  "pr": {
+    "url": "https://github.com/org/repo/pull/123",
+    "provider": "github",
+    "repo": "org/repo",
+    "number": 123,
+    "head_sha": "9fceb02"
+  },
   "markdown": "# PR Reviewer Guide ..."
 }
 ```
@@ -32,6 +39,12 @@ A record is a JSON object:
 - `type` — which tool produced the output
 - `timestamp` — the run completion time, UTC, ISO-8601
 - `payload` — the structured tool result
+- `pr` — the tool's pull request identity, present when the calling tool supplies it
+- `pr.url` — the pull request page URL
+- `pr.provider` — the git provider, such as `github`, `gitlab`, or `bitbucket`
+- `pr.repo` — the repository name or path
+- `pr.number` — the pull request number
+- `pr.head_sha` — the head commit SHA
 - `markdown` — the rendered comment text; present when the tool produces one
 
 For `/describe`, `payload.title` is the selected title, including the original PR title read when the
@@ -90,8 +103,8 @@ credential.
 | `stdout` | Prints one JSON line (the record) to stdout. |
 | `file` | Appends one JSON line per run (JSONL) to `file_path`, creating parent directories as needed. |
 | `webhook` | POSTs the generic record as JSON to `webhook_url` (5-second timeout, redirects not followed). |
-| `slack` | POSTs `{"text": ...}` to a Slack Incoming Webhook; the text is the markdown, or the payload JSON when the tool produces no markdown. |
-| `telegram` | Sends the markdown, or the payload JSON when no markdown is present, as plain text to `telegram_chat_id`. Text is truncated to at most 4096 UTF-16 code units without splitting surrogate pairs. |
+| `slack` | POSTs `{"text": ...}` to a Slack Incoming Webhook; the text is the markdown, or the payload JSON when the tool produces no markdown, followed by the PR URL when one is present. |
+| `telegram` | Sends the markdown, or the payload JSON when no markdown is present, as plain text to `telegram_chat_id`, followed by the PR URL when one is present. Text is truncated to at most 4096 UTF-16 code units without splitting surrogate pairs; room is reserved for the URL so truncation does not drop it. |
 
 Local channels (`stdout`, `file`) run before network channels (`webhook`, `slack`, `telegram`), and network
 posts never follow redirects. Each configured destination is attempted independently, so one failure

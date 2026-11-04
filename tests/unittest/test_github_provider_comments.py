@@ -9,13 +9,16 @@ These tests use ``GithubProvider.__new__(GithubProvider)`` to bypass network-bou
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from github import GithubException
+from github.PullRequest import PullRequest
 from github.PullRequestComment import PullRequestComment
 from requests.exceptions import RequestException
 
 from pr_agent.git_providers import github_provider as gh_module
+from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 
 
@@ -64,6 +67,106 @@ def _make_provider(pr=None, max_chars=65000):
     p.diff_files = []
     p.base_url = "https://api.github.com"
     return p
+
+
+class _CommentPageRequester:
+    per_page = 100
+    is_not_lazy = False
+    url = "https://api.github.test/repos/owner/repo/issues/1/comments"
+
+    def __init__(self, count, page_size):
+        self.count = count
+        self.page_size = page_size
+        self.pages = []
+        self.bodies = {}
+
+    def requestJsonAndCheck(self, method, url, parameters=None, headers=None):
+        parsed = urlparse(url)
+        assert method == "GET" and parsed.path == urlparse(self.url).path
+        params = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
+        params.update(parameters or {})
+        assert int(params.get("per_page", 100)) == 100
+        page = int(params.get("page", 1))
+        self.pages.append(page)
+        last = max(1, (self.count + self.page_size - 1) // self.page_size)
+        links = [(last, "last")] if last > 1 else []
+        if page < last:
+            links.append((page + 1, "next"))
+        if page > 1:
+            links.append((page - 1, "prev"))
+        response_headers = {"link": ", ".join(
+            f'<{self.url}?per_page=100&page={number}>; rel="{relation}"'
+            for number, relation in links
+        )} if links else {}
+        start = (page - 1) * self.page_size + 1
+        end = min(page * self.page_size, self.count)
+        return response_headers, [
+            {"id": number, "url": f"{self.url}/{number}",
+             "body": self.bodies.get(number, "## Legacy review" if number == self.count else "ordinary")}
+            for number in range(start, end + 1)
+        ]
+
+
+def _make_comment_page_provider(reported, actual, page_size=100):
+    requester = _CommentPageRequester(actual, page_size)
+    attributes = {"issue_url": requester.url.removesuffix("/comments")}
+    if reported is not None:
+        attributes["comments"] = reported
+    provider = _make_provider(PullRequest(requester, {}, attributes, completed=True))
+    provider.github_client = SimpleNamespace(per_page=requester.per_page)
+    return provider, requester
+
+
+@pytest.mark.parametrize(
+    ("reported", "actual", "page_size", "max_gets"),
+    [
+        (0, 0, 100, 1),
+        (1, 1, 100, 1),
+        (10, 10, 100, 1),
+        (99, 99, 100, 1),
+        (100, 100, 100, 2),
+        (101, 101, 100, 2),
+        (1000, 1000, 100, 2),
+        (99, 101, 100, 3),
+        (50, 1000, 100, 3),
+        (None, 10, 100, 2),
+        (True, 10, 100, 2),
+        (-1, 10, 100, 2),
+        # Simulate short responses that still advertise a next link for per_page=100.
+        (10, 101, 30, 6),
+    ],
+)
+def test_newest_issue_comments_preserve_sdk_pagination(reported, actual, page_size, max_gets):
+    provider, requester = _make_comment_page_provider(reported, actual, page_size)
+
+    comments = provider.get_issue_comments_newest_first()
+    newest = next(iter(comments), None)
+
+    assert (newest.id if newest is not None else None) == (actual or None)
+    # Allow future SDK versions to reduce requests on the unchanged fallback path.
+    assert 1 <= len(requester.pages) <= max_gets
+    pages = list(requester.pages)
+    first_ids = [comment.id for comment in comments]
+    assert first_ids == list(range(actual, 0, -1))
+    if actual < 100:
+        # Repeat the traversal for the identity/legacy fallback contract.
+        assert [comment.id for comment in comments] == first_ids
+        assert requester.pages == pages
+
+
+@pytest.mark.parametrize(("older_has_identity", "expected_id"), [(False, 2), (True, 1)])
+def test_short_thread_preserves_persistent_identity_and_legacy_scans(older_has_identity, expected_id):
+    provider, requester = _make_comment_page_provider(2, 2)
+    identity = "<!-- pr-agent:review:full -->"
+    if older_has_identity:
+        requester.bodies[1] = f"## Legacy review\n\n{identity}"
+
+    comment, _ = next(GitProvider._iter_persistent_comments(
+        provider, [identity, "## Legacy review"], identity_marker=identity,
+    ))
+
+    assert comment.id == expected_id
+    assert requester.pages == [1]
 
 
 @pytest.mark.parametrize(("comment_id", "expected_ids"), [(1, [1, 2]), (2, [1, 2]), (99, [])])

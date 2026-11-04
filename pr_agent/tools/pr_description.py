@@ -235,7 +235,8 @@ class PRDescription:
                 # Emit to the optional external sinks before touching the provider, so a sink
                 # still receives the description if publishing it to the PR fails.
                 await push_outputs_async(
-                    "describe", payload=self._prepare_output_payload(pr_title, label_data), markdown=pr_body
+                    "describe", payload=self._prepare_output_payload(pr_title, label_data),
+                    markdown=pr_body, git_provider=self.git_provider,
                 )
 
                 # publish labels
@@ -803,6 +804,8 @@ class PRDescription:
             system=system_prompt,
             user=user_prompt
         )
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"PR description response was truncated by {model}")
 
         return response
 

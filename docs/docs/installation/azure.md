@@ -107,6 +107,15 @@ org = "https://dev.azure.com/YOUR_ORGANIZATION/"
 # pat = "YOUR_PAT_TOKEN" needed only if using PAT for authentication
 ```
 
+Persistent reviews resolve the posting account through Azure DevOps using the same credentials as comment writes.
+Repeated `/review` runs update that account's existing review without requiring an `agent_identity` setting,
+including when Jira ticket context is enabled. This applies to pipelines, CLI runs, and webhook deployments.
+If identity lookup is unavailable, configure `azure_devops_server.agent_identity` in the host environment or settings
+with the posting account's GUID, unique name, or descriptor. Repository settings and comment arguments cannot set it.
+An explicit setting takes precedence over automatic resolution; display names
+do not prove comment ownership. If ownership cannot be verified, an existing review is preserved and a standalone
+result is posted.
+
 ## Azure DevOps Webhook
 
 To trigger from an Azure webhook, you need to manually

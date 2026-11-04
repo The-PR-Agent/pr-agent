@@ -276,7 +276,7 @@ To activate dual publishing mode, use the following setting:
 dual_publishing_score_threshold = x
 ```
 
-Where x represents the minimum score threshold (>=) for suggestions to be presented as committable PR comments in addition to the table. Default is -1 (disabled).
+Where x represents the minimum score threshold (>=) for suggestions to be presented as committable PR comments in addition to the table. Default is -1. Values of -1 or 0 disable dual publishing.
 
 ### Persistent inline comments
 
@@ -417,7 +417,7 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>dual_publishing_score_threshold</b></td>
-    <td>Minimum score threshold for suggestions to be presented as committable PR comments in addition to the table.</td>
+    <td>Minimum score threshold for suggestions to be presented as committable PR comments in addition to the table. Values of -1 or 0 disable dual publishing.</td>
   </tr>
   <tr>
     <td><b>focus_only_on_problems</b></td>
@@ -512,9 +512,12 @@ another retry.
 
 This is recovery within one invocation, not persisted resume across commands. Entirely failed initial
 batches still use the existing whole-batch fallback. Malformed or invalid top-level
-suggestion responses are treated as failed chunks and can use the remaining fallback models.
-A valid empty suggestion list (including `code_suggestions: []`) is a successful result
-and is not retried. Invalid individual suggestions in an otherwise valid list continue to
+suggestion responses, and responses marked as truncated by the model (`finish_reason="length"`),
+are treated as failed chunks and can use the remaining fallback models. A truncated response is
+retried as a whole, including any complete suggestions before the cutoff. If no chunk succeeds
+after the configured fallbacks are exhausted, the command reports failure.
+A valid empty suggestion list (including `code_suggestions: []`) in a complete response is a
+successful result and is not retried. Invalid individual suggestions in an otherwise valid list continue to
 be filtered without retrying that entire chunk.
 An ambiguous repeated model/deployment pair skips partial recovery rather than restarting the chain.
 

@@ -7,6 +7,7 @@ from packaging.version import parse as parse_version
 from requests import Request, Response
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import HTTPError, Timeout
+from requests.utils import get_encoding_from_headers
 
 from pr_agent.algo.comment_identity import (
     PRCodeSuggestionsHeader,
@@ -31,6 +32,18 @@ def _added_file(filename="src/example.py", lines=("a = 1", "b = 2", "c = 3")):
     patch = f"@@ -0,0 +1,{len(lines)} @@\n" + "\n".join("+" + line for line in lines)
     return FilePatchInfo(base_file="", head_file="\n".join(lines), patch=patch, filename=filename,
                          edit_type=EDIT_TYPE.ADDED)
+
+
+def _raw_file_response(contents: str, content_type: str, encoding: str = "utf-8") -> Response:
+    """Answer like the src endpoint: the Content-Type comes from the file extension and carries no charset."""
+    response = Response()
+    response.status_code = 200
+    response.url = "https://api.bitbucket.org/2.0/repositories/workspace/repository/src/a1b2c3d4e5f6/CHANGELOG.md"
+    response.headers["Content-Type"] = content_type
+    # As in requests' HTTPAdapter.build_response: ISO-8859-1 for a text/* type without a charset.
+    response.encoding = get_encoding_from_headers(response.headers)
+    response._content = contents.encode(encoding)
+    return response
 
 
 class TestBitbucketProvider:
@@ -290,6 +303,25 @@ class TestBitbucketProvider:
             "a1b2c3/src/a%23b%3Fc%25.py", headers=provider.headers,
             timeout=DEFAULT_HTTP_REQUEST_TIMEOUT,
         )
+
+    @pytest.mark.parametrize("content_type,contents,encoding", [
+        ("text/markdown", "## 1.2.0 — Café support\n- Thanks José Müller → 中文 ✨\n", "utf-8"),
+        ("text/x-python", "# Bonjour, café crème\nGREETING = 'Grüße'\n", "utf-8"),
+        ("text/plain", "Größe — 中文\n", "utf-8"),
+        ("text/plain", "Größe — 中文\n", "utf-16"),
+        # A file that is not UTF-8 still decodes as Latin-1, as it did before.
+        ("text/plain", "Größe, Maß\n", "latin-1"),
+    ], ids=["markdown", "python", "plain", "utf-16 with BOM", "latin-1"])
+    def test_file_reads_decode_raw_contents_sent_without_a_charset(self, content_type, contents, encoding):
+        provider = self._source_write_provider()
+        response = _raw_file_response(contents, content_type, encoding)
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response):
+            assert provider.get_pr_file_content("CHANGELOG.md", "feature") == contents
+            assert provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature") == FileContentSnapshot(
+                contents, True, "a1b2c3d4e5f6"
+            )
+            assert provider._get_pr_file_content(response.url) == contents
 
     def test_file_snapshot_propagates_server_failure(self):
         provider = self._source_write_provider()
@@ -1793,6 +1825,54 @@ class TestBitbucketServerProvider:
         bitbucket_client.get.assert_called_once_with("rest/api/1.0/application-properties")
         bitbucket_client.get_pull_request.assert_called_once_with(workspace_slug, "repo", pull_request_id=7)
 
+    @pytest.mark.parametrize(
+        ("pr_url", "parsed_pr", "server_url"),
+        [
+            (
+                "https://git.example.com/projects/PROJ/repos/users/pull-requests/7",
+                ("PROJ", "users", 7),
+                "https://git.example.com",
+            ),
+            (
+                "https://git.example.com/projects/~ALICE/repos/users/pull-requests/7",
+                ("~ALICE", "users", 7),
+                "https://git.example.com",
+            ),
+            (
+                "https://git.example.com/users/alice/repos/projects/pull-requests/7",
+                ("~alice", "projects", 7),
+                "https://git.example.com",
+            ),
+            (
+                "https://git.example.com/bitbucket/users/alice/repos/projects/pull-requests/7/overview",
+                ("~alice", "projects", 7),
+                "https://git.example.com/bitbucket",
+            ),
+            (
+                "https://git.example.com/projects/projects/PROJ/repos/repo/pull-requests/7",
+                ("PROJ", "repo", 7),
+                "https://git.example.com/projects",
+            ),
+        ],
+    )
+    def test_parse_urls_with_segments_named_projects_or_users(self, pr_url, parsed_pr, server_url):
+        assert BitbucketServerProvider._parse_pr_url(pr_url) == parsed_pr
+        assert BitbucketServerProvider._parse_bitbucket_server(pr_url) == server_url
+
+    def test_constructor_reads_project_of_repository_named_users(self):
+        bitbucket_client = MagicMock(Bitbucket)
+        bitbucket_client.get.return_value = {"version": "8.16"}
+        bitbucket_client.get_pull_request.return_value = {}
+
+        with patch(
+            "pr_agent.git_providers.bitbucket_server_provider.Bitbucket",
+            return_value=bitbucket_client,
+        ):
+            provider = BitbucketServerProvider("https://git.example.com/projects/PROJ/repos/users/pull-requests/7")
+
+        assert provider.workspace_slug == "PROJ"
+        bitbucket_client.get_pull_request.assert_called_once_with("PROJ", "users", pull_request_id=7)
+
     def test_get_issue_comments_normalizes_top_level_comments_from_all_activities(self):
         provider = self._persistent_provider()
         provider.bitbucket_client.get_pull_requests_activities.return_value = iter([
@@ -2735,7 +2815,7 @@ class TestBitbucketGlobalSettings:
         ref_resp = MagicMock(status_code=200)
         ref_resp.json.return_value = {"target": {"hash": "settings-sha"}}
         file_resp = MagicMock(status_code=200)
-        file_resp.text = "[pr_reviewer]\nnum_max_findings = 5\n"
+        file_resp.content = b"[pr_reviewer]\nnum_max_findings = 5\n"
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
                    side_effect=[repo_resp, ref_resp, file_resp]) as rq, \
              patch("pr_agent.git_providers.git_provider.get_settings") as ms:
@@ -2747,6 +2827,20 @@ class TestBitbucketGlobalSettings:
         assert "myws/pr-agent-settings" in rq.call_args_list[0].args[1]
         assert "refs/branches/release%2F1.0" in rq.call_args_list[1].args[1]
         assert "src/settings-sha/.pr_agent.toml" in rq.call_args_list[2].args[1]
+
+    def test_workspace_settings_keep_non_ascii_values(self):
+        provider = self._provider()
+        repo_resp = MagicMock(status_code=200)
+        repo_resp.json.return_value = {"mainbranch": {"name": "main"}}
+        ref_resp = MagicMock(status_code=200)
+        ref_resp.json.return_value = {"target": {"hash": "settings-sha"}}
+        toml = '[pr_reviewer]\nextra_instructions = "Antworte auf Deutsch: Größe, Maß — 中文"\n'
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
+                   side_effect=[repo_resp, ref_resp, _raw_file_response(toml, "text/plain")]), \
+             patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
+            assert provider._get_global_repo_settings() == toml.encode("utf-8")
 
     @pytest.mark.parametrize("status_code", [403, 404])
     def test_missing_or_inaccessible_default_branch_ref_returns_empty_and_caches(self, status_code):
@@ -2815,7 +2909,7 @@ class TestBitbucketGlobalSettings:
         ref_resp = MagicMock(status_code=200)
         ref_resp.json.return_value = {"target": {"hash": "settings-sha"}}
         file_resp = MagicMock(status_code=200)
-        file_resp.text = "[pr_reviewer]\nx = 1\n"
+        file_resp.content = b"[pr_reviewer]\nx = 1\n"
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
                    side_effect=[repo_resp, ref_resp, file_resp]) as rq, \
              patch("pr_agent.git_providers.git_provider.get_settings") as ms:
@@ -2838,13 +2932,26 @@ class TestBitbucketLocalSettingsRobustness:
             data={"destination": {"commit": {"hash": "destination-sha"}}},
         )
         resp = MagicMock(status_code=200)
-        resp.text = "[pr_reviewer]\nnum_max_findings = 5\n"
+        resp.content = b"[pr_reviewer]\nnum_max_findings = 5\n"
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=resp) as rq, \
              patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = False
             result = provider.get_repo_settings()
         assert result == [("local", b"[pr_reviewer]\nnum_max_findings = 5\n")]
         assert "src/destination-sha/.pr_agent.toml" in rq.call_args.args[1]
+
+    def test_get_repo_settings_keeps_non_ascii_values(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.workspace_slug = "myws"
+        provider.repo_slug = "myrepo"
+        provider.headers = {"Authorization": "Bearer x"}
+        provider.pr = MagicMock(data={"destination": {"commit": {"hash": "destination-sha"}}})
+        toml = '[pr_reviewer]\nextra_instructions = "Antworte auf Deutsch: Größe, Maß — 中文"\n'
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
+                   return_value=_raw_file_response(toml, "text/plain")), \
+             patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            assert provider.get_repo_settings() == [("local", toml.encode("utf-8"))]
 
     def test_get_repo_settings_ignores_error_response_for_local(self):
         # A non-200/404 response (e.g. 500 error page) must NOT be treated as local TOML content.

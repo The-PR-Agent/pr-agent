@@ -44,6 +44,26 @@ def _post_json(channel: str, url: str, body: dict) -> None:
         get_logger().warning(f"push_outputs: {channel} failed with status {response.status_code}")
 
 
+def _pr_url(record: dict) -> str:
+    pr = record.get("pr")
+    if not isinstance(pr, dict):
+        return ""
+    url = pr.get("url")
+    return url if isinstance(url, str) else ""
+
+
+def _append_pr_url(text: str, record: dict) -> str:
+    url = _pr_url(record)
+    if not url:
+        return text
+    return f"{text}\n\n{url}" if text else url
+
+
+def _truncate_utf16(text: str, max_units: int = 4096) -> str:
+    """Limit text to `max_units` UTF-16 code units without splitting a surrogate pair."""
+    return text.encode("utf-16-le", "surrogatepass")[:max_units * 2].decode("utf-16-le", "ignore")
+
+
 class StdoutSink:
     def send(self, record: dict, cfg: dict) -> None:
         print(json.dumps(record, ensure_ascii=False))
@@ -74,7 +94,7 @@ class SlackSink:
         text = record.get("markdown")
         if text is None:
             text = json.dumps(record["payload"], ensure_ascii=False)
-        _post_json("slack", url, {"text": text})
+        _post_json("slack", url, {"text": _append_pr_url(text, record)})
 
 
 class TelegramSink:
@@ -94,8 +114,13 @@ class TelegramSink:
             text = json.dumps(record["payload"], ensure_ascii=False)
         # Keep the host fixed and encode the token as a path component, not a URL.
         url = f"https://api.telegram.org/bot{quote(bot_token, safe=':')}/sendMessage"
-        # Limit to 4096 UTF-16 code units, dropping an incomplete surrogate pair at the boundary.
-        text = text.encode("utf-16-le", "surrogatepass")[:8192].decode("utf-16-le", "ignore")
+        # Reserve room for the PR link so truncating a long message never drops it.
+        pr_url = _pr_url(record)
+        if pr_url:
+            suffix = f"\n\n{pr_url}" if text else pr_url
+            suffix_units = len(suffix.encode("utf-16-le", "surrogatepass")) // 2
+            text = _truncate_utf16(text, max(0, 4096 - suffix_units)) + suffix
+        text = _truncate_utf16(text)
         _post_json("telegram", url, {"chat_id": chat_id, "text": text})
 
 

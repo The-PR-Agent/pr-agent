@@ -134,23 +134,21 @@ class ImportGraph:
     def _build(self, tree):
         sources = {path: oid for path, oid in tree.items() if language_of(path)}
         missing = list({oid for path, oid in sources.items() if (oid, language_of(path)) not in self.cache})
-        for oid, content in cat_blobs(self.repo, missing):
-            self.cache[oid] = content
+        blobs = dict(cat_blobs(self.repo, missing))
         reverse: dict[str, set] = {}
         for path, oid in sources.items():
-            for target in self._resolve_all(path, self._imports(path, oid)):
+            for target in self._resolve_all(path, self._imports(path, oid, blobs)):
                 if target != path:
                     reverse.setdefault(target, set()).add(path)
         return reverse
 
-    def _imports(self, path, oid):
+    def _imports(self, path, oid, blobs):
         key = (oid, language_of(path))
         imports = self.cache.get(key)
         if imports is None:
-            content = self.cache.get(oid)
+            content = blobs.get(oid)
             imports = extract_imports(content, key[1]) if isinstance(content, bytes) else []
             self.cache[key] = imports
-            self.cache.pop(oid, None)
         return imports
 
     def _resolve_all(self, path, imports):

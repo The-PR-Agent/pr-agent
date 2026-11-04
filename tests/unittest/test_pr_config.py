@@ -87,7 +87,7 @@ def test_shipped_config_defaults_have_no_undeclared_keys():
     with request_cycle_context({"settings": settings}):
         output = PRConfig.__new__(PRConfig)._prepare_pr_configs()
 
-    assert "config.enable_custom_labels = False" in output
+    assert "config.enable_custom_labels" not in output
     assert "not declared in the shipped configuration" not in output
 
 

@@ -9,7 +9,11 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.git_patch_processing import extract_hunk_lines_from_patch
 from pr_agent.algo.language_handler import build_language_file_matcher
-from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD, retry_with_fallback_models
+from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    retry_with_fallback_models,
+    run_diff_preparation,
+)
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.run_output import append_run_details
 from pr_agent.algo.skills_loader import get_skills_context
@@ -106,7 +110,7 @@ class PR_LineQuestions:
                                                                                        side=side
                                                                                        )
         else:
-            diff_files = self.git_provider.get_diff_files()
+            diff_files = await run_diff_preparation(self.git_provider.get_diff_files)
             for file in diff_files:
                 if file.filename == file_name:
                     self.patch_with_lines, self.selected_lines = extract_hunk_lines_from_patch(file.patch,

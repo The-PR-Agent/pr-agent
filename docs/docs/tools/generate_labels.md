@@ -27,6 +27,9 @@ The `generate_labels` tool uses configurations from the `[pr_description]` secti
 
 To use custom labels, you need to enable them in the configuration:
 
+Set these options in the PR-Agent host configuration. Repository `.pr_agent.toml` files and comment arguments cannot
+change them.
+
 ```toml
 [config]
 enable_custom_labels = true

@@ -1,12 +1,20 @@
 import asyncio
+import copy
 import json
 import os
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 
 import dynaconf
+from starlette_context import context, request_cycle_context
 
-from pr_agent.agent.pr_agent import PRAgent, parse_command, publish_incomplete_files_comment
+from pr_agent.agent.pr_agent import (
+    PRAgent,
+    parse_command,
+    publish_incomplete_files_comment,
+    response_language_instructions,
+)
 from pr_agent.agent.request_policy import RequestOutcome, enforce_request_policy
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
@@ -18,9 +26,9 @@ from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings
 from pr_agent.doctor import missing_provider_key_env_vars
-from pr_agent.git_providers import get_git_provider
+from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
-from pr_agent.git_providers.utils import apply_repo_settings
+from pr_agent.git_providers.utils import apply_host_settings, apply_repo_settings
 from pr_agent.log import get_logger, setup_logger
 from pr_agent.servers.github_common import (
     _reformat_quote_ask_command,
@@ -70,10 +78,31 @@ def get_list_setting_or_env(key, fallback=None):
     return normalize_setting_list(value)
 
 
+def _refresh_shared_provider(pr_url):
+    """Give each command of the run the view of the PR a provider of its own would give it.
+
+    Reset the diff state, as the webhook servers do between automatic commands, and re-read the PR, so that
+    a label, the title or a head that changed since the previous command is seen. Raise when the PR cannot be
+    read, as a provider of its own would, so no command runs on a snapshot that may be stale.
+    """
+    provider = context.get("git_provider", {}).get(pr_url) if context.exists() else None
+    for hook_name in ("reset_diff_cache_for_command", "refresh_pr_for_command"):
+        hook = getattr(provider, hook_name, None)
+        if callable(hook):
+            hook()
+
+
 async def _handle_request(url, body, notify=None):
     # Install a fresh collector so `command_failed()` below cannot read a verdict left
     # behind by a previous command; the tool replaces it with its own on entry.
     init_run_details()
+    try:
+        _refresh_shared_provider(url)
+    except Exception:
+        # PRAgent.handle_request fails a command whose PR cannot be read instead of raising; do the same.
+        get_logger().exception("Failed to refresh the pull request, not running the command.")
+        _mark_action_failed()
+        return
     result = await PRAgent().handle_request(url, body, notify=notify)
     if result is RequestOutcome.SKIPPED:
         return RequestOutcome.SKIPPED
@@ -104,14 +133,16 @@ def _settings_pr_url(event_payload, event_name):
     """The PR url repo-level settings load from, whatever shape the event has.
 
     PR events carry it top-level; comment events under "issue"; workflow_run only
-    resolves it for pull-request-originated runs, like its own branch below.
+    resolves it for pull-request-originated runs, like its own branch below. It is the
+    API url the tools and commands use, so one provider serves the settings, the policy
+    check and the tools.
     """
     pull_request = (
         event_payload.get("pull_request")
         or event_payload.get("issue", {}).get("pull_request")
         or {}
     )
-    pr_url = pull_request.get("html_url")
+    pr_url = pull_request.get("url") or pull_request.get("html_url")
     if event_name == "workflow_run":
         workflow_run = event_payload.get("workflow_run", {})
         if workflow_run.get("event") in ("pull_request", "pull_request_target"):
@@ -135,8 +166,10 @@ async def _run_auto_tool(tool_class, pr_url):
     # Install a fresh collector so `command_failed()` below cannot read a verdict left
     # behind by a previous tool; the tool replaces it with its own on entry.
     init_run_details()
+    _refresh_shared_provider(pr_url)
     try:
-        result = await tool_class(pr_url).run()
+        with response_language_instructions():
+            result = await tool_class(pr_url).run()
     except IncompletePullRequestFilesError as error:
         await asyncio.to_thread(publish_incomplete_files_comment, pr_url, error)
         raise
@@ -302,11 +335,16 @@ async def run_action():
         settings_provider = None
 
     # Gate on the active provider's key after repo settings are applied (a repo-level
-    # .pr_agent.toml can select a different provider) but before any tool runs: carrying
+    # .pr_agent.toml can select a different provider) but before model-backed tools run: carrying
     # on with the placeholder only fails every call a full run later (#4195, #4324).
     # Keyless providers defer to the run, as in `pr-agent doctor`; so do events with no
-    # PR, which have no repo settings to judge from.
-    missing_key = missing_provider_key_env_vars() if pr_url else None
+    # PR, which have no repo settings to judge from. Bare static commands need no model key.
+    static_comment_command = (
+        GITHUB_EVENT_NAME in ("issue_comment", "pull_request_review_comment")
+        and isinstance(comment_body, str)
+        and comment_body.strip().lower() in {"/help", "/config", "/settings"}
+    )
+    missing_key = missing_provider_key_env_vars() if pr_url and not static_comment_command else None
     if missing_key is not None:
         # Skip ignored automatic PR batches before enforcing a model key they do not need.
         if (GITHUB_EVENT_NAME in ("pull_request", "pull_request_target", "workflow_run")
@@ -321,35 +359,6 @@ async def run_action():
             f"Set {' or '.join(env_var_names)} in this workflow's env. "
             "'pr-agent doctor' preflights the same check by hand."
         )
-
-    # Append the response language in the extra instructions
-    try:
-        response_language = get_settings().config.get('response_language', 'en-us')
-        if response_language.lower() != 'en-us':
-            get_logger().info(f'User has set the response language to: {response_language}')
-
-            lang_instruction_text = (
-                f"Your response MUST be written in the language corresponding to locale code: "
-                f"'{response_language}'. This is crucial. Keep schema control values "
-                f"(such as 'No', 'Yes', 'None', 'false') in their original English form "
-                f"and do not translate them.")
-            separator_text = "\n======\n\nIn addition, "
-
-            for key in get_settings():
-                setting = get_settings().get(key)
-                if isinstance(setting, dynaconf.DataDict):
-                    if key.lower() in ['pr_description', 'pr_code_suggestions', 'pr_reviewer']:
-                        if hasattr(setting, 'extra_instructions'):
-                            extra_instructions = setting.extra_instructions
-
-                            if lang_instruction_text not in str(extra_instructions):
-                                updated_instructions = (
-                                    str(extra_instructions) + separator_text + lang_instruction_text
-                                    if extra_instructions else lang_instruction_text
-                                )
-                                setting.extra_instructions = updated_instructions
-    except Exception as e:
-        get_logger().info(f"github action: failed to apply language-specific instructions: {e}")
 
     # Handle pull request opened event
     if GITHUB_EVENT_NAME == "pull_request" or GITHUB_EVENT_NAME == "pull_request_target":
@@ -487,7 +496,7 @@ async def run_action():
                         body = comment_body
                     comment_id = event_payload.get("comment", {}).get("id")
                     if is_pr and not disable_eyes:
-                        provider = get_git_provider()(pr_url=url)
+                        provider = get_git_provider_with_context(url)
                     if is_pr:
                         _inject_artifact_context()
                         await _handle_request(
@@ -594,6 +603,26 @@ def _inject_ci_conclusion(conclusion):
                         )
 
 
+@contextmanager
+def _action_settings_scope():
+    """Scope a copy of the settings to the run and reset it on any exit, even when the run raises."""
+    cm = request_cycle_context({})
+    cm.__enter__()
+    try:
+        # Apply the trusted host layer (CONFIG.EXTRA_CONFIG_URL) to the process-wide settings the copy is taken
+        # from, so the options LiteLLM reads from them keep seeing it. Doing so inside the scope lets the run's
+        # apply_repo_settings() calls reuse the fetched payload; repository overrides stay in the copy.
+        try:
+            apply_host_settings()
+        except Exception as e:  # run_action() handles the same failure for the events that need these settings
+            get_logger().warning(f"github action: failed to apply host settings: {type(e).__name__}")
+        context["settings"] = copy.deepcopy(get_settings())
+        yield
+    finally:
+        # request_cycle_context skips its reset when the body raises (starlette-context 0.5.1).
+        cm.__exit__(None, None, None)
+
+
 async def _run_action_and_drain():
     """
     Run the action, then flush litellm's deferred callbacks before the loop closes.
@@ -605,18 +634,21 @@ async def _run_action_and_drain():
     token = _action_status.set(status)
 
     try:
-        await run_action()
-    finally:
-        try:
-            if litellm_callbacks_registered():
-                await drain_litellm_callbacks(
-                    get_settings().litellm.get(
-                        "callback_timeout_seconds",
-                        DEFAULT_CALLBACK_TIMEOUT_SECONDS,
+        # One request scope per run, as in the webhook servers and CLI, lets the run's commands share the
+        # GitHub provider and its PR, commit and file-content caches instead of rebuilding them per tool.
+        with _action_settings_scope():
+            try:
+                await run_action()
+            finally:
+                if litellm_callbacks_registered():
+                    await drain_litellm_callbacks(
+                        get_settings().litellm.get(
+                            "callback_timeout_seconds",
+                            DEFAULT_CALLBACK_TIMEOUT_SECONDS,
+                        )
                     )
-                )
-        finally:
-            _action_status.reset(token)
+    finally:
+        _action_status.reset(token)
 
     if status.failed:
         raise SystemExit(1)

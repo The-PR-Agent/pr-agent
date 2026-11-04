@@ -20,6 +20,8 @@ to-do list.
 
 ## `[config]` {#config}
 
+See [Configuration options](../usage-guide/configuration_options.md#global-configuration-file).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `max_webhook_request_body_bytes` | 5242880 | maximum request body accepted by webhook servers (5 MiB) |
@@ -66,8 +68,8 @@ to-do list.
 | `num_retries` | 4 | same-model retries of a request the provider rejects (429, 5xx, connection error) before fallback_models, waiting for its Retry-After (up to 30 s) or with exponential backoff; 0 falls back at once. Timeouts and empty responses use retry_same_model_on_timeout / retry_same_model_on_length instead |
 | `skip_keys` | [] |  |
 | `custom_reasoning_model` | false | when true, disables system messages and temperature controls for models that don't support chat-style inputs |
-| `response_language` | "en-US" | Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...) |
-| `repo_context_files` | ["AGENTS.md"] | Repository-relative files (e.g. AGENTS.md, CLAUDE.md) to include as AI prompt context; set to [] to disable local context. A nested list is a group of alternatives: only the first one that yields content is used, so a repository keeping the same instructions in several conventions (or symlinking them) sends them once; alternatives must be local paths. A local entry may use a single-directory glob in its file name (e.g. "docs/adr/*.md"), expanded to at most repo_context_max_glob_matches sorted matches on providers that can list directories (GitHub, GitLab). A structured entry {"repo_id" = ..., "file_path" = ...} selects a sibling default-branch file from the same namespace/owner; repo_id must be in the host-issued repo_context_sibling_repos allowlist below. Reads use the sibling default branch and share repo_context_max_lines; repository settings may select entries, comment arguments cannot override this key |
+| `response_language` | "en-US" | PR response locale (e.g., "en-US", "it-IT"); generated guidance applies only during each command. See additional_configurations.md. |
+| `repo_context_files` | ["AGENTS.md"] | Prompt context files: paths, alternatives, globs, sibling entries; [] disables. See [docs](additional_configurations.md). |
 | `repo_context_from_default_branch` | true | Read repo context files from the repository default branch (trusts only default-branch content). Set to false to read from the PR target branch instead. |
 | `repo_context_max_lines` | 500 | Maximum total rendered lines for repo context, including wrapper tags |
 | `repo_context_max_glob_matches` | 20 | Maximum number of files one repo_context_files glob entry (e.g. "docs/adr/*.md") expands to, in name order; each match is one file fetch. A repository's .pr_agent.toml may set it, comment arguments cannot. Clamped to 100. Matches still share the repo_context_max_lines budget. |
@@ -78,7 +80,7 @@ to-do list.
 | Key | Default | Description |
 | --- | --- | --- |
 | `max_description_tokens` | 500 |  |
-| `max_commits_tokens` | 500 |  |
+| `max_commits_tokens` | 500 | Token cap on the commit messages sent to the model by /describe, /review, /improve and other tools. 0 means no limit; -1 sends none. |
 | `max_model_tokens` | 32000 | Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities. |
 | `custom_model_max_tokens` | -1 | Override unknown models or Sol-tier GPT-6 on non-native custom providers. |
 | `max_output_tokens` | 0 | 0 = unset (the provider's own default applies) |
@@ -98,7 +100,7 @@ to-do list.
 | `output_relevant_configurations` | false |  |
 | `output_run_details` | false | if true, append an agent run details section (model, tokens, time cost, AI calls) to generated PR comments |
 | `output_run_cost` | false | if true, collect estimated LiteLLM API cost and include it inside the enabled run details section |
-| `large_patch_policy` | "clip" | "clip", "skip" |
+| `large_patch_policy` | "clip" | "clip" (default) or "skip"; a missing value is treated as "clip" |
 | `duplicate_prompt_examples` | false |  |
 | `persistent_inline_comments` | false | Enable persistent inline comments (issue #2037) to fingerprint each inline comment and embed a provider-compatible marker, then skip re-posting suggestions already present on the PR/MR across runs. |
 **seed**
@@ -129,23 +131,25 @@ to-do list.
 | `add_user_to_requests` | false | send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user") |
 | `reasoning_effort` | "medium" | "none", "minimal", "low", "medium", "high", "xhigh", "max" |
 | `additional_reasoning_effort_models` | [] | Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is otherwise decided by litellm's bundled model metadata (and the maintained Grok registry), so add an ID here when litellm does not know the model (custom OpenAI-compatible endpoints), or when another provider hosts a Sol-tier GPT-6 model under the same ID. Model IDs match exactly or through any provider prefix (e.g. "deepseek-v4-flash-0731" matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not recognize, so the parameter reaches the endpoint. The default "medium" may be rejected by providers that accept a different subset (e.g. "none"/"low"/"high"/"max"); adding a custom model id now surfaces a provider-side error instead of the previous silent drop. |
-| `no_temperature_models` | ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini", "moonshotai.kimi-k3", "us.moonshotai.kimi-k3", "global.moonshotai.kimi-k3", "kimi-k3", "kimi-k3.1-pro", "zai.glm-5"] | Optional: model IDs that must never receive the temperature parameter, on top of what litellm's parameter metadata reports. Temperature support is otherwise decided by litellm.get_supported_openai_params() (mirroring reasoning_effort), so add an ID here when litellm reports temperature as supported but the provider rejects it, or when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking Claude models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive temperature. Match model IDs exactly or through any provider prefix. For OpenRouter `:nitro` and `:floor` routing shortcuts, also match the suffix-free base ID (for example, match `future-model` to `openrouter/vendor/future-model:nitro`). Keep other model variants at their full ID. Preserve the former static registry entries below when litellm's metadata still marks them temperature-capable; see the issue for the probe diff. Bedrock rejects temperature for Kimi K3 and GLM-5 ("This model doesn't support the temperature field"); Moonshot/Kimi reasoning endpoints reject custom temperature. |
+| `no_temperature_models` | ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini", "moonshotai.kimi-k3", "us.moonshotai.kimi-k3", "global.moonshotai.kimi-k3", "kimi-k3", "kimi-k3.1-pro", "zai.glm-5"] | Optional: model IDs that must never receive the temperature parameter, on top of what litellm's parameter metadata reports. Temperature support is otherwise decided by litellm.get_supported_openai_params() (mirroring reasoning_effort), so add an ID here when litellm reports temperature as supported but the provider rejects it, or when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking Claude models (Opus 4.7/4.8, Opus/Sonnet/Fable 5.x and Haiku 5.5) never receive temperature. Match model IDs exactly or through any provider prefix. For OpenRouter `:nitro` and `:floor` routing shortcuts, also match the suffix-free base ID (for example, match `future-model` to `openrouter/vendor/future-model:nitro`). Keep other model variants at their full ID. Preserve the former static registry entries below when litellm's metadata still marks them temperature-capable; see #3611 (Derive temperature support from LiteLLM metadata and retire NO_SUPPORT_TEMPERATURE_MODELS) for the probe diff. Bedrock rejects temperature for Kimi K3 and GLM-5 ("This model doesn't support the temperature field"); Moonshot/Kimi reasoning endpoints reject custom temperature. |
 **extended thinking for Claude reasoning models**
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `enable_claude_extended_thinking` | false | Set to true to enable extended thinking feature |
-| `extended_thinking_budget_tokens` | 2048 |  |
-| `extended_thinking_max_output_tokens` | 4096 |  |
+| `extended_thinking_budget_tokens` | 2048 | Thinking budget used when enable_claude_extended_thinking is true. |
+| `extended_thinking_max_output_tokens` | 4096 | Output cap in extended-thinking mode; it replaces max_output_tokens and must be at least the thinking budget. |
 | `enable_claude_adaptive_thinking` | false | Adaptive thinking for Claude Opus 4.7/4.8 and Claude 5 models. When enabled, these models receive thinking={"type": "adaptive"} and an output_config effort. Do not add adaptive-only models to claude_extended_thinking_models_override; when both features are enabled, adaptive thinking takes precedence. |
-| `claude_adaptive_thinking_models_override` | [] | Optional: list model ids to additionally treat as adaptive-only Claude models. Add opaque Bedrock application inference profile ARNs here while keeping built-in detection for named models. When adaptive thinking is enabled, use the exact request model ids so LiteLLM keeps the adaptive payload instead of converting it to the legacy budget_tokens shape. |
+| `claude_adaptive_thinking_models_override` | [] | Optional model ids to treat as adaptive-only Claude models, including opaque Bedrock ARNs. See [changing a model](changing_a_model.md). |
 | `claude_extended_thinking_models_override` | [] | Optional: override the built-in list of Claude models that receive the extended-thinking payload. When non-empty, this list fully replaces the built-in defaults (see CLAUDE_EXTENDED_THINKING_MODELS in pr_agent/algo/__init__.py). Leave empty to use the defaults. |
 | `extract_issue_from_branch` | true | Extract issue number from PR source branch name (e.g. feature/1-auth-google -> issue #1). When true, branch-derived issue URLs are merged with tickets from the PR description for compliance. Set to false to restore description-only behaviour. Note: Branch-name extraction is GitHub-only for now; other providers planned for later. |
-| `branch_issue_regex` | "" | Optional: custom regex with exactly one capturing group for the issue number (validated at runtime; falls back to default if missing). If empty, uses default pattern: first 1-6 digits at start of branch or after a slash, followed by hyphen or end (e.g. feature/1-test, 123-fix). GitHub only; other providers planned for later. |
+| `branch_issue_regex` | "" | Optional: custom regex with one or more capturing groups for the issue number (validated at runtime); only the first group is used. If the regex has no capturing group, the default pattern is used; if it does not compile, no branch tickets are extracted. If empty, uses default pattern: first 1-6 digits at start of branch or after a slash, followed by hyphen or end (e.g. feature/1-test, 123-fix). GitHub only; other providers planned for later. |
 | `description_issue_regex` | "" | Configure a regex replacing bare #N references, with exactly one capturing group for an ASCII issue number. Leave empty for default matching (up to six digits); fall back with a warning on invalid patterns. Set the custom digit limit in the pattern; use only integer-parseable captures. Keep full URLs and owner/repo#N references. Use TOML literal quotes to preserve backslashes, e.g. description_issue_regex = '(?i)(?:fixes\|closes\|resolves)\s+#(\d+)' |
 
 
 ## `[pr_reviewer]` — /review {#pr_reviewer-review}
+
+See [Review](../tools/review.md#configuration-options).
 
 **enable/disable features**
 
@@ -176,16 +180,16 @@ to-do list.
 | `persistent_finding_state` | true | Persist review finding state across complete review runs. |
 | `max_previous_findings_chars` | 8000 | Character budget for the findings stored by earlier reviews, given to /review as context so it keeps their wording instead of re-raising them reworded, and skips findings whose GitHub or GitLab inline thread someone other than PR-Agent resolved (needs persistent_finding_state); 0 disables it. |
 | `inline_key_issues` | false | Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab, Gitea). |
-| `min_finding_confidence` | 0 | Drop findings whose model-reported confidence (integer 0-10) is below this value. 0 (default) keeps every finding and does not ask the model for a confidence. Above 0, each finding shows its confidence. Findings without a usable confidence value are kept. |
+| `min_finding_confidence` | 0 | Drop findings below this model-reported confidence (0-10); 0 keeps every finding and does not ask the model for one. |
 | `extra_instructions` | "" |  |
 | `num_max_findings` | 3 |  |
 | `final_update_message` | true |  |
 
 Azure DevOps also supplies verified PR-Agent inline key issues as dismissed when their status is `wontFix`
 or `byDesign` and differs from `azure_devops.default_comment_status`. Matching defaults, `fixed`, `closed`,
-active, and pending threads do not count as dismissals. This requires a stable
-`azure_devops_server.agent_identity` and infers a human decision from the current configuration; it cannot
-verify the status-changing actor or historical defaults. Dismissed findings share the existing
+active, and pending threads do not count as dismissals. PR-Agent resolves its posting identity through Azure DevOps;
+`azure_devops_server.agent_identity` can override it. This infers a human decision from the current configuration;
+it cannot verify the status-changing actor or historical defaults. Dismissed findings share the existing
 `max_previous_findings_chars` budget and may be reported again if the code makes them worse.
 
 **review labels**
@@ -209,6 +213,8 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 
 
 ## `[pr_description]` — /describe {#pr_description-describe}
+
+See [Describe](../tools/describe.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -244,12 +250,14 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 | --- | --- | --- |
 | `use_description_markers` | false |  |
 | `enable_large_pr_handling` | true |  |
-| `include_generated_by_header` | true |  |
-| `max_ai_calls` | 4 |  |
-| `async_ai_calls` | true |  |
+| `include_generated_by_header` | true | Add a "Generated by PR Agent" header (with the head SHA when available). Only read when use_description_markers is true. |
+| `max_ai_calls` | 4 | Not settable from a per-directory .pr_agent.toml. Caps the /describe AI calls for a large PR (one is kept for the summary). |
+| `async_ai_calls` | true | Not settable from a per-directory .pr_agent.toml. Run a large PR's /describe calls concurrently when enable_large_pr_handling is on. |
 
 
 ## `[pr_questions]` — /ask {#pr_questions-ask}
+
+See [Ask](../tools/ask.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -262,10 +270,12 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 
 ## `[pr_code_suggestions]` — /improve {#pr_code_suggestions-improve}
 
+See [Improve](../tools/improve.mdx#configuration-options).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `committable_code_suggestions` | false | Deprecated alias still accepted until 1.0: pr_code_suggestions.commitable_code_suggestions |
-| `dual_publishing_score_threshold` | -1 | -1 to disable, [0-10] to set the threshold (>=) for publishing a code suggestion both in a table and as committable |
+| `dual_publishing_score_threshold` | -1 | -1 or 0 disables, [1-10] to set the threshold (>=) for publishing a code suggestion both in a table and as committable |
 | `focus_only_on_problems` | true |  |
 | `extra_instructions` | "" |  |
 | `suggestions_heading` | "PR Code Suggestions" | Visible base heading for summary-table /improve comments. Identity is tracked separately. |
@@ -301,11 +311,11 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 | --- | --- | --- |
 | `demand_code_suggestions_self_review` | false | add a checkbox for the author to self-review the code suggestions |
 | `code_suggestions_self_review_text` | "**Author self-review**: I have reviewed the PR code suggestions, and addressed the relevant ones." |  |
-| `approve_pr_on_self_review` | false | no effect: the self-review checkbox is a visual marker only, and PR-Agent does not approve PRs (see the improve docs and the FAQ) |
-| `fold_suggestions_on_self_review` | true | no effect: the self-review checkbox is a visual marker only, and suggestions are not folded when it is ticked |
 
 
 ## `[pr_add_docs]` — /add_docs {#pr_add_docs-add_docs}
+
+See [Add Docs](../tools/add_docs.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -314,6 +324,8 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 
 
 ## `[pr_update_changelog]` — /update_changelog {#pr_update_changelog-update_changelog}
+
+See [Update Changelog](../tools/update_changelog.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -325,9 +337,13 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 
 ## `[pr_config]` — /config {#pr_config-config}
 
+See [Show possible configurations](../usage-guide/additional_configurations.md#show-possible-configurations).
+
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
 ## `[pr_help_docs]` {#pr_help_docs}
+
+See [Help Docs](../tools/help_docs.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -340,6 +356,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 
 ## `[github]` {#github}
+
+See [GitHub](../installation/github.md#run-as-a-github-app).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -359,9 +377,13 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[github_action_config]` {#github_action_config}
 
+See [GitHub Actions](../usage-guide/automations_and_usage.md#github-action).
+
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
 ## `[github_app]` {#github_app}
+
+See [GitHub App](../usage-guide/automations_and_usage.md#github-app).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -379,12 +401,14 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `handle_push_trigger` | false | settings for "pull_request" event with "synchronize" action - used to detect and handle push triggers for new commits |
 | `push_trigger_ignore_bot_commits` | true |  |
 | `push_trigger_ignore_merge_commits` | true |  |
-| `push_trigger_pending_tasks_backlog` | true |  |
-| `push_trigger_pending_tasks_ttl` | 300 |  |
+| `push_trigger_pending_tasks_backlog` | true | GitHub App only. Keep one queued push-trigger task per PR instead of dropping it; other servers always queue. |
+| `push_trigger_pending_tasks_ttl` | 300 | GitHub App only. Seconds idle per-PR push-trigger state is kept (other servers: 300); also the dedupe window when webhook_delivery_deduplication is on. |
 | `push_commands` | ["/describe", "/review"] |  |
 
 
 ## `[gitlab]` {#gitlab}
+
+See [GitLab](../usage-guide/automations_and_usage.md#gitlab-webhook).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -406,6 +430,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[gitea]` {#gitea}
 
+See [Gitea](../usage-guide/automations_and_usage.md#gitea-webhook).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `url` | "https://gitea.com" |  |
@@ -415,12 +441,16 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[bitbucket]` {#bitbucket}
 
+See [Bitbucket](../usage-guide/automations_and_usage.md#bitbucket-app).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `identity_request_timeout` | 30 | positive seconds for authenticated-account verification requests |
 
 
 ## `[bitbucket_app]` {#bitbucket_app}
+
+See [Bitbucket App](../usage-guide/automations_and_usage.md#bitbucket-app).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -432,9 +462,13 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[local]` {#local}
 
+See [Local git provider](../usage-guide/local_git_provider.md#when-to-use-it).
+
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
 ## `[gerrit]` {#gerrit}
+
+See [Supported platforms](../overview/supported_platforms.md#gerrit-and-codecommit).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -445,6 +479,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[bitbucket_server]` {#bitbucket_server}
 
+See [Bitbucket Server](../usage-guide/automations_and_usage.md#bitbucket-server-webhook).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `url` | "" | URL to the BitBucket Server instance |
@@ -453,6 +489,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 
 ## `[jira]` {#jira}
+
+See [Ticket context](../core-abilities/fetching_ticket_context.md#jira-integration).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -463,13 +501,15 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[litellm]` {#litellm}
 
+See [Changing a model](../usage-guide/changing_a_model.md#changing-a-model-in-pr-agent).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `enable_callbacks` | false |  |
 | `add_session_id_to_requests` | false | send a stable x-litellm-session-id header derived from the PR URL, so LiteLLM groups every request for the same PR into one session |
-| `success_callback` | [] |  |
-| `failure_callback` | [] |  |
-| `service_callback` | [] |  |
+| `success_callback` | [] | process-wide: only the deployment's configuration and environment set it, not a repo's .pr_agent.toml; in the Action, use a workflow env entry |
+| `failure_callback` | [] | process-wide, set like success_callback |
+| `service_callback` | [] | process-wide, set like success_callback |
 | `turn_off_message_logging` | false | set true to keep prompt/response content (the whole PR diff) out of callback payloads; strongly recommended with the "otel" callback |
 | `custom_llm_provider` | "" | Optional: forward a fixed custom_llm_provider to LiteLLM, so a raw hosted model id (e.g. "claude-sonnet-4-5") reaches the provider unchanged instead of being rewritten by LiteLLM's prefix inference. Empty = let LiteLLM infer the provider from the model name. |
 | `force_streaming_custom_llm_provider` | "" | Force streaming when the request matches this provider AND its api_base contains one of the substrings below. Some OpenAI-compatible endpoints return a response that LiteLLM cannot normalize in non-streaming mode. Both must be set for the workaround to apply. |
@@ -481,6 +521,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[bedrock]` {#bedrock}
 
+See [Amazon Bedrock](../usage-guide/changing_a_model.md#amazon-bedrock).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `guardrail_identifier` | "" | guardrail ID or ARN; empty = disabled. When set, Bedrock models must use "bedrock/converse/..."; other Bedrock routes fail instead of running unguarded |
@@ -489,6 +531,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 
 ## `[openrouter]` {#openrouter}
+
+See [OpenRouter](../usage-guide/changing_a_model.md#openrouter).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -502,13 +546,17 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[model_routing]` — send a small pull request to a cheaper primary model (disabled by default) {#model_routing-send a small pull request to a cheaper primary model (disabled by default)}
 
+See [Model routing](../usage-guide/changing_a_model.md#routing-small-pull-requests-to-a-cheaper-model).
+
 | Key | Default | Description |
 | --- | --- | --- |
-| `enable` | false | Rules are checked in order; the first one whose limits the pull request fits selects the primary model for the call, and config.fallback_models still apply after it. A pull request that fits no rule uses config.model. Size is measured after the [ignore] rules by diff hunks (max_hunks) and changed files (max_files), which every git provider reports and which do not depend on any model's tokenizer. Only calls that ask for the regular model are routed (/review, /improve, /generate_labels, /add_docs); tools that use model_weak are left alone. With Azure (openai.deployment_id set) a rule also needs its own deployment_id, or it is skipped. |
-| `rules` | [] | Each rule may also set max_patch_chars: an inclusive ceiling on the sum of Python character counts in the supplied patch strings, including headers and line endings. All limits named by a rule must match. Missing, non-string, or failed-content patches make this count unknown, so character-limited rules are skipped. An explicit empty patch counts as zero; an incomplete head file alone does not invalidate a supplied patch. This measures supplied text, not tokens or full file/diff size; provider normalization or clipping is not recovered. Example: [{ max_hunks = 3, max_patch_chars = 10000, model = "gpt-6-luna" }, { max_hunks = 15, max_files = 6, model = "gpt-6.1-sol" }] A matched rule replaces the primary (model, deployment) pair. If it matches a configured fallback pair, deduplicate the effective chain and append the displaced primary unless already present. Otherwise the configured fallbacks follow unchanged. Later pairs are attempted only after fallback-eligible failures; distinct deployments remain separate. /improve uses this effective chain for chunk recovery. |
+| `enable` | false | Set true to route small pull requests to a cheaper primary model. See [changing a model](changing_a_model.md). |
+| `rules` | [] | Ordered rules using max_hunks, max_files, max_patch_chars, model, and deployment_id. See [changing a model](changing_a_model.md). |
 
 
 ## `[otel]` {#otel}
+
+See [Additional configurations](../usage-guide/additional_configurations.md#built-in-opentelemetry-command-telemetry).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -525,6 +573,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[pr_similar_issue]` {#pr_similar_issue}
 
+See [Similar Issues](../tools/similar_issues.md#selecting-a-vector-database).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `skip_comments` | false |  |
@@ -535,6 +585,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[pinecone]` {#pinecone}
 
+See [Pinecone](../tools/similar_issues.md#pinecone-configuration).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `cloud` | "aws" | Serverless index deployment for the modern SDK. `cloud` is one of "aws", "gcp" or "azure"; pick a `region` offered by that cloud. |
@@ -543,6 +595,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[lancedb]` {#lancedb}
 
+See [LanceDB](../tools/similar_issues.md#lancedb-configuration).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `uri` | "./lancedb" |  |
@@ -550,18 +604,24 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[qdrant]` {#qdrant}
 
+See [Qdrant](../tools/similar_issues.md#qdrant-configuration).
+
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
 ## `[skills]` {#skills}
 
+See [Agent skills](../core-abilities/agent_skills.md#configuration).
+
 | Key | Default | Description |
 | --- | --- | --- |
-| `enabled` | false | Agent skills (SKILL.md) support: discovers SKILL.md files from the configured filesystem paths and injects their content into review/improve/describe and /ask prompts, including questions on a specific line. Sibling *.md files in the skill directory tree (e.g. references/guide.md) are inlined alongside SKILL.md. PR-Agent supports text-only skills: scripts/ and assets/ subdirectories are skipped because PR-Agent uses a single-shot model call (no tool-use loop) and cannot execute scripts or load binary assets on demand. Skills that depend on script execution will not work here. See https://github.com/The-PR-Agent/pr-agent/issues/2384 |
+| `enabled` | false | Enable agent skills (SKILL.md) discovery and prompt injection. See [agent skills](../core-abilities/agent_skills.md). |
 | `paths` | [] | directories to scan recursively for "*/SKILL.md"; supports ~ and $VAR |
 | `max_skills_tokens` | 8000 | token budget for the combined skills_context block |
 
 
 ## `[artifacts]` {#artifacts}
+
+See [CI artifacts](../installation/github.md#ci-artifact-context).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -576,6 +636,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[mosaico]` {#mosaico}
 
+See [Mosaico server](../installation/mosaico_server.md#what-the-mode-is).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `bearer_tokens` | {} | principal names to distinct bearer secrets; empty permits anonymous trusted-network use |
@@ -587,12 +649,16 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[asana]` {#asana}
 
+See [Asana](../core-abilities/fetching_ticket_context.md#asana-integration).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `request_timeout` | 10 | seconds allowed for each Asana task API request |
 
 
 ## `[linear]` {#linear}
+
+See [Linear](../core-abilities/fetching_ticket_context.md#linear-integration).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -601,6 +667,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[azure_devops]` {#azure_devops}
 
+See [Azure DevOps](../usage-guide/automations_and_usage.md#azure-devops-provider).
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `default_comment_status` | "closed" |  |
@@ -608,12 +676,16 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[azure_devops_server]` {#azure_devops_server}
 
+See [Azure DevOps Server](../usage-guide/automations_and_usage.md#azure-devops-webhook).
+
 | Key | Default | Description |
 | --- | --- | --- |
-| `agent_identity` | "" | Host-only identity (email, GUID, or descriptor) PR-Agent posts as on Azure DevOps. Empty discovers the identity from earlier agent comments on the PR. Repository settings and comment arguments cannot change it |
+| `agent_identity` | "" | Host-only GUID, unique name, descriptor, or list; empty resolves review authorship automatically. See installation/azure.md |
 
 
 ## `[push_outputs]` — push tool outputs to external sinks without calling git-provider APIs (disabled by default) {#push_outputs-push tool outputs to external sinks without calling git-provider APIs (disabled by default)}
+
+See [Push outputs](../usage-guide/push_outputs.md#configuration).
 
 | Key | Default | Description |
 | --- | --- | --- |
