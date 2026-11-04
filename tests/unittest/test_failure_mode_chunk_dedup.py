@@ -21,3 +21,9 @@ def test_repeated_chunk_failure_modes_do_not_crowd_out_distinct_cases():
 def test_single_chunk_failure_modes_are_unique_before_the_cap():
     first, second = mode("first"), mode("second")
     assert parse_failure_modes([first, first, first, second]) == [first, second]
+
+
+def test_coverage_differences_remain_distinct_in_original_order():
+    covered = mode("same failure")
+    uncovered = {**covered, "covered_in_this_pr": False}
+    assert parse_failure_modes([covered, uncovered, covered]) == [covered, uncovered]
