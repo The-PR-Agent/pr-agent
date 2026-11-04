@@ -1281,7 +1281,7 @@ class PRCodeSuggestions:
     @staticmethod
     def _truncate_if_needed(suggestion):
         suggestion.pop('_is_truncated', None)
-        max_code_suggestion_length = get_settings().get("PR_CODE_SUGGESTIONS.MAX_CODE_SUGGESTION_LENGTH", 0)
+        max_code_suggestion_length = _as_threshold("pr_code_suggestions.max_code_suggestion_length", 0, 0)
         suggestion_truncation_message = get_settings().get("PR_CODE_SUGGESTIONS.SUGGESTION_TRUNCATION_MESSAGE", "")
         if max_code_suggestion_length > 0:
             if len(suggestion['improved_code']) > max_code_suggestion_length:
