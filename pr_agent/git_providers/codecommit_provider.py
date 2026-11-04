@@ -18,7 +18,7 @@ from ..algo.comment_identity import (
 )
 from ..algo.utils import load_large_diff
 from ..log import get_logger
-from .git_provider import GitProvider, cache_languages
+from .git_provider import GitProvider, cache_languages, format_persistent_update_header
 
 
 class PullRequestCCMimic:
@@ -724,7 +724,7 @@ class CodeCommitProvider(GitProvider):
         if not update_header:
             return pr_comment
 
-        update_message = f"#### ({name.capitalize()} updated until commit {target['source_commit']})\n"
+        update_message = format_persistent_update_header(name, target["source_commit"])
         updated_anchor = f"{identity_marker}\n\n{update_message}"
         return pr_comment.replace(identity_marker, updated_anchor, 1)
 
