@@ -57,8 +57,7 @@ def push_outputs(
     Controlled by the [push_outputs] config section (disabled by default). Supported channels:
     "stdout" (one JSON line), "file" (append JSONL), "webhook" (POST the generic record),
     "slack" (POST {"text": ...} to a Slack Incoming Webhook), and "telegram"
-    (sendMessage to a configured chat). The record carries the calling tool's PR identity
-    when one is supplied. Non-fatal: never raises.
+    (sendMessage to a configured chat). Non-fatal: never raises.
     """
     try:
         cfg = get_settings().get("push_outputs", {}) or {}
