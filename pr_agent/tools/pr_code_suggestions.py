@@ -490,7 +490,9 @@ class PRCodeSuggestions:
                 # Emit to the optional external sinks before touching the provider, so a sink
                 # still receives the suggestions if publishing them to the PR fails.
                 markdown = render_suggestions_markdown(data) + self._get_suggestions_coverage_footer()
-                await push_outputs_async("improve", payload=data, markdown=markdown)
+                await push_outputs_async(
+                    "improve", payload=data, markdown=markdown, git_provider=self.git_provider
+                )
                 # If a temporary comment was published, remove it
                 self.git_provider.remove_initial_comment()
 
@@ -690,8 +692,10 @@ class PRCodeSuggestions:
         pr_body = f"{format_pr_code_suggestions_header()}\n\n{no_suggestions_message}{coverage_footer}"
         if get_settings().config.publish_output:
             markdown = f"## PR Code Suggestions\n\n{no_suggestions_message}{coverage_footer}"
-            await push_outputs_async("improve", payload=getattr(self, "data", None) or {"code_suggestions": []},
-                                     markdown=markdown)
+            await push_outputs_async(
+                "improve", payload=getattr(self, "data", None) or {"code_suggestions": []},
+                markdown=markdown, git_provider=self.git_provider,
+            )
         if (get_settings().config.publish_output and
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
             get_logger().warning("No code suggestions found for the PR.")

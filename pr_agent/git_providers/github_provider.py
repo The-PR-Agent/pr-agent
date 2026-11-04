@@ -851,6 +851,15 @@ class GithubProvider(GitProvider):
         head_sha = getattr(head, "sha", None)
         return head_sha if isinstance(head_sha, str) else ""
 
+    def get_pr_identity(self) -> dict:
+        return {
+            "url": self.get_pr_url() or "",
+            "provider": "github",
+            "repo": self.repo or "",
+            "number": self.pr_num if self.pr_num is not None else "",
+            "head_sha": self.get_pr_head_sha(),
+        }
+
     def get_comment_url(self, comment) -> str:
         return comment.html_url
 

@@ -76,6 +76,15 @@ class LocalGitProvider(GitProvider):
             return False
         return True
 
+    def get_pr_identity(self) -> dict:
+        return {
+            "url": "",
+            "provider": "local",
+            "repo": Path(self.repo_path).name if self.repo_path else "",
+            "number": "",
+            "head_sha": self.repo.head.commit.hexsha if self.repo else "",
+        }
+
     def supports_code_suggestions_artifact(self) -> bool:
         return True
 

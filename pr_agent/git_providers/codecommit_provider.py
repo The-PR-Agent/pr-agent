@@ -435,6 +435,16 @@ class CodeCommitProvider(GitProvider):
         except AttributeError:
             return ""
 
+    def get_pr_identity(self) -> dict:
+        head_sha = getattr(self.pr, "source_commit", "") if self.pr is not None else ""
+        return {
+            "url": self.get_pr_url() or "",
+            "provider": "codecommit",
+            "repo": self.repo_name or "",
+            "number": self.pr_num if self.pr_num is not None else "",
+            "head_sha": head_sha if isinstance(head_sha, str) else "",
+        }
+
     @cache_languages
     def get_languages(self):
         """Return recognized language percentages for diff prioritization."""

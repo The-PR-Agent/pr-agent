@@ -1405,6 +1405,21 @@ class GitLabProvider(GitProvider):
             get_logger().exception(f"Could not get head SHA: {e}")
             return ""
 
+    def get_pr_identity(self) -> dict:
+        repo = getattr(self, "id_project", None)
+        repo = repo if isinstance(repo, str) else ("" if repo is None else str(repo))
+        if "/" not in repo:
+            project_path = getattr(self.mr, "path_with_namespace", None)
+            if isinstance(project_path, str) and project_path:
+                repo = project_path
+        return {
+            "url": getattr(self.mr, "web_url", None) or self.get_pr_url() or "",
+            "provider": "gitlab",
+            "repo": repo,
+            "number": self.id_mr if self.id_mr is not None else "",
+            "head_sha": self.get_pr_head_sha(),
+        }
+
     def get_comment_url(self, comment):
         return f"{self.mr.web_url}#note_{comment.id}"
 
