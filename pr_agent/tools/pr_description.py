@@ -1067,7 +1067,8 @@ class PRDescription:
                                          artifact={"file": file})
                     continue
                 filename = file['filename'].replace("'", "`").replace('"', "`")
-                changes_summary = (file.get('changes_summary') or "").strip()
+                summary = file.get("changes_summary")
+                changes_summary = summary.strip() if isinstance(summary, str) else ""
                 changes_title = file['changes_title'].strip()
                 label = file['label'].strip().lower()
                 if label not in file_label_dict:
