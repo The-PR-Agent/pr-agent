@@ -16,8 +16,14 @@ _MAPPING_TOO_COMPLEX_ARG = '.mapping_value_too_complex'
 class CliArgs:
     @staticmethod
     def _host_only_setting_arg(arg: str) -> str | None:
-        """Return a protected setting token when a CLI arg targets a host-only key."""
-        setting_name = arg.lstrip('-').split('=', 1)[0].strip().replace('__', '.')
+        """Return a protected setting token when a CLI arg targets a host-only key.
+
+        Every whitespace character in the flag is removed before the section and key are
+        split, because ``update_settings_from_args`` strips the token parts before applying
+        them, so a name written e.g. ``--github. seconds_between_requests`` must validate as
+        the same host-only key it would set.
+        """
+        setting_name = ''.join(arg.lstrip('-').split('=', 1)[0].split()).replace('__', '.')
         section, separator, key = setting_name.partition('.')
         if not separator:
             if (section in REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION
@@ -215,8 +221,12 @@ class CliArgs:
                         if mapping_offending_arg:
                             return False, mapping_offending_arg
                         continue
+                    # A forbidden key written with whitespace around the dot must not slip by
+                    # the literal match below: strip the whitespace out of the flag part so
+                    # the scan sees the dotted path settings_loader will apply.
+                    normalized_arg_word = ''.join(arg_word.split('=', 1)[0].split())
                     for forbidden_arg_word in forbidden_cli_args:
-                        if forbidden_arg_word in arg_word:
+                        if forbidden_arg_word in arg_word or forbidden_arg_word in normalized_arg_word:
                             return False, forbidden_arg_word
             return True, ""
         except Exception as e:

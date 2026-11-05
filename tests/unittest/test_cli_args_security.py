@@ -408,6 +408,54 @@ def test_validate_user_args_rejects_forbidden_arg_with_leading_whitespace(prefix
 
 
 @pytest.mark.parametrize(
+    "spaced",
+    [
+        # update_settings_from_args strips the whitespace around the dot before applying
+        # the setting, so validate_user_args must see the same dotted path for every
+        # host-only key, not just for the tightly written form
+        "--config. num_retries=10",
+        "--config .num_retries=10",
+        "--config\t.num_retries=10",
+        "--github. seconds_between_requests=1",
+        "--github .seconds_between_writes=1",
+        "--github.\tapi_retries=3",
+        "--pr_reviewer. max_number_of_calls=10",
+        "--pr_code_suggestions .parallel_calls=true",
+        "--pr_similar_issue .force_update_dataset=true",
+        "--prompt_fragments .diff_hunk_format=unsafe",
+        "--push_outputs. webhook_url=https://evil.example",
+        "--push_outputs .enable=true",
+        # the whole-section mapping form with a spaced section name is checked too
+        '--config ={num_retries: 10}',
+        '--push_outputs ={webhook_url: "https://evil.example"}',
+        '--skills ={paths: ["/etc"]}',
+    ],
+)
+def test_validate_user_args_rejects_host_only_key_with_whitespace_around_the_section_dot(spaced):
+    ok, offending = CliArgs.validate_user_args([spaced])
+    assert ok is False
+    assert isinstance(offending, str) and offending
+
+
+@pytest.mark.parametrize(
+    "spaced",
+    [
+        # a forbidden key is anchored on the dot, so a name written with whitespace
+        # around the dot evades the raw substring match and must be caught by the
+        # normalized flag name
+        "--config. description_path=docs-output",
+        "--config .review_path=docs-output",
+        "--config. base_url=https://evil.example",
+        "--config .extra_config_url=https://evil.example",
+    ],
+)
+def test_validate_user_args_rejects_forbidden_key_with_whitespace_around_the_section_dot(spaced):
+    ok, offending = CliArgs.validate_user_args([spaced])
+    assert ok is False
+    assert isinstance(offending, str) and offending
+
+
+@pytest.mark.parametrize(
     "cyclic",
     [
         "--qdrant={\"x\": &a [*a]}",
