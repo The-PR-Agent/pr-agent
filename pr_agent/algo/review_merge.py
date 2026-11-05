@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Hashable
 from typing import Any
+from urllib.parse import urlsplit
 
 from pr_agent.algo.comment_identity import as_review_text
 from pr_agent.algo.output_models import parse_failure_modes
@@ -379,7 +380,24 @@ def _canonical_ticket_url(raw_url: Any, ticket_index: tuple) -> str:
         return by_url[_normalize_text(text)]
     number = _ticket_number(text)
     if number and number in by_number:
-        return by_number[number]
+        canonical_url = by_number[number]
+        if re.fullmatch(r"#?\d+", text):
+            return canonical_url
+        # A full URL or a named tracker ID identifies its own ticket, even when its
+        # numeric suffix happens to match a related ticket in another repository.
+        if text.casefold() == canonical_url.rstrip("/").rsplit("/", 1)[-1].casefold():
+            return canonical_url
+        try:
+            source, target = urlsplit(text), urlsplit(canonical_url)
+        except ValueError:
+            return text
+        if (source.scheme == target.scheme and source.netloc.casefold() == target.netloc.casefold()
+                and not source.query and not source.fragment):
+            parts = source.path.split("/")
+            if parts.count("...") == 1:
+                before, after = source.path.split("...", 1)
+                if target.path.startswith(before) and target.path.endswith(after):
+                    return canonical_url
     return text
 
 
