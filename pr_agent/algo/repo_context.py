@@ -628,46 +628,12 @@ def _iter_repo_context_files(
             )
 
 
-def _load_repo_context_files(
-    git_provider, context_files: list, from_default_branch: bool | None = None
-) -> tuple[list[tuple[str, str]], bool]:
-    """Load every configured file for compatibility callers."""
-    state = _RepoContextLoadState()
-    files = [
-        (label, content.rstrip())
-        for label, content in _iter_repo_context_files(
-            git_provider, context_files, from_default_branch, state=state
-        )
-    ]
-    return files, state.had_fetch_error
-
-
 def _repo_context_render_entries(files):
     """Yield (path, content) pairs, accepting a label-keyed dict or ordered pairs.
 
-    _load_repo_context_files returns ordered (label, content) pairs so a local path and a
-    sibling's rendered label may coexist; a dict spelling is kept for direct callers."""
+    Ordered (label, content) pairs let a local path and a sibling's rendered label
+    coexist; a dict spelling is kept for direct callers."""
     return files.items() if isinstance(files, dict) else files
-
-
-def render_instruction_files(files: dict[str, str] | list[tuple[str, str]]) -> str:
-    parts = [
-        INSTRUCTION_FILES_INTRO,
-        "<instruction_files>",
-    ]
-
-    for path, content in _repo_context_render_entries(files):
-        scope = path.rsplit("/", 1)[0] if "/" in path else "repo-root"
-        fence = _get_markdown_fence(content)
-        parts.append(f'<file path="{escape(path, quote=True)}" scope="{escape(scope, quote=True)}">')
-        parts.append(f"{fence}markdown")
-        parts.append(content.rstrip())
-        parts.append(fence)
-        parts.append("</file>")
-        parts.append("")
-
-    parts.append("</instruction_files>")
-    return "\n".join(parts)
 
 
 def _split_instruction_lines(content: str, max_lines: int) -> tuple[list[str], bool]:

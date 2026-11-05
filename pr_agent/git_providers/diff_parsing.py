@@ -141,9 +141,3 @@ def reconstruct_base_file_checked(head_file_str: str, patch_str: str) -> str | N
     if base_lines and head_file_str.endswith("\n"):
         result += "\n"
     return result
-
-
-def reconstruct_base_file(head_file_str: str, patch_str: str) -> str:
-    """Reverse-apply a patch, returning "" when it does not match the head file."""
-    result = reconstruct_base_file_checked(head_file_str, patch_str)
-    return result if result is not None else ""

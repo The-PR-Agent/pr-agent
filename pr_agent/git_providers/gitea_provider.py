@@ -1419,12 +1419,6 @@ class RepoApi(giteapy.RepositoryApi):
             index=issue_number
         )
 
-    def list_all_commits(self, owner: str, repo: str):
-        return self.repository.repo_get_all_commits(
-            owner=owner,
-            repo=repo
-        )
-
     def add_reaction_comment(self, owner: str, repo: str, comment_id: int, reaction: str):
         body = {
             "content": reaction

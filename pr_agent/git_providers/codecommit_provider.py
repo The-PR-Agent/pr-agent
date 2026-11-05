@@ -102,8 +102,6 @@ class CodeCommitProvider(GitProvider):
 
     def is_supported(self, capability: str) -> bool:
         if capability in [
-            "create_inline_comment",
-            "publish_inline_comments",
             "get_labels",
             "gfm_markdown",
             "markdown_backslash_escapes",
@@ -419,9 +417,6 @@ class CodeCommitProvider(GitProvider):
 
     def publish_inline_comments(self, comments: list[dict]):
         raise NotImplementedError("CodeCommit provider does not support publishing inline comments yet")
-
-    def get_title(self):
-        return self.pr.title
 
     def get_pr_id(self):
         """

@@ -202,11 +202,6 @@ def _globstar_offsets(pattern: str) -> list[int]:
     return offsets
 
 
-def translate_globs_to_regexes(globs: list):
-    """Expand standalone ``**/`` segments into separate zero-directory translations."""
-    return _translate_globs_to_regexes_with_status(globs)[0]
-
-
 def _translate_globs_to_regexes_with_status(globs: list):
     """Translate globs without hiding bounded omissions from metadata callers."""
     complete = not isinstance(globs, Mapping)

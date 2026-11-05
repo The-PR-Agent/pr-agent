@@ -1731,18 +1731,6 @@ class PRCodeSuggestions:
             return False, "the existing code does not match the anchored range", True
         return True, "", True
 
-    def _suggestion_applyability(self, relevant_file, relevant_lines_start, relevant_lines_end,
-                                 existing_code) -> tuple[bool, str]:
-        is_applicable, fallback_reason, _ = self._validate_suggestion(
-            relevant_file, relevant_lines_start, relevant_lines_end, existing_code)
-        return is_applicable, fallback_reason
-
-    def is_applicable_suggestion(self, relevant_file, relevant_lines_start, relevant_lines_end,
-                                 existing_code) -> bool:
-        return self._suggestion_applyability(relevant_file, relevant_lines_start,
-                                             relevant_lines_end, existing_code)[0]
-
-
     def dedent_code(self, relevant_file, relevant_lines_start, new_code_snippet):
         try:  # dedent code snippet
             self.diff_files = getattr(self.git_provider, "diff_files", None)

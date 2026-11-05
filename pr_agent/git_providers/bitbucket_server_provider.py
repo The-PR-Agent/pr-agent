@@ -548,9 +548,6 @@ class BitbucketServerProvider(GitProvider):
         # list, which would post the already-accepted suggestions a second time.
         return published_count > 0 or publishable_count == 0
 
-    def get_title(self):
-        return self.pr.title
-
     @cache_languages
     def get_languages(self):
         return self._language_percentages(self.get_files())

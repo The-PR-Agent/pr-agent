@@ -1,7 +1,7 @@
 """End-to-end A2A 1.0 round-trip through the real MOSAICO server stack.
 
 Drives an HTTP POST through the whole server (Starlette + DefaultRequestHandler +
-executor + RawContextMiddleware + route_and_run + real PRReviewer with publish_output
+executor + RawContextMiddleware + route_and_run_result + real PRReviewer with publish_output
 forced False -> A2A 1.0 response). Tier 0b: load-bearing interop proof.
 
 Only the LLM is stubbed (LiteLLMAIHandler.chat_completion -> canned review YAML);

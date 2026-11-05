@@ -1427,9 +1427,6 @@ class AzureDevopsProvider(GitProvider):
                     overall_success = False
             return overall_success
 
-    def get_title(self):
-        return self.pr.title
-
     @cache_languages
     def get_languages(self):
         # Percentages are computed over the repository's blob inventory (not the PR
