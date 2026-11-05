@@ -11,7 +11,6 @@ import aiohttp
 from starlette_context import request_cycle_context
 
 from pr_agent.agent.pr_agent import PRAgent
-from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
@@ -276,16 +275,6 @@ def process_comment_sync(pr_url, rest_of_comment, comment_id):
     except Exception as e:
         get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
-
-async def process_comment(pr_url, rest_of_comment, comment_id):
-    try:
-        with _polling_settings_scope():
-            result = await async_handle_request(pr_url, rest_of_comment, comment_id)
-            if result is RequestOutcome.SKIPPED:
-                return
-        get_logger().info(f"Finished processing comment for PR: {pr_url}")
-    except Exception as e:
-        get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
 async def is_valid_notification(
     notification, headers, handled_ids, session, user_id, added_handled_ids=None

@@ -1713,9 +1713,6 @@ class GithubProvider(GitProvider):
         except (GithubException, RequestException) as e:
             get_logger().exception(f"Failed to remove comment, error: {e}")
 
-    def get_title(self):
-        return self.pr.title
-
     @cache_languages
     def get_languages(self):
         languages = self._get_repo().get_languages()

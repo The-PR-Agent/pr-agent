@@ -13,7 +13,7 @@ Inbound text may be a whole forwarded conversation, one part per turn: "{role}: 
 
 Capture is DEFENSIVE everywhere: get_settings().get("data", {}).get("artifact", "")
 (several tool paths never set it, and handle_request swallows exceptions -> False).
-route_and_run NEVER raises; on failure/empty it returns an honest fallback string."""
+route_and_run_result NEVER raises; on failure/empty it returns an honest fallback string."""
 import asyncio
 import re
 from collections import deque
@@ -143,18 +143,6 @@ def _explicit_verb(text: str) -> str | None:
 def _reads_as_question(text: str) -> bool:
     low = (text or "").lower()
     return "?" in low or bool(_QUESTION_OPENER_RE.match(low))
-
-
-def _detect_verb(text: str) -> str:
-    """Pick a verb from the text. Defaults to 'review'. 'ask' wins when the text reads
-    like a question and no other explicit verb is present."""
-    verb = _explicit_verb(text)
-    if verb:
-        return verb
-    # heuristic: a question mark or interrogative opener -> ask
-    if _reads_as_question(text):
-        return "ask"
-    return _DEFAULT_VERB
 
 
 def _resolve_verb(user_segments: list) -> str:
@@ -402,8 +390,3 @@ async def route_and_run_result(user_text: str, *, context_history: list[str] | N
     except Exception:
         get_logger().exception("MOSAICO: route_and_run_result failed")
         return RouteResult(_error_fallback("request"), ok=False)
-
-
-async def route_and_run(user_text: str) -> str:
-    """Back-compat string wrapper around route_and_run_result (preserves existing callers/tests)."""
-    return (await route_and_run_result(user_text)).text

@@ -711,10 +711,6 @@ def _get_linear_issue_identity(ticket_url: str) -> tuple[str, str]:
     return match.group(1).lower(), match.group(2).upper()
 
 
-def _get_linear_issue_identifier(ticket_url: str) -> str:
-    return _get_linear_issue_identity(ticket_url)[1]
-
-
 def find_linear_tickets(text: str | None) -> list:
     """Extract canonical Linear issue links, preserving first-seen workspace/issue order."""
     if not isinstance(text, str):

@@ -2159,9 +2159,6 @@ class GitLabProvider(GitProvider):
         except (GitlabError, RequestException) as e:
             get_logger().exception(f"Failed to remove comment, error: {e}")
 
-    def get_title(self):
-        return self.mr.title
-
     def get_languages(self):
         if not hasattr(self, "_languages"):
             self._languages = self.gl.projects.get(self.id_project, lazy=True).languages()

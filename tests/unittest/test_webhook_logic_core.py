@@ -310,11 +310,6 @@ def test_bitbucket_server_process_command_applies_repo_settings_before_preparing
     assert command == ["/review"]
 
 
-def test_bitbucket_server_to_list_rejects_non_list_strings():
-    with pytest.raises(ValueError, match="Invalid command string"):
-        bitbucket_server_webhook._to_list("{'/review': true}")
-
-
 def test_gitlab_should_process_pr_logic_ignores_labels_and_branches(gitlab_webhook_module):
     settings = get_settings()
     original = {

@@ -2484,31 +2484,31 @@ async def test_dual_publishing_keeps_suggestions_without_replacement_code():
         settings.set("pr_code_suggestions.dual_publishing_score_threshold", original_threshold)
 
 
-def test_is_applicable_suggestion_rejects_a_range_in_an_empty_file():
+def test_validate_suggestion_rejects_a_range_in_an_empty_file():
     git_provider = MagicMock()
     git_provider.diff_files = [FilePatchInfo(base_file="", head_file="", patch="", filename="app.py")]
     tool = _make_tool(git_provider)
 
-    assert tool.is_applicable_suggestion("app.py", 1, 1, "old()") is False
+    assert tool._validate_suggestion("app.py", 1, 1, "old()")[0] is False
 
 
-def test_is_applicable_suggestion_rejects_when_existing_code_does_not_cover_the_anchor():
+def test_validate_suggestion_rejects_when_existing_code_does_not_cover_the_anchor():
     git_provider = _provider_with_file("def f():\n    first()\n    second()\n")
     tool = _make_tool(git_provider)
 
-    assert tool.is_applicable_suggestion("app.py", 2, 3, "first()") is False
+    assert tool._validate_suggestion("app.py", 2, 3, "first()")[0] is False
 
 
-def test_is_applicable_suggestion_rejects_when_file_content_is_unavailable():
+def test_validate_suggestion_rejects_when_file_content_is_unavailable():
     git_provider = MagicMock()
     git_provider.diff_files = [FilePatchInfo(base_file="", head_file=None, patch="", filename="app.py")]
     tool = _make_tool(git_provider)
 
-    assert tool.is_applicable_suggestion("app.py", 1, 1, "old()") is False
-    assert tool._suggestion_applyability("app.py", 1, 1, "old()")[1] == "the file content is unavailable"
+    assert tool._validate_suggestion("app.py", 1, 1, "old()")[0] is False
+    assert tool._validate_suggestion("app.py", 1, 1, "old()")[1] == "the file content is unavailable"
 
 
-def test_is_applicable_suggestion_uses_patch_when_file_content_is_unavailable():
+def test_validate_suggestion_uses_patch_when_file_content_is_unavailable():
     git_provider = MagicMock()
     git_provider.diff_files = [FilePatchInfo(
         base_file="",
@@ -2518,10 +2518,10 @@ def test_is_applicable_suggestion_uses_patch_when_file_content_is_unavailable():
     )]
     tool = _make_tool(git_provider)
 
-    assert tool.is_applicable_suggestion("app.py", 2, 2, "return old()") is True
+    assert tool._validate_suggestion("app.py", 2, 2, "return old()")[0] is True
 
 
-def test_is_applicable_suggestion_rejects_a_range_missing_from_the_patch():
+def test_validate_suggestion_rejects_a_range_missing_from_the_patch():
     git_provider = MagicMock()
     git_provider.diff_files = [FilePatchInfo(
         base_file="",
@@ -2531,7 +2531,7 @@ def test_is_applicable_suggestion_rejects_a_range_missing_from_the_patch():
     )]
     tool = _make_tool(git_provider)
 
-    assert tool.is_applicable_suggestion("app.py", 2, 2, "other()") is False
+    assert tool._validate_suggestion("app.py", 2, 2, "other()")[0] is False
 
 
 def test_get_diff_file_does_not_refetch_an_empty_cache():
@@ -2543,23 +2543,23 @@ def test_get_diff_file_does_not_refetch_an_empty_cache():
     git_provider.get_diff_files.assert_not_called()
 
 
-def test_is_applicable_suggestion_preserves_blank_line_positions():
+def test_validate_suggestion_preserves_blank_line_positions():
     git_provider = _provider_with_file("first()\n\nsecond()\n")
     tool = _make_tool(git_provider)
 
-    assert tool.is_applicable_suggestion("app.py", 1, 3, "first()\nsecond()") is False
-    assert tool.is_applicable_suggestion("app.py", 1, 3, "first()\n\nsecond()") is True
+    assert tool._validate_suggestion("app.py", 1, 3, "first()\nsecond()")[0] is False
+    assert tool._validate_suggestion("app.py", 1, 3, "first()\n\nsecond()")[0] is True
 
 
-def test_is_applicable_suggestion_preserves_relative_indentation():
+def test_validate_suggestion_preserves_relative_indentation():
     git_provider = _provider_with_file("if ready:\n    run()\n")
     tool = _make_tool(git_provider)
 
-    assert tool.is_applicable_suggestion("app.py", 1, 2, "    if ready:\n        run()") is True
-    assert tool.is_applicable_suggestion("app.py", 1, 2, "if ready:\nrun()") is False
+    assert tool._validate_suggestion("app.py", 1, 2, "    if ready:\n        run()")[0] is True
+    assert tool._validate_suggestion("app.py", 1, 2, "if ready:\nrun()")[0] is False
 
 
-def test_is_applicable_suggestion_uses_absolute_patch_lines_for_partial_head_content():
+def test_validate_suggestion_uses_absolute_patch_lines_for_partial_head_content():
     git_provider = MagicMock()
     git_provider.diff_files = [FilePatchInfo(
         base_file="first()\nlater()\n",
@@ -2571,7 +2571,7 @@ def test_is_applicable_suggestion_uses_absolute_patch_lines_for_partial_head_con
     )]
     tool = _make_tool(git_provider)
 
-    assert tool.is_applicable_suggestion("app.py", 100, 100, "later()") is True
+    assert tool._validate_suggestion("app.py", 100, 100, "later()")[0] is True
 def test_code_suggestion_state_is_provider_driven():
     provider = MagicMock()
 

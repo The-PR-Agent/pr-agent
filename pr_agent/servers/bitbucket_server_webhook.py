@@ -1,4 +1,3 @@
-import ast
 import copy
 import os
 
@@ -240,19 +239,6 @@ def _process_command(command: str, url) -> list[str]:
     # don't think we need this
     apply_repo_settings(url)
     return prepare_command(command)
-
-
-def _to_list(command_string: str) -> list:
-    try:
-        # Use ast.literal_eval to safely parse the string into a list
-        commands = ast.literal_eval(command_string)
-        # Check if the parsed object is a list of strings
-        if isinstance(commands, list) and all(isinstance(cmd, str) for cmd in commands):
-            return commands
-        else:
-            raise ValueError("Parsed data is not a list of strings.")
-    except (SyntaxError, ValueError, TypeError) as e:
-        raise ValueError(f"Invalid command string: {e}") from e
 
 
 def _get_commands_list_from_settings(setting_key: str) -> list:

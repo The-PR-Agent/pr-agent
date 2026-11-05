@@ -420,9 +420,6 @@ class CodeCommitProvider(GitProvider):
     def publish_inline_comments(self, comments: list[dict]):
         raise NotImplementedError("CodeCommit provider does not support publishing inline comments yet")
 
-    def get_title(self):
-        return self.pr.title
-
     def get_pr_id(self):
         """
         Returns the PR ID in the format: "repo_name/pr_number".
