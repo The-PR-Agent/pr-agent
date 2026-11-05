@@ -600,9 +600,7 @@ class PRDescription:
                 # Fence-aware stripping: `str.strip("`")` removes characters
                 # rather than the fence, mangling answers that end in an
                 # inline code span (the #3083 family, large-PR headers path).
-                prediction_headers = strip_wrapping_code_fence(
-                    prediction_headers.strip()
-                ).strip()
+                prediction_headers = strip_wrapping_code_fence(prediction_headers.strip()).strip()
             self._require_usable_prediction(prediction_headers)
 
             # extend the tables with the files not shown

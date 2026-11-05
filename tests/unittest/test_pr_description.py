@@ -179,9 +179,8 @@ async def test_large_pr_header_allows_clipped_input_but_requires_complete_output
 
 @pytest.mark.asyncio
 async def test_large_pr_header_ending_in_inline_code_keeps_closing_backtick():
-    """A bare-YAML header whose description ends in an inline code span must
-    keep its closing backtick: str.strip("`") removes characters rather than
-    the fence (the #3083 family, large-PR headers path)."""
+    """A bare-YAML header whose description ends in an inline code span (the
+    #3083 family, large-PR headers path)."""
     obj = _make_large_pr_instance()
     header = (
         "type:\n- Bug fix\n"
