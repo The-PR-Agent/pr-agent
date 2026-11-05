@@ -41,7 +41,6 @@ from ..algo.language_handler import is_valid_file
 from ..algo.token_budget import clip_tokens
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (
-    Range,
     find_line_number_of_relevant_line_in_file,
     load_large_diff,
     replace_suggestion_blocks,
@@ -1713,9 +1712,6 @@ class GithubProvider(GitProvider):
         except (GithubException, RequestException) as e:
             get_logger().exception(f"Failed to remove comment, error: {e}")
 
-    def get_title(self):
-        return self.pr.title
-
     @cache_languages
     def get_languages(self):
         languages = self._get_repo().get_languages()
@@ -2466,33 +2462,6 @@ class GithubProvider(GitProvider):
                     f"#diff-{sha_file}R{relevant_line_start}-R{relevant_line_end}")
         else:
             link = f"{self.base_url_html}/{self.repo}/pull/{self.pr_num}/files#diff-{sha_file}R{relevant_line_start}"
-        return link
-
-    def get_lines_link_original_file(self, filepath: str, component_range: Range) -> str:
-        """
-        Returns the link to the original file on GitHub that corresponds to the given filepath and component range.
-
-        Args:
-            filepath (str): The path of the file.
-            component_range (Range): The range of lines that represent the component.
-
-        Returns:
-            str: The link to the original file on GitHub.
-
-        Example:
-            >>> filepath = "path/to/file.py"
-            >>> component_range = Range(line_start=10, line_end=20)
-            >>> link = get_lines_link_original_file(filepath, component_range)
-            >>> print(link)
-            "https://github.com/{repo}/blob/{commit_sha}/{filepath}/#L11-L21"
-        """
-        line_start = component_range.line_start + 1
-        line_end = component_range.line_end + 1
-        # link = (f"https://github.com/{self.repo}/blob/{self.last_commit_id.sha}/{filepath}/"
-        #         f"#L{line_start}-L{line_end}")
-        link = (f"{self.base_url_html}/{self.repo}/blob/{self.last_commit_id.sha}/{filepath}/"
-                f"#L{line_start}-L{line_end}")
-
         return link
 
     def get_pr_id(self):
