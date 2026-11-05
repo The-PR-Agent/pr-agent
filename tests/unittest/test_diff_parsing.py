@@ -1,5 +1,7 @@
+import pytest
+
 from pr_agent.algo.types import EDIT_TYPE
-from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file
+from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file_checked
 
 MODIFY_DIFF = """diff --git a/foo.py b/foo.py
 index 1111111..2222222 100644
@@ -81,15 +83,15 @@ BASE = "line1\nline2\nline3\n"
 
 
 def test_reconstruct_base_success():
-    assert reconstruct_base_file(HEAD, _PATCH) == BASE
+    assert reconstruct_base_file_checked(HEAD, _PATCH) == BASE
 
 
-def test_reconstruct_base_drift_returns_empty():
+def test_reconstruct_base_drift_returns_none():
     drifted_head = "completely\ndifferent\ncontent\n"
-    assert reconstruct_base_file(drifted_head, _PATCH) == ""
+    assert reconstruct_base_file_checked(drifted_head, _PATCH) is None
 
 
-# --- new tests for reconstruct_base_file ---
+# --- new tests for reconstruct_base_file_checked ---
 
 _MULTI_HUNK_PATCH = """--- a/bar.py
 +++ b/bar.py
@@ -111,7 +113,7 @@ _MULTI_HUNK_BASE = "alpha\nbeta\ngamma\n\ndelta\nepsilon\nzeta\n"
 
 def test_reconstruct_base_multi_hunk():
     """Base is correctly reconstructed across two hunks."""
-    result = reconstruct_base_file(_MULTI_HUNK_HEAD, _MULTI_HUNK_PATCH)
+    result = reconstruct_base_file_checked(_MULTI_HUNK_HEAD, _MULTI_HUNK_PATCH)
     assert result == _MULTI_HUNK_BASE
 
 
@@ -130,7 +132,7 @@ _NO_TRAILING_NL_BASE = "line1\nline2\nline3"  # no trailing newline expected
 
 def test_reconstruct_base_no_trailing_newline():
     """Result has no trailing newline when head has none."""
-    result = reconstruct_base_file(_NO_TRAILING_NL_HEAD, _NO_TRAILING_NL_PATCH)
+    result = reconstruct_base_file_checked(_NO_TRAILING_NL_HEAD, _NO_TRAILING_NL_PATCH)
     assert result == _NO_TRAILING_NL_BASE
     assert not result.endswith("\n")
 
@@ -150,7 +152,7 @@ _ADD_FILE_HEAD = "hello\nworld\n"
 
 def test_reconstruct_base_add_to_empty():
     """Reversing an add-file patch yields a truly empty base, not a lone newline."""
-    result = reconstruct_base_file(_ADD_FILE_HEAD, _ADD_FILE_PATCH)
+    result = reconstruct_base_file_checked(_ADD_FILE_HEAD, _ADD_FILE_PATCH)
     # Even though head ends with "\n", an empty base must stay "" (no trailing
     # newline appended) so it is falsy for extend_patch().
     assert result == ""
@@ -169,7 +171,7 @@ _ZERO_CONTEXT_DELETE_PATCH = """--- a/f.txt
 def test_reconstruct_base_zero_context_deletion():
     # `git diff -U0` numbers a pure deletion by the head line before it (`+2,0`),
     # so the removed lines belong after head line 2, not before it.
-    assert reconstruct_base_file("a\nb\ne\n", _ZERO_CONTEXT_DELETE_PATCH) == "a\nb\nc\nd\ne\n"
+    assert reconstruct_base_file_checked("a\nb\ne\n", _ZERO_CONTEXT_DELETE_PATCH) == "a\nb\nc\nd\ne\n"
 
 
 # Verbatim `git diff -U0` output for the base/head pair in the test below.
@@ -188,7 +190,7 @@ _ZERO_CONTEXT_MIXED_PATCH = """--- a/f.txt
 def test_reconstruct_base_zero_context_mixed_hunks():
     base = "a\nb\nc\nd\ne\n"
     head = "a\nx\nb\nd\ne\ny\nz\n"
-    assert reconstruct_base_file(head, _ZERO_CONTEXT_MIXED_PATCH) == base
+    assert reconstruct_base_file_checked(head, _ZERO_CONTEXT_MIXED_PATCH) == base
 
 
 _EMPTIED_FILE_PATCH = """--- a/f.txt
@@ -202,4 +204,27 @@ _EMPTIED_FILE_PATCH = """--- a/f.txt
 def test_reconstruct_base_file_emptied():
     # Every line removed but the file kept: `+0,0` must not be read as out of bounds.
     # (Only the lines are checked; the trailing newline follows the EOF handling.)
-    assert reconstruct_base_file("", _EMPTIED_FILE_PATCH).splitlines() == ["a", "b"]
+    assert reconstruct_base_file_checked("", _EMPTIED_FILE_PATCH).splitlines() == ["a", "b"]
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x85", "\f", "\v", "\x1c", "\r"])
+def test_reverse_patch_preserves_non_lf_characters_inside_physical_lines(separator):
+    head = f"first{separator}continued\nnew\nlast\n"
+    patch = ("--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n"
+             f" first{separator}continued\n-old\n+new\n last\n")
+
+    assert reconstruct_base_file_checked(head, patch) == f"first{separator}continued\nold\nlast\n"
+
+
+def test_reverse_patch_preserves_a_non_lf_separator_outside_the_hunk():
+    head = "first\u2028continued\nunchanged\nnew\n"
+    patch = "--- a/f.txt\n+++ b/f.txt\n@@ -3 +3 @@\n-old\n+new\n"
+
+    assert reconstruct_base_file_checked(head, patch) == "first\u2028continued\nunchanged\nold\n"
+
+
+def test_reverse_patch_does_not_strip_multiple_carriage_returns_from_line_content():
+    head = "first\r\r\nnew\n"
+    patch = "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n first\r\r\n-old\n+new\n"
+
+    assert reconstruct_base_file_checked(head, patch) == "first\r\nold\n"

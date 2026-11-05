@@ -350,6 +350,18 @@ class GiteaProvider(GitProvider):
         sha = getattr(self.last_commit, "sha", None)
         return sha if isinstance(sha, str) else ""
 
+    def get_pr_identity(self) -> dict:
+        repo = "/".join(
+            str(part) for part in (self.owner, self.repo) if part
+        )
+        return {
+            "url": self.get_pr_url() or "",
+            "provider": "gitea",
+            "repo": repo,
+            "number": self.pr_number if self.pr_number is not None else "",
+            "head_sha": self.get_pr_head_sha(),
+        }
+
     def get_comment_url(self, comment) -> str:
         if isinstance(comment, dict):
             return comment.get("html_url") or comment.get("url") or ""
@@ -1405,12 +1417,6 @@ class RepoApi(giteapy.RepositoryApi):
             owner=owner,
             repo=repo,
             index=issue_number
-        )
-
-    def list_all_commits(self, owner: str, repo: str):
-        return self.repository.repo_get_all_commits(
-            owner=owner,
-            repo=repo
         )
 
     def add_reaction_comment(self, owner: str, repo: str, comment_id: int, reaction: str):

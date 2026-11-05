@@ -1097,7 +1097,6 @@ class TestGiteaProviderPRCommits:
             repo="repo",
             pr_number=123
         )
-        provider.repo_api.list_all_commits.assert_not_called()
 
     def test_last_commit_is_the_pr_head_although_gitea_returns_newest_first(self):
         # Gitea returns PR commits newest-first, so the head commit comes first.

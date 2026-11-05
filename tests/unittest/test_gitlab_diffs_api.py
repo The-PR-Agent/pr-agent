@@ -155,6 +155,27 @@ def test_diff_line_counts_keep_unicode_separators_in_source_lines(provider_facto
     assert (file.num_plus_lines, file.num_minus_lines) == (1, 1)
 
 
+def test_diff_line_counts_ignore_unified_diff_file_headers(provider_factory):
+    # Older GitLab MRs carry the ---/+++ headers in /diffs (gitlab-org/gitlab !1
+    # still does today); newer ones start at @@. gitlab-org/gitlab#270960
+    # confirms the standard API diff field "already includes full headers".
+    patch = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+    provider, _ = provider_factory([(200, [_change("a.py", diff=patch)], {})], count="1")
+
+    file = provider.get_diff_files()[0]
+
+    assert (file.num_plus_lines, file.num_minus_lines) == (1, 1)
+
+
+def test_added_file_line_counts_ignore_dev_null_header(provider_factory):
+    patch = "--- /dev/null\n+++ b/a.py\n@@ -0,0 +1,2 @@\n+one\n+two\n"
+    provider, _ = provider_factory([(200, [_change("a.py", diff=patch)], {})], count="1")
+
+    file = provider.get_diff_files()[0]
+
+    assert (file.num_plus_lines, file.num_minus_lines) == (2, 0)
+
+
 @pytest.mark.parametrize("project_id", [123, "123"])
 def test_numeric_project_identifier(provider_factory, project_id):
     provider, transport = provider_factory([(200, [_change("a.py")], {})], "1", project_id)

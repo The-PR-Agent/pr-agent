@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 import shlex
+from contextlib import contextmanager
 from functools import partial
 
 import dynaconf
@@ -301,7 +302,14 @@ def prepare_command(command: str) -> list[str]:
         get_logger().error(
             "Dropping auto-command argument(s) targeting forbidden param(s): "
             + ", ".join(f"'{param}'" for param in rejected))
-    update_settings_from_args(kept)
+    settings = get_settings()
+    original_language = settings.config.get("response_language", "en-us")
+    try:
+        update_settings_from_args(kept)
+    finally:
+        # Apply the requested response language only during command execution.
+        if settings.config.get("response_language", "en-us") != original_language:
+            settings.set("CONFIG.RESPONSE_LANGUAGE", original_language)
     return [action] + kept
 
 
@@ -331,6 +339,41 @@ def _record_token_metrics(action: str, git_provider: str) -> None:
             tokens_counter.add(count, {**labels, "gen_ai.token.type": token_type})
     if details.num_ai_calls:
         get_ai_calls_counter().add(details.num_ai_calls, labels)
+
+
+@contextmanager
+def response_language_instructions():
+    """Apply generated locale guidance only while a command is running."""
+    settings = get_settings()
+    originals = []
+    try:
+        response_language = settings.config.get("response_language", "en-us")
+        if not isinstance(response_language, str) or not response_language.strip():
+            get_logger().warning("Ignoring response_language: expected a non-empty locale string")
+            response_language = "en-us"
+        if response_language.lower() != "en-us":
+            get_logger().info(f"User has set the response language to: {response_language}")
+            language_instruction = (
+                "Your response MUST be written in the language corresponding "
+                f"to locale code: '{response_language}'. This is crucial. "
+                "Keep schema control values (such as 'No', 'Yes', 'None', "
+                "'false') in their original English form and do not translate them."
+            )
+            for key in settings:
+                section = settings.get(key)
+                if not isinstance(section, dynaconf.DataDict) or not hasattr(section, "extra_instructions"):
+                    continue
+                original = section.extra_instructions
+                if language_instruction not in str(original):
+                    originals.append((section, original))
+                    section.extra_instructions = (
+                        f"{original}\n======\n\nIn addition, {language_instruction}"
+                        if original else language_instruction
+                    )
+        yield
+    finally:
+        for section, original in originals:
+            section.extra_instructions = original
 
 
 class PRAgent:
@@ -413,67 +456,56 @@ class PRAgent:
             span.set_attribute("error.argument", arg)
             return False
 
-        # Update settings from args
-        args = update_settings_from_args(args)
-
-        # Append the response language in the extra instructions
-        response_language = get_settings().config.get('response_language', 'en-us')
-        if response_language.lower() != 'en-us':
-            get_logger().info(f'User has set the response language to: {response_language}')
-            for key in get_settings():
-                setting = get_settings().get(key)
-                if isinstance(setting, dynaconf.DataDict):
-                    if hasattr(setting, 'extra_instructions'):
-                        current_extra_instructions = setting.extra_instructions
-
-                        # Define the language-specific instruction and the separator
-                        lang_instruction_text = (f"Your response MUST be written in the language corresponding "
-                                                 f"to locale code: '{response_language}'. This is crucial. "
-                                                 f"Keep schema control values (such as 'No', 'Yes', 'None', "
-                                                 f"'false') in their original English form and do not translate them.")
-                        separator_text = "\n======\n\nIn addition, "
-
-                        # Check if the specific language instruction is already present to avoid duplication
-                        if lang_instruction_text not in str(current_extra_instructions):
-                            if current_extra_instructions: # If there's existing text
-                                setting.extra_instructions = (str(current_extra_instructions)
-                                                              + separator_text + lang_instruction_text)
-                            else: # If extra_instructions was None or empty
-                                setting.extra_instructions = lang_instruction_text
-                        # If lang_instruction_text is already present, do nothing.
-
-        action = action.lstrip("/").lower()
-
-        span.set_attribute("pr_agent.args_count", len(args))
-        _git_provider = get_settings().config.git_provider
-        span.set_attribute("vcs.provider.name", _git_provider)
-
-        if action not in command2class:
-            get_logger().warning(f"Unknown command: {action}")
-            span.set_status(StatusCode.ERROR)
-            span.set_attribute("error.type", "unknown_command")
-            if get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False):
-                span.set_attribute("error.message", f"Unknown command: {action}")
-            return False
-
-        # Only after validation: an unknown action is arbitrary user input and
-        # must not become a span name, span attribute, or metric label.
-        span.update_name(f"pr_agent {action}")
-        span.set_attribute("pr_agent.command", action)
-        get_commands_counter().add(1, {"pr_agent.command": action, "vcs.provider.name": _git_provider})
-
+        # Keep command-level language overrides from affecting later commands.
         settings = get_settings()
-        if propagate_tool_errors is not None:
-            # Apply this after repository and command settings so callers that require an honest
-            # result cannot be overridden by either source. Restore it below for request isolation.
-            previous_propagation = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
-            settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_tool_errors)
-        # Install a fresh collector at the per-command boundary so the finally block
-        # exports this command's usage and never repeats or inherits a prior command's
-        # counts. Tools that run their own collector (e.g. /review) replace it on entry.
-        init_run_details()
+        previous_response_language = settings.config.get("response_language", "en-us")
         try:
-            with get_logger().contextualize(command=action, pr_url=pr_url):
+            args = update_settings_from_args(args)
+        except Exception:
+            if settings.config.get("response_language", "en-us") != previous_response_language:
+                settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)
+            raise
+        language_overridden = settings.config.get("response_language", "en-us") != previous_response_language
+
+        try:
+            action = action.lstrip("/").lower()
+
+            span.set_attribute("pr_agent.args_count", len(args))
+            _git_provider = get_settings().config.git_provider
+            span.set_attribute("vcs.provider.name", _git_provider)
+
+            if action not in command2class:
+                get_logger().warning(f"Unknown command: {action}")
+                span.set_status(StatusCode.ERROR)
+                span.set_attribute("error.type", "unknown_command")
+                if get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False):
+                    span.set_attribute("error.message", f"Unknown command: {action}")
+                if language_overridden:
+                    settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)
+                return False
+
+            # Only after validation: an unknown action is arbitrary user input and
+            # must not become a span name, span attribute, or metric label.
+            span.update_name(f"pr_agent {action}")
+            span.set_attribute("pr_agent.command", action)
+            get_commands_counter().add(1, {"pr_agent.command": action, "vcs.provider.name": _git_provider})
+
+            # Install a fresh collector at the per-command boundary so the finally block
+            # exports this command's usage and never repeats or inherits a prior command's
+            # counts. Tools that run their own collector (e.g. /review) replace it on entry.
+            init_run_details()
+            if propagate_tool_errors is not None:
+                # Apply this after repository and command settings so callers that require an honest
+                # result cannot be overridden by either source. Restore it below for request isolation.
+                previous_propagation = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+                settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_tool_errors)
+        except Exception:
+            if language_overridden:
+                settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)
+            raise
+
+        try:
+            with response_language_instructions(), get_logger().contextualize(command=action, pr_url=pr_url):
                 get_logger().info("PR-Agent request handler started", analytics=True)
                 if action == "answer":
                     if notify:
@@ -498,6 +530,8 @@ class PRAgent:
                     span.set_status(StatusCode.OK)
                 return True
         finally:
+            if language_overridden:
+                settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)
             _record_token_metrics(action, _git_provider)
             if propagate_tool_errors is not None:
                 settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", previous_propagation)

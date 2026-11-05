@@ -11,6 +11,8 @@ from pr_agent.log import get_logger
 
 
 def shift_code_indentation(code_snippet: str, delta_spaces: int) -> str:
+    if delta_spaces == 0:
+        return code_snippet
     shifted_lines = []
     for line in split_diff_lines(code_snippet):
         if not line.strip(" \t"):

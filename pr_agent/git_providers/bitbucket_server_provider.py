@@ -104,7 +104,7 @@ class BitbucketServerProvider(GitProvider):
                                    f"project_name={project_name}, default_branch_dict={default_branch_dict}")
                 return ("", "")
         elif '.git' in repo_git_url and 'scm/' in repo_git_url:
-            repo_path = repo_git_url.split('.git')[0].split('scm/')[-1]
+            repo_path = repo_git_url.rstrip('/').removesuffix('.git').split('scm/')[-1]
             if repo_path.count('/') == 1:  # Has to have the form <workspace>/<repo>
                 workspace_name, project_name = repo_path.split('/')
         if not workspace_name or not project_name:
@@ -548,9 +548,6 @@ class BitbucketServerProvider(GitProvider):
         # list, which would post the already-accepted suggestions a second time.
         return published_count > 0 or publishable_count == 0
 
-    def get_title(self):
-        return self.pr.title
-
     @cache_languages
     def get_languages(self):
         return self._language_percentages(self.get_files())
@@ -622,6 +619,18 @@ class BitbucketServerProvider(GitProvider):
         except (KeyError, TypeError) as e:
             get_logger().warning(f"Failed to get head SHA, error: {e}")
             return ""
+
+    def get_pr_identity(self) -> dict:
+        repo = "/".join(
+            str(part) for part in (self.workspace_slug, self.repo_slug) if part
+        )
+        return {
+            "url": self.get_pr_url() or "",
+            "provider": "bitbucket_server",
+            "repo": repo,
+            "number": self.pr_num if self.pr_num is not None else "",
+            "head_sha": self.get_pr_head_sha(),
+        }
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> int | None:
         return None

@@ -160,11 +160,12 @@ class PlainDiffGitProvider(GitProvider):
         self._write_output(f"{title}\n\n{pr_body}")
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ["get_issue_comments", "create_inline_comment",
-                          "publish_inline_comments",
-                          "get_labels", "edit_comment", "remove_comment"]:
+        if capability in ["get_issue_comments", "get_labels", "edit_comment", "remove_comment"]:
             return False
         return True
+
+    def get_pr_identity(self) -> dict:
+        return {"url": "", "provider": "plain-diff", "repo": "", "number": "", "head_sha": ""}
 
     def supports_code_suggestions_artifact(self) -> bool:
         return True

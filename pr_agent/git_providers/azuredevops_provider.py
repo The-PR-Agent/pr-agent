@@ -23,7 +23,7 @@ from ..algo.comment_identity import (
     get_pr_review_comment_identifiers,
 )
 from ..algo.file_filter import filter_ignored
-from ..algo.git_patch_processing import count_patch_lines
+from ..algo.git_patch_processing import count_patch_lines, split_diff_lines
 from ..algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
     body_with_markers,
@@ -265,7 +265,7 @@ class AzureDevopsProvider(GitProvider):
         for file in self.diff_files or []:
             if file.filename != relevant_file or not isinstance(file.head_file, str):
                 continue
-            lines = file.head_file.splitlines()
+            lines = split_diff_lines(file.head_file)
             if relevant_lines_end > len(lines):
                 return None
             line = lines[relevant_lines_end - 1]
@@ -274,9 +274,9 @@ class AzureDevopsProvider(GitProvider):
 
     @staticmethod
     def _render_suggestion_as_diff(body: str, original_suggestion: dict | None) -> str:
-        """Azure DevOps has no committable suggestion blocks, so a ```suggestion fence is
-        published verbatim and renders as an uneditable raw block. Replace it with a diff
-        block, the same way the Bitbucket providers do."""
+        """A PR-level comment has no lines for a ```suggestion fence to replace, so Azure DevOps
+        shows the fence as a raw block. Replace it with a diff block, the same way the Bitbucket
+        providers do."""
         if not original_suggestion:
             return body
         try:
@@ -313,6 +313,8 @@ class AzureDevopsProvider(GitProvider):
         prepared = []
         for suggestion, reason in suggestions:
             try:
+                suggestion = {**suggestion, "body": self._render_suggestion_as_diff(
+                    suggestion["body"], suggestion.get("original_suggestion"))}
                 prepared.append((suggestion, self._fallback_suggestion_section(suggestion, reason)))
             except (KeyError, TypeError) as e:
                 get_logger().warning(f"Could not format Azure code suggestion fallback, error: {e}")
@@ -386,9 +388,6 @@ class AzureDevopsProvider(GitProvider):
                 continue
 
             has_suggestion_fence = "```suggestion" in body
-            raw_body = body
-            body = self._render_suggestion_as_diff(body, suggestion.get("original_suggestion"))
-            suggestion = {**suggestion, "body": body}
 
             publishable_count += 1
             fallback_to_pr_comment = suggestion.get("fallback_to_pr_comment", True)
@@ -400,8 +399,8 @@ class AzureDevopsProvider(GitProvider):
             should_mark = store is not None and not has_marker(body)
             fingerprints = set()
             if should_mark:
-                body_fp = full_body_fingerprint(fingerprint_file, fingerprint_anchor, raw_body)
-                code_fp = code_fingerprint(fingerprint_file, fingerprint_anchor, raw_body)
+                body_fp = full_body_fingerprint(fingerprint_file, fingerprint_anchor, body)
+                code_fp = code_fingerprint(fingerprint_file, fingerprint_anchor, body)
                 fingerprints.add(body_fp)
                 if code_fp is not None:
                     fingerprints.add(code_fp)
@@ -1428,9 +1427,6 @@ class AzureDevopsProvider(GitProvider):
                     overall_success = False
             return overall_success
 
-    def get_title(self):
-        return self.pr.title
-
     @cache_languages
     def get_languages(self):
         # Percentages are computed over the repository's blob inventory (not the PR
@@ -1768,14 +1764,14 @@ class AzureDevopsProvider(GitProvider):
                     content = getattr(item, "content", None)
                     if not isinstance(content, str):
                         raise TypeError("Azure DevOps returned non-string file content")
-                    file_lines[path] = content.splitlines()
+                    file_lines[path] = split_diff_lines(content)
                 except Exception as e:
                     get_logger().warning(f"Failed to read {path} while reconciling code suggestions: {e}")
                     file_lines[path] = None
             lines = file_lines[path]
             if lines is None:
                 continue
-            suggested_lines = suggestion_code.splitlines()
+            suggested_lines = split_diff_lines(suggestion_code)
             if lines[start - 1:start - 1 + len(suggested_lines)] != suggested_lines:
                 continue
             thread_id = self._value(thread, "id")
@@ -1957,6 +1953,18 @@ class AzureDevopsProvider(GitProvider):
         # absent findings after a head change, which is the defect #3431 was filed against.
         head = getattr(getattr(self.pr, "last_merge_commit", None), "commit_id", None)
         return head if isinstance(head, str) else ""
+
+    def get_pr_identity(self) -> dict:
+        repo = "/".join(
+            str(part) for part in (self.workspace_slug, self.repo_slug) if part
+        )
+        return {
+            "url": self.get_pr_url() or "",
+            "provider": "azure",
+            "repo": repo,
+            "number": self.pr_num if self.pr_num is not None else "",
+            "head_sha": self.get_pr_head_sha(),
+        }
 
     def get_latest_commit_url(self) -> str:
         if (cached_url := getattr(self, "_latest_commit_url", None)) is not None:

@@ -4,7 +4,11 @@ import io
 
 import pytest
 
-from pr_agent.algo.file_filter import filter_ignored, filter_ignored_with_status, translate_globs_to_regexes
+from pr_agent.algo.file_filter import (
+    _translate_globs_to_regexes_with_status,
+    filter_ignored,
+    filter_ignored_with_status,
+)
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -144,7 +148,7 @@ def test_a_non_list_generated_code_setting_does_not_disable_other_rules(
 
 
 def test_glob_translation_validates_before_deduplicating():
-    expected = translate_globs_to_regexes(["src/**/generated.py"])
+    expected = _translate_globs_to_regexes_with_status(["src/**/generated.py"])[0]
     patterns = iter([["invalid"], "src/**/generated.py", {"invalid": True}, "src/**/generated.py"])
 
-    assert translate_globs_to_regexes(patterns) == expected
+    assert _translate_globs_to_regexes_with_status(patterns)[0] == expected

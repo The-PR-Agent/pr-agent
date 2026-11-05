@@ -71,10 +71,18 @@ class LocalGitProvider(GitProvider):
             raise KeyError(f'Branch: {self.target_branch_name} does not exist')
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ['get_issue_comments', 'create_inline_comment', 'publish_inline_comments', 'get_labels',
-                          'gfm_markdown']:
+        if capability in ['get_issue_comments', 'get_labels', 'gfm_markdown']:
             return False
         return True
+
+    def get_pr_identity(self) -> dict:
+        return {
+            "url": "",
+            "provider": "local",
+            "repo": Path(self.repo_path).name if self.repo_path else "",
+            "number": "",
+            "head_sha": self.repo.head.commit.hexsha if self.repo else "",
+        }
 
     def supports_code_suggestions_artifact(self) -> bool:
         return True

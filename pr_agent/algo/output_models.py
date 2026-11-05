@@ -154,6 +154,17 @@ class PRDescription(BaseModel):
     changes_diagram: str | None = None
     pr_files: list[FileDescription] | None = Field(default=None, max_length=20)
 
+    @field_validator("type", mode="before")
+    @classmethod
+    def _strip_type_items(cls, value):
+        # Block scalars (|, >) and quoted scalars keep trailing whitespace in
+        # parsed items (e.g. "Enhancement\n"), which PRType rejects. Strip
+        # string items so valid model output validates; non-string items pass
+        # through to the usual enum validation, and non-list input is untouched.
+        if isinstance(value, list):
+            return [item.strip() if isinstance(item, str) else item for item in value]
+        return value
+
 
 class PRDescriptionAssembled(PRDescription):
     """Validate the final description after file chunks and uncovered files are joined."""
@@ -166,6 +177,16 @@ class PRDescriptionHeaders(BaseModel):
     description: str | None = None
     title: str
     changes_diagram: str | None = None
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _strip_type_items(cls, value):
+        # Same block-scalar whitespace problem as PRDescription: strip string
+        # items so valid model output validates, without touching non-list
+        # input or masking genuinely invalid values.
+        if isinstance(value, list):
+            return [item.strip() if isinstance(item, str) else item for item in value]
+        return value
 
 
 class PRFilesWalkthrough(BaseModel):

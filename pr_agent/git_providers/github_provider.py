@@ -41,7 +41,6 @@ from ..algo.language_handler import is_valid_file
 from ..algo.token_budget import clip_tokens
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (
-    Range,
     find_line_number_of_relevant_line_in_file,
     load_large_diff,
     replace_suggestion_blocks,
@@ -149,7 +148,7 @@ class GithubProvider(GitProvider):
             self.installation_id = None
         self.max_comment_chars = 65000
         self.base_url = get_settings().get("GITHUB.BASE_URL", "https://api.github.com").rstrip("/") # "https://api.github.com"
-        self.base_url_html = self.base_url.split("api/")[0].rstrip("/") if "api/" in self.base_url else "https://github.com"
+        self.base_url_html = self._html_base_url(self.base_url)
         self.github_client = self._get_github_client()
         self.repo = None
         self.pr_num = None
@@ -277,10 +276,30 @@ class GithubProvider(GitProvider):
         return True
 
     @staticmethod
+    def _is_ghe_com_api_host(netloc: str) -> bool:
+        # GitHub Enterprise Cloud with data residency serves the REST API on api.<subdomain>.ghe.com
+        return netloc.startswith("api.") and netloc.endswith(".ghe.com")
+
+    @staticmethod
+    def _is_api_url(parsed_url) -> bool:
+        netloc = parsed_url.netloc
+        return (netloc == "api.github.com" or GithubProvider._is_ghe_com_api_host(netloc)
+                or parsed_url.path.startswith("/api/v3/"))
+
+    @staticmethod
+    def _html_base_url(base_url: str) -> str:
+        if "api/" in base_url:
+            return base_url.split("api/")[0].rstrip("/")
+        netloc = urlparse(base_url).netloc
+        if GithubProvider._is_ghe_com_api_host(netloc):
+            return f"https://{netloc[len('api.'):]}"
+        return "https://github.com"
+
+    @staticmethod
     def _get_url_resource(url: str) -> str:
         parsed_url = urlparse(url)
         path = parsed_url.path
-        is_api_url = parsed_url.netloc == "api.github.com" or path.startswith("/api/v3/")
+        is_api_url = GithubProvider._is_api_url(parsed_url)
         if path.startswith("/api/v3/"):
             path = path[len("/api/v3"):]
         path_parts = path.strip('/').split('/')
@@ -297,7 +316,7 @@ class GithubProvider(GitProvider):
                 repo_path, _ = self._parse_pr_url(given_url)
             elif given_url.endswith('.git'):
                 parsed_url = urlparse(given_url)
-                repo_path = (parsed_url.path.split('.git')[0])[1:] # /<owner>/<repo>.git -> <owner>/<repo>
+                repo_path = parsed_url.path.removesuffix('.git')[1:] # /<owner>/<repo>.git -> <owner>/<repo>
             if not repo_path:
                 get_logger().error(f"url is neither an issues url nor a PR url nor a valid git url: "
                                    f"{given_url}. Returning empty result.")
@@ -850,6 +869,15 @@ class GithubProvider(GitProvider):
         head = getattr(self.pr, "head", None)
         head_sha = getattr(head, "sha", None)
         return head_sha if isinstance(head_sha, str) else ""
+
+    def get_pr_identity(self) -> dict:
+        return {
+            "url": self.get_pr_url() or "",
+            "provider": "github",
+            "repo": self.repo or "",
+            "number": self.pr_num if self.pr_num is not None else "",
+            "head_sha": self.get_pr_head_sha(),
+        }
 
     def get_comment_url(self, comment) -> str:
         return comment.html_url
@@ -1684,9 +1712,6 @@ class GithubProvider(GitProvider):
         except (GithubException, RequestException) as e:
             get_logger().exception(f"Failed to remove comment, error: {e}")
 
-    def get_title(self):
-        return self.pr.title
-
     @cache_languages
     def get_languages(self):
         languages = self._get_repo().get_languages()
@@ -2121,7 +2146,7 @@ class GithubProvider(GitProvider):
     def _parse_pr_url(self, pr_url: str) -> tuple[str, int]:
         parsed_url = urlparse(pr_url)
 
-        is_api_url = parsed_url.netloc == "api.github.com" or parsed_url.path.startswith("/api/v3/")
+        is_api_url = self._is_api_url(parsed_url)
         if parsed_url.path.startswith("/api/v3/"):
             parsed_url = urlparse(parsed_url.path[len("/api/v3") :])
 
@@ -2150,7 +2175,7 @@ class GithubProvider(GitProvider):
     def _parse_issue_url(self, issue_url: str) -> tuple[str, int]:
         parsed_url = urlparse(issue_url)
 
-        is_api_url = parsed_url.netloc == "api.github.com" or parsed_url.path.startswith("/api/v3/")
+        is_api_url = self._is_api_url(parsed_url)
         if parsed_url.path.startswith("/api/v3/"):
             parsed_url = urlparse(parsed_url.path[len("/api/v3") :])
 
@@ -2437,33 +2462,6 @@ class GithubProvider(GitProvider):
                     f"#diff-{sha_file}R{relevant_line_start}-R{relevant_line_end}")
         else:
             link = f"{self.base_url_html}/{self.repo}/pull/{self.pr_num}/files#diff-{sha_file}R{relevant_line_start}"
-        return link
-
-    def get_lines_link_original_file(self, filepath: str, component_range: Range) -> str:
-        """
-        Returns the link to the original file on GitHub that corresponds to the given filepath and component range.
-
-        Args:
-            filepath (str): The path of the file.
-            component_range (Range): The range of lines that represent the component.
-
-        Returns:
-            str: The link to the original file on GitHub.
-
-        Example:
-            >>> filepath = "path/to/file.py"
-            >>> component_range = Range(line_start=10, line_end=20)
-            >>> link = get_lines_link_original_file(filepath, component_range)
-            >>> print(link)
-            "https://github.com/{repo}/blob/{commit_sha}/{filepath}/#L11-L21"
-        """
-        line_start = component_range.line_start + 1
-        line_end = component_range.line_end + 1
-        # link = (f"https://github.com/{self.repo}/blob/{self.last_commit_id.sha}/{filepath}/"
-        #         f"#L{line_start}-L{line_end}")
-        link = (f"{self.base_url_html}/{self.repo}/blob/{self.last_commit_id.sha}/{filepath}/"
-                f"#L{line_start}-L{line_end}")
-
         return link
 
     def get_pr_id(self):

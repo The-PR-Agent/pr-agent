@@ -4,7 +4,7 @@ sidebar_position: 7
 ---
 
 The `[push_outputs]` feature routes finished tool output to external sinks — stdout, a JSONL file, a
-generic webhook, Slack, or Telegram — without calling git-provider APIs. It is disabled by default, and is
+generic webhook, Slack, Telegram, or Microsoft Teams — without calling git-provider APIs. It is disabled by default, and is
 additive to normal publishing: when a tool finishes, the same result that is posted as a PR comment
 is also emitted to the configured sinks.
 
@@ -25,6 +25,13 @@ A record is a JSON object:
   "type": "review",
   "timestamp": "2026-09-08T14:03:21+00:00",
   "payload": {},
+  "pr": {
+    "url": "https://github.com/org/repo/pull/123",
+    "provider": "github",
+    "repo": "org/repo",
+    "number": 123,
+    "head_sha": "9fceb02"
+  },
   "markdown": "# PR Reviewer Guide ..."
 }
 ```
@@ -32,6 +39,12 @@ A record is a JSON object:
 - `type` — which tool produced the output
 - `timestamp` — the run completion time, UTC, ISO-8601
 - `payload` — the structured tool result
+- `pr` — the tool's pull request identity, present when the calling tool supplies it
+- `pr.url` — the pull request page URL
+- `pr.provider` — the git provider, such as `github`, `gitlab`, or `bitbucket`
+- `pr.repo` — the repository name or path
+- `pr.number` — the pull request number
+- `pr.head_sha` — the head commit SHA
 - `markdown` — the rendered comment text; present when the tool produces one
 
 For `/describe`, `payload.title` is the selected title, including the original PR title read when the
@@ -47,12 +60,13 @@ The defaults are defined at the end of the
 ```toml
 [push_outputs]
 enable = false
-channels = []                          # any of: "stdout", "file", "webhook", "slack", "telegram"
+channels = []                          # any of: "stdout", "file", "webhook", "slack", "telegram", "teams"
 file_path = "pr-agent-outputs/reviews.jsonl"
 webhook_url = ""                       # must be an absolute https:// URL
 slack_webhook_url = ""                 # Slack Incoming Webhook; must be an absolute https:// URL
 telegram_bot_token = ""                # Telegram bot token; host-only secret
 telegram_chat_id = ""                  # destination chat for the Telegram bot
+teams_webhook_url = ""                 # Teams Workflows webhook URL; must be an absolute https:// URL
 ```
 
 - `enable` — master switch (default `false`). When `false`, nothing is emitted.
@@ -62,6 +76,7 @@ telegram_chat_id = ""                  # destination chat for the Telegram bot
 - `slack_webhook_url` — a Slack Incoming Webhook URL that the `slack` channel posts a `{"text": ...}` payload to.
 - `telegram_bot_token` — the bot token used by the `telegram` channel. Keep it in host secrets, not a repository file.
 - `telegram_chat_id` — the chat that receives Telegram messages.
+- `teams_webhook_url` — a Teams Workflows webhook URL that receives Adaptive Cards from the `teams` channel.
 
 :::danger[Host-only configuration]
 The whole `[push_outputs]` section is **host-only**. A repository cannot set these keys:
@@ -74,7 +89,7 @@ PR-Agent host's own settings.
 
 ### URL requirements
 
-`webhook_url` and `slack_webhook_url` must be absolute `https://` URLs with a host. Any other
+`webhook_url`, `slack_webhook_url`, and `teams_webhook_url` must be absolute `https://` URLs with a host. Any other
 value (for example a plain `http://` URL or a bare path) is ignored with a warning. Requiring
 HTTPS keeps review text, which can quote private code, off plaintext transports. The host is
 intentionally not restricted, so self-hosted collectors and Slack-compatible endpoints
@@ -90,10 +105,11 @@ credential.
 | `stdout` | Prints one JSON line (the record) to stdout. |
 | `file` | Appends one JSON line per run (JSONL) to `file_path`, creating parent directories as needed. |
 | `webhook` | POSTs the generic record as JSON to `webhook_url` (5-second timeout, redirects not followed). |
-| `slack` | POSTs `{"text": ...}` to a Slack Incoming Webhook; the text is the markdown, or the payload JSON when the tool produces no markdown. |
-| `telegram` | Sends the markdown, or the payload JSON when no markdown is present, as plain text to `telegram_chat_id`. Text is truncated to at most 4096 UTF-16 code units without splitting surrogate pairs. |
+| `slack` | POSTs `{"text": ...}` to a Slack Incoming Webhook; the text is the markdown, or the payload JSON when the tool produces no markdown, followed by the PR URL when one is present. |
+| `telegram` | Sends the markdown, or the payload JSON when no markdown is present, as plain text to `telegram_chat_id`, followed by the PR URL when one is present. Text is truncated to at most 4096 UTF-16 code units without splitting surrogate pairs; room is reserved for the URL so truncation does not drop it. |
+| `teams` | POSTs an Adaptive Card to `teams_webhook_url` with the tool type, markdown output, and a button to the PR when its URL is present. The card is trimmed to Teams' 28 KB message size limit. |
 
-Local channels (`stdout`, `file`) run before network channels (`webhook`, `slack`, `telegram`), and network
+Local channels (`stdout`, `file`) run before network channels (`webhook`, `slack`, `telegram`, `teams`), and network
 posts never follow redirects. Each configured destination is attempted independently, so one failure
 does not prevent later destinations from receiving the output.
 
