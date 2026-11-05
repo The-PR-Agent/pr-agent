@@ -5,6 +5,7 @@ import posixpath
 import re
 import time
 import urllib.parse
+from bisect import bisect_left
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -96,15 +97,29 @@ def _neutralize_gitlab_mentions(text: str) -> str:
         return text
 
     mention = re.compile(r"(?<![\w/])@(?=[\w-])", re.UNICODE)
-    last_tick_run: dict[int, int] = {}
+    tick_runs: dict[int, list[int]] = {}
     for run in re.finditer(r"`+", text):
-        last_tick_run[len(run.group())] = run.start()
+        tick_runs.setdefault(len(run.group()), []).append(run.start())
+
+    boundaries: list[int] = []
+    boundary_line = 0
+    while boundary_line <= len(text):
+        line_end = text.find("\n", boundary_line)
+        if line_end < 0:
+            line_end = len(text)
+        line = text[boundary_line:line_end]
+        if not line.strip() or re.match(r" {0,3}(`{3,}|~{3,})", line):
+            boundaries.append(boundary_line)
+        if line_end == len(text):
+            break
+        boundary_line = line_end + 1
 
     output = []
     index = 0
     fence_char = None
     fence_size = 0
     inline_ticks = 0
+    indented_code = False
     line_start = True
 
     while index < len(text):
@@ -131,11 +146,15 @@ def _neutralize_gitlab_mentions(text: str) -> str:
                 index = line_end
                 line_start = False
                 continue
-            if line.startswith("    ") or line.startswith("\t"):
+            if line.startswith(("    ", "\t")) and (indented_code or (
+                    (index == 0 or text[index - 2:index] == "\n\n")
+                    and not re.match(r"\s*(?:[-*+]|\d+[.)])\s", line))):
+                indented_code = True
                 output.append(line)
                 index = line_end
                 line_start = False
                 continue
+            indented_code = False
 
         if fence_char:
             char = text[index]
@@ -150,8 +169,13 @@ def _neutralize_gitlab_mentions(text: str) -> str:
                 end += 1
             ticks = end - index
             if not inline_ticks:
-                if last_tick_run.get(ticks, -1) >= end:
-                    inline_ticks = ticks
+                runs = tick_runs.get(ticks)
+                if runs:
+                    closer_index = bisect_left(runs, end)
+                    boundary_index = bisect_left(boundaries, end)
+                    boundary = boundaries[boundary_index] if boundary_index < len(boundaries) else len(text)
+                    if closer_index < len(runs) and runs[closer_index] < boundary:
+                        inline_ticks = ticks
             elif ticks == inline_ticks:
                 inline_ticks = 0
             output.append(text[index:end])

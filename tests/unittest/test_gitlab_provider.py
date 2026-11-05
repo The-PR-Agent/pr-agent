@@ -89,8 +89,27 @@ def _thread(notes, discussion_id='d1'):
         "    @indented\n\t@tab-indented\n@active",
         "    @indented\n\t@tab-indented\n@\u200bactive",
     ),
+    (
+        "@active\n\n    @indented-code\n@after",
+        "@\u200bactive\n\n    @indented-code\n@\u200bafter",
+    ),
+    (
+        "- a\n    - sub @all\n    continuation @reviewer",
+        "- a\n    - sub @\u200ball\n    continuation @\u200breviewer",
+    ),
+    (
+        "`unclosed\n\n@all `closed`",
+        "`unclosed\n\n@\u200ball `closed`",
+    ),
 ])
 def test_neutralize_gitlab_mentions_preserves_literals(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_stops_a_code_span_at_a_fence_line():
+    text = "Stray ` tick\n```suggestion\n@Override\n```\n\n@all ` here"
+    expected = "Stray ` tick\n```suggestion\n@Override\n```\n\n@\u200ball ` here"
+
     assert _neutralize_gitlab_mentions(text) == expected
 
 
