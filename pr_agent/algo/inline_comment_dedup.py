@@ -79,6 +79,12 @@ def marker_fingerprints(body: str) -> set:
     return found
 
 
+def extract_markers(body: str) -> list[str]:
+    """Return the dedup markers embedded in a comment body, in body order."""
+    matches = [m for marker_re in _MARKER_RES for m in marker_re.finditer(body or "")]
+    return [m.group(0) for m in sorted(matches, key=lambda m: m.start())]
+
+
 def _strip_markers(body: str) -> str:
     """Remove embedded dedup markers so a pre-marked body fingerprints the
     same as its original (markers are appended after marking)."""

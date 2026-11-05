@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import get_artifact_context, prompt_boundary_markers, resolve_artifact_path
+from pr_agent.algo.code_replacement import python_replacement_compiles, reindent_to_line
 from pr_agent.algo.comment_identity import (
     PRReviewHeader,
     PRReviewIdentity,
@@ -18,6 +19,7 @@ from pr_agent.algo.comment_identity import (
     hidden_marker_forms,
     render_hidden_marker,
 )
+from pr_agent.algo.git_patch_processing import split_diff_lines
 from pr_agent.algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
     InlineCommentStore,
@@ -28,7 +30,7 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_location_fingerprint,
     strip_markers,
 )
-from pr_agent.algo.output_models import PRReview, parse_failure_modes
+from pr_agent.algo.output_models import PRReview, finding_confidence, parse_failure_modes
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
@@ -65,7 +67,9 @@ from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import (
     ModelType,
     _as_line,
+    _get_fence,
     convert_to_markdown_v2,
+    get_min_finding_confidence,
     is_value_no,
     load_yaml,
 )
@@ -184,6 +188,7 @@ class PRReviewer:
     prediction_data = None  # merged review dict; None means "parse self.prediction instead"
     review_chunk_count = 1
     review_failed_chunk_count = 0
+    low_confidence_filtered_count = 0
     # chunked reviews only: every finding the chunks reported (before the merge cut it to
     # num_max_findings), and whether a chunk reached that limit on its own
     review_all_issues = None
@@ -251,6 +256,7 @@ class PRReviewer:
             "diff": "",  # empty diff for initial calculation
             "num_pr_files": self.git_provider.get_num_of_files(),
             "num_max_findings": get_settings().pr_reviewer.num_max_findings,
+            "enable_suggested_fixes": self._suggested_fixes_enabled(),
             "require_score": get_settings().pr_reviewer.require_score_review,
             "require_tests": get_settings().pr_reviewer.require_tests_review,
             "require_estimate_effort_to_review": get_settings().pr_reviewer.require_estimate_effort_to_review,
@@ -264,6 +270,7 @@ class PRReviewer:
             'require_can_be_split_review': get_settings().pr_reviewer.require_can_be_split_review,
             'require_security_review': get_settings().pr_reviewer.require_security_review,
             'require_todo_scan': get_settings().pr_reviewer.get("require_todo_scan", False),
+            'min_finding_confidence': get_min_finding_confidence(),
             'question_str': question_str,
             'answer_str': answer_str,
             "extra_instructions": get_settings().pr_reviewer.extra_instructions,
@@ -859,6 +866,8 @@ class PRReviewer:
             and current_findings is not None
             # a dropped finding is not an absent one, so this run cannot resolve anything
             and not dropped_findings
+            # neither is a finding suppressed by min_finding_confidence
+            and not self.low_confidence_filtered_count
             and (
                 len(current_findings) < max_findings
                 # a chunked review that reached the limit is complete unless a chunk stopped at it
@@ -908,6 +917,7 @@ class PRReviewer:
         self.review_failed_chunk_count = 0
         self.review_all_issues = None
         self.review_chunk_hit_limit = None
+        self.low_confidence_filtered_count = 0
         self.partial_files_list = []
         raw_prompt_vars = getattr(self, "_raw_prompt_vars", getattr(self, "vars", None))
         ai_handler = getattr(self, "ai_handler", None)
@@ -1093,6 +1103,7 @@ class PRReviewer:
                                      artifact={"error": error})
                 continue
             self._validate_review_schema(data)
+            self._drop_disabled_suggested_fixes(data)
             chunk_results[chunk_index] = (prediction, data, model)
         self._chunked_results = chunk_results
         if self._chunk_progress is not None:
@@ -1190,7 +1201,13 @@ class PRReviewer:
         # Keep raw text for logging only; use the merged verdict from self.prediction_data.
         indices = sorted(chunk_results)
         raw_predictions = [chunk_results[index][0] for index in indices]
-        chunk_outputs = [chunk_results[index][1] for index in indices]
+        # Filter before merge_review_chunks cuts to num_max_findings, so low-confidence findings cannot
+        # take the place of a confident one from another chunk. Cached chunks stay raw (a fallback attempt
+        # reuses them), so filter copies and recount on every merge.
+        self.low_confidence_filtered_count = 0
+        chunk_outputs = [copy.deepcopy(chunk_results[index][1]) for index in indices]
+        for chunk_output in chunk_outputs:
+            self._filter_low_confidence_findings(chunk_output)
         self.prediction = "\n".join(raw_predictions)
         try:
             max_findings = int(get_settings().pr_reviewer.num_max_findings)
@@ -1268,7 +1285,7 @@ class PRReviewer:
         return load_yaml(prediction.strip(),
                          keys_fix_yaml=["ticket_compliance_check", "estimated_effort_to_review_[1-5]:", "risk_level:",
                                         "merge_recommendation:", "security_concerns:", "key_issues_to_review:",
-                                        "relevant_file:", "relevant_line:", "suggestion:"],
+                                        "relevant_file:", "relevant_line:", "suggestion:", "suggested_fix:"],
                         first_key='review', last_key='security_concerns')
 
     def _validate_review_schema(self, data: object) -> bool:
@@ -1337,6 +1354,8 @@ class PRReviewer:
                 data["review"].pop(key)
         if self.prediction_data is None:
             self._validate_review_schema(data)
+            self._filter_low_confidence_findings(data)
+            self._drop_disabled_suggested_fixes(data)
         if isinstance(data, dict) and isinstance(data.get("review"), dict) and "failure_modes" in data["review"]:
             data["review"]["failure_modes"] = parse_failure_modes(data["review"]["failure_modes"])
         github_action_output(data, 'review')
@@ -1504,6 +1523,72 @@ class PRReviewer:
             message_type, payload=payload, markdown=markdown, git_provider=self.git_provider
         )
 
+    def _filter_low_confidence_findings(self, data) -> None:
+        """Drop findings below `min_finding_confidence`, counting them in `low_confidence_filtered_count`."""
+        review = data.get("review") if isinstance(data, dict) else None
+        issues = review.get("key_issues_to_review") if isinstance(review, dict) else None
+        if not isinstance(issues, list):
+            return
+        threshold = get_min_finding_confidence()
+        if threshold <= 0:
+            return
+        kept = []
+        for issue in issues:
+            confidence = finding_confidence(issue)
+            if confidence is not None and confidence < threshold:
+                continue
+            kept.append(issue)
+        dropped = len(issues) - len(kept)
+        if dropped:
+            get_logger().info(f"Dropped {dropped} finding(s) below min_finding_confidence={threshold:g}")
+            review["key_issues_to_review"] = kept
+            self.low_confidence_filtered_count += dropped
+
+    @staticmethod
+    def _suggested_fixes_enabled() -> bool:
+        return _as_bool(get_settings().pr_reviewer.get("enable_suggested_fixes", False))
+
+    def _drop_disabled_suggested_fixes(self, data) -> None:
+        """Remove `suggested_fix` from findings when disabled, so no output path can publish one."""
+        if self._suggested_fixes_enabled():
+            return
+        review = data.get("review") if isinstance(data, dict) else None
+        issues = review.get("key_issues_to_review") if isinstance(review, dict) else None
+        for issue in issues if isinstance(issues, list) else []:
+            if isinstance(issue, dict):
+                issue.pop("suggested_fix", None)
+
+    def _suggested_fix_markdown(self, issue: dict, file, start_line: int, end_line: int) -> tuple[str, dict | None]:
+        """Render a finding's suggested fix, and the provider payload when it is committable."""
+        suggested_fix = issue.get("suggested_fix")
+        if not isinstance(suggested_fix, str) or not suggested_fix.strip():
+            return "", None
+        suggested_fix = suggested_fix.rstrip(" \t\r\n")
+        head_lines = split_diff_lines(file.head_file)
+        existing_code = "\n".join(head_lines[start_line - 1:end_line])
+        if 0 < start_line <= len(head_lines):
+            suggested_fix = reindent_to_line(suggested_fix, head_lines[start_line - 1])
+        if suggested_fix == existing_code.rstrip(" \t\r\n"):
+            return "", None
+        fence = _get_fence(suggested_fix)
+        reason = None
+        if fence != "```":
+            # providers rewrite suggestion blocks with a ```suggestion.*?``` regex that a nested fence breaks
+            reason = "the code contains a Markdown code fence"
+        elif not file.head_file_is_complete:
+            reason = "the file content could not be verified"
+        elif python_replacement_compiles(file.filename, file.head_file, start_line, end_line,
+                                         suggested_fix) is False:
+            reason = "the proposed Python code has invalid syntax"
+        if reason:
+            return (f"\n\nProposed fix (not offered as a committable change because {reason}):\n"
+                    f"{fence}\n{suggested_fix}\n{fence}"), None
+        payload = {"relevant_lines_start": start_line, "relevant_lines_end": end_line,
+                   "existing_code": existing_code, "improved_code": suggested_fix,
+                   "suggestion_content": (issue.get("issue_content") or "").strip(),
+                   "label": (issue.get("issue_header") or "").strip()}
+        return f"\n\n{fence}suggestion\n{suggested_fix}\n{fence}", payload
+
     def _build_key_issue_comment(self, issue, diff_files: dict) -> dict | None:
         if not isinstance(issue, dict):
             return None
@@ -1534,11 +1619,15 @@ class PRReviewer:
 
         relevant_file = file.filename.strip()
         body = f"**{issue_header}**\n\n{issue_content}" if issue_header else issue_content
-        return {"body": body,
-                "relevant_file": relevant_file,
-                "relevant_lines_start": start_line,
-                "relevant_lines_end": end_line,
-                "fallback_to_pr_comment": False}
+        fix_markdown, original_suggestion = self._suggested_fix_markdown(issue, file, start_line, end_line)
+        comment = {"body": body + fix_markdown,
+                   "relevant_file": relevant_file,
+                   "relevant_lines_start": start_line,
+                   "relevant_lines_end": end_line,
+                   "fallback_to_pr_comment": False}
+        if original_suggestion is not None:
+            comment["original_suggestion"] = original_suggestion
+        return comment
 
     def _can_verify_inline_key_issue_publication(self) -> bool:
         return can_verify_inline_comment_publication(self.git_provider)

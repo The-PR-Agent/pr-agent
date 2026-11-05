@@ -38,7 +38,7 @@ from pr_agent.algo.git_patch_processing import (
     to_hunk_only_patch,
 )
 from pr_agent.algo.language_handler import build_language_file_matcher
-from pr_agent.algo.output_models import PRType, SubPR, parse_failure_modes
+from pr_agent.algo.output_models import PRType, SubPR, finding_confidence, parse_failure_modes
 from pr_agent.algo.structural_reach import render_structural_reach
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings, get_verbosity_level
@@ -202,6 +202,14 @@ def replace_suggestion_blocks(body: str, replacement: str) -> str:
         position = end
     parts.append(body[position:])
     return "".join(parts)
+
+
+def get_min_finding_confidence() -> float:
+    """Return pr_reviewer.min_finding_confidence as a number; 0 (disabled) when unset or not numeric."""
+    try:
+        return float(get_settings().pr_reviewer.get("min_finding_confidence", 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def convert_to_markdown_v2(output_data: dict,
@@ -457,6 +465,11 @@ def convert_to_markdown_v2(output_data: dict,
                         if issue_header.lower() == 'possible bug':
                             issue_header = 'Possible Issue'  # Make the header less frightening
                         issue_content = issue.get('issue_content', '').strip()
+                        confidence = finding_confidence(issue) if get_min_finding_confidence() > 0 else None
+                        if confidence is not None:
+                            issue_header = f"{issue_header} (confidence: {confidence:g})"
+                        suggested_fix = issue.get('suggested_fix')
+                        suggested_fix = suggested_fix.rstrip(" \t\r\n") if isinstance(suggested_fix, str) else ""
                         start_line = _as_line(issue.get('start_line')) or 0
                         end_line = _as_line(issue.get('end_line')) or start_line
                         valid_lines = start_line > 0 and end_line >= start_line
@@ -488,6 +501,16 @@ def convert_to_markdown_v2(output_data: dict,
                                 issue_str = f"[**{issue_header}**]({reference_link})\n\n{issue_content}\n\n"
                             else:
                                 issue_str = f"**{issue_header}**\n\n{issue_content}\n\n"
+                        if suggested_fix.strip():
+                            language = next((file.language for file in set_file_languages(files)
+                                             if file.filename.strip() == relevant_file), "") if files else ""
+                            fence = _get_fence(suggested_fix)
+                            fix_block = f"{fence}{language}\n{suggested_fix}\n{fence}"
+                            if gfm_supported:
+                                issue_str += (f"\n\n<details><summary>Suggested fix</summary>\n\n"
+                                              f"{fix_block}\n\n</details>")
+                            else:
+                                issue_str += f"Suggested fix:\n\n{fix_block}\n\n"
                         markdown_text += f"{issue_str}\n\n"
                     except Exception as e:
                         get_logger().exception(f"Failed to process 'Recommended focus areas for review': {e}")

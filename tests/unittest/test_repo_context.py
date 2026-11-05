@@ -1845,6 +1845,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
                 "question_str": "",
                 "require_security_review": True,
                 "require_todo_scan": False,
+                "min_finding_confidence": 0,
                 "require_estimate_effort_to_review": True,
                 "require_risk_assessment": False,
                 "require_merge_recommendation": False,
@@ -1853,6 +1854,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
                 "num_max_findings": 3,
                 "num_pr_files": 1,
                 "is_ai_metadata": False,
+                "enable_suggested_fixes": True,
             },
         ),
         (
