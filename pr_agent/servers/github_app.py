@@ -15,7 +15,7 @@ from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.setting_utils import normalize_setting_list
-from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.config_loader import get_bot_display_name, get_settings, global_settings
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
@@ -227,7 +227,7 @@ def _start_auto_command_check_run(provider, command) -> str | None:
     if provider is None or name is None:
         return None
     try:
-        provider.start_check_run(name, f"PR-Agent is running {action}")
+        provider.start_check_run(name, f"{get_bot_display_name()} is running {action}")
     except Exception as e:
         get_logger().warning(f"Failed to open the {name} check run: {e}")
     return name
@@ -238,7 +238,8 @@ def _finish_auto_command_check_run(provider, name: str | None, command, succeede
     if provider is None or name is None:
         return
     action, _ = _auto_command_check_run(command)
-    summary = f"PR-Agent ran {action}" if succeeded else f"PR-Agent could not finish {action}"
+    bot_display_name = get_bot_display_name()
+    summary = f"{bot_display_name} ran {action}" if succeeded else f"{bot_display_name} could not finish {action}"
     try:
         provider.finish_check_run(name, "success" if succeeded else "failure", summary)
     except Exception as e:
