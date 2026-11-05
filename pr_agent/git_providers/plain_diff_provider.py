@@ -160,7 +160,15 @@ class PlainDiffGitProvider(GitProvider):
         self._write_output(f"{title}\n\n{pr_body}")
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ["get_issue_comments", "get_labels", "edit_comment", "remove_comment"]:
+        if capability in [
+            "get_issue_comments",
+            "get_labels",
+            "edit_comment",
+            "remove_comment",
+            "head_ci_status",
+            "head_staleness",
+            "author_human_check",
+        ]:
             return False
         return True
 
