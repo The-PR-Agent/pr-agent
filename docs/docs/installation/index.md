@@ -93,7 +93,7 @@ Releases **`0.34.2` and later** are published under [`pragent/pr-agent`](https:/
 **What you pin is what you get.** Version-numbered artifacts can never change after publication:
 
 - **GitHub releases** — the Git tag cannot be moved or deleted, and attached assets cannot be added, replaced, or removed. The protection also survives repository deletion, so a tag from an immutable release can never be reused by a repository recreated under the same name. (Release titles and notes stay editable; immutability covers the tag and the assets.)
-- **Docker images** — version tags such as `0.40.0` and `0.40.0-github_app` always resolve to the same image. Once pushed, they cannot be overwritten or repointed.
+- **Docker images** — version tags such as `0.40.0` and `0.40.0-github_app` always resolve to the same image. Once pushed, they cannot be overwritten or repointed. Only the `cli` image installs the `pr-agent` console script; on service images run `python -m pr_agent.cli …` (or `python /app/pr_agent/cli.py …`) instead — see [CLI Health Check](../usage-guide/automations_and_usage.md#cli-health-check).
 
 **Rolling tags stay mutable by design.** `latest`, `github_action`, `github_lambda`, `gitlab_lambda`, `gitlab_webhook`, `gitea_app`, `mosaico_agent` and `bitbucket_server_webhook` move to the newest build on every release. They are convenient for trying things out, but a `docker pull` of the same rolling tag on two different days can give you two different images.
 
