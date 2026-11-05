@@ -243,6 +243,13 @@ class TestRepoPathAndGitUrl:
             == "owner/repo"
         )
 
+    def test_owner_repo_from_git_url_keeps_dot_git_inside_repo_name(self):
+        p = _bare_provider()
+        assert (
+            p._get_owner_and_repo_path("https://github.com/owner/owner.github.io.git")
+            == "owner/owner.github.io"
+        )
+
     def test_unknown_url_returns_empty(self):
         p = _bare_provider()
         # No "issues" or "pull" segment and no .git suffix -> empty string,
