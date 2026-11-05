@@ -456,6 +456,24 @@ def test_validate_user_args_rejects_forbidden_key_with_whitespace_around_the_sec
 
 
 @pytest.mark.parametrize(
+    "spaced",
+    [
+        # Ordinary (non-host-only, non-forbidden) keys with whitespace before the
+        # section dot still validate today, but update_settings_from_args then
+        # replaces the whole section. Reject any whitespace in the flag name.
+        "--pr_description .extra_instructions=hi",
+        "--pr_description	.extra_instructions=hi",
+        "--config .verbosity_level=2",
+        "--pr_code_suggestions. suggestions_score_threshold=0",
+    ],
+)
+def test_validate_user_args_rejects_whitespace_in_ordinary_flag_name(spaced):
+    ok, offending = CliArgs.validate_user_args([spaced])
+    assert ok is False
+    assert isinstance(offending, str) and offending
+
+
+@pytest.mark.parametrize(
     "cyclic",
     [
         "--qdrant={\"x\": &a [*a]}",

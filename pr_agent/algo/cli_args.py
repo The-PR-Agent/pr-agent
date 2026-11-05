@@ -221,12 +221,13 @@ class CliArgs:
                         if mapping_offending_arg:
                             return False, mapping_offending_arg
                         continue
-                    # A forbidden key written with whitespace around the dot must not slip by
-                    # the literal match below: strip the whitespace out of the flag part so
-                    # the scan sees the dotted path settings_loader will apply.
-                    normalized_arg_word = ''.join(arg_word.split('=', 1)[0].split())
+                    # A flag name with whitespace never names a real setting, and applying one can
+                    # replace a whole section, so reject it outright.
+                    flag_name = arg_word.split('=', 1)[0].rstrip()
+                    if flag_name != ''.join(flag_name.split()):
+                        return False, flag_name
                     for forbidden_arg_word in forbidden_cli_args:
-                        if forbidden_arg_word in arg_word or forbidden_arg_word in normalized_arg_word:
+                        if forbidden_arg_word in arg_word:
                             return False, forbidden_arg_word
             return True, ""
         except Exception as e:
