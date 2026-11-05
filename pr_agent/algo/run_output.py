@@ -70,6 +70,8 @@ def push_outputs(
             return
 
         channels = cfg.get("channels", []) or []
+        if isinstance(channels, str):
+            channels = normalize_setting_list(channels, split_commas=True)
         record = {
             "type": message_type,
             "timestamp": datetime.now(UTC).isoformat(),

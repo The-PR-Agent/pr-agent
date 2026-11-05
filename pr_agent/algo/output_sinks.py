@@ -9,6 +9,7 @@ from urllib.parse import quote, urlparse
 
 import requests
 
+from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.log import get_logger
 
 
@@ -207,13 +208,12 @@ def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
 
     channels = cfg.get("channels", [])
     if isinstance(channels, str):
-        selected = [name for name in OUTPUT_SINK_TYPES if name in channels]
-    elif isinstance(channels, (list, tuple)):
-        if any(not isinstance(name, str) or name not in OUTPUT_SINK_TYPES for name in channels):
-            return False, "push_outputs.channels must select registered output sinks"
-        selected = [name for name in OUTPUT_SINK_TYPES if name in channels]
-    else:
+        channels = normalize_setting_list(channels, split_commas=True)
+    if not isinstance(channels, (list, tuple)):
         return False, "push_outputs.channels must select registered output sinks"
+    if any(not isinstance(name, str) or name not in OUTPUT_SINK_TYPES for name in channels):
+        return False, "push_outputs.channels must select registered output sinks"
+    selected = [name for name in OUTPUT_SINK_TYPES if name in channels]
     if not selected:
         return False, "push_outputs.channels must select registered output sinks"
 

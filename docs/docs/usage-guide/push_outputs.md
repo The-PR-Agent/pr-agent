@@ -70,7 +70,7 @@ teams_webhook_url = ""                 # Teams Workflows webhook URL; must be an
 ```
 
 - `enable` — master switch (default `false`). When `false`, nothing is emitted.
-- `channels` — which sinks to use. Nothing is emitted until at least one channel is listed here.
+- `channels` — which sinks to use. Use exact registered names as a list/tuple or a comma-separated string; surrounding whitespace is ignored. Nothing is emitted until at least one channel is listed here.
 - `file_path` — the file the `file` channel appends to.
 - `webhook_url` — the endpoint the `webhook` channel POSTs the generic record to.
 - `slack_webhook_url` — a Slack Incoming Webhook URL that the `slack` channel posts a `{"text": ...}` payload to.
