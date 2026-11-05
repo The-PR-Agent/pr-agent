@@ -183,6 +183,46 @@ async def test_the_committed_file_is_written_to_the_pr_branch(committing_tool):
     assert kwargs["message"] == "[skip ci] Update CHANGELOG.md"
 
 
+# --------------------------------------------------------------------------------------
+# Four-backtick fences: standard Markdown for embedding ``` inside a block, and the
+# long-run linear-time contract (a plain {3,} backtracks quadratically there).
+# --------------------------------------------------------------------------------------
+
+
+def test_a_four_backtick_fence_is_stripped():
+    assert strip_wrapping_code_fence("````yaml\n- Handle `None`\n````") == "- Handle `None`"
+
+
+def test_a_four_backtick_fence_leaves_no_stray_backtick():
+    """Before the fence run was matched as {3,}, the closing ```` matched its first
+    three backticks and the last one leaked into the body (PR #4652 review)."""
+    out = strip_wrapping_code_fence("````yaml\n- one\n- two\n````")
+
+    assert out == "- one\n- two"
+
+
+def test_stripping_twice_is_the_same_as_once_for_a_four_backtick_fence():
+    fenced = "````markdown\n- one\n```python\nx = 1\n````"
+
+    once = strip_wrapping_code_fence(fenced)
+
+    assert strip_wrapping_code_fence(once.strip()) == once.strip()
+
+
+def test_a_long_backtick_run_is_stripped_in_linear_time():
+    """A plain {3,} on the closing fence spends seconds at this size (28s at 80k on a
+    dev box); the possessive quantifier must keep it linear (PR #4652 review)."""
+    import time
+
+    text = "`" * 30_000 + "x"
+
+    start = time.perf_counter()
+    strip_wrapping_code_fence(text)
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 3.0
+
+
 @pytest.mark.asyncio
 async def test_a_fenced_answer_is_committed_without_its_fence(committing_tool):
     """The model often wraps the whole entry; the fence must not reach the file."""
