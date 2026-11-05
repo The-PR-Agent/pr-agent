@@ -25,7 +25,7 @@ from pr_agent.algo.artifacts import inject_artifact_context as _inject_artifact_
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings
-from pr_agent.doctor import missing_provider_key_env_vars
+from pr_agent.doctor import PROVIDER_AUTH_CORRECTIONS, missing_provider_key_env_vars
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
 from pr_agent.git_providers.utils import apply_host_settings, apply_repo_settings
@@ -354,9 +354,19 @@ async def run_action():
         # Raised, not printed, and rendered only from constant-table env var names and
         # static text: CodeQL's clear-text-logging sinks (logging/print/stderr) never
         # see anything derived near key handling, and the raise is not a sink itself.
+        correction = PROVIDER_AUTH_CORRECTIONS.get(env_var_names)
+        if correction is not None:
+            raise SystemExit(
+                f"Stopping before any tool runs: {correction} "
+                "'pr-agent doctor' preflights the same check by hand."
+            )
+        key_hint = (
+            f"Set {' or '.join(env_var_names)} in this workflow's env."
+            if env_var_names else "Replace the placeholder key in provider settings or workflow env."
+        )
         raise SystemExit(
             "Stopping before any tool runs: no usable API key for the active model's provider. "
-            f"Set {' or '.join(env_var_names)} in this workflow's env. "
+            f"{key_hint} "
             "'pr-agent doctor' preflights the same check by hand."
         )
 
