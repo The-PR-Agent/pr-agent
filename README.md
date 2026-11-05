@@ -14,8 +14,29 @@
 <br>
 The Original Open-Source PR Reviewer
 <br><br>
+<a href="https://github.com/The-PR-Agent/pr-agent/releases/latest">
+<img alt="Release" src="https://img.shields.io/github/v/release/The-PR-Agent/pr-agent?style=for-the-badge" height="20">
+</a>
+<a href="https://pypi.org/project/pr-agent/">
+<img alt="PyPI" src="https://img.shields.io/pypi/v/pr-agent?style=for-the-badge" height="20">
+</a>
+<a href="https://hub.docker.com/r/pragent/pr-agent">
+<img alt="Docker Hub" src="https://img.shields.io/badge/docker%20hub-pragent%2Fpr--agent-2496ED?style=for-the-badge&amp;logo=docker&amp;logoColor=white" height="20">
+</a>
+<a href="https://docs.pr-agent.ai/">
+<img alt="Documentation" src="https://img.shields.io/badge/docs-docs.pr--agent.ai-267bbd?style=for-the-badge" height="20">
+</a>
+<a href="https://codecov.io/gh/The-PR-Agent/pr-agent">
+<img alt="Coverage" src="https://img.shields.io/codecov/c/github/The-PR-Agent/pr-agent/main?style=for-the-badge" height="20">
+</a>
+<a href="https://github.com/The-PR-Agent/pr-agent/blob/main/LICENSE">
+<img alt="License" src="https://img.shields.io/github/license/The-PR-Agent/pr-agent?style=for-the-badge" height="20">
+</a>
 <a href="https://github.com/the-pr-agent/pr-agent/commits/main">
 <img alt="GitHub" src="https://img.shields.io/github/last-commit/the-pr-agent/pr-agent/main?style=for-the-badge" height="20">
+</a>
+<a href="https://github.com/The-PR-Agent/pr-agent/actions/workflows/build-and-test.yaml?query=branch%3Amain">
+<img alt="Build and test" src="https://img.shields.io/github/actions/workflow/status/The-PR-Agent/pr-agent/build-and-test.yaml?branch=main&amp;event=push&amp;style=for-the-badge" height="20">
 </a>
 </div>
 
