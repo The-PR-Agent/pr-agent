@@ -1323,12 +1323,8 @@ class GitLabProvider(GitProvider):
                 patch = load_large_diff(filename, new_file_content_str, original_file_content_str)
 
 
-            # GitLab returns the full unified diff including the `---`/`+++`
-            # file headers, which are not changed source lines (# see Bitbucket
-            # sibling: to_hunk_only_patch + line-count contract test).
-            num_plus_lines, num_minus_lines = count_patch_lines(
-                to_hunk_only_patch(patch)
-            )
+            # Older GitLab MR diffs carry ---/+++ file headers, which are not changed lines.
+            num_plus_lines, num_minus_lines = count_patch_lines(to_hunk_only_patch(patch))
             diff_files.append(
                 FilePatchInfo(original_file_content_str, new_file_content_str,
                               patch=patch,

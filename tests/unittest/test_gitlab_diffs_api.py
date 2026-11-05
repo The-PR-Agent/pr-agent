@@ -156,11 +156,9 @@ def test_diff_line_counts_keep_unicode_separators_in_source_lines(provider_facto
 
 
 def test_diff_line_counts_ignore_unified_diff_file_headers(provider_factory):
-    # Header shape per the MR diffs API's own documented payload example
-    # (docs.gitlab.com/api/merge_requests, GET .../merge_requests/:iid/diffs:
-    # "diff": "--- a/...\n+++ b/...\n@@ ..."), also confirmed by
-    # gitlab-org/gitlab#270960: the standard API diff field "already includes
-    # full headers".
+    # Older GitLab MRs carry the ---/+++ headers in /diffs (gitlab-org/gitlab !1
+    # still does today); newer ones start at @@. gitlab-org/gitlab#270960
+    # confirms the standard API diff field "already includes full headers".
     patch = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
     provider, _ = provider_factory([(200, [_change("a.py", diff=patch)], {})], count="1")
 
