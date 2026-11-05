@@ -22,6 +22,7 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from pr_agent.algo.pr_processing import pr_generate_extended_diff
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import github_provider
 from pr_agent.git_providers.github_provider import GithubProvider, IncompletePullRequestFilesError
 from pr_agent.log import get_logger
@@ -42,6 +43,9 @@ def _bare_provider():
     ("https://github.com/acme/issues-helper/pull/42", "acme/issues-helper", False),
     ("https://api.github.com/repos/acme/issues-helper/pulls/42", "acme/issues-helper", False),
     ("https://ghes.example.com/api/v3/repos/acme/issues-helper/pulls/42", "acme/issues-helper", False),
+    ("https://api.octo.ghe.com/repos/acme/pull-tools/issues/42", "acme/pull-tools", True),
+    ("https://api.octo.ghe.com/repos/acme/issues-helper/pulls/42", "acme/issues-helper", False),
+    ("https://api.example.com/acme/issues-helper/pull/42", "acme/issues-helper", False),
 ])
 def test_constructor_routes_by_url_resource(monkeypatch, url, repo_name, is_issue):
     client = Mock()
@@ -264,6 +268,23 @@ class TestRepoPathAndGitUrl:
             p.get_git_repo_url("https://ghes.example.com/owner/repo/pull/1")
             == "https://ghes.example.com/owner/repo.git"
         )
+
+    @pytest.mark.parametrize(("base_url", "pr_url", "git_url"), [
+        ("https://api.github.com", "https://github.com/owner/repo/pull/1", "https://github.com/owner/repo.git"),
+        ("https://ghes.example.com/api/v3", "https://ghes.example.com/owner/repo/pull/1",
+         "https://ghes.example.com/owner/repo.git"),
+        ("https://api.octo.ghe.com", "https://octo.ghe.com/owner/repo/pull/1", "https://octo.ghe.com/owner/repo.git"),
+    ])
+    def test_get_git_repo_url_follows_configured_base_url(self, monkeypatch, base_url, pr_url, git_url):
+        monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: Mock())
+        settings = get_settings()
+        previous = settings.get("GITHUB.BASE_URL")
+        settings.set("GITHUB.BASE_URL", base_url)
+        try:
+            provider = GithubProvider()
+        finally:
+            settings.set("GITHUB.BASE_URL", previous)
+        assert provider.get_git_repo_url(pr_url) == git_url
 
     def test_get_git_repo_url_mismatch_returns_empty(self):
         """If derived owner/repo doesn't appear in the input URL, return ''."""

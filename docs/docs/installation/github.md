@@ -689,7 +689,7 @@ gh attestation verify \
 ```
 :::
 
-### Action for GitHub enterprise server
+### Action for GitHub enterprise server or GHE.com
 
 :::tip
 To use the action with a GitHub enterprise server, add an environment variable `GITHUB__BASE_URL` with the API URL of your GitHub server.
@@ -699,6 +699,13 @@ For example, if your GitHub server is at `https://github.mycompany.com`, add the
       env:
         # ... previous environment values
         GITHUB__BASE_URL: "https://github.mycompany.com/api/v3"
+```
+
+For GitHub Enterprise Cloud with data residency (GHE.com), set `GITHUB__BASE_URL` to the API host `https://api.<subdomain>.ghe.com`, which the workflow exposes as `github.api_url`:
+```yaml
+      env:
+        # ... previous environment values
+        GITHUB__BASE_URL: ${{ github.api_url }} # e.g. https://api.mycompany.ghe.com
 ```
 :::
 

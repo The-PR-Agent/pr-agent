@@ -29,6 +29,12 @@ To invoke a tool (for example `review`), you can run PR-Agent directly from the 
     -e GITHUB__BASE_URL=https://github.mycompany.com/api/v3
     ```
 
+    For GitHub Enterprise Cloud with data residency (GHE.com), use the API host instead:
+
+    ```bash
+    -e GITHUB__BASE_URL=https://api.mycompany.ghe.com
+    ```
+
 - For GitLab:
 
     ```bash
