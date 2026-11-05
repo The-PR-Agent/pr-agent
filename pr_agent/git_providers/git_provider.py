@@ -25,7 +25,7 @@ from pr_agent.algo.comment_identity import (
 from pr_agent.algo.inline_comment_dedup import strip_markers
 from pr_agent.algo.language_handler import build_language_file_matcher, numeric_languages
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import Range, process_description
+from pr_agent.algo.utils import process_description
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -1043,9 +1043,6 @@ class GitProvider(ABC):
         return relevant_line_start, relevant_line_end
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
-        return ""
-
-    def get_lines_link_original_file(self, filepath:str, component_range: Range) -> str:
         return ""
 
     #### comments operations ####

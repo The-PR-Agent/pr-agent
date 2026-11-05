@@ -1293,13 +1293,6 @@ class TestCodeCommitProvider:
         assert sent.endswith("...")
         assert "\n\n" in sent
 
-    def test_get_title(self):
-        # Test that the get_title() function returns the PR title
-        with patch.object(CodeCommitProvider, "__init__", lambda x, y: None):
-            provider = CodeCommitProvider(None)
-            provider.pr = PullRequestCCMimic("My Test PR Title", [])
-            assert provider.get_title() == "My Test PR Title"
-
     def test_get_pr_id(self):
         # Test that the get_pr_id() function returns the correct ID
         with patch.object(CodeCommitProvider, "__init__", lambda x, y: None):

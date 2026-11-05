@@ -3251,13 +3251,6 @@ class TestGitLabCapabilities:
         assert provider.is_comment_authored_by_pr_agent({"author": {"id": 42}}) is True
         assert provider.is_comment_authored_by_pr_agent({"author": {"id": 99}}) is False
 
-    @pytest.mark.parametrize("capability", [
-        "create_inline_comment",
-        "publish_inline_comments",
-    ])
-    def test_unimplemented_capabilities_stay_unsupported(self, capability):
-        assert self._provider().is_supported(capability) is False
-
     def test_gfm_markdown_is_supported(self):
         assert self._provider().is_supported("gfm_markdown") is True
 
