@@ -162,3 +162,30 @@ def test_sync_polling_gets_provider_only_when_notifying():
 
     getter.assert_called_once_with("https://example/pr/6")
     provider.add_eyes_reaction.assert_called_once_with(6)
+
+
+@pytest.mark.parametrize("base_url, expected", [
+    (None, "https://api.github.com/notifications"),
+    ("https://github.example.com/api/v3/", "https://github.example.com/api/v3/notifications"),
+    ("https://api.octo.ghe.com", "https://api.octo.ghe.com/notifications"),
+])
+def test_notifications_url_follows_github_base_url(base_url, expected):
+    if base_url is None:
+        global_settings.unset("github.base_url")
+    else:
+        global_settings.set("github.base_url", base_url)
+    assert github_polling._notifications_url() == expected
+
+
+@pytest.mark.asyncio
+async def test_mark_notification_as_read_uses_github_base_url():
+    global_settings.set("github.base_url", "https://api.octo.ghe.com")
+    response = MagicMock(status=205)
+    session = MagicMock()
+    session.patch.return_value.__aenter__ = AsyncMock(return_value=response)
+    session.patch.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    await github_polling.mark_notification_as_read({"Authorization": "Bearer t"}, {"id": "42"}, session)
+
+    session.patch.assert_called_once_with("https://api.octo.ghe.com/notifications/threads/42",
+                                          headers={"Authorization": "Bearer t"})

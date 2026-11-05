@@ -149,7 +149,7 @@ class GithubProvider(GitProvider):
             self.installation_id = None
         self.max_comment_chars = 65000
         self.base_url = get_settings().get("GITHUB.BASE_URL", "https://api.github.com").rstrip("/") # "https://api.github.com"
-        self.base_url_html = self.base_url.split("api/")[0].rstrip("/") if "api/" in self.base_url else "https://github.com"
+        self.base_url_html = self._html_base_url(self.base_url)
         self.github_client = self._get_github_client()
         self.repo = None
         self.pr_num = None
@@ -277,10 +277,30 @@ class GithubProvider(GitProvider):
         return True
 
     @staticmethod
+    def _is_ghe_com_api_host(netloc: str) -> bool:
+        # GitHub Enterprise Cloud with data residency serves the REST API on api.<subdomain>.ghe.com
+        return netloc.startswith("api.") and netloc.endswith(".ghe.com")
+
+    @staticmethod
+    def _is_api_url(parsed_url) -> bool:
+        netloc = parsed_url.netloc
+        return (netloc == "api.github.com" or GithubProvider._is_ghe_com_api_host(netloc)
+                or parsed_url.path.startswith("/api/v3/"))
+
+    @staticmethod
+    def _html_base_url(base_url: str) -> str:
+        if "api/" in base_url:
+            return base_url.split("api/")[0].rstrip("/")
+        netloc = urlparse(base_url).netloc
+        if GithubProvider._is_ghe_com_api_host(netloc):
+            return f"https://{netloc[len('api.'):]}"
+        return "https://github.com"
+
+    @staticmethod
     def _get_url_resource(url: str) -> str:
         parsed_url = urlparse(url)
         path = parsed_url.path
-        is_api_url = parsed_url.netloc == "api.github.com" or path.startswith("/api/v3/")
+        is_api_url = GithubProvider._is_api_url(parsed_url)
         if path.startswith("/api/v3/"):
             path = path[len("/api/v3"):]
         path_parts = path.strip('/').split('/')
@@ -2130,7 +2150,7 @@ class GithubProvider(GitProvider):
     def _parse_pr_url(self, pr_url: str) -> tuple[str, int]:
         parsed_url = urlparse(pr_url)
 
-        is_api_url = parsed_url.netloc == "api.github.com" or parsed_url.path.startswith("/api/v3/")
+        is_api_url = self._is_api_url(parsed_url)
         if parsed_url.path.startswith("/api/v3/"):
             parsed_url = urlparse(parsed_url.path[len("/api/v3") :])
 
@@ -2159,7 +2179,7 @@ class GithubProvider(GitProvider):
     def _parse_issue_url(self, issue_url: str) -> tuple[str, int]:
         parsed_url = urlparse(issue_url)
 
-        is_api_url = parsed_url.netloc == "api.github.com" or parsed_url.path.startswith("/api/v3/")
+        is_api_url = self._is_api_url(parsed_url)
         if parsed_url.path.startswith("/api/v3/"):
             parsed_url = urlparse(parsed_url.path[len("/api/v3") :])
 
