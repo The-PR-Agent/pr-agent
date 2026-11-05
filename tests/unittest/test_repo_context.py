@@ -74,6 +74,7 @@ def repo_context_settings():
     original_files = settings.config.get("repo_context_files", [])
     original_max_lines = settings.config.get("repo_context_max_lines", 500)
     original_from_default_branch = settings.config.get("repo_context_from_default_branch", True)
+    original_expand_imports = settings.config.get("repo_context_expand_imports", False)
     original_sibling_repos = settings.config.get("repo_context_sibling_repos", [])
     settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", [])
     original_max_sibling_files = settings.config.get("repo_context_max_sibling_files", 5)
@@ -86,6 +87,7 @@ def repo_context_settings():
     settings.set("CONFIG.REPO_CONTEXT_FILES", original_files)
     settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", original_max_lines)
     settings.set("CONFIG.REPO_CONTEXT_FROM_DEFAULT_BRANCH", original_from_default_branch)
+    settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", original_expand_imports)
     settings.set("CONFIG.REPO_CONTEXT_MAX_SIBLING_FILES", original_max_sibling_files)
     repo_context._unsupported_repo_context_provider_classes = original_warned_provider_classes
     repo_context._repo_context_process_cache = original_process_cache
@@ -2294,6 +2296,155 @@ def test_load_repo_context_files_alternatives_skip_structured_entries_and_duplic
     )
 
     assert loaded == [("AGENTS.md", "agents"), ("CLAUDE.md", "claude")]
+
+
+def test_repo_context_imports_are_disabled_by_default(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["CLAUDE.md"])
+    provider = FakeProvider({"CLAUDE.md": "@AGENTS.md", "AGENTS.md": "agents"})
+
+    loaded, _ = repo_context._load_repo_context_files(
+        provider, ["CLAUDE.md"], from_default_branch=True
+    )
+
+    assert loaded == [("CLAUDE.md", "@AGENTS.md")]
+    assert provider.requested_paths == ["CLAUDE.md"]
+
+
+def test_repo_context_alternatives_keep_first_available_after_duplicate_entry(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", False)
+    provider = FakeProvider({"AGENTS.md": "agents", "CLAUDE.md": "claude"})
+
+    loaded, _ = repo_context._load_repo_context_files(
+        provider, ["AGENTS.md", ["AGENTS.md", "CLAUDE.md"]], from_default_branch=True
+    )
+
+    assert loaded == [("AGENTS.md", "agents")]
+    assert "CLAUDE.md" not in provider.requested_paths
+
+
+def test_repo_context_expands_imports_relative_to_the_containing_file(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
+    provider = FakeProvider({
+        "docs/CLAUDE.md": "See @rules.md and @Design\\ Docs/style.md",
+        "docs/rules.md": "rules",
+        "docs/Design Docs/style.md": "style",
+    })
+
+    loaded, _ = repo_context._load_repo_context_files(
+        provider, ["docs/CLAUDE.md"], from_default_branch=True
+    )
+
+    assert loaded == [
+        ("docs/CLAUDE.md", "See @rules.md and @Design\\ Docs/style.md"),
+        ("docs/rules.md", "rules"),
+        ("docs/Design Docs/style.md", "style"),
+    ]
+    assert provider.from_default_branch_calls == [True, True, True]
+
+
+def test_repo_context_import_parsing_skips_code_urls_and_escaping_paths(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
+    provider = FakeProvider({
+        "CLAUDE.md": (
+            "`@inline.md`\n"
+            "```\n@fenced.md\n```\n"
+            "@https://example.com/remote.md\n"
+            "@../outside.md\n"
+            "@/absolute.md\n"
+            "@~/.claude/private.md\n"
+            "@real.md"
+        ),
+        "inline.md": "inline",
+        "fenced.md": "fenced",
+        "outside.md": "outside",
+        "absolute.md": "absolute",
+        "real.md": "real",
+    })
+
+    loaded, _ = repo_context._load_repo_context_files(
+        provider, ["CLAUDE.md"], from_default_branch=True
+    )
+
+    assert [label for label, _ in loaded] == ["CLAUDE.md", "real.md"]
+    assert provider.requested_paths == ["CLAUDE.md", "real.md"]
+
+
+def test_repo_context_import_parser_consumes_escaped_space_tokens_once():
+    content = "@first\\ " + "@nested\\ " * 2000 + "last.md"
+
+    paths = list(repo_context._iter_markdown_import_paths(content))
+
+    assert paths == ["first " + "@nested " * 2000 + "last.md"]
+
+
+def test_repo_context_imports_follow_at_most_four_hops(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
+    provider = FakeProvider({
+        "a.md": "@b.md",
+        "b.md": "@c.md",
+        "c.md": "@d.md",
+        "d.md": "@e.md",
+        "e.md": "@f.md",
+        "f.md": "too deep",
+    })
+
+    loaded, _ = repo_context._load_repo_context_files(provider, ["a.md"], from_default_branch=True)
+
+    assert [label for label, _ in loaded] == ["a.md", "b.md", "c.md", "d.md", "e.md"]
+
+
+def test_repo_context_import_fetches_have_a_hard_cap(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
+    imports = " ".join(f"@missing-{index}.md" for index in range(30))
+    provider = FakeProvider({"CLAUDE.md": imports})
+
+    loaded, _ = repo_context._load_repo_context_files(provider, ["CLAUDE.md"], from_default_branch=True)
+
+    assert loaded == [("CLAUDE.md", imports)]
+    assert len(provider.requested_paths) == 1 + repo_context._HARD_MAX_IMPORT_FETCHES
+    assert len(set(provider.requested_paths)) == len(provider.requested_paths)
+
+
+def test_repo_context_includes_each_imported_file_once(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["CLAUDE.md", "AGENTS.md"])
+    provider = FakeProvider({
+        "CLAUDE.md": "@AGENTS.md\n@AGENTS.md",
+        "AGENTS.md": "@CLAUDE.md\nagents",
+    })
+
+    loaded, _ = repo_context._load_repo_context_files(
+        provider, ["CLAUDE.md", "AGENTS.md"], from_default_branch=True
+    )
+
+    assert [label for label, _ in loaded] == ["CLAUDE.md", "AGENTS.md"]
+    assert provider.requested_paths == ["CLAUDE.md", "AGENTS.md"]
+
+
+def test_repo_context_imported_lines_share_the_line_budget(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["CLAUDE.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 15)
+    provider = FakeProvider({"CLAUDE.md": "@AGENTS.md", "AGENTS.md": "one\ntwo\nthree"})
+
+    context = build_repo_context(provider)
+
+    assert TRUNCATION_MARKER in context
+    assert "three" not in context
+
+
+def test_repo_context_cache_invalidates_when_import_expansion_changes(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["CLAUDE.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    provider = FakeProvider({"CLAUDE.md": "@AGENTS.md", "AGENTS.md": "agents"})
+
+    literal_context = build_repo_context(provider)
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
+    expanded_context = build_repo_context(provider)
+
+    assert "@AGENTS.md" in literal_context
+    assert "agents" in expanded_context
+    assert provider.requested_paths == ["CLAUDE.md", "CLAUDE.md", "AGENTS.md"]
 
 
 def test_repo_context_cache_key_tracks_glob_limit_for_nested_glob_alternatives(monkeypatch):
