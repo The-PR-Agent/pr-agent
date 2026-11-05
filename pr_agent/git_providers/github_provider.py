@@ -297,7 +297,7 @@ class GithubProvider(GitProvider):
                 repo_path, _ = self._parse_pr_url(given_url)
             elif given_url.endswith('.git'):
                 parsed_url = urlparse(given_url)
-                repo_path = (parsed_url.path.split('.git')[0])[1:] # /<owner>/<repo>.git -> <owner>/<repo>
+                repo_path = parsed_url.path.removesuffix('.git')[1:] # /<owner>/<repo>.git -> <owner>/<repo>
             if not repo_path:
                 get_logger().error(f"url is neither an issues url nor a PR url nor a valid git url: "
                                    f"{given_url}. Returning empty result.")

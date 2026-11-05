@@ -317,7 +317,8 @@ class BitbucketProvider(GitProvider):
         if repo_git_url:
             parsed_git_url = urlparse(repo_git_url)
             scheme_and_netloc = parsed_git_url.scheme + "://" + parsed_git_url.netloc
-            repo_path = parsed_git_url.path.split('.git')[0][1:] #/<workspace>/<repo>.git -> <workspace>/<repo>
+            #/<workspace>/<repo>.git -> <workspace>/<repo>
+            repo_path = parsed_git_url.path.rstrip('/').removesuffix('.git')[1:]
             if repo_path.count('/') != 1:
                 get_logger().error(f"repo_git_url is not a valid git repo url: {repo_git_url}")
                 return ("", "")

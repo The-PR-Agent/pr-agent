@@ -797,8 +797,14 @@ class GitLabProvider(GitProvider):
             # numeric-alias URLs need the "projects/" segment, same as get_line_link
             prefix = f"{self._get_project_web_url()}/-/blob/{quote(desired_branch)}"
         else: #Use repo git url
-            repo_path = repo_git_url.split('.git')[0].split('.com/')[-1]
-            prefix = f"{self.gitlab_url}/{repo_path}/-/blob/{quote(desired_branch)}"
+            parsed_git_url = urlparse(repo_git_url)
+            # The prefix ends up in published comments, so drop any credentials from the netloc.
+            netloc = parsed_git_url.netloc.rpartition('@')[2]
+            repo_path = parsed_git_url.path.strip('/').removesuffix('.git')
+            if not (parsed_git_url.scheme and netloc and repo_path):
+                get_logger().error(f"repo_git_url is not a valid git repo url: {redact_credentials(repo_git_url)}")
+                return ("", "")
+            prefix = f"{parsed_git_url.scheme}://{netloc}/{repo_path}/-/blob/{quote(desired_branch)}"
         suffix = "?ref_type=heads"  # gitlab cloud adds this suffix. gitlab server does not, but it is harmless.
         return (prefix, suffix)
 

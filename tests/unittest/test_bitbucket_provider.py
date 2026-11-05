@@ -3105,3 +3105,28 @@ def test_paths_preserve_spaces_in_actual_git_rename_output(tmp_path, old, new):
     raw_diff = git("diff", "--cached", "--no-ext-diff", "--find-renames")
 
     assert _diff_header_paths(raw_diff) == (old, new)
+
+
+@pytest.mark.parametrize("repo_git_url", [
+    "https://bitbucket.org/workspace/site.github.io.git",
+    "https://bitbucket.org/workspace/site.github.io.git/",
+])
+def test_get_canonical_url_parts_keeps_dot_git_inside_repo_name(repo_git_url):
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+
+    assert provider.get_canonical_url_parts(repo_git_url=repo_git_url, desired_branch="main") == (
+        "https://bitbucket.org/workspace/site.github.io/src/main",
+        "",
+    )
+
+
+def test_server_get_canonical_url_parts_keeps_dot_git_inside_repo_name():
+    provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+    provider.bitbucket_server_url = "https://bitbucket.example.com"
+
+    assert provider.get_canonical_url_parts(
+        repo_git_url="https://bitbucket.example.com/scm/PROJ/site.github.io.git", desired_branch="main"
+    ) == (
+        "https://bitbucket.example.com/projects/PROJ/repos/site.github.io/browse",
+        "?at=refs%2Fheads%2Fmain",
+    )
