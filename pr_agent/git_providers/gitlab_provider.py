@@ -5,6 +5,7 @@ import posixpath
 import re
 import time
 import urllib.parse
+from bisect import bisect_left
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -88,6 +89,122 @@ class GitLabDiffNotReadyError(IncompleteGitLabDiffError):
 # counts and mid-collection metadata movement fail immediately.
 _DIFF_READY_RETRY_DELAYS = (2, 5, 10)
 _diff_ready_sleep = time.sleep
+
+
+def _neutralize_gitlab_mentions(text: str) -> str:
+    """Disable GitLab notifications while leaving Markdown code spans untouched."""
+    if not text:
+        return text
+
+    mention = re.compile(r"(?<![\w/])@(?=[\w-])", re.UNICODE)
+    tick_runs: dict[int, list[int]] = {}
+    for run in re.finditer(r"`+", text):
+        tick_runs.setdefault(len(run.group()), []).append(run.start())
+
+    boundaries: list[int] = []
+    boundary_line = 0
+    while boundary_line <= len(text):
+        line_end = text.find("\n", boundary_line)
+        if line_end < 0:
+            line_end = len(text)
+        line = text[boundary_line:line_end]
+        if not line.strip() or re.match(r" {0,3}(`{3,}|~{3,})", line):
+            boundaries.append(boundary_line)
+        if line_end == len(text):
+            break
+        boundary_line = line_end + 1
+
+    output = []
+    index = 0
+    fence_char = None
+    fence_size = 0
+    inline_ticks = 0
+    indented_code = False
+    line_start = True
+
+    while index < len(text):
+        if text[index] == "\n":
+            output.append("\n")
+            index += 1
+            line_start = True
+            continue
+
+        if line_start and not inline_ticks:
+            line_end = text.find("\n", index)
+            if line_end < 0:
+                line_end = len(text)
+            line = text[index:line_end]
+            fence = re.match(r" {0,3}(`{3,}|~{3,})", line)
+            if fence:
+                marker = fence.group(1)
+                if fence_char is None:
+                    fence_char, fence_size = marker[0], len(marker)
+                elif marker[0] == fence_char and len(marker) >= fence_size:
+                    fence_char = None
+                    fence_size = 0
+                output.append(line)
+                index = line_end
+                line_start = False
+                continue
+            if line.startswith(("    ", "\t")) and (indented_code or (
+                    (index == 0 or text[index - 2:index] == "\n\n")
+                    and not re.match(r"\s*(?:[-*+]|\d+[.)])\s", line))):
+                indented_code = True
+                output.append(line)
+                index = line_end
+                line_start = False
+                continue
+            indented_code = False
+
+        if fence_char:
+            char = text[index]
+            output.append(char)
+            index += 1
+            line_start = char == "\n"
+            continue
+
+        if text[index] == "`":
+            end = index + 1
+            while end < len(text) and text[end] == "`":
+                end += 1
+            ticks = end - index
+            if not inline_ticks:
+                runs = tick_runs.get(ticks)
+                if runs:
+                    closer_index = bisect_left(runs, end)
+                    boundary_index = bisect_left(boundaries, end)
+                    boundary = boundaries[boundary_index] if boundary_index < len(boundaries) else len(text)
+                    if closer_index < len(runs) and runs[closer_index] < boundary:
+                        inline_ticks = ticks
+            elif ticks == inline_ticks:
+                inline_ticks = 0
+            output.append(text[index:end])
+            index = end
+            line_start = False
+            continue
+
+        if inline_ticks:
+            char = text[index]
+            output.append(char)
+            index += 1
+            line_start = char == "\n"
+            continue
+
+        next_special = index + 1
+        while next_special < len(text) and text[next_special] not in "@`\n":
+            next_special += 1
+        chunk = text[index:next_special]
+        prefix = text[index - 1:index] if index else ""
+        output.append(mention.sub("@\u200b", prefix + chunk)[len(prefix):])
+        index = next_special
+        if index < len(text) and text[index] == "\n":
+            output.append("\n")
+            index += 1
+            line_start = True
+        else:
+            line_start = False
+
+    return "".join(output)
 
 
 def _is_stale_file_update_error(error: GitlabUpdateError) -> bool:
@@ -1377,8 +1494,8 @@ class GitLabProvider(GitProvider):
     def publish_description(self, pr_title: str, pr_body: str) -> None:
         try:
             if pr_title is not None:
-                self.mr.title = pr_title
-            self.mr.description = pr_body
+                self.mr.title = _neutralize_gitlab_mentions(pr_title)
+            self.mr.description = _neutralize_gitlab_mentions(pr_body)
             self.mr.save()
         except (GitlabError, RequestException) as e:
             get_logger().exception(f"Could not update merge request {self.id_mr} description: {e}")
@@ -1518,7 +1635,8 @@ class GitLabProvider(GitProvider):
         if is_temporary and not get_settings().config.publish_output_progress:
             get_logger().debug(f"Skipping publish_comment for temporary comment: {mr_comment}")
             return None
-        mr_comment = self.limit_output_characters(mr_comment, self.max_comment_chars)
+        mr_comment = self.limit_output_characters(
+            _neutralize_gitlab_mentions(mr_comment), self.max_comment_chars)
         # Reply to the triggering GitLab discussion only when explicitly enabled and available.
         if (not is_temporary and self.should_reply_to_trigger_comment()
                 and (comment_id := get_settings().get("comment_id", ""))):
@@ -1549,7 +1667,7 @@ class GitLabProvider(GitProvider):
         return comment
 
     def edit_comment(self, comment, body: str):
-        body = self.limit_output_characters(body, self.max_comment_chars)
+        body = self.limit_output_characters(_neutralize_gitlab_mentions(body), self.max_comment_chars)
         self.mr.notes.update(comment.id,{'body': body} )
 
     def unresolve_comment_thread(self, comment):
@@ -1719,7 +1837,7 @@ class GitLabProvider(GitProvider):
         return resolved
 
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
-        body = self.limit_output_characters(body, self.max_comment_chars)
+        body = self.limit_output_characters(_neutralize_gitlab_mentions(body), self.max_comment_chars)
         discussion = self.mr.discussions.get(comment_id)
         return discussion.notes.create({'body': body})
 
@@ -1796,8 +1914,11 @@ class GitLabProvider(GitProvider):
                         f"Persistent inline comments: skipping duplicate inline "
                         f"comment on {relevant_file}:{anchor_line}")
                     return None
+                body = _neutralize_gitlab_mentions(body)
                 body = body_with_markers(
                     body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
+            else:
+                body = _neutralize_gitlab_mentions(body)
             # in order to have exact sha's we have to find correct diff for this change
             diff = self.get_relevant_diff(relevant_file, relevant_line_in_file)
             if diff is None:
@@ -1885,6 +2006,7 @@ class GitLabProvider(GitProvider):
                 patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
                 diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
                 body_fallback += diff_code
+                body_fallback = _neutralize_gitlab_mentions(body_fallback)
 
                 if store is not None:
                     body_fallback = body_with_markers(

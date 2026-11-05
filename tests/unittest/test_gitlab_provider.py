@@ -27,6 +27,7 @@ from pr_agent.git_providers.gitlab_provider import (
     GitLabProvider,
     _GitLabIncrementalCommit,
     _GitLabIncrementalNote,
+    _neutralize_gitlab_mentions,
     _parse_gitlab_iso_datetime,
 )
 
@@ -73,6 +74,49 @@ def _thread(notes, discussion_id='d1'):
     discussion.id = discussion_id
     discussion.attributes = {'id': discussion_id, 'notes': notes}
     return discussion
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    (
+        "Ping @user, email x@y.com, package /package/@scope/pkg, and (@group).",
+        "Ping @\u200buser, email x@y.com, package /package/@scope/pkg, and (@\u200bgroup).",
+    ),
+    (
+        "Inline `@literal` and fenced:\n```text\n@literal\n```\n@active",
+        "Inline `@literal` and fenced:\n```text\n@literal\n```\n@\u200bactive",
+    ),
+    (
+        "    @indented\n\t@tab-indented\n@active",
+        "    @indented\n\t@tab-indented\n@\u200bactive",
+    ),
+    (
+        "@active\n\n    @indented-code\n@after",
+        "@\u200bactive\n\n    @indented-code\n@\u200bafter",
+    ),
+    (
+        "- a\n    - sub @all\n    continuation @reviewer",
+        "- a\n    - sub @\u200ball\n    continuation @\u200breviewer",
+    ),
+    (
+        "`unclosed\n\n@all `closed`",
+        "`unclosed\n\n@\u200ball `closed`",
+    ),
+])
+def test_neutralize_gitlab_mentions_preserves_literals(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_stops_a_code_span_at_a_fence_line():
+    text = "Stray ` tick\n```suggestion\n@Override\n```\n\n@all ` here"
+    expected = "Stray ` tick\n```suggestion\n@Override\n```\n\n@\u200ball ` here"
+
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_handles_many_unmatched_tick_lengths():
+    text = " ".join("`" * length for length in range(1, 128)) + " @active"
+
+    assert _neutralize_gitlab_mentions(text).endswith(" @\u200bactive")
 
 
 class TestGitLabProvider:
@@ -1226,6 +1270,14 @@ class TestGitLabProvider:
         assert gitlab_provider.mr.description == "Updated description"
         gitlab_provider.mr.save.assert_called_once()
 
+    def test_publish_description_neutralizes_mentions(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+
+        gitlab_provider.publish_description("Ping @reviewer", "Email x@y.com and `@literal`")
+
+        assert gitlab_provider.mr.title == "Ping @\u200breviewer"
+        assert gitlab_provider.mr.description == "Email x@y.com and `@literal`"
+
     def test_publish_description_propagates_save_failure(self, gitlab_provider):
         gitlab_provider.mr = MagicMock()
         gitlab_provider.mr.save.side_effect = RuntimeError("permission denied")
@@ -1295,11 +1347,109 @@ class TestGitLabProvider:
     def test_publish_comment_defaults_to_a_note(self, gitlab_provider):
         # Without a trigger discussion, publishing stays a plain note.
         gitlab_provider.mr = MagicMock()
-        result = gitlab_provider.publish_comment("a status comment")
+        result = gitlab_provider.publish_comment("a status comment for @reviewer")
 
-        gitlab_provider.mr.notes.create.assert_called_once_with({'body': 'a status comment'})
+        gitlab_provider.mr.notes.create.assert_called_once_with({'body': 'a status comment for @\u200breviewer'})
         gitlab_provider.mr.discussions.create.assert_not_called()
         assert result is gitlab_provider.mr.notes.create.return_value
+
+    def test_edit_comment_neutralizes_mentions(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        comment = SimpleNamespace(id=12)
+
+        gitlab_provider.edit_comment(comment, "Updated for @reviewer; x@y.com stays")
+
+        gitlab_provider.mr.notes.update.assert_called_once_with(
+            12, {'body': 'Updated for @\u200breviewer; x@y.com stays'}
+        )
+
+    def test_reply_to_comment_neutralizes_mentions(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+
+        gitlab_provider.reply_to_comment_from_comment_id(42, "Reply to @reviewer")
+
+        gitlab_provider.mr.discussions.get.return_value.notes.create.assert_called_once_with(
+            {'body': 'Reply to @\u200breviewer'}
+        )
+
+    @pytest.mark.parametrize("as_draft", [False, True])
+    def test_inline_comment_neutralizes_mentions_for_live_and_draft_notes(self, gitlab_provider, as_draft):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_relevant_diff = MagicMock(return_value=SimpleNamespace(
+            base_commit_sha="base", start_commit_sha="start", head_commit_sha="head"
+        ))
+        target_file = SimpleNamespace(filename="src/app.py", old_filename="src/app.py")
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as settings:
+            settings.return_value.get.return_value = False
+            result = gitlab_provider.send_inline_comment(
+                "Suggestion for @reviewer", "addition", True, "src/app.py", "new line", 1,
+                target_file, 2, as_draft=as_draft,
+            )
+
+        assert result is True
+        if as_draft:
+            gitlab_provider.mr.draft_notes.create.assert_called_once()
+            published_body = gitlab_provider.mr.draft_notes.create.call_args.args[0]["note"]
+        else:
+            gitlab_provider.mr.discussions.create.assert_called_once()
+            published_body = gitlab_provider.mr.discussions.create.call_args.args[0]["body"]
+        assert published_body == "Suggestion for @\u200breviewer"
+
+    @pytest.mark.parametrize("as_draft", [False, True])
+    def test_inline_fallback_note_neutralizes_mentions(self, gitlab_provider, as_draft):
+        gitlab_provider.mr = MagicMock()
+        create = gitlab_provider.mr.draft_notes.create if as_draft else gitlab_provider.mr.discussions.create
+        create.side_effect = GitlabCreateError("position rejected")
+        gitlab_provider.get_relevant_diff = MagicMock(return_value=SimpleNamespace(
+            base_commit_sha="base", start_commit_sha="start", head_commit_sha="head"
+        ))
+        gitlab_provider.get_line_link = MagicMock(return_value="https://gitlab.test/file")
+        target_file = SimpleNamespace(filename="src/app.py", old_filename="src/app.py")
+        original_suggestion = {
+            "relevant_lines_start": 1,
+            "relevant_lines_end": 1,
+            "existing_code": "old",
+            "improved_code": "new",
+            "suggestion_content": "Notify @reviewer",
+            "label": "quality",
+        }
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as settings:
+            settings.return_value.get.return_value = False
+            result = gitlab_provider.send_inline_comment(
+                "Primary suggestion", "addition", True, "src/app.py", "new line", 1,
+                target_file, 2, original_suggestion=original_suggestion, as_draft=as_draft,
+            )
+
+        assert result is True
+        if as_draft:
+            fallback_body = gitlab_provider.mr.draft_notes.create.call_args.args[0]["note"]
+        else:
+            fallback_body = gitlab_provider.mr.notes.create.call_args.args[0]["body"]
+        assert "Notify @\u200breviewer" in fallback_body
+
+    def test_inline_fingerprint_uses_body_before_mention_rewrite(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_relevant_diff = MagicMock(return_value=SimpleNamespace(
+            base_commit_sha="base", start_commit_sha="start", head_commit_sha="head"
+        ))
+        target_file = SimpleNamespace(filename="src/app.py", old_filename="src/app.py")
+        store = MagicMock()
+        store.seen.return_value = False
+        raw_body = "Suggestion for @reviewer"
+        with (
+            patch("pr_agent.git_providers.gitlab_provider.get_settings") as settings,
+            patch("pr_agent.git_providers.gitlab_provider.get_inline_comment_store", return_value=store),
+            patch("pr_agent.git_providers.gitlab_provider.body_fingerprint", return_value="body-fp") as fingerprint,
+            patch("pr_agent.git_providers.gitlab_provider.code_fingerprint", return_value="code-fp"),
+        ):
+            settings.return_value.get.return_value = True
+            gitlab_provider.send_inline_comment(
+                raw_body, "addition", True, "src/app.py", "new line", 1, target_file, 2
+            )
+
+        fingerprint.assert_called_once_with("src/app.py", 2, raw_body)
+        published_body = gitlab_provider.mr.discussions.create.call_args.args[0]["body"]
+        assert "Suggestion for @\u200breviewer" in published_body
 
     def test_publish_comment_replies_to_trigger_discussion(self, gitlab_provider):
         gitlab_provider.mr = MagicMock()
