@@ -25,7 +25,9 @@ class TestOutputSinkPreflight:
     @pytest.mark.parametrize("channels, valid", [
         ("stdout", True),
         ("stdout,file", True),
-        ("prefixstdoutsuffix", True),
+        (" stdout , file ", True),
+        ("prefixstdoutsuffix", False),
+        ("stdout,unknown", False),
         ("unknown", False),
         (["stdout", "stdout"], True),
         (("file", "stdout"), True),
@@ -34,7 +36,7 @@ class TestOutputSinkPreflight:
         (["stdout", 1], False),
         ({"stdout": True}, False),
     ])
-    def test_selection_matches_runtime_string_membership_and_exact_collections(self, channels, valid):
+    def test_selection_uses_comma_separated_string_names_and_exact_collections(self, channels, valid):
         result = output_sinks._check_output_sinks({"enable": True, "channels": channels})
         assert result[0] is valid
 
@@ -126,6 +128,25 @@ class TestPushOutputs:
         push_outputs("review", payload={"a": 1}, markdown="hi")
 
         assert not (tmp_path / 'out.jsonl').exists()
+
+    def test_string_channels_use_complete_comma_separated_names(self, monkeypatch):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', True)
+        get_settings().set('PUSH_OUTPUTS.CHANNELS', ' webhook , not-slack ')
+        webhook_url = 'https://example.test/webhook'
+        slack_url = 'https://example.test/slack'
+        get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', webhook_url)
+        get_settings().set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', slack_url)
+        posts = []
+
+        def fake_post(url, **kwargs):
+            posts.append(url)
+            return SimpleNamespace(status_code=200)
+
+        monkeypatch.setattr(output_sinks.requests, 'post', fake_post)
+
+        push_outputs("review", payload={"a": 1}, markdown="hi")
+
+        assert posts == [webhook_url]
 
     def test_file_channel_appends_jsonl(self, monkeypatch, tmp_path):
         out = tmp_path / 'nested' / 'out.jsonl'

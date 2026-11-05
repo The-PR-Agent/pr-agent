@@ -658,7 +658,7 @@ agent_identity = "" # Host-only GUID, unique name, descriptor, or list; empty re
 
 [push_outputs] # push tool outputs to external sinks without calling git-provider APIs (disabled by default)
 enable = false
-channels = [] # any of: "stdout", "file", "webhook", "slack", "telegram", "teams". Nothing is emitted until a channel is listed here
+channels = [] # exact names as a list/tuple or comma-separated string: "stdout", "file", "webhook", "slack", "telegram", "teams"; empty emits nothing
 file_path = "pr-agent-outputs/reviews.jsonl" # used by the "file" channel
 webhook_url = "" # used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL
 slack_webhook_url = "" # used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL
