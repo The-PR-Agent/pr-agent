@@ -53,7 +53,7 @@ def locale_chain(language) -> list[str]:
     shipped = _shipped_catalogs()
     chain = []
     if isinstance(language, str):
-        subtags = language.strip().lower().replace("_", "-").split("-")
+        subtags = language.strip().lower().replace("_", "-").split("-", 8)
         for end in range(len(subtags), 0, -1):
             candidate = "-".join(subtags[:end])
             if candidate in shipped and candidate not in chain:
