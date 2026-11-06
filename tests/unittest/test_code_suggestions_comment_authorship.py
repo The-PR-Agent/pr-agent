@@ -22,6 +22,7 @@ MARKER = PRCodeSuggestionsIdentity.SUMMARY.value
 
 @pytest.fixture(params=[
     pytest.param((GithubProvider, 4), id="github-history"),
+    pytest.param((GithubProvider, 0), id="github-no-history"),
     pytest.param((GitLabProvider, 4), id="gitlab-history"),
     pytest.param((GitLabProvider, 0), id="gitlab-no-history"),
     pytest.param((AzureDevopsProvider, 4), id="azure-history"),
