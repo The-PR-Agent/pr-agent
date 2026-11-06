@@ -103,9 +103,12 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # for it are already blocked; the repo-settings entry point now matches.
     # Provider request timeouts stay host-controlled so repository settings cannot lengthen
     # worker occupancy across SDK retries. Command arguments enforce this same boundary.
+    # enable_auto_approval lets a reviewed repository switch on an approval action taken with
+    # the host's credentials, so only the operator may enable it.
     "config": frozenset({
         "extra_config_url",
         "description_issue_regex",
+        "enable_auto_approval",
         "enable_custom_labels",
         "global_settings_repo",
         "use_group_settings_file",

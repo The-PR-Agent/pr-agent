@@ -2535,8 +2535,27 @@ class GithubProvider(GitProvider):
         return sub_issues
 
     def auto_approve(self) -> bool:
+        """Approve the PR head that was reviewed, not whatever head exists now.
+
+        The approval is pinned to the head SHA the provider snapshot was read for
+        (``self._pr_revision_loaded``), and skipped when the PR has moved since, so a
+        push made between the review and the approval cannot mark unreviewed commits
+        as approved.
+        """
+        reviewed_head_sha = self._pr_revision_loaded[0] if self._pr_revision_loaded else None
         try:
-            res = self.pr.create_review(event="APPROVE")
+            current_head_sha = policy_value(self._get_pr(), "head", "sha")
+            if reviewed_head_sha and current_head_sha and current_head_sha != reviewed_head_sha:
+                get_logger().info(
+                    f"Skipping auto-approve: the PR head moved from {reviewed_head_sha} "
+                    f"to {current_head_sha} after it was read"
+                )
+                return False
+            if not reviewed_head_sha:
+                return False
+            res = self.pr.create_review(
+                event="APPROVE", commit=self._get_repo().get_commit(reviewed_head_sha)
+            )
             if res.state == "APPROVED":
                 return True
             return False
