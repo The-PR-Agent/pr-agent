@@ -37,7 +37,8 @@ Context windows are registered in `MAX_TOKENS` in `pr_agent/algo/__init__.py`:
 Claude model families declared in `_CLAUDE_MODEL_FAMILIES` populate their
 aliases automatically. For other models, add the model name and its
 context-window token count to `MAX_TOKENS`, or set `config.custom_model_max_tokens`
-in `configuration.toml`. Without either, `get_max_tokens()` raises.
+in `configuration.toml`. Without either, `get_max_tokens()` falls back to LiteLLM's
+`max_input_tokens` metadata and raises only if it cannot resolve a positive limit.
 
 Verify with `PYTHONPATH=. uv run pytest tests/unittest`.
 

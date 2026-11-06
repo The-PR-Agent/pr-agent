@@ -151,7 +151,7 @@ Passing custom headers to the underlying LLM Model API can be done by setting ex
 
 ```toml
 [litellm]
-extra_headers='{"projectId": "<authorized projectId >", ...}') #The value of this setting should be a JSON string representing the desired headers, a ValueError is thrown otherwise.
+extra_headers='{"projectId": "<authorized projectId >"}' #The value of this setting should be a JSON string representing the desired headers, a ValueError is thrown otherwise.
 ```
 
 This enables users to pass authorization tokens or API keys, when routing requests through an API management gateway.
@@ -169,7 +169,7 @@ E.g. to use a new model locally via Ollama, set in `.secrets.toml` or in a confi
 model = "ollama/qwen2.5-coder:32b"
 fallback_models=[]
 custom_model_max_tokens=128000 # set the maximal input tokens for the model
-duplicate_examples=true # will duplicate the examples in the prompt, to help the model to generate structured output
+duplicate_prompt_examples=true # will duplicate the examples in the prompt, to help the model to generate structured output
 
 [ollama]
 api_base = "http://localhost:11434" # or whatever port you're running Ollama on
@@ -204,7 +204,7 @@ key = ... # your Hugging Face api key
 api_base = ... # the base url for your Hugging Face inference endpoint
 ```
 
-(you can obtain a Llama2 key from [here](https://replicate.com/replicate/llama-2-70b-chat/api))
+(you can obtain a Hugging Face access token from [here](https://huggingface.co/settings/tokens))
 
 ### Replicate
 
@@ -435,16 +435,18 @@ credential sources and appropriate process/container isolation for distinct work
 explicit request-local credentials. Request-local configuration is not an isolation boundary against arbitrary
 code running in the same process.
 
-Minimal GitHub Actions workflow (no AWS secret keys required):
+Minimal GitHub Actions step for review only (no AWS secret keys required):
 
 ```yaml
 - uses: the-pr-agent/pr-agent@main
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     AWS_USE_IMDS: "true"
+    CONFIG__MODEL: "bedrock/us.anthropic.claude-sonnet-4-6"
+    CONFIG__FALLBACK_MODELS: "[]"
+    GITHUB_ACTION_CONFIG__AUTO_DESCRIBE: "false"
+    GITHUB_ACTION_CONFIG__AUTO_IMPROVE: "false"
     # AWS_REGION_NAME: us-east-1  # optional if the instance metadata provides it
-  with:
-    command: review
 ```
 
 The IAM role must have `bedrock:InvokeModel` permission on the inference profile and its destination foundation models. For the US profile invoked from `us-east-1`, replace `123456789012` with your AWS account ID:
