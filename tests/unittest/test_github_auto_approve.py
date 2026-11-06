@@ -20,6 +20,8 @@ def make_provider(reviewed_sha, current_sha, review_result=None):
     provider.pr = Mock()
     provider.pr.create_review = Mock(return_value=review_result or review)
     provider._get_pr = Mock(return_value=SimpleNamespace(head=SimpleNamespace(sha=current_sha)))
+    provider._get_repo = Mock()
+    provider._get_repo.return_value.get_commit = Mock(return_value=Mock())
     return provider
 
 
@@ -27,7 +29,20 @@ def test_auto_approve_pins_the_reviewed_head_sha():
     provider = make_provider(reviewed_sha="aaa111", current_sha="aaa111")
 
     assert provider.auto_approve() is True
-    provider.pr.create_review.assert_called_once_with(event="APPROVE", commit="aaa111")
+    provider._get_repo.return_value.get_commit.assert_called_once_with("aaa111")
+    provider.pr.create_review.assert_called_once_with(
+        event="APPROVE", commit=provider._get_repo.return_value.get_commit.return_value
+    )
+
+
+def test_auto_approve_skips_when_no_snapshot_to_pin():
+    provider = gp.GithubProvider.__new__(gp.GithubProvider)
+    provider._pr_revision_loaded = ()
+    provider.pr = Mock()
+    provider._get_pr = Mock(return_value=SimpleNamespace(head=SimpleNamespace(sha="aaa111")))
+
+    assert provider.auto_approve() is False
+    provider.pr.create_review.assert_not_called()
 
 
 def test_auto_approve_skips_when_head_moved():
@@ -47,3 +62,45 @@ def test_auto_approve_returns_false_when_review_not_approved():
 
 def test_enable_auto_approval_is_repo_host_only():
     assert is_repo_host_only_key("config", "enable_auto_approval") is True
+
+
+def _real_pull_request():
+    """Drive PyGithub's real ``create_review`` with a mocked requester."""
+    import github.Commit
+    import github.PullRequest
+    from github.Requester import Requester
+
+    requester = Requester(
+        auth=None,
+        base_url="https://api.github.com",
+        timeout=10,
+        user_agent="test",
+        per_page=30,
+        verify=True,
+        retry=None,
+        pool_size=None,
+    )
+    requester.requestJsonAndCheck = Mock(return_value=({}, {"id": 1, "state": "APPROVED", "body": None}))
+    pull_request = github.PullRequest.PullRequest(
+        requester, {}, {"id": 1, "url": "https://api.github.com/repos/octocat/demo/pulls/1"}, completed=True
+    )
+    commit = github.Commit.Commit(requester, {}, {"sha": "aaa111"}, completed=True)
+    return pull_request, commit
+
+
+def test_real_create_review_accepts_commit_object():
+    pull_request, commit = _real_pull_request()
+
+    # Must not raise: PyGithub's is_optional(commit, Commit) type check passes.
+    review = pull_request.create_review(event="APPROVE", commit=commit)
+    assert review.state == "APPROVED"
+
+
+def test_real_create_review_rejects_sha_string():
+    pull_request, _ = _real_pull_request()
+
+    # Documents why the provider must convert the SHA to a Commit object.
+    import pytest
+
+    with pytest.raises(AssertionError):
+        pull_request.create_review(event="APPROVE", commit="aaa111")

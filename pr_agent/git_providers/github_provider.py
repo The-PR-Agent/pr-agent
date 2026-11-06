@@ -2582,7 +2582,11 @@ class GithubProvider(GitProvider):
                     f"to {current_head_sha} after it was read"
                 )
                 return False
-            res = self.pr.create_review(event="APPROVE", commit=reviewed_head_sha)
+            if not reviewed_head_sha:
+                return False
+            res = self.pr.create_review(
+                event="APPROVE", commit=self._get_repo().get_commit(reviewed_head_sha)
+            )
             if res.state == "APPROVED":
                 return True
             return False
