@@ -57,14 +57,14 @@ Bitbucket. PR-Agent does not recover missing patches automatically.
 
 Login into your on-prem instance of Bitbucket with your service account username and password.
 Navigate to `Manage account`, `HTTP Access tokens`, `Create Token`.
-Generate the token and add it to .secret.toml under `bitbucket_server` section
+Generate the token and add it to `pr_agent/settings/.secrets.toml` under `bitbucket_server` section
 
 ```toml
 [bitbucket_server]
 bearer_token = "<your key>"
 ```
 
-Don't forget to also set the URL of your Bitbucket Server instance (either in `.secret.toml` or in `configuration.toml`):
+Don't forget to also set the URL of your Bitbucket Server instance (either in `.secrets.toml` or in `configuration.toml`):
 
 ```toml
 [bitbucket_server]
@@ -84,7 +84,7 @@ git_provider="bitbucket_server"
 and pass the Pull request URL:
 
 ```shell
-python cli.py --pr_url https://git.on-prem-instance-of-bitbucket.com/projects/PROJECT/repos/REPO/pull-requests/1 review
+uv run pr-agent --pr_url https://git.on-prem-instance-of-bitbucket.com/projects/PROJECT/repos/REPO/pull-requests/1 review
 ```
 
 ### Run it as service

@@ -55,7 +55,7 @@ The GitHub, GitLab, Gitea and Bitbucket Server webhook servers (the `github_app`
 | `GUNICORN_MAX_WORKERS` | `4`       | Upper bound on the automatically derived worker count.                                    |
 | `PORT`                 | `3000`    | Port the server binds to.                                                                 |
 
-When `GUNICORN_WORKERS` is unset, the worker count is derived from the CPUs actually available to the container (cgroup CPU limit, falling back to CPU affinity), clamped to between 2 and `GUNICORN_MAX_WORKERS`. Note that a CPU *request* without a *limit* leaves no cgroup quota to read, so the cap is what bounds the worker count there.
+When `GUNICORN_WORKERS` is unset, the worker count is derived from the CPUs actually available to the container (the stricter of the cgroup CPU limit and CPU affinity, using whichever is available), clamped to between 2 and `GUNICORN_MAX_WORKERS`, except that an explicit `GUNICORN_MAX_WORKERS=1` permits one worker. Note that a CPU *request* without a *limit* leaves no cgroup quota to read, so affinity and the cap are what bound the worker count there.
 
 **Sizing memory:** importing the application costs roughly 250MB. The app is imported once in the gunicorn master and workers are forked from it, so they share most of that baseline copy-on-write rather than each paying it in full — total memory grows with worker count, but by noticeably less than 250MB per worker. Start from about 1Gi for the default of 4 workers and adjust against your own metrics.
 

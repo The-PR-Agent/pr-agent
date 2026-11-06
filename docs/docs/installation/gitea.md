@@ -5,9 +5,9 @@ sidebar_position: 8
 
 ## Run a Gitea webhook server
 
-1. In Gitea create a new user and give it "Reporter" role for the intended group or project.
+1. In Gitea create a new user and give it write access to the intended repositories, either as a collaborator or through an organization team. See [Gitea repository permissions](https://docs.gitea.com/usage/access-control/permissions/).
 
-2. For the user from step 1. generate a `personal_access_token` with `api` access.
+2. For the user from step 1. generate a personal access token under **User Settings → Applications**, with `write:repository` and `write:issue` scopes for reading pull requests and publishing descriptions, reviews, comments, and labels. See [Gitea API token permissions](https://docs.gitea.com/1.26/development/api-usage/#generating-and-listing-api-tokens).
 
 3. Generate a random secret for your app, and save it for later (`webhook_secret`). For example, you can use:
 
@@ -21,6 +21,7 @@ sidebar_position: 8
 
     ```bash
     git clone https://github.com/the-pr-agent/pr-agent.git
+    cd pr-agent
     ```
 
 5. Prepare variables and secrets. Skip this step if you plan on setting these as environment variables when running the agent:
@@ -40,7 +41,7 @@ sidebar_position: 8
     docker push <your-registry>/pr-agent:gitea_app
     ```
 
-7. Set the environmental variables, the method depends on your docker runtime. Skip this step if you included your secrets/configuration directly in the Docker image.
+7. Set the environmental variables, the method depends on your docker runtime. Secrets can also be provided through a mounted `.secrets.toml` file. The supported secrets files are excluded from the Docker build context; do not bake secrets into the image.
 
     ```bash
     CONFIG__GIT_PROVIDER=gitea
@@ -62,9 +63,9 @@ sidebar_position: 8
     Set `GITEA__WEB_URL` explicitly when `GITEA__URL` is an internal address users cannot browse
     (e.g. a Docker service name), or when the server's `ROOT_URL` is misconfigured.
 
-8. Create a webhook in your Gitea project. Set the URL to `http[s]://<PR_AGENT_HOSTNAME>/api/v1/gitea_webhooks`, the secret token to the generated secret from step 3, and enable the triggers `push`, `comments` and `merge request events`.
+8. Create a webhook in your Gitea repository. Set the URL to `http[s]://<PR_AGENT_HOSTNAME>/api/v1/gitea_webhooks`, the secret token to the generated secret from step 3, and enable pull request and pull request comment events. To run commands after new commits, also enable pull request synchronization events and set `gitea.handle_push_trigger = true`. The server handles normalized `pull_request` and `issue_comment` events, not standalone `push` events.
 
-9. Test your installation by opening a merge request or commenting on a merge request using one of PR Agent's commands.
+9. Test your installation by opening a pull request or commenting on a pull request using one of PR Agent's commands.
 
 10. The webhook server runs under gunicorn with multiple worker processes. See [Sizing a self-hosted webhook server](./index.md#sizing-a-self-hosted-webhook-server) for the `GUNICORN_WORKERS` / `GUNICORN_MAX_WORKERS` knobs and memory guidance — worth reading before setting a memory limit.
 
