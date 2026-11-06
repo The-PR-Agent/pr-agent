@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">Fetching Ticket Context for PRs | PR-Agent</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" property="og:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.pr-agent.ai/core-abilities/fetching_ticket_context/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Fetching Ticket Context for PRs | PR-Agent"><meta data-rh="true" name="description" content="Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps, Gitea"><meta data-rh="true" property="og:description" content="Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps, Gitea"><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.pr-agent.ai/core-abilities/fetching_ticket_context/"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/core-abilities/fetching_ticket_context/" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/core-abilities/fetching_ticket_context/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Fetching ticket context","item":"https://docs.pr-agent.ai/core-abilities/fetching_ticket_context"}]}</script><script src="https://widget.kapa.ai/kapa-widget.bundle.js" data-website-id="5c89c0b1-b2ee-43c9-8c6f-43ed762b3c1e" data-project-name="PR-Agent" data-project-color="#2459db" data-project-logo="/img/favicon.svg" data-launcher-button-image="/img/favicon-white.svg" data-color-scheme-selector="[data-theme=&#39;dark&#39;]" async></script><link rel="stylesheet" href="/assets/css/styles.928a3cd8.css">
-<script src="/assets/js/runtime~main.a7b60bb2.js" defer="defer"></script>
+<script src="/assets/js/runtime~main.9fdf62a5.js" defer="defer"></script>
 <script src="/assets/js/main.8693b73f.js" defer="defer"></script>
 </head>
 <body>
@@ -28,11 +28,11 @@ This integration enriches the review process by automatically surfacing relevant
 <ol>
 <li class="">Ticket Title</li>
 <li class="">Ticket Description</li>
-<li class="">Custom Fields (Acceptance criteria)</li>
-<li class="">Subtasks (linked tasks)</li>
+<li class="">Acceptance criteria (configured Jira custom fields and Azure DevOps work items)</li>
+<li class="">GitHub sub-issues</li>
 <li class="">Labels</li>
-<li class="">Attached Images/Screenshots</li>
 </ol>
+<p>Image attachments are not fetched or sent to the model as images by the ticket integration.</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="affected-tools">Affected Tools<a href="#affected-tools" class="hash-link" aria-label="Direct link to Affected Tools" title="Direct link to Affected Tools" translate="no">​</a></h2>
 <p>Ticket Recognition Requirements:</p>
 <ul>
@@ -46,7 +46,7 @@ By understanding the reasoning and intent behind modifications, the LLM can offe
 <h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="review-tool">Review tool<a href="#review-tool" class="hash-link" aria-label="Direct link to Review tool" title="Direct link to Review tool" translate="no">​</a></h3>
 <p>Similarly to the <code>describe</code> tool, the <code>review</code> tool will use the ticket content to provide additional context for the code changes.</p>
 <p>In addition, this feature will evaluate how well a Pull Request (PR) adheres to its original purpose/intent as defined by the associated ticket or issue.
-Each ticket will be assigned a label (Compliance/Alignment level), Indicates the degree to which the PR fulfills its original purpose:</p>
+Each ticket will be assigned a compliance assessment in the review comment, indicating the degree to which the PR fulfills its original purpose. These assessments are not added as PR labels:</p>
 <ul>
 <li class="">Fully Compliant</li>
 <li class="">Partially Compliant</li>
@@ -54,19 +54,13 @@ Each ticket will be assigned a label (Compliance/Alignment level), Indicates the
 <li class="">PR Code Verified</li>
 </ul>
 <img decoding="async" loading="lazy" src="/img/ticket_compliance_review.png" alt="Ticket Compliance" width="768" class="img_ev3q">
-<p>A <code>PR Code Verified</code> label indicates the PR code meets ticket requirements, but requires additional manual testing beyond the code scope. For example - validating UI display across different environments (Mac, Windows, mobile, etc.).</p>
+<p>A <code>PR Code Verified</code> assessment indicates the PR code meets ticket requirements, but requires additional manual testing beyond the code scope. For example - validating UI display across different environments (Mac, Windows, mobile, etc.).</p>
 <h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="configuration-options">Configuration options<a href="#configuration-options" class="hash-link" aria-label="Direct link to Configuration options" title="Direct link to Configuration options" translate="no">​</a></h4>
 <ul>
 <li class="">
 <p>By default, the <code>review</code> tool will automatically validate if the PR complies with the referenced ticket.
 If you want to disable this feedback, add the following line to your configuration file:</p>
 <div class="language-toml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-toml codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token punctuation" style="color:hsl(220, 14%, 71%)">[</span><span class="token table class-name" style="color:hsl(29, 54%, 61%)">pr_reviewer</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain"></span><span class="token key property" style="color:hsl(355, 65%, 65%)">require_ticket_analysis_review</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">=</span><span class="token boolean" style="color:hsl(29, 54%, 61%)">false</span><br></div></code></pre></div></div>
-</li>
-<li class="">
-<p>If you set:</p>
-<div class="language-toml codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-toml codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token punctuation" style="color:hsl(220, 14%, 71%)">[</span><span class="token table class-name" style="color:hsl(29, 54%, 61%)">pr_reviewer</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain"></span><span class="token key property" style="color:hsl(355, 65%, 65%)">check_pr_additional_content</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">=</span><span class="token boolean" style="color:hsl(29, 54%, 61%)">true</span><br></div></code></pre></div></div>
-<p>(default: <code>false</code>)</p>
-<p>the <code>review</code> tool will also validate that the PR code doesn&#x27;t contain any additional content that is not related to the ticket. If it does, the PR will be labeled at best as <code>PR Code Verified</code>, and the <code>review</code> tool will provide a comment with the additional unrelated content found in the PR code.</p>
 </li>
 </ul>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="githubgitlab-issues-integration">GitHub/GitLab Issues Integration<a href="#githubgitlab-issues-integration" class="hash-link" aria-label="Direct link to GitHub/GitLab Issues Integration" title="Direct link to GitHub/GitLab Issues Integration" translate="no">​</a></h2>
