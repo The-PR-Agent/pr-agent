@@ -52,7 +52,13 @@ from pr_agent.algo.review_finding_state import (
 )
 from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
 from pr_agent.algo.review_merge import all_key_issues, chunk_hit_findings_limit, merge_review_chunks
-from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure, record_model_used
+from pr_agent.algo.run_details import (
+    command_failed,
+    get_run_details,
+    init_run_details,
+    record_command_failure,
+    record_model_used,
+)
 from pr_agent.algo.run_output import (
     github_action_output,
     push_outputs_async,
@@ -62,7 +68,7 @@ from pr_agent.algo.run_output import (
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.structural_reach import build_structural_reach
-from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.algo.token_budget import AttemptTokenBudget, _as_int, clip_tokens
 from pr_agent.algo.utils import (
     ModelType,
     _as_line,
@@ -77,6 +83,7 @@ from pr_agent.git_providers.git_provider import (
     GitProvider,
     IncompleteProviderPullRequestFilesError,
     IncrementalPR,
+    PRCommit,
     format_persistent_update_header,
     get_main_pr_language,
 )
@@ -190,6 +197,8 @@ class PRReviewer:
     review_all_issues = None
     review_chunk_hit_limit = None
     partial_files_list = ()
+    _review_commit: PRCommit | None = None
+    _review_has_findings = False
 
     def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -244,6 +253,7 @@ class PRReviewer:
 
         is_ai_metadata = get_settings().get("config.enable_ai_metadata", False)
         commit_messages_begin, commit_messages_end = prompt_boundary_markers("COMMIT_MESSAGES")
+        commit_message_begin, commit_message_end = prompt_boundary_markers("COMMIT_MESSAGE")
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -275,6 +285,9 @@ class PRReviewer:
             "commit_messages_str": "" if self.incremental.is_incremental else self.git_provider.get_commit_messages(),
             "commit_messages_begin": commit_messages_begin,
             "commit_messages_end": commit_messages_end,
+            "commit_under_review": "",
+            "commit_message_begin": commit_message_begin,
+            "commit_message_end": commit_message_end,
             "custom_labels": "",
             "enable_custom_labels": get_settings().config.enable_custom_labels,
             "is_ai_metadata": is_ai_metadata,
@@ -298,6 +311,144 @@ class PRReviewer:
         return incremental
 
     async def run(self) -> None:
+        if _as_bool_setting(get_settings().pr_reviewer.get("per_commit_review", False)) and not self.is_answer:
+            await self._run_per_commit()
+        else:
+            await self._run_review()
+
+    async def _review_as_one(self, reason: str, notice: str) -> None:
+        get_logger().warning(f"{reason}, skipping per commit review")
+        if get_settings().config.publish_output and not get_settings().config.get("is_auto_command", False):
+            try:
+                self.git_provider.publish_comment(notice)
+            except Exception as e:
+                get_logger().exception(f"Failed to publish the per commit review notice, error: {e}")
+        await self._run_review()
+
+    def _publish_per_commit_failure(self, error: Exception, detail: str = "") -> None:
+        record_command_failure()
+        if (get_settings().config.publish_output
+                and _as_bool(get_settings().pr_reviewer.get("publish_review_failure_comment", True))
+                and not get_settings().config.get("is_auto_command", False)):
+            try:
+                self.git_provider.publish_comment(_review_failure_comment(error) + detail)
+            except Exception as e:
+                get_logger().exception(f"Failed to publish review failure result, error: {e}")
+
+    async def _run_per_commit(self) -> None:
+        init_run_details()
+        publish_notice = (get_settings().config.publish_output
+                          and not get_settings().config.get("is_auto_command", False))
+        try:
+            commits = self.git_provider.get_pr_commits()
+            pr = getattr(self.git_provider, "pr", None)
+            total_commits = None if commits is None else getattr(pr, "commits", None)
+        except Exception as e:
+            get_logger().error(f"Failed to list the PR commits for per commit review: {e}")
+            self._publish_per_commit_failure(e)
+            if get_settings().config.get("propagate_tool_errors", False):
+                raise
+            return
+        if commits is None:
+            await self._review_as_one(
+                f"Per commit review is not supported for {get_settings().config.git_provider}",
+                "Per commit review is not supported for this git provider, so the whole PR was reviewed instead.")
+            return
+        if isinstance(total_commits, int) and len(commits) < total_commits:
+            await self._review_as_one(
+                f"PR has {total_commits} commits but the git provider listed only {len(commits)}",
+                f"This PR has {total_commits} commits, more than the {len(commits)} the git provider API "
+                f"returns, so per commit review was skipped and the whole PR was reviewed instead.")
+            return
+        commits = self._commits_to_review(commits)
+        if commits is None:
+            return
+        since_last_review = self.incremental.is_incremental
+        max_commits = _as_int(get_settings().pr_reviewer.get("max_commits_per_review", 0), 0)
+        if 0 < max_commits < len(commits):
+            await self._review_as_one(
+                f"{len(commits)} commits to review exceed max_commits_per_review={max_commits}",
+                f"There are {len(commits)} commits to review, more than the limit of {max_commits} for per commit "
+                f"review, so they were reviewed together in one review instead.")
+            return
+
+        base_vars = copy.deepcopy(self.vars)
+        max_message_tokens = get_settings().config.get("max_commits_tokens", None)
+        reviewed = 0
+        failed = False
+        first_error = None
+        unloaded = []
+        try:
+            for commit in commits:
+                self.incremental = IncrementalPR(True)
+                try:
+                    has_own_changes = self.git_provider.set_commit_review_scope(commit, self.incremental)
+                except IncompleteProviderPullRequestFilesError:
+                    raise
+                except Exception as e:
+                    get_logger().error(f"Failed to load the changes of commit {commit.sha}: {e}")
+                    unloaded.append((commit.sha[:7], e))
+                    failed = True
+                    first_error = first_error or e
+                    continue
+                if not has_own_changes:
+                    get_logger().info(f"Commit {commit.sha} has no changes of its own, skipping it")
+                    continue
+                try:
+                    message = clip_tokens(commit.message, max_message_tokens) if max_message_tokens \
+                        else commit.message
+                    self.vars = dict(copy.deepcopy(base_vars), commit_under_review=message, commit_messages_str="",
+                                     previous_findings="")
+                    self._review_commit = commit
+                    get_logger().info(f"Reviewing commit {commit.sha} of PR: {self.pr_url}")
+                    await self._run_review()
+                    reviewed += 1
+                    failed = failed or command_failed()
+                except IncompleteProviderPullRequestFilesError:
+                    raise
+                except Exception as e:
+                    get_logger().error(f"Failed to review commit {commit.sha}: {e}")
+                    failed = True
+                    first_error = first_error or e
+        finally:
+            self._review_commit = None
+            self.vars = base_vars
+            self.incremental = IncrementalPR(False)
+            try:
+                self.git_provider.get_incremental_commits(self.incremental)
+            except Exception as e:
+                get_logger().exception(f"Failed to restore the full PR scope after per commit review, error: {e}")
+            if unloaded:
+                self._publish_per_commit_failure(
+                    unloaded[0][1], "\n\nThe changes of these commits could not be loaded: "
+                    + ", ".join(f"`{sha}`" for sha, _ in unloaded))
+
+        if not reviewed and not failed:
+            get_logger().info(f"No commit with changes of its own to review in PR: {self.pr_url}")
+            if publish_notice:
+                try:
+                    self.git_provider.publish_comment(
+                        "Per commit review skipped: no new commits with changes since the last review."
+                        if since_last_review else "Per commit review skipped: no commits with changes to review.")
+                except Exception as e:
+                    get_logger().exception(f"Failed to publish the per commit review notice, error: {e}")
+        if failed:
+            record_command_failure()
+        if first_error is not None and get_settings().config.get("propagate_tool_errors", False):
+            raise first_error
+
+    def _commits_to_review(self, commits: list[PRCommit]) -> list[PRCommit] | None:
+        if not self.incremental.is_incremental:
+            return commits
+        if not self._can_run_incremental_review():
+            return None if self.incremental.is_incremental else commits
+        first_new_sha = self.incremental.first_new_commit_sha
+        if first_new_sha is None:
+            return []
+        shas = [commit.sha for commit in commits]
+        return commits[shas.index(first_new_sha):] if first_new_sha in shas else commits
+
+    async def _run_review(self) -> None:
         init_run_details()
         self.partial_files_list = []
         for name in ("_chunked_patches_diff_list", "_chunked_remaining_files_list", "_chunked_partial_files_list",
@@ -316,7 +467,7 @@ class PRReviewer:
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
                 return None
 
-            if self.incremental.is_incremental:
+            if self.incremental.is_incremental and self._review_commit is None:
                 can_run = self._can_run_incremental_review()
                 # If the gate disabled incremental (e.g., commits_range is None), fall through to full review.
                 if not can_run and self.incremental.is_incremental:
@@ -895,10 +1046,11 @@ class PRReviewer:
         return findings, len(all_findings) < len(self.review_all_issues)
 
     def _should_publish_review_no_suggestions(self, pr_review: str) -> bool:
-        return (
-            get_settings().pr_reviewer.get('publish_output_no_suggestions', True)
-            or t("review.no_major_issues") not in pr_review
-        )
+        if get_settings().pr_reviewer.get('publish_output_no_suggestions', True):
+            return True
+        if self._review_commit is not None:
+            return self._review_has_findings
+        return t("review.no_major_issues") not in pr_review
 
     async def _prepare_prediction(self, model: str) -> None:
         # Each model attempt owns a fresh result. A malformed primary must not
@@ -1388,10 +1540,18 @@ class PRReviewer:
         self._prepare_review_finding_state(data)
         if get_settings().config.publish_output and get_settings().pr_reviewer.get('inline_key_issues', False):
             data = self._publish_key_issues_as_inline_comments(data)
+        issues = data['review'].get('key_issues_to_review')
+        self._review_has_findings = isinstance(issues, list) and any(
+            isinstance(issue, dict) and issue for issue in issues)
 
         incremental_review_markdown_text = None
-        # Add incremental review section
-        if self.incremental.is_incremental:
+        commit_review_markdown_text = None
+        if self._review_commit is not None:
+            commit = self._review_commit
+            sha_link = f"[`{commit.sha[:7]}`]({commit.url})" if commit.url else f"`{commit.sha[:7]}`"
+            subject = commit.message.strip().split("\n", 1)[0]
+            commit_review_markdown_text = f"{sha_link} {_markdown_code_span(subject)}" if subject else sha_link
+        elif self.incremental.is_incremental:
             last_commit_url = f"{self.git_provider.get_pr_url()}/commits/" \
                               f"{self.git_provider.incremental.first_new_commit_sha}"
             incremental_review_markdown_text = f"Starting from commit {last_commit_url}"
@@ -1399,7 +1559,8 @@ class PRReviewer:
         markdown_text = convert_to_markdown_v2(data, self.git_provider.is_supported("gfm_markdown"),
                                             incremental_review_markdown_text,
                                                git_provider=self.git_provider,
-                                               files=self.git_provider.get_diff_files())
+                                               files=self.git_provider.get_diff_files(),
+                                               commit_review=commit_review_markdown_text)
 
         if self.review_chunk_count > 1:
             markdown_text += (
@@ -1728,7 +1889,7 @@ class PRReviewer:
         return True
 
     def set_review_labels(self, data):
-        if not get_settings().config.publish_output:
+        if not get_settings().config.publish_output or self._review_commit is not None:
             return
 
         if not get_settings().pr_reviewer.require_estimate_effort_to_review:
