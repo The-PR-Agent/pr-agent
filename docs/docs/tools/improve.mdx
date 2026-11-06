@@ -429,6 +429,12 @@ for the authoritative default values.
     <td>If set to true, the improve comment will be persistent, meaning that every new improve request will edit the previous one.</td>
   </tr>
   <tr>
+    <td><b>max_history_len</b></td>
+    <td>Maximum number of previous suggestion sets to retain in a persistent summary. Non-positive values keep only the latest
+    suggestions, updating the same comment when the provider supports comment editing. Lowering a positive limit does not
+    shrink an existing history; use 0 for an update to clear it before choosing a new positive limit. Default is 4.</td>
+  </tr>
+  <tr>
     <td><b>suggestions_score_threshold</b></td>
     <td>Any suggestion with importance score less than this threshold will be removed. Values above 7-8 may clip relevant suggestions.</td>
   </tr>
