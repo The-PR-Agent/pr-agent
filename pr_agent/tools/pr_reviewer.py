@@ -1400,7 +1400,6 @@ class PRReviewer:
                 model_risk_level=data["review"].get("risk_level"),
                 risk_checks=risk_checks,
             )
-            self._computed_merge_verdict = verdict
             data["review"] = _with_merge_verdict(data["review"], verdict)
 
         structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
