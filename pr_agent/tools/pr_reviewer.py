@@ -339,7 +339,8 @@ class PRReviewer:
                           and not get_settings().config.get("is_auto_command", False))
         try:
             commits = self.git_provider.get_pr_commits()
-            total_commits = None if commits is None else getattr(getattr(self.git_provider, "pr", None), "commits", None)
+            pr = getattr(self.git_provider, "pr", None)
+            total_commits = None if commits is None else getattr(pr, "commits", None)
         except Exception as e:
             self._publish_commit_listing_failure(e)
             if get_settings().config.get("propagate_tool_errors", False):
