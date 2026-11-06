@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from github import GithubException
-from starlette_context import context
+from starlette_context import context, request_cycle_context
 
 import pr_agent.agent.pr_agent as pr_agent_module
 import pr_agent.servers.github_action_runner as github_action_runner
@@ -77,8 +77,14 @@ async def test_direct_auto_tool_leaves_unexpected_constructor_error_unchanged(mo
 
     monkeypatch.setattr(github_action_runner, "publish_incomplete_files_comment", notify)
 
-    with pytest.raises(RuntimeError) as raised:
-        await github_action_runner._run_auto_tool(BrokenTool, "https://example/pr/1")
+    get_settings().get("config")
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        settings = get_settings()
+        settings.set("CONFIG.RESPONSE_LANGUAGE", "de-DE")
+        settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "Keep user instructions")
+        with pytest.raises(RuntimeError) as raised:
+            await github_action_runner._run_auto_tool(BrokenTool, "https://example/pr/1")
+        assert settings.pr_reviewer.extra_instructions == "Keep user instructions"
 
     assert raised.value is error
     notify.assert_not_called()
@@ -248,6 +254,56 @@ def restore_artifact_action_settings():
     for key, value in originals.items():
         settings.set(key, value, merge=False)
     settings.set("CONFIG.USE_REPO_SETTINGS_FILE", original_use_repo_settings)
+
+
+@pytest.mark.parametrize("event_name", ["pull_request", "pull_request_target"])
+@pytest.mark.parametrize("include_opened", [True, False])
+@pytest.mark.parametrize(
+    "created_at,updated_at,expected_batches",
+    [
+        ("2026-11-04T12:00:00Z", "2026-11-04T12:00:00Z", 1),
+        ("2026-11-04T12:00:00Z", "2026-11-04T12:01:00Z", 2),
+        (None, None, 2),
+        ("2026-11-04T12:00:00Z", None, 2),
+        (None, "2026-11-04T12:00:00Z", 2),
+        ("", "", 2),
+    ],
+)
+async def test_first_open_review_request_stream(
+    monkeypatch, tmp_path, restore_github_settings, event_name, include_opened, created_at, updated_at, expected_batches
+):
+    pr_url = "https://api.github.com/repos/org/repo/pulls/1"
+    pull_request = {"url": pr_url}
+    if created_at is not None:
+        pull_request["created_at"] = created_at
+    if updated_at is not None:
+        pull_request["updated_at"] = updated_at
+    event_path = tmp_path / "event.json"
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", "unit-test-token")
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(github_action_runner, "_inject_artifact_context", lambda: None)
+    monkeypatch.setattr(
+        github_action_runner, "get_setting_or_env",
+        lambda key, default=None: True if key.startswith("GITHUB_ACTION.AUTO_") else default,
+    )
+    actions = ["opened", "review_requested"] if include_opened else ["review_requested"]
+    get_settings().set("GITHUB_ACTION_CONFIG.PR_ACTIONS", actions)
+    run_tool = AsyncMock()
+    monkeypatch.setattr(github_action_runner, "_run_auto_tool", run_tool)
+
+    for action in ("opened", "review_requested"):
+        event_path.write_text(json.dumps({"action": action, "pull_request": pull_request}))
+        await github_action_runner.run_action()
+
+    expected_tools = [
+        github_action_runner.PRDescription,
+        github_action_runner.PRReviewer,
+        github_action_runner.PRCodeSuggestions,
+    ] * (expected_batches if include_opened else 1)
+    assert [invocation.args[0] for invocation in run_tool.await_args_list] == expected_tools
+    assert all(invocation.args[1] == pr_url for invocation in run_tool.await_args_list)
 
 
 def _write_synchronize_event(tmp_path, before_sha="abc", after_sha="def", merge_commit_sha=None, sender_type="User"):
@@ -1452,6 +1508,89 @@ def _write_issue_comment_event_with_body(tmp_path, body, sender_type="User"):
         "sender": {"type": sender_type},
     }))
     return event_path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_name,language", [
+    ("issue_comment", "fr-FR"),
+    ("issue_comment", "en-us"),
+    ("pull_request", "de-DE"),
+    ("workflow_run", "de-DE"),
+    ("pull_request", 123),
+    ("pull_request", ""),
+    ("pull_request", "  "),
+])
+async def test_run_action_scopes_language_after_repo_and_command_settings(monkeypatch, tmp_path, event_name, language):
+    observed = []
+
+    class Provider:
+        def __init__(self, pr_url=None):
+            pass
+
+        def get_repo_settings(self):
+            repo_language = "de-DE" if event_name == "issue_comment" else language
+            return f"[config]\nresponse_language = {json.dumps(repo_language)}\n"
+
+        def get_files(self):
+            return []
+
+        def add_eyes_reaction(self, *_args, **_kwargs):
+            pass
+
+    class RecordingReviewer:
+        def __init__(self, *_args, **_kwargs):
+            observed.append(get_settings().pr_reviewer.extra_instructions)
+
+        async def run(self):
+            observed.append(get_settings().pr_reviewer.extra_instructions)
+
+    if event_name == "issue_comment":
+        event_path = _write_issue_comment_event_with_body(
+            tmp_path, f"/review --config.response_language={language}"
+        )
+        payload = json.loads(event_path.read_text())
+        payload["issue"]["pull_request"]["html_url"] = "https://github.com/org/repo/pull/1"
+        event_path.write_text(json.dumps(payload))
+    elif event_name == "workflow_run":
+        event_path = _write_workflow_run_event(tmp_path, conclusion=None)
+    else:
+        event_path = tmp_path / "event.json"
+        event_path.write_text(json.dumps({
+            "action": "opened",
+            "pull_request": {
+                "url": "https://api.github.com/repos/org/repo/pulls/1",
+                "html_url": "https://github.com/org/repo/pull/1",
+            },
+        }))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setattr(git_utils, "get_git_provider_with_context", lambda _url: Provider())
+    monkeypatch.setattr(github_action_runner, "get_git_provider_with_context", lambda _url: Provider())
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
+    monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
+    monkeypatch.setitem(pr_agent_module.command2class, "review", RecordingReviewer)
+    monkeypatch.setattr(github_action_runner, "PRReviewer", RecordingReviewer)
+    _patch_env_settings(monkeypatch)
+
+    get_settings().get("config")  # Initialize Dynaconf before copying its loaded sections.
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        settings = get_settings()
+        settings.set("CONFIG.USE_REPO_SETTINGS_FILE", True)
+        settings.set("CONFIG.RESPONSE_LANGUAGE", "en-us")
+        settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "Keep user instructions")
+        await github_action_runner.run_action()
+        assert settings.pr_reviewer.extra_instructions == "Keep user instructions"
+
+    assert len(observed) == 2
+    assert observed[0] == observed[1]
+    if language == "en-us" or not isinstance(language, str) or not language.strip():
+        assert observed[0] == "Keep user instructions"
+    else:
+        assert observed[0].startswith("Keep user instructions")
+        assert observed[0].count("locale code:") == 1
+        assert f"'{language}'" in observed[0]
+
 
 def _write_plain_issue_comment_event(tmp_path):
     event_path = tmp_path / "event.json"

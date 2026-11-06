@@ -416,7 +416,7 @@ async def test_polling_loop_keeps_notification_unread_when_drift_retry_times_out
             pass
 
         def get(self, url, **kwargs):
-            if url == github_polling.NOTIFICATION_URL:
+            if url == github_polling._notifications_url():
                 notification_requests.append(kwargs)
                 return Response([notification], {"Last-Modified": "unchanged"})
             assert url == notification["subject"]["latest_comment_url"]
@@ -548,7 +548,7 @@ async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monke
         def get(self, url, **kwargs):
             if url == latest_url:
                 return Response(latest_comment)
-            assert url == github_polling.NOTIFICATION_URL
+            assert url == github_polling._notifications_url()
             requests.append(kwargs)
             notifications = [preexisting_notification, notification] if len(requests) == 1 else [notification]
             return Response(notifications)
@@ -699,7 +699,7 @@ async def test_polling_loop_preserves_queued_work_when_mark_read_fails(workers, 
 
         def get(self, url, **kwargs):
             self.status = 200
-            if url == github_polling.NOTIFICATION_URL:
+            if url == github_polling._notifications_url():
                 requests.append(kwargs)
                 self.body = [
                     {

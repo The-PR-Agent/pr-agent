@@ -11,7 +11,7 @@
 # PR-Agent host's filesystem, so letting a repo set it would allow a malicious repo to read
 # sensitive host files (e.g. ~/.ssh/*) into the LLM prompt. `paths` therefore stays host-only.
 #
-# push_outputs: routes review data to operator-controlled sinks (webhook/slack/telegram/file). Letting a
+# push_outputs: routes review data to operator-controlled sinks (webhook/slack/telegram/teams/file). Letting a
 # repo set any of these would let a malicious repo exfiltrate review data to an arbitrary host,
 # reach internal endpoints (SSRF), or append to arbitrary host files. The whole section is
 # therefore host-only (empty allowlist -> every key dropped).
@@ -150,7 +150,8 @@ def should_skip_config_key(section: str, key: str, skip_keys=()) -> bool:
 # by the repo's maintainers in .pr_agent.toml stay accepted (apply_repo_settings does not consult
 # this map); only CliArgs.validate_user_args enforces it, so repo settings and comment args do
 # not drift. repo_context_max_glob_matches bounds how many files those entries fetch, so it
-# follows the same rule.
+# follows the same rule. repo_context_expand_imports adds repository-controlled provider
+# fetches, so a comment argument cannot enable it either.
 # github_action_config.fail_on_tool_errors decides whether a tool's recorded failure fails the
 # GitHub Action. The runner reads it after the command has applied its arguments, so a comment
 # such as `/review --github_action_config.fail_on_tool_errors=false` could turn a failed review
@@ -165,6 +166,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
         "output_relevant_configurations",
         "repo_context_files",
         "repo_context_max_glob_matches",
+        "repo_context_expand_imports",
     }),
     "github_action_config": frozenset({"fail_on_tool_errors"}),
     "ignore": frozenset({"regex"}),

@@ -25,7 +25,9 @@ class TestOutputSinkPreflight:
     @pytest.mark.parametrize("channels, valid", [
         ("stdout", True),
         ("stdout,file", True),
-        ("prefixstdoutsuffix", True),
+        (" stdout , file ", True),
+        ("prefixstdoutsuffix", False),
+        ("stdout,unknown", False),
         ("unknown", False),
         (["stdout", "stdout"], True),
         (("file", "stdout"), True),
@@ -34,7 +36,7 @@ class TestOutputSinkPreflight:
         (["stdout", 1], False),
         ({"stdout": True}, False),
     ])
-    def test_selection_matches_runtime_string_membership_and_exact_collections(self, channels, valid):
+    def test_selection_uses_comma_separated_string_names_and_exact_collections(self, channels, valid):
         result = output_sinks._check_output_sinks({"enable": True, "channels": channels})
         assert result[0] is valid
 
@@ -48,6 +50,8 @@ class TestOutputSinkPreflight:
         ("webhook", {"webhook_url": "https://[synthetic-secret"}, False),
         ("slack", {"slack_webhook_url": "https:///synthetic-secret"}, False),
         ("slack", {"slack_webhook_url": 1}, False),
+        ("teams", {"teams_webhook_url": "https://example.test/workflow"}, True),
+        ("teams", {"teams_webhook_url": "http://example.test/workflow"}, False),
         ("telegram", {"telegram_bot_token": "synthetic-secret", "telegram_chat_id": "chat"}, True),
         ("telegram", {"telegram_bot_token": " ", "telegram_chat_id": "chat"}, False),
         ("telegram", {"telegram_bot_token": "synthetic-secret", "telegram_chat_id": 123}, True),
@@ -102,6 +106,7 @@ def _reset_push_outputs():
     s.set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', '')
     s.set('PUSH_OUTPUTS.TELEGRAM_BOT_TOKEN', '')
     s.set('PUSH_OUTPUTS.TELEGRAM_CHAT_ID', '')
+    s.set('PUSH_OUTPUTS.TEAMS_WEBHOOK_URL', '')
 
 
 class TestPushOutputs:
@@ -123,6 +128,25 @@ class TestPushOutputs:
         push_outputs("review", payload={"a": 1}, markdown="hi")
 
         assert not (tmp_path / 'out.jsonl').exists()
+
+    def test_string_channels_use_complete_comma_separated_names(self, monkeypatch):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', True)
+        get_settings().set('PUSH_OUTPUTS.CHANNELS', ' webhook , not-slack ')
+        webhook_url = 'https://example.test/webhook'
+        slack_url = 'https://example.test/slack'
+        get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', webhook_url)
+        get_settings().set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', slack_url)
+        posts = []
+
+        def fake_post(url, **kwargs):
+            posts.append(url)
+            return SimpleNamespace(status_code=200)
+
+        monkeypatch.setattr(output_sinks.requests, 'post', fake_post)
+
+        push_outputs("review", payload={"a": 1}, markdown="hi")
+
+        assert posts == [webhook_url]
 
     def test_file_channel_appends_jsonl(self, monkeypatch, tmp_path):
         out = tmp_path / 'nested' / 'out.jsonl'
@@ -159,6 +183,54 @@ class TestPushOutputs:
 
         assert captured['url'] == slack_url
         assert captured['json'] == {"text": "a markdown review"}
+
+    def test_teams_channel_posts_adaptive_card_with_pr_link(self, monkeypatch):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', True)
+        get_settings().set('PUSH_OUTPUTS.CHANNELS', ['teams'])
+        teams_url = 'https://example.test/workflow'
+        get_settings().set('PUSH_OUTPUTS.TEAMS_WEBHOOK_URL', teams_url)
+        posts = []
+        monkeypatch.setattr(output_sinks.requests, 'post',
+                            lambda url, **kwargs: posts.append((url, kwargs)) or SimpleNamespace(status_code=200))
+
+        pr_url = "https://github.com/org/repo/pull/123"
+        output_sinks.TeamsSink().send({
+            "type": "review",
+            "markdown": "Review summary",
+            "pr": {"url": pr_url},
+        }, get_settings().get('push_outputs'))
+
+        assert posts[0][0] == teams_url
+        card = posts[0][1]['json']
+        assert card['type'] == 'message'
+        adaptive_card = card['attachments'][0]['content']
+        assert adaptive_card['type'] == 'AdaptiveCard'
+        assert adaptive_card['body'][0]['text'] == 'PR-Agent Review'
+        assert adaptive_card['body'][1]['text'] == 'Review summary'
+        assert adaptive_card['actions'] == [{
+            'type': 'Action.OpenUrl',
+            'title': 'Open pull request',
+            'url': pr_url,
+        }]
+        assert posts[0][1]['timeout'] == 5
+        assert posts[0][1]['allow_redirects'] is False
+
+    def test_teams_channel_truncates_card_to_28_kb(self, monkeypatch):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', True)
+        get_settings().set('PUSH_OUTPUTS.CHANNELS', ['teams'])
+        get_settings().set('PUSH_OUTPUTS.TEAMS_WEBHOOK_URL', 'https://example.test/workflow')
+        posts = []
+        monkeypatch.setattr(output_sinks.requests, 'post',
+                            lambda url, **kwargs: posts.append(kwargs['json']) or SimpleNamespace(status_code=200))
+
+        output_sinks.TeamsSink().send(
+            {"type": "review", "markdown": "漢🙂" * 5000}, get_settings().get('push_outputs')
+        )
+
+        card = posts[0]
+        assert output_sinks.TeamsSink._serialized_size(card) <= 28 * 1024
+        assert len(json.dumps(card).encode('utf-8')) <= 28 * 1024
+        assert card['attachments'][0]['content']['body'][1]['text'].endswith('[Output truncated]')
 
     def test_telegram_channel_posts_to_configured_chat(self, monkeypatch):
         get_settings().set('PUSH_OUTPUTS.ENABLE', True)

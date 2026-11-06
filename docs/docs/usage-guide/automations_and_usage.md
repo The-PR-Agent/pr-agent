@@ -59,7 +59,15 @@ For a quick preflight that needs no token and no PR, run:
 pr-agent doctor
 ```
 
-It checks that `config.model` is set, that the active provider has a real API key, and that a one-token completion against the configured model succeeds. The exit code is `0` only when every check passes, so CI setups can gate on it. It ships with the package, unlike the fuller health check below, which exercises real commands on a real PR.
+It checks that `config.model` is set and that a completion against the configured model succeeds. Where required, it also checks for a real static API key. Azure AD, Bedrock IAM, Anthropic bearer tokens without captured API keys, keyless local endpoints, and custom endpoints defer authentication validation to the completion. For Watsonx, an API URL alone is insufficient: configure an API key, `WATSONX_TOKEN`, `WATSONX_ZENAPIKEY`, or an explicit `Authorization` header. Watsonx checks these credentials in header, bearer-token, Zen-key, then API-key order; placeholder credentials are not accepted. An Anthropic bearer token must also be non-placeholder. Keyless local providers and eligible OpenRouter gateway fallbacks defer placeholder-key validation to the model completion. Native providers that require a real key still reject placeholders. The exit code is `0` only when every check passes, so CI setups can gate on it. It ships with the package, unlike the fuller health check below, which exercises real commands on a real PR.
+
+In Docker, run it from the CLI image (`pragent/pr-agent:<version>` or `pragent/pr-agent:latest`), whose entrypoint takes the command directly:
+
+```bash
+docker run --rm --env-file .env pragent/pr-agent:latest doctor
+```
+
+Service images such as `pragent/pr-agent:<version>-github_app` are intended for long-running servers and do not install the `pr-agent` console script. To run the check from one of them, override the command with `python -m pr_agent.cli doctor`.
 
 When host-configured `push_outputs` is enabled, `doctor` adds a fourth check for the selected output destinations: registered channel names, a nonempty file path, HTTPS scheme and hostname for webhook/Slack URLs, and a nonempty Telegram token string and a chat ID that is a nonempty string or nonzero integer. An omitted file path uses the normal default. Distinct custom sink names receive recognition-only checks; their private settings are not validated.
 

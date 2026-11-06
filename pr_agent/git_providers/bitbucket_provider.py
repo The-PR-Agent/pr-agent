@@ -13,7 +13,7 @@ from starlette_context import context
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 
 from ..algo.file_filter import filter_ignored
-from ..algo.git_patch_processing import count_patch_lines
+from ..algo.git_patch_processing import count_patch_lines, decode_if_bytes
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.utils import find_line_number_of_relevant_line_in_file, replace_suggestion_blocks
@@ -86,12 +86,13 @@ def _paths_from_patch_headers(patch: str) -> tuple[str, str] | None:
     rename_old = rename_new = None
     file_old = file_new = None
     for line in patch.split("\n"):
+        line = line.removesuffix("\r")
         if line.startswith("@@"):
             break
         if line.startswith("rename from "):
-            rename_old = line[len("rename from "):].strip()
+            rename_old = line[len("rename from "):]
         elif line.startswith("rename to "):
-            rename_new = line[len("rename to "):].strip()
+            rename_new = line[len("rename to "):]
         elif line.startswith("--- "):
             file_old = line[len("--- "):].split("\t", 1)[0]
         elif line.startswith("+++ "):
@@ -249,7 +250,7 @@ class BitbucketProvider(GitProvider):
                    f"{destination_commit}/.pr_agent.toml")
             response = requests.request("GET", url, headers=self.headers, timeout=get_http_request_timeout())
             if response.status_code == 200:  # found
-                settings_files.append(("local", response.text.encode('utf-8')))
+                settings_files.append(("local", decode_if_bytes(response.content).encode('utf-8')))
             elif response.status_code != 404:
                 # Don't treat error bodies (401/403/500/...) as TOML content.
                 get_logger().warning(f"Failed to load local .pr_agent.toml file, status: {response.status_code}")
@@ -286,7 +287,7 @@ class BitbucketProvider(GitProvider):
         if file_resp.status_code in (403, 404):  # missing file or no access -> expected, cacheable
             return ""
         file_resp.raise_for_status()
-        return file_resp.text.encode('utf-8')
+        return decode_if_bytes(file_resp.content).encode('utf-8')
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         # Read from the PR destination (target) branch, matching the other providers,
@@ -316,7 +317,8 @@ class BitbucketProvider(GitProvider):
         if repo_git_url:
             parsed_git_url = urlparse(repo_git_url)
             scheme_and_netloc = parsed_git_url.scheme + "://" + parsed_git_url.netloc
-            repo_path = parsed_git_url.path.split('.git')[0][1:] #/<workspace>/<repo>.git -> <workspace>/<repo>
+            #/<workspace>/<repo>.git -> <workspace>/<repo>
+            repo_path = parsed_git_url.path.rstrip('/').removesuffix('.git')[1:]
             if repo_path.count('/') != 1:
                 get_logger().error(f"repo_git_url is not a valid git repo url: {repo_git_url}")
                 return ("", "")
@@ -372,7 +374,7 @@ class BitbucketProvider(GitProvider):
         get_logger().error(f"Bitbucket failed to publish code suggestion, error: {error}")
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ['publish_inline_comments', 'get_labels', 'gfm_markdown']:
+        if capability in ['get_labels', 'gfm_markdown']:
             return False
         if capability == "push_code":
             return not get_settings().config.restricted_mode and self._pr_head_in_base_repo()
@@ -595,6 +597,18 @@ class BitbucketProvider(GitProvider):
             get_logger().warning(f"Failed to get head SHA, error: {e}")
             return ""
 
+    def get_pr_identity(self) -> dict:
+        repo = "/".join(
+            str(part) for part in (self.workspace_slug, self.repo_slug) if part
+        )
+        return {
+            "url": self.get_pr_url() or "",
+            "provider": "bitbucket",
+            "repo": repo,
+            "number": self.pr_num if self.pr_num is not None else "",
+            "head_sha": self.get_pr_head_sha(),
+        }
+
     def _get_cloud_comment(self, comment):
         if isinstance(comment, SimpleNamespace):
             return comment._cloud_comment
@@ -744,9 +758,6 @@ class BitbucketProvider(GitProvider):
         # list, which would post the already-accepted suggestions a second time.
         return published_count > 0 or publishable_count == 0
 
-    def get_title(self):
-        return self.pr.title
-
     @cache_languages
     def get_languages(self):
         language = self._get_repo().get_data("language")
@@ -895,7 +906,8 @@ class BitbucketProvider(GitProvider):
             # Distinguish an unavailable file from a failed request to prevent an error response
             # body from being treated as repository instructions or changelog content.
             response.raise_for_status()
-            contents = response.text
+            # Raw files come without a charset, so response.text would decode a text/* file as ISO-8859-1.
+            contents = decode_if_bytes(response.content)
             return contents
         except Exception:
             if propagate_errors:
@@ -917,7 +929,7 @@ class BitbucketProvider(GitProvider):
         if response.status_code == 404:
             return FileContentSnapshot("", False, revision)
         response.raise_for_status()
-        return FileContentSnapshot(response.text, True, revision)
+        return FileContentSnapshot(decode_if_bytes(response.content), True, revision)
 
     def create_or_update_pr_file(
         self, file_path: str, branch: str, contents="", message="", *, expected_snapshot: FileContentSnapshot
@@ -953,7 +965,7 @@ class BitbucketProvider(GitProvider):
             if response.status_code == 404:  # not found
                 return ""
             response.raise_for_status()
-            contents = response.text
+            contents = decode_if_bytes(response.content)
             return contents
         except Exception as error:
             if isinstance(error, requests.RequestException):

@@ -1,3 +1,5 @@
+import os
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
@@ -7,6 +9,7 @@ from packaging.version import parse as parse_version
 from requests import Request, Response
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import HTTPError, Timeout
+from requests.utils import get_encoding_from_headers
 
 from pr_agent.algo.comment_identity import (
     PRCodeSuggestionsHeader,
@@ -31,6 +34,18 @@ def _added_file(filename="src/example.py", lines=("a = 1", "b = 2", "c = 3")):
     patch = f"@@ -0,0 +1,{len(lines)} @@\n" + "\n".join("+" + line for line in lines)
     return FilePatchInfo(base_file="", head_file="\n".join(lines), patch=patch, filename=filename,
                          edit_type=EDIT_TYPE.ADDED)
+
+
+def _raw_file_response(contents: str, content_type: str, encoding: str = "utf-8") -> Response:
+    """Answer like the src endpoint: the Content-Type comes from the file extension and carries no charset."""
+    response = Response()
+    response.status_code = 200
+    response.url = "https://api.bitbucket.org/2.0/repositories/workspace/repository/src/a1b2c3d4e5f6/CHANGELOG.md"
+    response.headers["Content-Type"] = content_type
+    # As in requests' HTTPAdapter.build_response: ISO-8859-1 for a text/* type without a charset.
+    response.encoding = get_encoding_from_headers(response.headers)
+    response._content = contents.encode(encoding)
+    return response
 
 
 class TestBitbucketProvider:
@@ -290,6 +305,25 @@ class TestBitbucketProvider:
             "a1b2c3/src/a%23b%3Fc%25.py", headers=provider.headers,
             timeout=DEFAULT_HTTP_REQUEST_TIMEOUT,
         )
+
+    @pytest.mark.parametrize("content_type,contents,encoding", [
+        ("text/markdown", "## 1.2.0 — Café support\n- Thanks José Müller → 中文 ✨\n", "utf-8"),
+        ("text/x-python", "# Bonjour, café crème\nGREETING = 'Grüße'\n", "utf-8"),
+        ("text/plain", "Größe — 中文\n", "utf-8"),
+        ("text/plain", "Größe — 中文\n", "utf-16"),
+        # A file that is not UTF-8 still decodes as Latin-1, as it did before.
+        ("text/plain", "Größe, Maß\n", "latin-1"),
+    ], ids=["markdown", "python", "plain", "utf-16 with BOM", "latin-1"])
+    def test_file_reads_decode_raw_contents_sent_without_a_charset(self, content_type, contents, encoding):
+        provider = self._source_write_provider()
+        response = _raw_file_response(contents, content_type, encoding)
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response):
+            assert provider.get_pr_file_content("CHANGELOG.md", "feature") == contents
+            assert provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature") == FileContentSnapshot(
+                contents, True, "a1b2c3d4e5f6"
+            )
+            assert provider._get_pr_file_content(response.url) == contents
 
     def test_file_snapshot_propagates_server_failure(self):
         provider = self._source_write_provider()
@@ -2783,7 +2817,7 @@ class TestBitbucketGlobalSettings:
         ref_resp = MagicMock(status_code=200)
         ref_resp.json.return_value = {"target": {"hash": "settings-sha"}}
         file_resp = MagicMock(status_code=200)
-        file_resp.text = "[pr_reviewer]\nnum_max_findings = 5\n"
+        file_resp.content = b"[pr_reviewer]\nnum_max_findings = 5\n"
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
                    side_effect=[repo_resp, ref_resp, file_resp]) as rq, \
              patch("pr_agent.git_providers.git_provider.get_settings") as ms:
@@ -2795,6 +2829,20 @@ class TestBitbucketGlobalSettings:
         assert "myws/pr-agent-settings" in rq.call_args_list[0].args[1]
         assert "refs/branches/release%2F1.0" in rq.call_args_list[1].args[1]
         assert "src/settings-sha/.pr_agent.toml" in rq.call_args_list[2].args[1]
+
+    def test_workspace_settings_keep_non_ascii_values(self):
+        provider = self._provider()
+        repo_resp = MagicMock(status_code=200)
+        repo_resp.json.return_value = {"mainbranch": {"name": "main"}}
+        ref_resp = MagicMock(status_code=200)
+        ref_resp.json.return_value = {"target": {"hash": "settings-sha"}}
+        toml = '[pr_reviewer]\nextra_instructions = "Antworte auf Deutsch: Größe, Maß — 中文"\n'
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
+                   side_effect=[repo_resp, ref_resp, _raw_file_response(toml, "text/plain")]), \
+             patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
+            assert provider._get_global_repo_settings() == toml.encode("utf-8")
 
     @pytest.mark.parametrize("status_code", [403, 404])
     def test_missing_or_inaccessible_default_branch_ref_returns_empty_and_caches(self, status_code):
@@ -2863,7 +2911,7 @@ class TestBitbucketGlobalSettings:
         ref_resp = MagicMock(status_code=200)
         ref_resp.json.return_value = {"target": {"hash": "settings-sha"}}
         file_resp = MagicMock(status_code=200)
-        file_resp.text = "[pr_reviewer]\nx = 1\n"
+        file_resp.content = b"[pr_reviewer]\nx = 1\n"
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
                    side_effect=[repo_resp, ref_resp, file_resp]) as rq, \
              patch("pr_agent.git_providers.git_provider.get_settings") as ms:
@@ -2886,13 +2934,26 @@ class TestBitbucketLocalSettingsRobustness:
             data={"destination": {"commit": {"hash": "destination-sha"}}},
         )
         resp = MagicMock(status_code=200)
-        resp.text = "[pr_reviewer]\nnum_max_findings = 5\n"
+        resp.content = b"[pr_reviewer]\nnum_max_findings = 5\n"
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=resp) as rq, \
              patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = False
             result = provider.get_repo_settings()
         assert result == [("local", b"[pr_reviewer]\nnum_max_findings = 5\n")]
         assert "src/destination-sha/.pr_agent.toml" in rq.call_args.args[1]
+
+    def test_get_repo_settings_keeps_non_ascii_values(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.workspace_slug = "myws"
+        provider.repo_slug = "myrepo"
+        provider.headers = {"Authorization": "Bearer x"}
+        provider.pr = MagicMock(data={"destination": {"commit": {"hash": "destination-sha"}}})
+        toml = '[pr_reviewer]\nextra_instructions = "Antworte auf Deutsch: Größe, Maß — 中文"\n'
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
+                   return_value=_raw_file_response(toml, "text/plain")), \
+             patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            assert provider.get_repo_settings() == [("local", toml.encode("utf-8"))]
 
     def test_get_repo_settings_ignores_error_response_for_local(self):
         # A non-200/404 response (e.g. 500 error page) must NOT be treated as local TOML content.
@@ -3001,3 +3062,71 @@ def test_a_failed_file_read_is_reported(failure):
 
     assert read() == ""
     assert f"Failed to read {link!r}" in _capture_logs(read)
+
+
+@pytest.mark.parametrize("old,new", [
+    (" old.py", "new.py"), ("old.py ", "new.py"),
+    ("old.py", " new.py"), ("old.py", "new.py "),
+])
+@pytest.mark.parametrize("crlf", [False, True])
+def test_significant_rename_spaces_stay_aligned_with_the_changed_file_inventory(old, new, crlf):
+    raw = (f"diff --git a/{old} b/{new}\nsimilarity index 100%\n"
+           f"rename from {old}\nrename to {new}\n")
+    if crlf:
+        raw = raw.replace("\n", "\r\n")
+
+    diff_file = TestBitbucketProvider._get_single_diff_file(raw, "renamed", 0, 0, new, old)
+
+    assert diff_file.filename == new
+    assert _diff_header_paths(raw) == (old, new)
+    assert diff_file.edit_type == EDIT_TYPE.RENAMED
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows cannot create all significant-space filenames")
+@pytest.mark.parametrize("old,new", [
+    (" old.py", "new.py"), ("old.py ", "new.py"),
+    ("old.py", " new.py"), ("old.py", "new.py "),
+])
+def test_paths_preserve_spaces_in_actual_git_rename_output(tmp_path, old, new):
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    environment.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-C", str(tmp_path), *args],
+            env=environment, stderr=subprocess.PIPE, text=True,
+        )
+
+    git("init", "-q")
+    (tmp_path / old).write_text("sample\n", encoding="utf-8")
+    git("add", "--all")
+    git("-c", "user.name=Regression", "-c", "user.email=regression@example.invalid", "commit", "-qm", "baseline")
+    git("mv", "--", old, new)
+    raw_diff = git("diff", "--cached", "--no-ext-diff", "--find-renames")
+
+    assert _diff_header_paths(raw_diff) == (old, new)
+
+
+@pytest.mark.parametrize("repo_git_url", [
+    "https://bitbucket.org/workspace/site.github.io.git",
+    "https://bitbucket.org/workspace/site.github.io.git/",
+])
+def test_get_canonical_url_parts_keeps_dot_git_inside_repo_name(repo_git_url):
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+
+    assert provider.get_canonical_url_parts(repo_git_url=repo_git_url, desired_branch="main") == (
+        "https://bitbucket.org/workspace/site.github.io/src/main",
+        "",
+    )
+
+
+def test_server_get_canonical_url_parts_keeps_dot_git_inside_repo_name():
+    provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+    provider.bitbucket_server_url = "https://bitbucket.example.com"
+
+    assert provider.get_canonical_url_parts(
+        repo_git_url="https://bitbucket.example.com/scm/PROJ/site.github.io.git", desired_branch="main"
+    ) == (
+        "https://bitbucket.example.com/projects/PROJ/repos/site.github.io/browse",
+        "?at=refs%2Fheads%2Fmain",
+    )

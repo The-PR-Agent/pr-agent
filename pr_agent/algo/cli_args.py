@@ -16,8 +16,14 @@ _MAPPING_TOO_COMPLEX_ARG = '.mapping_value_too_complex'
 class CliArgs:
     @staticmethod
     def _host_only_setting_arg(arg: str) -> str | None:
-        """Return a protected setting token when a CLI arg targets a host-only key."""
-        setting_name = arg.lstrip('-').split('=', 1)[0].strip().replace('__', '.')
+        """Return a protected setting token when a CLI arg targets a host-only key.
+
+        Every whitespace character in the flag is removed before the section and key are
+        split, because ``update_settings_from_args`` strips the token parts before applying
+        them, so a name written e.g. ``--github. seconds_between_requests`` must validate as
+        the same host-only key it would set.
+        """
+        setting_name = ''.join(arg.lstrip('-').split('=', 1)[0].split()).replace('__', '.')
         section, separator, key = setting_name.partition('.')
         if not separator:
             if (section in REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION
@@ -207,6 +213,13 @@ class CliArgs:
                     host_only_arg = CliArgs._host_only_setting_arg(arg_word)
                     if host_only_arg:
                         return False, host_only_arg
+                    # A flag name with whitespace never names a real setting, and applying one can
+                    # replace a whole section, so reject it outright. Checked before the mapping
+                    # branch below, whose `continue` would otherwise skip this validation for a
+                    # mapping-valued flag carrying a spaced key.
+                    flag_name = arg_word.split('=', 1)[0].rstrip()
+                    if flag_name != ''.join(flag_name.split()):
+                        return False, flag_name
                     # A mapping value sets many keys at once, so validate each nested
                     # section.key path against the host-only and forbidden lists instead of
                     # matching the value text, which may legitimately mention a key name.

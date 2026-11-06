@@ -14,10 +14,6 @@ class LoggingFormat(StrEnum):
     JSON = "JSON"
 
 
-def json_format(record: dict) -> str:
-    return record["message"]
-
-
 def analytics_filter(record: dict) -> bool:
     return record.get("extra", {}).get("analytics", False)
 

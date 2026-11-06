@@ -18,6 +18,7 @@ from pr_agent.algo.comment_identity import (
     hidden_marker_forms,
     render_hidden_marker,
 )
+from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
     InlineCommentStore,
@@ -83,6 +84,7 @@ from pr_agent.git_providers.git_provider import (
     IncompleteProviderPullRequestFilesError,
     IncrementalPR,
     PRCommit,
+    format_persistent_update_header,
     get_main_pr_language,
 )
 from pr_agent.log import get_logger
@@ -96,7 +98,6 @@ from pr_agent.tools.ticket_pr_compliance_check import (
 
 MAX_REVIEW_COVERAGE_FILES = 50
 _SUGGESTION_FENCE_RE = re.compile(r"```[ \t]*suggestion\b", re.IGNORECASE)
-REVIEW_PROGRESS_COMMENT = "Preparing review..."
 
 _REVIEW_FAILURE_REASONS = (
     (
@@ -457,7 +458,7 @@ class PRReviewer:
 
             if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
                 progress_response = self.git_provider.publish_comment(
-                    REVIEW_PROGRESS_COMMENT, is_temporary=True)
+                    t("review.progress"), is_temporary=True)
                 # A chunked run rewrites this temporary comment in place. The chunk count is
                 # only known once the diff is split, so the reporter is built there; all this
                 # run keeps is the handle.
@@ -893,7 +894,7 @@ class PRReviewer:
         for attribute in ("max_comment_chars", "max_comment_length"):
             value = getattr(self.git_provider, attribute, None)
             if isinstance(value, int) and value > 0:
-                update_suffix = f"\n\n#### (Review updated until commit {self._review_run_id()})\n"
+                update_suffix = "\n\n" + format_persistent_update_header("review", self._review_run_id())
                 # The shared persistent publisher adds the full-review identity
                 # before inserting the update suffix. Reserve both pieces so a
                 # complete state marker remains inside the provider limit.
@@ -1000,7 +1001,7 @@ class PRReviewer:
             return True
         if self._review_commit is not None:
             return self._review_has_findings
-        return "No major issues detected" not in pr_review
+        return t("review.no_major_issues") not in pr_review
 
     async def _prepare_prediction(self, model: str) -> None:
         # Each model attempt owns a fresh result. A malformed primary must not
@@ -1084,7 +1085,8 @@ class PRReviewer:
 
     def _review_progress_body(self, line: str) -> str:
         """Render the temporary review placeholder plus the current chunk progress line."""
-        return f"{REVIEW_PROGRESS_COMMENT} {line}" if line else REVIEW_PROGRESS_COMMENT
+        progress = t("review.progress")
+        return f"{progress} {line}" if line else progress
 
     def _chunk_progress_reporter(self, total: int, completed: int = 0) -> ChunkProgressReporter | None:
         """Report chunk progress by rewriting the temporary review comment in place.
@@ -1103,7 +1105,7 @@ class PRReviewer:
         return ChunkProgressReporter.create(
             self.git_provider,
             comment,
-            REVIEW_PROGRESS_COMMENT,
+            t("review.progress"),
             total=total,
             body_builder=self._review_progress_body,
             label="review",
@@ -1612,7 +1614,9 @@ class PRReviewer:
             return
         self._pending_sink_output = None
         message_type, payload, markdown = pending
-        await push_outputs_async(message_type, payload=payload, markdown=markdown)
+        await push_outputs_async(
+            message_type, payload=payload, markdown=markdown, git_provider=self.git_provider
+        )
 
     def _build_key_issue_comment(self, issue, diff_files: dict) -> dict | None:
         if not isinstance(issue, dict):

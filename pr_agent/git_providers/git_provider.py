@@ -22,10 +22,11 @@ from pr_agent.algo.comment_identity import (
     comment_matches_identity,
     render_hidden_marker,
 )
+from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import strip_markers
 from pr_agent.algo.language_handler import build_language_file_matcher, numeric_languages
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import Range, process_description
+from pr_agent.algo.utils import process_description
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -50,6 +51,23 @@ def get_config_branch() -> str:
     settings_branch = settings_branch.strip() if isinstance(settings_branch, str) else ""
     env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
     return settings_branch or env_branch
+
+
+def format_persistent_update_header(name: str, commit: str) -> str:
+    """Return the `#### (... updated until commit ...)` line placed after a persistent comment's identity."""
+    if name == "review":
+        text = t("review.updated_until_commit", commit=commit)
+    else:
+        text = f"{name.capitalize()} updated until commit {commit}"
+    return f"#### ({text})\n"
+
+
+def format_persistent_update_notice(name: str, comment_url: str, commit: str) -> str:
+    """Return the comment announcing that a persistent comment now covers the latest commit."""
+    if name == "review":
+        link = f"**[{t('review.persistent_link')}]({comment_url})**"
+        return t("review.persistent_updated", link=link, commit=commit)
+    return f"**[Persistent {name}]({comment_url})** updated to latest commit {commit}"
 
 
 MAX_FILES_ALLOWED_FULL = 50
@@ -1051,9 +1069,6 @@ class GitProvider(ABC):
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         return ""
 
-    def get_lines_link_original_file(self, filepath:str, component_range: Range) -> str:
-        return ""
-
     #### comments operations ####
     @abstractmethod
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
@@ -1199,7 +1214,7 @@ class GitProvider(ABC):
                 latest_commit_url = self.get_latest_commit_url()
                 comment_url = self.get_comment_url(comment)
                 if update_header:
-                    update_message = f"#### ({name.capitalize()} updated until commit {latest_commit_url})\n"
+                    update_message = format_persistent_update_header(name, latest_commit_url)
                     update_anchor = render_hidden_marker(identity_marker, self) if identity_marker else initial_header
                     updated_anchor = f"{update_anchor}\n\n{update_message}"
                     pr_comment_updated = pr_comment.replace(update_anchor, updated_anchor, 1)
@@ -1216,7 +1231,7 @@ class GitProvider(ABC):
                 if final_update_message:
                     try:
                         status_comment = self.publish_comment(
-                            f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
+                            format_persistent_update_notice(name, comment_url, latest_commit_url))
                         if status_comment is None or status_comment is False:
                             get_logger().warning(
                                 "Persistent review update message was not published; "
@@ -1364,6 +1379,20 @@ class GitProvider(ABC):
             str: the head commit SHA, or an empty string when unavailable.
         """
         return ""
+
+    def get_pr_identity(self) -> dict:
+        """Return the identity external output sinks attach to a run.
+
+        Providers that can expose a stable repository name and PR number override
+        this. Values are always present; an unavailable value is an empty string.
+        """
+        return {
+            "url": self.get_pr_url() or "",
+            "provider": "",
+            "repo": "",
+            "number": "",
+            "head_sha": self.get_pr_head_sha() or "",
+        }
 
     def auto_approve(self) -> bool:
         return False

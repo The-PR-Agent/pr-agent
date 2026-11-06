@@ -100,7 +100,7 @@ def _warn_deprecated_self_review_marker_keys() -> None:
 
 
 def _as_threshold(setting_name: str, default: int, minimum: int) -> int:
-    """Read a score threshold as an int, so a quoted or unusable value cannot fail the run."""
+    """Read an integer setting, retaining its default when the configured value is unusable."""
     value = get_settings().get(setting_name, default)
     try:
         return max(minimum, int(value))
@@ -490,7 +490,9 @@ class PRCodeSuggestions:
                 # Emit to the optional external sinks before touching the provider, so a sink
                 # still receives the suggestions if publishing them to the PR fails.
                 markdown = render_suggestions_markdown(data) + self._get_suggestions_coverage_footer()
-                await push_outputs_async("improve", payload=data, markdown=markdown)
+                await push_outputs_async(
+                    "improve", payload=data, markdown=markdown, git_provider=self.git_provider
+                )
                 # If a temporary comment was published, remove it
                 self.git_provider.remove_initial_comment()
 
@@ -690,8 +692,10 @@ class PRCodeSuggestions:
         pr_body = f"{format_pr_code_suggestions_header()}\n\n{no_suggestions_message}{coverage_footer}"
         if get_settings().config.publish_output:
             markdown = f"## PR Code Suggestions\n\n{no_suggestions_message}{coverage_footer}"
-            await push_outputs_async("improve", payload=getattr(self, "data", None) or {"code_suggestions": []},
-                                     markdown=markdown)
+            await push_outputs_async(
+                "improve", payload=getattr(self, "data", None) or {"code_suggestions": []},
+                markdown=markdown, git_provider=self.git_provider,
+            )
         if (get_settings().config.publish_output and
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
             get_logger().warning("No code suggestions found for the PR.")
@@ -1277,7 +1281,7 @@ class PRCodeSuggestions:
     @staticmethod
     def _truncate_if_needed(suggestion):
         suggestion.pop('_is_truncated', None)
-        max_code_suggestion_length = get_settings().get("PR_CODE_SUGGESTIONS.MAX_CODE_SUGGESTION_LENGTH", 0)
+        max_code_suggestion_length = _as_threshold("pr_code_suggestions.max_code_suggestion_length", 0, 0)
         suggestion_truncation_message = get_settings().get("PR_CODE_SUGGESTIONS.SUGGESTION_TRUNCATION_MESSAGE", "")
         if max_code_suggestion_length > 0:
             if len(suggestion['improved_code']) > max_code_suggestion_length:
@@ -1726,18 +1730,6 @@ class PRCodeSuggestions:
         if existing_lines != anchored_lines:
             return False, "the existing code does not match the anchored range", True
         return True, "", True
-
-    def _suggestion_applyability(self, relevant_file, relevant_lines_start, relevant_lines_end,
-                                 existing_code) -> tuple[bool, str]:
-        is_applicable, fallback_reason, _ = self._validate_suggestion(
-            relevant_file, relevant_lines_start, relevant_lines_end, existing_code)
-        return is_applicable, fallback_reason
-
-    def is_applicable_suggestion(self, relevant_file, relevant_lines_start, relevant_lines_end,
-                                 existing_code) -> bool:
-        return self._suggestion_applyability(relevant_file, relevant_lines_start,
-                                             relevant_lines_end, existing_code)[0]
-
 
     def dedent_code(self, relevant_file, relevant_lines_start, new_code_snippet):
         try:  # dedent code snippet

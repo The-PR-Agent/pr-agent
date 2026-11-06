@@ -15,15 +15,19 @@ from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.mosaico import dispatch
 from pr_agent.mosaico.dispatch import (
-    _detect_verb,
     _diff_prose,
     _empty_fallback,
     _error_fallback,
     _explicit_verb,
+    _resolve_verb,
     _split_turns,
-    route_and_run,
     route_and_run_result,
 )
+
+
+async def route_and_run(user_text: str) -> str:
+    """Adapt the live route_and_run_result to the text-only shape the dead wrapper returned."""
+    return (await route_and_run_result(user_text)).text
 
 
 def _patch_questions(monkeypatch, question_class):
@@ -165,21 +169,21 @@ def _clear_artifact():
 # ---------------------------------------------------------------------------
 class TestVerbDetection:
     def test_explicit_slash_verbs(self):
-        assert _detect_verb("/review please") == "review"
-        assert _detect_verb("/improve this") == "improve"
-        assert _detect_verb("/describe it") == "describe"
-        assert _detect_verb("/ask something") == "ask"
+        assert _resolve_verb(["/review please"]) == "review"
+        assert _resolve_verb(["/improve this"]) == "improve"
+        assert _resolve_verb(["/describe it"]) == "describe"
+        assert _resolve_verb(["/ask something"]) == "ask"
 
     def test_bare_verb_words(self):
-        assert _detect_verb("review this PR") == "review"
-        assert _detect_verb("improve the code") == "improve"
+        assert _resolve_verb(["review this PR"]) == "review"
+        assert _resolve_verb(["improve the code"]) == "improve"
 
     def test_question_defaults_to_ask(self):
-        assert _detect_verb("what does this change?") == "ask"
-        assert _detect_verb("How is the error handled") == "ask"
+        assert _resolve_verb(["what does this change?"]) == "ask"
+        assert _resolve_verb(["How is the error handled"]) == "ask"
 
     def test_default_is_review(self):
-        assert _detect_verb("here is a blob of stuff") == "review"
+        assert _resolve_verb(["here is a blob of stuff"]) == "review"
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +207,7 @@ class TestPathPrUrl:
         from pr_agent.agent.pr_agent import PRAgent
         monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
 
-        out = await route_and_run(f"review {PR_URL}")
+        out = (await route_and_run_result(f"review {PR_URL}")).text
         assert out == "REVIEW MARKDOWN"
         # After Fix B path (a) routes through the supplied-diff target, not the raw PR URL.
         assert captured["pr_url"] == "mosaico://supplied-diff"
@@ -228,7 +232,7 @@ class TestPathPrUrl:
         from pr_agent.agent.pr_agent import PRAgent
         monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
 
-        await route_and_run(f"review {PR_URL}")
+        await route_and_run_result(f"review {PR_URL}")
         assert global_settings.get("CONFIG.GIT_PROVIDER") == "mosaico_diff"
 
     @pytest.mark.asyncio
@@ -266,7 +270,7 @@ class TestPathSuppliedDiff:
         from pr_agent.agent.pr_agent import PRAgent
         monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
 
-        out = await route_and_run(f"review the following\n{SAMPLE_DIFF}")
+        out = (await route_and_run_result(f"review the following\n{SAMPLE_DIFF}")).text
         assert out == "DIFF REVIEW"
         assert captured["git_provider"] == "mosaico_diff"
         assert "/review" in captured["request"]
@@ -314,7 +318,7 @@ index 1111111..2222222 100644
         from pr_agent.agent.pr_agent import PRAgent
         monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
 
-        assert await route_and_run(f"review the following\n{language_diff}") == "DIFF REVIEW"
+        assert (await route_and_run_result(f"review the following\n{language_diff}")).text == "DIFF REVIEW"
         assert captured["languages"] == {
             "Python": 2,
             "JavaScript": 1,
@@ -495,7 +499,7 @@ class TestDefensiveCapture:
         from pr_agent.agent.pr_agent import PRAgent
         monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
 
-        out = await route_and_run(f"review {PR_URL}")
+        out = (await route_and_run_result(f"review {PR_URL}")).text
         assert out == _error_fallback("review")
 
     @pytest.mark.asyncio
@@ -1099,7 +1103,7 @@ class TestVerbNegationAndPosition:
         ("describe this, then improve it", "describe"),
     ])
     def test_negated_and_positional_verbs(self, text, expected):
-        assert _detect_verb(text) == expected
+        assert _resolve_verb([text]) == expected
 
     @pytest.mark.parametrize("text, expected", [
         ("there is no bug, review this", "review"),
@@ -1108,13 +1112,13 @@ class TestVerbNegationAndPosition:
         ("do not review", "review"),
     ])
     def test_negation_does_not_fire_on_ordinary_prose(self, text, expected):
-        assert _detect_verb(text) == expected
+        assert _resolve_verb([text]) == expected
 
 
 class TestStickyReviewToken:
     def test_reviewer_heading_alone_does_not_reach_the_matcher(self):
         assert _explicit_verb("## PR Reviewer Guide 🔍") is None
-        assert _detect_verb("## PR Reviewer Guide 🔍") == "review"
+        assert _resolve_verb(["## PR Reviewer Guide 🔍"]) == "review"
 
     def test_estimated_effort_line_is_the_token_that_matches(self):
         assert _explicit_verb("### ⏱️ Estimated effort to review: 1 🔵⚪⚪⚪⚪") == "review"
@@ -1195,10 +1199,10 @@ class TestExtendedHeaderNotLeaked:
         assert _diff_prose(self.NEW_FILE_DIFF).strip() == ""
 
     def test_renamed_path_does_not_override_the_request(self):
-        assert _detect_verb(_diff_prose(self.RENAME_DIFF)) == "review"
+        assert _resolve_verb([self.RENAME_DIFF]) == "review"
 
     def test_question_mark_in_a_leaked_path_does_not_flip_to_ask(self):
-        assert _detect_verb(_diff_prose(self.NEW_FILE_DIFF)) == "review"
+        assert _resolve_verb([self.NEW_FILE_DIFF]) == "review"
 
     def test_prose_after_an_extended_header_patch_still_survives(self):
         prose = _diff_prose(f"{self.NEW_FILE_DIFF}\nnow describe it")
@@ -1270,7 +1274,7 @@ class TestSingleTurnUnchanged:
     @pytest.mark.asyncio
     async def test_single_turn_diff_unchanged(self, monkeypatch, restore_settings):
         seen = _routed(monkeypatch)
-        out = await route_and_run(f"review the following\n{SAMPLE_DIFF}")
+        out = (await route_and_run_result(f"review the following\n{SAMPLE_DIFF}")).text
         assert out == "ROUTED"
         assert seen["verb"] == "review"
         assert seen["title"] == "Supplied diff"

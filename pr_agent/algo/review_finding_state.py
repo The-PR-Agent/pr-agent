@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import key_issue_fingerprint
 from pr_agent.algo.utils import _as_line
 
@@ -23,6 +24,8 @@ _STATE_MARKER_NAMESPACE = "<!-- pr-agent-review-state"
 _WHITESPACE_RE = re.compile(r"\s+")
 _VALID_STATES = {"ACTIVE", "RESOLVED"}
 _FINDING_HEADER_RE = re.compile(r"\*\*(?P<header>[^*\n]+)\*\*\n\n(?P<content>.*)", re.DOTALL)
+# The reviewer stores this header in English so a finding id does not depend on the response language.
+_STORED_POSSIBLE_ISSUE_HEADER = "**Possible Issue**\n\n"
 
 
 @dataclass(frozen=True)
@@ -366,7 +369,7 @@ def _render_resolved_section(state: Mapping[str, Any]) -> str:
     )
     lines = [
         "<details>",
-        "<summary>✅ Resolved findings</summary>",
+        f"<summary>✅ {t('review.resolved_findings')}</summary>",
         "",
     ]
     for finding in resolved:
@@ -375,7 +378,10 @@ def _render_resolved_section(state: Mapping[str, Any]) -> str:
             location += f":{finding['line_start']}"
             if finding.get("line_end") and finding["line_end"] != finding["line_start"]:
                 location += f"-{finding['line_end']}"
-        lines.extend([f"### {location}", "", finding["body"], ""])
+        body = finding["body"]
+        if body.startswith(_STORED_POSSIBLE_ISSUE_HEADER):
+            body = f"**{t('review.possible_issue')}**\n\n{body.removeprefix(_STORED_POSSIBLE_ISSUE_HEADER)}"
+        lines.extend([f"### {location}", "", body, ""])
     lines.extend(["</details>", ""])
     return "\n".join(lines).rstrip()
 

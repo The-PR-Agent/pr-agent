@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import copy
 import difflib
 import html
@@ -36,6 +37,7 @@ from pr_agent.algo.git_patch_processing import (
     split_diff_lines,
     to_hunk_only_patch,
 )
+from pr_agent.algo.i18n import t
 from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.output_models import PRType, SubPR, parse_failure_modes
 from pr_agent.algo.structural_reach import render_structural_reach
@@ -247,7 +249,7 @@ def convert_to_markdown_v2(output_data: dict,
         return ""
 
     if get_settings().get("pr_reviewer.enable_intro_text", False):
-        markdown_text += "Here are some key observations to aid the review process:\n\n"
+        markdown_text += f"{t('review.intro')}\n\n"
 
     if gfm_supported:
         markdown_text += "<table>\n"
@@ -261,7 +263,7 @@ def convert_to_markdown_v2(output_data: dict,
         key_nice = key.replace('_', ' ').capitalize()
         emoji = emojis.get(key_nice, "")
         if 'Estimated effort to review' in key_nice:
-            key_nice = 'Estimated effort to review'
+            key_nice = t('review.estimated_effort')
             value = str(value).strip()
             if value.isnumeric():
                 value_int = int(value)
@@ -285,15 +287,15 @@ def convert_to_markdown_v2(output_data: dict,
             if gfm_supported:
                 markdown_text += "<tr><td>"
                 if is_value_no(value):
-                    markdown_text += f"{emoji}&nbsp;<strong>No relevant tests</strong>"
+                    markdown_text += f"{emoji}&nbsp;<strong>{t('review.no_relevant_tests')}</strong>"
                 else:
-                    markdown_text += f"{emoji}&nbsp;<strong>PR contains tests</strong>"
+                    markdown_text += f"{emoji}&nbsp;<strong>{t('review.contains_tests')}</strong>"
                 markdown_text += "</td></tr>\n"
             else:
                 if is_value_no(value):
-                    markdown_text += f'### {emoji} No relevant tests\n\n'
+                    markdown_text += f"### {emoji} {t('review.no_relevant_tests')}\n\n"
                 else:
-                    markdown_text += f"### {emoji} PR contains tests\n\n"
+                    markdown_text += f"### {emoji} {t('review.contains_tests')}\n\n"
         elif 'ticket compliance check' in key_nice.lower():
             markdown_text = ticket_markdown_logic(emoji, markdown_text, value, gfm_supported)
         elif 'contribution time cost estimate' in key_nice.lower():
@@ -321,17 +323,17 @@ def convert_to_markdown_v2(output_data: dict,
             if gfm_supported:
                 markdown_text += "<tr><td>"
                 if is_value_no(value):
-                    markdown_text += f"{emoji}&nbsp;<strong>No security concerns identified</strong>"
+                    markdown_text += f"{emoji}&nbsp;<strong>{t('review.no_security_concerns')}</strong>"
                 else:
-                    markdown_text += f"{emoji}&nbsp;<strong>Security concerns</strong><br><br>\n\n"
+                    markdown_text += f"{emoji}&nbsp;<strong>{t('review.security_concerns')}</strong><br><br>\n\n"
                     value = _ci.emphasize_header(value.strip()) if isinstance(value, str) else _ci.as_review_text(value)
                     markdown_text += f"{value}"
                 markdown_text += "</td></tr>\n"
             else:
                 if is_value_no(value):
-                    markdown_text += f'### {emoji} No security concerns identified\n\n'
+                    markdown_text += f"### {emoji} {t('review.no_security_concerns')}\n\n"
                 else:
-                    markdown_text += f"### {emoji} Security concerns\n\n"
+                    markdown_text += f"### {emoji} {t('review.security_concerns')}\n\n"
                     value = _ci.emphasize_header(
                         value.strip(), only_markdown=True) if isinstance(value, str) else _ci.as_review_text(value)
                     markdown_text += f"{value}\n\n"
@@ -433,18 +435,18 @@ def convert_to_markdown_v2(output_data: dict,
             if is_value_no(value):
                 if gfm_supported:
                     markdown_text += "<tr><td>"
-                    markdown_text += f"{emoji}&nbsp;<strong>No major issues detected</strong>"
+                    markdown_text += f"{emoji}&nbsp;<strong>{t('review.no_major_issues')}</strong>"
                     markdown_text += "</td></tr>\n"
                 else:
-                    markdown_text += f"### {emoji} No major issues detected\n\n"
+                    markdown_text += f"### {emoji} {t('review.no_major_issues')}\n\n"
             else:
                 issues = value
                 if gfm_supported:
                     markdown_text += "<tr><td>"
                     # markdown_text += f"{emoji}&nbsp;<strong>{key_nice}</strong><br><br>\n\n"
-                    markdown_text += f"{emoji}&nbsp;<strong>Recommended focus areas for review</strong><br><br>\n\n"
+                    markdown_text += f"{emoji}&nbsp;<strong>{t('review.focus_areas')}</strong><br><br>\n\n"
                 else:
-                    markdown_text += f"### {emoji} Recommended focus areas for review\n\n#### \n"
+                    markdown_text += f"### {emoji} {t('review.focus_areas')}\n\n#### \n"
                 for issue in issues:
                     try:
                         if not issue or not isinstance(issue, dict):
@@ -457,7 +459,7 @@ def convert_to_markdown_v2(output_data: dict,
                         relevant_file = issue.get('relevant_file', '').strip()
                         issue_header = issue.get('issue_header', '').strip()
                         if issue_header.lower() == 'possible bug':
-                            issue_header = 'Possible Issue'  # Make the header less frightening
+                            issue_header = t('review.possible_issue')  # Make the header less frightening
                         issue_content = issue.get('issue_content', '').strip()
                         start_line = _as_line(issue.get('start_line')) or 0
                         end_line = _as_line(issue.get('end_line')) or start_line
@@ -1470,12 +1472,35 @@ def get_user_labels(current_labels: list[str] = None):
 
 def replace_code_tags(text):
     """
-    Replace odd instances of ` with <code> and even instances of ` with </code>
+    Turn backtick code spans into <code> elements after HTML-escaping the text.
+
+    As in Markdown, a span opens with a run of backticks and closes at the next
+    run of the same length, so ``a`b`` keeps its inner backtick. A run with no
+    matching closer stays a literal backtick instead of turning the rest of the
+    text into code.
     """
     text = html.escape(text)
-    parts = text.split('`')
-    for i in range(1, len(parts), 2):
-        parts[i] = '<code>' + parts[i] + '</code>'
+    runs = list(re.finditer(r"`+", text))
+    runs_by_length = {}
+    for index, run in enumerate(runs):
+        runs_by_length.setdefault(len(run.group()), []).append(index)
+    parts = []
+    position = 0
+    i = 0
+    while i < len(runs):
+        opener = runs[i]
+        same_length = runs_by_length[len(opener.group())]
+        next_same = bisect.bisect_right(same_length, i)
+        if next_same == len(same_length):
+            i += 1
+            continue
+        closer_index = same_length[next_same]
+        closer = runs[closer_index]
+        parts.append(text[position:opener.start()])
+        parts.append('<code>' + text[opener.end():closer.start()] + '</code>')
+        position = closer.end()
+        i = closer_index + 1
+    parts.append(text[position:])
     return ''.join(parts)
 
 

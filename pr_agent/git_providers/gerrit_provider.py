@@ -321,6 +321,19 @@ class GerritProvider(GitProvider):
         """
         return self.repo.branches[0].name
 
+    def get_pr_identity(self) -> dict:
+        number = ""
+        match = re.fullmatch(r"refs/changes/\d{2}/(\d+)/\d+", self.refspec)
+        if match:
+            number = int(match.group(1))
+        return {
+            "url": self.get_pr_url() or "",
+            "provider": "gerrit",
+            "repo": self.project or "",
+            "number": number,
+            "head_sha": self.repo.head.commit.hexsha if self.repo else "",
+        }
+
     def get_issue_comments(self) -> list:
         Comment = namedtuple('Comment', ['body'])
         return [Comment(c['message']) for c in list_comments(self.parsed_url, self.refspec)]
@@ -481,8 +494,6 @@ class GerritProvider(GitProvider):
     def is_supported(self, capability: str) -> bool:
         if capability in [
             # 'get_issue_comments',
-            'create_inline_comment',
-            'publish_inline_comments',
             'get_labels',
             'gfm_markdown'
         ]:
