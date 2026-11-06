@@ -578,6 +578,8 @@ class AzureDevopsProvider(GitProvider):
             return None
 
     def is_supported(self, capability: str) -> bool:
+        if capability in ("head_ci_status", "head_staleness", "author_human_check"):
+            return False
         return True
 
     def supports_incremental_kind(self, kind: str) -> bool:
