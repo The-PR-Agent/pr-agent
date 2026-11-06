@@ -214,6 +214,10 @@ for the authoritative default values.
     <td>Changed-line cap for a no_concerns_found merge recommendation. A larger diff makes the recommendation needs_review at best. The cap counts added and removed lines.</td>
   </tr>
   <tr>
+    <td><b>github.publish_merge_verdict_as_check</b></td>
+    <td>If set to true, publishes the review's merge recommendation as a separate GitHub check on the reviewed head SHA. It requires <code>require_merge_recommendation = true</code> and maps the three recommendations to success, neutral, and failure conclusions.</td>
+  </tr>
+  <tr>
     <td><b>require_failure_modes</b></td>
     <td>Off by default. If enabled, adds up to three concrete failure scenarios, each with what could break,
     where, its trigger, how it could be detected, and whether a test or check in this PR covers it.

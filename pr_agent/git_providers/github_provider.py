@@ -1078,7 +1078,7 @@ class GithubProvider(GitProvider):
                 "status": "completed",
                 "conclusion": conclusion,
                 "output": {
-                    "title": "PR Agent Merge Verdict",
+                    "title": self._check_run_name("verdict"),
                     "summary": recommendation,
                 },
             },

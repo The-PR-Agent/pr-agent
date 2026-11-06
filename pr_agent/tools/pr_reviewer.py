@@ -1409,6 +1409,14 @@ class PRReviewer:
             get_logger().exception("Failed to parse review data", artifact={"data": data})
             return ""
 
+        recommendation = data["review"].get("merge_recommendation")
+        self._merge_recommendation = (
+            recommendation
+            if getattr(self, "vars", {}).get("require_merge_recommendation", False)
+            and recommendation in ("no_concerns_found", "needs_review", "changes_required")
+            else None
+        )
+
         structural_reach = build_structural_reach(resolve_artifact_path)
         if structural_reach:
             data["review"] = {"structural_reach": structural_reach, **data["review"]}
