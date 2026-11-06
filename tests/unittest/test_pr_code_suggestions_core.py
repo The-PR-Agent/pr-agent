@@ -2878,13 +2878,16 @@ def test_persistent_suggestions_do_not_adopt_quoted_or_late_identity():
     )
 
 
-def test_legacy_heading_without_generated_shape_is_not_adopted():
+@pytest.mark.parametrize("history_len", [0, 4])
+def test_legacy_heading_without_generated_shape_is_not_adopted(history_len):
     human = MagicMock()
     human.body = (
         f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n"
         "A human-authored comment using the same heading."
     )
     provider = _persistent_provider([human])
+    provider.supports_code_suggestion_state.return_value = False
+    provider.supports_comment_editing.return_value = True
     custom_header = "## Team Suggestions ✨"
 
     PRCodeSuggestions.publish_persistent_comment_with_history(
@@ -2892,6 +2895,7 @@ def test_legacy_heading_without_generated_shape_is_not_adopted():
         f"{custom_header}\n\n<table>new suggestions</table>",
         initial_header=custom_header,
         name="suggestions",
+        max_previous_comments=history_len,
         identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
         legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
     )
@@ -3014,6 +3018,9 @@ class _LifecycleSuggestionProvider:
     def supports_code_suggestion_state(self):
         return self._supports_state
 
+    def supports_comment_editing(self):
+        return True
+
     def should_publish_improve_as_thread(self):
         return False
 
@@ -3054,9 +3061,15 @@ def _lifecycle_suggestion_comment(name):
     return SimpleNamespace(body=body, name=name)
 
 
-def test_persistent_improve_uses_newest_matching_comment():
+@pytest.mark.parametrize("history_len", [-1, 0, 4])
+def test_persistent_improve_uses_newest_matching_comment(history_len):
     old = _lifecycle_suggestion_comment("old")
     newest = _lifecycle_suggestion_comment("newest")
+    newest.body += (
+        "\n\n#### Previous suggestions\n"
+        "<details><summary>Suggestions up to commit aaa1111</summary>\n"
+        "<br><table>previous suggestions</table>\n\n</details>"
+    )
     provider = _LifecycleSuggestionProvider([old, newest])
 
     result = PRCodeSuggestions.publish_persistent_comment_with_history(
@@ -3065,6 +3078,7 @@ def test_persistent_improve_uses_newest_matching_comment():
         PRCodeSuggestionsHeader.SUMMARY.value,
         name="suggestions",
         final_update_message=False,
+        max_previous_comments=history_len,
         identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
         legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
     )
@@ -3072,6 +3086,11 @@ def test_persistent_improve_uses_newest_matching_comment():
     assert result is newest
     assert provider.edits[0][0] is newest
     assert provider.published == []
+    updated_body = provider.edits[0][1]
+    assert "<table>new suggestions</table>" in updated_body
+    assert ("<table>newest</table>" in updated_body) == (history_len > 0)
+    assert ("#### Previous suggestions" in updated_body) == (history_len > 0)
+    assert ("<table>previous suggestions</table>" in updated_body) == (history_len > 0)
 
 
 @pytest.mark.parametrize("edit_result", [False, RuntimeError("edit failed")])
@@ -3186,13 +3205,14 @@ async def test_no_suggestions_failure_removes_stale_progress_comment():
         restore_settings(settings_snapshot)
 
 
-def test_stateful_no_history_edit_failure_has_no_duplicate_authoritative_summary():
+@pytest.mark.parametrize("supports_state", [False, True])
+def test_no_history_edit_failure_has_no_duplicate_authoritative_summary(supports_state):
     details = init_run_details()
     existing = _lifecycle_suggestion_comment("existing")
     provider = _LifecycleSuggestionProvider(
         [existing],
         edit_results=[False],
-        supports_state=True,
+        supports_state=supports_state,
     )
 
     result = PRCodeSuggestions.publish_persistent_comment_with_history(

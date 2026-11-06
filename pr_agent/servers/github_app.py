@@ -14,7 +14,7 @@ from starlette_context.middleware import RawContextMiddleware
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
-from pr_agent.algo.setting_utils import normalize_setting_list
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
@@ -307,7 +307,7 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
     # we need to apply the repo settings to get the correct settings for the PR.
     # This is quite expensive - a call to the git provider is made for each PR event.
     apply_repo_settings(api_url)
-    if not get_settings().github_app.handle_push_trigger:
+    if not _as_bool_setting(get_settings().github_app.handle_push_trigger):
         return {}
     if get_settings().github_app.push_trigger_ignore_bot_commits and body.get("sender", {}).get("type") == "Bot":
         get_logger().info(f"Skipping {event}: bot commit detected")

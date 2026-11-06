@@ -5,12 +5,15 @@ sidebar_position: 7
 
 The `[push_outputs]` feature routes finished tool output to external sinks — stdout, a JSONL file, a
 generic webhook, Slack, Telegram, or Microsoft Teams — without calling git-provider APIs. It is disabled by default, and is
-additive to normal publishing: when a tool finishes, the same result that is posted as a PR comment
-is also emitted to the configured sinks.
+additive to normal publishing: when a tool finishes, its structured result and rendered Markdown
+are also emitted to the configured sinks. An effective `config.publish_output = false` disables both normal publishing
+and these sinks. Plain-diff mode forces publishing on to preserve stdout/file output; set
+`push_outputs.enable = false` in the host configuration to disable its extra sinks.
 
 ## What gets pushed
 
-Each finished tool run emits one record. The tools that currently emit are:
+Each finished tool run that produces output emits one record when publishing and the sinks are enabled.
+The tools that currently emit are:
 
 | Tool | `type` in the record |
 |---|---|

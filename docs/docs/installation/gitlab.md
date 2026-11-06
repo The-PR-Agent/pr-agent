@@ -148,6 +148,7 @@ For all supported filters, see [Ignoring automatic commands in PRs](../usage-gui
 
    ```bash
    git clone https://github.com/the-pr-agent/pr-agent.git
+   cd pr-agent
    ```
 
 5. Prepare variables and secrets. Skip this step if you plan on setting these as environment variables when running the agent:
@@ -169,7 +170,7 @@ For all supported filters, see [Ignoring automatic commands in PRs](../usage-gui
    docker push <your-registry>/pr-agent:gitlab_webhook
    ```
 
-7. Set the environmental variables, the method depends on your docker runtime. Skip this step if you included your secrets/configuration directly in the Docker image.
+7. Set the environmental variables, the method depends on your docker runtime. Secrets can also be provided through a mounted `.secrets.toml` file. The supported secrets files are excluded from the Docker build context; do not bake secrets into the image.
 
    ```bash
    CONFIG__GIT_PROVIDER=gitlab

@@ -900,7 +900,7 @@ class PRCodeSuggestions:
         latest_commit_html_comment = f"<!-- {last_commit_num} -->"
         new_suggestion_table = _without_heading(pr_comment)
 
-        if max_previous_comments > 0:
+        if max_previous_comments > 0 or git_provider.supports_comment_editing():
             try:
                 comment = None
                 legacy_comment = None
@@ -926,11 +926,11 @@ class PRCodeSuggestions:
                     prev_suggestions = _comment_body(comment)
                     comment_url = git_provider.get_comment_url(comment)
 
-                    if history_header.strip() not in prev_suggestions:
-                        # no history section
+                    if max_previous_comments <= 0 or history_header.strip() not in prev_suggestions:
+                        # Replace the current table when history is disabled, or start a history section.
                         # extract everything between <table> and </table> in comment.body including <table> and </table>
                         table_index = prev_suggestions.find("<table>")
-                        if table_index == -1:
+                        if max_previous_comments <= 0 or table_index == -1:
                             pr_comment_updated = _with_identity(
                                 f"{initial_header}\n\n{latest_commit_html_comment}\n\n"
                                 f"{new_suggestion_table}\n\n"

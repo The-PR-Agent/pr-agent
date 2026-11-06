@@ -40,6 +40,7 @@ from pr_agent.algo.pr_processing import (
     get_pr_diff,
     get_pr_multi_diffs,
     retry_with_fallback_models,
+    run_diff_preparation,
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
@@ -950,7 +951,7 @@ class PRReviewer:
             diff_kwargs["output_token_reserve"] = output_token_reserve
         if chunking_enabled:
             diff_kwargs["return_prepared"] = True
-        output = get_pr_diff(self.git_provider, self.token_handler, model, **diff_kwargs)
+        output = await run_diff_preparation(get_pr_diff, self.git_provider, self.token_handler, model, **diff_kwargs)
         if isinstance(output, PreparedPRDiff):
             self.patches_diff = output.diff
             self.remaining_files_list = output.remaining_files_list

@@ -62,7 +62,7 @@ stages:
 ```
 
 This script will run PR-Agent on every new merge request, with the `improve`, `review`, and `describe` commands.
-Note that you need to export the `azure_devops__pat` and `OPENAI_KEY` variables in the Azure DevOps pipeline settings (Pipelines -> Library -> + Variable group):
+Note that you need to add the `azure_devops_pat` and `OPENAI_KEY` variables to the `pr_agent` variable group in the Azure DevOps pipeline settings (Pipelines -> Library -> + Variable group). The pipeline maps `azure_devops_pat` to the `azure_devops__pat` environment variable:
 
 <img src="/img/azure_devops_pipeline_secrets.png" alt="PR-Agent" width="468" />
 

@@ -428,7 +428,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                     # the draft was already getting feedback, so only the push half of this update is new
                     if (object_attributes.get('oldrev')
                             and normalize_setting_list(get_settings().get("gitlab.push_commands", {}))
-                            and get_settings().get("gitlab.handle_push_trigger", False)):
+                            and _as_bool_setting(get_settings().get("gitlab.handle_push_trigger", False))):
                         get_logger().debug(f'A push event has been received: {url}')
                         async with push_trigger_slot(url, allow_backlog=True, ttl=300) as proceed:
                             if proceed:
@@ -446,7 +446,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 apply_repo_settings(url)
 
                 commands_on_push = normalize_setting_list(get_settings().get("gitlab.push_commands", {}))
-                handle_push_trigger = get_settings().get("gitlab.handle_push_trigger", False)
+                handle_push_trigger = _as_bool_setting(get_settings().get("gitlab.handle_push_trigger", False))
                 if not commands_on_push or not handle_push_trigger:
                     get_logger().info("Push event, but no push commands found or push trigger is disabled")
                     return

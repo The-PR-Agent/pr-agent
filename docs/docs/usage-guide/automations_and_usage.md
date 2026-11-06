@@ -419,7 +419,7 @@ pr_commands = [
 ]
 ```
 
-Note that we set specifically for bitbucket, we recommend using: `--pr_code_suggestions.suggestions_score_threshold=7` and that is the default value we set for bitbucket.
+For Bitbucket, we recommend using: `--pr_code_suggestions.suggestions_score_threshold=7`. The shipped default value is `1`; Bitbucket does not override it automatically.
 Since this platform only supports inline code suggestions, we want to limit the number of suggestions, and only present a limited number.
 
 To enable BitBucket app to respond to each **push** to the PR, set (for example):

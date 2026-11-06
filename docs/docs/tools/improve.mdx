@@ -120,7 +120,6 @@ The table format offers several key advantages:
 - **Quick overview and prioritization**: Enables quick review of one-liner summaries, impact levels, and easy prioritization
 - **High-level suggestions**: High-level suggestions that aren't tied to specific code chunks are presented only in the table mode
 - **Centralized tracking**: Shows suggestion implementation status in one place
-- **IDE integration**: Allows applying suggestions directly in your IDE via the CLI tool
 
 Table mode is the default of PR-Agent, and is recommended approach for most users due to these benefits.
 
@@ -427,6 +426,12 @@ for the authoritative default values.
   <tr>
     <td><b>persistent_comment</b></td>
     <td>If set to true, the improve comment will be persistent, meaning that every new improve request will edit the previous one.</td>
+  </tr>
+  <tr>
+    <td><b>max_history_len</b></td>
+    <td>Maximum number of previous suggestion sets to retain in a persistent summary. Non-positive values keep only the latest
+    suggestions, updating the same comment when the provider supports comment editing. Lowering a positive limit does not
+    shrink an existing history; use 0 for an update to clear it before choosing a new positive limit. Default is 4.</td>
   </tr>
   <tr>
     <td><b>suggestions_score_threshold</b></td>

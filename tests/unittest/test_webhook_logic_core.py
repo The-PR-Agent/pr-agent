@@ -71,7 +71,10 @@ class _StubRequest:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("event_key", ["pr:from_ref_updated", "repo:refs_changed"])
 @pytest.mark.parametrize("proceed", [True, False])
-async def test_bitbucket_server_handle_webhook_accepts_push_trigger_event_keys(event_key, proceed, monkeypatch):
+@pytest.mark.parametrize("trigger_enabled", [True, "false"])
+async def test_bitbucket_server_handle_webhook_accepts_push_trigger_event_keys(
+    event_key, proceed, trigger_enabled, monkeypatch
+):
     # Regression test: "pr:from_ref_updated" used to be excluded from this branch and
     # fell through to the "Unsupported event" 400 response instead of running push commands.
     settings = get_settings()
@@ -79,7 +82,7 @@ async def test_bitbucket_server_handle_webhook_accepts_push_trigger_event_keys(e
     original_handle_push_trigger = settings.get("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER", None)
     original_url = settings.get("BITBUCKET_SERVER.URL", None)
     settings.set("BITBUCKET_SERVER.WEBHOOK_SECRET", "test-webhook-secret")
-    settings.set("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER", True)
+    settings.set("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER", trigger_enabled)
     settings.set("BITBUCKET_SERVER.URL", "https://bitbucket.example.com")
 
     monkeypatch.setattr(bitbucket_server_webhook, "apply_repo_settings", lambda url: None)
@@ -121,6 +124,12 @@ async def test_bitbucket_server_handle_webhook_accepts_push_trigger_event_keys(e
         settings.set("BITBUCKET_SERVER.URL", original_url)
 
     assert response.status_code == 200
+    if trigger_enabled == "false":
+        assert json.loads(response.body)["message"] == "PR ignored due to push trigger not enabled"
+        assert not background_tasks.tasks
+        assert not slots
+        assert not commands
+        return
     assert json.loads(response.body)["message"] == "success"
     assert len(background_tasks.tasks) == 1
     expected_url = "https://bitbucket.example.com/projects/PROJ/repos/repo/pull-requests/7"
@@ -717,12 +726,12 @@ async def test_gitea_automatic_feedback_stops_after_invalid_command(monkeypatch)
     assert agent.commands == []
 
 
-async def _run_gitlab_pr_commands(module, monkeypatch, draft, repo_setting, event="open"):
+async def _run_gitlab_pr_commands(module, monkeypatch, draft, repo_setting, event="open", handle_push_trigger=True):
     settings = get_settings()
     original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
     settings.set("GITLAB.PR_COMMANDS", ["/review"])
     settings.set("GITLAB.PUSH_COMMANDS", ["/review"])
-    settings.set("GITLAB.HANDLE_PUSH_TRIGGER", True)
+    settings.set("GITLAB.HANDLE_PUSH_TRIGGER", handle_push_trigger)
     # Prove repo settings are applied before draft filtering.
     settings.set("GITLAB.FEEDBACK_ON_DRAFT_PR", not repo_setting)
 
@@ -783,11 +792,18 @@ async def test_gitlab_push_uses_shared_dedupe_slot(gitlab_webhook_module, monkey
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("feedback_on_draft_pr", [True, False])
-async def test_gitlab_draft_ready_with_new_commits(gitlab_webhook_module, monkeypatch, feedback_on_draft_pr):
+@pytest.mark.parametrize("feedback_on_draft_pr, handle_push_trigger, expected_commands, expect_slot", [
+    (True, True, [["/review"]], True),
+    (True, "false", [], False),
+    (False, True, [["/review"]], False),
+])
+async def test_gitlab_draft_ready_with_new_commits(
+    gitlab_webhook_module, monkeypatch, feedback_on_draft_pr, handle_push_trigger, expected_commands, expect_slot
+):
     # One update clears the draft flag and carries commits. With draft feedback already on,
     # the review has been running all along and only the push half is new, so it takes the
     # push path through the dedupe slot instead of returning at the guard.
+    # With push handling disabled, neither commands nor a dedupe slot should run.
     slots = []
 
     @asynccontextmanager
@@ -799,11 +815,12 @@ async def test_gitlab_draft_ready_with_new_commits(gitlab_webhook_module, monkey
     commands, _ = await _run_gitlab_pr_commands(
         gitlab_webhook_module, monkeypatch, draft=False,
         repo_setting=feedback_on_draft_pr, event="draft_ready_push",
+        handle_push_trigger=handle_push_trigger,
     )
 
-    assert commands == [["/review"]]
+    assert commands == expected_commands
     expected_slots = [("https://gitlab.com/org/repo/-/merge_requests/1", {"allow_backlog": True, "ttl": 300})]
-    assert slots == (expected_slots if feedback_on_draft_pr else [])
+    assert slots == (expected_slots if expect_slot else [])
 
 
 @pytest.mark.asyncio
@@ -890,6 +907,7 @@ async def test_gitea_push_applies_repo_settings_before_effective_gate(monkeypatc
     ("repo_trigger", "repo_commands"),
     [
         (False, ["/review"]),
+        ("false", ["/review"]),
         (True, []),
     ],
 )
@@ -1348,6 +1366,21 @@ async def _run_gitlab_update(module, monkeypatch, *, oldrev, draft_ready, handle
 
     assert response.status_code == 200
     return agent.commands
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handle_push_trigger, expected", [
+    (False, []), ("false", []), ("off", []), ("0", []),
+    (True, [["/describe"]]), ("true", [["/describe"]]),
+])
+async def test_gitlab_push_trigger_parses_boolean_settings(
+    gitlab_webhook_module, monkeypatch, handle_push_trigger, expected
+):
+    commands = await _run_gitlab_update(
+        gitlab_webhook_module, monkeypatch, oldrev=True, draft_ready=False,
+        handle_push_trigger=handle_push_trigger,
+    )
+    assert commands == expected
 
 
 @pytest.mark.asyncio

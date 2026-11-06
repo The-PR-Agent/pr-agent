@@ -87,7 +87,7 @@ OPENAI__KEY="<your key>"
 Then, you can run `pr_agent` using Docker with the following command:
 
 ```shell
-docker run --rm -it --env-file .env pragent/pr-agent:latest <tool> <tool parameter>
+docker run --rm -it --env-file .env pragent/pr-agent:latest --pr_url <pr_url> <tool> <tool parameter>
 ```
 
 ---
@@ -124,11 +124,11 @@ from pr_agent.config_loader import get_settings
 
 def main():
     # Fill in the following values
-    provider = "github" # github/gitlab/bitbucket/azure_devops
+    provider = "github" # github/gitlab/bitbucket/azure
     user_token = "..."  #  user token
     openai_key = "..."  # OpenAI key
     pr_url = "..."      # PR URL, for example 'https://github.com/the-pr-agent/pr-agent/pull/809'
-    command = "/review" # Command to run (e.g. '/review', '/describe', '/ask="What is the purpose of this PR?"', ...)
+    command = "/review" # Command to run (e.g. '/review', '/describe', '/ask "What is the purpose of this PR?"', ...)
 
     # Setting the configurations
     get_settings().set("CONFIG.git_provider", provider)
@@ -142,6 +142,8 @@ def main():
 if __name__ == '__main__':
     raise SystemExit(main())
 ```
+
+For other providers, change `provider` to its provider ID (for example, `gitlab`, `bitbucket`, or `azure`) and replace `github.user_token` with that provider's required credentials and connection settings.
 
 With `config.propagate_tool_errors` enabled, forwarding the return value through `SystemExit` makes this script exit with status 1 after a propagated tool error. The default remains status 0.
 

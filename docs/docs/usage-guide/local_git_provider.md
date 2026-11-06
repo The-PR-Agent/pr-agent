@@ -71,13 +71,20 @@ The local provider writes these files instead of publishing the result to a host
 
 ## Custom output paths
 
-Set paths in the configuration used by the run, for example in the repository root `.pr_agent.toml`:
+Set paths in a trusted, operator-controlled configuration file outside the repository under review, for example `$HOME/.config/pr-agent/local.toml`:
 
 ```toml
 [local]
 review_path = "artifacts/review.md"
 description_path = "artifacts/description.md"
 improve_path = "artifacts/improve.md"
+```
+
+The local provider does not automatically load the repository's `.pr_agent.toml`. `--extra_config_url` loads trusted host configuration without the repository-settings filter, so do not point it at a file from an untrusted PR checkout. Pass your operator-controlled file before the command:
+
+```bash
+CONFIG__GIT_PROVIDER=local \
+python -m pr_agent.cli --pr_url main --extra_config_url "$HOME/.config/pr-agent/local.toml" review
 ```
 
 When using relative custom paths, run PR-Agent from the repository root as shown above.
