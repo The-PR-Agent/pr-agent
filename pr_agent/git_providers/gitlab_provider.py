@@ -8,6 +8,10 @@ import urllib.parse
 from bisect import bisect_left
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from http.client import HTTPException
+from socket import SHUT_RDWR
+from threading import Event, Lock, Timer
+from time import monotonic
 from types import SimpleNamespace
 from urllib.parse import quote, urlparse
 
@@ -20,6 +24,7 @@ from gitlab import (
     GitlabUpdateError,
 )
 from requests.exceptions import RequestException
+from urllib3.exceptions import HTTPError
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.setting_utils import _as_bool_setting
@@ -90,6 +95,24 @@ class GitLabDiffNotReadyError(IncompleteGitLabDiffError):
 # counts and mid-collection metadata movement fail immediately.
 _DIFF_READY_RETRY_DELAYS = (2, 5, 10)
 _diff_ready_sleep = time.sleep
+
+# Keep requests small: GitLab limits multi-blob GraphQL responses to 20 MB.
+# The wall-clock budget is best-effort while Requests waits for response headers.
+_GRAPHQL_CONTENT_BATCH = 10
+_GRAPHQL_CONTENT_MIN_READS = 8
+_GRAPHQL_CONTENT_TIME_BUDGET = 5.0
+_GRAPHQL_CONTENT_MAX_BODY_BYTES = 20 * 1024 * 1024
+_GRAPHQL_CONTENT_QUERY = """
+query($project: ID!, $ref: String!, $paths: [String!]!) {
+  project(fullPath: $project) {
+    repository {
+      blobs(paths: $paths, ref: $ref) {
+        nodes { path oid mode rawTextBlob }
+      }
+    }
+  }
+}
+"""
 
 
 def _neutralize_gitlab_mentions(text: str) -> str:
@@ -1245,6 +1268,160 @@ class GitLabProvider(GitProvider):
             get_logger().warning(f"Error retrieving file {file_path} from branch {branch}: {e}")
             return ''
 
+    def _prefetch_diff_file_contents(self, diffs: list[dict], base_sha: str, head_sha: str) -> dict:
+        """Read ordinary changed files in batches, leaving every unverified result to REST."""
+        if len(diffs) < 4 or "/" not in str(self.id_project) or not base_sha or not head_sha:
+            return {}
+
+        reads = []
+        valid_count = 0
+        for diff in diffs:
+            if not is_valid_file(diff['new_path']):
+                continue
+            valid_count += 1
+            if valid_count >= MAX_FILES_ALLOWED_FULL:
+                break
+            if not diff['diff'] or diff.get("_submodule_child"):
+                continue
+            if not diff['new_file']:
+                reads.append((base_sha, diff['old_path']))
+            if not diff['deleted_file']:
+                reads.append((head_sha, diff['new_path']))
+
+        if len(reads) < _GRAPHQL_CONTENT_MIN_READS:
+            return {}
+
+        paths_by_ref = {}
+        for ref, path in dict.fromkeys(reads):
+            paths_by_ref.setdefault(ref, []).append(path)
+
+        content_by_revision = {}
+        deadline = monotonic() + _GRAPHQL_CONTENT_TIME_BUDGET
+        for ref, paths in paths_by_ref.items():
+            for start in range(0, len(paths), _GRAPHQL_CONTENT_BATCH):
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    return content_by_revision
+                batch = paths[start:start + _GRAPHQL_CONTENT_BATCH]
+                try:
+                    response = self.gl.http_request(
+                        "post", f"{self.gl.url.rstrip('/')}/api/graphql",
+                        post_data={"query": _GRAPHQL_CONTENT_QUERY,
+                                   "variables": {"project": str(self.id_project), "ref": ref, "paths": batch}},
+                        timeout=min(get_http_request_timeout(), remaining),
+                        obey_rate_limit=False, retry_transient_errors=False, max_retries=0, streamed=True,
+                    )
+                    fully_read = False
+                    try:
+                        response_socket = getattr(getattr(response.raw, "connection", None), "sock", None)
+                        if response_socket is None:
+                            return content_by_revision
+                        original_release = getattr(response.raw, "release_conn", None)
+                        if not callable(original_release):
+                            return content_by_revision
+                        watchdog_lock = Lock()
+                        watchdog_done = Event()
+
+                        def release_after_watchdog(original=original_release, lock=watchdog_lock,
+                                                   done=watchdog_done):
+                            with lock:
+                                done.set()
+                                original()
+
+                        # Never return a socket to the shared pool while its watchdog may still close it.
+                        response.raw.release_conn = release_after_watchdog
+
+                        def abort_stalled_read(lock=watchdog_lock, done=watchdog_done,
+                                               raw=response.raw, sock=response_socket):
+                            with lock:
+                                if done.is_set() or getattr(raw, "connection", None) is None:
+                                    return
+                                try:
+                                    sock.shutdown(SHUT_RDWR)
+                                except OSError:
+                                    return  # The peer may have already closed this socket.
+
+                        watchdog = Timer(max(0, deadline - monotonic()), abort_stalled_read)
+                        watchdog.daemon = True
+                        body = bytearray()
+                        oversized = False
+                        started = False
+                        try:
+                            watchdog.start()
+                            started = True
+                            while (read_remaining := deadline - monotonic()) > 0:
+                                with watchdog_lock:
+                                    if not watchdog_done.is_set():
+                                        response_socket.settimeout(min(get_http_request_timeout(), read_remaining))
+                                # read1 returns available bytes without waiting for a full-sized chunk.
+                                chunk = response.raw.read1(65536, decode_content=True)
+                                if not chunk:
+                                    fully_read = True
+                                    break
+                                if len(body) + len(chunk) > _GRAPHQL_CONTENT_MAX_BODY_BYTES:
+                                    get_logger().info(
+                                        "GitLab blob prefetch response too large; skipping this batch"
+                                    )
+                                    oversized = True
+                                    break
+                                body.extend(chunk)
+                        finally:
+                            with watchdog_lock:
+                                watchdog_done.set()
+                            watchdog.cancel()
+                            if started:
+                                watchdog.join(timeout=1.0)
+                            response.raw.release_conn = original_release
+                        if oversized:
+                            continue
+                        if monotonic() >= deadline:
+                            get_logger().info("GitLab blob prefetch time budget exhausted; using individual file reads")
+                            return content_by_revision
+                        response_data = json.loads(body)
+                    finally:
+                        if not fully_read:
+                            response.close()
+                except (GitlabError, RequestException, HTTPError, HTTPException, ValueError, AttributeError,
+                        TypeError, OSError, RuntimeError) as error:
+                    get_logger().info(
+                        f"GitLab blob prefetch unavailable ({type(error).__name__}); using individual file reads"
+                    )
+                    return content_by_revision
+
+                if not isinstance(response_data, dict) or response_data.get("errors"):
+                    get_logger().info("GitLab blob prefetch returned errors; using individual file reads")
+                    return content_by_revision
+                data = response_data.get("data")
+                project = data.get("project") if isinstance(data, dict) else None
+                repository = project.get("repository") if isinstance(project, dict) else None
+                blobs = repository.get("blobs") if isinstance(repository, dict) else None
+                nodes = blobs.get("nodes") if isinstance(blobs, dict) else None
+                if not isinstance(nodes, list):
+                    get_logger().info(
+                        "GitLab blob prefetch returned an unexpected response; using individual file reads"
+                    )
+                    return content_by_revision
+
+                wanted = set(batch)
+                for blob in nodes:
+                    if not isinstance(blob, dict) or not isinstance(blob.get("path"), str):
+                        continue
+                    if blob["path"] not in wanted:
+                        continue
+                    if blob.get("mode") not in ("100644", "100755"):
+                        continue  # Only ordinary files can bypass the REST path.
+                    content, oid = blob.get("rawTextBlob"), blob.get("oid")
+                    if not isinstance(content, str) or not isinstance(oid, str):
+                        continue
+                    try:
+                        data = content.encode("utf-8")
+                        digest = hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
+                    except (UnicodeEncodeError, ValueError, TypeError):
+                        continue
+                    if digest == oid:
+                        content_by_revision[(ref, blob["path"])] = content
+        return content_by_revision
+
     def get_pr_file_content_snapshot(self, file_path: str, branch: str) -> FileContentSnapshot:
         try:
             file_obj = self.gl.projects.get(self.id_project, lazy=True).files.get(file_path, branch)
@@ -1379,6 +1556,16 @@ class GitLabProvider(GitProvider):
                 # Keep logging best-effort: a diff entry without a path must not stop diff collection.
                 pass
 
+        prefetched = (
+            self._prefetch_diff_file_contents(diffs, base_sha_for_content, head_sha_for_content)
+            if not incremental_active else {}
+        )
+
+        def read_content(path, ref, **options):
+            # Missing patches require strict REST reads even if another entry used the same path.
+            cached = prefetched.get((ref, path)) if not options else None
+            return cached if cached is not None else self.get_pr_file_content(path, ref, **options)
+
         diff_files = []
         invalid_files_names = []
         counter_valid = 0
@@ -1406,12 +1593,12 @@ class GitLabProvider(GitProvider):
                     original_file_content_str = (
                         ''
                         if not incremental_active and diff['new_file']
-                        else self.get_pr_file_content(diff['old_path'], base_sha_for_content, **old_options)
+                        else read_content(diff['old_path'], base_sha_for_content, **old_options)
                     )
                     new_file_content_str = (
                         ''
                         if not incremental_active and diff['deleted_file']
-                        else self.get_pr_file_content(diff['new_path'], head_sha_for_content, **new_options)
+                        else read_content(diff['new_path'], head_sha_for_content, **new_options)
                     )
                 except Exception as e:
                     if diff['diff']:
