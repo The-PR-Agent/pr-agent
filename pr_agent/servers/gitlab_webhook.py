@@ -45,6 +45,16 @@ router = APIRouter()
 NEW_MR_LOOKUP_RETRY_DELAYS = (1, 2, 4)
 
 
+def _revoke_auto_approval_after_push(api_url: str) -> None:
+    try:
+        provider = get_git_provider_with_context(pr_url=api_url)
+        revoke = getattr(provider, "revoke_auto_approval", None)
+        if callable(revoke):
+            revoke()
+    except Exception as error:
+        get_logger().warning(f"Failed to revoke approval after a push, error: {error}")
+
+
 # Validated at import so a typo in CONFIG.SECRET_PROVIDER still fails at startup. The
 # client itself is deliberately not built here - see get_fork_safe_secret_provider.
 validate_secret_provider_setting()
@@ -400,6 +410,8 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 get_logger().info(f"Draft MR is ready: {url}")
 
                 apply_repo_settings(url)
+                if object_attributes.get("oldrev"):
+                    _revoke_auto_approval_after_push(url)
                 if get_settings().get("gitlab.feedback_on_draft_pr", False):
                     # the draft was already getting feedback, so only the push half of this update is new
                     if (object_attributes.get('oldrev')
@@ -420,6 +432,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 get_logger().info(f"New merge request: {url}")
                 # Apply repo settings before checking push commands or handle_push_trigger
                 apply_repo_settings(url)
+                _revoke_auto_approval_after_push(url)
 
                 commands_on_push = normalize_setting_list(get_settings().get("gitlab.push_commands", {}))
                 handle_push_trigger = get_settings().get("gitlab.handle_push_trigger", False)

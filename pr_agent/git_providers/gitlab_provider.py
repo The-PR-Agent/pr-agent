@@ -1528,6 +1528,41 @@ class GitLabProvider(GitProvider):
             get_logger().exception(f"Could not get head SHA: {e}")
             return ""
 
+    def _refresh_mr_head_sha(self) -> str:
+        try:
+            self.mr.refresh()
+            diff_refs = getattr(self.mr, "diff_refs", None)
+            head_sha = diff_refs.get("head_sha") if isinstance(diff_refs, dict) else None
+            return head_sha if isinstance(head_sha, str) else ""
+        except (GitlabError, RequestException, AttributeError) as e:
+            get_logger().exception(f"Could not refresh merge request head SHA: {e}")
+            return ""
+
+    def auto_approve(self, reviewed_sha: str | None = None) -> bool:
+        if not isinstance(reviewed_sha, str) or not reviewed_sha:
+            return False
+        if self._refresh_mr_head_sha() != reviewed_sha:
+            get_logger().info("Skipping auto-approval because the merge request head changed during review")
+            return False
+        try:
+            self.mr.approve(sha=reviewed_sha)
+            if self._refresh_mr_head_sha() != reviewed_sha:
+                self.mr.unapprove()
+                get_logger().info("Revoked auto-approval because the merge request head changed during review")
+                return False
+            return True
+        except (GitlabError, RequestException, AttributeError) as e:
+            get_logger().exception(f"Failed to auto-approve, error: {e}")
+            return False
+
+    def revoke_auto_approval(self) -> bool:
+        try:
+            self.mr.unapprove()
+            return True
+        except (GitlabError, RequestException, AttributeError) as e:
+            get_logger().exception(f"Failed to revoke auto-approval, error: {e}")
+            return False
+
     def get_pr_identity(self) -> dict:
         repo = getattr(self, "id_project", None)
         repo = repo if isinstance(repo, str) else ("" if repo is None else str(repo))

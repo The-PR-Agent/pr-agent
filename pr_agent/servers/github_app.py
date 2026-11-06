@@ -307,6 +307,13 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
     # we need to apply the repo settings to get the correct settings for the PR.
     # This is quite expensive - a call to the git provider is made for each PR event.
     apply_repo_settings(api_url)
+    try:
+        provider = get_git_provider_with_context(pr_url=api_url)
+        revoke = getattr(provider, "revoke_auto_approval", None)
+        if callable(revoke):
+            revoke()
+    except Exception as error:
+        get_logger().warning(f"Failed to revoke approval after a push, error: {error}")
     if not get_settings().github_app.handle_push_trigger:
         return {}
     if get_settings().github_app.push_trigger_ignore_bot_commits and body.get("sender", {}).get("type") == "Bot":

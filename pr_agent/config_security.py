@@ -23,6 +23,7 @@
 # bedrock: guardrail settings are host-only so a repository cannot disable or swap the guardrail.
 # custom_labels and config.enable_custom_labels are host-only because every configured custom label
 # is treated as PR-Agent-owned and may be removed when it is absent from the generated label set.
+# config.enable_auto_approval is host-only because it submits authenticated approvals on behalf of the host.
 REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
     "skills": frozenset({"enabled", "max_skills_tokens"}),
     "push_outputs": frozenset(),
@@ -106,6 +107,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "config": frozenset({
         "extra_config_url",
         "description_issue_regex",
+        "enable_auto_approval",
         "enable_custom_labels",
         "global_settings_repo",
         "use_group_settings_file",
@@ -156,10 +158,12 @@ def should_skip_config_key(section: str, key: str, skip_keys=()) -> bool:
 # GitHub Action. The runner reads it after the command has applied its arguments, so a comment
 # such as `/review --github_action_config.fail_on_tool_errors=false` could turn a failed review
 # into a green workflow; the workflow's operator sets it instead.
+# config.enable_auto_approval submits an authenticated approval and may only be set by the operator.
 CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "config": frozenset({
         "branch_issue_regex",
         "ai_timeout",
+        "enable_auto_approval",
         "enable_custom_labels",
         "fallback_models",
         "num_retries",

@@ -2566,14 +2566,49 @@ class GithubProvider(GitProvider):
 
         return sub_issues
 
-    def auto_approve(self) -> bool:
-        try:
-            res = self.pr.create_review(event="APPROVE")
-            if res.state == "APPROVED":
-                return True
+    def auto_approve(self, reviewed_sha: str | None = None) -> bool:
+        if not isinstance(reviewed_sha, str) or not reviewed_sha:
             return False
+        if not self._agent_login():
+            get_logger().warning("Cannot auto-approve without a verified GitHub login")
+            return False
+        try:
+            self.pr.update()
+            if self.get_pr_head_sha() != reviewed_sha:
+                get_logger().info("Skipping auto-approval because the pull request head changed during review")
+                return False
+            commit = self._get_repo().get_commit(reviewed_sha)
+            review = self.pr.create_review(commit=commit, event="APPROVE")
+            if review.state != "APPROVED":
+                return False
+            self.pr.update()
+            if self.get_pr_head_sha() != reviewed_sha:
+                review.dismiss("PR-Agent approval dismissed because the pull request head changed during review.")
+                get_logger().info("Dismissed auto-approval because the pull request head changed during review")
+                return False
+            return True
         except (GithubException, RequestException, AttributeError) as e:
             get_logger().exception(f"Failed to auto-approve, error: {e}")
+            return False
+
+    def revoke_auto_approval(self) -> bool:
+        agent_login = self._agent_login()
+        if not agent_login:
+            return False
+        dismissed = False
+        try:
+            for review in self.pr.get_reviews():
+                author = getattr(getattr(review, "user", None), "login", "")
+                if (
+                    getattr(review, "state", None) == "APPROVED"
+                    and isinstance(author, str)
+                    and author.casefold() == agent_login.casefold()
+                ):
+                    review.dismiss("PR-Agent approval dismissed because the pull request head changed.")
+                    dismissed = True
+            return dismissed
+        except (GithubException, RequestException, AttributeError) as e:
+            get_logger().exception(f"Failed to revoke auto-approval, error: {e}")
             return False
 
     def get_head_ci_status(self, sha: str | None = None) -> str | None:

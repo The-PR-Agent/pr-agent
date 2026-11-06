@@ -20,7 +20,6 @@ from pr_agent.algo.comment_identity import (
 )
 from pr_agent.algo.deterministic_risk import build_risk_checks
 from pr_agent.algo.i18n import t
-from pr_agent.algo.merge_verdict import compute_merge_verdict
 from pr_agent.algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
     InlineCommentStore,
@@ -31,6 +30,7 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_location_fingerprint,
     strip_markers,
 )
+from pr_agent.algo.merge_verdict import compute_merge_verdict
 from pr_agent.algo.output_models import PRReview, parse_failure_modes
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
@@ -340,7 +340,10 @@ class PRReviewer:
         self._progress_response = None
         self._chunk_progress = None
         self._structured_review_data = None
+        self._reviewed_head_sha = ""
         try:
+            reviewed_sha = self.git_provider.get_pr_head_sha()
+            self._reviewed_head_sha = reviewed_sha if isinstance(reviewed_sha, str) else ""
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
                 return None
@@ -428,6 +431,9 @@ class PRReviewer:
                 if get_settings().config.publish_output:
                     reason += ": no major issues detected."
                 get_logger().info(reason)
+                self._publish_merge_verdict_check()
+                if not review_failed:
+                    self.auto_approve_logic(self._reviewed_head_sha)
                 get_settings().data = {"artifact": pr_review}
                 return
 
@@ -529,6 +535,8 @@ class PRReviewer:
                     pr_review = add_pr_review_identity(pr_review, identity_marker, self.git_provider)
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
             self._publish_merge_verdict_check()
+            if not review_failed:
+                self.auto_approve_logic(self._reviewed_head_sha)
         except Exception as e:
             review_error = e
             review_failed = True
@@ -1867,16 +1875,30 @@ class PRReviewer:
             except Exception as e:
                 get_logger().error(f"Failed to set review labels, error: {e}")
 
-    def auto_approve_logic(self):
-        """
-        Auto-approve a pull request if it meets the conditions for auto-approval.
-        """
-        if get_settings().config.enable_auto_approval:
-            is_auto_approved = self.git_provider.auto_approve()
-            if is_auto_approved:
-                get_logger().info("Auto-approved PR")
-                self.git_provider.publish_comment("Auto-approved PR")
-        else:
-            get_logger().info("Auto-approval option is disabled")
-            self.git_provider.publish_comment("Auto-approval option for PR-Agent is disabled. "
-                                              "You can enable it via a [configuration file](https://docs.pr-agent.ai/usage-guide/configuration_reference/#config)")
+    def auto_approve_logic(self, reviewed_sha: str) -> bool:
+        """Approve only a complete, clean verdict on the exact head reviewed."""
+        settings = get_settings()
+        if not settings.config.get("enable_auto_approval", False):
+            return False
+        verdict = getattr(self, "_computed_merge_verdict", None)
+        if not isinstance(verdict, dict) or verdict.get("recommendation") != "no_concerns_found":
+            return False
+        if (
+            not reviewed_sha
+            or getattr(self, "review_failed_chunk_count", 0) > 0
+            or getattr(self, "_review_state_blocked", False)
+            or getattr(getattr(self, "incremental", None), "is_incremental", False)
+        ):
+            return False
+        approve = getattr(self.git_provider, "auto_approve", None)
+        if not callable(approve):
+            return False
+        try:
+            if approve(reviewed_sha) is True:
+                get_logger().info("Auto-approved the reviewed head SHA")
+                if settings.config.publish_output:
+                    self.git_provider.publish_comment("Auto-approved PR")
+                return True
+        except Exception as error:
+            get_logger().warning(f"Failed to auto-approve the reviewed head SHA, error: {error}")
+        return False
