@@ -432,6 +432,12 @@ def test_gitlab_ci_status_fallback_to_pipelines_list():
     assert provider.get_head_ci_status() == "passed"
 
 
+def test_gitlab_ci_status_none_when_pipeline_list_fails():
+    provider = _make_gitlab_provider(head_pipeline=None)
+    provider.mr.pipelines = SimpleNamespace(list=MagicMock(side_effect=RuntimeError("boom")))
+    assert provider.get_head_ci_status() == "none"
+
+
 # ---------------------------------------------------------------------------
 # 7. GitLabProvider.is_head_stale_against_base
 # ---------------------------------------------------------------------------
@@ -468,6 +474,36 @@ def test_gitlab_staleness_returns_true_when_target_branch_touches_pr_file():
     provider.gl.projects.get.return_value = proj_mock
 
     assert provider.is_head_stale_against_base() is True
+
+
+def test_gitlab_staleness_none_when_commit_date_lookup_fails():
+    provider = _make_gitlab_provider(head_pipeline=None)
+    provider.mr.target_branch = "main"
+    provider.get_diff_files = lambda: [SimpleNamespace(filename="app/main.py")]
+    provider.get_pr_head_sha = lambda: "glhead123"
+
+    proj_mock = MagicMock()
+    proj_mock.commits.get.side_effect = RuntimeError("boom")
+    provider.gl.projects.get.return_value = proj_mock
+
+    assert provider.is_head_stale_against_base() is None
+
+
+def test_gitlab_staleness_none_when_commit_diff_fails():
+    now_iso = "2026-01-01T12:00:00Z"
+    provider = _make_gitlab_provider(head_pipeline={"status": "success", "created_at": now_iso})
+    provider.mr.target_branch = "main"
+    provider.get_diff_files = lambda: [SimpleNamespace(filename="app/main.py")]
+
+    proj_mock = MagicMock()
+    commit_stale = SimpleNamespace(
+        committed_date="2026-01-01T12:15:00Z",
+        diff=MagicMock(side_effect=RuntimeError("boom")),
+    )
+    proj_mock.commits.list.return_value = [commit_stale]
+    provider.gl.projects.get.return_value = proj_mock
+
+    assert provider.is_head_stale_against_base() is None
 
 
 # ---------------------------------------------------------------------------

@@ -1569,8 +1569,9 @@ class GitLabProvider(GitProvider):
                         if not target_sha or p_sha == target_sha:
                             pipeline = p
                             break
-                except Exception:
-                    pass
+                except Exception as e:
+                    # The pipeline list is best effort; the head pipeline above still decides.
+                    get_logger().debug(f"Could not list GitLab pipelines for MR {self.id_mr}: {e}")
 
             if pipeline is None:
                 return "none"
@@ -1636,8 +1637,9 @@ class GitLabProvider(GitProvider):
                         c_date = getattr(commit, "committed_date", None) or getattr(commit, "created_at", None)
                         if c_date:
                             ref_dt = _parse_gitlab_iso_datetime(c_date)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # Without a commit timestamp the staleness reference stays unknown.
+                        get_logger().debug(f"Could not read GitLab commit timestamp: {e}")
 
             if ref_dt is None:
                 return None
@@ -1661,8 +1663,10 @@ class GitLabProvider(GitProvider):
                         if (new_path and new_path in pr_filenames) or (old_path and old_path in pr_filenames):
                             stale = True
                             break
-                except Exception:
-                    pass
+                except Exception as e:
+                    # An unreadable commit diff means staleness cannot be decided safely.
+                    get_logger().warning(f"Could not inspect GitLab commit diff: {e}")
+                    return None
                 if stale:
                     break
             return stale
