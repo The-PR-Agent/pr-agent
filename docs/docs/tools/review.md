@@ -206,10 +206,6 @@ for the authoritative default values.
     <td>If set to true, the tool publishes a merge recommendation computed in code: no_concerns_found only when every deterministic check passes, needs_review when a check fails, and changes_required when the model vetoes the result. The review lists the checks and the model's recommendation and risk level can only lower the result, never raise it. See <a href="#merge-recommendation">Merge recommendation</a>.</td>
   </tr>
   <tr>
-    <td><b>github.publish_merge_verdict_as_check</b></td>
-    <td>If set to true, publishes the computed recommendation as a separate GitHub check on the reviewed head SHA. It requires <code>require_merge_recommendation = true</code>; its conclusion is success, neutral, or failure for no_concerns_found, needs_review, or changes_required respectively.</td>
-  </tr>
-  <tr>
     <td><b>max_changed_lines</b></td>
     <td>Changed-line cap for a no_concerns_found merge recommendation. A larger diff makes the recommendation needs_review at best. The cap counts added and removed lines.</td>
   </tr>

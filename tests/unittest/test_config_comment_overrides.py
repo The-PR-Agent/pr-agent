@@ -64,8 +64,7 @@ COMMENT_OVERRIDABLE_KEYS = {
         "handle_push_trigger", "push_commands",
     }),
     "github": frozenset({
-        "ignore_bot_pr", "polling_request_timeout", "publish_as_check_run", "publish_merge_verdict_as_check",
-        "try_fix_invalid_inline_comments",
+        "ignore_bot_pr", "polling_request_timeout", "publish_as_check_run", "try_fix_invalid_inline_comments",
     }),
     "github_app": frozenset({
         "feedback_on_draft_pr", "handle_pr_actions", "handle_push_trigger", "push_commands",

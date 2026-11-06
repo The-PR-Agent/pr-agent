@@ -1,13 +1,11 @@
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
 from pr_agent.algo import merge_verdict as mv
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.github_provider import GithubProvider
-from pr_agent.tools.pr_reviewer import PRReviewer, _with_merge_verdict
+from pr_agent.tools.pr_reviewer import _with_merge_verdict
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 CLEAN_RISK = {"has_findings": False, "sensitive_paths": [], "risky_shapes": [], "deleted_files": []}
@@ -181,48 +179,3 @@ def test_with_merge_verdict_keeps_checks_next_to_the_recommendation():
     ]
     assert updated["merge_recommendation"] == "no_concerns_found"
 
-
-@pytest.mark.parametrize(
-    ("recommendation", "conclusion"),
-    [
-        ("no_concerns_found", "success"),
-        ("needs_review", "neutral"),
-        ("changes_required", "failure"),
-    ],
-)
-def test_github_publishes_the_verdict_conclusion(recommendation, conclusion):
-    provider = GithubProvider.__new__(GithubProvider)
-    provider._upsert_check_run = MagicMock(return_value=True)
-    assert provider.publish_merge_verdict_check(recommendation) is True
-    name, body = provider._upsert_check_run.call_args.args
-    assert name == "verdict"
-    assert body["conclusion"] == conclusion
-
-
-def test_github_rejects_an_unknown_verdict():
-    provider = GithubProvider.__new__(GithubProvider)
-    provider._upsert_check_run = MagicMock(return_value=True)
-    assert provider.publish_merge_verdict_check("approve") is False
-    provider._upsert_check_run.assert_not_called()
-
-
-def test_verdict_check_is_not_published_by_default():
-    reviewer = PRReviewer.__new__(PRReviewer)
-    reviewer.git_provider = SimpleNamespace(publish_merge_verdict_check=MagicMock(return_value=True))
-    reviewer._computed_merge_verdict = {"recommendation": "no_concerns_found"}
-    assert reviewer._publish_merge_verdict_check() is False
-    reviewer.git_provider.publish_merge_verdict_check.assert_not_called()
-
-
-def test_verdict_check_publishes_the_computed_recommendation():
-    settings = get_settings()
-    snapshot = snapshot_settings(["github.publish_merge_verdict_as_check"])
-    try:
-        settings.set("github.publish_merge_verdict_as_check", True)
-        reviewer = PRReviewer.__new__(PRReviewer)
-        reviewer.git_provider = SimpleNamespace(publish_merge_verdict_check=MagicMock(return_value=True))
-        reviewer._computed_merge_verdict = {"recommendation": "changes_required"}
-        assert reviewer._publish_merge_verdict_check() is True
-        reviewer.git_provider.publish_merge_verdict_check.assert_called_once_with("changes_required")
-    finally:
-        restore_settings(snapshot)

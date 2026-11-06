@@ -1061,29 +1061,6 @@ class GithubProvider(GitProvider):
             return True
         return False
 
-    def publish_merge_verdict_check(self, recommendation: str) -> bool:
-        """Publish the computed review verdict on the exact head SHA that was reviewed."""
-        conclusions = {
-            "no_concerns_found": "success",
-            "needs_review": "neutral",
-            "changes_required": "failure",
-        }
-        conclusion = conclusions.get(recommendation)
-        if conclusion is None:
-            get_logger().warning(f"Cannot publish unsupported merge recommendation: {recommendation!r}")
-            return False
-        return self._upsert_check_run(
-            "verdict",
-            {
-                "status": "completed",
-                "conclusion": conclusion,
-                "output": {
-                    "title": "PR Agent Merge Verdict",
-                    "summary": recommendation,
-                },
-            },
-        )
-
     def start_check_run(self, name: str, summary: str) -> bool:
         """Open the tool's check run as in_progress before it has any output to publish.
 

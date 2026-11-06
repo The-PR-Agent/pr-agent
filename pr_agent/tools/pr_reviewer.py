@@ -528,7 +528,6 @@ class PRReviewer:
                     )
                     pr_review = add_pr_review_identity(pr_review, identity_marker, self.git_provider)
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
-            self._publish_merge_verdict_check()
         except Exception as e:
             review_error = e
             review_failed = True
@@ -635,23 +634,6 @@ class PRReviewer:
             get_logger().warning(
                 f"Failed to publish review check run, error: {error}"
             )
-            return False
-
-    def _publish_merge_verdict_check(self) -> bool:
-        settings = get_settings()
-        if not settings.github.get("publish_merge_verdict_as_check", False):
-            return False
-        if getattr(self, "review_failed_chunk_count", 0) > 0:
-            return False
-        verdict = getattr(self, "_computed_merge_verdict", None)
-        recommendation = verdict.get("recommendation") if isinstance(verdict, dict) else None
-        publisher = getattr(self.git_provider, "publish_merge_verdict_check", None)
-        if not isinstance(recommendation, str) or not callable(publisher):
-            return False
-        try:
-            return publisher(recommendation) is True
-        except Exception as error:
-            get_logger().warning(f"Failed to publish merge verdict check, error: {error}")
             return False
 
     def _review_finding_state_in_play(self) -> bool:
