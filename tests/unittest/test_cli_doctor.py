@@ -1,7 +1,9 @@
 """Preflight checks for `pr-agent doctor` (#4320)."""
 
 
+import io
 import json
+import sys
 
 import pytest
 
@@ -161,6 +163,20 @@ def test_missing_key_names_the_env_variable_and_fails(monkeypatch, cli_mode_sett
     assert cli.run(inargs=["doctor"]) == 1
     out = capsys.readouterr().out
     assert "✗ no API key for 'openai'; set OPENAI_API_KEY" in out
+
+
+def test_doctor_report_survives_stdout_that_cannot_encode(monkeypatch, cli_mode_settings):
+    # A redirected Windows stdout uses cp1252, which has no check mark characters.
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="cp1252"))
+    _install_handler(monkeypatch, key=None)
+
+    assert cli.run(inargs=["doctor"]) == 1
+    sys.stdout.flush()
+    out = raw.getvalue().decode("utf-8")
+    assert "✓ config.model = openai/gpt-4o\n" in out
+    assert "✗ no API key for 'openai'; set OPENAI_API_KEY" in out
+    assert out.endswith("2 of 3 checks passed\n")
 
 
 def test_missing_provider_key_env_vars_shared_with_the_runner(monkeypatch, cli_mode_settings):

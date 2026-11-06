@@ -9,6 +9,7 @@ additional basic settings check, without constructing sinks or probing their des
 """
 
 import os
+import sys
 
 from pr_agent.algo.ai_handlers.cloud_auth import (
     DUMMY_LITELLM_API_KEY,
@@ -276,6 +277,20 @@ async def _check_model_ping(handler: LiteLLMAIHandler, model: str) -> tuple[bool
     return True, "model completion succeeded"
 
 
+def _print_report(report: str) -> None:
+    try:
+        print(report)
+    except UnicodeEncodeError:
+        # A redirected stdout uses the locale encoding (cp1252 on Windows), which cannot
+        # encode the check marks; emit UTF-8 bytes instead of losing the report.
+        buffer = getattr(sys.stdout, "buffer", None)
+        if buffer is None:
+            raise
+        sys.stdout.flush()
+        buffer.write((report + "\n").encode("utf-8"))
+        buffer.flush()
+
+
 async def run_doctor_checks() -> int:
     """Run every check, print one line per check, and return the process exit code."""
     model = str(get_settings().config.get("model", "") or "")
@@ -299,6 +314,6 @@ async def run_doctor_checks() -> int:
     for ok, detail in results:
         lines.append(f"{'✓' if ok else '✗'} {detail}")
     passed = sum(1 for ok, _ in results if ok)
-    print("\n".join(lines))
-    print(f"{passed} of {len(results)} checks passed")
+    lines.append(f"{passed} of {len(results)} checks passed")
+    _print_report("\n".join(lines))
     return 0 if passed == len(results) else 1
