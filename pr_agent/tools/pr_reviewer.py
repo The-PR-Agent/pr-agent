@@ -340,6 +340,7 @@ class PRReviewer:
         self._progress_response = None
         self._chunk_progress = None
         self._structured_review_data = None
+        self._computed_merge_recommendation = None
         try:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
@@ -629,6 +630,15 @@ class PRReviewer:
         if not callable(publisher):
             return False
         try:
+            conclusion = None
+            if get_settings().github.get("publish_verdict_as_check_run", False):
+                conclusion = {
+                    "no_concerns_found": "success",
+                    "needs_review": "neutral",
+                    "changes_required": "failure",
+                }.get(getattr(self, "_computed_merge_recommendation", None))
+            if conclusion is not None:
+                return publisher(pr_review, "review", conclusion=conclusion) is True
             return publisher(pr_review, "review") is True
         except Exception as error:
             get_logger().warning(
@@ -1400,6 +1410,7 @@ class PRReviewer:
                 model_risk_level=data["review"].get("risk_level"),
                 risk_checks=risk_checks,
             )
+            self._computed_merge_recommendation = verdict["recommendation"]
             data["review"] = _with_merge_verdict(data["review"], verdict)
 
         structured_publisher = getattr(self.git_provider, "publish_structured_review", None)

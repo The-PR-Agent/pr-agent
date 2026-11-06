@@ -534,3 +534,10 @@ The review lists every check with its outcome next to the recommendation, so the
 see which one decided the verdict. Providers without CI, staleness or author support cannot
 publish `no_concerns_found`. The recommendation is advisory and does not approve or merge
 the pull request.
+
+For GitHub, set `github.publish_as_check_run = true` and
+`github.publish_verdict_as_check_run = true` to use that computed recommendation as the review
+check run conclusion. `no_concerns_found` maps to `success`, `needs_review` maps to `neutral`,
+and `changes_required` maps to `failure`. The check run is attached to the reviewed head SHA,
+so a later push has no verdict check until another review runs. This setting has no effect
+without `require_merge_recommendation = true` or when a computed recommendation is unavailable.

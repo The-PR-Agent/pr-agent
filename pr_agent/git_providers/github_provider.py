@@ -1037,7 +1037,7 @@ class GithubProvider(GitProvider):
     def _check_run_name(name: str) -> str:
         return f"PR Agent - {name.capitalize()}"
 
-    def _publish_check_run(self, text: str, name: str) -> bool:
+    def _publish_check_run(self, text: str, name: str, conclusion: str = "neutral") -> bool:
         check_run_name = self._check_run_name(name)
         summary = text.split("\n\n")[0] if "\n\n" in text else text[:200]
         summary = summary.strip(" #")
@@ -1047,7 +1047,7 @@ class GithubProvider(GitProvider):
             text = text[:max_text]
         body = {
             "status": "completed",
-            "conclusion": "neutral",
+            "conclusion": conclusion,
             "output": {
                 "title": check_run_name,
                 "summary": summary[:300],

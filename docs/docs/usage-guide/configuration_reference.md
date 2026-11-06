@@ -377,6 +377,7 @@ See [GitHub](../installation/github.md#run-as-a-github-app).
 | `try_fix_invalid_inline_comments` | true |  |
 | `ignore_bot_pr` | true |  |
 | `publish_as_check_run` | false | when true, publish review/description/improve output as GitHub Checks instead of PR comments |
+| `publish_verdict_as_check_run` | false | when true, set the review check conclusion from the computed merge recommendation |
 
 
 ## `[github_action_config]` {#github_action_config}
