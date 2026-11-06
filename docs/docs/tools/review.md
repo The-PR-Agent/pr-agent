@@ -206,6 +206,10 @@ for the authoritative default values.
     <td>If set to true, the tool publishes a merge recommendation computed in code: no_concerns_found only when every deterministic check passes, needs_review when a check fails, and changes_required when the model vetoes the result. The review lists the checks and the model's recommendation and risk level can only lower the result, never raise it. See <a href="#merge-recommendation">Merge recommendation</a>.</td>
   </tr>
   <tr>
+    <td><b>publish_merge_recommendation_status</b></td>
+    <td>If set to true with <code>require_merge_recommendation</code>, publishes the verdict as a status on the reviewed commit. GitHub uses the <code>PR Agent - Review</code> check run; GitLab uses a commit status. GitLab maps <code>needs_review</code> to <code>skipped</code> because it has no neutral state.</td>
+  </tr>
+  <tr>
     <td><b>max_changed_lines</b></td>
     <td>Changed-line cap for a no_concerns_found merge recommendation. A larger diff makes the recommendation needs_review at best. The cap counts added and removed lines.</td>
   </tr>
@@ -534,3 +538,10 @@ The review lists every check with its outcome next to the recommendation, so the
 see which one decided the verdict. Providers without CI, staleness or author support cannot
 publish `no_concerns_found`. The recommendation is advisory and does not approve or merge
 the pull request.
+
+When `publish_merge_recommendation_status` is enabled, PR-Agent publishes the verdict
+against the exact head SHA that was reviewed. GitHub uses the `PR Agent - Review` check
+run with conclusions `success`, `neutral` or `failure`. GitLab publishes a commit status
+with states `success`, `skipped` or `failed`; `skipped` represents `needs_review` because
+GitLab has no neutral commit status. A later push has no PR-Agent verdict status until
+that commit is reviewed.

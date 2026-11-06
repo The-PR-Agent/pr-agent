@@ -429,6 +429,7 @@ class PRReviewer:
                     reason += ": no major issues detected."
                 get_logger().info(reason)
                 get_settings().data = {"artifact": pr_review}
+                self._publish_merge_recommendation_status()
                 return
 
             # publish the review
@@ -544,6 +545,8 @@ class PRReviewer:
                     self.git_provider.remove_comment(progress_response)
                 except Exception as e:
                     get_logger().exception(f"Failed to remove review progress comment, error: {e}")
+            if not review_failed:
+                self._publish_merge_recommendation_status()
             if review_failed:
                 # Record the failure here, where `review_failed` is consumed: the branches above
                 # set it and go on to publish a failure comment instead of raising, so the run
@@ -569,6 +572,24 @@ class PRReviewer:
                 raise partial_review_error
             if not review_failed and self._structured_review_data is not None:
                 write_review_json_output(self._structured_review_data)
+
+    def _publish_merge_recommendation_status(self) -> None:
+        recommendation = getattr(self, "_merge_recommendation_status", None)
+        settings = get_settings()
+        if (
+            not recommendation
+            or not settings.config.publish_output
+            or not _as_bool(settings.pr_reviewer.get("publish_merge_recommendation_status", False))
+        ):
+            return
+
+        publisher = getattr(self.git_provider, "publish_merge_recommendation_status", None)
+        if not callable(publisher):
+            get_logger().warning(
+                f"Git provider does not support publishing merge recommendation status: {recommendation}"
+            )
+        elif not publisher(recommendation):
+            get_logger().warning(f"Failed to publish merge recommendation status: {recommendation}")
 
     def _review_finding_state_enabled(self) -> bool:
         settings = get_settings()
@@ -1360,6 +1381,7 @@ class PRReviewer:
         Prepare the PR review by processing the AI prediction and generating a markdown-formatted text that summarizes
         the feedback.
         """
+        self._merge_recommendation_status = None
         data = self.prediction_data if self.prediction_data is not None else self._load_review_yaml(self.prediction)
         if isinstance(data, dict) and isinstance(data.get("review"), dict):
             if not getattr(self, "vars", {}).get("require_failure_modes", False):
@@ -1400,6 +1422,7 @@ class PRReviewer:
                 model_risk_level=data["review"].get("risk_level"),
                 risk_checks=risk_checks,
             )
+            self._merge_recommendation_status = verdict["recommendation"]
             data["review"] = _with_merge_verdict(data["review"], verdict)
 
         structured_publisher = getattr(self.git_provider, "publish_structured_review", None)

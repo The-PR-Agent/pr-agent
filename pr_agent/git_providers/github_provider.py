@@ -1061,6 +1061,35 @@ class GithubProvider(GitProvider):
             return True
         return False
 
+    def publish_merge_recommendation_status(self, recommendation: str) -> bool:
+        """Publish the computed verdict as the review check's conclusion on its head SHA."""
+        conclusions = {
+            "no_concerns_found": "success",
+            "needs_review": "neutral",
+            "changes_required": "failure",
+        }
+        conclusion = conclusions.get(recommendation)
+        if conclusion is None:
+            get_logger().warning(f"Cannot publish an unknown merge recommendation: {recommendation!r}")
+            return False
+
+        check_run_name = self._check_run_name("review")
+        body = {
+            "status": "completed",
+            "conclusion": conclusion,
+            "output": {
+                "title": check_run_name,
+                "summary": f"Computed merge recommendation: {recommendation}",
+            },
+        }
+        update_body = {"status": "completed", "conclusion": conclusion}
+        if self._upsert_check_run("review", body, update_body=update_body):
+            self._check_runs_in_progress.discard("review")
+            self._check_run_base_summaries.pop("review", None)
+            self._check_runs_progress_blocked.discard("review")
+            return True
+        return False
+
     def start_check_run(self, name: str, summary: str) -> bool:
         """Open the tool's check run as in_progress before it has any output to publish.
 
@@ -1127,14 +1156,14 @@ class GithubProvider(GitProvider):
             return True
         return False
 
-    def _upsert_check_run(self, name: str, body: dict) -> bool:
+    def _upsert_check_run(self, name: str, body: dict, update_body: dict | None = None) -> bool:
         """Update the `PR Agent - {Name}` check run on the head commit, creating it if absent."""
         if not getattr(self, 'last_commit_id', None):
             get_logger().error("Cannot publish check run without a commit SHA")
             return False
         check_run_name = self._check_run_name(name)
         create_body = {"name": check_run_name, "head_sha": self.last_commit_id.sha, **body}
-        update_body = body
+        update_body = body if update_body is None else update_body
         existing_id = self._check_run_ids.get(name)
         if not existing_id:
             existing_id = self._find_existing_check_run(check_run_name, self.last_commit_id.sha)

@@ -1528,6 +1528,38 @@ class GitLabProvider(GitProvider):
             get_logger().exception(f"Could not get head SHA: {e}")
             return ""
 
+    def publish_merge_recommendation_status(self, recommendation: str) -> bool:
+        """Publish the computed verdict as a GitLab commit status on the reviewed head SHA."""
+        states = {
+            "no_concerns_found": "success",
+            "needs_review": "skipped",
+            "changes_required": "failed",
+        }
+        state = states.get(recommendation)
+        if state is None:
+            get_logger().warning(f"Cannot publish an unknown merge recommendation: {recommendation!r}")
+            return False
+
+        head_sha = self.get_pr_head_sha()
+        if not head_sha:
+            get_logger().error("Cannot publish merge recommendation status without a head SHA")
+            return False
+
+        source_project_id = getattr(self.mr, "source_project_id", None)
+        project_id = source_project_id if source_project_id is not None else self.id_project
+        try:
+            project = self.gl.projects.get(project_id, lazy=True)
+            commit = project.commits.get(head_sha)
+            commit.statuses.create({
+                "state": state,
+                "name": "PR Agent - Review",
+                "description": f"Computed merge recommendation: {recommendation}",
+            })
+            return True
+        except (GitlabError, RequestException) as e:
+            get_logger().exception(f"Could not publish merge recommendation status: {e}")
+            return False
+
     def get_pr_identity(self) -> dict:
         repo = getattr(self, "id_project", None)
         repo = repo if isinstance(repo, str) else ("" if repo is None else str(repo))

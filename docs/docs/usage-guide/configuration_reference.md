@@ -167,6 +167,7 @@ See [Review](../tools/review.md#configuration-options).
 | `require_risk_assessment` | false | ask the model for an overall risk level (low/medium/high) |
 | `require_merge_recommendation` | false | ask the model for a merge recommendation: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge) |
 | `max_changed_lines` | 100 | changed-line cap for a no_concerns_found merge recommendation; a larger diff is vetoed. See docs/docs/tools/review.md |
+| `publish_merge_recommendation_status` | false | publish the computed verdict as a SHA-scoped GitHub check or GitLab commit status; requires require_merge_recommendation |
 | `require_failure_modes` | false | ask for up to three concrete failure scenarios and their detection/coverage |
 | `require_priority_files` | false | ask the model which files a human should inspect first |
 | `structural_reach_input_file` | "" | JSON reach facts from a build-graph tool; when the file exists, adds a deterministic change-risk row. See docs/docs/tools/review.md |
