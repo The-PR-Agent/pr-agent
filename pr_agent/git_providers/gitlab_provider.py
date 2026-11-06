@@ -1756,8 +1756,8 @@ class GitLabProvider(GitProvider):
                         if not target_sha or p_sha == target_sha:
                             pipeline = p
                             break
-                except Exception:
-                    pass
+                except Exception as e:
+                    get_logger().warning(f"Could not list GitLab MR pipelines: {e}")
 
             if pipeline is None:
                 return "none"
@@ -1795,7 +1795,14 @@ class GitLabProvider(GitProvider):
             if len(diff_files) == 0:
                 return False
 
-            pr_filenames = {getattr(f, "filename", None) for f in diff_files if getattr(f, "filename", None)}
+            pr_filenames = set()
+            for f in diff_files:
+                fn = getattr(f, "filename", None)
+                if fn:
+                    pr_filenames.add(fn)
+                old_fn = getattr(f, "old_filename", None) or getattr(f, "previous_filename", None)
+                if old_fn:
+                    pr_filenames.add(old_fn)
             if not pr_filenames:
                 return False
 
@@ -1823,8 +1830,8 @@ class GitLabProvider(GitProvider):
                         c_date = getattr(commit, "committed_date", None) or getattr(commit, "created_at", None)
                         if c_date:
                             ref_dt = _parse_gitlab_iso_datetime(c_date)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        get_logger().warning(f"Could not retrieve GitLab commit {head_sha} for timestamp: {e}")
 
             if ref_dt is None:
                 return None
@@ -1848,11 +1855,18 @@ class GitLabProvider(GitProvider):
                         if (new_path and new_path in pr_filenames) or (old_path and old_path in pr_filenames):
                             stale = True
                             break
-                except Exception:
-                    pass
+                except Exception as e:
+                    get_logger().warning(f"Could not read a base commit diff for staleness: {e}")
+                    return None
                 if stale:
                     break
-            return stale
+
+            if stale:
+                return True
+            if commits and len(commits) >= 50:
+                get_logger().warning("Base commit history reached pagination limit (50); failing closed as unknown")
+                return None
+            return False
         except Exception as e:
             get_logger().warning(f"Failed to check GitLab head staleness: {e}")
             return None

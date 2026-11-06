@@ -498,3 +498,127 @@ def test_gitlab_authors_false_when_commit_author_is_bot():
         {"author_name": "dependabot[bot]", "author_email": "dependabot@gitlab.com"},
     ]
     assert provider.are_all_authors_human() is False
+
+
+def test_github_ci_status_evaluates_user_check_named_pr_agent_tests():
+    # User's test named "pr-agent tests" must NOT be skipped as PR-Agent's own run
+    runs = [
+        SimpleNamespace(status="completed", conclusion="failure", app=None, name="pr-agent tests"),
+    ]
+    provider = _make_github_provider(check_runs=runs)
+    assert provider.get_head_ci_status() == "failed"
+
+
+def test_github_ci_status_ignores_running_action_job(monkeypatch):
+    monkeypatch.setenv("GITHUB_JOB", "pr_agent_job")
+    runs = [
+        # Action's own job in progress should be ignored
+        SimpleNamespace(status="in_progress", conclusion=None, app=None, name="pr_agent_job"),
+        SimpleNamespace(status="completed", conclusion="success", app=None, name="test"),
+    ]
+    provider = _make_github_provider(check_runs=runs)
+    assert provider.get_head_ci_status() == "passed"
+
+
+def test_github_staleness_detects_renamed_file_previous_filename():
+    now = datetime.now(UTC)
+    runs = [SimpleNamespace(status="completed", conclusion="success", app=None, completed_at=now, name="test")]
+    provider = _make_github_provider(check_runs=runs)
+    provider.get_diff_files = lambda: [SimpleNamespace(filename="new_path.py", old_filename="old_path.py")]
+    provider.pr.base = SimpleNamespace(ref="main")
+
+    base_commit = SimpleNamespace(
+        commit=SimpleNamespace(committer=SimpleNamespace(date=now + timedelta(minutes=5))),
+        files=[SimpleNamespace(filename="old_path.py")],
+    )
+    provider.repo_obj.get_commits.return_value = [base_commit]
+    assert provider.is_head_stale_against_base() is True
+
+
+def test_github_staleness_fails_closed_on_51_commits():
+    now = datetime.now(UTC)
+    runs = [SimpleNamespace(status="completed", conclusion="success", app=None, completed_at=now, name="test")]
+    provider = _make_github_provider(check_runs=runs)
+    provider.get_diff_files = lambda: [SimpleNamespace(filename="app/main.py")]
+    provider.pr.base = SimpleNamespace(ref="main")
+
+    # 51 unrelated commits should cause pagination limit truncation and return None
+    commits = [
+        SimpleNamespace(
+            commit=SimpleNamespace(committer=SimpleNamespace(date=now + timedelta(minutes=i + 1))),
+            files=[SimpleNamespace(filename="other.py")],
+        )
+        for i in range(51)
+    ]
+    provider.repo_obj.get_commits.return_value = commits
+    assert provider.is_head_stale_against_base() is None
+
+
+def test_gitlab_staleness_detects_renamed_file_previous_filename():
+    provider = _make_gitlab_provider()
+    provider.mr.target_branch = "main"
+    provider.mr.head_pipeline = {
+        "status": "success",
+        "sha": "headsha123",
+        "created_at": "2026-01-01T12:00:00Z",
+    }
+    provider.get_diff_files = lambda: [SimpleNamespace(filename="new_path.py", old_filename="old_path.py")]
+
+    proj_mock = MagicMock()
+    commit_stale = SimpleNamespace(
+        committed_date="2026-01-01T12:15:00Z",
+        diff=lambda: [{"new_path": "old_path.py", "old_path": "old_path.py"}],
+    )
+    proj_mock.commits.list.return_value = [commit_stale]
+    provider.gl.projects.get.return_value = proj_mock
+
+    assert provider.is_head_stale_against_base() is True
+
+
+def test_gitlab_staleness_fails_closed_on_diff_read_error():
+    provider = _make_gitlab_provider()
+    provider.mr.target_branch = "main"
+    provider.mr.head_pipeline = {
+        "status": "success",
+        "sha": "headsha123",
+        "created_at": "2026-01-01T12:00:00Z",
+    }
+    provider.get_diff_files = lambda: [SimpleNamespace(filename="app/main.py")]
+
+    def failing_diff():
+        raise RuntimeError("diff API error")
+
+    proj_mock = MagicMock()
+    commit_err = SimpleNamespace(
+        committed_date="2026-01-01T12:15:00Z",
+        diff=failing_diff,
+    )
+    proj_mock.commits.list.return_value = [commit_err]
+    provider.gl.projects.get.return_value = proj_mock
+
+    assert provider.is_head_stale_against_base() is None
+
+
+def test_gitlab_staleness_fails_closed_on_50_commits():
+    provider = _make_gitlab_provider()
+    provider.mr.target_branch = "main"
+    provider.mr.head_pipeline = {
+        "status": "success",
+        "sha": "headsha123",
+        "created_at": "2026-01-01T12:00:00Z",
+    }
+    provider.get_diff_files = lambda: [SimpleNamespace(filename="app/main.py")]
+
+    # 50 commits returned by per_page=50 means potential truncation
+    proj_mock = MagicMock()
+    commits_list = [
+        SimpleNamespace(
+            committed_date="2026-01-01T12:15:00Z",
+            diff=lambda: [{"new_path": "other.py", "old_path": "other.py"}],
+        )
+        for _ in range(50)
+    ]
+    proj_mock.commits.list.return_value = commits_list
+    provider.gl.projects.get.return_value = proj_mock
+
+    assert provider.is_head_stale_against_base() is None
