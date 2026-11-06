@@ -35,6 +35,19 @@ const config = {
   organizationName: 'the-pr-agent',
   projectName: 'pr-agent',
 
+  // Translations live under i18n/<locale>/. Docusaurus falls back to the English
+  // page whenever a locale has not translated one, so a locale can be added with
+  // a handful of pages and grow from there.
+  i18n: {
+    defaultLocale: 'en',
+    locales: ['en', 'pt-BR', 'es'],
+    localeConfigs: {
+      en: {label: 'English', htmlLang: 'en'},
+      'pt-BR': {label: 'Português (Brasil)', htmlLang: 'pt-BR'},
+      es: {label: 'Español', htmlLang: 'es'},
+    },
+  },
+
   markdown: {
     format: 'detect',
     hooks: {
@@ -155,6 +168,7 @@ const config = {
             position: 'left',
           },
           {to: '/maintainers', label: 'Maintainers', position: 'left'},
+          {type: 'localeDropdown', position: 'right'},
           {
             href: 'https://github.com/the-pr-agent/pr-agent',
             label: 'GitHub',

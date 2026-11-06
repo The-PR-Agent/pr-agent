@@ -1,0 +1,34 @@
+{
+  "title": {
+    "message": "PR-Agent",
+    "description": "The title in the navbar"
+  },
+  "logo.alt": {
+    "message": "Logotipo de PR-Agent",
+    "description": "The alt text of navbar logo"
+  },
+  "item.label.Get Started": {
+    "message": "Primeros pasos",
+    "description": "Navbar item with label Get Started"
+  },
+  "item.label.Guides": {
+    "message": "Guías",
+    "description": "Navbar item with label Guides"
+  },
+  "item.label.Tools": {
+    "message": "Herramientas",
+    "description": "Navbar item with label Tools"
+  },
+  "item.label.Core Abilities": {
+    "message": "Capacidades principales",
+    "description": "Navbar item with label Core Abilities"
+  },
+  "item.label.Maintainers": {
+    "message": "Mantenedores",
+    "description": "Navbar item with label Maintainers"
+  },
+  "item.label.GitHub": {
+    "message": "GitHub",
+    "description": "Navbar item with label GitHub"
+  }
+}

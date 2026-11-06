@@ -1,0 +1,26 @@
+{
+  "theme.admonition.note": {
+    "message": "Nota",
+    "description": "Default title of an untitled :::note (Infima uppercased the lowercase default; the theme no longer does)"
+  },
+  "theme.admonition.tip": {
+    "message": "Dica",
+    "description": "Default title of an untitled :::tip"
+  },
+  "theme.admonition.info": {
+    "message": "Informação",
+    "description": "Default title of an untitled :::info"
+  },
+  "theme.admonition.warning": {
+    "message": "Atenção",
+    "description": "Default title of an untitled :::warning"
+  },
+  "theme.admonition.danger": {
+    "message": "Perigo",
+    "description": "Default title of an untitled :::danger"
+  },
+  "theme.admonition.caution": {
+    "message": "Cuidado",
+    "description": "Default title of an untitled :::caution"
+  }
+}

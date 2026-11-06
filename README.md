@@ -1,5 +1,3 @@
-**English** | [Português (Brasil)](README.pt-BR.md) | [Español](README.es.md)
-
 
 
 <br />
