@@ -2572,6 +2572,29 @@ class GithubProvider(GitProvider):
             get_logger().exception(f"Failed to auto-approve, error: {e}")
             return False
 
+    def _get_pr_agent_check_names(self) -> set[str]:
+        names = {
+            self._check_run_name(cmd)
+            for cmd in (
+                "review",
+                "describe",
+                "improve",
+                "ask",
+                "reflect",
+                "test",
+                "similar_issue",
+                "checks",
+                "verdict",
+                "auto_review",
+                "review_pr",
+                "improve_code",
+                "ask_question",
+            )
+        }
+        if hasattr(self, "_check_run_ids"):
+            names.update(self._check_run_name(k) for k in self._check_run_ids)
+        return names
+
     def get_head_ci_status(self, sha: str | None = None) -> str | None:
         """Return the head CI state for `sha` (or the PR head SHA if None).
 
@@ -2605,18 +2628,25 @@ class GithubProvider(GitProvider):
                     get_logger().warning(f"Failed to fetch check runs for {target_sha}: {e}")
 
             if check_runs is not None:
+                pr_agent_check_names = self._get_pr_agent_check_names()
+                current_job = os.environ.get("GITHUB_JOB")
+                action_jobs_to_skip = {current_job} if current_job else set()
+                action_jobs_to_skip.add("pr_agent_job")
+
                 for run in check_runs:
                     # Ignore PR-Agent's own check runs to avoid self-blocking
                     app = getattr(run, "app", None)
-                    app_slug = (getattr(app, "slug", "") or "") if app else ""
-                    app_name = (getattr(app, "name", "") or "") if app else ""
+                    app_slug = (getattr(app, "slug", "") or "").lower() if app else ""
                     run_name = getattr(run, "name", "") or ""
-                    if (
-                        app_slug.lower() in ("pr-agent", "pr_agent")
-                        or app_name.lower().startswith("pr agent")
-                        or run_name.lower().startswith("pr agent")
-                        or run_name.lower().startswith("pr-agent")
-                    ):
+
+                    if app_slug in ("pr-agent", "pr_agent", "the-pr-agent"):
+                        continue
+                    if run_name in pr_agent_check_names:
+                        continue
+
+                    # Leave out the running GitHub Action job so it doesn't keep CI pending
+                    job_base_name = run_name.split(" / ")[-1].split(" (")[0].strip()
+                    if job_base_name in action_jobs_to_skip:
                         continue
 
                     has_checks = True
@@ -2680,7 +2710,14 @@ class GithubProvider(GitProvider):
             if len(diff_files) == 0:
                 return False
 
-            pr_filenames = {getattr(f, "filename", None) for f in diff_files if getattr(f, "filename", None)}
+            pr_filenames = set()
+            for f in diff_files:
+                fn = getattr(f, "filename", None)
+                if fn:
+                    pr_filenames.add(fn)
+                old_fn = getattr(f, "old_filename", None) or getattr(f, "previous_filename", None)
+                if old_fn:
+                    pr_filenames.add(old_fn)
             if not pr_filenames:
                 return False
 
@@ -2705,11 +2742,23 @@ class GithubProvider(GitProvider):
                 try:
                     commit = repo.get_commit(sha)
                     if hasattr(commit, "get_check_runs"):
+                        pr_agent_check_names = self._get_pr_agent_check_names()
+                        current_job = os.environ.get("GITHUB_JOB")
+                        action_jobs_to_skip = {current_job} if current_job else set()
+                        action_jobs_to_skip.add("pr_agent_job")
+
                         for run in commit.get_check_runs():
                             app = getattr(run, "app", None)
-                            app_slug = (getattr(app, "slug", "") or "") if app else ""
-                            if app_slug.lower() in ("pr-agent", "pr_agent"):
+                            app_slug = (getattr(app, "slug", "") or "").lower() if app else ""
+                            run_name = getattr(run, "name", "") or ""
+                            if app_slug in ("pr-agent", "pr_agent", "the-pr-agent"):
                                 continue
+                            if run_name in pr_agent_check_names:
+                                continue
+                            job_base_name = run_name.split(" / ")[-1].split(" (")[0].strip()
+                            if job_base_name in action_jobs_to_skip:
+                                continue
+
                             run_dt = getattr(run, "completed_at", None) or getattr(run, "created_at", None)
                             if run_dt:
                                 run_dt = _ensure_utc(run_dt)
@@ -2732,9 +2781,11 @@ class GithubProvider(GitProvider):
             base_commits = repo.get_commits(sha=base_ref, since=ref_dt)
             stale = False
             count = 0
+            truncated = False
             for c in base_commits:
                 count += 1
                 if count > 50:
+                    truncated = True
                     break
                 c_git = getattr(c, "commit", None)
                 c_committer = getattr(c_git, "committer", None)
@@ -2748,13 +2799,19 @@ class GithubProvider(GitProvider):
                 c_files = getattr(c, "files", None) or []
                 for f in c_files:
                     fn = getattr(f, "filename", None)
-                    if fn and fn in pr_filenames:
+                    prev_fn = getattr(f, "previous_filename", None)
+                    if (fn and fn in pr_filenames) or (prev_fn and prev_fn in pr_filenames):
                         stale = True
                         break
                 if stale:
                     break
 
-            return stale
+            if stale:
+                return True
+            if truncated:
+                get_logger().warning("Base commit history reached pagination limit (50); failing closed as unknown")
+                return None
+            return False
         except Exception as e:
             get_logger().warning(f"Failed to check head staleness: {e}")
             return None
