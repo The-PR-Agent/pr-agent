@@ -1,0 +1,263 @@
+---
+title: "GitLab Integration"
+sidebar_position: 5
+---
+
+## Merge request diff limits
+
+PR-Agent requires GitLab 15.7 or later and retrieves all pages from the merge request
+[`/diffs` endpoint](https://docs.gitlab.com/api/merge_requests/#list-merge-request-diffs).
+Pagination does not bypass GitLab's server-side diff limits. PR-Agent raises a provider
+error if the returned file count disagrees with an exact `changes_count`, or that count
+indicates overflow or is not ready. A file whose patch GitLab omits (`too_large`, or
+`collapsed` before GitLab 19.2) is diffed locally from its two revisions instead.
+When `CONFIG.PUBLISH_OUTPUT` is enabled, PR-Agent attempts to post a fixed, deduplicated
+**PR-Agent command was not run** notice after this error reaches the command boundary.
+Publishing is best effort and never includes internal GitLab response details.
+
+The `/diffs` endpoint must be available. PR-Agent does not fall back to the deprecated
+`/changes` endpoint or its raw-diff retry.
+
+PR-Agent reads fresh merge request metadata before and after collecting the diff pages.
+If the revision or file count changes during collection, it retries once, then raises a
+provider error if they change again. Non-empty results also require usable base/head
+references for loading file content. If the merge request moves after incremental
+setup, PR-Agent falls back to a full review instead of mixing revisions.
+
+## Optional submodule diff expansion
+
+When `GITLAB.EXPAND_SUBMODULE_DIFFS` is enabled, PR-Agent compares submodule commits
+to add child-file patches. If the comparison times out or a child patch is omitted
+(`collapsed` or `too_large`), it logs a warning and skips that optional expansion.
+The parent submodule gitlink remains in the merge request diff. This repository
+comparison fallback is separate from the merge-request `/diffs` behavior above.
+
+## Run as a GitLab Pipeline
+
+You can use a pre-built Action Docker image to run PR-Agent as a GitLab pipeline. This is a simple way to get started with PR-Agent without setting up your own server.
+
+Pipeline mode runs configured commands automatically when GitLab creates a merge request pipeline. It does not receive GitLab comment events. If you want users to invoke commands such as `/review` or `/improve` in merge request comments, deploy the [GitLab webhook server](#run-a-gitlab-webhook-server) instead and enable the **Comments** webhook trigger.
+
+### Step 1: Configure the pipeline
+
+Add the following file to your repository under `.gitlab-ci.yml`:
+
+```yaml
+stages:
+  - pr_agent
+
+pr_agent_job:
+  stage: pr_agent
+  image:
+    name: pragent/pr-agent:latest
+    entrypoint: [""]
+  script:
+    - cd /app
+    - echo "Running PR Agent action step"
+    - export MR_URL="$CI_MERGE_REQUEST_PROJECT_URL/merge_requests/$CI_MERGE_REQUEST_IID"
+    - echo "MR_URL=$MR_URL"
+    - export gitlab__url=$CI_SERVER_PROTOCOL://$CI_SERVER_FQDN
+    - export gitlab__PERSONAL_ACCESS_TOKEN=$GITLAB_PERSONAL_ACCESS_TOKEN
+    - export config__git_provider="gitlab"
+    - export openai__key=$OPENAI_KEY
+    - python -m pr_agent.cli --pr_url="$MR_URL" describe
+    - python -m pr_agent.cli --pr_url="$MR_URL" review
+    - python -m pr_agent.cli --pr_url="$MR_URL" improve
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+```
+
+This script runs PR-Agent when a merge request pipeline is created, including when a merge request is opened and when new commits are pushed to its source branch. You can modify the `rules` section to run PR-Agent on different events.
+You can also modify the `script` section to run different PR-Agent commands, or with different parameters by exporting different environment variables.
+
+### Step 2: Configure CI/CD variables
+
+Add the following masked variables to your GitLab repository (CI/CD -> Variables):
+
+- `GITLAB_PERSONAL_ACCESS_TOKEN`: Your GitLab personal access token.
+
+- `OPENAI_KEY`: Your OpenAI key.
+
+Note that if your base branches are not protected, don't set the variables as `protected`, since the pipeline will not have access to them.
+
+> **Note**: The `$CI_SERVER_FQDN` variable is available starting from GitLab version 16.10. If you're using an earlier version, this variable will not be available. However, you can combine `$CI_SERVER_HOST` and `$CI_SERVER_PORT` to achieve the same result. Please ensure you're using a compatible version or adjust your configuration.
+
+> **Note**: The `gitlab__SSL_VERIFY` environment variable can be used to specify the path to a custom CA certificate bundle for SSL verification. GitLab exposes the `$CI_SERVER_TLS_CA_FILE` variable, which points to the custom CA certificate file configured in your GitLab instance.
+> Alternatively, SSL verification can be disabled entirely by setting `gitlab__SSL_VERIFY=false`, although this is not recommended.
+> This setting affects only the GitLab API client. For certificate issues with LLM calls or git clone operations, see [Custom CA and Self-Signed Certificates](../usage-guide/custom_ca_and_self_signed_certificates.md).
+
+### Optional pipeline configurations
+
+#### CI artifact context
+
+A file produced by an earlier job — a test report, a coverage summary, a linter or SAST output — can be handed to `/review`, `/describe`, `/improve` and `/ask` as extra context, so the model reviews the merge request with your pipeline's own findings in hand. Save the file as a job artifact, make the PR-Agent job depend on that job with `needs:`, and point PR-Agent at it with `ARTIFACT_PATH`. The job above runs from `/app`, so give the path in full:
+
+```yaml
+pr_agent_job:
+  stage: pr_agent
+  needs: ["test_job"]
+  image:
+    name: pragent/pr-agent:latest
+    entrypoint: [""]
+  script:
+    - cd /app
+    - export ARTIFACT_PATH="$CI_PROJECT_DIR/reports/pytest.xml"
+    - export ARTIFACT_INSTRUCTIONS="These are the failing tests from this MR's pipeline. Call out any suggestion that would not fix them."
+    - python -m pr_agent.cli --pr_url="$MR_URL" review
+```
+
+Setting `ARTIFACT_PATH` turns the feature on by itself. The remaining knobs — which tools receive the context, the label, the size limit — are the `[artifacts]` settings described under [CI artifact context](./github.md#ci-artifact-context) for the GitHub Action, and they apply to the CLI in the same way.
+
+#### Ignore bot-created merge requests
+
+Dependency update bots usually use predictable source branch prefixes. Add a higher-priority `when: never` rule before the general merge request rule to skip those branches:
+
+```yaml
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^(dependabot|renovate)\//'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+```
+
+Adjust the regular expression to match the branch naming conventions used by your bots. Filtering on `CI_MERGE_REQUEST_SOURCE_BRANCH_NAME` is more reliable than `GITLAB_USER_LOGIN`, because `GITLAB_USER_LOGIN` identifies the user who started the pipeline and can change when a pipeline is run manually.
+
+The webhook server can apply the equivalent filter to automatic merge request events through a repository-level `.pr_agent.toml` file:
+
+```toml
+[config]
+ignore_pr_source_branches = ["^(dependabot|renovate)/"]
+```
+
+For all supported filters, see [Ignoring automatic commands in PRs](../usage-guide/additional_configurations.md#ignoring-automatic-commands-in-prs).
+
+## Run a GitLab webhook server
+
+1. In GitLab create a new user and give it "Developer" role for the intended group or project.
+   > **Note:** "Reporter" role is sufficient for adding comments for `/improve` or `/review` for example,
+   > but "Developer" role is required to update the Merge Request description when using the `/describe` command.
+
+2. For the user from step 1, generate a `personal_access_token` with `api` access.
+
+3. Generate a random secret for your app, and save it for later (`shared_secret`). For example, you can use:
+
+   ```bash
+   SHARED_SECRET=$(python -c "import secrets; print(secrets.token_hex(10))")
+   ```
+
+4. Clone this repository:
+
+   ```bash
+   git clone https://github.com/the-pr-agent/pr-agent.git
+   ```
+
+5. Prepare variables and secrets. Skip this step if you plan on setting these as environment variables when running the agent:
+    1. In the configuration file/variables:
+        - Set `config.git_provider` to "gitlab"
+
+    2. In the secrets file/variables:
+        - Set your AI model key in the respective section
+        - In the [gitlab] section, set `personal_access_token` (with token from step 2) and `shared_secret` (with secret from step 3)
+        - **Authentication type**: Set `auth_type` to `"private_token"` to send the token in the `PRIVATE-TOKEN` header, or use the default `"oauth_token"` for the `Authorization: Bearer` header. Both are supported on GitLab.com and self-managed instances.
+
+6. Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
+
+   ```bash
+   docker build . -t pr-agent:gitlab_webhook --target gitlab_webhook -f docker/Dockerfile
+
+   # Optional, to push it to your own Docker repository:
+   docker tag pr-agent:gitlab_webhook <your-registry>/pr-agent:gitlab_webhook
+   docker push <your-registry>/pr-agent:gitlab_webhook
+   ```
+
+7. Set the environmental variables, the method depends on your docker runtime. Skip this step if you included your secrets/configuration directly in the Docker image.
+
+   ```bash
+   CONFIG__GIT_PROVIDER=gitlab
+   GITLAB__PERSONAL_ACCESS_TOKEN=<personal_access_token>
+   GITLAB__SHARED_SECRET=<shared_secret>
+   GITLAB__URL=https://gitlab.com
+   GITLAB__AUTH_TYPE=oauth_token  # Use "private_token" for the PRIVATE-TOKEN header
+   OPENAI__KEY=<your_openai_api_key>
+   PORT=3000  # Optional: override the webhook server port
+   ```
+
+8. Create a webhook in your GitLab project. Set the URL to `http[s]://<PR_AGENT_HOSTNAME>/webhook`, the secret token to the generated secret from step 3, and enable the triggers `push`, `comments` and `merge request events`.
+
+9. Test your installation by opening a merge request or commenting on a merge request using one of PR Agent's commands.
+
+10. The webhook server runs under gunicorn with multiple worker processes. See [Sizing a self-hosted webhook server](./index.md#sizing-a-self-hosted-webhook-server) for the `GUNICORN_WORKERS` / `GUNICORN_MAX_WORKERS` knobs and memory guidance — worth reading before setting a memory limit.
+
+## Deploy as a Lambda Function
+
+Note that since AWS Lambda env vars cannot have "." in the name, you can replace each "." in an env variable with "__".<br>
+For example: `GITLAB.PERSONAL_ACCESS_TOKEN` --> `GITLAB__PERSONAL_ACCESS_TOKEN`
+
+1. Follow steps 1-5 from [Run a GitLab webhook server](#run-a-gitlab-webhook-server).
+2. Build a docker image that can be used as a lambda function
+
+    ```shell
+    docker buildx build --platform=linux/amd64 . -t pr-agent:gitlab_lambda --target gitlab_lambda -f docker/Dockerfile.lambda
+   ```
+
+3. Push image to ECR
+
+    ```shell
+    docker tag pr-agent:gitlab_lambda <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pr-agent:gitlab_lambda
+    docker push <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pr-agent:gitlab_lambda
+    ```
+
+4. Create a lambda function that uses the uploaded image. Set the lambda timeout to be at least 3m.
+5. Configure the lambda function to have a Function URL.
+6. In the environment variables of the Lambda function, specify `AZURE_DEVOPS_CACHE_DIR` to a writable location such as /tmp. (see [link](https://github.com/the-pr-agent/pr-agent/pull/450#issuecomment-1840242269))
+7. Go back to steps 8-9 of [Run a GitLab webhook server](#run-a-gitlab-webhook-server) with the function URL as your Webhook URL.
+    The Webhook URL would look like `https://<LAMBDA_FUNCTION_URL>/webhook`
+
+### Using AWS Secrets Manager
+
+For production Lambda deployments, use AWS Secrets Manager instead of environment variables:
+
+1. Generate a separate random webhook token for each project, for example with `openssl rand -hex 32`.
+   Create an individual secret for each GitLab webhook with this JSON format (e.g., secret name: `project-webhook-secret-001`):
+
+   ```json
+   {
+     "gitlab_token": "glpat-xxxxxxxxxxxxxxxxxxxxxxxx",
+     "webhook_token": "<generated-random-webhook-token>",
+     "token_name": "project-webhook-001"
+   }
+   ```
+
+2. Create a main configuration secret for common settings (e.g., secret name: `pr-agent-main-config`)
+
+   ```json
+   {
+     "openai.key": "sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   }
+   ```
+
+3. Set these environment variables in your Lambda:
+
+   ```bash
+   CONFIG__SECRET_PROVIDER=aws_secrets_manager
+   AWS_SECRETS_MANAGER__SECRET_ARN=arn:aws:secretsmanager:us-east-1:123456789012:secret:pr-agent-main-config-AbCdEf
+   ```
+
+4. In your GitLab webhook configuration, set the **Secret Token** to `<secret-name>:<webhook-token>`:
+   - Example: `project-webhook-secret-001:<generated-random-webhook-token>`
+   - Use the random token stored in the `webhook_token` field, not the GitLab personal access token.
+   - The final colon separates the token from the secret name, so the webhook token must not contain colons.
+
+PR-Agent retrieves the JSON by secret name and compares the supplied token with `webhook_token` before
+using `gitlab_token`. Both fields must be nonempty strings. The secret name alone is not a credential.
+
+5. Add IAM permission `secretsmanager:GetSecretValue` to your Lambda execution role
+
+:::important Migration for existing secret-provider deployments
+Add `webhook_token` to each project secret and update the corresponding GitLab **Secret Token** to
+`<secret-name>:<webhook-token>` when deploying this version. Existing name-only tokens are rejected with
+HTTP 401; coordinate the server and webhook updates to avoid interrupted deliveries. The same format
+applies to the Google Cloud Storage secret provider.
+
+Deployments using `GITLAB.SHARED_SECRET` keep their existing token. A matching shared secret is checked
+first and uses the configured `GITLAB.PERSONAL_ACCESS_TOKEN` without contacting the cloud provider.
+:::

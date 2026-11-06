@@ -16,8 +16,7 @@ Hay varias formas de usar PR-Agent:
 
 </div>
 
-## Peticiones HTTP del sondeo de GitHub
-
+## Peticiones HTTP del sondeo de GitHub {#github-polling-http-requests}
 Cuando el sondeo de GitHub necesita mirar hacia atrás en los comentarios de un PR,
 reutiliza la sesión HTTP del sondeo en lugar de bloquear el bucle de eventos con
 una petición síncrona. `github.polling_request_timeout` fija el tiempo de espera
@@ -47,8 +46,7 @@ dobles. Sustituye `@your-bot` por el nombre de usuario de la cuenta de sondeo:
 @your-bot /ask "Why does @your-bot appear in this workflow?"
 ```
 
-## Dimensionar un servidor de webhooks autoalojado
-
+## Dimensionar un servidor de webhooks autoalojado {#sizing-a-self-hosted-webhook-server}
 Los servidores de webhooks de GitHub, GitLab, Gitea y Bitbucket Server (los objetivos de Docker `github_app`, `gitlab_webhook`, `gitea_app` y `bitbucket_server_webhook`) se ejecutan bajo gunicorn con varios procesos de trabajo, de modo que un worker ocupado atendiendo una petición no pueda bloquear la comprobación de estado que sirve otro. El resto de despliegues —Bitbucket Cloud, Azure DevOps, el sondeo de GitHub y las variantes Lambda— no usan esta configuración de workers de gunicorn.
 
 | Variable               | Por defecto      | Descripción                                                                                      |
@@ -67,8 +65,7 @@ Si el contenedor termina por falta de memoria (OOMKilled) durante el arranque, b
 GUNICORN_WORKERS=2
 ```
 
-## Workers del sondeo de GitHub
-
+## Workers del sondeo de GitHub {#github-polling-workers}
 El sondeo de GitHub usa un proceso de sondeo y un proceso hijo aparte para cada
 comentario aceptado. Como mucho puede haber 10 de estos workers hijos activos
 sumando todas las iteraciones de sondeo. Si un lote anterior sigue ocupando el
@@ -87,8 +84,7 @@ unen sin esperar y se cierran en cada iteración; los hijos vivos no se terminan
 cancelar. Esto no es una cola duradera, ni un plazo para las llamadas al modelo,
 ni un límite de memoria para todo el host.
 
-## Nombres de imagen de Docker y etiquetas de versión
-
+## Nombres de imagen de Docker y etiquetas de versión {#docker-image-names-and-version-tags}
 :::note[Migración de namespace en Docker Hub]
 Las versiones **`0.34.2` y posteriores** se publican en [`pragent/pr-agent`](https://hub.docker.com/r/pragent/pr-agent). Las versiones antiguas (hasta la `v0.31` incluida) siguen en el namespace heredado [`codiumai/pr-agent`](https://hub.docker.com/r/codiumai/pr-agent) como archivo congelado: allí no se publican imágenes nuevas. Los ejemplos de este sitio usan el namespace nuevo; si estás fijando una versión anterior a la `0.34.2`, cambia `pragent/pr-agent` por `codiumai/pr-agent` en tus referencias de `image:` / `docker pull` / `uses: docker://`.
 :::
