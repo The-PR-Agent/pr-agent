@@ -23,6 +23,7 @@ from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.git_provider import (
+    GitProvider,
     IncompleteBitbucketPullRequestFilesError,
     IncompletePullRequestFilesError,
 )
@@ -2133,3 +2134,68 @@ async def test_prepare_pr_review_pushes_outputs_when_publishing():
     assert push.call_args.args[0] == "review"
     assert push.call_args.kwargs["payload"] == {"score": "1"}
     assert push.call_args.kwargs["markdown"] == "original review"
+
+
+def _make_git_provider_for_init(files=("a.py", "b.py")):
+    provider = MagicMock()
+    provider.is_supported.return_value = False
+    provider.get_languages.return_value = {"Python": 100}
+    provider.get_files.return_value = list(files)
+    provider.get_pr_description.return_value = ("desc", [])
+    provider.get_pr_branch.return_value = "feature"
+    provider.get_commit_messages.return_value = ""
+    provider.get_num_of_files.side_effect = lambda: GitProvider.get_num_of_files(provider)
+    return provider
+
+
+@pytest.mark.asyncio
+async def test_init_counts_files_without_fetching_diff_before_skipped_incremental_review(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    provider = _make_git_provider_for_init(("a.py", "b.py"))
+    provider.is_supported.side_effect = lambda cap: cap == "get_Commit_Messages"
+    provider.unreviewed_files_map = {}
+    provider.previous_review = SimpleNamespace(html_url="https://gitlab.example/mr/1#note_1")
+    monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
+    monkeypatch.setitem(get_settings().config, "is_auto_command", False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "minimal_commits_for_incremental_review", 0)
+
+    reviewer = PRReviewer(
+        "https://gitlab.example/group/repo/-/merge_requests/1",
+        args=["-i"],
+        ai_handler=lambda: SimpleNamespace(main_pr_language=None),
+    )
+    reviewer.incremental.commits_range = []
+
+    assert reviewer.vars["num_pr_files"] == 2
+    provider.get_diff_files.assert_not_called()
+
+    await reviewer.run()
+
+    provider.get_diff_files.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_init_does_not_pre_invoke_failing_get_diff_files_before_run(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    provider = _make_git_provider_for_init(("a.py",))
+    incomplete_error = IncompletePullRequestFilesError("diff not ready")
+    provider.get_diff_files.side_effect = incomplete_error
+    monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
+    monkeypatch.setitem(get_settings().config, "publish_output", False)
+
+    reviewer = PRReviewer(
+        "https://gitlab.example/group/repo/-/merge_requests/1",
+        ai_handler=lambda: SimpleNamespace(main_pr_language=None),
+    )
+
+    assert reviewer.vars["num_pr_files"] == 1
+    provider.get_diff_files.assert_not_called()
+
+    with pytest.raises(IncompletePullRequestFilesError) as exc_info:
+        await reviewer.run()
+
+    assert exc_info.value is incomplete_error
+    provider.get_diff_files.assert_called_once_with()
