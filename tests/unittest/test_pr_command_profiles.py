@@ -66,6 +66,7 @@ class _RecordingAgent:
 
     async def handle_request(self, _url, command, notify=None):
         self.commands.append(command)
+        return True
 
 
 class _IdentityProvider:
@@ -615,15 +616,20 @@ async def test_gitlab_auto_commands_invalidate_cached_empty_diffs(monkeypatch):
 
     settings = copy.deepcopy(global_settings)
     settings.set("config.disable_auto_feedback", False)
+    # This test exercises diff-cache boundaries, without repository-policy
+    # acquisition. An unverified policy must stop automatic commands.
+    settings.set("config.use_repo_settings_file", False)
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.diff_files = None
+    provider._gitlab_suggestion_version_changed = True
     api_url = "https://gitlab.example/group/repo/-/merge_requests/7"
     seen = []
 
     class Agent:
         async def handle_request(self, _url, _command):
-            seen.append(provider.diff_files)
+            seen.append((provider.diff_files, provider._gitlab_suggestion_version_changed))
             provider.diff_files = []
+            provider._gitlab_suggestion_version_changed = True
             return True
 
     monkeypatch.setattr(gitlab_webhook, "should_process_pr_logic", lambda _: True)
@@ -631,4 +637,4 @@ async def test_gitlab_auto_commands_invalidate_cached_empty_diffs(monkeypatch):
     with request_cycle_context({"settings": settings, "git_provider": {api_url: provider}}):
         await gitlab_webhook._perform_commands_gitlab("pr_commands", Agent(), api_url, {}, {})
 
-    assert seen == [None, None]
+    assert seen == [(None, False), (None, False)]

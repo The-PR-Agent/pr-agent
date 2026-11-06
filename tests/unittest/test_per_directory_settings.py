@@ -123,6 +123,32 @@ def _provider(tree_paths, contents, files, root_settings=b"", full_files=None):
 
 
 class TestResolvePerDirectorySettings:
+    @pytest.mark.parametrize("invalid_limit", [True, 0, -1, "not-an-integer"])
+    def test_gitlab_rejects_invalid_file_cap_on_initial_load_and_recheck(self, per_dir_settings, invalid_limit):
+        provider = _provider(
+            tree_paths=["services/.pr_agent.toml"],
+            contents={"services/.pr_agent.toml": SERVICES_TOML},
+            files=["services/api.py"],
+        )
+        provider._repo_settings_failed = False
+        get_settings().config.per_directory_settings_max_files = invalid_limit
+
+        assert git_utils._get_per_directory_settings(provider) == []
+        assert provider._repo_settings_failed is True
+        assert provider.contents_calls == []
+
+        snapshot = GitLabProvider.__new__(GitLabProvider)
+        snapshot._repo_settings_failed = False
+        snapshot.get_pr_file_paths = MagicMock(return_value=["services/api.py"])
+        snapshot._get_nested_settings_manifest = MagicMock(side_effect=[
+            {"services/.pr_agent.toml": "old-blob"},
+            {"services/.pr_agent.toml": "new-blob"},
+        ])
+        snapshot.get_repo_settings_contents = MagicMock()
+        with pytest.raises(ValueError, match="nested settings file limit"):
+            snapshot._nested_settings_equal("old-ref", "new-ref")
+        snapshot.get_repo_settings_contents.assert_not_called()
+
     def test_literal_backslashes_do_not_activate_nested_settings(self, per_dir_settings):
         provider = _provider(
             tree_paths=["services/auth/.pr_agent.toml"],
@@ -1246,10 +1272,13 @@ class TestGitLabProviderPerDirectory:
         gl = MagicMock()
         gl.projects.get.return_value = project
 
-        paths, ref = _gitlab_provider(gl).get_repo_settings_tree()
-
-        assert ref == "a" * 40
-        assert paths == (["svc/.pr_agent.toml"] * 100 if complete else [])
+        if complete:
+            paths, ref = _gitlab_provider(gl).get_repo_settings_tree()
+            assert ref == "a" * 40
+            assert paths == ["svc/.pr_agent.toml"] * 100
+        else:
+            with pytest.raises(ValueError, match="page limit"):
+                _gitlab_provider(gl).get_repo_settings_tree()
         assert project.repository_tree.call_args_list == [
             call(ref="a" * 40, recursive=True, page=1, per_page=100),
             call(ref="a" * 40, recursive=True, page=2, per_page=100),
@@ -1269,7 +1298,7 @@ class TestGitLabProviderPerDirectory:
         assert result == {"svc/.pr_agent.toml": b"[pr_reviewer]\nnum_max_findings = 5\n"}
         project.files.get.assert_called_once_with(file_path="svc/.pr_agent.toml", ref="main")
 
-    def test_get_repo_settings_contents_skips_missing_file(self):
+    def test_get_repo_settings_contents_rejects_missing_file(self):
         from gitlab.exceptions import GitlabGetError
 
         project = MagicMock()
@@ -1278,9 +1307,9 @@ class TestGitLabProviderPerDirectory:
         gl.projects.get.return_value = project
         provider = _gitlab_provider(gl)
 
-        result = provider.get_repo_settings_contents(["svc/.pr_agent.toml"], "main")
-
-        assert result == {}
+        with pytest.raises(ValueError, match="disappeared at immutable ref"):
+            provider.get_repo_settings_contents(["svc/.pr_agent.toml"], "main")
+        project.files.get.assert_called_once_with(file_path="svc/.pr_agent.toml", ref="main")
 
     def test_get_pr_file_paths_returns_full_changes_with_rename_metadata(self):
         provider = _gitlab_provider(MagicMock())

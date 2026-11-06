@@ -78,6 +78,7 @@ async def test_gitea_review_rejects_incomplete_real_provider_inventory(monkeypat
 
     def provider_factory(_url):
         provider = gitea_module.GiteaProvider("https://gitea.example.com/owner/repo/pulls/1")
+        provider._notice_policy_snapshot_required = False  # Explicitly verified host-only test policy.
         providers.append(provider)
         return provider
 
@@ -427,6 +428,7 @@ async def test_incomplete_github_files_constructor_error_publishes_sanitized_not
 async def test_incomplete_gitlab_diff_constructor_error_publishes_sanitized_notice(monkeypatch):
     secret = "private/repository diff mismatch with request details"
     provider = _incomplete_files_provider()
+    provider._notice_policy_snapshot_required = False
 
     class IncompleteTool:
         def __init__(self, pr_url, ai_handler, args):

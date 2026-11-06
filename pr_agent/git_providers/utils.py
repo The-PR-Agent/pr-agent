@@ -14,6 +14,7 @@ from dynaconf import Dynaconf
 from dynaconf.loaders import env_loader
 from starlette_context import context
 
+from pr_agent.agent.request_policy import RULE_FIELDS
 from pr_agent.config_loader import get_settings
 from pr_agent.config_security import (
     PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION,
@@ -351,12 +352,31 @@ def apply_repo_settings(pr_url):
                 handle_configurations_errors(config_errors, git_provider)
         except Exception as e:
             get_logger().exception("Failed to apply repo settings", e)
+            if hasattr(git_provider, "_repo_settings_failed"):
+                git_provider._repo_settings_failed = True
         finally:
             for repo_settings_file in repo_settings_files:
                 try:
                     os.remove(repo_settings_file)
                 except Exception as e:
                     get_logger().error(f"Failed to remove temporary settings file {repo_settings_file}: {e}")
+    # A command can modify the active ignore settings after request-policy
+    # enforcement. Keep the policy decision authoritative for any later
+    # stale-snapshot notice rather than re-reading mutable CLI settings.
+    settings = get_settings()
+    git_provider._notice_policy_snapshot_required = bool(
+        getattr(git_provider, "_notice_policy_snapshot_required", False)
+        or settings.config.get("use_repo_settings_file", False)
+        or (settings.config.get("use_global_settings_file", False)
+            and settings.config.get("global_settings_repo", ""))
+        or any(settings.get(f"config.{rule}", []) for rule in RULE_FIELDS.values())
+    )
+    if (getattr(git_provider, "_repo_settings_failed", False) is True
+            or getattr(git_provider, "_gitlab_settings_unverified", False) is True):
+        # Snapshot verification and policy acquisition have separate failure
+        # flags. A manual command must respect either; do not permanently
+        # latch acquisition failure merely because a transient recheck failed.
+        raise RuntimeError("GitLab repository settings could not be verified")
     return git_provider
 
 
@@ -581,6 +601,9 @@ def _get_changed_file_paths(git_provider) -> list[str]:
         files = full_paths() if full_paths is not None else git_provider.get_files()
     except Exception as e:
         get_logger().warning(f"Failed to list changed files for per-directory settings: {e}")
+        if hasattr(git_provider, "_repo_settings_failed"):
+            # A missing inventory cannot safely imply that no nested ignore rule applies.
+            git_provider._repo_settings_failed = True
         return []
     paths = []
     for entry in files or []:
@@ -627,9 +650,15 @@ def _get_per_directory_settings(git_provider) -> list:
     the tree has no nested configs, or nothing is crossed.
     """
     settings = get_settings()
-    if not settings.config.get("enable_per_directory_settings", False):
+    enabled = bool(settings.config.get("enable_per_directory_settings", False))
+    # Record the policy before a command's CLI overrides mutate request settings.
+    # This runs before user-provided --config arguments are applied, after
+    # repository overrides. Track the effective policy for this command only.
+    git_provider._per_directory_settings_policy_enabled = enabled
+    if not enabled:
         return []
     config_branch = get_config_branch()
+    git_provider._per_directory_settings_source_branch = config_branch
     tree_method = getattr(git_provider, "get_repo_settings_tree", None)
     if tree_method is None:
         return []
@@ -637,6 +666,8 @@ def _get_per_directory_settings(git_provider) -> list:
         tree_paths, resolved_ref = tree_method(config_branch)
     except Exception as e:
         get_logger().warning(f"Failed to list per-directory settings candidates: {e}")
+        if hasattr(git_provider, "_repo_settings_failed"):
+            git_provider._repo_settings_failed = True
         return []
     # The root `.pr_agent.toml` (directory '') is already applied through
     # get_repo_settings(); only nested directories add per-directory behavior.
@@ -648,15 +679,24 @@ def _get_per_directory_settings(git_provider) -> list:
     if not config_dirs:
         return []
     changed_paths = _get_changed_file_paths(git_provider)
+    git_provider._per_directory_changed_paths = tuple(changed_paths)
     if not changed_paths:
         return []
 
+    configured_limit = settings.config.get(
+        "per_directory_settings_max_files", _DEFAULT_MAX_PER_DIRECTORY_SETTINGS)
     try:
-        max_configs = int(settings.config.get(
-            "per_directory_settings_max_files", _DEFAULT_MAX_PER_DIRECTORY_SETTINGS))
-    except (TypeError, ValueError):
+        if isinstance(configured_limit, bool):
+            raise ValueError("Boolean file limit")
+        max_configs = int(configured_limit)
+        if max_configs < 1:
+            raise ValueError("Nonpositive file limit")
+    except (TypeError, ValueError, OverflowError):
+        if hasattr(git_provider, "_repo_settings_failed"):
+            get_logger().warning("Invalid per-directory settings file limit; policy cannot be verified")
+            git_provider._repo_settings_failed = True
+            return []
         max_configs = _DEFAULT_MAX_PER_DIRECTORY_SETTINGS
-    max_configs = max(1, max_configs)
     crossed = set()
     for changed_path in changed_paths:
         directory = posixpath.dirname(changed_path)
@@ -674,6 +714,10 @@ def _get_per_directory_settings(git_provider) -> list:
             f"applying at most {max_configs}, preferring shallower files and keeping "
             f"later-path winners within a partially included depth"
         )
+        if hasattr(git_provider, "_repo_settings_failed"):
+            # Never silently apply only part of the effective GitLab ignore policy.
+            git_provider._repo_settings_failed = True
+            return []
     # Shallowest (closest to root) first: later files override earlier ones, so the
     # nearest directory wins on scalar keys. Equal-depth siblings are ordered by
     # path, so the lexicographically-last directory wins deterministically (any
@@ -701,11 +745,22 @@ def _get_per_directory_settings(git_provider) -> list:
     if contents_method is None:
         return []
     config_paths = [f"{directory}/.pr_agent.toml" for directory in ordered]
-    contents = contents_method(config_paths, resolved_ref) or {}
+    try:
+        contents = contents_method(config_paths, resolved_ref) or {}
+    except Exception:
+        if hasattr(git_provider, "_repo_settings_failed"):
+            git_provider._repo_settings_failed = True
+        raise
+    if hasattr(git_provider, "_repo_settings_failed") and set(config_paths) != set(contents):
+        git_provider._repo_settings_failed = True
+        return []
     # Reject oversized or over-budget payloads before any conflict inspection or
     # retention: files are contributor-controlled and unvalidated at fetch time, so a
     # batch of them must not be held and parsed wholesale in one worker.
     contents = _size_bounded_per_directory_contents(config_paths, contents)
+    if hasattr(git_provider, "_repo_settings_failed") and set(config_paths) != set(contents):
+        git_provider._repo_settings_failed = True
+        return []
     _warn_on_sibling_key_conflicts(ordered, contents)
     resolved = []
     for path in config_paths:

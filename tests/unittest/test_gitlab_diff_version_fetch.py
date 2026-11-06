@@ -25,13 +25,13 @@ def test_set_merge_request_fetches_only_latest_diff_version():
 def test_get_relevant_diff_fetches_only_latest_diff_version():
     provider = GitLabProvider.__new__(GitLabProvider)
 
-    latest_diff = object()
+    latest_diff = SimpleNamespace(head_commit_sha='head', base_commit_sha='base', start_commit_sha='start')
     list_diffs = Mock(return_value=[latest_diff])
     provider.mr = SimpleNamespace(diffs=SimpleNamespace(list=list_diffs))
     provider.last_diff = latest_diff
     provider._get_merge_request_changes = Mock(return_value={
         "changes": [{"new_path": "src/app.py", "diff": "@@\n+hello"}],
-        "diff_refs": {"base_sha": "base", "head_sha": "head"},
+        "diff_refs": {"base_sha": "base", "head_sha": "head", "start_sha": "start"},
     })
     provider._expand_submodule_changes = Mock(side_effect=lambda changes, diff_refs=None: changes)
 

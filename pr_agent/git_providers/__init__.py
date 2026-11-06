@@ -186,7 +186,7 @@ def get_git_provider_with_context(pr_url) -> GitProvider:
 
 
 def get_git_provider_for_tool(pr_url) -> GitProvider:
-    """Reuse an eligible request provider only before an automatic command boundary."""
+    """Reuse an eligible request provider, including a verified command snapshot."""
     provider_class = get_git_provider()
     if provider_class.__dict__.get("reuse_for_manual_tool", False) and context.exists():
         cached = context.get("git_provider", {}).get(pr_url)

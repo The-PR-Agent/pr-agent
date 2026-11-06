@@ -187,6 +187,8 @@ class TestGitLabProvider:
     def test_latest_commit_url_reuses_api_result_until_command_reset(self, gitlab_provider):
         client = Gitlab("https://gitlab.example.com", private_token="test-token")
         gitlab_provider.mr = client.projects.get("target/repo", lazy=True).mergerequests.get(1, lazy=True)
+        gitlab_provider.mr.target_branch = "main"
+        gitlab_provider._get_merge_request = MagicMock(return_value=gitlab_provider.mr)
         url = "https://gitlab.example.com/fork/repo/-/commit/first"
         response = MagicMock()
         response.json.return_value = [{"id": "first", "web_url": url}]
@@ -231,7 +233,7 @@ class TestGitLabProvider:
         assert gitlab_provider.mr.commits.call_count == 2
 
     def test_merge_request_changes_are_cached_after_stable_collection(self, gitlab_provider):
-        refs = {"base_sha": "base", "head_sha": "head"}
+        refs = {"base_sha": "base", "start_sha": "base", "head_sha": "head"}
         changes = [{"new_path": "src/app.py", "old_path": "src/app.py"}]
         gitlab_provider.mr.diff_refs = refs
         gitlab_provider.gl.http_list.return_value = changes
@@ -1091,7 +1093,7 @@ class TestGitLabProvider:
             "new_file": False, "deleted_file": False, "renamed_file": False,
         }
         ordinary = {**child, "old_path": "ordinary.py", "new_path": "ordinary.py"}
-        gitlab_provider.mr.diff_refs = {"base_sha": "base", "head_sha": "head"}
+        gitlab_provider.mr.diff_refs = {"base_sha": "base", "start_sha": "base", "head_sha": "head"}
         gitlab_provider.gl.http_list.return_value = [ordinary, parent]
         child_project = MagicMock()
         child_project.repository_compare.return_value = {"diffs": [child]}
@@ -1230,21 +1232,28 @@ class TestGitLabProvider:
         gitlab_provider.id_project = "group/repo"
         gitlab_provider.mr = MagicMock()
         gitlab_provider.mr.source_branch = "feature/cache"
+        gitlab_provider.mr.source_project_id = 1
+        gitlab_provider.mr.target_project_id = 1
+        gitlab_provider.mr.diff_refs = {"base_sha": "base", "start_sha": "base", "head_sha": "reviewed-head"}
+        gitlab_provider.diff_files = [SimpleNamespace(
+            filename="src/app.py", old_filename=None, edit_type=EDIT_TYPE.MODIFIED,
+        )]
+        gitlab_provider._diff_head_sha = "reviewed-head"
 
         assert gitlab_provider.get_line_link("src/app.py", -1) == (
-            "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads"
+            "https://gitlab.com/group/repo/-/blob/reviewed-head/src/app.py"
         )
         assert gitlab_provider.get_line_link("src/app.py", 10) == (
-            "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads#L10"
+            "https://gitlab.com/group/repo/-/blob/reviewed-head/src/app.py#L10"
         )
         assert gitlab_provider.get_line_link("src/app.py", 10, 12) == (
-            "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads#L10-12"
+            "https://gitlab.com/group/repo/-/blob/reviewed-head/src/app.py#L10-12"
         )
         assert gitlab_provider.get_line_link("src/app.py", 10, 5) == (
-            "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads#L10-10"
+            "https://gitlab.com/group/repo/-/blob/reviewed-head/src/app.py#L10-10"
         )
         assert gitlab_provider.get_line_link("src/app.py", 10, "not-a-number") == (
-            "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads#L10"
+            "https://gitlab.com/group/repo/-/blob/reviewed-head/src/app.py#L10"
         )
 
     def test_publish_description_with_none_title_leaves_title_unchanged(self, gitlab_provider):
@@ -1399,7 +1408,8 @@ class TestGitLabProvider:
     def test_inline_fallback_note_neutralizes_mentions(self, gitlab_provider, as_draft):
         gitlab_provider.mr = MagicMock()
         create = gitlab_provider.mr.draft_notes.create if as_draft else gitlab_provider.mr.discussions.create
-        create.side_effect = GitlabCreateError("position rejected")
+        rejection = GitlabCreateError("position rejected", response_code=400)
+        create.side_effect = [rejection, MagicMock(id=71)] if as_draft else rejection
         gitlab_provider.get_relevant_diff = MagicMock(return_value=SimpleNamespace(
             base_commit_sha="base", start_commit_sha="start", head_commit_sha="head"
         ))
@@ -2112,6 +2122,9 @@ class TestGitLabProvider:
         gitlab_provider.mr = MagicMock()
         gitlab_provider.mr.diff_refs = {'head_sha': current_head_sha}
         gitlab_provider.mr.discussions.list.return_value = threads
+        gitlab_provider._get_merge_request = MagicMock(
+            side_effect=lambda: SimpleNamespace(diff_refs=dict(gitlab_provider.mr.diff_refs))
+        )
 
     def _run_outdated_cleanup(self, gitlab_provider, enabled=True):
         with patch("pr_agent.git_providers.gitlab_provider.get_settings",
@@ -2212,6 +2225,17 @@ class TestGitLabProvider:
         self._run_outdated_cleanup(gitlab_provider)
 
         outdated.save.assert_called_once()
+
+    def test_outdated_cleanup_does_not_resolve_after_head_changes_during_scan(self, gitlab_provider):
+        outdated = _thread([_thread_note()])
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated])
+        gitlab_provider._get_merge_request = MagicMock(
+            return_value=SimpleNamespace(diff_refs={'head_sha': _OUTDATED_HEAD_SHA})
+        )
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+        outdated.save.assert_not_called()
 
     def test_resolve_outdated_inline_threads_soft_fails(self, gitlab_provider):
         self._prepare_outdated_cleanup(gitlab_provider, [])
@@ -3415,7 +3439,10 @@ class TestGitLabRelevantDiff:
     def _provider(self, changes):
         provider = GitLabProvider.__new__(GitLabProvider)
         provider.mr = MagicMock()
-        provider.mr.diffs.list.return_value = list(self.VERSIONS)
+        provider.mr.diffs.list.return_value = [
+            SimpleNamespace(head_commit_sha="head", base_commit_sha="base", start_commit_sha="base"),
+            *self.VERSIONS[1:],
+        ]
         provider.mr.diff_refs = {"base_sha": "base", "head_sha": "head", "start_sha": "base"}
         provider.gl = MagicMock()
         provider.gl.http_list.return_value = changes
@@ -3432,12 +3459,85 @@ class TestGitLabRelevantDiff:
     def test_matching_change_resolves_to_the_newest_version(self):
         provider = self._provider([{"new_path": "app.py", "diff": "@@\n+added line\n"}])
 
-        assert provider.get_relevant_diff("app.py", "+added line") == "newest"
+        assert provider.get_relevant_diff("app.py", "+added line") is provider.mr.diffs.list.return_value[0]
 
     def test_fallback_uses_the_latest_version_not_the_oldest(self):
         provider = self._provider([{"new_path": "other.py", "diff": "@@\n+unrelated\n"}])
 
-        assert provider.get_relevant_diff("app.py", "+added line") == "latest-at-construction"
+        assert provider.get_relevant_diff("app.py", "+added line") is provider.mr.diffs.list.return_value[0]
+
+    def test_rejects_suggestion_when_latest_diff_version_disagrees_with_reviewed_refs(self):
+        provider = self._provider([{"new_path": "app.py", "diff": "@@\n+added line\n"}])
+        provider.mr.diffs.list.return_value = [
+            SimpleNamespace(head_commit_sha="pushed-head", base_commit_sha="base", start_commit_sha="base"),
+        ]
+
+        assert provider.get_relevant_diff("app.py", "+added line") is None
+
+    def test_rejects_suggestion_with_missing_version_sha(self):
+        provider = self._provider([{"new_path": "app.py", "diff": "@@\n+added line\n"}])
+        provider.mr.diffs.list.return_value = [
+            SimpleNamespace(head_commit_sha=None, base_commit_sha="base", start_commit_sha="base"),
+        ]
+        assert provider.get_relevant_diff("app.py", "+added line") is None
+
+    def test_rejects_uncached_new_version_when_reviewed_file_refs_are_stale(self):
+        provider = self._provider([{"new_path": "app.py", "diff": "@@\n+added line\n"}])
+        provider.diff_files = []
+        provider._diff_head_sha = "head"
+        provider._diff_base_sha = "base"
+        provider._diff_start_sha = "base"
+        provider._diff_is_incremental = False
+        provider.mr.diff_refs["head_sha"] = "pushed-head"
+        provider.gl.http_get.side_effect = lambda *_args, **_kwargs: {
+            "sha": "pushed-mr", "diff_refs": dict(provider.mr.diff_refs), "changes_count": None,
+        }
+        provider.mr.diffs.list.return_value = [
+            SimpleNamespace(head_commit_sha="pushed-head", base_commit_sha="base",
+                            start_commit_sha="base"),
+        ]
+        assert provider.get_relevant_diff("app.py", "+added line") is None
+        assert provider._gitlab_suggestion_version_changed is True
+
+    @pytest.mark.parametrize("publish_output", [True, False])
+    def test_mid_batch_revision_change_reports_incomplete_suggestions(self, publish_output):
+        provider = GitLabProvider.__new__(GitLabProvider)
+        provider.resolve_outdated_inline_threads = MagicMock()
+        provider.reconcile_code_suggestion_threads = MagicMock()
+        provider.publish_comment = MagicMock()
+        # A retry notice is safe only when the original ignore policy was
+        # verified to be host-only before command-level overrides.
+        provider._notice_policy_snapshot_required = False
+        file = SimpleNamespace(filename="app.py", head_file="a\nb\n", patch="", old_filename=None)
+        provider.get_diff_files = MagicMock(return_value=[file])
+        attempts = []
+
+        def publish_one(*_args, **_kwargs):
+            attempts.append(True)
+            if len(attempts) == 2:
+                provider._gitlab_suggestion_version_changed = True
+                raise RuntimeError("MR moved during suggestion publication")
+            return True
+
+        provider.send_inline_comment = MagicMock(side_effect=publish_one)
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {
+            "gitlab.publish_code_suggestions_as_review": False,
+            "CONFIG.PUBLISH_OUTPUT": publish_output,
+        }.get(key, default)
+        suggestions = [
+            {"body": "one", "relevant_file": "app.py", "relevant_lines_start": 1, "relevant_lines_end": 1},
+            {"body": "two", "relevant_file": "app.py", "relevant_lines_start": 1, "relevant_lines_end": 1},
+            {"body": "three", "relevant_file": "app.py", "relevant_lines_start": 1, "relevant_lines_end": 1},
+        ]
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
+            assert provider.publish_code_suggestions(suggestions) is False
+
+        assert len(attempts) == 2
+        assert provider.publish_comment.call_count == int(publish_output)
+        if publish_output:
+            assert "not fully published" in provider.publish_comment.call_args.args[0]
+
 
     def test_returns_none_when_the_mr_has_no_diff_versions(self):
         provider = self._provider([{"new_path": "app.py", "diff": "@@\n+added line\n"}])

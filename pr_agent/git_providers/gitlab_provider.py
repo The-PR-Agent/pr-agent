@@ -4,9 +4,10 @@ import json
 import posixpath
 import re
 import time
+import tomllib
 import urllib.parse
 from bisect import bisect_left
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from urllib.parse import quote, urlparse
@@ -20,10 +21,12 @@ from gitlab import (
     GitlabUpdateError,
 )
 from requests.exceptions import RequestException
+from starlette_context import context
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.custom_merge_loader import MAX_TOML_SIZE_IN_BYTES
 from pr_agent.git_providers.diff_parsing import to_hunk_only_patch
 
 from ..algo.comment_identity import (
@@ -70,6 +73,8 @@ class DiffNotFoundError(Exception):
 class IncompleteGitLabDiffError(DiffNotFoundError, IncompleteProviderPullRequestFilesError):
     """Represent an incomplete GitLab merge-request diff response."""
 
+    requires_safe_notice_policy = True
+
     notice = (
         "## PR-Agent command was not run\n\n"
         "GitLab returned an incomplete or inconsistent merge-request diff, so PR-Agent stopped "
@@ -82,6 +87,37 @@ class IncompleteGitLabDiffError(DiffNotFoundError, IncompleteProviderPullRequest
 
 class GitLabDiffNotReadyError(IncompleteGitLabDiffError):
     """GitLab is still generating the diff; a later attempt may succeed."""
+
+
+class GitLabSuggestionPublicationError(IncompleteProviderPullRequestFilesError):
+    """A GitLab write may have succeeded, so retrying could publish duplicates."""
+
+    requires_safe_notice_policy = True
+
+    notice = (
+        "## PR-Agent suggestion publication is unverified\n\n"
+        "GitLab did not confirm whether the suggestion was published. Check the merge request "
+        "and pending drafts before retrying the original command."
+    )
+    notice_marker = "<!-- pr-agent:gitlab-unverified-suggestion -->"
+
+
+def _post_suggestion(write, *, require_result: bool = False):
+    """Preserve definite 4xx rejections while stopping on uncertain write outcomes."""
+    try:
+        result = write()
+    except (GitlabError, RequestException) as exc:
+        status = getattr(exc, "response_code", None)
+        if status is None:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+        if isinstance(status, int) and 400 <= status < 500 and status not in (408, 409, 425, 429):
+            raise
+        raise GitLabSuggestionPublicationError(
+            "GitLab did not confirm whether a suggestion write succeeded"
+        ) from exc
+    if require_result and result is None:
+        raise GitLabSuggestionPublicationError("GitLab returned no confirmation for a new suggestion")
+    return result
 
 
 # A large merge request can still be generating its diff when PR-Agent first asks for it:
@@ -459,6 +495,256 @@ class GitLabProvider(GitProvider):
             r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
         self.incremental = incremental
 
+    @staticmethod
+    def _settings_files_equal(left, right) -> bool:
+        """Compare parsed settings per source rather than unrelated Git commit IDs or TOML comments."""
+        def parsed(files):
+            if not files:
+                return []
+            if not isinstance(files, list):
+                files = [("local", files)]
+            normalized = []
+            for scope, contents in files:
+                if not isinstance(contents, (str, bytes)):
+                    raise ValueError("Invalid GitLab settings snapshot")
+                if len(contents) > MAX_TOML_SIZE_IN_BYTES:
+                    raise ValueError("GitLab settings snapshot exceeds loader byte limit")
+                if isinstance(contents, str) and len(contents) > MAX_TOML_SIZE_IN_BYTES // 4:
+                    # Count UTF-8 bytes in bounded slices, without allocating a
+                    # second potentially enormous copy of the original content.
+                    size = 0
+                    for offset in range(0, len(contents), 65536):
+                        size += len(contents[offset:offset + 65536].encode("utf-8"))
+                        if size > MAX_TOML_SIZE_IN_BYTES:
+                            raise ValueError("GitLab settings snapshot exceeds loader byte limit")
+                raw = decode_if_bytes(contents)
+                try:
+                    value = ("toml", tomllib.loads(raw))
+                except tomllib.TOMLDecodeError:
+                    # A malformed file is already reported and ignored by the
+                    # settings loader. The same bytes remain the same policy.
+                    value = ("invalid", raw)
+                normalized.append((scope, value))
+            return normalized
+        return parsed(left) == parsed(right)
+
+    def _get_nested_settings_manifest(self, ref: str) -> dict[str, str]:
+        """Return the complete path/blob-ID map of nested TOML at one immutable commit."""
+        if not isinstance(ref, str) or not ref:
+            raise ValueError("Missing GitLab nested settings revision")
+        pages = get_settings().config.per_directory_settings_max_tree_pages
+        if isinstance(pages, bool) or not isinstance(pages, int) or pages < 1:
+            raise ValueError("Invalid GitLab per-directory tree page limit")
+        project = self.gl.projects.get(self.id_project, lazy=True)
+        manifest = {}
+        for page in range(1, pages + 1):
+            entries = project.repository_tree(ref=ref, recursive=True, page=page, per_page=100)
+            if not isinstance(entries, list):
+                raise ValueError("Incomplete GitLab settings tree")
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise ValueError("Malformed GitLab settings tree entry")
+                path = entry.get("path")
+                if (entry.get("type") == "blob" and isinstance(path, str)
+                        and "/" in path and path.endswith("/.pr_agent.toml")):
+                    blob_id = entry.get("id")
+                    if not isinstance(blob_id, str) or not blob_id:
+                        raise ValueError("GitLab nested settings tree lacks blob IDs")
+                    manifest[path] = blob_id
+            if len(entries) < 100:
+                return manifest
+        raise ValueError("GitLab settings tree exceeded the configured page limit")
+
+    def _nested_settings_equal(self, old_ref: str, new_ref: str) -> bool:
+        """Compare changed TOMLs with the same bounded byte budget as discovery."""
+        from .utils import _DEFAULT_MAX_PER_DIRECTORY_SETTINGS, _PER_DIRECTORY_SETTINGS_AGGREGATE_BYTES
+
+        old = self._get_nested_settings_manifest(old_ref)
+        new = self._get_nested_settings_manifest(new_ref)
+        changed = sorted(path for path in old.keys() | new.keys() if old.get(path) != new.get(path))
+        from .utils import _get_changed_file_paths
+
+        # The original tree may have no nested configs; always fetch the current
+        # MR inventory before deciding which newly-added policies can apply.
+        fresh_paths = _get_changed_file_paths(self)
+        if getattr(self, "_repo_settings_failed", False):
+            raise ValueError("GitLab changed-file inventory could not be verified")
+        affected = set(getattr(self, "_per_directory_changed_paths", ())) | set(fresh_paths)
+        changed = [
+            path for path in changed
+            if any(file == path or file.startswith(posixpath.dirname(path) + "/")
+                   for file in affected)
+        ]
+        max_files = get_settings().config.get(
+            "per_directory_settings_max_files", _DEFAULT_MAX_PER_DIRECTORY_SETTINGS
+        )
+        if isinstance(max_files, bool):
+            raise ValueError("Invalid GitLab nested settings file limit")
+        try:
+            max_files = int(max_files)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Invalid GitLab nested settings file limit") from exc
+        if max_files < 1:
+            raise ValueError("Invalid GitLab nested settings file limit")
+        if len(changed) > max_files:
+            raise ValueError("Too many changed GitLab nested settings to verify safely")
+        remaining = [_PER_DIRECTORY_SETTINGS_AGGREGATE_BYTES] * 2
+        # Each revision is a separate policy acquisition with its own 5 MiB
+        # budget. Do not add the old and new sizes together, since normal
+        # discovery would accept either complete revision independently.
+        for path in changed:
+            values = []
+            for index, (manifest, ref) in enumerate(((old, old_ref), (new, new_ref))):
+                if path not in manifest:
+                    values.append(("toml", {}))
+                    continue
+                raw = self.get_repo_settings_contents([path], ref).get(path)
+                if not isinstance(raw, (str, bytes)):
+                    raise ValueError("Missing GitLab nested settings payload")
+                raw = decode_if_bytes(raw)
+                length = len(raw.encode("utf-8"))
+                remaining[index] -= length
+                if remaining[index] < 0:
+                    raise ValueError("GitLab nested settings verification exceeds byte limit")
+                try:
+                    values.append(("toml", tomllib.loads(raw)))
+                except tomllib.TOMLDecodeError:
+                    values.append(("invalid", raw))
+            if values[0] != values[1]:
+                return False
+        return True
+
+    def reset_diff_cache_for_command(self) -> None:
+        super().reset_diff_cache_for_command()
+        # Invalidate inventory, patch and publication state as one command-scoped unit.
+        self._merge_request_changes_cache = None
+        self.git_files = None
+        self._line_link_source_lookup_attempts = 0
+        self._line_link_source_web_url = None
+        self._gitlab_suggestion_version_changed = False
+        self._gitlab_suggestion_version_notice_sent = False
+        self._gitlab_suggestion_publication_incomplete = False
+        # Retry bookkeeping is command-owned. A later command must not publish
+        # outstanding drafts from an interrupted earlier batch, even at the
+        # same MR revision. Track only drafts this provider actually created.
+        pending = getattr(self, "_gitlab_pending_drafts", ())
+        if pending:
+            stale = list(getattr(self, "_gitlab_stale_suggestion_drafts", ()))
+            stale.extend(draft for draft in pending if not any(old is draft for old in stale))
+            self._gitlab_stale_suggestion_drafts = stale
+        # New commands own new draft IDs and refs. Keep the old IDs only
+        # in the stale list, so selective publication cannot adopt them.
+        self._gitlab_pending_drafts = []
+        self._gitlab_pending_draft_refs = None
+        self._gitlab_selective_draft_landed = False
+        self._failed_draft_batch = None
+        self._failed_draft_inputs = []
+        self._failed_draft_settled = []
+        self._gitlab_settings_unverified = False
+        # The MR metadata used for ignore rules and manual-tool head identity
+        # belongs to this command, too. Verifying TOML alone does not refresh
+        # the MR object retained from the previous webhook command.
+        previous_mr = getattr(self, "mr", None)
+        refreshed_mr = None
+        if previous_mr is not None:
+            refreshed_mr = self._get_merge_request()
+            previous_target = getattr(previous_mr, "target_branch", None)
+            refreshed_target = getattr(refreshed_mr, "target_branch", None)
+            if not (isinstance(previous_target, str) and previous_target
+                    and isinstance(refreshed_target, str) and refreshed_target):
+                raise ValueError("GitLab MR target branch cannot be verified")
+            if previous_target != refreshed_target:
+                raise ValueError("GitLab MR was retargeted; a new policy snapshot is required")
+            self.mr = refreshed_mr
+            self.mr_commits = None
+            self.__dict__.pop("_incremental_notes_cache", None)
+        self._verify_repo_settings_for_command()
+        if refreshed_mr is not None and not self._gitlab_settings_unverified:
+            # A successfully verified command boundary can safely hand the
+            # refreshed MR to tools after the settings/ignore decision.
+            self._tool_provider_stale = False
+
+    def _verify_repo_settings_for_command(self) -> None:
+        """Check that the next command cannot run under an outdated repository policy."""
+        cached = context.get("repo_settings") if context.exists() else None
+        if cached is None:
+            # A missing policy snapshot is not proof that there were no ignore rules.
+            if context.exists() and get_settings().config.get("use_repo_settings_file", False):
+                self._gitlab_settings_unverified = True
+            return
+        sources = getattr(self, "_repo_settings_source_options", None)
+        if not isinstance(sources, dict):
+            self._gitlab_settings_unverified = True
+            return
+
+        settings = get_settings()
+        previous_options = {key: settings.get(f"CONFIG.{key.upper()}") for key in sources}
+        original_ref = getattr(self, "_resolved_config_branch", "")
+        root_source_branch = getattr(self, "_repo_root_settings_branch", None)
+        initially_failed = getattr(self, "_repo_settings_failed", False)
+        # Capture the policy used before any per-command --config override changed the settings.
+        nested_enabled = getattr(
+            self, "_per_directory_settings_policy_enabled",
+            settings.config.get("enable_per_directory_settings", False),
+        )
+        nested_branch = getattr(self, "_per_directory_settings_source_branch", None)
+        try:
+            for key, value in sources.items():
+                settings.set(f"config.{key}", value)
+            if initially_failed:
+                raise ValueError("Original GitLab repository settings were not verified")
+            for attempt in range(2):
+                try:
+                    fresh = self.get_repo_settings()
+                    if getattr(self, "_repo_settings_failed", False):
+                        raise ValueError("GitLab repository settings read failed")
+                    if not self._settings_files_equal(cached, fresh):
+                        break
+                    if nested_enabled:
+                        if not isinstance(original_ref, str) or not original_ref:
+                            raise ValueError("Missing original GitLab nested settings revision")
+                        # Use the branch that actually provided nested settings (which may
+                        # have been selected by a global TOML when no root TOML existed).
+                        branch = nested_branch or get_config_branch() or self._project_default_branch()
+                        project = self.gl.projects.get(self.id_project, lazy=True)
+                        fresh_ref = self._settings_commit_id(project.commits.get(branch).id)
+                        if fresh_ref != original_ref:
+                            if root_source_branch is None:
+                                # With no original root TOML, a global setting can
+                                # select a different branch for nested discovery.
+                                # A new root on that branch changes the effective
+                                # policy even if none of the nested blobs changed.
+                                try:
+                                    project.files.get(file_path=".pr_agent.toml", ref=fresh_ref)
+                                except GitlabGetError as exc:
+                                    if getattr(exc, "response_code", None) != 404:
+                                        raise
+                                else:
+                                    raise ValueError("Root GitLab settings appeared on the nested branch")
+                            if not self._nested_settings_equal(original_ref, fresh_ref):
+                                break
+                    return
+                except Exception as exc:
+                    if attempt == 0:
+                        get_logger().warning(f"Retrying GitLab policy verification: {type(exc).__name__}")
+                        continue
+                    get_logger().warning(f"GitLab policy verification failed: {type(exc).__name__}")
+            self._gitlab_settings_unverified = True
+        except Exception:
+            self._gitlab_settings_unverified = True
+        finally:
+            # Never switch the settings ref or host selection underneath a running command.
+            self._resolved_config_branch = original_ref
+            self._repo_root_settings_branch = root_source_branch
+            # The original snapshot state is separate from verification. Do not
+            # clear the latter: manual/reused-provider paths must fail closed too.
+            # A failed *reverification* is transient command state, not a
+            # permanent acquisition failure. The webhook and manual path check
+            # _gitlab_settings_unverified independently on every command.
+            self._repo_settings_failed = initially_failed
+            for key, value in previous_options.items():
+                settings.set(f"config.{key}", value)
+
     # --- submodule expansion helpers (opt-in) ---
     def _get_gitmodules_map(self, diff_refs: dict | None = None) -> dict[str, str]:
         """
@@ -826,7 +1112,8 @@ class GitLabProvider(GitProvider):
                     )
             diff_refs = after.get("diff_refs")
             if changes and (not isinstance(diff_refs, dict) or any(
-                not isinstance(diff_refs.get(key), str) or not diff_refs[key] for key in ("base_sha", "head_sha")
+                not isinstance(diff_refs.get(key), str) or not diff_refs[key]
+                for key in ("base_sha", "start_sha", "head_sha")
             )):
                 raise GitLabDiffNotReadyError(
                     f"GitLab merge request {self.id_mr} diff refs are not ready"
@@ -1466,6 +1753,9 @@ class GitLabProvider(GitProvider):
                 return diff_files
         self.diff_files = diff_files
         self._diff_head_sha = head_sha_for_content
+        self._diff_base_sha = base_sha_for_content
+        self._diff_start_sha = diff_refs.get("start_sha")
+        self._diff_is_incremental = incremental_active
         return diff_files
 
     def get_files(self) -> list:
@@ -1704,14 +1994,37 @@ class GitLabProvider(GitProvider):
             get_logger().warning(f"Failed to resolve comment thread: {e}")
         return False
 
+    def _cleanup_revision_is_current(self, head_sha: str) -> bool:
+        """Verify the live MR head immediately before changing a discussion's state."""
+        try:
+            latest = self._get_merge_request()
+            refs = getattr(latest, "diff_refs", None)
+            latest_head = refs.get("head_sha") if isinstance(refs, dict) else None
+            latest_sha = getattr(latest, "sha", None)
+            old_target = getattr(self.mr, "target_branch", None)
+            new_target = getattr(latest, "target_branch", None)
+            return (isinstance(latest_head, str) and bool(latest_head)
+                    and latest_head == head_sha
+                    and (not isinstance(old_target, str) or not old_target or old_target == new_target)
+                    and (not isinstance(latest_sha, str) or not latest_sha or latest_sha == latest_head))
+        except (GitlabError, RequestException, AttributeError, TypeError):
+            get_logger().warning("Cannot verify GitLab MR revision before discussion cleanup")
+            return False
+
+    def _cleanup_command_head(self) -> str | None:
+        """Use the reviewed diff head when it is available, including after an MR push."""
+        if getattr(self, "diff_files", None) is not None:
+            head_sha = getattr(self, "_diff_head_sha", None)
+        else:
+            refs = getattr(self.mr, "diff_refs", None)
+            head_sha = refs.get("head_sha") if isinstance(refs, dict) else None
+        return head_sha if isinstance(head_sha, str) and head_sha else None
+
     def resolve_outdated_inline_threads(self):
         if not get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False):
             return
         own_user_id = self._get_own_user_id()
-        try:
-            current_head_sha = self.mr.diff_refs['head_sha']
-        except (KeyError, TypeError, AttributeError):
-            current_head_sha = None
+        current_head_sha = self._cleanup_command_head()
         if own_user_id is None or not current_head_sha:
             get_logger().warning(
                 f"Skipping outdated inline thread cleanup on merge request {self.id_mr} "
@@ -1730,6 +2043,9 @@ class GitLabProvider(GitProvider):
             try:
                 if not _is_outdated_own_inline_thread(discussion, own_user_id, current_head_sha):
                     continue
+                if not self._cleanup_revision_is_current(current_head_sha):
+                    get_logger().warning("GitLab MR changed during outdated-thread cleanup; stopping")
+                    break
                 discussion.resolved = True
                 discussion.save()
                 resolved += 1
@@ -1744,19 +2060,31 @@ class GitLabProvider(GitProvider):
             get_logger().info(
                 f"Resolved {resolved} outdated inline thread(s) on merge request {self.id_mr}")
 
-    def _removed_lines_since(self, base_sha: str, head_sha: str) -> dict:
-        """Base-side line numbers removed per path between two commits, via repository_compare."""
+    def _removed_lines_since(self, base_sha: str, head_sha: str,
+                             *, older_in_mr_history: Callable[[str, str], bool] | None = None) -> dict | None:
+        """Base-side removed lines when the comment version is verified older."""
         removed = {}
         try:
             project = self.gl.projects.get(self.id_project, lazy=True)
+            ancestor = project.repository_merge_base(refs=[base_sha, head_sha])
+            if not isinstance(ancestor, dict) or not isinstance(ancestor.get('id'), str):
+                raise ValueError("GitLab merge-base response is incomplete")
+            if ancestor['id'] == head_sha:
+                # The discussion head is a descendant of the reviewed head.
+                return removed
+            if (ancestor['id'] != base_sha
+                    and (older_in_mr_history is None or not older_in_mr_history(base_sha, head_sha))):
+                # A rebase can make two successive MR versions divergent. Only
+                # their actual MR version order can authorize a direct compare.
+                return removed
             # straight=True: direct base..head comparison. The default merge-base
             # comparison reports lines dropped by a rebase/merge as removed, which
             # would resolve threads whose flagged code still exists at head.
             comparison = project.repository_compare(base_sha, head_sha, straight=True)
-        except (GitlabError, RequestException) as e:
+        except (GitlabError, RequestException, ValueError) as e:
             get_logger().warning(
-                f"Could not compare {base_sha[:12]}..{head_sha[:12]} for fixed-thread detection: {e}")
-            return removed
+                f"Could not verify {base_sha[:12]}..{head_sha[:12]} for fixed-thread detection: {e}")
+            return None
         if isinstance(comparison, dict):
             diffs = comparison.get('diffs', []) or []
         else:
@@ -1775,34 +2103,61 @@ class GitLabProvider(GitProvider):
     def reconcile_code_suggestion_threads(self) -> int:
         if not get_settings().get("GITLAB.AUTO_RESOLVE_FIXED_INLINE_THREADS", False):
             return 0
-        if getattr(self, '_fixed_threads_swept', False):
-            return 0  # one sweep per process: repeats only burn API calls
         own_user_id = self._get_own_user_id()
-        try:
-            current_head_sha = self.mr.diff_refs['head_sha']
-        except (KeyError, TypeError, AttributeError):
-            current_head_sha = None
+        current_head_sha = self._cleanup_command_head()
         if own_user_id is None or not current_head_sha:
             get_logger().warning(
                 f"Skipping fixed inline thread cleanup on merge request {self.id_mr} "
                 f"(bot user: {own_user_id}, current head sha: {current_head_sha})"
             )
             return 0
+        if getattr(self, '_fixed_threads_swept_head', None) == current_head_sha:
+            return 0  # Reuse one completed discussion scan for the same revision.
         try:
             discussions = self.mr.discussions.list(get_all=True, per_page=100)
         except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to list discussions of merge request {self.id_mr}: {e}")
             return 0
-        self._fixed_threads_swept = True
         # Threads pinned to the same head share one compare call.
         removed_lines_cache = {}
+        sweep_complete = True
+        version_ids = None
 
-        def removed_lines_for(position) -> dict:
+        def older_in_mr_history(recorded: str, reviewed: str) -> bool:
+            nonlocal version_ids
+            if version_ids is None:
+                versions = self.mr.diffs.list(get_all=True, per_page=100)
+                if not isinstance(versions, list):
+                    raise ValueError("GitLab MR diff version history is incomplete")
+                checked_ids = {}
+                seen_ids = set()
+                for version in versions:
+                    sha = (version.get('head_commit_sha') if isinstance(version, dict)
+                           else getattr(version, 'head_commit_sha', None))
+                    version_id = (version.get('id') if isinstance(version, dict)
+                                  else getattr(version, 'id', None))
+                    if (not isinstance(sha, str) or not sha or type(version_id) is not int
+                            or version_id <= 0 or version_id in seen_ids):
+                        raise ValueError("GitLab MR diff version history is incomplete")
+                    seen_ids.add(version_id)
+                    checked_ids.setdefault(sha, []).append(version_id)
+                # Commit this cache only after the entire API result is valid.
+                version_ids = checked_ids
+            # IDs establish chronology even if API pagination changes order.
+            # A repeated head makes a discussion's version ambiguous.
+            recorded_ids = version_ids.get(recorded, [])
+            reviewed_ids = version_ids.get(reviewed, [])
+            return (len(recorded_ids) == len(reviewed_ids) == 1
+                    and recorded_ids[0] < reviewed_ids[0])
+
+        def removed_lines_for(position) -> dict | None:
             recorded = position.get('head_sha')
             if not recorded or recorded == current_head_sha:
                 return None  # nothing pushed since the comment - nothing could be fixed yet
             if recorded not in removed_lines_cache:
-                removed_lines_cache[recorded] = self._removed_lines_since(recorded, current_head_sha)
+                removed_lines_cache[recorded] = self._removed_lines_since(
+                    recorded, current_head_sha, older_in_mr_history=older_in_mr_history
+                )
             return removed_lines_cache[recorded]
 
         resolved = 0
@@ -1818,9 +2173,15 @@ class GitLabProvider(GitProvider):
                     continue
                 removed_lines = removed_lines_for(position)
                 if removed_lines is None:
+                    if position.get('head_sha') != current_head_sha:
+                        sweep_complete = False  # Compare failed; retry on the next sweep.
                     continue
                 if not _flagged_line_removed(position, removed_lines):
                     continue
+                if not self._cleanup_revision_is_current(current_head_sha):
+                    get_logger().warning("GitLab MR changed during fixed-thread cleanup; stopping")
+                    sweep_complete = False
+                    break
                 discussion.resolved = True
                 discussion.save()
                 resolved += 1
@@ -1829,6 +2190,9 @@ class GitLabProvider(GitProvider):
                         released_fps |= marker_fingerprints(note.get('body'))
             except (GitlabError, RequestException, KeyError, TypeError) as e:
                 get_logger().warning(f"Failed to resolve fixed inline thread {discussion_id}: {e}")
+                sweep_complete = False
+        if sweep_complete:
+            self._fixed_threads_swept_head = current_head_sha
         if released_fps:
             get_inline_comment_store(self).release(released_fps)
         if resolved:
@@ -1854,7 +2218,11 @@ class GitLabProvider(GitProvider):
         return list(getattr(self, "_published_inline_comment_bodies", []))
 
     def get_persistent_comment_bodies(self) -> list[str]:
-        """Return existing GitLab MR note bodies for inline deduplication."""
+        """Return published GitLab notes for inline deduplication.
+
+        Drafts from another provider run are private and may never be published.
+        Only this instance's tracked drafts can reserve fingerprints locally.
+        """
         bodies = list(getattr(self, "_published_inline_comment_bodies", []))
         seen = set(bodies)
         if self.mr is None:
@@ -1868,14 +2236,6 @@ class GitLabProvider(GitProvider):
                     if body and body not in seen:
                         bodies.append(body)
                         seen.add(body)
-        try:
-            for draft in self.mr.draft_notes.list(get_all=True, per_page=100):
-                body = getattr(draft, "note", "") or ""
-                if body and body not in seen:
-                    bodies.append(body)
-                    seen.add(body)
-        except (GitlabError, RequestException) as e:
-            get_logger().warning(f"Could not list pending draft notes for MR {self.id_mr}: {e}")
         return bodies
 
     def _remember_published_inline_comment_body(self, body: str) -> None:
@@ -1935,7 +2295,7 @@ class GitLabProvider(GitProvider):
             get_logger().debug(f"Creating comment in MR {self.id_mr} with body {body} and position {pos_obj}")
             created = self._create_suggestion_note(as_draft, body, pos_obj, diff, target_file, relevant_file,
                                                     original_suggestion, store, body_fp, code_fp)
-            if not created and as_draft:
+            if not created and as_draft and not self._gitlab_suggestion_version_changed:
                 # Draft notes are unavailable/erroring outright for this MR (unsupported GitLab
                 # version, insufficient permissions, ...) - degrade to a normal live comment rather
                 # than silently dropping the suggestion. It publishes immediately and falls outside
@@ -1954,10 +2314,22 @@ class GitLabProvider(GitProvider):
         attempt succeeded."""
         try:
             if as_draft:
-                self.mr.draft_notes.create({'note': body, 'position': pos_obj})
+                draft_refs = {key: pos_obj.get(key) for key in
+                              ("base_sha", "start_sha", "head_sha")}
+                previous_refs = getattr(self, "_gitlab_pending_draft_refs", None)
+                if previous_refs is not None and previous_refs != draft_refs:
+                    self._gitlab_suggestion_version_changed = True
+                    return False
+                draft = _post_suggestion(
+                    lambda: self.mr.draft_notes.create({'note': body, 'position': pos_obj}), require_result=True
+                )
+                self._gitlab_pending_draft_refs = draft_refs
+                self._gitlab_pending_drafts = getattr(self, "_gitlab_pending_drafts", []) + [draft]
                 self._code_suggestion_draft_queued = True
             else:
-                self.mr.discussions.create({'body': body, 'position': pos_obj})
+                _post_suggestion(
+                    lambda: self.mr.discussions.create({'body': body, 'position': pos_obj}), require_result=True
+                )
                 self._remember_published_inline_comment_body(body)
             if store is not None:
                 store.add(body_fp)
@@ -2016,10 +2388,23 @@ class GitLabProvider(GitProvider):
                     'file_path': f'{target_file.filename}',
                 }
                 if as_draft:
-                    self.mr.draft_notes.create({'note': body_fallback, 'position': fallback_position})
+                    draft_refs = {key: fallback_position.get(key) for key in
+                                  ("base_sha", "start_sha", "head_sha")}
+                    previous_refs = getattr(self, "_gitlab_pending_draft_refs", None)
+                    if previous_refs is not None and previous_refs != draft_refs:
+                        self._gitlab_suggestion_version_changed = True
+                        return False
+                    draft = _post_suggestion(
+                        lambda: self.mr.draft_notes.create({'note': body_fallback, 'position': fallback_position}),
+                        require_result=True,
+                    )
+                    self._gitlab_pending_draft_refs = draft_refs
+                    self._gitlab_pending_drafts = getattr(self, "_gitlab_pending_drafts", []) + [draft]
                     self._code_suggestion_draft_queued = True
                 else:
-                    self.mr.notes.create({'body': body_fallback, 'position': fallback_position})
+                    _post_suggestion(lambda: self.mr.notes.create({
+                        'body': body_fallback, 'position': fallback_position,
+                    }), require_result=True)
                     self._remember_published_inline_comment_body(body_fallback)
                 get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
                 if store is not None:
@@ -2042,36 +2427,283 @@ class GitLabProvider(GitProvider):
         if not all_diffs:
             get_logger().error('No diffs found for the merge request.')
             return None
+        latest_diff = all_diffs[0]
+        reviewed_refs = changes.get("diff_refs", {})
+        # Suggestion file/line positions come from the earlier get_diff_files()
+        # snapshot. Changes without a numeric changes_count are not cached:
+        # compare their new refs with the actual reviewed file snapshot first.
+        if getattr(self, "diff_files", None) is not None:
+            reviewed_head = getattr(self, "_diff_head_sha", None)
+            if not reviewed_head or reviewed_head != reviewed_refs.get("head_sha"):
+                self._gitlab_suggestion_version_changed = True
+                get_logger().warning("GitLab suggestion differs from the reviewed file revision")
+                return None
+            if not getattr(self, "_diff_is_incremental", False):
+                reviewed_base = getattr(self, "_diff_base_sha", None)
+                reviewed_start = getattr(self, "_diff_start_sha", None)
+                if (not reviewed_base or reviewed_base != reviewed_refs.get("base_sha")
+                        or not reviewed_start or reviewed_start != reviewed_refs.get("start_sha")):
+                    self._gitlab_suggestion_version_changed = True
+                    get_logger().warning("GitLab suggestion base differs from the reviewed files")
+                    return None
+        # The versions endpoint may have moved while the MR diff was read.
+        # Missing refs also cannot prove the position is from a reviewed version.
+        for ref, attr in (
+            ("head_sha", "head_commit_sha"),
+            ("base_sha", "base_commit_sha"),
+            ("start_sha", "start_commit_sha"),
+        ):
+            reviewed = reviewed_refs.get(ref)
+            version = getattr(latest_diff, attr, None)
+            if (not isinstance(reviewed, str) or not reviewed
+                    or not isinstance(version, str) or not version or reviewed != version):
+                self._gitlab_suggestion_version_changed = True
+                get_logger().warning("GitLab suggestion diff version could not be verified")
+                return None
         for change in changes['changes']:
             if change['new_path'] == relevant_file and relevant_line_in_file in change['diff']:
-                return all_diffs[0]
+                return latest_diff
         get_logger().debug(
             f'No relevant diff found for {relevant_file} {relevant_line_in_file}. Falling back to latest diff.')
-        return self.last_diff  # fallback to the latest diff if no relevant diff is found
+        return latest_diff
 
-    def _publish_suggestion_drafts(self, pending) -> None:
-        if pending:
-            self.mr.draft_notes.bulk_publish()
-            for draft in pending:
+    def _draft_revision_is_current(self, pending=None) -> bool | None:
+        """Validate all draft positions against live MR refs.
+
+        True means verified, False means a confirmed mismatch and None means an
+        API error or incomplete metadata. Unknown must never trigger deletion.
+        """
+        expected = getattr(self, "_gitlab_pending_draft_refs", None)
+        if expected is None and not pending:
+            return True
+        try:
+            mr = self._get_merge_request()
+            refs = getattr(mr, "diff_refs", None)
+            keys = ("base_sha", "start_sha", "head_sha")
+            if not isinstance(refs, dict) or not all(
+                isinstance(refs.get(key), str) and refs[key] for key in keys
+            ):
+                return None
+            sha = getattr(mr, "sha", None)
+            if (expected is not None and isinstance(sha, str) and sha
+                    and sha != expected.get("head_sha")):
+                return False
+            if isinstance(sha, str) and sha != refs["head_sha"]:
+                return None
+            if expected is not None:
+                if not all(isinstance(expected.get(key), str) and expected[key] for key in keys):
+                    return None
+                if any(refs[key] != expected[key] for key in keys):
+                    return False
+            tracked = getattr(self, "_gitlab_pending_drafts", [])
+            unknown = False
+            for draft in pending or ():
+                if not any(
+                    known is draft or (
+                        getattr(known, "id", None) is not None
+                        and known.id == getattr(draft, "id", None)
+                    )
+                    for known in tracked
+                ):
+                    # A comment marker is copyable, so only notes created by
+                    # this provider (matched by draft ID) may be treated as
+                    # trusted for a definitive stale-version verdict.
+                    unknown = True
+                    continue
+                position = getattr(draft, "position", None)
+                if not isinstance(position, dict):
+                    attributes = getattr(draft, "attributes", None)
+                    position = attributes.get("position") if isinstance(attributes, dict) else None
+                if not isinstance(position, dict) or not all(
+                    isinstance(position.get(key), str) and position[key] for key in keys
+                ):
+                    unknown = True
+                    continue
+                if any(position[key] != refs[key] for key in keys):
+                    return False
+            return None if unknown else True
+        except (GitlabError, RequestException, AttributeError, KeyError, TypeError):
+            get_logger().warning("Cannot verify GitLab pending draft revision")
+            return None
+
+    def _discard_stale_suggestion_drafts(self) -> bool:
+        """Discard tracked stale drafts; release dedup keys only after confirmed deletion."""
+        pending = getattr(self, "_gitlab_stale_suggestion_drafts", [])
+        remaining = []
+        processed_ids = set()
+        for draft in pending:
+            draft_id = getattr(draft, "id", None)
+            # GitLab can return a second Python object for the same draft ID.
+            if draft_id is not None and draft_id in processed_ids:
+                continue
+            if draft_id is not None:
+                processed_ids.add(draft_id)
+            try:
+                draft.delete()
+            except GitlabError as exc:
+                if getattr(exc, "response_code", None) != 404:
+                    get_logger().warning("Could not discard a stale GitLab draft suggestion")
+                    remaining.append(draft)
+                    continue
+                # A 404 cannot distinguish a deleted draft from an already
+                # published one; keep its fingerprints reserved.
+                get_logger().warning("GitLab stale-draft deletion returned 404; outcome remains unverified")
+                remaining.append(draft)
+                continue
+            except RequestException:
+                get_logger().warning("Could not discard a stale GitLab draft suggestion")
+                remaining.append(draft)
+                continue
+            # Deleted drafts are not visible reviews. A later command must
+            # be allowed to recreate their suggestions for the new MR version.
+            fingerprints = marker_fingerprints(getattr(draft, "note", "") or "")
+            if fingerprints:
+                get_inline_comment_store(self).release(fingerprints)
+        self._gitlab_stale_suggestion_drafts = remaining
+        if pending and not remaining:
+            self._gitlab_pending_drafts = []
+            self._gitlab_pending_draft_refs = None
+            # Deleted drafts cannot count as a settled result of a prior batch.
+            self._failed_draft_batch = None
+            self._failed_draft_inputs = []
+            self._failed_draft_settled = []
+        return not remaining
+
+    def _publish_suggestion_drafts(self, pending) -> bool:
+        tracked = getattr(self, "_gitlab_pending_drafts", [])
+
+        def same_draft(a, b):
+            a_id, b_id = getattr(a, "id", None), getattr(b, "id", None)
+            return a_id is not None and b_id is not None and a_id == b_id or a is b
+
+        if not pending:
+            if tracked:
+                # A timeout after publication is ambiguous. Do not report
+                # success or retry blindly until the published note is verified.
+                raise GitLabSuggestionPublicationError("GitLab pending drafts could not be confirmed")
+            return True
+
+        unrelated = [draft for draft in pending
+                     if not any(same_draft(draft, own) for own in tracked)]
+        if unrelated and not tracked:
+            # Drafts from another run cannot be authenticated by a copyable
+            # comment marker. Leave them for manual recovery, not bulk_publish.
+            get_logger().warning("Skipping GitLab drafts not tracked by this provider")
+            return True
+        if tracked and (unrelated or getattr(self, "_gitlab_stale_suggestion_drafts", [])):
+            # bulk_publish would also release manually written drafts and old
+            # drafts belonging to another webhook. Even if listing omits an
+            # ambiguous stale draft, never bulk-publish it by accident.
+            for draft in list(tracked):
+                # GitLab publishes these notes one at a time. Recheck before
+                # every write, not just the first, to stop on a mid-batch push.
+                current = self._draft_revision_is_current(tracked)
+                if current is False:
+                    self._gitlab_suggestion_version_changed = True
+                    stale = list(getattr(self, "_gitlab_stale_suggestion_drafts", []))
+                    for remaining in tracked:
+                        if not any(known is remaining for known in stale):
+                            stale.append(remaining)
+                    self._gitlab_stale_suggestion_drafts = stale
+                    self._discard_stale_suggestion_drafts()
+                    return False
+                if current is None:
+                    raise IncompleteGitLabDiffError("Cannot verify this GitLab draft batch")
+                if not any(same_draft(draft, item) for item in pending):
+                    raise GitLabSuggestionPublicationError("GitLab draft publication outcome is uncertain")
+                _post_suggestion(draft.publish)
+                # Retain this across publication retries: a timeout on the
+                # next draft must not allow a duplicate full-summary fallback.
+                self._gitlab_selective_draft_landed = True
                 body = getattr(draft, "note", "") or ""
                 if body:
                     self._remember_published_inline_comment_body(body)
+                tracked.remove(draft)
+            current = self._draft_revision_is_current()
+            if current is False:
+                self._gitlab_suggestion_version_changed = True
+                return False
+            if current is None:
+                raise IncompleteGitLabDiffError("Cannot verify revision after GitLab draft publication")
+            self._gitlab_pending_draft_refs = None
+            self._gitlab_selective_draft_landed = False
+            return True
+        # A failed bulk publish may be retried after the MR has advanced.
+        # Check the latest MR version BEFORE releasing any queued drafts.
+        version_current = self._draft_revision_is_current(pending)
+        if version_current is None:
+            # Do not publish or delete drafts when GitLab merely failed to
+            # supply fresh version metadata. Retry is safe after recovery.
+            raise IncompleteGitLabDiffError("Cannot verify GitLab pending draft revision")
+        if not version_current:
+            self._gitlab_suggestion_version_changed = True
+            tracked = getattr(self, "_gitlab_pending_drafts", [])
+            stale = list(getattr(self, "_gitlab_stale_suggestion_drafts", []))
+            for draft in tracked:
+                if not any(previous is draft for previous in stale):
+                    stale.append(draft)
+            # Cross-provider drafts cannot be safely deleted solely by a
+            # copyable comment marker; keep them pending for explicit recovery.
+            self._gitlab_stale_suggestion_drafts = stale
+            self._discard_stale_suggestion_drafts()
+            self._failed_draft_batch = None
+            self._failed_draft_inputs = []
+            self._failed_draft_settled = []
+            return False
+        _post_suggestion(self.mr.draft_notes.bulk_publish)
+        current = self._draft_revision_is_current()
+        if current is False:
+            self._gitlab_suggestion_version_changed = True
+            return False
+        if current is None:
+            raise IncompleteGitLabDiffError("Cannot verify revision after GitLab bulk publication")
+        for draft in pending:
+            body = getattr(draft, "note", "") or ""
+            if body:
+                self._remember_published_inline_comment_body(body)
+        self._gitlab_pending_drafts = []
+        self._gitlab_pending_draft_refs = None
+        return True
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
+        # Never publish pending drafts tied to an obsolete MR revision, even on
+        # a later command after a transient failure deleting those drafts.
+        if not self._discard_stale_suggestion_drafts():
+            if getattr(self, "_gitlab_pending_drafts", []):
+                # An unresolved draft still owned by this command cannot be
+                # distinguished from a new draft. Stop without publishing it.
+                self._gitlab_suggestion_publication_incomplete = True
+                return False
+            # Older command drafts remain reserved. New drafts are isolated
+            # and can be published individually, never through bulk_publish.
         # Runs first so the fingerprints it frees are in the store before any dedup lookup.
         self.resolve_outdated_inline_threads()
         self.reconcile_code_suggestion_threads()
         if not code_suggestions:
             return True
+        self._gitlab_suggestion_version_changed = False
+        self._gitlab_suggestion_publication_incomplete = bool(
+            getattr(self, "_gitlab_selective_draft_landed", False)
+        )
         retry = getattr(self, "_failed_draft_batch", None) is not None and all(
                 suggestion in self._failed_draft_inputs for suggestion in code_suggestions)
         if retry and all(suggestion in self._failed_draft_settled for suggestion in code_suggestions):
             # Caller retries publish the queued batch without recreating its suggestions.
             if not self._failed_draft_batch:
                 try:
-                    self._publish_suggestion_drafts(self.mr.draft_notes.list(get_all=True, per_page=100))
-                    self._failed_draft_batch = True
+                    published = self._publish_suggestion_drafts(
+                        self.mr.draft_notes.list(get_all=True, per_page=100)
+                    )
+                    if self._gitlab_suggestion_version_changed:
+                        # The revision guard already invalidated and cleared
+                        # the old retry state. Do not overwrite it with False.
+                        return False
+                    self._failed_draft_batch = published
+                except IncompleteProviderPullRequestFilesError:
+                    self._gitlab_suggestion_publication_incomplete = True
+                    raise
                 except (GitlabError, RequestException) as e:
+                    self._gitlab_suggestion_publication_incomplete = True
                     get_logger().warning(f"Retrying draft publication for MR {self.id_mr} failed: {e}")
             return self._failed_draft_batch
         if not retry:
@@ -2083,6 +2715,8 @@ class GitLabProvider(GitProvider):
         # notification/email) as soon as it's created.
         as_review = get_settings().get("gitlab.publish_code_suggestions_as_review", False)
         for suggestion in code_suggestions:
+            if self._gitlab_suggestion_version_changed:
+                break
             try:
                 if suggestion and 'original_suggestion' in suggestion:
                     original_suggestion = suggestion['original_suggestion']
@@ -2165,12 +2799,26 @@ class GitLabProvider(GitProvider):
                 landed = landed or bool(created)
                 if created is not False:
                     settled.append(suggestion)
+            except IncompleteProviderPullRequestFilesError:
+                raise
             except Exception as e:
                 # Deliberately broad: suggestions are published one by one, so the loop has to
                 # survive a single bad one - whatever went wrong with it - and still land the rest.
                 get_logger().exception(f"Could not publish code suggestion:\nsuggestion: {suggestion}\nerror: {e}")
 
-        if as_review:
+        if as_review and self._gitlab_suggestion_version_changed:
+            # Keep failed cleanup visible across commands; a later bulk publish
+            # must not accidentally release obsolete drafts from this review.
+            stale = list(getattr(self, "_gitlab_stale_suggestion_drafts", []))
+            # A failed earlier bulk publish may still have pending notes from
+            # another invocation on this same provider. They share the old
+            # revision and must be discarded together with this batch.
+            for draft in getattr(self, "_gitlab_pending_drafts", []):
+                if not any(previous is draft for previous in stale):
+                    stale.append(draft)
+            self._gitlab_stale_suggestion_drafts = stale
+            self._discard_stale_suggestion_drafts()
+        if as_review and not self._gitlab_suggestion_version_changed:
             try:
                 # Dedup-only runs may still refer to pending drafts from an earlier operation.
                 try:
@@ -2181,26 +2829,64 @@ class GitLabProvider(GitProvider):
                     # Draft-unsupported instances already fell back to live comments.
                     get_logger().warning(f"Could not list draft notes for MR {self.id_mr}: {e}")
                     pending = []
-                if settled:
-                    self._publish_suggestion_drafts(pending)
+                if settled and not self._publish_suggestion_drafts(pending):
+                    return False
+            except IncompleteProviderPullRequestFilesError:
+                # Keep the identified draft IDs for an explicit retry after
+                # GitLab recovers; never recreate or republish them blindly.
+                self._gitlab_suggestion_publication_incomplete = True
+                self._failed_draft_batch = False
+                if not retry:
+                    self._failed_draft_inputs, self._failed_draft_settled = code_suggestions, []
+                self._failed_draft_settled += settled
+                raise
             except (GitlabError, RequestException) as e:
-                # Draft notes are only visible to the posting user until published, so a failure here
-                # leaves the suggestions invisible to everyone else. They aren't lost: GitLab keeps
-                # pending drafts on the MR, so a manual publish from the GitLab UI, or the next
-                # successful run of this method (which also ends in a bulk_publish call), will surface
-                # them - but that won't happen automatically, so this needs to be visible in logs/alerts.
+                self._gitlab_suggestion_publication_incomplete = True
+                # GitLab draft notes are visible only to the posting account until published.
+                # A new provider cannot safely adopt untracked notes based on copyable markers;
+                # unresolved drafts require manual inspection and recovery in GitLab.
                 get_logger().exception(
                     f"Failed to bulk-publish draft code-suggestion notes for MR {self.id_mr}; they remain "
-                    f"as pending drafts, visible only to the posting user, until published manually from "
-                    f"the GitLab UI or by a subsequent successful run: {e}")
+                    f"as pending drafts, visible only to the posting account; inspect and recover "
+                    f"them manually in the GitLab UI: {e}")
                 self._failed_draft_batch = False
                 if not retry:
                     self._failed_draft_inputs, self._failed_draft_settled = code_suggestions, []
                 self._failed_draft_settled += settled
                 return False
 
-        # note that we publish suggestions one-by-one. so, if one fails, the rest will still be published
-        return landed or len(settled) == len(code_suggestions)
+        if getattr(self, "_gitlab_suggestion_version_changed", False):
+            # A push during the batch may leave some suggestions published and
+            # others skipped. Do not falsely report a complete publication.
+            settings = get_settings()
+            # A changed MR may now be subject to different ignore rules. Publish
+            # a retry notice only when no repository or metadata-dependent policy
+            # can have changed; otherwise log without posting to the MR.
+            # Command-level overrides can turn off repo settings or ignore
+            # lists. Rely on the policy captured before CLI arguments instead.
+            safe_notice = getattr(self, "_notice_policy_snapshot_required", True) is False
+            if (settings.get("CONFIG.PUBLISH_OUTPUT", True) and safe_notice
+                    and not getattr(self, "_gitlab_suggestion_version_notice_sent", False)):
+                try:
+                    self.publish_comment(
+                        "## PR-Agent suggestions were not fully published\n\n"
+                        "The merge request changed during suggestion publication. "
+                        "Some suggestions were skipped to avoid attaching them to "
+                        "unreviewed code. Please retry the original command."
+                    )
+                    self._gitlab_suggestion_version_notice_sent = True
+                except Exception:
+                    get_logger().exception("Failed to publish GitLab stale-suggestion notice")
+            return False
+
+        self._gitlab_suggestion_publication_incomplete = (
+            bool(settled) and len(settled) != len(code_suggestions)
+        )
+        if self._gitlab_suggestion_publication_incomplete:
+            get_logger().warning('GitLab suggestion publication was incomplete')
+        # A complete failure is still a failure, but can use the caller's
+        # ordinary retries/summary fallback because nothing landed inline.
+        return len(settled) == len(code_suggestions)
 
     def remove_initial_comment(self):
         try:
@@ -2253,25 +2939,45 @@ class GitLabProvider(GitProvider):
         return list(reversed(self.get_issue_comments()))
 
     def get_repo_settings(self):
+        if not hasattr(self, "_repo_settings_source_options"):
+            self._repo_settings_source_options = {
+                key: get_settings().get(f"CONFIG.{key.upper()}")
+                for key in ("use_global_settings_file", "use_group_settings_file",
+                            "global_settings_repo", "config_branch")
+            }
         # A real acquisition starts before global work, which can itself fail.
         self._resolved_config_branch = ""
+        self._repo_root_settings_branch = None
         self._repo_settings_failed = True
         settings_files = []
-        global_settings = self._get_global_repo_settings()
+        if get_settings().config.use_global_settings_file:
+            owner = self.get_owning_namespace()
+            settings_repo = get_settings().config.global_settings_repo
+            if settings_repo and not owner:
+                # A failed namespace lookup is not proof that a configured
+                # global policy is absent. Do not attempt local-only analysis.
+                get_logger().warning("Cannot resolve GitLab global settings namespace")
+                return ""
+            global_settings = self._fetch_global_repo_settings(owner, settings_repo) if owner and settings_repo else ""
+        else:
+            global_settings = ""
         if global_settings:
             settings_files.append(("global", global_settings))
-        group_settings = self._get_group_repo_settings()
+        group_settings = self._get_group_repo_settings(verify_fresh=True)
         if group_settings:
             settings_files.append(("group", group_settings))
         try:
             project = self.gl.projects.get(self.id_project, lazy=True)
             contents = None
+            # Re-evaluate the originally selected branch; a root TOML that has
+            # appeared since an earlier default-branch fallback must be detected.
             config_branch = get_config_branch()
             if config_branch:
                 try:
                     root_file = project.files.get(file_path='.pr_agent.toml', ref=config_branch)
                     contents = root_file.decode()
                     self._resolved_config_branch = self._settings_commit_id(root_file.commit_id)
+                    self._repo_root_settings_branch = config_branch
                 except GitlabGetError as e:
                     # Fall back to the default branch only for a missing branch/file (404); let
                     # other errors propagate so a fallback cannot mask them and apply unintended
@@ -2285,6 +2991,7 @@ class GitLabProvider(GitProvider):
                 root_file = project.files.get(file_path='.pr_agent.toml', ref=main_branch)
                 contents = root_file.decode()
                 self._resolved_config_branch = self._settings_commit_id(root_file.commit_id)
+                self._repo_root_settings_branch = main_branch
             self._repo_settings_failed = False
             if contents:
                 settings_files.append(("local", contents))
@@ -2321,6 +3028,9 @@ class GitLabProvider(GitProvider):
         root_commit = getattr(self, "_resolved_config_branch", "")
         if root_commit:
             try:
+                self._per_directory_settings_source_branch = (
+                    getattr(self, "_repo_root_settings_branch", None) or ref or get_config_branch()
+                )
                 return self._get_config_tree_paths(project, root_commit), root_commit
             except GitlabGetError as e:
                 if getattr(e, "response_code", None) != 404:
@@ -2350,6 +3060,7 @@ class GitLabProvider(GitProvider):
                     raise
                 continue
             self._resolved_config_branch = commit
+            self._per_directory_settings_source_branch = candidate_ref
             self._repo_settings_failed = False
             return paths, commit
         get_logger().debug("No repository tree found for per-directory settings; skipping")
@@ -2380,8 +3091,7 @@ class GitLabProvider(GitProvider):
         """
         max_pages = get_settings().config.per_directory_settings_max_tree_pages
         if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1:
-            get_logger().warning("Invalid per-directory tree page limit; skipping nested settings")
-            return []
+            raise ValueError("Invalid GitLab per-directory tree page limit")
         paths = []
         for page in range(1, max_pages + 1):
             tree = project.repository_tree(ref=ref, recursive=True, page=page, per_page=100)
@@ -2392,8 +3102,7 @@ class GitLabProvider(GitProvider):
             )
             if len(tree) < 100:
                 return paths
-        get_logger().warning("Per-directory tree page limit reached; skipping incomplete nested settings discovery")
-        return []
+        raise ValueError("GitLab per-directory tree page limit reached; refusing incomplete discovery")
 
     def get_repo_settings_contents(self, paths: list[str], ref: str) -> dict[str, bytes]:
         """Fetch raw content of per-directory settings files at *ref*."""
@@ -2409,14 +3118,14 @@ class GitLabProvider(GitProvider):
                 result[path] = content
             except GitlabGetError as e:
                 if getattr(e, "response_code", None) == 404:
-                    get_logger().warning(
-                        f"Per-directory settings file '{path}' not found at ref '{ref}'; skipping"
-                    )
+                    raise ValueError(
+                        f"GitLab per-directory settings disappeared at immutable ref: {path}"
+                    ) from e
                 else:
                     raise
         return result
 
-    def _get_group_repo_settings(self) -> bytes | str:
+    def _get_group_repo_settings(self, *, verify_fresh: bool = False) -> bytes | str:
         """Load only the closest subgroup's settings, excluding the global top-level group."""
         settings = get_settings()
         if not settings.config.use_global_settings_file or not getattr(
@@ -2431,15 +3140,20 @@ class GitLabProvider(GitProvider):
                 project_path = self.gl.projects.get(project_path).path_with_namespace
             except (GitlabError, RequestException, AttributeError):
                 get_logger().warning("Failed to resolve GitLab project path for subgroup settings")
+                if verify_fresh:
+                    raise
                 return ""
         if not isinstance(project_path, str):
+            if verify_fresh:
+                raise ValueError("Cannot identify GitLab subgroup settings source")
             return ""
         namespace = project_path.split("/")[:-1]
         for depth in range(len(namespace), 1, -1):
             group = "/".join(namespace[:depth])
-            contents = get_cached_global_settings(
-                self._get_global_settings_cache_key(group),
-                lambda group=group: self._fetch_global_repo_settings(group, settings_repo))
+            contents = (self._fetch_global_repo_settings(group, settings_repo) if verify_fresh
+                        else get_cached_global_settings(
+                            self._get_global_settings_cache_key(group),
+                            lambda group=group: self._fetch_global_repo_settings(group, settings_repo)))
             # python-gitlab returns bytes for a found file, including b"". An empty
             # closest file still wins; only the absent sentinel (str "") falls back.
             if contents != "":
@@ -2817,23 +3531,92 @@ class GitLabProvider(GitProvider):
         return f"{self.gl.url}/{project_path}"
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
+        diff_files = getattr(self, "diff_files", None)
+        if diff_files is None:
+            # MR metadata can outlive a push. Until a command has collected its
+            # reviewed diff, there is no verified revision for a file link.
+            # Fall back without fetching the MR once for every rendered link.
+            return getattr(self.mr, "web_url", "") or self.pr_url
         project_web_url = self._get_project_web_url()
-        encoded_file = quote(relevant_file, safe="/")
+        # PR descriptions already treat leading slashes/case as equivalent when
+        # resolving diff entries. Use the actual matched path for the link.
+        path = relevant_file.strip("/") if isinstance(relevant_file, str) else ""
+        if not path:
+            return getattr(self.mr, "web_url", "") or self.pr_url
+        entries = diff_files or []
+        diff_file = next((file for file in entries
+                          if isinstance(file.filename, str)
+                          and file.filename.strip("/") == path), None)
+        if diff_file is None:
+            diff_file = next((file for file in entries
+                              if isinstance(file.old_filename, str)
+                              and file.old_filename.strip("/") == path), None)
+        if diff_file is None:
+            # Git can track case-distinct names. An ambiguous case-insensitive
+            # match cannot safely choose a file or its head/base revision.
+            matches = [file for file in entries if any(
+                isinstance(getattr(file, field, None), str)
+                and getattr(file, field).strip("/").lower() == path.lower()
+                for field in ("filename", "old_filename")
+            )]
+            if len(matches) == 1:
+                diff_file = matches[0]
+        if diff_file is None:
+            return getattr(self.mr, "web_url", "") or self.pr_url
+        deleted = diff_file.edit_type == EDIT_TYPE.DELETED
+        # Pin the file link to the reviewed diff version.
+        sha = getattr(self, "_diff_base_sha" if deleted else "_diff_head_sha", None)
+
+        source_id = getattr(self.mr, "source_project_id", None)
+        target_id = getattr(self.mr, "target_project_id", None)
+        projects_known = isinstance(source_id, int) and isinstance(target_id, int)
+        is_fork = projects_known and source_id != target_id
+        if not isinstance(sha, str) or not sha:
+            # A branch ref can advance between analysis and rendering. Without an
+            # immutable revision a file link cannot identify the reviewed lines.
+            return getattr(self.mr, "web_url", "") or self.pr_url
+        if not projects_known and (not deleted or getattr(self, "_diff_is_incremental", False)):
+            # Incremental deletion bases can belong to a removed source fork.
+            return getattr(self.mr, "web_url", "") or self.pr_url
+        ref = quote(sha)
+        suffix = ""
+        if is_fork and (not deleted or getattr(self, "_diff_is_incremental", False)):
+            source_web_url = getattr(self, "_line_link_source_web_url", None)
+            if source_web_url is None:
+                attempts = getattr(self, "_line_link_source_lookup_attempts", 0)
+                if attempts >= 2:
+                    return getattr(self.mr, "web_url", "") or self.pr_url
+                self._line_link_source_lookup_attempts = attempts + 1
+                try:
+                    source_web_url = self.gl.projects.get(source_id).web_url or ""
+                except GitlabGetError as exc:
+                    source_web_url = ""
+                    if getattr(exc, "response_code", None) in (403, 404):
+                        self._line_link_source_web_url = ""
+                except (GitlabError, RequestException, AttributeError, TypeError):
+                    # A malformed or incomplete source project cannot supply a
+                    # reliable commit URL. Retry once, then use the MR page.
+                    source_web_url = ""
+                if isinstance(source_web_url, str) and source_web_url:
+                    self._line_link_source_web_url = source_web_url
+            if not isinstance(source_web_url, str) or not source_web_url:
+                return getattr(self.mr, "web_url", "") or self.pr_url
+            project_web_url = source_web_url.rstrip("/")
+
+        if deleted and diff_file.old_filename:
+            filename = diff_file.old_filename
+        elif diff_file is not None:
+            filename = diff_file.filename
+        else:
+            filename = path
+        encoded_file = quote(filename, safe="/")
+        link = f"{project_web_url}/-/blob/{ref}/{encoded_file}{suffix}"
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
-        if relevant_line_start == -1:
-            link = f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
-        elif relevant_line_end:
-            link = (
-                f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
-                f"#L{relevant_line_start}-{relevant_line_end}"
-            )
-        else:
-            link = (
-                f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
-                f"#L{relevant_line_start}"
-            )
+        if relevant_line_start != -1:
+            link += (f"#L{relevant_line_start}-{relevant_line_end}"
+                     if relevant_line_end else f"#L{relevant_line_start}")
         return link
 
 

@@ -115,14 +115,30 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
                 provider = context.get("git_provider", {}).get(api_url)
                 reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)
                 if callable(reset_diff_cache):
-                    reset_diff_cache()
+                    # Settings verification may read GitLab files over synchronous HTTP.
+                    try:
+                        await asyncio.to_thread(reset_diff_cache)
+                    except Exception:
+                        # A failed refresh must abort the batch, not silently
+                        # skip this command and run later commands.
+                        get_logger().exception("GitLab snapshot refresh failed; stopping auto commands")
+                        return False
+                    if getattr(provider, "_gitlab_settings_unverified", False):
+                        get_logger().warning("GitLab repository settings changed or could not be verified; "
+                                             "stopping auto commands")
+                        return False
             new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):
-                if await agent.handle_request(api_url, new_command) is RequestOutcome.SKIPPED:
+                outcome = await agent.handle_request(api_url, new_command)
+                if outcome is RequestOutcome.SKIPPED:
                     return RequestOutcome.SKIPPED
-        except Exception as e:
-            get_logger().error(f"Failed to perform command {command}: {e}")
+                if outcome is not True or command_failed():
+                    get_logger().warning("Stopping GitLab auto commands after a failed command")
+                    return False
+        except Exception:
+            get_logger().exception(f"Failed to perform GitLab command {command}; stopping batch")
+            return False
 
 
 def is_bot_user(data) -> bool:
@@ -378,6 +394,14 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
         sender = data.get("user", {}).get("username", "unknown")
         sender_id = data.get("user", {}).get("id", "unknown")
 
+        async def run_automatic_commands(profile: str, url: str):
+            outcome = await _perform_commands_gitlab(profile, PRAgent(), url, log_context, data)
+            if outcome is False:
+                # BackgroundTasks has already acknowledged the webhook. Preserve
+                # a visible error in the server logs when policy prevents a safe MR notice.
+                get_logger().error(f"GitLab {profile} stopped before completion for MR {url}")
+            return outcome
+
         # ignore bot users
         if is_bot_user(data):
             return
@@ -392,7 +416,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 url = object_attributes.get('url')
                 get_logger().info(f"New merge request: {url}")
                 await apply_new_mr_repo_settings(url)
-                await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
+                await run_automatic_commands("pr_commands", url)
 
             # for draft to ready triggered merge requests, before the push case: one update can be both
             elif object_attributes.get('action') == 'update' and is_draft_ready(data):
@@ -408,11 +432,11 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                         get_logger().debug(f'A push event has been received: {url}')
                         async with push_trigger_slot(url, allow_backlog=True, ttl=300) as proceed:
                             if proceed:
-                                await _perform_commands_gitlab("push_commands", PRAgent(), url, log_context, data)
+                                await run_automatic_commands("push_commands", url)
                     else:
                         get_logger().info(f"Skipping draft-ready commands because draft feedback is enabled: {url}")
                     return
-                await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
+                await run_automatic_commands("pr_commands", url)
 
             # for push event triggered merge requests
             elif object_attributes.get('action') == 'update' and object_attributes.get('oldrev'):
@@ -430,7 +454,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 get_logger().debug(f'A push event has been received: {url}')
                 async with push_trigger_slot(url, allow_backlog=True, ttl=300) as proceed:
                     if proceed:
-                        await _perform_commands_gitlab("push_commands", PRAgent(), url, log_context, data)
+                        await run_automatic_commands("push_commands", url)
 
             # for reviewer assignment triggered merge requests
             elif object_attributes.get('action') == 'update' and not object_attributes.get('oldrev'):
@@ -469,7 +493,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                         return JSONResponse(status_code=status.HTTP_200_OK,
                                             content=jsonable_encoder({"message": "success"}))
                     get_logger().info(f"Bot was assigned as reviewer on MR: {url}")
-                    await _perform_commands_gitlab("reviewer_commands", PRAgent(), url, log_context, data)
+                    await run_automatic_commands("reviewer_commands", url)
 
         elif data.get('object_kind') == 'note' and data.get('event_type') == 'note': # comment on MR
             if 'merge_request' in data:

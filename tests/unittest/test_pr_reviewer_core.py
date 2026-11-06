@@ -2259,3 +2259,22 @@ async def test_prepare_pr_review_pushes_outputs_when_publishing():
     assert push.call_args.args[0] == "review"
     assert push.call_args.kwargs["payload"] == {"score": "1"}
     assert push.call_args.kwargs["markdown"] == "original review"
+
+
+def test_review_does_not_publish_stale_gitlab_inline_findings_as_summary():
+    reviewer = _make_prediction_reviewer()
+    reviewer.git_provider._gitlab_suggestion_version_changed = True
+    reviewer._publish_key_issues_as_inline_comments = MagicMock(
+        return_value={"review": {"summary": "old revision"}}
+    )
+    settings = get_settings()
+    previous_publish = settings.config.publish_output
+    previous_inline = settings.pr_reviewer.get("inline_key_issues", False)
+    try:
+        settings.config.publish_output = True
+        settings.pr_reviewer.inline_key_issues = True
+        with pytest.raises(RuntimeError, match="GitLab MR updated"):
+            _render_review(reviewer, [])
+    finally:
+        settings.config.publish_output = previous_publish
+        settings.pr_reviewer.inline_key_issues = previous_inline

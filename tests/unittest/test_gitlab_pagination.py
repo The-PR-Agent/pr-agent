@@ -55,10 +55,12 @@ def test_persistent_comment_listing_requests_max_pages():
 
     bodies = provider.get_persistent_comment_bodies()
 
-    assert len(bodies) == 300
-    for listing in (discussions, draft_notes):
-        assert listing.requests == 2
-        assert listing.calls == [{"get_all": True, "per_page": 100}]
+    # Unpublished drafts may belong to a different run or a human reviewer.
+    assert len(bodies) == 150
+    assert discussions.requests == 2
+    assert discussions.calls == [{"get_all": True, "per_page": 100}]
+    assert draft_notes.requests == 0
+    assert draft_notes.calls == []
 
     assert notes.requests == 0
     assert notes.calls == []
@@ -78,10 +80,11 @@ def test_diff_listing_requests_max_pages():
     changes = [{"new_path": f"file-{index}.py"} for index in range(150)]
     diffs = _PaginatedList(changes)
     provider = object.__new__(GitLabProvider)
+    provider.id_mr = 1
     provider.gl = SimpleNamespace(
         http_get=lambda _path: {
             "sha": "head",
-            "diff_refs": {"base_sha": "base", "head_sha": "head"},
+            "diff_refs": {"base_sha": "base", "start_sha": "base", "head_sha": "head"},
             "changes_count": "150",
         },
         http_list=diffs.http_list,

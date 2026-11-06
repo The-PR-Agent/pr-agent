@@ -95,7 +95,7 @@ For GitHub Enterprise Server, use the same organization-level repository on your
 The app installation or token used by PR-Agent must have read access to both the pull request repository and the settings repository; otherwise, PR-Agent will skip the global configuration and continue with repository-local settings.
 
 :::note[Caching]
-In long-running deployments (the GitHub App / webhook server), the fetched global settings are cached **in-process** for up to 15 minutes to avoid re-fetching on every webhook event, so a change to the settings repository may take up to that long to take effect there. CLI and CI (GitHub Action) runs are short-lived processes, so they fetch the global settings once per invocation and always see the latest version.
+In long-running deployments, providers other than GitLab cache fetched global settings **in-process** for up to 15 minutes, so changes can take that long to take effect. GitLab reloads configured shared settings during webhook policy acquisition and revalidates them between automatic commands; it does not rely on this cache for those checks. CLI and CI (GitHub Action) runs are short-lived processes and fetch settings during each invocation.
 :::
 
 Loading the global settings file is controlled by the `use_global_settings_file` flag, which is **enabled by default** but reads nothing until `global_settings_repo` is set. To opt out and rely only on each repo's local `.pr_agent.toml`, set:
@@ -144,7 +144,7 @@ A present but empty closest subgroup file selects that subgroup without adding o
 
 Missing or inaccessible shared settings are optional, matching existing global-settings behavior. PR-Agent needs read access to the applicable settings repositories. Shared configuration is **not an enforcement boundary**: a local file can override repository-configurable keys, and the host-only key restrictions continue to apply to every source. Whoever can create a project with the `global_settings_repo` name in a subgroup sets the defaults for every project beneath it that has no closer subgroup settings file, so treat project creation rights in those subgroups as control over their review settings.
 
-The existing bounded, 15-minute in-process cache is reused. GitLab entries are isolated by host, full group path, configured repository name, and credential context; when a safe credential scope is unavailable, lookup bypasses the shared cache. Missing-file/access results are cached too; transient API/transport failures are not cached. Therefore, adding or editing a settings file may take up to 15 minutes to affect a running webhook process.
+GitLab webhook policy acquisition and verification read subgroup settings afresh, including missing-file and access results; the 15-minute in-process cache is not used to decide the policy for these commands. This ensures that changes to applicable shared settings are not hidden by a previously cached value, at the cost of additional API requests.
 
 Set `use_group_settings_file = false` to disable subgroup lookups while preserving global and local settings. Set `use_global_settings_file = false` or leave `global_settings_repo` empty to disable both global and subgroup lookups; the subgroup opt-in does not bypass these prerequisites. As with existing global configuration, `use_repo_settings_file = false` bypasses the repository-settings loading flow entirely. The optional per-directory configuration layer inside a repository remains separate and unchanged.
 

@@ -1,11 +1,15 @@
 import functools
 import json
+import tomllib
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import quote, urlparse
 
 import giteapy
 from giteapy.rest import ApiException
+from requests.exceptions import RequestException
+from starlette_context import context
+from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.file_filter import filter_ignored
@@ -37,6 +41,8 @@ DEFAULT_GITEA_URL = "https://gitea.com"
 
 class IncompleteGiteaPullRequestFilesError(IncompleteProviderPullRequestFilesError):
     """Represent an unavailable or malformed Gitea changed-file inventory."""
+
+    requires_safe_notice_policy = True
 
     notice = (
         "## PR-Agent command was not run\n\n"
@@ -71,6 +77,17 @@ def _with_default_request_timeout(call_api):
 
 
 class GiteaProvider(GitProvider):
+    reuse_for_manual_tool = True
+
+    @staticmethod
+    def _same_settings_toml(original: bytes, latest: bytes) -> bool:
+        if original == latest:
+            return True
+        try:
+            return tomllib.loads(original.decode("utf-8")) == tomllib.loads(latest.decode("utf-8"))
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+            return False
+
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         pr = self.pr
         if pr is None:
@@ -159,6 +176,198 @@ class GiteaProvider(GitProvider):
             self.issue_url = url
             self.__set_repo_and_owner_from_issue()
             self.enabled_issue = True
+
+    def reset_diff_cache_for_command(self) -> None:
+        super().reset_diff_cache_for_command()
+        self.git_files = None
+        self.file_diffs = None
+        self.file_contents = {}
+        self._line_link_diff_refs = None
+        self._line_link_raw_diff_refs = None
+        self._line_link_checked_refs = None
+        self._line_link_failed_ref_checks = 0
+
+        self._line_link_snapshot_unverified = False
+        self._gitea_policy_metadata_unverified = False
+        if getattr(self, "enabled_pr", False):
+            for attempt in range(2):
+                try:
+                    refreshed_pr = self.repo_api.get_pull_request(
+                        owner=self.owner, repo=self.repo, pr_number=self.pr_number
+                    )
+                    break
+                except (ApiException, RequestException, Urllib3HTTPError, OSError):
+                    if attempt == 0:
+                        self.logger.warning("Retrying Gitea PR snapshot refresh")
+                        continue
+                    self.logger.exception("Gitea PR snapshot refresh failed; auto commands must not proceed")
+                    self._line_link_snapshot_unverified = True
+                    self._gitea_policy_metadata_unverified = True
+                    self.pr_commits = None
+                    return
+                except Exception:
+                    # Unexpected API parsing errors must not let the next command
+                    # proceed after this one was skipped.
+                    self.logger.exception("Gitea PR snapshot refresh could not be verified")
+                    self._line_link_snapshot_unverified = True
+                    self._gitea_policy_metadata_unverified = True
+                    self.pr_commits = None
+                    return
+            try:
+                refreshed_target = (refreshed_pr.base.sha or "", refreshed_pr.base.ref or "")
+                refreshed_head = refreshed_pr.head.sha or ""
+                if not all(isinstance(value, str) and value for value in (*refreshed_target, refreshed_head)):
+                    raise ValueError("Gitea PR snapshot is missing a required revision")
+            except (AttributeError, TypeError, ValueError):
+                self.logger.exception("Gitea PR snapshot has incomplete revision metadata")
+                self._line_link_snapshot_unverified = True
+                self._gitea_policy_metadata_unverified = True
+                self.pr_commits = None
+                return
+            if refreshed_target != (self.base_sha, self.base_ref):
+                # A retarget needs a new webhook settings snapshot. For an ordinary
+                # target-branch advance, continue only when the settings at the new
+                # immutable base are verified identical to those already applied.
+                verified = refreshed_target[1] == self.base_ref and bool(refreshed_target[0])
+                cached_settings = context.get("repo_settings") if context.exists() else None
+                if verified and cached_settings is not None:
+                    try:
+                        verified = self._repo_settings_match_target(refreshed_target[0], cached_settings)
+                    except Exception:
+                        self.logger.warning("Gitea target repository settings verification failed")
+                        verified = False
+                elif verified and get_settings().config.use_repo_settings_file:
+                    verified = False
+                if verified:
+                    try:
+                        confirmed_pr = self.repo_api.get_pull_request(
+                            owner=self.owner, repo=self.repo, pr_number=self.pr_number
+                        )
+                        confirmed_head = confirmed_pr.head.sha
+                        verified = (
+                            (confirmed_pr.base.sha or "", confirmed_pr.base.ref or "") == refreshed_target
+                            and isinstance(confirmed_head, str) and bool(confirmed_head)
+                        )
+                        refreshed_pr = confirmed_pr
+                    except Exception:
+                        self.logger.warning("Gitea target changed or became unavailable during verification")
+                        self._gitea_policy_metadata_unverified = True
+                        verified = False
+                if not verified:
+                    self.logger.warning("Gitea PR target changed without verified matching repository settings")
+                    # A new target may carry different ignore rules, even when the
+                    # previously loaded policy had no exclusions.
+                    self._gitea_policy_metadata_unverified = True
+                    self.pr = refreshed_pr
+                    self._line_link_snapshot_unverified = True
+                    self.pr_commits = None
+                    return
+            elif getattr(self, "_gitea_global_settings_expected", False):
+                # The global settings repository may change independently of
+                # the PR target. A cached 15-minute value is not a policy
+                # snapshot verification for the next automatic command.
+                original_policy = context.get("repo_settings") if context.exists() else None
+                try:
+                    if original_policy is None or not self._global_settings_match_snapshot(original_policy):
+                        raise ValueError("Gitea global settings changed or could not be verified")
+                except Exception:
+                    self.logger.warning("Gitea global settings could not be verified for this command")
+                    self._gitea_policy_metadata_unverified = True
+                    self._line_link_snapshot_unverified = True
+                    self.pr_commits = None
+                    return
+            self.pr = refreshed_pr
+            self.sha = refreshed_pr.head.sha or ""
+            self.base_sha, self.base_ref = refreshed_target
+            self.pr_commits = None
+            self.last_commit = _GiteaCommitAdapter({"sha": self.sha})
+            self.last_commit_id = self.last_commit
+            # Only a verified PR revision can be reused by another tool.
+            # An issue event has no PR snapshot to hand off.
+            self._tool_provider_stale = False
+
+    def _repo_settings_match_target(self, target_sha: str, cached_settings) -> bool:
+        # The webhook's settings selection is frozen across commands. Verify the
+        # target-local file at the new immutable base, and separately check any
+        # global policy that can change with that base.
+        if isinstance(cached_settings, list):
+            local_settings = next(
+                (content for scope, content in cached_settings if scope == "local"), b""
+            )
+            global_settings = next(
+                (content for scope, content in cached_settings if scope == "global"), b""
+            )
+        else:
+            local_settings, global_settings = cached_settings, b""
+        if isinstance(local_settings, str):
+            local_settings = local_settings.encode("utf-8")
+        if isinstance(global_settings, str):
+            global_settings = global_settings.encode("utf-8")
+        if not isinstance(local_settings, bytes) or not isinstance(global_settings, bytes):
+            return False
+
+        if self.repo_settings:
+            try:
+                content = self.repo_api.get_file_content(
+                    owner=self.owner, repo=self.repo, commit_sha=target_sha,
+                    filepath=self.repo_settings, propagate_errors=True,
+                )
+            except ApiException as exc:
+                if getattr(exc, "status", None) != 404:
+                    raise
+                content = ""
+            if not self._same_settings_toml(local_settings, content.encode("utf-8")):
+                return False
+        elif local_settings:
+            return False
+
+        global_source = getattr(self, "_gitea_global_settings_source", None)
+        if global_source is None:
+            # A configured but unresolved global source cannot prove that an
+            # absent cached file means an empty policy.
+            return not global_settings and not getattr(self, "_gitea_global_settings_expected", False)
+        owner, settings_repo = global_source
+        if owner.casefold() == self.owner.casefold() and settings_repo.casefold() == self.repo.casefold():
+            default_branch = getattr(self.repo_api.repo_get(owner, settings_repo), "default_branch", None)
+            if not isinstance(default_branch, str) or not default_branch:
+                # Unknown default branch cannot prove the global policy is unrelated.
+                return False
+            if default_branch == self.base_ref:
+                # The global file belongs to this PR's target branch, so it
+                # changes with target_sha even when the local setting is unset.
+                try:
+                    content = self.repo_api.get_file_content(
+                        owner=owner, repo=settings_repo, commit_sha=target_sha,
+                        filepath=".pr_agent.toml", propagate_errors=True,
+                    )
+                except ApiException as exc:
+                    if getattr(exc, "status", None) != 404:
+                        raise
+                    content = ""
+                return self._same_settings_toml(global_settings, content.encode("utf-8"))
+
+        # Also verify an existing external global TOML. Its default branch
+        # may advance without changing the PR's target base or local TOML.
+        return self._global_settings_match_snapshot(cached_settings)
+
+    def _global_settings_match_snapshot(self, cached_settings) -> bool:
+        if not getattr(self, "_gitea_global_settings_expected", False):
+            return True
+        source = getattr(self, "_gitea_global_settings_source", None)
+        if source is None or cached_settings is None:
+            return False
+        if isinstance(cached_settings, list):
+            initial = next((content for scope, content in cached_settings if scope == "global"), b"")
+        else:
+            initial = b""
+        if isinstance(initial, str):
+            initial = initial.encode("utf-8")
+        if not isinstance(initial, bytes):
+            return False
+        latest = self._fetch_global_repo_settings(*source)
+        if isinstance(latest, str):
+            latest = latest.encode("utf-8")
+        return isinstance(latest, bytes) and self._same_settings_toml(initial, latest)
 
     @property
     def base_url_html(self) -> str:
@@ -252,10 +461,35 @@ class GiteaProvider(GitProvider):
                     repo=self.repo,
                     pr_number=self.pr_number
             )
-
-            self.file_diffs = {f.filename: f.patch for f in parse_unified_diff(diff_contents)}
-        except Exception as e:
-            self.logger.error(f"Error getting diff content: {str(e)}")
+            if not isinstance(diff_contents, str):
+                raise ValueError("Gitea returned a malformed raw diff")
+            parsed = {f.filename: f.patch for f in parse_unified_diff(diff_contents)}
+            # The changed-file inventory and raw patch are independent HTTP
+            # reads. Refuse to combine them after a concurrent PR update.
+            original_pr = getattr(self, "pr", None)
+            if original_pr is not None:
+                refreshed = self.repo_api.get_pull_request(
+                    owner=self.owner, repo=self.repo, pr_number=self.pr_number
+                )
+                current_head = getattr(getattr(refreshed, "head", None), "sha", None)
+                current_base = getattr(getattr(refreshed, "base", None), "sha", None)
+                current_target = getattr(getattr(refreshed, "base", None), "ref", None)
+                if (current_head != self.sha or current_base != self.base_sha
+                        or current_target != self.base_ref
+                        or getattr(refreshed, "merge_base", None) != getattr(original_pr, "merge_base", None)):
+                    raise ValueError("Gitea PR changed while fetching the raw diff")
+            self.file_diffs = parsed
+            pr = getattr(self, "pr", None)
+            head_repo = getattr(getattr(getattr(pr, "head", None), "repo", None), "full_name", None)
+            self._line_link_raw_diff_refs = (
+                getattr(self, "sha", None), getattr(pr, "merge_base", None), head_repo,
+            )
+        except Exception as exc:
+            self.file_diffs = None
+            self._line_link_raw_diff_refs = None
+            raise IncompleteGiteaPullRequestFilesError(
+                "Gitea raw diff could not be verified against the reviewed PR revision"
+            ) from exc
 
     @staticmethod
     def _url_path_parts(url: str) -> list[str]:
@@ -631,6 +865,8 @@ class GiteaProvider(GitProvider):
 
     def get_diff_files(self) -> list[FilePatchInfo]:
         """Get files that were modified in the PR"""
+        if getattr(self, "_line_link_snapshot_unverified", False):
+            raise IncompleteGiteaPullRequestFilesError("Gitea PR snapshot unavailable for this command")
         if self.diff_files is not None:
             return self.diff_files
 
@@ -656,6 +892,12 @@ class GiteaProvider(GitProvider):
             # Fetch once, only after a reviewable file can consume the raw diff.
             if counter_valid == 1 and getattr(self, "file_diffs", None) is None:
                 self.__add_file_diff()
+                if not self.file_diffs:
+                    self.file_diffs = None
+                    self._line_link_raw_diff_refs = None
+                    raise IncompleteGiteaPullRequestFilesError(
+                        "Gitea raw diff is empty for a PR with reviewable changed files"
+                    )
             avoid_load = False
             patch = (self.file_diffs or {}).get(filename, "")
             head_file = ""
@@ -722,12 +964,102 @@ class GiteaProvider(GitProvider):
             self.logger.info(f"Filtered out files with invalid extensions: {invalid_files_names}")
 
         self.filtered_diff_file_names = invalid_files_names
+        pr = getattr(self, "pr", None)
+        head_repo = getattr(getattr(getattr(pr, "head", None), "repo", None), "full_name", None)
+        self._line_link_diff_refs = getattr(self, "_line_link_raw_diff_refs", None) or (
+            getattr(self, "sha", None), getattr(pr, "merge_base", None), head_repo,
+        )
+        self._line_link_checked_refs = None
+        self._line_link_failed_ref_checks = 0
         self.diff_files = diff_files
         return diff_files
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
-        encoded_file = quote(relevant_file, safe="/")
-        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{encoded_file}"
+        if getattr(self, "_line_link_snapshot_unverified", False):
+            return self.get_pr_url()
+        diff_files = getattr(self, "diff_files", None)
+        path = relevant_file.strip("/") if isinstance(relevant_file, str) else ""
+        if not path:
+            return self.get_pr_url()
+        entries = diff_files or []
+        diff_file = next((file for file in entries
+                          if isinstance(file.filename, str)
+                          and file.filename.strip("/") == path), None)
+        if diff_file is None:
+            diff_file = next((file for file in entries
+                              if isinstance(file.old_filename, str)
+                              and file.old_filename.strip("/") == path), None)
+        if diff_file is None:
+            matches = [file for file in entries if any(
+                isinstance(getattr(file, field, None), str)
+                and getattr(file, field).strip("/").lower() == path.lower()
+                for field in ("filename", "old_filename")
+            )]
+            if len(matches) == 1:
+                diff_file = matches[0]
+        # Without a reviewed file inventory, the path could be deleted; do not
+        # guess the head side and produce a broken commit link.
+        if diff_file is None:
+            return self.get_pr_url()
+        deleted = diff_file is not None and diff_file.edit_type == EDIT_TYPE.DELETED
+        pr = getattr(self, "pr", None)
+        # Use the diff-time refs even if publishing the description later refreshes self.pr.
+        snapshot = getattr(self, "_line_link_diff_refs", None)
+        if snapshot is None:
+            head_repo = getattr(getattr(getattr(pr, "head", None), "repo", None), "full_name", None)
+            snapshot = (getattr(self, "sha", None), getattr(pr, "merge_base", None), head_repo)
+        head_sha, merge_base, head_repo = snapshot
+        sha = merge_base if deleted else head_sha
+        if not isinstance(sha, str) or not sha:
+            return self.get_pr_url()
+
+        if deleted:
+            owner, repo = self.owner, self.repo
+        else:
+            if not isinstance(head_repo, str) or head_repo.count("/") != 1 or not all(head_repo.split("/")):
+                return self.get_pr_url()
+            owner, repo = head_repo.split("/")
+
+        # Check the live PR even before loading diffs, and bound retries on API failures.
+        if getattr(self, "repo_api", None) is not None:
+            checked_refs = getattr(self, "_line_link_checked_refs", None)
+            if checked_refs is None:
+                failures = getattr(self, "_line_link_failed_ref_checks", 0)
+                if failures >= 2:
+                    return self.get_pr_url()
+                try:
+                    latest_pr = self.repo_api.get_pull_request(
+                        owner=self.owner, repo=self.repo, pr_number=self.pr_number
+                    )
+                    latest_head = getattr(latest_pr, "head", None)
+                    latest_repo = getattr(getattr(latest_head, "repo", None), "full_name", None)
+                    checked_refs = (
+                        getattr(latest_head, "sha", None),
+                        getattr(latest_pr, "merge_base", None),
+                        latest_repo,
+                    )
+                except Exception:
+                    # A URL helper must degrade safely even on malformed API responses.
+                    self.logger.exception("Could not verify Gitea file-link revision")
+                    self._line_link_failed_ref_checks = failures + 1
+                    return self.get_pr_url()
+                self._line_link_checked_refs = checked_refs
+            # Check the head for deletions too, as inventory and diff may span separate pushes.
+            if checked_refs[0] != head_sha:
+                return self.get_pr_url()
+            if deleted and checked_refs[1] != merge_base:
+                return self.get_pr_url()
+            if not deleted and checked_refs[2] != head_repo:
+                return self.get_pr_url()
+
+        if deleted and diff_file.old_filename:
+            filename = diff_file.old_filename
+        elif diff_file is not None:
+            filename = diff_file.filename
+        else:
+            filename = path
+        encoded_file = quote(filename, safe="/")
+        link = f"{self.base_url_html}/{quote(owner)}/{quote(repo)}/src/commit/{quote(sha)}/{encoded_file}"
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
@@ -841,6 +1173,16 @@ class GiteaProvider(GitProvider):
     def get_repo_settings(self):
         """Get repository settings (org/global first, then repo-local)."""
         settings_files = []
+        namespace = self.get_owning_namespace()
+        settings_repo = get_settings().config.global_settings_repo
+        self._gitea_global_settings_expected = bool(
+            get_settings().config.use_global_settings_file and settings_repo
+        )
+        self._gitea_global_settings_source = (
+            (namespace, settings_repo)
+            if get_settings().config.use_global_settings_file and namespace and settings_repo
+            else None
+        )
         global_settings = self._get_global_repo_settings()
         if global_settings:
             settings_files.append(("global", global_settings))
@@ -933,6 +1275,8 @@ class GiteaProvider(GitProvider):
                 repo=self.repo,
                 pr_number=self.pr_number
             )
+            self._line_link_checked_refs = None
+            self._line_link_failed_ref_checks = 0
 
     def publish_labels(self, labels: list[str]) -> bool:
         """Set the PR labels to the given set: remove the labels left out of it, then add the missing ones"""

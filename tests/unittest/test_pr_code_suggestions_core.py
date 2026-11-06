@@ -10,7 +10,7 @@ import pr_agent.algo.token_budget as token_budget_module
 import pr_agent.tools.pr_code_suggestions as pr_code_suggestions_module
 from pr_agent.algo.comment_identity import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity
 from pr_agent.algo.pr_processing import PackedPRDiffs
-from pr_agent.algo.run_details import init_run_details
+from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -1510,6 +1510,8 @@ async def test_push_inline_code_suggestions_falls_back_to_individual_publish_cal
 @pytest.mark.asyncio
 async def test_push_inline_code_suggestions_publishes_summarized_comment_when_all_retries_fail():
     git_provider = MagicMock()
+    git_provider._gitlab_suggestion_publication_incomplete = False
+    git_provider._gitlab_suggestion_version_changed = False
     git_provider.diff_files = [
         FilePatchInfo(
             base_file="",
@@ -1530,6 +1532,7 @@ async def test_push_inline_code_suggestions_publishes_summarized_comment_when_al
         )
     ]}
 
+    init_run_details()
     await tool.push_inline_code_suggestions(data)
 
     # batch publish plus the individual retry both fail, then the already-computed
@@ -1537,6 +1540,7 @@ async def test_push_inline_code_suggestions_publishes_summarized_comment_when_al
     # misleading failure comment (issue #3602).
     assert git_provider.publish_code_suggestions.call_count == 2
     assert tool._output_published is True
+    assert command_failed() is False
     body = git_provider.publish_comment.call_args.args[0]
     assert "Use the shared helper." in body
     assert "Failed to generate code suggestions" not in body
