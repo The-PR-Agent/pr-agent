@@ -1052,6 +1052,28 @@ class GithubProvider(GitProvider):
             return True
         return False
 
+    def publish_merge_verdict_check(self, recommendation: str) -> bool:
+        """Publish the review recommendation on the exact head SHA that was reviewed."""
+        conclusions = {
+            "no_concerns_found": "success",
+            "needs_review": "neutral",
+            "changes_required": "failure",
+        }
+        conclusion = conclusions.get(recommendation)
+        if conclusion is None:
+            return False
+        return self._upsert_check_run(
+            "verdict",
+            {
+                "status": "completed",
+                "conclusion": conclusion,
+                "output": {
+                    "title": self._check_run_name("verdict"),
+                    "summary": recommendation,
+                },
+            },
+        )
+
     def start_check_run(self, name: str, summary: str) -> bool:
         """Open the tool's check run as in_progress before it has any output to publish.
 

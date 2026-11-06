@@ -399,6 +399,7 @@ class PRReviewer:
                 if get_settings().config.publish_output:
                     reason += ": no major issues detected."
                 get_logger().info(reason)
+                self._publish_merge_verdict_check()
                 get_settings().data = {"artifact": pr_review}
                 return
 
@@ -499,6 +500,7 @@ class PRReviewer:
                     )
                     pr_review = add_pr_review_identity(pr_review, identity_marker, self.git_provider)
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
+            self._publish_merge_verdict_check()
         except Exception as e:
             review_error = e
             review_failed = True
@@ -605,6 +607,22 @@ class PRReviewer:
             get_logger().warning(
                 f"Failed to publish review check run, error: {error}"
             )
+            return False
+
+    def _publish_merge_verdict_check(self) -> bool:
+        settings = get_settings()
+        if not settings.github.get("publish_merge_verdict_as_check", False):
+            return False
+        if getattr(self, "review_failed_chunk_count", 0) > 0:
+            return False
+        recommendation = getattr(self, "_merge_recommendation", None)
+        publisher = getattr(self.git_provider, "publish_merge_verdict_check", None)
+        if not isinstance(recommendation, str) or not callable(publisher):
+            return False
+        try:
+            return publisher(recommendation) is True
+        except Exception as error:
+            get_logger().warning(f"Failed to publish merge verdict check, error: {error}")
             return False
 
     def _review_finding_state_in_play(self) -> bool:
@@ -1350,6 +1368,14 @@ class PRReviewer:
                 get_logger().warning("Review data is invalid; preserving persistent finding state")
             get_logger().exception("Failed to parse review data", artifact={"data": data})
             return ""
+
+        recommendation = data["review"].get("merge_recommendation")
+        self._merge_recommendation = (
+            recommendation
+            if getattr(self, "vars", {}).get("require_merge_recommendation", False)
+            and recommendation in ("no_concerns_found", "needs_review", "changes_required")
+            else None
+        )
 
         structural_reach = build_structural_reach(resolve_artifact_path)
         if structural_reach:

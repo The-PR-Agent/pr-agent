@@ -206,6 +206,10 @@ for the authoritative default values.
     <td>If set to true, the tool will add a section describing what the review found: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge). The value reports the model's findings, not a guarantee about the code.</td>
   </tr>
   <tr>
+    <td><b>github.publish_merge_verdict_as_check</b></td>
+    <td>If set to true, publishes the review's merge recommendation as a separate GitHub check on the reviewed head SHA. It requires <code>require_merge_recommendation = true</code> and maps the three recommendations to success, neutral, and failure conclusions.</td>
+  </tr>
+  <tr>
     <td><b>require_failure_modes</b></td>
     <td>Off by default. If enabled, adds up to three concrete failure scenarios, each with what could break,
     where, its trigger, how it could be detected, and whether a test or check in this PR covers it.
