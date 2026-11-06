@@ -1362,8 +1362,24 @@ class PRReviewer:
         if structural_reach:
             data["review"] = {"structural_reach": structural_reach, **data["review"]}
 
-        risk_checks = build_risk_checks(self.git_provider.get_diff_files())
-        if risk_checks:
+        unfiltered_files = None
+        if hasattr(self.git_provider, "get_pr_file_paths"):
+            try:
+                unfiltered_files = self.git_provider.get_pr_file_paths()
+            except Exception:
+                unfiltered_files = None
+        if not unfiltered_files and hasattr(self.git_provider, "get_files"):
+            try:
+                unfiltered_files = self.git_provider.get_files()
+            except Exception:
+                unfiltered_files = None
+
+        filtered_names = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
+        if filtered_names:
+            unfiltered_files = list(unfiltered_files or []) + list(filtered_names)
+
+        risk_checks = build_risk_checks(self.git_provider.get_diff_files(), unfiltered_files=unfiltered_files)
+        if risk_checks and risk_checks.get("has_findings"):
             data["review"] = {"risk_checks": risk_checks, **data["review"]}
 
         structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
