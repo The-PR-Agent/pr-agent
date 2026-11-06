@@ -219,11 +219,7 @@ def test_build_risk_checks_clean_pr(risk_settings):
         _file("tests/test_utils.py", "@@ -1,2 +1,2 @@\n context\n+assert a == 1"),
     ]
     res = dr.build_risk_checks(files)
-    assert res is not None
-    assert res["has_findings"] is False
-    assert res["sensitive_paths"] == []
-    assert res["risky_shapes"] == []
-    assert res["deleted_files"] == []
+    assert res is None
 
 
 def test_build_risk_checks_with_findings(risk_settings):
@@ -243,6 +239,35 @@ def test_build_risk_checks_with_findings(risk_settings):
     assert res["deleted_files"][0] == "old.py"
 
 
+def test_build_risk_checks_renamed_sensitive_file(risk_settings):
+    # Moving a sensitive file to a non-sensitive path should still flag it
+    f = _file("scripts/temp.yml", "@@ -1 +1 @@\n+echo 1")
+    f.old_filename = ".github/workflows/ci.yml"
+    res = dr.build_risk_checks([f])
+    assert res is not None
+    assert res["has_findings"] is True
+    assert any(".github/workflows/ci.yml" in s["file"] for s in res["sensitive_paths"])
+
+
+def test_build_risk_checks_unfiltered_lockfiles(risk_settings):
+    # Lockfiles dropped by get_diff_files should still be flagged via unfiltered_files
+    clean_diff = [_file("src/utils.py", "@@ -1,2 +1,2 @@\n context\n+a = 1")]
+    unfiltered = ["package-lock.json", "yarn.lock"]
+    res = dr.build_risk_checks(clean_diff, unfiltered_files=unfiltered)
+    assert res is not None
+    assert res["has_findings"] is True
+    assert len(res["sensitive_paths"]) == 2
+    matched_names = {s["file"] for s in res["sensitive_paths"]}
+    assert "package-lock.json" in matched_names
+    assert "yarn.lock" in matched_names
+
+
+def test_extra_risky_shapes_is_repo_host_only():
+    from pr_agent.config_security import is_repo_host_only_key
+    assert is_repo_host_only_key("pr_reviewer", "extra_risky_shapes") is True
+    assert is_repo_host_only_key("PR_REVIEWER", "EXTRA_RISKY_SHAPES") is True
+
+
 # 7. render_risk_checks tests
 def test_render_risk_checks_malformed():
     assert dr.render_risk_checks(None, True) == ""
@@ -251,12 +276,8 @@ def test_render_risk_checks_malformed():
 
 def test_render_risk_checks_clean():
     clean = {"has_findings": False, "sensitive_paths": [], "risky_shapes": [], "deleted_files": []}
-    gfm = dr.render_risk_checks(clean, gfm_supported=True)
-    plain = dr.render_risk_checks(clean, gfm_supported=False)
-    assert "No sensitive paths or risky shapes detected" in gfm
-    assert "<tr><td>" in gfm
-    assert "No sensitive paths or risky shapes detected" in plain
-    assert "### ✅ Risk checks:" in plain
+    assert dr.render_risk_checks(clean, gfm_supported=True) == ""
+    assert dr.render_risk_checks(clean, gfm_supported=False) == ""
 
 
 def test_render_risk_checks_findings():

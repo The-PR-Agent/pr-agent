@@ -73,8 +73,9 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "openai": frozenset({"api_base", "api_type", "api_version"}),
     "openrouter": frozenset({"api_base"}),
     # structural_reach_input_file is read from the host and echoed into the review, and outside
-    # GITHUB_WORKSPACE nothing bounds the path.
-    "pr_reviewer": frozenset({"publish_error_details", "structural_reach_input_file"}),
+    # GITHUB_WORKSPACE nothing bounds the path. extra_risky_shapes contains custom regex patterns
+    # compiled and run against diff hunks, so repository settings must not specify untrusted patterns.
+    "pr_reviewer": frozenset({"extra_risky_shapes", "publish_error_details", "structural_reach_input_file"}),
     # List the sibling repositories whose files and GitHub tickets a consuming repo
     # (or a comment command) may select into model context. A repo's .pr_agent.toml alone must
     # not be able to name an arbitrary same-owner private sibling: the actor check bounds who

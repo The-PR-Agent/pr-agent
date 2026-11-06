@@ -11,6 +11,7 @@ import re
 from collections.abc import Sequence
 from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
+from typing import Any
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
@@ -334,13 +335,34 @@ def scan_file_diff(
     return findings
 
 
-def build_risk_checks(diff_files: list[FilePatchInfo] | None) -> dict | None:
-    """Assess deterministic risk for all diff files in the PR. Return findings dict or None."""
+def _extract_file_paths(file_entry: Any) -> list[str]:
+    """Extract candidate file paths from a file object, dict, or string."""
+    paths = []
+    if isinstance(file_entry, str):
+        paths.append(file_entry)
+    elif isinstance(file_entry, dict):
+        for key in ("new_path", "old_path", "filename", "path"):
+            val = file_entry.get(key)
+            if val and isinstance(val, str):
+                paths.append(val)
+    else:
+        for attr in ("filename", "old_filename", "previous_filename", "path", "b_path", "a_path"):
+            val = getattr(file_entry, attr, None)
+            if val and isinstance(val, str):
+                paths.append(val)
+    return paths
+
+
+def build_risk_checks(
+    diff_files: list[FilePatchInfo] | None,
+    unfiltered_files: Sequence[Any] | None = None,
+) -> dict | None:
+    """Assess deterministic risk for all diff files and unfiltered files in the PR. Return findings dict or None."""
     try:
         settings = get_settings()
         if not settings.pr_reviewer.get("enable_risk_checks", True):
             return None
-        if not diff_files:
+        if not diff_files and not unfiltered_files:
             return None
 
         configured_paths = settings.pr_reviewer.get("sensitive_paths", DEFAULT_SENSITIVE_PATHS)
@@ -354,20 +376,31 @@ def build_risk_checks(diff_files: list[FilePatchInfo] | None) -> dict | None:
         deleted_files = []
 
         seen_sensitive = set()
-        for file in diff_files:
-            filename = normalize_file_path(file.filename)
-            if not filename:
-                continue
+        for file in (diff_files or []):
+            filename = normalize_file_path(getattr(file, "filename", ""))
+            old_filename = normalize_file_path(
+                getattr(file, "old_filename", None) or getattr(file, "previous_filename", None)
+            )
 
-            # Check sensitive paths
-            matched_glob = matches_sensitive_path(filename, configured_paths)
-            if matched_glob and filename not in seen_sensitive:
-                seen_sensitive.add(filename)
-                sensitive_matches.append({"file": filename, "pattern": matched_glob})
+            # Check sensitive paths for current filename
+            if filename:
+                matched_glob = matches_sensitive_path(filename, configured_paths)
+                if matched_glob and filename not in seen_sensitive:
+                    seen_sensitive.add(filename)
+                    sensitive_matches.append({"file": filename, "pattern": matched_glob})
+
+            # Check sensitive paths for old_filename (renamed/moved files)
+            if old_filename and old_filename != filename:
+                matched_old = matches_sensitive_path(old_filename, configured_paths)
+                if matched_old and old_filename not in seen_sensitive:
+                    seen_sensitive.add(old_filename)
+                    sensitive_matches.append({"file": old_filename, "pattern": matched_old})
 
             # Check deleted files
             if getattr(file, "edit_type", None) == EDIT_TYPE.DELETED:
-                deleted_files.append(filename)
+                deleted_name = filename or old_filename
+                if deleted_name and deleted_name not in deleted_files:
+                    deleted_files.append(deleted_name)
 
             # Scan diff patch
             shapes = scan_file_diff(file, custom_patterns)
@@ -375,7 +408,21 @@ def build_risk_checks(diff_files: list[FilePatchInfo] | None) -> dict | None:
                 if shape["category"] != "deleted_file":
                     risky_shapes.append(shape)
 
+        # Check unfiltered file list (e.g. lock files or files omitted by git provider diff filters)
+        if unfiltered_files:
+            for item in unfiltered_files:
+                for candidate in _extract_file_paths(item):
+                    norm = normalize_file_path(candidate)
+                    if norm and norm not in seen_sensitive:
+                        matched = matches_sensitive_path(norm, configured_paths)
+                        if matched:
+                            seen_sensitive.add(norm)
+                            sensitive_matches.append({"file": norm, "pattern": matched})
+
         has_findings = bool(sensitive_matches or risky_shapes or deleted_files)
+        if not has_findings:
+            return None
+
         return {
             "has_findings": has_findings,
             "sensitive_paths": sensitive_matches,
@@ -397,11 +444,8 @@ def render_risk_checks(data: dict, gfm_supported: bool) -> str:
     risky_shapes = data.get("risky_shapes") or []
     deleted_files = data.get("deleted_files") or []
 
-    clean_msg = "No sensitive paths or risky shapes detected"
     if not has_findings:
-        if gfm_supported:
-            return f"<tr><td>✅&nbsp;<strong>Risk checks:</strong> {clean_msg}</td></tr>\n"
-        return f"### ✅ Risk checks: {clean_msg}\n\n"
+        return ""
 
     total = len(sensitive_paths) + len(risky_shapes) + len(deleted_files)
     if gfm_supported:
