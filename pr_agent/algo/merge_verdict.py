@@ -165,13 +165,19 @@ def compute_merge_verdict(git_provider: Any,
 
     recommendation = _model_recommendation(model_recommendation)
     risk = _model_risk(model_risk_level)
-    recommendation_rank = _RECOMMENDATION_RANK.get(recommendation, 0)
+    if model_recommendation is None:
+        recommendation_rank = 0
+    elif recommendation is None:
+        recommendation_rank = _RECOMMENDATION_RANK["needs_review"]
+    else:
+        recommendation_rank = _RECOMMENDATION_RANK[recommendation]
     risk_rank = _RISK_RANK.get(risk, 0)
 
     vetoes = []
     if recommendation_rank > base_rank:
-        vetoes.append(f"model merge recommendation: {recommendation}")
-        checks.append(_check("Model merge recommendation", False, recommendation))
+        detail = recommendation or "unrecognized value; needs_review"
+        vetoes.append(f"model merge recommendation: {detail}")
+        checks.append(_check("Model merge recommendation", False, detail))
     if risk_rank > base_rank:
         vetoes.append(f"model risk level: {risk}")
         checks.append(_check("Model risk level", False, risk))

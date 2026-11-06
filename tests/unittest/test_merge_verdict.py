@@ -122,8 +122,15 @@ def test_model_cannot_raise_a_blocked_verdict():
     assert result["recommendation"] == "needs_review"
 
 
-def test_model_values_outside_the_schema_do_not_veto():
-    result = _verdict(model_recommendation="approve", model_risk_level="critical")
+def test_unknown_model_recommendation_fails_closed():
+    result = _verdict(model_recommendation="changes-required")
+    assert result["recommendation"] == "needs_review"
+    assert "Model merge recommendation" in _failed(result)
+    assert "model merge recommendation: unrecognized value; needs_review" in result["decided_by"]
+
+
+def test_model_risk_values_outside_the_schema_do_not_veto():
+    result = _verdict(model_recommendation=None, model_risk_level="critical")
     assert result["recommendation"] == "no_concerns_found"
 
 

@@ -172,11 +172,14 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "ignore": frozenset({"regex"}),
     "pr_code_suggestions": frozenset({"parallel_calls", "max_number_of_calls"}),
     "pr_questions": frozenset({"resolve_threads"}),
-    # A commenter must not choose which host file the structural-reach row reads.
+    # Keep verdict limits and publication host-controlled, and don't let a commenter choose
+    # which host file the structural-reach row reads.
     "pr_reviewer": frozenset({
         "enable_risk_checks",
         "extra_risky_shapes",
+        "max_changed_lines",
         "max_number_of_calls",
+        "publish_merge_recommendation_status",
         "sensitive_paths",
         "structural_reach_input_file",
     }),
