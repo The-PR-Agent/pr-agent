@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Protocol
 from urllib.parse import quote, urlparse
 
@@ -67,7 +68,10 @@ def _truncate_utf16(text: str, max_units: int = 4096) -> str:
 
 class StdoutSink:
     def send(self, record: dict, cfg: dict) -> None:
-        print(json.dumps(record, ensure_ascii=False))
+        try:
+            print(json.dumps(record, ensure_ascii=False))
+        except UnicodeEncodeError:
+            sys.stdout.write(json.dumps(record, ensure_ascii=True) + "\n")
 
 
 class FileSink:
