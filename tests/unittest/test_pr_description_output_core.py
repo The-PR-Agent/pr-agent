@@ -711,7 +711,12 @@ class TestProcessPRFilesPrediction:
         provider.mr = SimpleNamespace(
             web_url="https://gitlab.example/owner/repo/-/merge_requests/7",
             source_branch="feature/test",
+            source_project_id=1,
+            target_project_id=1,
+            diff_refs={"base_sha": "base", "start_sha": "base", "head_sha": "reviewed-head"},
         )
+        provider.diff_files = [FilePatchInfo("", "", "", filename)]
+        provider._diff_head_sha = "reviewed-head"
         link = provider.get_line_link(filename, -1)
         obj = _make_instance()
 

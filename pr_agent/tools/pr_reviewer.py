@@ -525,6 +525,7 @@ class PRReviewer:
                 review_failed
                 and not isinstance(review_error, IncompleteProviderPullRequestFilesError)
                 and get_settings().config.publish_output
+                and getattr(self.git_provider, "_gitlab_suggestion_version_changed", False) is not True
                 and _as_bool(get_settings().pr_reviewer.get("publish_review_failure_comment", True))
                 and (
                     persistent_write_failed
@@ -1388,6 +1389,9 @@ class PRReviewer:
         self._prepare_review_finding_state(data)
         if get_settings().config.publish_output and get_settings().pr_reviewer.get('inline_key_issues', False):
             data = self._publish_key_issues_as_inline_comments(data)
+            if getattr(self.git_provider, '_gitlab_suggestion_version_changed', False) is True:
+                # Do not turn findings from an old revision into a summary on a new MR.
+                raise RuntimeError('GitLab MR updated during inline review publication')
 
         incremental_review_markdown_text = None
         # Add incremental review section
@@ -1619,6 +1623,8 @@ class PRReviewer:
         if candidate_comments:
             try:
                 self.git_provider.publish_code_suggestions(list(candidate_comments.values()))
+            except IncompleteProviderPullRequestFilesError:
+                raise
             except Exception as e:
                 locations = [{"relevant_file": comment["relevant_file"],
                               "start_line": comment["relevant_lines_start"],

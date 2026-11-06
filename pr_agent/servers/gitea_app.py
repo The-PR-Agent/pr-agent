@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import os
 from typing import Any
@@ -9,7 +10,8 @@ from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
-from pr_agent.agent.request_policy import RequestOutcome
+from pr_agent.agent.request_policy import RULE_FIELDS, RequestOutcome, enforce_request_policy
+from pr_agent.algo.run_details import command_failed
 from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
@@ -112,7 +114,10 @@ async def handle_pr_event(body: dict[str, Any], event: str, action: str, agent: 
     # Handle PR based on action
     if action in ["opened", "reopened"]:
         # commands = get_settings().get("gitea.pr_commands", [])
-        await _perform_commands_gitea("pr_commands", agent, body, api_url)
+        result = await _perform_commands_gitea("pr_commands", agent, body, api_url)
+        if result is False:
+            get_logger().error("Gitea PR auto commands stopped before completion")
+        return result
         # for command in commands:
         #     await agent.handle_request(api_url, command)
     elif action == "synchronized":
@@ -125,7 +130,10 @@ async def handle_pr_event(body: dict[str, Any], event: str, action: str, agent: 
         get_logger().debug(f'A push event has been received: {api_url}')
         async with push_trigger_slot(api_url, allow_backlog=True, ttl=300) as proceed:
             if proceed:
-                await _perform_commands_gitea("push_commands", agent, body, api_url)
+                result = await _perform_commands_gitea("push_commands", agent, body, api_url)
+                if result is False:
+                    get_logger().error("Gitea push auto commands stopped before completion")
+                return result
         # for command in commands_on_push:
         #     await agent.handle_request(api_url, command)
 
@@ -166,13 +174,64 @@ async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict
                 provider = context.get("git_provider", {}).get(api_url)
                 reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)
                 if callable(reset_diff_cache):
-                    reset_diff_cache()
+                    # The provider refresh performs blocking Gitea API I/O.
+                    try:
+                        await asyncio.to_thread(reset_diff_cache)
+                    except Exception:
+                        # An unexpected provider failure must not skip one command
+                        # and allow later commands to use an unverified snapshot.
+                        get_logger().exception("Gitea snapshot refresh failed; stopping auto commands")
+                        return False
+                    if getattr(provider, "_line_link_snapshot_unverified", False):
+                        # Other tools may construct their own GiteaProvider, so
+                        # do not dispatch a command with an unverified snapshot.
+                        get_logger().warning("Gitea PR snapshot unverified; stopping auto commands")
+                        required = {
+                            field for field, rule in RULE_FIELDS.items()
+                            if get_settings().get(f"config.{rule}", [])
+                        }
+                        if getattr(provider, "_notice_policy_snapshot_required", True):
+                            # Repository/ignore rules were active before command
+                            # overrides. Never authorize a notice from mutable
+                            # CLI settings after a retarget or failed refresh.
+                            get_logger().warning("Suppressing Gitea notice: original policy may have changed")
+                            return False
+                        if getattr(provider, "_gitea_policy_metadata_unverified", False) and required:
+                            get_logger().warning("Suppressing notice: Gitea policy metadata unavailable")
+                            return False
+                        if required:
+                            try:
+                                metadata = await asyncio.to_thread(provider.get_request_policy_metadata, required)
+                            except Exception:
+                                get_logger().exception("Cannot validate Gitea notice policy metadata")
+                                return False
+                            if not isinstance(metadata, dict) or any(metadata.get(field) is None for field in required):
+                                get_logger().warning("Suppressing notice: Gitea policy fields are incomplete")
+                                return False
+                            if await asyncio.to_thread(enforce_request_policy, api_url, provider=provider) is False:
+                                return RequestOutcome.SKIPPED
+                        if get_settings().get("CONFIG.PUBLISH_OUTPUT", True):
+                            try:
+                                await asyncio.to_thread(
+                                    provider.publish_comment,
+                                    "## PR-Agent auto commands were not run\n\n"
+                                    "The pull request version could not be verified, or its target changed "
+                                    "during processing. Please retry the commands.",
+                                )
+                            except Exception:
+                                get_logger().exception("Failed to publish the Gitea snapshot notice")
+                        return False
             new_command = prepare_command(command)
             get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
-            if await agent.handle_request(api_url, new_command) is RequestOutcome.SKIPPED:
+            outcome = await agent.handle_request(api_url, new_command)
+            if outcome is RequestOutcome.SKIPPED:
                 return RequestOutcome.SKIPPED
-        except Exception as e:
-            get_logger().error(f"Failed to perform command {command}: {e}")
+            if outcome is not True or command_failed():
+                get_logger().warning("Stopping Gitea auto commands after a failed command")
+                return False
+        except Exception:
+            get_logger().exception(f"Failed to perform Gitea command {command}; stopping batch")
+            return False
 
 def should_process_pr_logic(body) -> bool:
     return shared_should_process_pr_logic(body, provider="gitea")

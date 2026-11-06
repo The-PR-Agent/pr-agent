@@ -46,6 +46,7 @@ class TestStaleIncrementalScopeAcrossCommands:
             provider.gl = mock_gitlab_client
             provider.id_project = "test/repo"
             provider.mr = MagicMock()
+            provider.mr.target_branch = "main"
             provider.mr.web_url = "https://gitlab.com/test/repo/-/merge_requests/1"
             provider.mr.diff_refs = {"base_sha": "base", "head_sha": "head", "start_sha": "base"}
             provider._own_user_id = None
@@ -113,6 +114,7 @@ class TestStaleIncrementalScopeAcrossCommands:
     def test_incremental_scope_does_not_survive_the_command_boundary(self, provider):
         # ---- Command 1: '/review -i' (pr_reviewer.py:205-206) ----
         self._anchor_incremental_on_new_commits(provider)
+        provider._get_merge_request = MagicMock(return_value=provider.mr)
         provider.get_incremental_commits(IncrementalPR(True))
         incremental_files = provider.get_diff_files()
         assert [f.filename for f in incremental_files] == ["a.py", "b.py"]

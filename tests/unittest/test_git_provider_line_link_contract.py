@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, parse_qsl, unquote, urlsplit
 
 import pytest
 
+from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.git_providers import _GIT_PROVIDERS
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
@@ -70,7 +71,14 @@ def _gitlab_provider() -> GitLabProvider:
     provider.mr = SimpleNamespace(
         web_url="https://gitlab.example/owner/repo/-/merge_requests/7",
         source_branch=BRANCH,
+        source_project_id=1,
+        target_project_id=1,
+        diff_refs={"base_sha": "base", "start_sha": "base", "head_sha": "reviewed-head"},
     )
+    provider.diff_files = [SimpleNamespace(
+        filename=filename, old_filename=None, edit_type=EDIT_TYPE.MODIFIED,
+    ) for filename in (FILE, RESERVED_FILE)]
+    provider._diff_head_sha = "reviewed-head"
     return provider
 
 
@@ -80,6 +88,12 @@ def _gitea_provider() -> GiteaProvider:
     provider.owner = "owner"
     provider.repo = "repo"
     provider.logger = MagicMock()
+    provider.sha = "head-sha"
+    provider.pr_number = 7
+    provider.pr = SimpleNamespace(head=SimpleNamespace(repo=SimpleNamespace(full_name="owner/repo")))
+    provider.diff_files = [SimpleNamespace(
+        filename=filename, old_filename=None, edit_type=EDIT_TYPE.MODIFIED,
+    ) for filename in (FILE, RESERVED_FILE)]
     provider.get_pr_branch = MagicMock(return_value=BRANCH)
     return provider
 
@@ -281,7 +295,7 @@ def test_get_line_link_follows_provider_contract(
 @pytest.mark.parametrize(
     ("factory", "expected_query"),
     [
-        pytest.param(_gitlab_provider, "ref_type=heads", id="gitlab"),
+        pytest.param(_gitlab_provider, "", id="gitlab"),
         pytest.param(_gitea_provider, "", id="gitea"),
     ],
 )

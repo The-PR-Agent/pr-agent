@@ -90,9 +90,12 @@ class PRAddDocs:
                 publication_result = self.push_inline_docs(data)
                 if publication_result is False:
                     publication_failed = True
-                    self.git_provider.publish_tool_failure(
-                        "add_docs", "Failed to publish code documentation for this PR."
-                    )
+                    if not getattr(self.git_provider, "_gitlab_suggestion_version_changed", False):
+                        # The MR may now match a previously inapplicable ignore rule.
+                        # Never send a stale-version failure notice without fresh policy.
+                        self.git_provider.publish_tool_failure(
+                            "add_docs", "Failed to publish code documentation for this PR."
+                        )
                     raise RuntimeError("Failed to publish code documentation after individual retries")
         except Exception as e:
             get_logger().error(f"Failed to generate code documentation for PR, error: {e}")
@@ -251,10 +254,23 @@ class PRAddDocs:
         if is_successful is True:
             return True
         if not is_successful:
+            if (getattr(self.git_provider, '_gitlab_suggestion_version_changed', False)
+                    or getattr(self.git_provider, '_gitlab_suggestion_publication_incomplete', False)):
+                get_logger().warning('GitLab code documentation was only partially published; not retrying old anchors')
+                return False
             get_logger().info("Failed to publish code docs, trying to publish each docs separately")
             retry_results = []
             for doc_suggestion in docs:
-                retry_results.append(self.git_provider.publish_code_suggestions([doc_suggestion]))
+                result = self.git_provider.publish_code_suggestions([doc_suggestion])
+                # The MR can advance between retries even if the original
+                # batch failed without landing a single suggestion.
+                if (getattr(self.git_provider, '_gitlab_suggestion_version_changed', False)
+                        or getattr(self.git_provider, '_gitlab_suggestion_publication_incomplete', False)):
+                    get_logger().warning('GitLab MR changed or publication became partial during docs retry')
+                    return False
+                retry_results.append(result)
+            if hasattr(self.git_provider, '_gitlab_suggestion_publication_incomplete'):
+                return all(result is True for result in retry_results)
             if is_successful is False and all(result is False for result in retry_results):
                 return False
             if any(result is True for result in retry_results):

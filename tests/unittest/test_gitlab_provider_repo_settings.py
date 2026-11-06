@@ -33,7 +33,8 @@ def project():
 
 @pytest.fixture(autouse=True)
 def no_global_settings():
-    with patch.object(GitLabProvider, "_get_global_repo_settings", return_value=""):
+    with patch.object(GitLabProvider, "_get_global_repo_settings", return_value=""), \
+            patch.object(GitLabProvider, "_fetch_global_repo_settings", return_value=""):
         yield
 
 
@@ -198,8 +199,11 @@ def test_get_repo_settings_tree_cache_respects_revision_and_page_limit(project, 
         assert project.repository_tree.call_count == 1
         provider._resolved_config_branch = next_ref
         settings.config.per_directory_settings_max_tree_pages = next_limit
-        expected_paths = [] if isinstance(next_limit, bool) else ["sub/.pr_agent.toml"]
-        assert provider.get_repo_settings_tree() == (expected_paths, next_ref)
+        if isinstance(next_limit, bool):
+            with pytest.raises(ValueError, match="page limit"):
+                provider.get_repo_settings_tree()
+        else:
+            assert provider.get_repo_settings_tree() == (["sub/.pr_agent.toml"], next_ref)
 
     assert project.repository_tree.call_count == expected_calls
 
@@ -214,7 +218,11 @@ def test_get_repo_settings_tree_retries_empty_or_incomplete_discovery(project, f
     settings.config.per_directory_settings_max_tree_pages = 1
 
     with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
-        assert provider.get_repo_settings_tree() == ([], SHA_A)
+        if first_page_size == 100:
+            with pytest.raises(ValueError, match="tree page limit reached"):
+                provider.get_repo_settings_tree()
+        else:
+            assert provider.get_repo_settings_tree() == ([], SHA_A)
         assert provider.get_repo_settings_tree() == (["sub/.pr_agent.toml"], SHA_A)
         assert provider.get_repo_settings_tree() == (["sub/.pr_agent.toml"], SHA_A)
 
@@ -380,8 +388,12 @@ def test_new_acquisition_clears_previous_selection_and_error_state(project, seco
 def test_acquisition_resets_snapshot_before_global_settings_failure(project):
     provider = _provider_with_project(project)
     provider._resolved_config_branch = SHA_A
-    with patch.object(GitLabProvider, "_get_global_repo_settings", side_effect=RuntimeError("global failure")), \
+    with patch("pr_agent.git_providers.gitlab_provider.get_settings") as settings, \
+            patch.object(provider, "get_owning_namespace", return_value="group"), \
+            patch.object(GitLabProvider, "_fetch_global_repo_settings", side_effect=RuntimeError("global failure")), \
             pytest.raises(RuntimeError, match="global failure"):
+        settings.return_value.config.use_global_settings_file = True
+        settings.return_value.config.global_settings_repo = "policy"
         provider.get_repo_settings()
     assert provider.get_repo_settings_tree() == ([], "")
     project.repository_tree.assert_not_called()

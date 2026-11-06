@@ -493,3 +493,29 @@ def test_exhausted_invalid_responses_report_failure_and_clear_progress(fallback_
     assert results(fallback_tool.git_provider) == ["Failed to generate code documentation for this PR."]
     assert fallback_tool.git_provider.initial_comment_removed
     assert command_failed() is True
+
+
+@pytest.mark.parametrize("stale_call", [2, 3])
+def test_docs_retry_never_posts_failure_notice_after_gitlab_revision_changes(
+    publish_output, monkeypatch, stale_call,
+):
+    class RevisionChangingProvider(FakeGitProvider):
+        _gitlab_suggestion_version_changed = False
+        _gitlab_suggestion_publication_incomplete = False
+
+        def publish_code_suggestions(self, suggestions):
+            self.suggestions.append(suggestions)
+            if len(self.suggestions) == stale_call:
+                self._gitlab_suggestion_version_changed = True
+                return False
+            return len(self.suggestions) > 1
+
+    provider = RevisionChangingProvider()
+    failed = Mock()
+    monkeypatch.setattr("pr_agent.tools.pr_add_docs.record_command_failure", failed)
+
+    run(DOCUMENTED_TWICE, monkeypatch, provider)
+    assert len(provider.suggestions) == stale_call
+    assert provider.failures == []  # A stale failure note could violate updated ignore rules.
+    assert results(provider) == []
+    failed.assert_called_once()

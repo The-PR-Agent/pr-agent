@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -330,6 +331,9 @@ def _gl_provider(existing_bodies):
     p.mr.discussions.list.return_value = discs
     p.mr.notes.list.return_value = []
     p.mr.draft_notes.list.return_value = []
+    p._get_merge_request = MagicMock(return_value=SimpleNamespace(
+        sha="head", diff_refs={"base_sha": "base", "start_sha": "start", "head_sha": "head"},
+    ))
     p.get_relevant_diff = MagicMock(return_value=_FakeDiff())
     return p
 
@@ -409,8 +413,8 @@ def test_gitlab_recent_inline_bodies_include_marked_posts():
 
 def test_gitlab_failed_create_does_not_record_a_recent_body():
     p = _gl_provider([])
-    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
-    p.mr.notes.create.side_effect = GitlabCreateError("note rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
+    p.mr.notes.create.side_effect = GitlabCreateError("note rejected", response_code=400)
     p.get_line_link = MagicMock(return_value="http://link")
     original = {
         "relevant_lines_start": 10, "relevant_lines_end": 11,
@@ -473,6 +477,9 @@ def test_gitlab_recent_inline_bodies_record_drafts_after_bulk_publish(_gl_review
     p = _gl_review_provider
     published_draft = MagicMock()
     published_draft.note = "draft finding"
+    published_draft.position = {"base_sha": "base", "start_sha": "start", "head_sha": "head"}
+    p._gitlab_pending_drafts = [published_draft]
+    p._gitlab_pending_draft_refs = dict(published_draft.position)
     p.mr.draft_notes.list.return_value = [published_draft]
 
     gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
@@ -493,8 +500,11 @@ def test_gitlab_failed_bulk_publish_does_not_record_drafts(_gl_review_provider):
     p = _gl_review_provider
     pending_draft = MagicMock()
     pending_draft.note = "unpublished finding"
+    pending_draft.position = {"base_sha": "base", "start_sha": "start", "head_sha": "head"}
+    p._gitlab_pending_drafts = [pending_draft]
+    p._gitlab_pending_draft_refs = dict(pending_draft.position)
     p.mr.draft_notes.list.return_value = [pending_draft]
-    p.mr.draft_notes.bulk_publish.side_effect = GitlabCreateError("cannot publish")
+    p.mr.draft_notes.bulk_publish.side_effect = GitlabCreateError("cannot publish", response_code=400)
 
     gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
     m = gs.start()
@@ -520,8 +530,9 @@ def test_gitlab_persistent_bodies_list_existing_mr_notes_without_duplicates():
 
     bodies = p.get_persistent_comment_bodies()
 
-    assert bodies == ["discussion finding", "plain note finding", "pending draft finding"]
+    assert bodies == ["discussion finding", "plain note finding"]
     p.mr.notes.list.assert_not_called()
+    p.mr.draft_notes.list.assert_not_called()
 
 
 def test_gitlab_persistent_bodies_include_recent_posts_only_once():
@@ -545,7 +556,7 @@ def test_gitlab_persistent_bodies_survive_draft_listing_failure():
 
 def test_gitlab_fallback_leaves_reduced_key_issue_in_summary():
     p = _gl_provider([])
-    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
     p.get_line_link = MagicMock(return_value="http://link")
     body = "**Possible Issue**\n\nfinding text"
     fingerprint = d.key_issue_fingerprint("a.py", body)
@@ -701,7 +712,7 @@ def test_gitlab_skips_when_existing_discussion_has_marker():
 
 def test_gitlab_fallback_note_carries_marker_and_records():
     p = _gl_provider([])
-    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
     p.get_line_link = MagicMock(return_value="http://link")
     original = {
         "relevant_lines_start": 10, "relevant_lines_end": 11,
@@ -756,11 +767,8 @@ def test_gitlab_skips_when_fallback_note_has_marker():
         gs.stop()
 
 
-def test_gitlab_skips_when_pending_draft_note_has_marker():
-    # gitlab.publish_code_suggestions_as_review queues suggestions as draft notes,
-    # which are invisible via discussions/notes listings until published. A pending
-    # draft's marker must still be found, so a suggestion isn't re-queued as a
-    # duplicate while an earlier draft of it is still waiting to be published.
+def test_gitlab_recreates_suggestion_when_only_a_previous_draft_has_marker():
+    # A private draft from another provider cannot be trusted as published.
     body = "**Suggestion:** still pending [possible issue, importance: 7]"
     seen_fp = d.body_fingerprint("a.py", 10, body)
     p = _gl_provider([])
@@ -772,7 +780,7 @@ def test_gitlab_skips_when_pending_draft_note_has_marker():
     m.return_value.get.side_effect = _flag_side_effect(True)
     try:
         _send(p, body)
-        p.mr.discussions.create.assert_not_called()
+        p.mr.discussions.create.assert_called_once()
         p.mr.draft_notes.create.assert_not_called()
     finally:
         gs.stop()

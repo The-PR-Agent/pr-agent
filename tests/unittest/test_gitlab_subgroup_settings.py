@@ -18,6 +18,7 @@ def settings(monkeypatch):
     config = SimpleNamespace(
         use_global_settings_file=True, use_group_settings_file=True, global_settings_repo="pr-agent-settings")
     settings = SimpleNamespace(config=config)
+    settings.get = lambda key, default=None: getattr(config, key.split(".")[-1].lower(), default)
     monkeypatch.setattr(git_provider, "get_settings", lambda: settings)
     monkeypatch.setattr(gitlab_provider, "get_settings", lambda: settings)
     monkeypatch.setattr(gitlab_provider, "get_config_branch", lambda: "")

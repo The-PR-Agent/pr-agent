@@ -1599,11 +1599,53 @@ class PRCodeSuggestions:
             if is_successful:
                 self._output_published = True
             if not is_successful:
+                version_changed = getattr(self.git_provider, "_gitlab_suggestion_version_changed", False) is True
+                incomplete = getattr(self.git_provider, "_gitlab_suggestion_publication_incomplete", False) is True
+                if version_changed or incomplete:
+                    # Do not re-post accepted inline suggestions or claim that a
+                    # partially delivered batch is a completed incremental pass.
+                    record_command_failure()
+                    if (incomplete and not version_changed
+                            and getattr(self.git_provider, "_notice_policy_snapshot_required", True) is False
+                            and get_settings().pr_code_suggestions.get("publish_failure_comment", True)):
+                        # An unverified ignore policy forbids a new MR comment.
+                        # A confirmed safe policy permits a bounded failure notice.
+                        try:
+                            self.git_provider.publish_tool_failure(
+                                "improve",
+                                "PR-Agent could not confirm all code suggestions were published. "
+                                "Some may already be visible; inspect the MR before retrying /improve.",
+                            )
+                        except Exception:
+                            get_logger().exception("Could not publish GitLab incomplete-suggestions notice")
+                    get_logger().warning("GitLab suggestion publication was interrupted or incomplete")
+                    return
+            if not is_successful:
                 get_logger().info("Failed to publish code suggestions, trying to publish each suggestion separately")
+                retry_results = []
                 for code_suggestion in code_suggestions:
-                    if self.git_provider.publish_code_suggestions([code_suggestion]):
-                        is_successful = True
+                    published = self.git_provider.publish_code_suggestions([code_suggestion])
+                    retry_results.append(published)
+                    # A push can arrive after the batch failure, during these
+                    # individual retries. Do not publish stale fallback comments,
+                    # or a summary that becomes a false incremental anchor.
+                    if getattr(self.git_provider, "_gitlab_suggestion_version_changed", False) is True:
+                        record_command_failure()
+                        get_logger().warning("GitLab MR changed during individual suggestion retries")
+                        return
+                    if getattr(self.git_provider, "_gitlab_suggestion_publication_incomplete", False) is True:
+                        record_command_failure()
+                        get_logger().warning("GitLab suggestion retry partially published")
+                        return
+                    if published:
                         self._output_published = True
+                if isinstance(getattr(self.git_provider, "_gitlab_suggestion_publication_incomplete", None), bool):
+                    # An entirely rejected inline batch can still be recovered by
+                    # the summarized comment below. Only partial publication or
+                    # an exhausted summary fallback makes this command fail.
+                    is_successful = all(result is True for result in retry_results)
+                else:
+                    is_successful = any(bool(result) for result in retry_results)
         if coverage_footer and not supports_suggestions_artifact:
             fallback_comments.append(coverage_footer.strip())
         if fallback_comments and not artifact_batch_published:

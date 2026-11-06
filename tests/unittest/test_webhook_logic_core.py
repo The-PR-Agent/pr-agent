@@ -684,7 +684,7 @@ async def test_github_automatic_feedback_continues_after_invalid_command(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_gitea_automatic_feedback_continues_after_invalid_command(monkeypatch):
+async def test_gitea_automatic_feedback_stops_after_invalid_command(monkeypatch):
     settings = get_settings()
     original_gitea = copy.deepcopy(settings.get("GITEA"))
     original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
@@ -706,14 +706,15 @@ async def test_gitea_automatic_feedback_continues_after_invalid_command(monkeypa
 
     monkeypatch.setattr(gitea_app, "apply_repo_settings", lambda _url: None)
     try:
-        await gitea_app._perform_commands_gitea(
+        result = await gitea_app._perform_commands_gitea(
             "pr_commands", agent, body, body["pull_request"]["url"]
         )
     finally:
         settings.set("GITEA", original_gitea)
         settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
 
-    assert agent.commands == [["/review"]]
+    assert result is False
+    assert agent.commands == []
 
 
 async def _run_gitlab_pr_commands(module, monkeypatch, draft, repo_setting, event="open"):

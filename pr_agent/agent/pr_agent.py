@@ -98,6 +98,11 @@ def _publish_incomplete_files_comment(
         get_logger().exception("Failed to get a provider for the incomplete-files notice")
         return
 
+    if getattr(error, "requires_safe_notice_policy", False):
+        if getattr(provider, "_notice_policy_snapshot_required", None) is not False:
+            get_logger().warning("Suppressing incomplete-files notice: original ignore policy is unverified")
+            return
+
     try:
         comments = provider.get_issue_comments_newest_first()
         for comment in comments:

@@ -14,6 +14,23 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
 
 
+@pytest.mark.parametrize("provider_id", ["gitlab", "gitea"])
+def test_manually_constructed_tool_uses_verified_auto_command_snapshot(provider_id):
+    from pr_agent.git_providers.gitea_provider import GiteaProvider
+    from pr_agent.git_providers.gitlab_provider import GitLabProvider
+
+    provider_class = {"gitlab": GitLabProvider, "gitea": GiteaProvider}[provider_id]
+    provider = provider_class.__new__(provider_class)
+    provider._tool_provider_stale = False
+    settings = deepcopy(get_settings())
+    settings.set("config.git_provider", provider_id)
+    settings.set("config.extra_config_url", "")
+    url = f"https://example.test/{provider_id}/pull/1"
+
+    with request_cycle_context({"settings": settings, "git_provider": {url: provider}}):
+        assert git_providers.get_git_provider_for_tool(url) is provider
+
+
 @pytest.mark.parametrize("action", ["ask", "ask_line", "add_docs", "update_changelog", "generate_labels"])
 async def test_manual_tools_reuse_request_provider(monkeypatch, action):
     original_settings = get_settings()
@@ -267,7 +284,9 @@ async def test_gitea_push_between_commands_rebuilds_head_and_file_list(monkeypat
     for pr, sha in ((old_pr, "old-head"), (new_pr, "new-head")):
         pr.head = SimpleNamespace(sha=sha, ref="feature")
         pr.base = SimpleNamespace(sha="base", ref="main")
-    repo_api.get_pull_request.side_effect = [old_pr, old_pr, new_pr]
+    # The command boundary refresh sees the push. /ask then reuses that
+    # verified provider instead of independently reading a third PR revision.
+    repo_api.get_pull_request.side_effect = [old_pr, new_pr]
     repo_api.get_languages.return_value = {"Python": 100}
     repo_api.get_pr_commits.return_value = []
     repo_api.get_change_file_pull_request.side_effect = [
@@ -286,4 +305,4 @@ async def test_gitea_push_between_commands_rebuilds_head_and_file_list(monkeypat
         assert await PRAgent(ai_handler=SimpleNamespace).handle_request(url, ["ask", "Why?"])
 
     assert observed == [("old-head", ["old.py"]), ("new-head", ["old.py", "new.py"])]
-    assert repo_api.get_pull_request.call_count == 3
+    assert repo_api.get_pull_request.call_count == 2
