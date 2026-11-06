@@ -201,23 +201,6 @@ async def test_no_new_commit_since_the_last_review_says_so(settings):
 
 
 @pytest.mark.asyncio
-async def test_per_commit_prompts_get_no_previous_findings(settings):
-    provider = _provider({"a" * 40: ["a.py"], "b" * 40: [], "c" * 40: ["c.py"]})
-    reviewer = _reviewer(provider)
-    reviewer.vars["previous_findings"] = "finding from an earlier whole PR review"
-    seen = []
-
-    async def review():
-        seen.append(reviewer.vars["previous_findings"])
-
-    with patch.object(reviewer, "_run_review", side_effect=review):
-        await reviewer.run()
-
-    assert seen == ["", ""]
-    assert reviewer.vars["previous_findings"] == "finding from an earlier whole PR review"
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("failing", ["get_pr_commits", "pr.commits"])
 async def test_commit_listing_error_takes_the_review_failure_path(settings, failing):
     provider = _provider({})
@@ -537,3 +520,56 @@ def test_gitlab_inline_findings_anchor_on_the_commit_diff_refs(inline_settings):
 
     provider.get_incremental_commits(IncrementalPR(False))
     assert provider._commit_diff_refs is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("per_commit", "sees_findings"), [(True, False), (False, True)])
+async def test_per_commit_prompts_get_no_previous_findings(settings, monkeypatch, per_commit, sees_findings):
+    monkeypatch.setitem(get_settings().pr_reviewer, "per_commit_review", per_commit)
+    monkeypatch.setattr(PRReviewer, "_load_previous_findings_context", lambda self: "EARLIER-FINDING-MARKER")
+    reviewer = _commit_reviewer(monkeypatch, "")
+    prompts = []
+
+    async def chat_completion(model, temperature, system, user):
+        prompts.append(user)
+        return "review:\n  key_issues_to_review: []\n", "stop"
+
+    async def predict(prepare, **_):
+        await prepare("gpt-4o")
+
+    monkeypatch.setattr("pr_agent.tools.pr_reviewer.retry_with_fallback_models", predict)
+    monkeypatch.setattr("pr_agent.tools.pr_reviewer.get_pr_diff", lambda *_, **__: ("## File: 'a.py'\n+x\n", []))
+    reviewer.ai_handler = SimpleNamespace(main_pr_language="Python", chat_completion=chat_completion)
+    await reviewer.run()
+
+    assert prompts
+    assert all(("EARLIER-FINDING-MARKER" in prompt) is sees_findings for prompt in prompts)
+
+
+@pytest.mark.asyncio
+async def test_commits_whose_changes_fail_to_load_get_a_failure_comment(settings):
+    provider = _provider({})
+    provider.set_commit_review_scope.side_effect = RuntimeError("api down")
+    reviewer = _reviewer(provider)
+
+    with patch.object(reviewer, "_run_review") as run_review:
+        await reviewer.run()
+
+    run_review.assert_not_awaited()
+    assert command_failed()
+    bodies = [call.args[0] for call in provider.publish_comment.call_args_list]
+    assert len(bodies) == len(COMMITS)
+    assert all(body.startswith("Failed to review PR") for body in bodies)
+
+
+@pytest.mark.asyncio
+async def test_failing_fallback_notice_still_reviews_the_whole_pr(settings):
+    provider = MagicMock()
+    provider.get_pr_commits.return_value = None
+    provider.publish_comment.side_effect = RuntimeError("cannot comment")
+    reviewer = _reviewer(provider)
+
+    with patch.object(reviewer, "_run_review") as run_review:
+        await reviewer.run()
+
+    run_review.assert_awaited_once()

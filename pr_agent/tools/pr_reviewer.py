@@ -319,11 +319,14 @@ class PRReviewer:
     async def _review_as_one(self, reason: str, notice: str) -> None:
         get_logger().warning(f"{reason}, skipping per commit review")
         if get_settings().config.publish_output and not get_settings().config.get("is_auto_command", False):
-            self.git_provider.publish_comment(notice)
+            try:
+                self.git_provider.publish_comment(notice)
+            except Exception as e:
+                get_logger().exception(f"Failed to publish the per commit review notice, error: {e}")
         await self._run_review()
 
-    def _publish_commit_listing_failure(self, error: Exception) -> None:
-        get_logger().error(f"Failed to list the PR commits for per commit review: {error}")
+    def _publish_per_commit_failure(self, context: str, error: Exception) -> None:
+        get_logger().error(f"{context}: {error}")
         record_command_failure()
         if (get_settings().config.publish_output
                 and _as_bool(get_settings().pr_reviewer.get("publish_review_failure_comment", True))
@@ -342,7 +345,7 @@ class PRReviewer:
             pr = getattr(self.git_provider, "pr", None)
             total_commits = None if commits is None else getattr(pr, "commits", None)
         except Exception as e:
-            self._publish_commit_listing_failure(e)
+            self._publish_per_commit_failure("Failed to list the PR commits for per commit review", e)
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
             return
@@ -378,9 +381,16 @@ class PRReviewer:
             for commit in commits:
                 self.incremental = IncrementalPR(True)
                 try:
-                    if not self.git_provider.set_commit_review_scope(commit, self.incremental):
-                        get_logger().info(f"Commit {commit.sha} has no changes of its own, skipping it")
-                        continue
+                    has_own_changes = self.git_provider.set_commit_review_scope(commit, self.incremental)
+                except Exception as e:
+                    self._publish_per_commit_failure(f"Failed to load the changes of commit {commit.sha}", e)
+                    failed = True
+                    first_error = first_error or e
+                    continue
+                if not has_own_changes:
+                    get_logger().info(f"Commit {commit.sha} has no changes of its own, skipping it")
+                    continue
+                try:
                     message = clip_tokens(commit.message, max_message_tokens) if max_message_tokens \
                         else commit.message
                     self.vars = dict(copy.deepcopy(base_vars), commit_under_review=message, commit_messages_str="",
