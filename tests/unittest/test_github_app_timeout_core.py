@@ -556,8 +556,9 @@ class TestPushTriggerDedupe:
 
         assert push_trigger_env["count"] == 0
 
-    def test_skips_when_handle_push_trigger_disabled(self, push_trigger_env):
-        github_app.get_settings().github_app.handle_push_trigger = False
+    @pytest.mark.parametrize("disabled", [False, "false", "0", "off"])
+    def test_skips_when_handle_push_trigger_disabled(self, push_trigger_env, disabled):
+        github_app.get_settings().github_app.handle_push_trigger = disabled
 
         asyncio.run(
             github_app.handle_push_trigger_for_new_commits(
