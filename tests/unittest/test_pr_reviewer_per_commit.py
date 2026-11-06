@@ -1,6 +1,6 @@
 import re
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from github import GithubException
@@ -184,6 +184,67 @@ async def test_no_commit_with_changes_publishes_a_skip_notice(settings):
 
     run_review.assert_not_awaited()
     assert "skipped" in provider.publish_comment.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_no_new_commit_since_the_last_review_says_so(settings):
+    provider = _provider({})
+    reviewer = _reviewer(provider)
+    reviewer.incremental = _incremental(None)
+
+    with patch.object(reviewer, "_can_run_incremental_review", return_value=True), \
+            patch.object(reviewer, "_run_review") as run_review:
+        await reviewer.run()
+
+    run_review.assert_not_awaited()
+    assert "no new commits with changes since the last review" in provider.publish_comment.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_per_commit_prompts_get_no_previous_findings(settings):
+    provider = _provider({"a" * 40: ["a.py"], "b" * 40: [], "c" * 40: ["c.py"]})
+    reviewer = _reviewer(provider)
+    reviewer.vars["previous_findings"] = "finding from an earlier whole PR review"
+    seen = []
+
+    async def review():
+        seen.append(reviewer.vars["previous_findings"])
+
+    with patch.object(reviewer, "_run_review", side_effect=review):
+        await reviewer.run()
+
+    assert seen == ["", ""]
+    assert reviewer.vars["previous_findings"] == "finding from an earlier whole PR review"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing", ["get_pr_commits", "pr.commits"])
+async def test_commit_listing_error_takes_the_review_failure_path(settings, failing):
+    provider = _provider({})
+    if failing == "get_pr_commits":
+        provider.get_pr_commits.side_effect = RuntimeError("api down")
+    else:
+        type(provider.pr).commits = PropertyMock(side_effect=RuntimeError("api down"))
+    reviewer = _reviewer(provider)
+
+    with patch.object(reviewer, "_run_review") as run_review:
+        await reviewer.run()
+
+    run_review.assert_not_awaited()
+    assert command_failed()
+    assert provider.publish_comment.call_args.args[0].startswith("Failed to review PR")
+
+
+@pytest.mark.asyncio
+async def test_commit_listing_error_propagates_when_configured(settings, monkeypatch):
+    monkeypatch.setitem(get_settings().config, "propagate_tool_errors", True)
+    provider = _provider({})
+    provider.get_pr_commits.side_effect = RuntimeError("api down")
+    reviewer = _reviewer(provider)
+
+    with pytest.raises(RuntimeError, match="api down"):
+        await reviewer.run()
+    assert command_failed()
 
 
 def _incremental(first_new_sha):

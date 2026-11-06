@@ -322,16 +322,34 @@ class PRReviewer:
             self.git_provider.publish_comment(notice)
         await self._run_review()
 
+    def _publish_commit_listing_failure(self, error: Exception) -> None:
+        get_logger().error(f"Failed to list the PR commits for per commit review: {error}")
+        record_command_failure()
+        if (get_settings().config.publish_output
+                and _as_bool(get_settings().pr_reviewer.get("publish_review_failure_comment", True))
+                and not get_settings().config.get("is_auto_command", False)):
+            try:
+                self.git_provider.publish_comment(_review_failure_comment(error))
+            except Exception as e:
+                get_logger().exception(f"Failed to publish review failure result, error: {e}")
+
     async def _run_per_commit(self) -> None:
-        commits = self.git_provider.get_pr_commits()
+        init_run_details()
         publish_notice = (get_settings().config.publish_output
                           and not get_settings().config.get("is_auto_command", False))
+        try:
+            commits = self.git_provider.get_pr_commits()
+            total_commits = None if commits is None else getattr(getattr(self.git_provider, "pr", None), "commits", None)
+        except Exception as e:
+            self._publish_commit_listing_failure(e)
+            if get_settings().config.get("propagate_tool_errors", False):
+                raise
+            return
         if commits is None:
             await self._review_as_one(
                 f"Per commit review is not supported for {get_settings().config.git_provider}",
                 "Per commit review is not supported for this git provider, so the whole PR was reviewed instead.")
             return
-        total_commits = getattr(getattr(self.git_provider, "pr", None), "commits", None)
         if isinstance(total_commits, int) and len(commits) < total_commits:
             await self._review_as_one(
                 f"PR has {total_commits} commits but the git provider listed only {len(commits)}",
@@ -341,6 +359,7 @@ class PRReviewer:
         commits = self._commits_to_review(commits)
         if commits is None:
             return
+        since_last_review = self.incremental.is_incremental
         max_commits = _as_int(get_settings().pr_reviewer.get("max_commits_per_review", 0), 0)
         if 0 < max_commits < len(commits):
             await self._review_as_one(
@@ -363,7 +382,8 @@ class PRReviewer:
                         continue
                     message = clip_tokens(commit.message, max_message_tokens) if max_message_tokens \
                         else commit.message
-                    self.vars = dict(copy.deepcopy(base_vars), commit_under_review=message, commit_messages_str="")
+                    self.vars = dict(copy.deepcopy(base_vars), commit_under_review=message, commit_messages_str="",
+                                     previous_findings="")
                     self._review_commit = commit
                     get_logger().info(f"Reviewing commit {commit.sha} of PR: {self.pr_url}")
                     await self._run_review()
@@ -382,7 +402,9 @@ class PRReviewer:
         if not reviewed and not failed:
             get_logger().info(f"No commit with changes of its own to review in PR: {self.pr_url}")
             if publish_notice:
-                self.git_provider.publish_comment("Per commit review skipped: no commits with changes to review.")
+                self.git_provider.publish_comment(
+                    "Per commit review skipped: no new commits with changes since the last review."
+                    if since_last_review else "Per commit review skipped: no commits with changes to review.")
         if failed:
             record_command_failure()
         if first_error is not None and get_settings().config.get("propagate_tool_errors", False):
