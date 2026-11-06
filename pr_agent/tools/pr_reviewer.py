@@ -325,14 +325,13 @@ class PRReviewer:
                 get_logger().exception(f"Failed to publish the per commit review notice, error: {e}")
         await self._run_review()
 
-    def _publish_per_commit_failure(self, context: str, error: Exception) -> None:
-        get_logger().error(f"{context}: {error}")
+    def _publish_per_commit_failure(self, error: Exception, detail: str = "") -> None:
         record_command_failure()
         if (get_settings().config.publish_output
                 and _as_bool(get_settings().pr_reviewer.get("publish_review_failure_comment", True))
                 and not get_settings().config.get("is_auto_command", False)):
             try:
-                self.git_provider.publish_comment(_review_failure_comment(error))
+                self.git_provider.publish_comment(_review_failure_comment(error) + detail)
             except Exception as e:
                 get_logger().exception(f"Failed to publish review failure result, error: {e}")
 
@@ -345,7 +344,8 @@ class PRReviewer:
             pr = getattr(self.git_provider, "pr", None)
             total_commits = None if commits is None else getattr(pr, "commits", None)
         except Exception as e:
-            self._publish_per_commit_failure("Failed to list the PR commits for per commit review", e)
+            get_logger().error(f"Failed to list the PR commits for per commit review: {e}")
+            self._publish_per_commit_failure(e)
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
             return
@@ -377,13 +377,17 @@ class PRReviewer:
         reviewed = 0
         failed = False
         first_error = None
+        unloaded = []
         try:
             for commit in commits:
                 self.incremental = IncrementalPR(True)
                 try:
                     has_own_changes = self.git_provider.set_commit_review_scope(commit, self.incremental)
+                except IncompleteProviderPullRequestFilesError:
+                    raise
                 except Exception as e:
-                    self._publish_per_commit_failure(f"Failed to load the changes of commit {commit.sha}", e)
+                    get_logger().error(f"Failed to load the changes of commit {commit.sha}: {e}")
+                    unloaded.append((commit.sha[:7], e))
                     failed = True
                     first_error = first_error or e
                     continue
@@ -400,6 +404,8 @@ class PRReviewer:
                     await self._run_review()
                     reviewed += 1
                     failed = failed or command_failed()
+                except IncompleteProviderPullRequestFilesError:
+                    raise
                 except Exception as e:
                     get_logger().error(f"Failed to review commit {commit.sha}: {e}")
                     failed = True
@@ -408,14 +414,24 @@ class PRReviewer:
             self._review_commit = None
             self.vars = base_vars
             self.incremental = IncrementalPR(False)
-            self.git_provider.get_incremental_commits(self.incremental)
+            try:
+                self.git_provider.get_incremental_commits(self.incremental)
+            except Exception as e:
+                get_logger().exception(f"Failed to restore the full PR scope after per commit review, error: {e}")
+            if unloaded:
+                self._publish_per_commit_failure(
+                    unloaded[0][1], "\n\nThe changes of these commits could not be loaded: "
+                    + ", ".join(f"`{sha}`" for sha, _ in unloaded))
 
         if not reviewed and not failed:
             get_logger().info(f"No commit with changes of its own to review in PR: {self.pr_url}")
             if publish_notice:
-                self.git_provider.publish_comment(
-                    "Per commit review skipped: no new commits with changes since the last review."
-                    if since_last_review else "Per commit review skipped: no commits with changes to review.")
+                try:
+                    self.git_provider.publish_comment(
+                        "Per commit review skipped: no new commits with changes since the last review."
+                        if since_last_review else "Per commit review skipped: no commits with changes to review.")
+                except Exception as e:
+                    get_logger().exception(f"Failed to publish the per commit review notice, error: {e}")
         if failed:
             record_command_failure()
         if first_error is not None and get_settings().config.get("propagate_tool_errors", False):

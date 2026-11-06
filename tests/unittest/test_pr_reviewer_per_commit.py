@@ -9,7 +9,7 @@ from pr_agent.algo.run_details import command_failed, init_run_details, record_c
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.git_provider import IncrementalPR, PRCommit
+from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError, IncrementalPR, PRCommit
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -557,9 +557,10 @@ async def test_commits_whose_changes_fail_to_load_get_a_failure_comment(settings
 
     run_review.assert_not_awaited()
     assert command_failed()
-    bodies = [call.args[0] for call in provider.publish_comment.call_args_list]
-    assert len(bodies) == len(COMMITS)
-    assert all(body.startswith("Failed to review PR") for body in bodies)
+    provider.publish_comment.assert_called_once()
+    body = provider.publish_comment.call_args.args[0]
+    assert body.startswith("Failed to review PR")
+    assert all(f"`{commit.sha[:7]}`" in body for commit in COMMITS)
 
 
 @pytest.mark.asyncio
@@ -573,3 +574,47 @@ async def test_failing_fallback_notice_still_reviews_the_whole_pr(settings):
         await reviewer.run()
 
     run_review.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing_call", ["set_commit_review_scope", "_run_review"])
+async def test_incomplete_files_error_propagates_after_restoring_state(settings, failing_call):
+    provider = _provider({commit.sha: ["a.py"] for commit in COMMITS})
+    reviewer = _reviewer(provider)
+    base_vars = dict(reviewer.vars)
+    error = IncompleteProviderPullRequestFilesError("incomplete")
+    if failing_call == "set_commit_review_scope":
+        provider.set_commit_review_scope.side_effect = error
+
+    with patch.object(reviewer, "_run_review", side_effect=error) as run_review:
+        with pytest.raises(IncompleteProviderPullRequestFilesError):
+            await reviewer.run()
+
+    assert run_review.await_count == (failing_call == "_run_review")
+    assert reviewer.vars == base_vars
+    assert not reviewer.incremental.is_incremental
+    provider.get_incremental_commits.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_failing_scope_restore_does_not_mask_the_review_error(settings, monkeypatch):
+    monkeypatch.setitem(get_settings().config, "propagate_tool_errors", True)
+    provider = _provider({commit.sha: ["a.py"] for commit in COMMITS})
+    provider.get_incremental_commits.side_effect = RuntimeError("restore failed")
+    reviewer = _reviewer(provider)
+
+    with patch.object(reviewer, "_run_review", side_effect=ValueError("review failed")):
+        with pytest.raises(ValueError, match="review failed"):
+            await reviewer.run()
+
+
+@pytest.mark.asyncio
+async def test_failing_nothing_to_review_notice_is_logged(settings):
+    provider = _provider({commit.sha: [] for commit in COMMITS})
+    provider.publish_comment.side_effect = RuntimeError("cannot comment")
+    reviewer = _reviewer(provider)
+
+    await reviewer.run()
+
+    provider.publish_comment.assert_called_once()
+    assert not command_failed()
