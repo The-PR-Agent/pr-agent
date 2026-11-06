@@ -40,6 +40,7 @@ from pr_agent.algo.git_patch_processing import (
 )
 from pr_agent.algo.i18n import t
 from pr_agent.algo.language_handler import build_language_file_matcher
+from pr_agent.algo.merge_verdict import render_merge_recommendation_checks
 from pr_agent.algo.output_models import PRType, SubPR, parse_failure_modes
 from pr_agent.algo.structural_reach import render_structural_reach
 from pr_agent.algo.types import FilePatchInfo
@@ -348,6 +349,8 @@ def convert_to_markdown_v2(output_data: dict,
                 markdown_text += "</td></tr>\n"
             else:
                 markdown_text += f"### {emoji} Risk level: {risk_display}\n\n"
+        elif key.lower() == 'merge_recommendation_checks':
+            markdown_text += render_merge_recommendation_checks(value, gfm_supported)
         elif 'merge recommendation' in key_nice.lower():
             recommendation = str(value).strip().replace("_", " ")
             recommendation_display = recommendation.capitalize() if recommendation else "Unknown"

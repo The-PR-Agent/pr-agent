@@ -166,9 +166,13 @@ See [Review](../tools/review.md#configuration-options).
 | `require_ticket_analysis_review` | true |  |
 | `require_risk_assessment` | false | ask the model for an overall risk level (low/medium/high) |
 | `require_merge_recommendation` | false | ask the model for a merge recommendation: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge) |
+| `max_changed_lines` | 100 | changed-line cap for a no_concerns_found merge recommendation; a larger diff is vetoed. See docs/docs/tools/review.md |
 | `require_failure_modes` | false | ask for up to three concrete failure scenarios and their detection/coverage |
 | `require_priority_files` | false | ask the model which files a human should inspect first |
 | `structural_reach_input_file` | "" | JSON reach facts from a build-graph tool; when the file exists, adds a deterministic change-risk row. See docs/docs/tools/review.md |
+| `enable_risk_checks` | true | Enable deterministic risk checks for sensitive paths and risky change shapes. See docs/docs/tools/review.md |
+| `sensitive_paths` | [".github/workflows/**", ".gitlab-ci.yml", "Jenkinsfile*", ".circleci/**", "azure-pipelines*.yml", ".travis.yml", "bitbucket-pipelines.yml", "*CODEOWNERS", ".pr_agent.toml", "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "requirements*.txt", "Pipfile", "Pipfile.lock", "pyproject.toml", "poetry.lock", "uv.lock", "Cargo.toml", "Cargo.lock", "go.mod", "go.sum", "pom.xml", "build.gradle*", "Gemfile", "Gemfile.lock", "composer.json", "composer.lock", "*Dockerfile*", "docker-compose*.yml", "docker-compose*.yaml", "*.dockerfile", "*.tf", "*.tfvars", "*.hcl", "*migrations*/**", "*migration*", "db/migrate/**", "alembic/**"] | Glob patterns of sensitive paths flagging deterministic review risk findings. See docs/docs/tools/review.md |
+| `extra_risky_shapes` | [] | Custom regex patterns flagging risky changes in diff hunks. See docs/docs/tools/review.md |
 **general options**
 
 | Key | Default | Description |
@@ -373,6 +377,7 @@ See [GitHub](../installation/github.md#run-as-a-github-app).
 | `try_fix_invalid_inline_comments` | true |  |
 | `ignore_bot_pr` | true |  |
 | `publish_as_check_run` | false | when true, publish review/description/improve output as GitHub Checks instead of PR comments |
+| `publish_merge_verdict_as_check` | false | when true, publish the computed review verdict as a GitHub Check on the reviewed head SHA |
 
 
 ## `[github_action_config]` {#github_action_config}

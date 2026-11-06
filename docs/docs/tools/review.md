@@ -203,7 +203,15 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>require_merge_recommendation</b></td>
-    <td>If set to true, the tool will add a section describing what the review found: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge). The value reports the model's findings, not a guarantee about the code.</td>
+    <td>If set to true, the tool publishes a merge recommendation computed in code: no_concerns_found only when every deterministic check passes, needs_review when a check fails, and changes_required when the model vetoes the result. The review lists the checks and the model's recommendation and risk level can only lower the result, never raise it. See <a href="#merge-recommendation">Merge recommendation</a>.</td>
+  </tr>
+  <tr>
+    <td><b>github.publish_merge_verdict_as_check</b></td>
+    <td>If set to true, publishes the computed recommendation as a separate GitHub check on the reviewed head SHA. It requires <code>require_merge_recommendation = true</code>; its conclusion is success, neutral, or failure for no_concerns_found, needs_review, or changes_required respectively.</td>
+  </tr>
+  <tr>
+    <td><b>max_changed_lines</b></td>
+    <td>Changed-line cap for a no_concerns_found merge recommendation. A larger diff makes the recommendation needs_review at best. The cap counts added and removed lines.</td>
   </tr>
   <tr>
     <td><b>require_failure_modes</b></td>
@@ -508,3 +516,25 @@ not match the schema, or anything fails while computing the row, the review is p
 - OWASP guidance on sensitive functionality: authentication, session management, cryptography and payments.
 
 :::
+
+### Merge recommendation
+
+When `require_merge_recommendation` is on, the published recommendation is computed from
+deterministic checks, not taken from the model. `no_concerns_found` requires every check to
+pass:
+
+- CI on the reviewed head is green;
+- the head is current with its base branch;
+- the author and every commit author are human;
+- no changed file matches `sensitive_paths`, and no risky change shape is found;
+- the diff changes at most `max_changed_lines` lines in total.
+
+A check that cannot be evaluated, including one a provider does not support, counts as
+failed. A failed check makes the recommendation `needs_review` at best. The model's own
+`merge_recommendation` and `risk_level` can only lower the result, never raise it, so a
+model that reports no concerns cannot override a failing check.
+
+The review lists every check with its outcome next to the recommendation, so the reader can
+see which one decided the verdict. Providers without CI, staleness or author support cannot
+publish `no_concerns_found`. The recommendation is advisory and does not approve or merge
+the pull request.

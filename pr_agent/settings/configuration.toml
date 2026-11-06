@@ -182,6 +182,7 @@ require_ticket_analysis_review=true
 # Opt-in structured assessment fields. Each adds one field to the review output and to the model's output schema.
 require_risk_assessment=false # ask the model for an overall risk level (low/medium/high)
 require_merge_recommendation=false # ask the model for a merge recommendation: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge)
+max_changed_lines=100 # changed-line cap for a no_concerns_found merge recommendation; a larger diff is vetoed. See docs/docs/tools/review.md
 require_failure_modes=false # ask for up to three concrete failure scenarios and their detection/coverage
 require_priority_files=false # ask the model which files a human should inspect first
 structural_reach_input_file="" # JSON reach facts from a build-graph tool; when the file exists, adds a deterministic change-risk row. See docs/docs/tools/review.md
@@ -342,6 +343,7 @@ base_url = "https://api.github.com"
 try_fix_invalid_inline_comments = true
 ignore_bot_pr = true
 publish_as_check_run = false # when true, publish review/description/improve output as GitHub Checks instead of PR comments
+publish_merge_verdict_as_check = false # when true, publish the computed review verdict as a GitHub Check on the reviewed head SHA
 
 [github_action_config]
 # auto_review = true    # set as env var in .github/workflows/pr-agent.yaml
