@@ -368,6 +368,8 @@ separate model call, so a PR with many commits costs accordingly; `-i` keeps rep
 Hosts that want to bound that cost can set `max_commits_per_review` (default 0, no limit): when more commits than that are selected, they are reviewed
 together in one review with a notice. Both settings belong to the operator, so a command argument such as
 `--pr_reviewer.per_commit_review=true` is rejected.
+Each commit's comment shows its own run details, while the `--json-output` file and the GitHub Action `review` output
+describe the last reviewed commit only.
 
 Per commit review is available on GitHub and GitLab. Other git providers fall back to a regular review of the whole PR.
 GitHub lists at most 250 commits of a PR, so a PR with more commits than that is also reviewed as a whole, with a
