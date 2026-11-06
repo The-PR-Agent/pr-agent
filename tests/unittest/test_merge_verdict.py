@@ -178,4 +178,3 @@ def test_with_merge_verdict_keeps_checks_next_to_the_recommendation():
         "key_issues_to_review",
     ]
     assert updated["merge_recommendation"] == "no_concerns_found"
-
