@@ -1,4 +1,6 @@
+import io
 import json
+import sys
 from types import SimpleNamespace
 from urllib.parse import urlparse
 
@@ -110,6 +112,21 @@ def _reset_push_outputs():
 
 
 class TestPushOutputs:
+    @pytest.mark.parametrize("encoding", ["utf-8", "ascii", "cp1252"])
+    def test_stdout_preserves_unicode_with_restricted_encodings(self, monkeypatch, encoding):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', True)
+        get_settings().set('PUSH_OUTPUTS.CHANNELS', ['stdout'])
+        raw = io.BytesIO()
+        monkeypatch.setattr(sys, 'stdout', io.TextIOWrapper(raw, encoding=encoding))
+
+        push_outputs('review', payload={'message': '台灣你好 👋'})
+        sys.stdout.flush()
+
+        output = raw.getvalue().decode(encoding)
+        assert json.loads(output)['payload'] == {'message': '台灣你好 👋'}
+        if encoding == 'utf-8':
+            assert '台灣你好 👋' in output
+
     def test_disabled_by_default_is_noop(self, monkeypatch, tmp_path):
         get_settings().set('PUSH_OUTPUTS.ENABLE', False)
         get_settings().set('PUSH_OUTPUTS.CHANNELS', ['file'])
