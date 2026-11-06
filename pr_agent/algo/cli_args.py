@@ -213,6 +213,13 @@ class CliArgs:
                     host_only_arg = CliArgs._host_only_setting_arg(arg_word)
                     if host_only_arg:
                         return False, host_only_arg
+                    # A flag name with whitespace never names a real setting, and applying one can
+                    # replace a whole section, so reject it outright. Checked before the mapping
+                    # branch below, whose `continue` would otherwise skip this validation for a
+                    # mapping-valued flag carrying a spaced key.
+                    flag_name = arg_word.split('=', 1)[0].rstrip()
+                    if flag_name != ''.join(flag_name.split()):
+                        return False, flag_name
                     # A mapping value sets many keys at once, so validate each nested
                     # section.key path against the host-only and forbidden lists instead of
                     # matching the value text, which may legitimately mention a key name.
@@ -221,11 +228,6 @@ class CliArgs:
                         if mapping_offending_arg:
                             return False, mapping_offending_arg
                         continue
-                    # A flag name with whitespace never names a real setting, and applying one can
-                    # replace a whole section, so reject it outright.
-                    flag_name = arg_word.split('=', 1)[0].rstrip()
-                    if flag_name != ''.join(flag_name.split()):
-                        return False, flag_name
                     for forbidden_arg_word in forbidden_cli_args:
                         if forbidden_arg_word in arg_word:
                             return False, forbidden_arg_word

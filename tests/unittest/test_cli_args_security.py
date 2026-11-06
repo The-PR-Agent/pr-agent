@@ -465,6 +465,9 @@ def test_validate_user_args_rejects_forbidden_key_with_whitespace_around_the_sec
         "--pr_description	.extra_instructions=hi",
         "--config .verbosity_level=2",
         "--pr_code_suggestions. suggestions_score_threshold=0",
+        # the whitespace check runs before the mapping branch: a mapping-valued flag
+        # `continue`s past the rest of the loop body in validate_user_args
+        "--pr_description .extra_instructions={what: parse}",
     ],
 )
 def test_validate_user_args_rejects_whitespace_in_ordinary_flag_name(spaced):
