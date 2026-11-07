@@ -18,6 +18,35 @@ It can be invoked manually by commenting on any PR:
 
 <img src="/img/ask.png" alt="Ask" width="512" />
 
+## Repository instructions
+
+Top-level `/ask` can use the same repository instruction files as `/review`, `/describe`, and `/improve`.
+For example, ask whether a migration follows the rollback rules in an existing architecture decision record:
+
+```toml
+[config]
+repo_context_files = ["AGENTS.md", "docs/adr/database-migrations.md"]
+```
+
+```text
+/ask "Does this migration follow our rollback and compatibility rules?"
+```
+
+Like `/review`, `/describe`, and `/improve`, top-level `/ask` reads `AGENTS.md` from the repository root by default.
+Set `config.repo_context_files = []` in the root repository settings to disable repository instructions for all tools.
+Comment arguments cannot change the configured file list.
+
+The existing [repository context settings](../usage-guide/additional_configurations.md#bringing-per-repo-context-files-to-pr-agent)
+control file selection, source branches, imports, and line limits. Files come from the repository's default branch unless
+configured otherwise. Providers without repository file access skip this context; missing or empty files are also skipped.
+This behavior does not affect `/ask_line`.
+
+The question, selected discussion history, and packed diff keep their existing token budget. The instruction block,
+already bounded by `repo_context_max_lines`, is included only if it fits in the remaining model context in full.
+Otherwise, `/ask` keeps its original prompt and adds a short omission notice to the answer. It does not retry another model
+just to fit instructions. Normal model retries reconsider the original instruction block without reading the files again.
+Including repository instructions can add repository API reads and input tokens, but does not add a separate model request.
+
 ## Ask lines
 
 You can run `/ask` on specific lines of code in the PR from the PR's diff view. The tool will answer questions based on the code changes in the selected lines.

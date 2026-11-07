@@ -495,7 +495,10 @@ Notes:
 
 `Platforms supported: GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, Local`
 
-To give PR-Agent's tools additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/) or [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices) — in the prompts for the `/review`, `/describe` and `/improve` tools.
+To give PR-Agent's tools additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/) or [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices) — in the prompts for the `/review`, `/describe`, `/improve`, and top-level `/ask` tools.
+
+Top-level `/ask` adds instructions only after selecting the question's existing context and diff, and reports when the instruction block does not fit.
+See [Ask: Repository instructions](../tools/ask.md#repository-instructions).
 
 By default, PR-Agent includes the `AGENTS.md` file at the repository root:
 
