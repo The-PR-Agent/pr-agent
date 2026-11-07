@@ -422,6 +422,7 @@ class PRCodeSuggestions:
 
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping code suggestions")
+                self._write_json_output({"code_suggestions": []})
                 return None
 
             await asyncio.to_thread(self.git_provider.get_diff_files)
@@ -464,11 +465,25 @@ class PRCodeSuggestions:
             if not data:
                 data = {"code_suggestions": []}
             self.data = data
+            # Keep hosted PR publication-before-JSON semantics unchanged. In
+            # plain-diff mode, the JSON artifact must survive stdout failures.
+            plain_diff_json = bool(review_json_output_path.get() and
+                                   get_settings().config.git_provider == "plain-diff")
+
+            def write_plain_diff_json(result):
+                if plain_diff_json:
+                    try:
+                        self._write_json_output(result)
+                    except (OSError, TypeError, ValueError):
+                        # Still publish Markdown; the CLI reports the missing JSON as a failure.
+                        record_command_failure()
 
             # Handle the case where the PR has no suggestions
             if (data is None or 'code_suggestions' not in data or not data['code_suggestions']):
+                write_plain_diff_json({"code_suggestions": []})
                 await self.publish_no_suggestions()
-                self._write_json_output({"code_suggestions": []})
+                if not plain_diff_json:
+                    self._write_json_output({"code_suggestions": []})
                 return
 
             # publish the suggestions
@@ -484,10 +499,13 @@ class PRCodeSuggestions:
                         if self._is_suggestion_line_range_valid(suggestion)
                     ]
                     if not data['code_suggestions']:
+                        write_plain_diff_json(data)
                         await self.publish_no_suggestions()
-                        self._write_json_output(data)
+                        if not plain_diff_json:
+                            self._write_json_output(data)
                         return
 
+                write_plain_diff_json(data)
                 # Emit to the optional external sinks before touching the provider, so a sink
                 # still receives the suggestions if publishing them to the PR fails.
                 markdown = render_suggestions_markdown(data) + self._get_suggestions_coverage_footer()
@@ -577,7 +595,8 @@ class PRCodeSuggestions:
                     await self.push_inline_code_suggestions(data)
                     if self.progress_response:
                         self.git_provider.remove_comment(self.progress_response)
-                self._write_json_output(data)
+                if not plain_diff_json:
+                    self._write_json_output(data)
             else:
                 get_logger().info('Code suggestions generated for PR, but not published since publish_output is False.')
                 pr_body = self.generate_summarized_suggestions(data)

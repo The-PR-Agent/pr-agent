@@ -168,9 +168,20 @@ class PRDescription:
 
             if self.prediction:
                 self._prepare_data()
-                self._write_json_output(self.data)
+                try:
+                    self._write_json_output(self.data)
+                except (OSError, TypeError, ValueError):
+                    if not (review_json_output_path.get() and
+                            get_settings().config.git_provider == "plain-diff"):
+                        raise
+                    # Keep Markdown available even when a requested JSON file cannot be written.
+                    record_command_failure()
             else:
                 get_logger().warning(f"Empty prediction, PR: {self.pr_id}")
+                # A skipped Plain Diff description cannot satisfy an explicit
+                # JSON artifact request, even though skipping is otherwise valid.
+                if review_json_output_path.get() and get_settings().config.git_provider == "plain-diff":
+                    record_command_failure()
                 return None
 
             if get_settings().pr_description.enable_semantic_files_types:
