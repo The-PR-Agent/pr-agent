@@ -10,7 +10,7 @@ from importlib.metadata import PackageNotFoundError, version
 import yaml
 
 from pr_agent.algo.i18n import t
-from pr_agent.algo.output_sinks import OUTPUT_SINK_TYPES, create_output_sink
+from pr_agent.algo.output_sinks import OUTPUT_SINK_TYPES, _selected_output_tools, create_output_sink
 from pr_agent.algo.run_details import get_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings
@@ -67,6 +67,13 @@ def push_outputs(
         if isinstance(enable, str):
             enable = enable.lower().strip() not in ("false", "0", "no", "")
         if not enable:
+            return
+
+        tools = _selected_output_tools(cfg)
+        if tools is None:
+            get_logger().warning("push_outputs: invalid push_outputs.tools setting")
+            return
+        if message_type not in tools:
             return
 
         channels = cfg.get("channels", []) or []
