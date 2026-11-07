@@ -86,7 +86,7 @@ class PR_LineQuestions:
 
         if (get_settings().pr_questions.use_conversation_history
                 and self.git_provider.supports_line_question_history()):
-            conversation_history = self._load_conversation_history()
+            conversation_history = await run_diff_preparation(self._load_conversation_history)
             self.vars["conversation_history"] = conversation_history
 
         self.patch_with_lines = ""
