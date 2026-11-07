@@ -52,7 +52,7 @@ class OpenAIHandler(BaseAiHandler):
                 get_logger().warning(f"Image path is not supported for OpenAIHandler. Ignoring image path: {img_path}")
             get_logger().info("System: ", system)
             get_logger().info("User: ", user)
-            messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+            messages = self.build_request_messages(model, system, user)
             client = AsyncOpenAI()
             chat_completion = await client.chat.completions.create(
                 model=model,
