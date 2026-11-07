@@ -776,7 +776,7 @@ async def test_auto_actions_apply_policy_after_repo_settings_without_rebuilding_
     settings.set("github_action_config.pr_actions", ["opened"])
     pr = SimpleNamespace(
         title=title, html_url="https://github.com/org/repo/pull/1",
-        user=SimpleNamespace(login="author"), head=SimpleNamespace(ref="feature"),
+        user=SimpleNamespace(login="author"), head=SimpleNamespace(ref="feature", sha="head"),
         base=SimpleNamespace(ref="main"), labels=[SimpleNamespace(name="skip-review")],
         get_commits=Mock(return_value=[SimpleNamespace(sha="head")]),
     )

@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
 from github.Commit import Commit
 
 from pr_agent.git_providers.github_provider import GithubProvider
@@ -34,32 +35,37 @@ def _provider(pr, repo) -> GithubProvider:
         return GithubProvider("https://github.com/owner/repo/pull/1")
 
 
-def test_empty_commit_list_falls_back_to_pull_request_head():
-    head_sha = "a" * 40
-    fallback_commit = _commit(head_sha)
+@pytest.mark.parametrize(
+    ("listed_count", "head_number"),
+    [(0, 1), (1, 1), (2, 3), (250, 250), (250, 251)],
+    ids=["empty", "single", "mismatched-tail", "at-api-limit", "truncated-at-api-limit"],
+)
+def test_commit_selection_and_check_run_use_the_pull_request_head(listed_count, head_number):
+    commits = [_commit(f"{number:040x}") for number in range(1, listed_count + 1)]
+    head_sha = f"{head_number:040x}"
+    head_commit = commits[-1] if listed_count == head_number else _commit(head_sha)
     pr = MagicMock()
-    pr.get_commits.return_value = []
+    pr.get_commits.return_value = commits
     pr.head.sha = head_sha
     pr.html_url = "https://github.com/owner/repo/pull/1"
+    pr._requester.requestJsonAndCheck.side_effect = lambda method, url, **kwargs: (
+        ({}, {"check_runs": []}) if method == "GET" else ({}, {"id": 222})
+    )
     repo = MagicMock()
-    repo.get_commit.return_value = fallback_commit
+    repo.get_commit.return_value = head_commit
 
     provider = _provider(pr, repo)
 
-    assert provider.pr_commits == []
-    assert provider.last_commit_id is fallback_commit
-    assert provider.get_latest_commit_url() == fallback_commit.html_url
-    repo.get_commit.assert_called_once_with(head_sha)
+    assert provider.pr_commits == commits
+    assert provider.last_commit_id is head_commit
+    assert provider.get_latest_commit_url() == head_commit.html_url
+    if listed_count == head_number:
+        repo.get_commit.assert_not_called()
+    else:
+        repo.get_commit.assert_called_once_with(head_sha)
 
-
-def test_non_empty_commit_list_keeps_latest_commit_without_fallback():
-    latest_commit = _commit("b" * 40)
-    pr = MagicMock()
-    pr.get_commits.return_value = [latest_commit]
-    pr.html_url = "https://github.com/owner/repo/pull/1"
-    repo = MagicMock()
-
-    provider = _provider(pr, repo)
-
-    assert provider.last_commit_id is latest_commit
-    repo.get_commit.assert_not_called()
+    assert provider._publish_check_run("review output", "review") is True
+    lookup, create = pr._requester.requestJsonAndCheck.call_args_list
+    assert lookup.args == ("GET", f"https://api.github.com/repos/owner/repo/commits/{head_sha}/check-runs")
+    assert create.args == ("POST", "https://api.github.com/repos/owner/repo/check-runs")
+    assert create.kwargs["input"]["head_sha"] == head_sha
