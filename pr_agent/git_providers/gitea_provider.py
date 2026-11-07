@@ -727,7 +727,20 @@ class GiteaProvider(GitProvider):
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
         encoded_file = quote(relevant_file, safe="/")
-        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{encoded_file}"
+        branch = self.get_pr_branch()
+        if branch.startswith("refs/pull/"):
+            # AGit-flow PRs have no head branch; Gitea reports
+            # head.ref == "refs/pull/<N>/head", and a branch link 404s.
+            # Link the file at the PR's head commit instead.
+            head_sha = self.pr.head.sha if self.pr and self.pr.head else ""
+            if not head_sha:
+                self.logger.warning(
+                    "AGit-flow PR without a head SHA; cannot generate a file link"
+                )
+                return ""
+            link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/commit/{quote(head_sha, safe='')}/{encoded_file}"
+        else:
+            link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(branch)}/{encoded_file}"
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
