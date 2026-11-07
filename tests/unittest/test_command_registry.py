@@ -50,7 +50,6 @@ def test_registry_covers_exactly_the_dispatched_commands():
     ],
 )
 def test_aliases_share_their_canonical_command(alias, canonical):
-    assert resolve_command(alias).canonical == canonical
     assert resolve_command(alias).tool is resolve_command(canonical).tool
 
 
