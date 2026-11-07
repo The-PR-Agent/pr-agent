@@ -297,8 +297,9 @@ async def test_a_diff_that_fits_in_one_chunk_is_reviewed_by_the_single_call_flow
     assert reviewer.prediction == CHUNK_A
     assert reviewer.prediction_data is None
     assert reviewer.review_chunk_count == 1
-    assert reviewer.remaining_files_list == ["b.py"]
-    assert reviewer.partial_files_list == []
+    assert reviewer.patches_diff == "only-chunk"
+    assert reviewer.remaining_files_list == []
+    assert reviewer.partial_files_list == ["unused.py"]
 
 
 @pytest.mark.asyncio
