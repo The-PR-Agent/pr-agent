@@ -905,6 +905,8 @@ class GiteaProvider(GitProvider):
 
     def is_supported(self, capability) -> bool:
         """Check if the provider is supported"""
+        if capability in ("head_ci_status", "head_staleness", "author_human_check"):
+            return False
         return True
 
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
