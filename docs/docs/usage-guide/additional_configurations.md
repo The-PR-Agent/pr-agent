@@ -111,11 +111,28 @@ The limit applies separately to `ignore.glob` and each enabled `ignore_language_
 
 ## Extra instructions
 
-All PR-Agent tools have a parameter called `extra_instructions`, that enables to add free-text extra instructions. Example usage:
+All PR-Agent tools have a parameter called `extra_instructions` that adds free-text instructions. Example usage:
 
 ```
 /update_changelog --pr_update_changelog.extra_instructions="Make sure to update also the version ..."
 ```
+
+Repository settings and command arguments can replace `extra_instructions` for a tool. For mandatory
+organization-wide guidance that must apply to every tool, host operators can set `config.system_instructions`:
+
+```toml
+[config]
+system_instructions = """
+Never evaluate the performance, competence, or quality of individual contributors.
+Follow the organization's security and privacy policies.
+"""
+```
+
+PR-Agent appends this value to each tool's own system prompt, after the tool-specific instructions. It is
+host-only: repository settings, namespace settings repositories, per-directory settings, and
+`/command --config.system_instructions=...` arguments cannot set or replace it.
+`extra_instructions` retains its existing behavior; use `system_instructions` when a rule must not be
+overridable by a repository or comment author.
 
 ## Language Settings
 

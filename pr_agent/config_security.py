@@ -105,6 +105,8 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # worker occupancy across SDK retries. Command arguments enforce this same boundary.
     # enable_auto_approval lets a reviewed repository switch on an approval action taken with
     # the host's credentials, so only the operator may enable it.
+    # system_instructions is appended to every model system prompt. A repository or comment
+    # must not be able to remove or replace an operator's mandatory policy.
     "config": frozenset({
         "extra_config_url",
         "description_issue_regex",
@@ -116,6 +118,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
         "repo_context_max_sibling_files",
         "repo_context_sibling_repos",
         "num_retries",
+        "system_instructions",
     }),
 }
 
@@ -170,6 +173,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
         "repo_context_files",
         "repo_context_max_glob_matches",
         "repo_context_expand_imports",
+        "system_instructions",
     }),
     "github_action_config": frozenset({"fail_on_tool_errors"}),
     "ignore": frozenset({"regex"}),
