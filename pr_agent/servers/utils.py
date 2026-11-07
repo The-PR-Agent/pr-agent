@@ -89,7 +89,11 @@ def is_ask_command_comment(body) -> bool:
 
 def auto_feedback_disabled() -> bool:
     """Whether config.disable_auto_feedback stops every auto command (pr_commands, push_commands, ...)."""
-    return _as_bool_setting(get_settings().get("config.disable_auto_feedback", False))
+    return _as_bool_setting(
+        get_settings().get("config.disable_auto_feedback", False),
+        default=True,
+        setting_name="config.disable_auto_feedback",
+    )
 
 
 def get_pr_commands(provider: str) -> Sequence[str]:

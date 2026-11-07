@@ -49,8 +49,8 @@ class _ActionStatus:
 _action_status: ContextVar[_ActionStatus | None] = ContextVar("pr_agent_action_status", default=None)
 
 
-def is_true(value: str | bool | int) -> bool:
-    return _as_bool_setting(value)
+def is_true(value: str | bool | int, default: bool = False, setting_name: str | None = None) -> bool:
+    return _as_bool_setting(value, default=default, setting_name=setting_name)
 
 
 def get_setting_or_env(key: str, default: str | bool = None) -> str | bool:
@@ -402,7 +402,11 @@ async def run_action():
                     "github_action_config.push_trigger_ignore_merge_commits",
                     get_settings().get("github_app.push_trigger_ignore_merge_commits", True),
                 )
-                if is_true(ignore_merge_commits) and after_sha is not None and after_sha == merge_commit_sha:
+                if is_true(
+                    ignore_merge_commits,
+                    default=True,
+                    setting_name="github_action_config.push_trigger_ignore_merge_commits",
+                ) and after_sha is not None and after_sha == merge_commit_sha:
                     get_logger().info("Skipping synchronize: merge commit detected")
                     return
                 sender_type = event_payload.get("sender", {}).get("type")
@@ -410,7 +414,11 @@ async def run_action():
                     "github_action_config.push_trigger_ignore_bot_commits",
                     get_settings().get("github_app.push_trigger_ignore_bot_commits", True),
                 )
-                if is_true(ignore_bot_commits) and sender_type == "Bot":
+                if is_true(
+                    ignore_bot_commits,
+                    default=True,
+                    setting_name="github_action_config.push_trigger_ignore_bot_commits",
+                ) and sender_type == "Bot":
                     get_logger().info("Skipping synchronize: bot commit detected")
                     return
                 push_commands = get_settings().get(

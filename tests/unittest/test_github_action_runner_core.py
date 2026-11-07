@@ -1290,6 +1290,37 @@ async def test_synchronize_skips_bot_commit(monkeypatch, tmp_path, restore_githu
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("setting_name", "event_kwargs"),
+    [
+        (
+            "push_trigger_ignore_merge_commits",
+            {"before_sha": "abc", "after_sha": "merge123", "merge_commit_sha": "merge123"},
+        ),
+        ("push_trigger_ignore_bot_commits", {"sender_type": "Bot"}),
+    ],
+    ids=["merge-commit", "bot-commit"],
+)
+async def test_synchronize_fails_closed_for_invalid_ignore_setting(
+    monkeypatch, tmp_path, restore_github_settings, setting_name, event_kwargs
+):
+    handled = []
+    _patch_synchronize_deps(monkeypatch, handled, ["/describe"])
+    settings = get_settings()
+    monkeypatch.setitem(settings.store["github_action_config"], setting_name, "y")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv(
+        "GITHUB_EVENT_PATH",
+        str(_write_synchronize_event(tmp_path, **event_kwargs)),
+    )
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == []
+
+
+@pytest.mark.asyncio
 async def test_synchronize_uses_github_action_config_push_commands(monkeypatch, tmp_path, restore_github_settings):
     handled = []
     _patch_synchronize_deps(monkeypatch, handled, ["/review"], handle_push_trigger=True)
