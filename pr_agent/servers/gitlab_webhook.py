@@ -16,6 +16,7 @@ from starlette.middleware import Middleware
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
+from pr_agent.agent.command_registry import command_takes_comment_id
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
@@ -488,7 +489,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 discussion_id = data.get('object_attributes', {}).get('discussion_id')
                 command = body.split(maxsplit=1)[0].lower() if isinstance(body, str) and body.strip() else ""
                 if (discussion_id and not data.get('object_attributes', {}).get('type')
-                        and command in ("/review", "/review_pr", "/improve", "/improve_code")):
+                        and command_takes_comment_id(command)):
                     body = f"{body} --comment_id={discussion_id}"
                 if (data.get('object_attributes', {}).get('type') == 'DiffNote'
                         and is_ask_command_comment(body)):  # /ask_line
