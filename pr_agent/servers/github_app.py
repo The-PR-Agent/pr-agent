@@ -309,7 +309,8 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
     apply_repo_settings(api_url)
     if not _as_bool_setting(get_settings().github_app.handle_push_trigger):
         return {}
-    if get_settings().github_app.push_trigger_ignore_bot_commits and body.get("sender", {}).get("type") == "Bot":
+    if (_as_bool_setting(get_settings().github_app.push_trigger_ignore_bot_commits, default=True)
+            and body.get("sender", {}).get("type") == "Bot"):
         get_logger().info(f"Skipping {event}: bot commit detected")
         return {}
 
@@ -318,12 +319,13 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
     merge_commit_sha = pull_request.get("merge_commit_sha")
     if before_sha == after_sha:
         return {}
-    if get_settings().github_app.push_trigger_ignore_merge_commits and after_sha == merge_commit_sha:
+    if (_as_bool_setting(get_settings().github_app.push_trigger_ignore_merge_commits, default=True)
+            and after_sha == merge_commit_sha):
         return {}
 
     async with push_trigger_slot(
         api_url,
-        allow_backlog=get_settings().github_app.push_trigger_pending_tasks_backlog,
+        allow_backlog=_as_bool_setting(get_settings().github_app.push_trigger_pending_tasks_backlog, default=True),
         ttl=get_settings().github_app.push_trigger_pending_tasks_ttl,
     ) as proceed:
         if not proceed:
@@ -443,7 +445,7 @@ async def handle_request(body: dict[str, Any], event: str, delivery_id: str | No
         get_logger().debug("No action found in request body, exiting handle_request")
         return {}
     settings = get_settings()
-    if not delivery_id or not settings.get("GITHUB_APP.WEBHOOK_DELIVERY_DEDUPLICATION", False):
+    if not delivery_id or not _as_bool_setting(settings.get("GITHUB_APP.WEBHOOK_DELIVERY_DEDUPLICATION", False)):
         await _dispatch_request(body, event, action)
         return {}
 
@@ -480,7 +482,7 @@ def _check_pull_request_event(action: str, body: dict, log_context: dict) -> tup
 
 async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body: dict, api_url: str,
                                         log_context: dict):
-    feedback_on_draft = get_settings().github_app.feedback_on_draft_pr
+    feedback_on_draft = _as_bool_setting(get_settings().github_app.feedback_on_draft_pr)
     if commands_conf == "pr_commands" and body.get("action") == "ready_for_review" and feedback_on_draft:
         get_logger().info(f"Skipping draft-ready commands because draft feedback is enabled: {api_url}")
         return

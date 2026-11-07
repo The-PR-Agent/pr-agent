@@ -556,6 +556,34 @@ class TestPushTriggerDedupe:
 
         assert push_trigger_env["count"] == 0
 
+    @pytest.mark.parametrize("ignore", [False, "false", "off"])
+    def test_processes_bot_commit_when_ignore_is_disabled(self, push_trigger_env, ignore):
+        github_app.get_settings().github_app.push_trigger_ignore_bot_commits = ignore
+        body = _push_body()
+        body["sender"]["type"] = "Bot"
+
+        asyncio.run(
+            github_app.handle_push_trigger_for_new_commits(
+                body, "push", "dependabot[bot]", "1", "synchronize", {}, agent=None
+            )
+        )
+
+        assert push_trigger_env["count"] == 1
+
+    @pytest.mark.parametrize("ignore", [False, "false", "off"])
+    def test_processes_merge_commit_when_ignore_is_disabled(self, push_trigger_env, ignore):
+        github_app.get_settings().github_app.push_trigger_ignore_merge_commits = ignore
+        body = _push_body()
+        body["after"] = body["pull_request"]["merge_commit_sha"]
+
+        asyncio.run(
+            github_app.handle_push_trigger_for_new_commits(
+                body, "push", "alice", "1", "synchronize", {}, agent=None
+            )
+        )
+
+        assert push_trigger_env["count"] == 1
+
     @pytest.mark.parametrize("disabled", [False, "false", "0", "off"])
     def test_skips_when_handle_push_trigger_disabled(self, push_trigger_env, disabled):
         github_app.get_settings().github_app.handle_push_trigger = disabled

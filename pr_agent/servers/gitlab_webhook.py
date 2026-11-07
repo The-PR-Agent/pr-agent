@@ -89,9 +89,7 @@ async def handle_request(
 
 async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: str,
                                    log_context: dict, data: dict):
-    feedback_on_draft = get_settings().get(
-        "gitlab.feedback_on_draft_pr", False
-    )
+    feedback_on_draft = _as_bool_setting(get_settings().get("gitlab.feedback_on_draft_pr", False))
     if is_draft(data) and not feedback_on_draft:
         get_logger().info(f"Skipping draft MR: {api_url}")
         return
@@ -400,7 +398,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 get_logger().info(f"Draft MR is ready: {url}")
 
                 apply_repo_settings(url)
-                if get_settings().get("gitlab.feedback_on_draft_pr", False):
+                if _as_bool_setting(get_settings().get("gitlab.feedback_on_draft_pr", False)):
                     # the draft was already getting feedback, so only the push half of this update is new
                     if (object_attributes.get('oldrev')
                             and normalize_setting_list(get_settings().get("gitlab.push_commands", {}))
