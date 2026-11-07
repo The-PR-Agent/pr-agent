@@ -11,6 +11,7 @@ from starlette.middleware import Middleware
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
+from pr_agent.agent.command_registry import command_check_run
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
@@ -197,11 +198,6 @@ async def handle_new_pr_opened(body: dict[str, Any],
             get_logger().info(f"User {sender=} is not eligible to process PR {api_url=}")
 
 
-# The check run each automatic command publishes its output to when `github.publish_as_check_run`
-# is on, keyed by command and valued by the `name` the tool passes to `_publish_check_run`.
-_AUTO_COMMAND_CHECK_RUNS = {"describe": "describe", "review": "review", "improve": "suggestions"}
-
-
 def _check_run_provider(api_url: str):
     """The provider whose check runs the automatic commands complete, or None when they publish none."""
     if not get_settings().get("github.publish_as_check_run", False):
@@ -215,10 +211,14 @@ def _check_run_provider(api_url: str):
 
 
 def _auto_command_check_run(command) -> tuple[str, str | None]:
-    """The command's leading token and the check run its tool publishes to, if any."""
+    """The command's leading token and the check run its tool publishes to, if any.
+
+    The check run comes from the command registry, so aliases resolve to the
+    same run as their canonical command (``/review_pr`` -> ``review``).
+    """
     tokens = command if isinstance(command, list) else str(command).split()
     action = tokens[0] if tokens else ""
-    return action, _AUTO_COMMAND_CHECK_RUNS.get(action.lstrip("/").lower())
+    return action, command_check_run(action)
 
 
 def _start_auto_command_check_run(provider, command) -> str | None:
