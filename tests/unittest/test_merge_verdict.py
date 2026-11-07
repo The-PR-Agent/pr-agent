@@ -64,6 +64,19 @@ def test_all_checks_pass_publishes_no_concerns_found():
     ]
 
 
+def test_empty_diff_can_reach_no_concerns_found():
+    result = mv.compute_merge_verdict(
+        git_provider=_provider(),
+        diff_files=[],
+        model_recommendation="no_concerns_found",
+        model_risk_level="low",
+        max_changed_lines=100,
+    )
+
+    assert result["recommendation"] == "no_concerns_found"
+    assert _failed(result) == []
+
+
 @pytest.mark.parametrize(
     ("overrides", "failed_name"),
     [

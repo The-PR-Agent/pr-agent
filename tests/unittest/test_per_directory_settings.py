@@ -647,6 +647,8 @@ enable_review_labels_effort = false
 require_security_review = false
 require_estimate_effort_to_review = false
 require_ticket_analysis_review = false
+max_changed_lines = 9999
+sensitive_paths = []
 
 [pr_description]
 publish_labels = true
@@ -736,6 +738,24 @@ skip_comments = true
         assert get_settings().pr_code_suggestions.max_number_of_calls != 99
         assert get_settings().pr_code_suggestions.parallel_calls is True
         assert get_settings().pr_code_suggestions.max_discussion_context_chars != 999999
+
+    def test_merge_verdict_limits_stay_host_controlled(self, per_dir_settings, monkeypatch):
+        settings = get_settings()
+        settings.pr_reviewer.max_changed_lines = 250
+        settings.pr_reviewer.sensitive_paths = ["host-controlled/**"]
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": self._HOST_ONLY_KEYS_CONFIG},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        assert settings.pr_reviewer.max_changed_lines == 250
+        assert settings.pr_reviewer.sensitive_paths == ["host-controlled/**"]
 
     def test_self_review_demand_stays_root_controlled(self, host_only_keys_applied):
         # The self-review workflow stays root-controlled: a nested file cannot make

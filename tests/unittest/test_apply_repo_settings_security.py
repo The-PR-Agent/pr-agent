@@ -200,6 +200,28 @@ def test_repo_settings_cannot_enable_publish_error_details(monkeypatch, settings
     assert pr_reviewer.get("num_max_findings") == 11
 
 
+def test_repo_settings_cannot_weaken_merge_verdict_risk_limits(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=(
+            b"[pr_reviewer]\nmax_changed_lines = 9999\nsensitive_paths = []\nnum_max_findings = 11\n"
+        )
+    )
+    _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("pr_reviewer.max_changed_lines", 250)
+    settings.set("pr_reviewer.sensitive_paths", ["host-controlled/**"])
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    pr_reviewer = _section(settings, "pr_reviewer")
+    assert pr_reviewer["max_changed_lines"] == 250
+    assert pr_reviewer["sensitive_paths"] == ["host-controlled/**"]
+    assert pr_reviewer["num_max_findings"] == 11
+    assert is_repo_host_only_key("pr_reviewer", "max_changed_lines")
+    assert is_repo_host_only_key("pr_reviewer", "sensitive_paths")
+
+
 def test_repo_settings_cannot_configure_custom_labels(monkeypatch, settings_snapshot):
     provider = FakeGitProvider(
         repo_settings_bytes=(

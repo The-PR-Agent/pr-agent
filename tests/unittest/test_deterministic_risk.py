@@ -208,8 +208,13 @@ def test_build_risk_checks_disabled(risk_settings):
     assert dr.build_risk_checks([_file("app.py", "+1")]) is None
 
 
-def test_build_risk_checks_empty():
-    assert dr.build_risk_checks([]) is None
+def test_build_risk_checks_empty(risk_settings):
+    assert dr.build_risk_checks([]) == {
+        "has_findings": False,
+        "sensitive_paths": [],
+        "risky_shapes": [],
+        "deleted_files": [],
+    }
     assert dr.build_risk_checks(None) is None
 
 

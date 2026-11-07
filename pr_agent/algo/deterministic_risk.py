@@ -340,7 +340,7 @@ def build_risk_checks(diff_files: list[FilePatchInfo] | None) -> dict | None:
         settings = get_settings()
         if not settings.pr_reviewer.get("enable_risk_checks", True):
             return None
-        if not diff_files:
+        if diff_files is None:
             return None
 
         configured_paths = settings.pr_reviewer.get("sensitive_paths", DEFAULT_SENSITIVE_PATHS)

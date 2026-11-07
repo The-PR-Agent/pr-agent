@@ -74,7 +74,11 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "openrouter": frozenset({"api_base"}),
     # structural_reach_input_file is read from the host and echoed into the review, and outside
     # GITHUB_WORKSPACE nothing bounds the path.
-    "pr_reviewer": frozenset({"publish_error_details", "structural_reach_input_file"}),
+    # Verdict bounds and sensitive-path patterns must come from host configuration: repo files
+    # must not weaken the checks that gate a no_concerns_found recommendation.
+    "pr_reviewer": frozenset({
+        "max_changed_lines", "publish_error_details", "sensitive_paths", "structural_reach_input_file",
+    }),
     # List the sibling repositories whose files and GitHub tickets a consuming repo
     # (or a comment command) may select into model context. A repo's .pr_agent.toml alone must
     # not be able to name an arbitrary same-owner private sibling: the actor check bounds who
@@ -213,6 +217,7 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
         "inline_key_issues", "enable_review_labels_security",
         "enable_review_labels_effort", "require_estimate_effort_to_review",
         "require_security_review", "require_ticket_analysis_review", "max_previous_findings_chars",
+        "max_changed_lines", "sensitive_paths",
     }),
     "pr_description": frozenset({
         "publish_labels", "enable_large_pr_handling", "max_ai_calls", "async_ai_calls",
