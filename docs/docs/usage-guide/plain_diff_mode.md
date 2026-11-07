@@ -82,8 +82,9 @@ the input is a standalone diff.
    for that file. The review still runs; it simply has less context.
 
 4. **Output** — the result is written to stdout. If `--output <path>` is given, it is
-   also written to that file (UTF-8, overwritten on each run). With
-   `--json-output <path>`, `review`/`review_pr` writes the parsed review, token
+   also written to that file (UTF-8, overwritten on each run). Both Markdown outputs
+   remove ASCII control characters in the C0 range while preserving tabs and line breaks.
+   With `--json-output <path>`, `review`/`review_pr` writes the parsed review, token
    `usage`, and a `coverage` object listing omitted or clipped files.
    `describe`/`describe_pr` writes the parsed description and `usage`;
    `improve`/`improve_code` writes code suggestions and `usage` (an empty list
