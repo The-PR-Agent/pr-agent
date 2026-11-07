@@ -1848,7 +1848,10 @@ class GitLabProvider(GitProvider):
                     if c_dt and c_dt <= ref_dt:
                         continue
                 try:
-                    c_diffs = c.diff()
+                    try:
+                        c_diffs = c.diff(get_all=True)
+                    except TypeError:
+                        c_diffs = c.diff()
                     for d in c_diffs:
                         new_path = d.get("new_path") if isinstance(d, dict) else getattr(d, "new_path", None)
                         old_path = d.get("old_path") if isinstance(d, dict) else getattr(d, "old_path", None)
@@ -1882,18 +1885,30 @@ class GitLabProvider(GitProvider):
                 return None
             author = getattr(mr, "author", None)
             if not author:
-                return False
+                return None
+
+            def is_access_token_bot(val: str) -> bool:
+                if not val or not isinstance(val, str):
+                    return False
+                low = val.lower().strip()
+                return bool(re.search(r"^(?:project|group)_\d+_bot(?:_|\b)", low)) or "_bot_" in low
+
+            def is_bot_identity(val: str) -> bool:
+                if not val or not isinstance(val, str):
+                    return False
+                low = val.lower().strip()
+                return low.endswith("[bot]") or "[bot]" in low or low in ("gitlab-bot", "dependabot")
 
             is_bot = author.get("bot", False) if isinstance(author, dict) else getattr(author, "bot", False)
             username = (
                 author.get("username", "") if isinstance(author, dict) else getattr(author, "username", "")
             ) or ""
-            if (
-                is_bot
-                or username.lower().endswith("[bot]")
-                or "[bot]" in username.lower()
-                or username.lower() in ("gitlab-bot", "dependabot")
-            ):
+            author_name = (
+                author.get("name", "") if isinstance(author, dict) else getattr(author, "name", "")
+            ) or ""
+            if is_access_token_bot(username) or is_access_token_bot(author_name):
+                return None
+            if is_bot or is_bot_identity(username) or is_bot_identity(author_name):
                 return False
 
             commits = mr.commits() if callable(getattr(mr, "commits", None)) else getattr(mr, "commits", [])
@@ -1902,12 +1917,9 @@ class GitLabProvider(GitProvider):
             for c in commits:
                 name = (c.get("author_name", "") if isinstance(c, dict) else getattr(c, "author_name", "")) or ""
                 email = (c.get("author_email", "") if isinstance(c, dict) else getattr(c, "author_email", "")) or ""
-                if (
-                    name.lower().endswith("[bot]")
-                    or "[bot]" in name.lower()
-                    or "[bot]" in email.lower()
-                    or name.lower() in ("gitlab-bot", "dependabot")
-                ):
+                if is_access_token_bot(name) or is_access_token_bot(email):
+                    return None
+                if is_bot_identity(name) or is_bot_identity(email):
                     return False
             return True
         except Exception as e:

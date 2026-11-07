@@ -2595,6 +2595,21 @@ class GithubProvider(GitProvider):
             names.update(self._check_run_name(k) for k in self._check_run_ids)
         return names
 
+    @staticmethod
+    def _is_current_action_run(run) -> bool:
+        current_run_id = os.environ.get("GITHUB_RUN_ID")
+        if not current_run_id:
+            return False
+        html_url = getattr(run, "html_url", "") or ""
+        details_url = getattr(run, "details_url", "") or ""
+        pattern = f"/actions/runs/{current_run_id}"
+        if pattern in html_url or pattern in details_url:
+            return True
+        external_id = str(getattr(run, "external_id", "") or "")
+        return bool(
+            external_id and (external_id == str(current_run_id) or external_id.startswith(f"{current_run_id}_"))
+        )
+
     def get_head_ci_status(self, sha: str | None = None) -> str | None:
         """Return the head CI state for `sha` (or the PR head SHA if None).
 
@@ -2629,9 +2644,6 @@ class GithubProvider(GitProvider):
 
             if check_runs is not None:
                 pr_agent_check_names = self._get_pr_agent_check_names()
-                current_job = os.environ.get("GITHUB_JOB")
-                action_jobs_to_skip = {current_job} if current_job else set()
-                action_jobs_to_skip.add("pr_agent_job")
 
                 for run in check_runs:
                     # Ignore PR-Agent's own check runs to avoid self-blocking
@@ -2645,8 +2657,7 @@ class GithubProvider(GitProvider):
                         continue
 
                     # Leave out the running GitHub Action job so it doesn't keep CI pending
-                    job_base_name = run_name.split(" / ")[-1].split(" (")[0].strip()
-                    if job_base_name in action_jobs_to_skip:
+                    if self._is_current_action_run(run):
                         continue
 
                     has_checks = True
@@ -2743,9 +2754,6 @@ class GithubProvider(GitProvider):
                     commit = repo.get_commit(sha)
                     if hasattr(commit, "get_check_runs"):
                         pr_agent_check_names = self._get_pr_agent_check_names()
-                        current_job = os.environ.get("GITHUB_JOB")
-                        action_jobs_to_skip = {current_job} if current_job else set()
-                        action_jobs_to_skip.add("pr_agent_job")
 
                         for run in commit.get_check_runs():
                             app = getattr(run, "app", None)
@@ -2755,8 +2763,7 @@ class GithubProvider(GitProvider):
                                 continue
                             if run_name in pr_agent_check_names:
                                 continue
-                            job_base_name = run_name.split(" / ")[-1].split(" (")[0].strip()
-                            if job_base_name in action_jobs_to_skip:
+                            if self._is_current_action_run(run):
                                 continue
 
                             run_dt = getattr(run, "completed_at", None) or getattr(run, "created_at", None)
@@ -2837,8 +2844,19 @@ class GithubProvider(GitProvider):
                 return False
 
             # 2. Verify all commit authors
+            pr_commits_count = getattr(pr, "commits", None)
+            if pr_commits_count is not None and isinstance(pr_commits_count, int) and pr_commits_count > 250:
+                get_logger().warning("PR commit count exceeds GitHub limit of 250; failing closed as unknown")
+                return None
+
             commits = pr.get_commits()
+            commit_count = 0
             for c in commits:
+                commit_count += 1
+                if commit_count > 250:
+                    get_logger().warning("PR commits exceeded 250 limit; failing closed as unknown")
+                    return None
+
                 author = getattr(c, "author", None)
                 if author is None:
                     # Unlinked GitHub user or unknown author
