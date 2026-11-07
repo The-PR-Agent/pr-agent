@@ -29,6 +29,7 @@ from pr_agent.git_providers.git_provider import (
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_reviewer import PRReviewer, _review_failure_comment
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _VALID_PREDICTION = "review:\n  summary: prediction"
 
@@ -47,6 +48,30 @@ def _make_prediction_reviewer(git_provider=None):
     reviewer.incremental = SimpleNamespace(is_incremental=False)
     reviewer.prediction = None
     return reviewer
+
+
+def test_merge_recommendation_status_is_opt_in():
+    settings = get_settings()
+    snapshot = snapshot_settings(["config.publish_output", "pr_reviewer.publish_merge_recommendation_status"])
+    provider = MagicMock()
+    reviewer = _make_reviewer(provider)
+    reviewer._merge_recommendation_status = "needs_review"
+    try:
+        settings.set("config.publish_output", True)
+        settings.set("pr_reviewer.publish_merge_recommendation_status", False)
+        reviewer._publish_merge_recommendation_status()
+        provider.publish_merge_recommendation_status.assert_not_called()
+
+        settings.set("pr_reviewer.publish_merge_recommendation_status", True)
+        reviewer._publish_merge_recommendation_status()
+        provider.publish_merge_recommendation_status.assert_called_once_with("needs_review")
+
+        provider.publish_merge_recommendation_status.reset_mock()
+        settings.set("config.publish_output", False)
+        reviewer._publish_merge_recommendation_status()
+        provider.publish_merge_recommendation_status.assert_not_called()
+    finally:
+        restore_settings(snapshot)
 
 
 @pytest.mark.asyncio

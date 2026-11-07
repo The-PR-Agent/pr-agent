@@ -601,8 +601,9 @@ A 429 is returned immediately; raising `config.ai_timeout` only bounds the durat
     issues: write
     pull-requests: write
   ```
-  The default tools need no additional scopes. Add `checks: write` only when
-  `github.publish_as_check_run` is enabled. Features that push repository contents, such as
+  The default tools need no additional scopes. Add `checks: write` when
+  `github.publish_as_check_run` or `pr_reviewer.publish_merge_recommendation_status` is enabled.
+  Features that push repository contents, such as
   `pr_update_changelog.push_changelog_changes`, require `contents: write`, and so does
   `pr_questions.resolve_threads`, because GitHub gates thread resolution on that scope. If you omit
   `contents: write`, enable `config.restricted_mode` so operations that need it are skipped or fall

@@ -159,6 +159,30 @@ class TestGitLabProvider:
             mock_gitlab_client.http_get.side_effect = _current_mr_metadata
             return provider
 
+    @pytest.mark.parametrize(
+        ("recommendation", "state"),
+        [
+            ("no_concerns_found", "success"),
+            ("needs_review", "skipped"),
+            ("changes_required", "failed"),
+        ],
+    )
+    def test_publish_merge_recommendation_status_on_reviewed_commit(
+        self, gitlab_provider, recommendation, state
+    ):
+        gitlab_provider.mr.diff_refs = {"head_sha": "reviewed-head"}
+        gitlab_provider.mr.source_project_id = 741
+
+        assert gitlab_provider.publish_merge_recommendation_status(recommendation) is True
+
+        gitlab_provider.gl.projects.get.assert_called_with(741, lazy=True)
+        commit = gitlab_provider.gl.projects.get.return_value.commits.get.return_value
+        commit.statuses.create.assert_called_once_with({
+            "state": state,
+            "name": "PR Agent - Review",
+            "description": f"Computed merge recommendation: {recommendation}",
+        })
+
     def test_get_commit_messages_reads_all_commits_with_larger_pages(self, gitlab_provider):
         client = Gitlab("https://gitlab.example.com", private_token="test-token")
         gitlab_provider.mr = client.projects.get("test/repo", lazy=True).mergerequests.get(1, lazy=True)
