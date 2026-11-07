@@ -119,7 +119,7 @@ credential.
 | `stdout` | Prints one JSON line (the record) to stdout. |
 | `file` | Appends one JSON line per run (JSONL) to `file_path`, creating parent directories as needed. |
 | `webhook` | POSTs the generic record as JSON to `webhook_url` (5-second timeout, redirects not followed). |
-| `slack` | POSTs `{"text": ...}` to a Slack Incoming Webhook; the text is the markdown, or the payload JSON when the tool produces no markdown, followed by the PR URL when one is present. |
+| `slack` | POSTs `{"text": ...}` to a Slack Incoming Webhook; the text is the markdown, or the payload JSON when the tool produces no markdown, with `&`, `<` and `>` escaped so Slack shows mentions and `<url\|label>` links as plain text, followed by the PR URL when one is present. |
 | `telegram` | Sends the markdown, or the payload JSON when no markdown is present, as plain text to `telegram_chat_id`, followed by the PR URL when one is present. Text is truncated to at most 4096 UTF-16 code units without splitting surrogate pairs; room is reserved for the URL so truncation does not drop it. |
 | `teams` | POSTs an Adaptive Card to `teams_webhook_url` with the tool type, markdown output, and a button to the PR when its URL is present. The card is trimmed to Teams' 28 KB message size limit. |
 
