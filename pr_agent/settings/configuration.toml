@@ -263,7 +263,8 @@ extra_instructions = ""
 [pr_code_suggestions] # /improve #
 # Deprecated alias still accepted until 1.0: pr_code_suggestions.commitable_code_suggestions
 committable_code_suggestions = false
-dual_publishing_score_threshold=-1 # -1 or 0 disables, [1-10] to set the threshold (>=) for publishing a code suggestion both in a table and as committable
+# Not settable from a per-directory .pr_agent.toml. -1 or 0 disables, [1-10] also publishes suggestions scoring >= it as committable, besides the table.
+dual_publishing_score_threshold=-1
 focus_only_on_problems=true
 #
 extra_instructions = ""

@@ -227,6 +227,9 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
         # an unrecognized key survives the merge, so leaving the alias out of this set would
         # hand a nested file the very control the canonical name is denied.
         "commitable_code_suggestions",
+        # Dual publishing posts every suggestion at or above the threshold through the same
+        # inline path, so a nested file must not be able to turn it on either.
+        "dual_publishing_score_threshold",
         "max_number_of_calls", "parallel_calls", "max_discussion_context_chars",
         "demand_code_suggestions_self_review",
     }),
