@@ -445,7 +445,7 @@ def test_gitlab_staleness_returns_false_when_target_branch_unrelated():
     proj_mock = MagicMock()
     commit_unrelated = SimpleNamespace(
         committed_date="2026-01-01T12:15:00Z",
-        diff=lambda: [{"new_path": "docs/readme.md", "old_path": "docs/readme.md"}],
+        diff=lambda **kwargs: [{"new_path": "docs/readme.md", "old_path": "docs/readme.md"}],
     )
     proj_mock.commits.list.return_value = [commit_unrelated]
     provider.gl.projects.get.return_value = proj_mock
@@ -462,7 +462,7 @@ def test_gitlab_staleness_returns_true_when_target_branch_touches_pr_file():
     proj_mock = MagicMock()
     commit_stale = SimpleNamespace(
         committed_date="2026-01-01T12:15:00Z",
-        diff=lambda: [{"new_path": "app/main.py", "old_path": "app/main.py"}],
+        diff=lambda **kwargs: [{"new_path": "app/main.py", "old_path": "app/main.py"}],
     )
     proj_mock.commits.list.return_value = [commit_stale]
     provider.gl.projects.get.return_value = proj_mock
@@ -510,10 +510,16 @@ def test_github_ci_status_evaluates_user_check_named_pr_agent_tests():
 
 
 def test_github_ci_status_ignores_running_action_job(monkeypatch):
-    monkeypatch.setenv("GITHUB_JOB", "pr_agent_job")
+    monkeypatch.setenv("GITHUB_RUN_ID", "123456789")
     runs = [
-        # Action's own job in progress should be ignored
-        SimpleNamespace(status="in_progress", conclusion=None, app=None, name="pr_agent_job"),
+        # Action's own job in progress should be ignored via GITHUB_RUN_ID in details_url/html_url
+        SimpleNamespace(
+            status="in_progress",
+            conclusion=None,
+            app=None,
+            name="Run PR Agent Action",
+            details_url="https://github.com/org/repo/actions/runs/123456789/job/456",
+        ),
         SimpleNamespace(status="completed", conclusion="success", app=None, name="test"),
     ]
     provider = _make_github_provider(check_runs=runs)
@@ -567,7 +573,7 @@ def test_gitlab_staleness_detects_renamed_file_previous_filename():
     proj_mock = MagicMock()
     commit_stale = SimpleNamespace(
         committed_date="2026-01-01T12:15:00Z",
-        diff=lambda: [{"new_path": "old_path.py", "old_path": "old_path.py"}],
+        diff=lambda **kwargs: [{"new_path": "old_path.py", "old_path": "old_path.py"}],
     )
     proj_mock.commits.list.return_value = [commit_stale]
     provider.gl.projects.get.return_value = proj_mock
@@ -614,7 +620,7 @@ def test_gitlab_staleness_fails_closed_on_50_commits():
     commits_list = [
         SimpleNamespace(
             committed_date="2026-01-01T12:15:00Z",
-            diff=lambda: [{"new_path": "other.py", "old_path": "other.py"}],
+            diff=lambda **kwargs: [{"new_path": "other.py", "old_path": "other.py"}],
         )
         for _ in range(50)
     ]
@@ -622,3 +628,50 @@ def test_gitlab_staleness_fails_closed_on_50_commits():
     provider.gl.projects.get.return_value = proj_mock
 
     assert provider.is_head_stale_against_base() is None
+
+
+def test_github_authors_none_when_pr_commits_exceed_250():
+    provider = _make_github_provider()
+    provider.pr.user = SimpleNamespace(type="User", login="dhruvil")
+    provider.pr.commits = 251
+    assert provider.are_all_authors_human() is None
+
+
+def test_gitlab_authors_none_when_project_access_token_bot():
+    provider = _make_gitlab_provider()
+    # GitLab project/group access token bot username pattern
+    provider.mr.author = {"bot": False, "username": "project_123_bot_456"}
+    provider.mr.commits = lambda: []
+    assert provider.are_all_authors_human() is None
+
+
+def test_gitlab_authors_none_when_commit_author_is_project_access_token_bot():
+    provider = _make_gitlab_provider()
+    provider.mr.author = {"bot": False, "username": "dhruvil"}
+    provider.mr.commits = lambda: [
+        {"author_name": "project_42_bot_token", "author_email": "project_42_bot@noreply.gitlab.com"},
+    ]
+    assert provider.are_all_authors_human() is None
+
+
+def test_gitlab_staleness_passes_get_all_to_diff():
+    provider = _make_gitlab_provider()
+    provider.mr.target_branch = "main"
+    provider.mr.head_pipeline = {
+        "status": "success",
+        "sha": "headsha123",
+        "created_at": "2026-01-01T12:00:00Z",
+    }
+    provider.get_diff_files = lambda: [SimpleNamespace(filename="app/main.py")]
+
+    diff_mock = MagicMock(return_value=[{"new_path": "other.py", "old_path": "other.py"}])
+    commit = SimpleNamespace(
+        committed_date="2026-01-01T12:15:00Z",
+        diff=diff_mock,
+    )
+    proj_mock = MagicMock()
+    proj_mock.commits.list.return_value = [commit]
+    provider.gl.projects.get.return_value = proj_mock
+
+    assert provider.is_head_stale_against_base() is False
+    diff_mock.assert_called_once_with(get_all=True)
