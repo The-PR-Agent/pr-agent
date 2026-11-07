@@ -48,12 +48,6 @@ def get_effective_fallback_chain() -> tuple[tuple[str, str | None], ...] | None:
     return _effective_fallback_chain.get()
 
 
-def has_fallback_after(model: str) -> bool:
-    """Return True when the active retry chain has another model after `model`."""
-    models = [name for name, _ in (get_effective_fallback_chain() or ())]
-    return model in models and models.index(model) < len(models) - 1
-
-
 def _count_raw_and_stripped_tokens(token_handler: TokenHandler, text: str) -> int:
     """Count both raw and stripped forms because either representation may be rendered."""
     token_count = token_handler.count_tokens(text)

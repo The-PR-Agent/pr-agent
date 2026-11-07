@@ -12,7 +12,7 @@ from litellm import token_counter
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.pr_processing import FallbackEligibleError, has_fallback_after, retry_with_fallback_models
+from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
 from pr_agent.algo.run_details import init_run_details, record_command_failure
 from pr_agent.algo.run_output import append_run_details
 from pr_agent.algo.token_budget import get_max_input_tokens, get_max_tokens
@@ -183,8 +183,7 @@ class PRHelpMessage:
         system_prompt, user_prompt, fitted_snippets = self._fit_prompts(variables, model)
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
-        # Without a further model to try, publish the truncated answer as before.
-        if finish_reason == "length" and has_fallback_after(model):
+        if finish_reason == "length":
             raise FallbackEligibleError(f"The /help response was truncated by {model}")
         parsed_response = self._load_help_response(response)
         self._model_visible_docs_files = self._get_fitted_docs_files(

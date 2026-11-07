@@ -1678,9 +1678,10 @@ async def test_ask_length_finish_reason_falls_back_instead_of_publishing():
         pr_processing._effective_fallback_chain.reset(token)
 
 
-async def test_ask_length_without_fallback_publishes_partial_answer():
+async def test_ask_length_without_fallback_rejects_partial_answer():
     handler = MagicMock(chat_completion=AsyncMock(return_value=("partial answer", "length")))
-    assert await _ask_tool(handler)._get_prediction("primary-model") == "partial answer"
+    with pytest.raises(FallbackEligibleError):
+        await _ask_tool(handler)._get_prediction("primary-model")
 
 
 async def test_ask_truncated_primary_publishes_only_fallback_answer(fallback_chain_settings):
@@ -1700,9 +1701,10 @@ async def test_line_ask_length_finish_reason_falls_back_instead_of_publishing():
         pr_processing._effective_fallback_chain.reset(token)
 
 
-async def test_line_ask_length_without_fallback_publishes_partial_answer():
+async def test_line_ask_length_without_fallback_rejects_partial_answer():
     handler = MagicMock(chat_completion=AsyncMock(return_value=("partial answer", "length")))
-    assert await _line_ask_tool(handler)._get_prediction("primary-model") == "partial answer"
+    with pytest.raises(FallbackEligibleError):
+        await _line_ask_tool(handler)._get_prediction("primary-model")
 
 
 async def test_line_ask_truncated_primary_publishes_only_fallback_answer(fallback_chain_settings):
