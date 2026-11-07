@@ -127,6 +127,7 @@ def test_compile_custom_shapes():
         r"\bREVOKE_SECRET\b",
         "a" * (dr.MAX_CUSTOM_PATTERN_LENGTH + 1),  # oversized
         r"(a+)+",  # unsafe ReDoS
+        r"(a|a)*$",  # unsafe alternation under quantifier
         r"[invalid",  # invalid regex
     ]
     compiled = dr.compile_custom_shapes(patterns)
@@ -206,6 +207,21 @@ def test_scan_file_diff_custom_pattern():
 def test_build_risk_checks_disabled(risk_settings):
     risk_settings.set("pr_reviewer.enable_risk_checks", False)
     assert dr.build_risk_checks([_file("app.py", "+1")]) is None
+
+
+def test_build_risk_checks_string_bool_disabled(risk_settings):
+    for false_val in ("false", "FALSE", "0", False):
+        risk_settings.set("pr_reviewer.enable_risk_checks", false_val)
+        assert dr.build_risk_checks([_file(".github/workflows/ci.yml", "+1")]) is None
+
+
+def test_build_risk_checks_non_list_sensitive_paths_fallback(risk_settings):
+    # Non-list value (e.g. integer or object) should fall back to DEFAULT_SENSITIVE_PATHS
+    risk_settings.set("pr_reviewer.sensitive_paths", 12345)
+    res = dr.build_risk_checks([_file(".github/workflows/ci.yml", "+1")])
+    assert res is not None
+    assert res["has_findings"] is True
+    assert any(".github/workflows/ci.yml" in s["file"] for s in res["sensitive_paths"])
 
 
 def test_build_risk_checks_empty():

@@ -13,6 +13,7 @@ from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 from typing import Any
 
+from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -163,7 +164,7 @@ _REMOVED_CONFIG_DEFAULT_PATTERN = re.compile(r"^-[A-Za-z0-9_.-]+\s*[:=]\s*\S+")
 _PROMPT_FILE_GLOBS = ("*prompt*.toml", "*prompt*.yaml", "*prompts*/**")
 
 # Unsafe ReDoS quantifier detector for custom patterns
-_UNSAFE_QUANTIFIER_RE = re.compile(r"\([^)]*[*+?]\)[*+?]|\([^)]*\{[0-9,]+\}\)[*+?\{]")
+_UNSAFE_QUANTIFIER_RE = re.compile(r"\([^)]*[*+?]\)[*+?]|\([^)]*\{[0-9,]+\}\)[*+?\{]|\([^)|]*\|[^)]*\)[*+?\{]")
 
 
 def normalize_file_path(path: str | None) -> str:
@@ -360,7 +361,7 @@ def build_risk_checks(
     """Assess deterministic risk for all diff files and unfiltered files in the PR. Return findings dict or None."""
     try:
         settings = get_settings()
-        if not settings.pr_reviewer.get("enable_risk_checks", True):
+        if not _as_bool_setting(settings.pr_reviewer.get("enable_risk_checks", True), default=True):
             return None
         if not diff_files and not unfiltered_files:
             return None
@@ -368,6 +369,8 @@ def build_risk_checks(
         configured_paths = settings.pr_reviewer.get("sensitive_paths", DEFAULT_SENSITIVE_PATHS)
         if isinstance(configured_paths, str):
             configured_paths = [configured_paths]
+        elif not isinstance(configured_paths, (list, tuple)):
+            configured_paths = DEFAULT_SENSITIVE_PATHS
 
         custom_patterns = compile_custom_shapes(settings.pr_reviewer.get("extra_risky_shapes", []))
 
