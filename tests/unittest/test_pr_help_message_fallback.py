@@ -765,3 +765,17 @@ async def test_invalid_prompt_reaches_final_failure_boundary(help_tool):
     assert "missing_variable" in logger.exception.call_args.args[0]
     assert details.model_used is None
     assert get_settings().get("openai.deployment_id") == "primary-deployment"
+
+
+async def test_truncated_primary_answer_retries_backup_before_parsing(help_tool):
+    tool, _, _ = help_tool
+    truncated = "response: Enable automatic"
+    tool.ai_handler.chat_completion.side_effect = lambda model, **_kwargs: (
+        (truncated, "length") if model == PRIMARY else (ANSWER, "stop"))
+
+    await tool.run()
+
+    assert attempted_models(tool) == [PRIMARY, BACKUP]
+    [call] = tool.git_provider.publish_comment.call_args_list
+    assert "Enable automatic review in the repository settings." in call.args[0]
+    assert "Could not find relevant information" not in call.args[0]

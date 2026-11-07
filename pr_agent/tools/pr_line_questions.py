@@ -11,6 +11,8 @@ from pr_agent.algo.git_patch_processing import extract_hunk_lines_from_patch
 from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    FallbackEligibleError,
+    has_fallback_after,
     retry_with_fallback_models,
     run_diff_preparation,
 )
@@ -234,6 +236,9 @@ class PR_LineQuestions:
 
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+        # Without a further model to try, publish the truncated answer as before.
+        if finish_reason == "length" and has_fallback_after(model):
+            raise FallbackEligibleError(f"The /ask_line response was truncated by {model}")
         return response
 
     def _render_prompts(self, variables):
