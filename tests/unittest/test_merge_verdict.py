@@ -129,9 +129,11 @@ def test_unknown_model_recommendation_fails_closed():
     assert "model merge recommendation: unrecognized value; needs_review" in result["decided_by"]
 
 
-def test_model_risk_values_outside_the_schema_do_not_veto():
+def test_unknown_model_risk_fails_closed():
     result = _verdict(model_recommendation=None, model_risk_level="critical")
-    assert result["recommendation"] == "no_concerns_found"
+    assert result["recommendation"] == "needs_review"
+    assert "Model risk level" in _failed(result)
+    assert "model risk level: unrecognized value; needs_review" in result["decided_by"]
 
 
 def test_changed_lines_uses_patch_when_provider_counts_are_unknown():
