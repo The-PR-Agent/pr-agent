@@ -21,6 +21,7 @@ from pr_agent.algo.comment_identity import (
     format_pr_code_suggestions_header,
     hidden_marker_forms,
 )
+from pr_agent.algo.findings import Finding
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers, split_diff_lines
 from pr_agent.algo.i18n import t
 from pr_agent.algo.pr_processing import (
@@ -1551,6 +1552,18 @@ class PRCodeSuggestions:
                 if not isinstance(existing_code, str):
                     raise TypeError("existing_code must be a string")
                 label = d['label'].strip()
+                finding = Finding.from_code_suggestion({
+                    **d,
+                    "relevant_file": relevant_file,
+                    "relevant_lines_start": relevant_lines_start,
+                    "relevant_lines_end": relevant_lines_end,
+                    "suggestion_content": content,
+                    "existing_code": existing_code,
+                    "improved_code": new_code_snippet,
+                    "label": label,
+                })
+                if finding is None:
+                    raise TypeError("suggestion must be a mapping")
             except (AttributeError, KeyError, TypeError, ValueError) as e:
                 get_logger().warning(f"Could not parse suggestion: {d}, error: {e}")
                 continue
@@ -1562,6 +1575,9 @@ class PRCodeSuggestions:
                 new_code_snippet = self.dedent_code(relevant_file, relevant_lines_start, new_code_snippet)
                 existing_code = self.dedent_code(relevant_file, relevant_lines_start, existing_code)
                 d = {**d, "existing_code": existing_code, "improved_code": new_code_snippet}
+                finding = Finding.from_code_suggestion(d)
+                if finding is None:
+                    raise ValueError("Could not convert a validated suggestion to a finding")
 
             requires_pr_fallback = False
             if d.get('_is_truncated'):
@@ -1580,9 +1596,9 @@ class PRCodeSuggestions:
                     fallback_reason = "the proposed Python code has invalid syntax"
                     requires_pr_fallback = True
 
-            score = d.get("score")
-            header = f"**Suggestion:** {content} [{label}, importance: {score}]" if score \
-                else f"**Suggestion:** {content} [{label}]"
+            score = finding.score
+            header = f"**Suggestion:** {finding.body} [{finding.label}, importance: {score}]" if score \
+                else f"**Suggestion:** {finding.body} [{finding.label}]"
             fence = get_suggestion_fence(new_code_snippet or "")
             if new_code_snippet and is_applicable:
                 body = f"{header}\n{fence}suggestion\n" + new_code_snippet + f"\n{fence}"
@@ -1594,10 +1610,7 @@ class PRCodeSuggestions:
                 elif requires_pr_fallback:
                     body += f"\n\nNot offered as a committable change because {fallback_reason}."
 
-            rendered_suggestion = {'body': body, 'relevant_file': relevant_file,
-                                   'relevant_lines_start': relevant_lines_start,
-                                   'relevant_lines_end': relevant_lines_end,
-                                   'original_suggestion': d}
+            rendered_suggestion = finding.to_inline_comment(body, original_suggestion=d)
             if supports_suggestions_artifact:
                 artifact_suggestions.append(rendered_suggestion)
 
