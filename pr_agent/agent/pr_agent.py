@@ -2,7 +2,7 @@ import asyncio
 import copy
 import json
 import shlex
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from functools import partial
 
 import dynaconf
@@ -376,9 +376,61 @@ def response_language_instructions():
             section.extra_instructions = original
 
 
+_tool_initialization_locks = {}
+
+
+@asynccontextmanager
+async def _serialize_tool_initialization(pr_url):
+    """Keep same-PR initialization sequential without occupying waiting worker threads."""
+    key = (asyncio.get_running_loop(), pr_url)
+    lock, users = _tool_initialization_locks.get(key, (asyncio.Lock(), 0))
+    _tool_initialization_locks[key] = (lock, users + 1)
+    try:
+        async with lock:
+            yield
+    finally:
+        _, users = _tool_initialization_locks[key]
+        if users == 1:
+            del _tool_initialization_locks[key]
+        else:
+            _tool_initialization_locks[key] = (lock, users - 1)
+
+
 class PRAgent:
     def __init__(self, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         self.ai_handler = ai_handler  # handler factory passed to each tool when it is instantiated
+
+    async def _create_tool(self, tool_class, pr_url, **kwargs):
+        """Offload isolated core-tool setup while preserving its cancellation boundary."""
+        if get_settings() is global_settings or tool_class not in (PRReviewer, PRDescription, PRCodeSuggestions):
+            # Preserve shared settings and other tools' existing initialization
+            # (some constructors also update external indexes).
+            return tool_class(pr_url, ai_handler=self.ai_handler, **kwargs)
+
+        async with _serialize_tool_initialization(pr_url):
+            if self.ai_handler is not LiteLLMAIHandler:
+                # Injected factories may require the calling event loop.
+                return tool_class(pr_url, ai_handler=self.ai_handler, **kwargs)
+
+            task = asyncio.create_task(asyncio.to_thread(tool_class, pr_url, ai_handler=self.ai_handler, **kwargs))
+            cancelled = None
+            while True:
+                try:
+                    tool = await asyncio.shield(task)
+                    break
+                except asyncio.CancelledError as error:
+                    if task.cancelled():
+                        raise
+                    # A thread cannot be stopped by cancelling its awaiter. Finish
+                    # setup before restoring settings or starting another command.
+                    cancelled = error
+                except Exception:
+                    if cancelled is not None:
+                        raise cancelled from None
+                    raise
+            if cancelled is not None:
+                raise cancelled
+            return tool
 
     async def _handle_request(
         self, pr_url, request, notify=None, propagate_tool_errors: bool | None = None
@@ -510,14 +562,17 @@ class PRAgent:
                 if action == "answer":
                     if notify:
                         notify()
-                    await PRReviewer(pr_url, is_answer=True, args=args, ai_handler=self.ai_handler).run()
+                    tool = await self._create_tool(PRReviewer, pr_url, is_answer=True, args=args)
+                    await tool.run()
                 elif action == "auto_review":
-                    await PRReviewer(pr_url, is_auto=True, args=args, ai_handler=self.ai_handler).run()
+                    tool = await self._create_tool(PRReviewer, pr_url, is_auto=True, args=args)
+                    await tool.run()
                 else:
                     if notify:
                         notify()
 
-                    result = await command2class[action](pr_url, ai_handler=self.ai_handler, args=args).run()
+                    tool = await self._create_tool(command2class[action], pr_url, args=args)
+                    result = await tool.run()
                     if action == "add_docs" and result is False:
                         span.set_status(StatusCode.ERROR)
                         span.set_attribute("error.type", "documentation_publication_failed")
