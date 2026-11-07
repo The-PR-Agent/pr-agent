@@ -276,7 +276,7 @@ See [Improve](../tools/improve.mdx#configuration-options).
 | Key | Default | Description |
 | --- | --- | --- |
 | `committable_code_suggestions` | false | Deprecated alias still accepted until 1.0: pr_code_suggestions.commitable_code_suggestions |
-| `dual_publishing_score_threshold` | -1 | -1 or 0 disables, [1-10] to set the threshold (>=) for publishing a code suggestion both in a table and as committable |
+| `dual_publishing_score_threshold` | -1 | Not settable from a per-directory .pr_agent.toml. -1 or 0 disables, [1-10] also publishes suggestions scoring >= it as committable, besides the table. |
 | `focus_only_on_problems` | true |  |
 | `extra_instructions` | "" |  |
 | `suggestions_heading` | "PR Code Suggestions" | Visible base heading for summary-table /improve comments. Identity is tracked separately. |
