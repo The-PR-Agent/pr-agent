@@ -26,9 +26,12 @@ from pr_agent.log import get_logger
 CHANGELOG_LINES = 50
 # A whole answer wrapped in one fenced block, e.g. "```markdown\n...\n```". The opening fence
 # is optional: the prompt ends with a dangling open "```markdown", which primes the model to
-# answer with a closing fence and no opening one.
-_WRAPPING_CODE_FENCE_RE = re.compile(r"\A(?:\s*(?P<open>```[^\n]*\n))?(?P<body>.*?)\n?```\s*\Z", re.DOTALL)
-_FENCE_LINE_RE = re.compile(r"(?m)^[^\S\n]*```")
+# answer with a closing fence and no opening one. Fences run for 3+ backticks (four-backtick
+# fences are standard Markdown for embedding ``` inside a block). The possessive `{3,}+` keeps
+# a long run of backticks linear: the run is consumed once and never re-tried at a shorter
+# length, which is what a plain `{3,}` backtracks into quadratically.
+_WRAPPING_CODE_FENCE_RE = re.compile(r"\A(?:\s*(?P<open>`{3,}+[^\n]*\n))?(?P<body>.*?)\n?`{3,}+\s*\Z", re.DOTALL)
+_FENCE_LINE_RE = re.compile(r"(?m)^[^\S\n]*`{3,}")
 
 
 def strip_wrapping_code_fence(text: str) -> str:

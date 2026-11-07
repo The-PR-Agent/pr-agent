@@ -178,6 +178,34 @@ async def test_large_pr_header_allows_clipped_input_but_requires_complete_output
 
 
 @pytest.mark.asyncio
+async def test_large_pr_header_ending_in_inline_code_keeps_closing_backtick():
+    """A bare-YAML header whose description ends in an inline code span (the
+    #3083 family, large-PR headers path)."""
+    obj = _make_large_pr_instance()
+    header = (
+        "type:\n- Bug fix\n"
+        "description: |\n  Rewrites `parse()`"
+    )
+
+    async def predict(model, patches_diff, prompt="pr_description_prompt"):
+        if prompt == "pr_description_only_description_prompts":
+            return header
+        return _file_prediction("src/file1.py") if "file1" in patches_diff else _file_prediction("src/file2.py")
+
+    obj._get_prediction = AsyncMock(side_effect=predict)
+    with (
+        patch("pr_agent.tools.pr_description.get_pr_diff", return_value=""),
+        patch("pr_agent.tools.pr_description.get_pr_diff_multiple_patchs", return_value=_large_pr_chunks()),
+        patch("pr_agent.algo.pr_processing._get_all_models", return_value=["gpt-4o", "gpt-4o-mini"]),
+        patch("pr_agent.algo.pr_processing._get_all_deployments", return_value=[None, None]),
+        patch("pr_agent.algo.pr_processing.route_primary_model", return_value=None),
+    ):
+        await retry_with_fallback_models(obj._prepare_prediction, ModelType.WEAK)
+
+    assert "Rewrites `parse()`" in obj.prediction
+
+
+@pytest.mark.asyncio
 async def test_large_pr_header_rejects_required_prompt_overflow_before_dispatch():
     tool = _make_large_pr_instance()
     tool._description_prompt_handlers = {
