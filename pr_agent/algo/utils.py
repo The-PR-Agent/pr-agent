@@ -30,6 +30,7 @@ from yaml.tokens import (
 )
 
 import pr_agent.algo.comment_identity as _ci
+from pr_agent.algo.deterministic_risk import render_risk_checks
 from pr_agent.algo.git_patch_processing import (
     NO_NEWLINE_AT_EOF_MARKER,
     extract_hunk_headers,
@@ -336,6 +337,8 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"{value}\n\n"
         elif key.lower() == 'structural_reach':
             markdown_text += render_structural_reach(value, gfm_supported)
+        elif key.lower() in ('risk_checks', 'deterministic_risk'):
+            markdown_text += render_risk_checks(value, gfm_supported)
         elif 'risk level' in key_nice.lower():
             risk_value = str(value).strip().lower().replace("_", " ")
             risk_display = risk_value.capitalize() if risk_value else "Unknown"
