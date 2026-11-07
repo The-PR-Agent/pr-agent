@@ -74,10 +74,12 @@ From the CLI, save the suggestions and token usage as JSON for a later CI step:
 pr-agent --pr_url https://github.com/org/repo/pull/123 --json-output improve.json improve
 ```
 
-The JSON file is written once the suggestions are ready, after any publishing, and also when
-`config.publish_output=false`, so a caller can post the suggestions itself. It holds a `code_suggestions`
+The JSON file is written once the suggestions are ready, including when
+`config.publish_output=false`, so a caller can post the suggestions itself. In plain-diff mode,
+the file is written before Markdown output; with `--pr_url`, it is written after publishing.
+It holds a `code_suggestions`
 list, empty when there are none, and a `usage` object. Place `--json-output` before `improve` or
-`improve_code`; with `--stdin` or `--diff-file`, `--json-output` is supported for `review` only.
+`improve_code`; it also works with plain-diff input (`--stdin` or `--diff-file`).
 
 ### Automatic triggering
 

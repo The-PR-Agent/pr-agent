@@ -39,7 +39,7 @@ From the CLI, save the generated description and token usage as JSON for a later
 pr-agent --pr_url https://github.com/org/repo/pull/123 --json-output describe.json describe
 ```
 
-The JSON file is written after the description is assembled. Place `--json-output` before `describe` or `describe_pr`; it needs `--pr_url` and is not available in plain-diff mode.
+The JSON file is written after the description is assembled. Place `--json-output` before `describe` or `describe_pr`; it works with `--pr_url` or with plain-diff input (`--stdin` or `--diff-file`).
 
 ### Automatic triggering
 
