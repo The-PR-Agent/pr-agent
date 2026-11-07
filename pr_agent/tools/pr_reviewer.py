@@ -18,6 +18,7 @@ from pr_agent.algo.comment_identity import (
     hidden_marker_forms,
     render_hidden_marker,
 )
+from pr_agent.algo.deterministic_risk import build_risk_checks
 from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
@@ -174,6 +175,11 @@ _STATE_BLOCK_SIZE = "state_size"
 def _is_structural_reach_key(key) -> bool:
     """Whether a review key would render like the deterministic structural reach row, whatever its separators."""
     return re.sub(r"[^a-z0-9]", "", str(key).lower()) == "structuralreach"
+
+
+def _is_risk_checks_key(key) -> bool:
+    """Whether a review key would render like the deterministic risk checks row, whatever its separators."""
+    return re.sub(r"[^a-z0-9]", "", str(key).lower()) in ("riskchecks", "deterministicrisk")
 
 
 class PRReviewer:
@@ -1336,7 +1342,7 @@ class PRReviewer:
         if isinstance(data, dict) and isinstance(data.get("review"), dict):
             if not getattr(self, "vars", {}).get("require_failure_modes", False):
                 data["review"].pop("failure_modes", None)
-            for key in [k for k in data["review"] if _is_structural_reach_key(k)]:
+            for key in [k for k in data["review"] if _is_structural_reach_key(k) or _is_risk_checks_key(k)]:
                 data["review"].pop(key)
         if self.prediction_data is None:
             self._validate_review_schema(data)
@@ -1355,6 +1361,26 @@ class PRReviewer:
         structural_reach = build_structural_reach(resolve_artifact_path)
         if structural_reach:
             data["review"] = {"structural_reach": structural_reach, **data["review"]}
+
+        unfiltered_files = None
+        if hasattr(self.git_provider, "get_pr_file_paths"):
+            try:
+                unfiltered_files = self.git_provider.get_pr_file_paths()
+            except Exception:
+                unfiltered_files = None
+        if not unfiltered_files and hasattr(self.git_provider, "get_files"):
+            try:
+                unfiltered_files = self.git_provider.get_files()
+            except Exception:
+                unfiltered_files = None
+
+        filtered_names = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
+        if filtered_names:
+            unfiltered_files = list(unfiltered_files or []) + list(filtered_names)
+
+        risk_checks = build_risk_checks(self.git_provider.get_diff_files(), unfiltered_files=unfiltered_files)
+        if risk_checks and risk_checks.get("has_findings"):
+            data["review"] = {"risk_checks": risk_checks, **data["review"]}
 
         structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
         if callable(structured_publisher) or review_json_output_path.get():
