@@ -182,7 +182,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
     # A commenter must not choose which host file the structural-reach row reads.
     "pr_reviewer": frozenset({"max_number_of_calls", "structural_reach_input_file"}),
     "pr_similar_issue": frozenset({"force_update_dataset"}),
-    "pr_update_changelog": frozenset({"push_changelog_changes"}),
+    "pr_update_changelog": frozenset({"push_changelog_changes", "changelog_path"}),
 }
 
 # Keys a per-directory `.pr_agent.toml` can never override, even when their section is

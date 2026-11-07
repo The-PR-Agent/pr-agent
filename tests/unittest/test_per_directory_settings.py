@@ -603,6 +603,7 @@ num_max_findings = 4
         config = b"""
 [pr_update_changelog]
 push_changelog_changes = true
+changelog_path = "services/CHANGELOG.md"
 add_pr_link = true
 extra_instructions = "keep-me"
 
@@ -616,7 +617,7 @@ enable_help_text = true
         monkeypatch.setattr(
             "pr_agent.git_providers.utils.get_git_provider_with_context",
             lambda url: _provider(
-                root_settings=ROOT_TOML,
+                root_settings=ROOT_TOML + b'\n[pr_update_changelog]\nchangelog_path = "docs/HISTORY.md"\n',
                 tree_paths=["services/.pr_agent.toml"],
                 contents={"services/.pr_agent.toml": config},
                 files=["services/api.py"],
@@ -626,6 +627,7 @@ enable_help_text = true
         git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
 
         assert get_settings().pr_update_changelog.push_changelog_changes is False
+        assert get_settings().pr_update_changelog.changelog_path == "docs/HISTORY.md"
         assert get_settings().get("pr_help_docs.repo_url", "") == ""
         # Collection scope is root-/host-controlled: a nested file cannot point /help_docs
         # at arbitrary repository paths or file extensions to read into the model prompt.

@@ -17,6 +17,7 @@ EXISTING = "# Changelog\n\n## 2026-01-01\n- Initial release\n"
 
 def _prepared(prediction, commit=True):
     tool = PRUpdateChangelog.__new__(PRUpdateChangelog)
+    tool.changelog_path = "CHANGELOG.md"
     tool.prediction = prediction
     tool.changelog_file = EXISTING
     tool.commit_changelog = commit
@@ -148,6 +149,7 @@ def committing_tool(monkeypatch):
     provider = MagicMock()
     provider.get_pr_branch.return_value = "feature/retry"
     tool = PRUpdateChangelog.__new__(PRUpdateChangelog)
+    tool.changelog_path = "CHANGELOG.md"
     tool.git_provider = provider
     tool.changelog_file = EXISTING
     tool.changelog_snapshot = FileContentSnapshot(EXISTING, True, "fixture-revision")
