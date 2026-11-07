@@ -16,6 +16,21 @@ updated_until_commit = "Revisión actualizada hasta el commit {commit}"
 persistent_link = "Revisión persistente"
 persistent_updated = "{link} actualizada al último commit {commit}"
 
+[improve]
+no_suggestions = "No se encontraron sugerencias para mejorar este PR."
+no_suggestions_for_pr = "No se encontraron sugerencias de código para el PR."
+no_suggestions_in_chunks = "No se encontraron sugerencias de código en los fragmentos analizados correctamente."
+no_suggestions_in_chunks_inline = "No se encontraron sugerencias en los fragmentos analizados correctamente."
+optional_intro = "Explora estas sugerencias de código opcionales:"
+category = "Categoría"
+suggestion = "Sugerencia"
+impact = "Impacto"
+importance = "Importancia de la sugerencia"
+why = "Motivo"
+high = "Alto"
+medium = "Medio"
+low = "Bajo"
+
 [run_details]
 title = "Detalles de la ejecución del agente"
 model = "Modelo"

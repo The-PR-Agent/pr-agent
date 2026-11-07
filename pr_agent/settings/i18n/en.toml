@@ -17,6 +17,21 @@ updated_until_commit = "Review updated until commit {commit}"
 persistent_link = "Persistent review"
 persistent_updated = "{link} updated to latest commit {commit}"
 
+[improve]
+no_suggestions = "No suggestions found to improve this PR."
+no_suggestions_for_pr = "No code suggestions found for the PR."
+no_suggestions_in_chunks = "No code suggestions found in the successfully analyzed chunks."
+no_suggestions_in_chunks_inline = "No suggestions found in the successfully analyzed chunks."
+optional_intro = "Explore these optional code suggestions:"
+category = "Category"
+suggestion = "Suggestion"
+impact = "Impact"
+importance = "Suggestion importance"
+why = "Why"
+high = "High"
+medium = "Medium"
+low = "Low"
+
 [run_details]
 title = "Agent run details"
 model = "Model"

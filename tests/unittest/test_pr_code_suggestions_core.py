@@ -8,7 +8,11 @@ import yaml
 import pr_agent.algo.pr_processing as pr_processing
 import pr_agent.algo.token_budget as token_budget_module
 import pr_agent.tools.pr_code_suggestions as pr_code_suggestions_module
-from pr_agent.algo.comment_identity import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity
+from pr_agent.algo.comment_identity import (
+    PRCodeSuggestionsHeader,
+    PRCodeSuggestionsIdentity,
+    format_pr_code_suggestions_header,
+)
 from pr_agent.algo.pr_processing import PackedPRDiffs
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.token_budget import AttemptTokenBudget
@@ -1731,6 +1735,73 @@ def test_summarized_suggestions_use_the_target_file_indentation():
     assert "+\treplacement() {" in summary
     assert "+\t\tnested()" in summary
     assert "+\t}" in summary
+
+
+@pytest.mark.parametrize(("language", "labels", "impact"), [
+    ("es-AR", ("Categoría", "Sugerencia", "Impacto", "Importancia de la sugerencia", "Motivo"), "Alto"),
+    ("en-US", ("Category", "Suggestion", "Impact", "Suggestion importance", "Why"), "High"),
+])
+def test_improve_summary_localizes_fixed_labels_not_content_or_identity(language, labels, impact):
+    saved = snapshot_settings(["config.response_language", "config.is_auto_command",
+                               "pr_code_suggestions.new_score_mechanism"])
+    try:
+        get_settings().set("config.response_language", language)
+        get_settings().set("config.is_auto_command", True)
+        get_settings().set("pr_code_suggestions.new_score_mechanism", True)
+        provider = _provider_with_file("new()\n", patch="@@ -1 +1 @@\n-old()\n+new()\n")
+        tool = _make_tool(provider)
+        suggestion = _valid_suggestion(score=9, score_why="Avoid repeated work")
+
+        summary = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
+
+        assert summary.startswith(format_pr_code_suggestions_header())
+        assert "Avoid duplicated work" in summary
+        assert "Avoid repeated work" in summary
+        assert all(label in summary for label in labels)
+        assert f">{impact}\n\n</td>" in summary
+        assert ("Explora estas sugerencias" if language.startswith("es") else
+                "Explore these optional") in summary
+        assert tool.get_score_str(8) == ("Medio" if language.startswith("es") else "Medium")
+        assert tool.get_score_str(6) == ("Bajo" if language.startswith("es") else "Low")
+    finally:
+        restore_settings(saved)
+
+
+@pytest.mark.asyncio
+async def test_improve_empty_result_is_localized_before_provider_publication(monkeypatch):
+    saved = snapshot_settings(["config.response_language", "config.publish_output"])
+    try:
+        get_settings().set("config.response_language", "es-AR")
+        get_settings().set("config.publish_output", True)
+        provider = MagicMock()
+        provider.supports_code_suggestions_artifact.return_value = True
+        tool = _make_tool(provider)
+        monkeypatch.setattr(pr_code_suggestions_module, "push_outputs_async", AsyncMock())
+
+        await tool.publish_no_suggestions()
+
+        kwargs = provider.publish_code_suggestions_artifact.call_args.kwargs
+        assert kwargs["no_suggestions_message"] == "No se encontraron sugerencias de código para el PR."
+        assert pr_code_suggestions_module.push_outputs_async.await_args.kwargs["markdown"].endswith(
+            kwargs["no_suggestions_message"])
+    finally:
+        restore_settings(saved)
+
+
+@pytest.mark.asyncio
+async def test_improve_empty_inline_fallback_uses_response_language():
+    saved = snapshot_settings(["config.response_language"])
+    try:
+        get_settings().set("config.response_language", "es-AR")
+        provider = MagicMock()
+        tool = _make_tool(provider)
+
+        await tool.push_inline_code_suggestions({"code_suggestions": []})
+
+        provider.publish_comment.assert_called_once_with(
+            "No se encontraron sugerencias para mejorar este PR.")
+    finally:
+        restore_settings(saved)
 
 
 def test_summarized_suggestions_use_patch_anchor_for_partial_head_file():
