@@ -673,6 +673,28 @@ ignore_pr_labels = ["do-not-merge"]
 
 Where the `ignore_pr_labels` is a list of labels that when present in the PR, the PR will be ignored.
 
+### Processing only PRs with selected labels
+
+To opt in only selected PRs or MRs to PR-Agent, specify one or more label names:
+
+```toml
+[config]
+include_pr_labels = ["ai-review"]
+```
+
+When the list is nonempty, a PR must have **at least one** matching label to be processed.
+Names are matched exactly (case-sensitive), not as regular expressions. The default empty
+list leaves all PRs eligible. If a label appears in both `include_pr_labels` and
+`ignore_pr_labels`, the exclusion wins. This applies to automatic runs, comment commands,
+and CLI `--pr_url` requests, just like the existing exclusion rules. Repository settings
+may select the labels; individual comment or CLI command arguments cannot override this gate.
+
+If the labels cannot be read, PR-Agent skips the request while this opt-in gate is enabled;
+GitHub and GitLab supply labels through their PR/MR APIs and webhook payloads. Inputs
+without hosted PR labels, including Bitbucket Cloud/Server, local, and plain-diff mode,
+will not pass this gate. The setting selects eligible PRs; it does not itself trigger
+a run when a label is assigned after the PR was opened.
+
 ### Ignoring PRs from specific users
 
 PR-Agent tries to automatically identify and ignore pull requests created by bots using:

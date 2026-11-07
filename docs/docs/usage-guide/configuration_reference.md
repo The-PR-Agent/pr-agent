@@ -119,6 +119,7 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | `ignore_pr_target_branches` | [] | a list of regular expressions of target branches to ignore from PR agent when an PR is created |
 | `ignore_pr_source_branches` | [] | a list of regular expressions of source branches to ignore from PR agent when an PR is created |
 | `ignore_pr_labels` | [] | labels to ignore from PR agent when an PR is created |
+| `include_pr_labels` | [] | PR label allowlist (exact match; empty disables); see [details](additional_configurations.md#processing-only-prs-with-selected-labels) |
 | `ignore_pr_authors` | [] | authors to ignore from PR agent when an PR is created |
 | `reaction_on_start` | "eyes" | added before the command runs |
 | `reaction_on_success` | "" | replaces the start reaction when the command succeeded (GitHub App, GitLab webhook) |

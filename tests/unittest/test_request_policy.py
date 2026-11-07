@@ -21,6 +21,7 @@ def environment(monkeypatch):
     settings = copy.deepcopy(global_settings)
     for rule in RULE_FIELDS.values():
         settings.set(f"config.{rule}", [])
+    settings.set("config.include_pr_labels", [])
     provider = Mock()
     provider.get_request_policy_metadata.return_value = METADATA.copy()
     monkeypatch.setattr(git_providers, "get_git_provider_with_context", lambda *_a, **_kw: provider)
@@ -125,6 +126,64 @@ async def test_policy_lookup_error_allows_command(environment, monkeypatch, fail
     tool.run.assert_awaited_once()
     notify.assert_called_once()
     agent.flush_telemetry.assert_called_once()
+
+
+@pytest.mark.parametrize(("labels", "allowed"), [
+    (["ai-review", "other"], True),
+    (["other"], False),
+    ([], False),
+    (None, False),
+])
+async def test_include_pr_labels_gates_real_tool_entrypoint(environment, monkeypatch, labels, allowed):
+    settings, provider = environment
+    settings.set("config.include_pr_labels", ["ai-review"])
+    provider.get_request_policy_metadata.return_value = {**METADATA, "labels": labels}
+    tool = SimpleNamespace(run=AsyncMock())
+    factory, notify = Mock(return_value=tool), Mock()
+    monkeypatch.setitem(agent.command2class, "review", factory)
+
+    result = await agent.PRAgent().handle_request(URL, "/review", notify=notify)
+    assert result is (True if allowed else RequestOutcome.SKIPPED)
+    if allowed:
+        tool.run.assert_awaited_once()
+        notify.assert_called_once()
+    else:
+        tool.run.assert_not_awaited()
+        notify.assert_not_called()
+    provider.get_request_policy_metadata.assert_called_once_with({"labels"})
+
+
+@pytest.mark.parametrize("failure_at", ["provider", "metadata"])
+async def test_include_pr_labels_skips_on_metadata_lookup_failure(environment, monkeypatch, failure_at):
+    settings, provider = environment
+    settings.set("config.include_pr_labels", ["ai-review"])
+    if failure_at == "provider":
+        monkeypatch.setattr(git_providers, "get_git_provider_with_context", Mock(side_effect=RuntimeError("outage")))
+    else:
+        provider.get_request_policy_metadata.side_effect = RuntimeError("outage")
+    tool, notify = SimpleNamespace(run=AsyncMock()), Mock()
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=tool))
+
+    assert await agent.PRAgent().handle_request(URL, "/review", notify=notify) is RequestOutcome.SKIPPED
+    tool.run.assert_not_awaited()
+    notify.assert_not_called()
+
+
+@pytest.mark.parametrize("numeric_label", [0, 123])
+async def test_numeric_include_labels_still_gate_tool_entrypoint(environment, monkeypatch, numeric_label):
+    settings, provider = environment
+    settings.set("config.include_pr_labels", numeric_label)
+    tool = SimpleNamespace(run=AsyncMock())
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=tool))
+
+    provider.get_request_policy_metadata.return_value = {**METADATA, "labels": [str(numeric_label)]}
+    assert await agent.PRAgent().handle_request(URL, "/review") is True
+    provider.get_request_policy_metadata.assert_called_with({"labels"})
+    tool.run.assert_awaited_once()
+
+    provider.get_request_policy_metadata.return_value = {**METADATA, "labels": ["other"]}
+    assert await agent.PRAgent().handle_request(URL, "/review") is RequestOutcome.SKIPPED
+    tool.run.assert_awaited_once()
 
 
 async def test_provider_without_metadata_uses_empty_default(environment, monkeypatch):

@@ -45,6 +45,14 @@ def _ignore_patterns(value):
     return normalize_setting_list(value)
 
 
+def get_include_pr_labels() -> list[str]:
+    """Keep numeric label names (including zero) active when read from environment settings."""
+    value = get_settings().get("CONFIG.INCLUDE_PR_LABELS", [])
+    if value is None or value == "" or value == []:
+        return []
+    return [str(label) for label in value] if isinstance(value, (list, tuple, set)) else [str(value)]
+
+
 def payload_log_summary(data: object, identifying_fields: Sequence[str] = ()) -> dict:
     """Return a webhook payload's top-level keys and identifying string fields, never its values."""
     if not isinstance(data, dict):
@@ -296,7 +304,10 @@ def _extract_pr_metadata(data: dict, provider: str | None = None):
         repo_full_name = data.get("project", {}).get("path_with_namespace") or ""
         source_branch = obj_attr.get("source_branch") or ""
         target_branch = obj_attr.get("target_branch") or ""
-        raw_labels = obj_attr.get("labels") or []
+        # GitLab merge request webhooks put labels at the payload root.
+        raw_labels = (data.get("labels") if "labels" in data else obj_attr.get("labels")) or []
+        if not isinstance(raw_labels, (list, tuple)):
+            raw_labels = []
         labels = [
             label.get("title", "") if isinstance(label, dict) else str(label)
             for label in raw_labels
@@ -341,6 +352,8 @@ def _extract_pr_metadata(data: dict, provider: str | None = None):
         source_branch = pull_request.get("head", {}).get("ref") or ""
         target_branch = pull_request.get("base", {}).get("ref") or ""
         pr_labels = pull_request.get("labels") or []
+        if not isinstance(pr_labels, (list, tuple)):
+            pr_labels = []
         labels = [
             label.get("name", "") if isinstance(label, dict) else str(label)
             for label in pr_labels
@@ -363,11 +376,13 @@ def should_process_pr_logic(
     labels: Sequence[str] | None = None,
     source_branch: str | None = None,
     target_branch: str | None = None,
+    check_include_labels: bool = True,
     raise_on_error: bool = False,
 ) -> bool:
     """Determine whether a pull/merge request should be processed based on configuration.
 
-    Evaluates ignore rules configured in settings:
+    Evaluates PR selection and ignore rules configured in settings:
+      - CONFIG.INCLUDE_PR_LABELS: require at least one exact matching PR/MR label when nonempty
       - CONFIG.IGNORE_REPOSITORIES: regex match on repo_full_name
       - CONFIG.IGNORE_PR_AUTHORS: regex match on sender/author
       - CONFIG.IGNORE_PR_TITLE: regex match on title (supports str or list[str])
@@ -377,6 +392,9 @@ def should_process_pr_logic(
 
     Can be called with a webhook payload dict (`data`), explicit keyword arguments, or both
     (explicit kwargs override extracted payload values).
+
+    Set `check_include_labels=False` only before repository settings have been loaded;
+    the caller must recheck the effective policy afterwards.
 
     When `raise_on_error` is True, exceptions raised during filtering are re-raised so callers
     can distinguish error fallbacks from successful evaluations. Otherwise, returns True.
@@ -408,6 +426,14 @@ def should_process_pr_logic(
         labels = labels or []
         source_branch = source_branch or ""
         target_branch = target_branch or ""
+
+        if check_include_labels:
+            include_pr_labels = get_include_pr_labels()
+            if include_pr_labels:
+                if (not isinstance(labels, Sequence) or isinstance(labels, (str, bytes))
+                        or not any(label in include_pr_labels for label in labels)):
+                    get_logger().info("Skipping PR without a valid label in config.include_pr_labels")
+                    return False
 
         # Ignore PRs from specific repositories
         ignore_repos = _ignore_patterns(get_settings().get("CONFIG.IGNORE_REPOSITORIES", []))
@@ -458,6 +484,9 @@ def should_process_pr_logic(
         get_logger().error(f"Failed 'should_process_pr_logic': {e}")
         if raise_on_error:
             raise
+        # An opt-in allowlist must not be bypassed by malformed webhook metadata.
+        if check_include_labels and get_include_pr_labels():
+            return False
         return True
     return True
 

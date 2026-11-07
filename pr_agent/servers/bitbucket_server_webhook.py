@@ -22,6 +22,7 @@ from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     auto_feedback_disabled,
+    get_include_pr_labels,
     get_pr_commands,
     is_command_comment,
     payload_log_summary,
@@ -55,8 +56,8 @@ def should_process_pr_logic(data) -> bool:
         if not shared_should_process_pr_logic(data, provider="bitbucket_server", raise_on_error=True):
             return False
     except Exception:
-        # Preserve fail-open fallback without continuing into folder filtering on error
-        return True
+        # Fail closed for an opt-in label gate, but preserve exclusion-only fallback.
+        return not bool(get_include_pr_labels())
 
     try:
         # Filter by allowed folders if configured
