@@ -7,6 +7,7 @@ from contextlib import contextmanager
 
 from starlette_context import context, request_cycle_context
 
+from pr_agent.agent.command_registry import COMMAND_SPECS
 from pr_agent.agent.pr_agent import PRAgent, commands, parse_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.ai_handlers.litellm_helpers import (
@@ -26,16 +27,20 @@ from pr_agent.log import get_logger, setup_logger
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 setup_logger(log_level)
 
-_PLAIN_DIFF_MARKDOWN_COMMANDS = frozenset({
-    "review", "review_pr", "auto_review",
-    "describe", "describe_pr",
-    "improve", "improve_code",
-    "ask", "ask_question",
-    "config", "settings", "help",
-})
-_JSON_REVIEW_COMMANDS = frozenset({"review", "review_pr"})
-_JSON_IMPROVE_COMMANDS = frozenset({"improve", "improve_code"})
-_JSON_DESCRIBE_COMMANDS = frozenset({"describe", "describe_pr"})
+# --output / --json-output eligibility, derived from the command registry so a
+# new alias is eligible wherever its canonical command is.
+_PLAIN_DIFF_MARKDOWN_COMMANDS = frozenset(
+    name for name, spec in COMMAND_SPECS.items() if spec.plain_diff_markdown
+)
+_JSON_REVIEW_COMMANDS = frozenset(
+    name for name, spec in COMMAND_SPECS.items() if spec.json_output == "review"
+)
+_JSON_IMPROVE_COMMANDS = frozenset(
+    name for name, spec in COMMAND_SPECS.items() if spec.json_output == "improve"
+)
+_JSON_DESCRIBE_COMMANDS = frozenset(
+    name for name, spec in COMMAND_SPECS.items() if spec.json_output == "describe"
+)
 _OUTPUT_OPTIONS = ("--output", "--json-output")
 _CLI_CONTEXT_CACHES = (
     "git_provider", "repo_settings", "git_files", "diff_files", "authenticated_provider_settings",
