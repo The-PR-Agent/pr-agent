@@ -60,13 +60,19 @@ class FailureMode(BaseModel):
 
 
 def parse_failure_modes(value: object) -> list[dict]:
-    """Keep at most three valid cases, including when review validation only warns."""
+    """Keep at most three distinct valid cases, including when review validation only warns."""
     modes = []
+    seen = set()
     for entry in value if isinstance(value, list) else []:
         try:
-            modes.append(FailureMode.model_validate(entry).model_dump())
+            mode = FailureMode.model_validate(entry).model_dump()
         except ValidationError:
             continue
+        fingerprint = tuple(mode.values())
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        modes.append(mode)
         if len(modes) == 3:
             break
     return modes
