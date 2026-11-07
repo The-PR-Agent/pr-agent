@@ -2627,8 +2627,11 @@ class GithubProvider(GitProvider):
                             # 10 lines - a reasonable distance to consider the comment inside the hunk
                             if min_distance < 10:
                                 # make the suggestion non-committable, yet multi line
-                                new_start = max(suggestion['relevant_lines_start'], patch_range_min['start'])
-                                new_end = min(suggestion['relevant_lines_end'], patch_range_min['end'])
+                                # clamp both ends into the hunk: a suggestion wholly above or below it
+                                # would otherwise get start > end and be dropped by the publisher
+                                new_start = min(max(suggestion['relevant_lines_start'], patch_range_min['start']),
+                                                patch_range_min['end'])
+                                new_end = max(min(suggestion['relevant_lines_end'], patch_range_min['end']), new_start)
                                 body = suggestion['body'].strip()
 
                                 # present new diff code in collapsible
