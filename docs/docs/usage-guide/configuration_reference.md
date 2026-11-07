@@ -692,6 +692,7 @@ See [Push outputs](../usage-guide/push_outputs.md#configuration).
 | --- | --- | --- |
 | `enable` | false |  |
 | `channels` | [] | exact names as a list/tuple or comma-separated string: "stdout", "file", "webhook", "slack", "telegram", "teams"; empty emits nothing |
+| `tools` | ["review", "describe", "improve"] | output types to deliver; add "ask" to include Q&A, or select fewer tools; supports comma-separated strings |
 | `file_path` | "pr-agent-outputs/reviews.jsonl" | used by the "file" channel |
 | `webhook_url` | "" | used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL |
 | `slack_webhook_url` | "" | used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL |

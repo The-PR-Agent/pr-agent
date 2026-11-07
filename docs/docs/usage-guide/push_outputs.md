@@ -20,6 +20,7 @@ The tools that currently emit are:
 | `/review` | `review` |
 | `/describe` | `describe` |
 | `/improve` | `improve` |
+| `/ask` | `ask` (opt-in with `tools`) |
 
 A record is a JSON object:
 
@@ -55,6 +56,10 @@ command starts if `pr_description.generate_ai_title` is disabled. When the model
 `labels` field, `payload.labels` contains only labels allowed by the configured vocabulary. This field
 remains present when `pr_description.publish_labels` is disabled.
 
+For `/ask`, `payload.question` is the user's question and `payload.answer` is the model's answer (or
+the note explaining that no changed files could be analyzed). Its Markdown contains the question
+and answer without the PR-only help guide or run-details footer. Inline `/ask_line` replies are not emitted.
+
 ## Configuration
 
 The defaults are defined at the end of the
@@ -64,6 +69,7 @@ The defaults are defined at the end of the
 [push_outputs]
 enable = false
 channels = []                          # any of: "stdout", "file", "webhook", "slack", "telegram", "teams"
+tools = ["review", "describe", "improve"] # tool types to deliver; opt in to "ask" explicitly
 file_path = "pr-agent-outputs/reviews.jsonl"
 webhook_url = ""                       # must be an absolute https:// URL
 slack_webhook_url = ""                 # Slack Incoming Webhook; must be an absolute https:// URL
@@ -74,12 +80,17 @@ teams_webhook_url = ""                 # Teams Workflows webhook URL; must be an
 
 - `enable` — master switch (default `false`). When `false`, nothing is emitted.
 - `channels` — which sinks to use. Use exact registered names as a list/tuple or a comma-separated string; surrounding whitespace is ignored. Nothing is emitted until at least one channel is listed here.
+- `tools` — which tool results to send to those sinks. Defaults to `review`, `describe`, and `improve`, preserving existing delivery. Use a list/tuple or comma-separated string of exact names. Add `ask` to receive answers, or select only the tools of interest. This does not change which commands PR-Agent runs.
 - `file_path` — the file the `file` channel appends to.
 - `webhook_url` — the endpoint the `webhook` channel POSTs the generic record to.
 - `slack_webhook_url` — a Slack Incoming Webhook URL that the `slack` channel posts a `{"text": ...}` payload to.
 - `telegram_bot_token` — the bot token used by the `telegram` channel. Keep it in host secrets, not a repository file.
 - `telegram_chat_id` — the chat that receives Telegram messages.
 - `teams_webhook_url` — a Teams Workflows webhook URL that receives Adaptive Cards from the `teams` channel.
+
+For example, a host can set `tools = ["review", "ask"]` to receive reviews and interactive answers
+without sending description or suggestion results. Ask questions and answers may contain private
+information; only enable their delivery to trusted, operator-controlled destinations.
 
 :::danger[Host-only configuration]
 The whole `[push_outputs]` section is **host-only**. A repository cannot set these keys:

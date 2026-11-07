@@ -16,7 +16,7 @@ from pr_agent.algo.pr_processing import (
     run_diff_preparation,
 )
 from pr_agent.algo.run_details import init_run_details
-from pr_agent.algo.run_output import append_run_details
+from pr_agent.algo.run_output import append_run_details, push_outputs_async
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import ModelType, decode_user_text_args
@@ -102,7 +102,7 @@ class PRQuestions:
                 # No model was called, so there are no run details to report.
                 note = self._prepare_no_analyzable_files_answer()
                 if get_settings().config.publish_output:
-                    self._publish_answer(note)
+                    await self._publish_answer_with_sinks(note, NO_ANALYZABLE_FILES_NOTE)
                 else:
                     get_settings().set("data.answer", NO_ANALYZABLE_FILES_NOTE)
                 return ""
@@ -116,7 +116,9 @@ class PRQuestions:
                 pr_comment += "\n</details>\n"
 
             if get_settings().config.publish_output:
-                self._publish_answer(append_run_details(pr_comment, self.git_provider))
+                await self._publish_answer_with_sinks(
+                    append_run_details(pr_comment, self.git_provider), (self.prediction or "").strip()
+                )
             else:
                 get_settings().set("data.answer", (self.prediction or "").strip())
         finally:
@@ -128,6 +130,13 @@ class PRQuestions:
                         f"Failed to remove the temporary question comment: {cleanup_error}"
                     )
         return ""
+
+    async def _publish_answer_with_sinks(self, comment: str, answer: str):
+        await push_outputs_async(
+            "ask", payload={"question": self.question_str, "answer": answer},
+            markdown=self._format_answer(_sanitize_slash_commands(answer)), git_provider=self.git_provider,
+        )
+        return self._publish_answer(comment)
 
     def _publish_answer(self, answer: str):
         comment_id = get_settings().get("comment_id", "")

@@ -99,6 +99,9 @@ class SlackSink:
         text = record.get("markdown")
         if text is None:
             text = json.dumps(record["payload"], ensure_ascii=False)
+        if record.get("type") == "ask":
+            # Ask may contain user-supplied Slack mention syntax; do not trigger notifications.
+            text = text.replace("<!", "&lt;!").replace("<@", "&lt;@")
         _post_json("slack", url, {"text": _append_pr_url(text, record)})
 
 
@@ -202,6 +205,18 @@ OUTPUT_SINK_TYPES: dict[str, type[OutputSink]] = {
 }
 
 
+def _selected_output_tools(cfg: dict) -> list[str] | None:
+    """Return selected output types, or None for an invalid configuration."""
+    tools = cfg.get("tools", ["review", "describe", "improve"])
+    if isinstance(tools, str):
+        tools = normalize_setting_list(tools, split_commas=True)
+    if (not isinstance(tools, (list, tuple)) or not tools
+            or any(not isinstance(name, str) or name not in ("review", "describe", "improve", "ask")
+                   for name in tools)):
+        return None
+    return list(tools)
+
+
 def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
     """Check basic enabled destination settings without constructing sinks or probing resources."""
     enable = cfg.get("enable", False)
@@ -209,6 +224,9 @@ def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
         enable = enable.lower().strip() not in ("false", "0", "no", "")
     if not enable:
         return None
+
+    if _selected_output_tools(cfg) is None:
+        return False, "push_outputs.tools must select supported tool names"
 
     channels = cfg.get("channels", [])
     if isinstance(channels, str):
