@@ -22,6 +22,7 @@ from pr_agent.algo.comment_identity import (
     hidden_marker_forms,
 )
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers, split_diff_lines
+from pr_agent.algo.i18n import t
 from pr_agent.algo.pr_processing import (
     DELETED_FILES_,
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
@@ -687,8 +688,8 @@ class PRCodeSuggestions:
 
     async def publish_no_suggestions(self):
         coverage_footer = self._get_suggestions_coverage_footer(suggestions_present=False)
-        no_suggestions_message = ("No code suggestions found in the successfully analyzed chunks."
-                                  if coverage_footer else "No code suggestions found for the PR.")
+        no_suggestions_message = (t("improve.no_suggestions_in_chunks")
+                                  if coverage_footer else t("improve.no_suggestions_for_pr"))
         pr_body = f"{format_pr_code_suggestions_header()}\n\n{no_suggestions_message}{coverage_footer}"
         if get_settings().config.publish_output:
             markdown = f"## PR Code Suggestions\n\n{no_suggestions_message}{coverage_footer}"
@@ -1508,8 +1509,8 @@ class PRCodeSuggestions:
             get_logger().info('No suggestions found to improve this PR.')
             empty_coverage_footer = (self._get_suggestions_coverage_footer(suggestions_present=False)
                                      if include_coverage_footer else "")
-            no_suggestions_message = ("No suggestions found in the successfully analyzed chunks."
-                                      if empty_coverage_footer else "No suggestions found to improve this PR.")
+            no_suggestions_message = (t("improve.no_suggestions_in_chunks_inline")
+                                      if empty_coverage_footer else t("improve.no_suggestions"))
             pr_body = no_suggestions_message + empty_coverage_footer
             if self.progress_response:
                 if not _edit_comment_safely(self.git_provider, self.progress_response, pr_body):
@@ -2180,11 +2181,11 @@ class PRCodeSuggestions:
             pr_body = f"{format_pr_code_suggestions_header()}\n\n"
 
             if len(data.get('code_suggestions', [])) == 0:
-                pr_body += "No suggestions found to improve this PR."
+                pr_body += t("improve.no_suggestions")
                 return pr_body
 
             if get_settings().config.is_auto_command:
-                pr_body += "Explore these optional code suggestions:\n\n"
+                pr_body += f"{t('improve.optional_intro')}\n\n"
 
             language_extension_map_org = get_settings().language_extension_map_org
             extension_to_language = {}
@@ -2193,12 +2194,13 @@ class PRCodeSuggestions:
                     extension_to_language[ext] = language
 
             pr_body += "<table>"
-            header = "Suggestion"
+            header = t("improve.suggestion")
             delta = 66
             header += "&nbsp; " * delta
             pr_body += (
-                f"""<thead><tr><td><strong>Category</strong></td><td align=left><strong>{header}</strong>"""
-                f"""</td><td align=center><strong>Impact</strong></td></tr>"""
+                f"""<thead><tr><td><strong>{t('improve.category')}</strong></td>"""
+                f"""<td align=left><strong>{header}</strong>"""
+                f"""</td><td align=center><strong>{t('improve.impact')}</strong></td></tr>"""
             )
             pr_body += """<tbody>"""
             suggestions_labels = dict()
@@ -2216,7 +2218,7 @@ class PRCodeSuggestions:
 
             if not suggestions_labels:
                 pr_body = f"{format_pr_code_suggestions_header()}\n\n"
-                pr_body += "No suggestions found to improve this PR."
+                pr_body += t("improve.no_suggestions")
                 return pr_body
 
             # sort suggestions_labels by the suggestion with the highest score
@@ -2289,8 +2291,9 @@ class PRCodeSuggestions:
 {example_code.rstrip()}
 """
                     if suggestion.get('score_why'):
-                        pr_body += f"<details><summary>Suggestion importance[1-10]: {suggestion['score']}</summary>\n\n"
-                        pr_body += f"__\n\nWhy: {suggestion['score_why']}\n\n"
+                        pr_body += (f"<details><summary>{t('improve.importance')}[1-10]: "
+                                    f"{suggestion['score']}</summary>\n\n")
+                        pr_body += f"__\n\n{t('improve.why')}: {suggestion['score_why']}\n\n"
                         pr_body += "</details>"
 
                     pr_body += "</details>"
@@ -2320,12 +2323,12 @@ class PRCodeSuggestions:
     def get_score_str(self, score: int) -> str:
         th_high = _as_threshold("pr_code_suggestions.new_score_mechanism_th_high", 9, 0)
         if score >= th_high:
-            return "High"
+            return t("improve.high")
         th_medium = _as_threshold("pr_code_suggestions.new_score_mechanism_th_medium", 7, 0)
         if score >= th_medium:
-            return "Medium"
+            return t("improve.medium")
         else:  # score < 7
-            return "Low"
+            return t("improve.low")
 
     async def self_reflect_on_suggestions(self,
                                           suggestion_list: list,
