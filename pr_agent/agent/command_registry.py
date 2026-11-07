@@ -1,6 +1,6 @@
 """One registry for every PR-Agent command and its aliases.
 
-Each entry maps one accepted command spelling to its canonical name, the tool
+Each entry maps one accepted command spelling to the tool
 that runs it, and the per-command facts the entry points need, so no entry
 point keeps its own copy of the alias lists (see issue #4723). Before this
 module, the same names were repeated in ``command2class``
@@ -16,8 +16,7 @@ five canonical actions are a pinned API contract
 so accepting aliases there is a separate decision for the maintainers.
 
 Facts, per spelling:
-- ``canonical`` names the tool family the spelling belongs to. Dispatch still
-  uses the raw spelling: ``auto_review`` runs the reviewer with
+- Dispatch still uses the raw spelling: ``auto_review`` runs the reviewer with
   ``is_auto=True`` and ``answer`` runs it with ``is_answer=True``
   (``pr_agent/agent/pr_agent.py``).
 - ``check_run`` is the name the tool passes to ``_publish_check_run`` when
@@ -50,7 +49,6 @@ from pr_agent.tools.pr_update_changelog import PRUpdateChangelog
 class CommandSpec:
     """Facts about one accepted command spelling."""
 
-    canonical: str
     tool: type
     check_run: str | None = None
     takes_comment_id: bool = False
@@ -59,42 +57,42 @@ class CommandSpec:
 
 
 COMMAND_SPECS: dict[str, CommandSpec] = {
-    "auto_review": CommandSpec("review", PRReviewer, plain_diff_markdown=True),
-    "answer": CommandSpec("answer", PRReviewer),
+    "auto_review": CommandSpec(PRReviewer, plain_diff_markdown=True),
+    "answer": CommandSpec(PRReviewer),
     "review": CommandSpec(
-        "review", PRReviewer, check_run="review", takes_comment_id=True,
+        PRReviewer, check_run="review", takes_comment_id=True,
         plain_diff_markdown=True, json_output="review",
     ),
     "review_pr": CommandSpec(
-        "review", PRReviewer, check_run="review", takes_comment_id=True,
+        PRReviewer, check_run="review", takes_comment_id=True,
         plain_diff_markdown=True, json_output="review",
     ),
     "describe": CommandSpec(
-        "describe", PRDescription, check_run="describe",
+        PRDescription, check_run="describe",
         plain_diff_markdown=True, json_output="describe",
     ),
     "describe_pr": CommandSpec(
-        "describe", PRDescription, check_run="describe",
+        PRDescription, check_run="describe",
         plain_diff_markdown=True, json_output="describe",
     ),
     "improve": CommandSpec(
-        "improve", PRCodeSuggestions, check_run="suggestions", takes_comment_id=True,
+        PRCodeSuggestions, check_run="suggestions", takes_comment_id=True,
         plain_diff_markdown=True, json_output="improve",
     ),
     "improve_code": CommandSpec(
-        "improve", PRCodeSuggestions, check_run="suggestions", takes_comment_id=True,
+        PRCodeSuggestions, check_run="suggestions", takes_comment_id=True,
         plain_diff_markdown=True, json_output="improve",
     ),
-    "ask": CommandSpec("ask", PRQuestions, plain_diff_markdown=True),
-    "ask_question": CommandSpec("ask", PRQuestions, plain_diff_markdown=True),
-    "ask_line": CommandSpec("ask_line", PR_LineQuestions),
-    "update_changelog": CommandSpec("update_changelog", PRUpdateChangelog),
-    "config": CommandSpec("config", PRConfig, plain_diff_markdown=True),
-    "settings": CommandSpec("config", PRConfig, plain_diff_markdown=True),
-    "help": CommandSpec("help", PRHelpMessage, plain_diff_markdown=True),
-    "similar_issue": CommandSpec("similar_issue", PRSimilarIssue),
-    "add_docs": CommandSpec("add_docs", PRAddDocs),
-    "generate_labels": CommandSpec("generate_labels", PRGenerateLabels),
+    "ask": CommandSpec(PRQuestions, plain_diff_markdown=True),
+    "ask_question": CommandSpec(PRQuestions, plain_diff_markdown=True),
+    "ask_line": CommandSpec(PR_LineQuestions),
+    "update_changelog": CommandSpec(PRUpdateChangelog),
+    "config": CommandSpec(PRConfig, plain_diff_markdown=True),
+    "settings": CommandSpec(PRConfig, plain_diff_markdown=True),
+    "help": CommandSpec(PRHelpMessage, plain_diff_markdown=True),
+    "similar_issue": CommandSpec(PRSimilarIssue),
+    "add_docs": CommandSpec(PRAddDocs),
+    "generate_labels": CommandSpec(PRGenerateLabels),
     # SECURITY: "/help_docs" is temporarily disabled while the clone-target validation
     # fix is reviewed (see issue #2445). Re-enable by restoring `"help_docs": PRHelpDocs`
     # and its import once the hardening PR is merged.
