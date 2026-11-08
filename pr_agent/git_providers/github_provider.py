@@ -8,6 +8,7 @@ import random
 import re
 import time
 import traceback
+from datetime import UTC, datetime
 from itertools import islice
 from urllib.parse import quote, urlparse
 
@@ -124,6 +125,14 @@ def _review_comment_root_id(comment) -> int:
     # because GitHub omits that field on roots.
     payload = GithubObject.raw_data.fget(comment)
     return payload.get("in_reply_to_id") or comment.id
+
+
+def _ensure_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 class GithubProvider(GitProvider):
@@ -2566,6 +2575,319 @@ class GithubProvider(GitProvider):
             get_logger().exception(f"Failed to auto-approve, error: {e}")
             return False
 
+    def _get_pr_agent_check_names(self) -> set[str]:
+        names = {
+            self._check_run_name(cmd)
+            for cmd in (
+                "review",
+                "describe",
+                "improve",
+                "ask",
+                "reflect",
+                "test",
+                "similar_issue",
+                "checks",
+                "verdict",
+                "auto_review",
+                "review_pr",
+                "improve_code",
+                "ask_question",
+            )
+        }
+        if hasattr(self, "_check_run_ids"):
+            names.update(self._check_run_name(k) for k in self._check_run_ids)
+        return names
+
+    @staticmethod
+    def _is_current_action_run(run) -> bool:
+        current_run_id = os.environ.get("GITHUB_RUN_ID")
+        if not current_run_id:
+            return False
+        html_url = getattr(run, "html_url", "") or ""
+        details_url = getattr(run, "details_url", "") or ""
+        pattern = f"/actions/runs/{current_run_id}/"
+        if pattern in html_url or pattern in details_url:
+            return True
+        external_id = str(getattr(run, "external_id", "") or "")
+        return bool(
+            external_id and (external_id == str(current_run_id) or external_id.startswith(f"{current_run_id}_"))
+        )
+
+    def get_head_ci_status(self, sha: str | None = None) -> str | None:
+        """Return the head CI state for `sha` (or the PR head SHA if None).
+
+        Returns 'passed', 'failed', 'pending', 'none', or None if unsupported or on error.
+        """
+        try:
+            target_sha = sha or self.get_pr_head_sha()
+            if not target_sha:
+                return None
+
+            repo = getattr(self, "repo_obj", None)
+            if repo is None:
+                try:
+                    repo = self.get_repo()
+                except Exception:
+                    repo = None
+            if repo is None:
+                return None
+
+            commit = repo.get_commit(target_sha)
+            has_checks = False
+            has_failure = False
+            has_pending = False
+
+            # 1. Evaluate check runs
+            check_runs = None
+            if hasattr(commit, "get_check_runs"):
+                try:
+                    check_runs = commit.get_check_runs()
+                except (GithubException, RequestException) as e:
+                    get_logger().warning(f"Failed to fetch check runs for {target_sha}: {e}")
+                    return None
+
+            if check_runs is not None:
+                pr_agent_check_names = self._get_pr_agent_check_names()
+
+                for run in check_runs:
+                    # Ignore PR-Agent's own check runs to avoid self-blocking
+                    app = getattr(run, "app", None)
+                    app_slug = (getattr(app, "slug", "") or "").lower() if app else ""
+                    run_name = getattr(run, "name", "") or ""
+
+                    if app_slug in ("pr-agent", "pr_agent", "the-pr-agent"):
+                        continue
+                    if run_name in pr_agent_check_names:
+                        continue
+
+                    # Leave out the running GitHub Action job so it doesn't keep CI pending
+                    status = (getattr(run, "status", "") or "").lower()
+                    if self._is_current_action_run(run) and status != "completed":
+                        continue
+
+                    has_checks = True
+                    conclusion = getattr(run, "conclusion", None)
+                    conclusion = conclusion.lower() if isinstance(conclusion, str) else None
+
+                    if status != "completed" or conclusion is None or status in ("queued", "in_progress"):
+                        has_pending = True
+                    elif conclusion in ("failure", "timed_out", "cancelled", "action_required", "stale"):
+                        has_failure = True
+                    elif conclusion in ("success", "neutral", "skipped"):
+                        pass
+                    else:
+                        has_failure = True
+
+            # 2. Evaluate combined status API
+            combined_status = None
+            if hasattr(commit, "get_combined_status"):
+                try:
+                    combined_status = commit.get_combined_status()
+                except (GithubException, RequestException) as e:
+                    get_logger().warning(f"Failed to fetch combined status for {target_sha}: {e}")
+                    return None
+
+            if combined_status is not None:
+                total_count = getattr(combined_status, "total_count", 0) or 0
+                if total_count > 0:
+                    has_checks = True
+                    state = (getattr(combined_status, "state", "") or "").lower()
+                    if state in ("failure", "error"):
+                        has_failure = True
+                    elif state == "pending":
+                        has_pending = True
+                    elif state == "success":
+                        pass
+
+            if not has_checks:
+                return "none"
+            if has_failure:
+                return "failed"
+            if has_pending:
+                return "pending"
+            return "passed"
+        except Exception as e:
+            get_logger().warning(f"Failed to get head CI status: {e}")
+            return None
+
+    def is_head_stale_against_base(self) -> bool | None:
+        """Return whether any file in the PR changed on the base branch after the head's last CI run.
+
+        Returns True (stale), False (not stale), or None if unsupported or on error.
+        """
+        try:
+            pr = getattr(self, "pr", None)
+            if not pr:
+                return None
+
+            diff_files = self.get_diff_files()
+            if diff_files is None:
+                return None
+
+            pr_filenames = set(self.get_filtered_diff_file_names())
+            for f in diff_files:
+                fn = getattr(f, "filename", None)
+                if fn:
+                    pr_filenames.add(fn)
+                old_fn = getattr(f, "old_filename", None) or getattr(f, "previous_filename", None)
+                if old_fn:
+                    pr_filenames.add(old_fn)
+            if not pr_filenames:
+                return False
+
+            base = getattr(pr, "base", None)
+            base_ref = getattr(base, "ref", None)
+            if not base_ref:
+                return None
+
+            repo = getattr(self, "repo_obj", None)
+            if repo is None:
+                try:
+                    repo = self.get_repo()
+                except Exception:
+                    repo = None
+            if repo is None:
+                return None
+
+            # Determine reference timestamp: latest completed CI check or head commit timestamp
+            ref_dt = None
+            sha = self.get_pr_head_sha()
+            if sha:
+                try:
+                    commit = repo.get_commit(sha)
+                    if hasattr(commit, "get_check_runs"):
+                        pr_agent_check_names = self._get_pr_agent_check_names()
+
+                        for run in commit.get_check_runs():
+                            app = getattr(run, "app", None)
+                            app_slug = (getattr(app, "slug", "") or "").lower() if app else ""
+                            run_name = getattr(run, "name", "") or ""
+                            if app_slug in ("pr-agent", "pr_agent", "the-pr-agent"):
+                                continue
+                            if run_name in pr_agent_check_names:
+                                continue
+                            if self._is_current_action_run(run):
+                                continue
+
+                            run_dt = getattr(run, "completed_at", None) or getattr(run, "created_at", None)
+                            if run_dt:
+                                run_dt = _ensure_utc(run_dt)
+                                if ref_dt is None or run_dt > ref_dt:
+                                    ref_dt = run_dt
+                    if ref_dt is None:
+                        git_commit = getattr(commit, "commit", None)
+                        committer = getattr(git_commit, "committer", None)
+                        author = getattr(git_commit, "author", None)
+                        commit_dt = getattr(committer, "date", None) or getattr(author, "date", None)
+                        if commit_dt:
+                            ref_dt = _ensure_utc(commit_dt)
+                except Exception as e:
+                    get_logger().debug(f"Could not determine head reference timestamp: {e}")
+
+            if ref_dt is None:
+                return None
+
+            # Query base branch commits since the reference timestamp
+            base_commits = repo.get_commits(sha=base_ref, since=ref_dt)
+            stale = False
+            count = 0
+            truncated = False
+            for c in base_commits:
+                count += 1
+                if count > 50:
+                    truncated = True
+                    break
+                c_git = getattr(c, "commit", None)
+                c_committer = getattr(c_git, "committer", None)
+                c_author = getattr(c_git, "author", None)
+                c_dt = getattr(c_committer, "date", None) or getattr(c_author, "date", None)
+                if c_dt:
+                    c_dt = _ensure_utc(c_dt)
+                    if c_dt <= ref_dt:
+                        continue
+
+                c_files = getattr(c, "files", None) or []
+                for f in c_files:
+                    fn = getattr(f, "filename", None)
+                    prev_fn = getattr(f, "previous_filename", None)
+                    if (fn and fn in pr_filenames) or (prev_fn and prev_fn in pr_filenames):
+                        stale = True
+                        break
+                if stale:
+                    break
+
+            if stale:
+                return True
+            if truncated:
+                get_logger().warning("Base commit history reached pagination limit (50); failing closed as unknown")
+                return None
+            return False
+        except Exception as e:
+            get_logger().warning(f"Failed to check head staleness: {e}")
+            return None
+
+    def are_all_authors_human(self) -> bool | None:
+        """Return whether the PR author and every commit author are human (not bot accounts).
+
+        Returns True (all human), False (contains bot account), or None if unsupported or on error.
+        """
+        try:
+            pr = getattr(self, "pr", None)
+            if not pr:
+                return None
+
+            # 1. Verify PR author
+            pr_user = getattr(pr, "user", None)
+            if pr_user is None:
+                return False
+
+            user_type = getattr(pr_user, "type", "") or ""
+            user_login = getattr(pr_user, "login", "") or ""
+            if user_type.lower() != "user" or user_login.lower().endswith("[bot]") or "[bot]" in user_login.lower():
+                return False
+
+            # 2. Verify all commit authors
+            pr_commits_count = getattr(pr, "commits", None)
+            if pr_commits_count is not None and isinstance(pr_commits_count, int) and pr_commits_count > 250:
+                get_logger().warning("PR commit count exceeds GitHub limit of 250; failing closed as unknown")
+                return None
+
+            commits = pr.get_commits()
+            commit_count = 0
+            for c in commits:
+                commit_count += 1
+                if commit_count > 250:
+                    get_logger().warning("PR commits exceeded 250 limit; failing closed as unknown")
+                    return None
+
+                author = getattr(c, "author", None)
+                if author is None:
+                    # Unlinked GitHub user or unknown author
+                    return False
+
+                author_type = getattr(author, "type", "") or ""
+                author_login = getattr(author, "login", "") or ""
+                if (
+                    author_type.lower() != "user"
+                    or author_login.lower().endswith("[bot]")
+                    or "[bot]" in author_login.lower()
+                ):
+                    return False
+
+                git_commit = getattr(c, "commit", None)
+                if git_commit:
+                    git_author = getattr(git_commit, "author", None)
+                    if git_author:
+                        email = getattr(git_author, "email", "") or ""
+                        name = getattr(git_author, "name", "") or ""
+                        if email.lower().endswith("[bot]@users.noreply.github.com") or name.lower().endswith("[bot]"):
+                            return False
+
+            return True
+        except Exception as e:
+            get_logger().warning(f"Failed to check if authors are human: {e}")
+            return None
+
     def calc_pr_statistics(self, pull_request_data: dict):
             return {}
 
@@ -2619,7 +2941,7 @@ class GithubProvider(GitProvider):
                                 min_distance = 0
                                 patch_range_min = patch_range
                                 break
-                            elif d1 * d2 <= 0:  # comment is possibly inside the hunk
+                            else:  # comment overlaps, encloses or lies near the hunk
                                 d1_clip = abs(min(0, d1))
                                 d2_clip = abs(min(0, d2))
                                 d = max(d1_clip, d2_clip)

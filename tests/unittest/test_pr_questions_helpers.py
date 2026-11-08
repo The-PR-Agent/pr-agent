@@ -130,6 +130,7 @@ def raw_question_tools(monkeypatch):
         (r'/ask "What does \"quoted\" mean in C:\\src?"', 'What does "quoted" mean in C:\\src?'),
         (r'/ask "What\'s changed?"', r"What\'s changed?"),
         (r"/ask What\'s changed?", "What's changed?"),
+        ("/ask Why this change? --comment_id=discussion-42", "Why this change?"),
     ],
 )
 async def test_raw_ask_preserves_question_through_rendering(raw_question_tools, command_request, expected):

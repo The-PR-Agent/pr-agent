@@ -51,7 +51,7 @@ On providers that support GitHub-Flavored Markdown this appends a collapsible se
   - anthropic/claude-sonnet-5: $0.01 USD
 ```
 
-`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. The `Tokens` line appears only when the model provider reports usage. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default.
+`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. A fallback run also adds a visible one-line note naming the fallback model, even when `config.output_run_details` is off, because its output quality can differ from the configured model. The note appears wherever the section below can appear. The `Tokens` line appears only when the model provider reports usage. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default.
 
 `Estimated API cost` is derived synchronously from each completed LiteLLM response and its finalized usage. LiteLLM can account for cache reads, cache writes, reasoning tokens, and provider-specific usage categories when the response and its pricing data include them. Multi-model runs show a compact breakdown of the known costs. Exact `Decimal` values are retained for aggregation, while public currency output is rounded to two decimal places; a tiny positive value that would round to zero is shown as `<$0.01` instead of `$0.00`. If only some successful calls can be priced, the total is marked `partial` with the priced-call count; if none can be priced, the line reports `unavailable`. Missing pricing is never rendered as `$0`.
 
@@ -216,14 +216,19 @@ publish_review_as_thread = true
 
 ## Reply to the triggering GitLab discussion
 
-By default, `/review` and `/improve` publish a new comment. To reply inside the GitLab discussion that triggered the command, enable (default: `false`):
+By default, `/review`, `/improve`, and `/ask` publish new comments. To reply inside the GitLab discussion
+that triggered the command, enable (default: `false`):
 
 ```toml
 [gitlab]
 reply_to_trigger_comment = true
 ```
 
-This is opt-in and GitLab-only. The webhook supplies the discussion ID for top-level `/review` and `/improve` notes. If the ID is unavailable or the reply fails, PR-Agent falls back to a normal note so output is not lost. GitHub Conversation comments do not expose a compatible reply endpoint.
+This is opt-in and GitLab-only. The webhook supplies the discussion ID for top-level `/review` and `/improve`
+notes, and for `/ask` (including `/ask_question`) in top-level notes or existing discussions. Diff-line `/ask`
+still uses `/ask_line` and its existing reply behavior. If the ID is unavailable or the reply fails, PR-Agent
+falls back to a normal note so output is not lost. GitHub Conversation comments do not expose a compatible
+reply endpoint.
 
 With `persistent_comment=true` (the default for both tools), a rerun updates the earlier result where it was first posted, which may be a different discussion; `/review` also posts a short link to it in the new command's discussion.
 
@@ -672,6 +677,28 @@ ignore_pr_labels = ["do-not-merge"]
 ```
 
 Where the `ignore_pr_labels` is a list of labels that when present in the PR, the PR will be ignored.
+
+### Processing only PRs with selected labels
+
+To opt in only selected PRs or MRs to PR-Agent, specify one or more label names:
+
+```toml
+[config]
+include_pr_labels = ["ai-review"]
+```
+
+When the list is nonempty, a PR must have **at least one** matching label to be processed.
+Names are matched exactly (case-sensitive), not as regular expressions. The default empty
+list leaves all PRs eligible. If a label appears in both `include_pr_labels` and
+`ignore_pr_labels`, the exclusion wins. This applies to automatic runs, comment commands,
+and CLI `--pr_url` requests, just like the existing exclusion rules. Repository settings
+may select the labels; individual comment or CLI command arguments cannot override this gate.
+
+If the labels cannot be read, PR-Agent skips the request while this opt-in gate is enabled;
+GitHub, GitLab, Gitea and Azure DevOps supply labels through their PR/MR APIs. Inputs
+without hosted PR labels, including Bitbucket Cloud/Server, local, and plain-diff mode,
+will not pass this gate. The setting selects eligible PRs; it does not itself trigger
+a run when a label is assigned after the PR was opened.
 
 ### Ignoring PRs from specific users
 

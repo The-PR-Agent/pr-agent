@@ -24,7 +24,7 @@ from pr_agent.algo.pr_processing import (
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
 from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure
-from pr_agent.algo.run_output import push_outputs_async, show_relevant_configurations, show_run_details
+from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import (
@@ -239,9 +239,8 @@ class PRDescription:
             if get_settings().get('config', {}).get('output_relevant_configurations', False):
                 pr_body += show_relevant_configurations(relevant_section='pr_description')
 
-            # Output the agent run details (model, tokens, time cost) if enabled
-            if get_settings().get('config', {}).get('output_run_details', False):
-                pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
+            # Output the fallback-model note, and the agent run details (model, tokens, time cost) if enabled
+            pr_body = append_run_details(pr_body, self.git_provider)
 
             if get_settings().config.publish_output:
                 # Emit to the optional external sinks before touching the provider, so a sink

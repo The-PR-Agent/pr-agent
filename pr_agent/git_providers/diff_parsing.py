@@ -90,6 +90,8 @@ def parse_unified_diff(diff_text: str) -> list[FilePatchInfo]:
                 filename=filename,
                 edit_type=edit_type,
                 old_filename=old_filename,
+                num_plus_lines=pf.added,
+                num_minus_lines=pf.removed,
             )
         )
     return files

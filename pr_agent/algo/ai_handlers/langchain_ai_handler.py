@@ -131,4 +131,4 @@ class LangChainOpenAIHandler(BaseAiHandler):
             raise
         except Exception as e:
             get_logger().warning(f"Unknown error during LLM inference: {e}")
-            raise openai.APIError from e
+            raise

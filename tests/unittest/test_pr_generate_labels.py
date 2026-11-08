@@ -1,7 +1,9 @@
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pr_agent.algo.review_json_output import review_json_output_path
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import (
@@ -88,6 +90,99 @@ async def test_user_label_changes_during_prediction_are_preserved(
 
 
 @pytest.mark.asyncio
+@patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
+@patch("pr_agent.tools.pr_generate_labels.get_settings")
+async def test_json_contains_generated_labels_without_existing_user_labels(
+        mock_get_settings, _mock_retry, tmp_path):
+    mock_get_settings.return_value.config.publish_output = True
+    provider = _provider(supports_labels=True)
+    provider.get_pr_labels.return_value = ["triaged"]
+    tool = _tool(provider)
+    tool.data = {"labels": ["Bug fix", "invalid-custom-label"]}
+    init_run_details()
+    output = tmp_path / "labels.json"
+    token = review_json_output_path.set(str(output))
+    try:
+        with patch("pr_agent.tools.pr_generate_labels.get_user_labels", return_value=["triaged"]):
+            await tool.run()
+    finally:
+        review_json_output_path.reset(token)
+
+    assert json.loads(output.read_text(encoding="utf-8")) == {"labels": ["Bug fix"], "usage": {}}
+    provider.publish_labels.assert_called_once_with(["Bug fix", "triaged"])
+
+
+@pytest.mark.asyncio
+@patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
+@patch("pr_agent.tools.pr_generate_labels.get_settings")
+async def test_json_writes_empty_labels_when_generated_values_are_rejected(
+        mock_get_settings, _mock_retry, tmp_path):
+    mock_get_settings.return_value.config.publish_output = True
+    provider = _provider(supports_labels=True)
+    tool = _tool(provider)
+    tool.data = {"labels": ["unrecognized-label"]}
+    tool._prepare_labels.return_value = []
+    output = tmp_path / "labels.json"
+    token = review_json_output_path.set(str(output))
+    try:
+        await tool.run()
+    finally:
+        review_json_output_path.reset(token)
+
+    assert json.loads(output.read_text(encoding="utf-8")) == {"labels": [], "usage": {}}
+    provider.get_pr_labels.assert_not_called()
+    provider.publish_labels.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["read", "write"])
+@patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
+@patch("pr_agent.tools.pr_generate_labels.get_settings")
+async def test_json_is_available_when_provider_label_publication_fails(
+        mock_get_settings, _mock_retry, failure, tmp_path):
+    mock_get_settings.return_value.config.publish_output = True
+    provider = _provider(supports_labels=True)
+    if failure == "read":
+        provider.get_pr_labels.return_value = None
+    else:
+        provider.publish_labels.return_value = False
+    output = tmp_path / "labels.json"
+    init_run_details()
+    token = review_json_output_path.set(str(output))
+    try:
+        with pytest.raises(RuntimeError, match="labels"):
+            await _tool(provider).run()
+    finally:
+        review_json_output_path.reset(token)
+
+    assert json.loads(output.read_text(encoding="utf-8")) == {"labels": ["Bug fix"], "usage": {}}
+    assert command_failed() is True
+    provider.remove_initial_comment.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
+@patch("pr_agent.tools.pr_generate_labels.get_settings")
+async def test_json_write_failure_does_not_publish_permanent_labels(
+        mock_get_settings, _mock_retry, tmp_path):
+    mock_get_settings.return_value.config.publish_output = True
+    provider = _provider(supports_labels=True)
+    output = tmp_path / "missing" / "labels.json"
+    init_run_details()
+    token = review_json_output_path.set(str(output))
+    try:
+        with pytest.raises(OSError):
+            await _tool(provider).run()
+    finally:
+        review_json_output_path.reset(token)
+
+    provider.get_pr_labels.assert_not_called()
+    provider.publish_labels.assert_not_called()
+    provider.publish_comment.assert_called_once_with("Preparing PR labels...", is_temporary=True)
+    provider.remove_initial_comment.assert_called_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["read", "write"])
 @pytest.mark.parametrize("propagate_errors", [False, True])
 @patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
@@ -168,7 +263,7 @@ async def test_incomplete_provider_diff_is_re_raised_after_temporary_comment_cle
 
 
 @pytest.mark.asyncio
-async def test_run_skips_without_recording_failure_when_all_changed_files_are_filtered(monkeypatch):
+async def test_run_skips_without_recording_failure_when_all_changed_files_are_filtered(monkeypatch, tmp_path):
     async def prepare_once(prepare_fn, **_kwargs):
         await prepare_fn("primary-model")
 
@@ -193,13 +288,17 @@ async def test_run_skips_without_recording_failure_when_all_changed_files_are_fi
     settings.config.publish_output = True
     settings.set("config.propagate_tool_errors", False)
     init_run_details()
+    output = tmp_path / "labels.json"
+    token = review_json_output_path.set(str(output))
     try:
         await tool.run()
     finally:
+        review_json_output_path.reset(token)
         settings.config.publish_output = previous["publish_output"]
         settings.set("config.propagate_tool_errors", previous["propagate_tool_errors"])
 
     assert command_failed() is False
+    assert json.loads(output.read_text(encoding="utf-8")) == {"labels": [], "usage": {}}
     tool._get_prediction.assert_not_awaited()
     provider.publish_comment.assert_called_once_with("Preparing PR labels...", is_temporary=True)
     provider.publish_labels.assert_not_called()

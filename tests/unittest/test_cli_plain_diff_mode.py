@@ -1,6 +1,7 @@
 import builtins
 import io
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 from git import Repo
@@ -205,7 +206,9 @@ def test_missing_diff_file_fails_fast(tmp_path, monkeypatch, capsys):
     assert "Could not read --diff-file" in err
 
 
-@pytest.mark.parametrize("command", ["review", "review_pr", "improve", "improve_code", "describe", "describe_pr"])
+@pytest.mark.parametrize("command", [
+    "review", "review_pr", "improve", "improve_code", "describe", "describe_pr", "generate_labels",
+])
 def test_json_output_accepts_pr_review(command, monkeypatch, tmp_path):
     from pr_agent.algo.review_json_output import review_json_output_path
 
@@ -257,7 +260,8 @@ def test_json_output_rejects_non_review_pr_command(monkeypatch, capsys):
     _fail_if_agent_constructed(monkeypatch)
     with pytest.raises(SystemExit, match="2"):
         run(inargs=["--pr_url", "https://example/pr/1", "--json-output", "out.json", "ask"])
-    assert "--json-output is only supported for review, improve, or describe commands" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "--json-output is only supported for review, improve, describe, or generate_labels commands" in error
 
 
 @pytest.mark.parametrize("command", ["review", "review_pr", "describe", "improve"])
@@ -444,6 +448,7 @@ pr_files:
     markdown = output.read_text(encoding="utf-8")
     assert markdown.startswith(f"{expected_title}\n\n")
     assert "Update the second line." in markdown
+    assert "+1/-1" in markdown
     assert capsys.readouterr().out == markdown + "\n"
 
 
@@ -628,6 +633,58 @@ def test_plain_diff_ask_keeps_output_after_command_settings(monkeypatch, tmp_pat
     assert "The changed line is correct." in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(("title", "description"), [
+    ("Fix: invoice approvals", "Acceptance criteria: require approval"),
+    ("true", "123"),
+    ("DEL\x7f title", "C1\x80\x9f description"),
+    ("繁體中文標題", "內容：需審核"),
+    ("Fix 🚀", "Ship 🎯 when ready"),
+])
+def test_plain_diff_cli_preserves_context_text_in_prompts(monkeypatch, tmp_path, title, description):
+    captured = {}
+
+    async def answer(self, model, system, user, temperature=0.2, **kwargs):
+        captured["title"] = get_settings().get("plain_diff.title")
+        captured["description"] = get_settings().get("plain_diff.description")
+        captured["prompt"] = system + "\n" + user
+        return "The changed line is correct.", "stop"
+
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion", answer,
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+
+    run(inargs=["--stdin", "ask", "Explain.",
+                f"--plain_diff.title={title}", f"--plain_diff.description={description}"])
+
+    assert captured["title"] == title
+    assert captured["description"] == description
+    assert title in captured["prompt"]
+    assert description in captured["prompt"]
+
+
+def test_plain_diff_cli_encodes_context_with_issue_target(monkeypatch):
+    captured = {}
+
+    class FakeAgent:
+        async def handle_request(self, target, request, notify=None):
+            captured.update(target=target, request=request)
+            return True
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+
+    run(inargs=["--stdin", "--issue_url", "https://example/issue/1", "ask",
+                "--plain_diff.title=true", "--plain_diff.description=Acceptance: ready"])
+
+    assert captured == {
+        "target": "https://example/issue/1",
+        "request": ["ask", '--plain_diff.title="true"',
+                    '--plain_diff.description="Acceptance: ready"'],
+    }
+
+
 def test_plain_diff_ask_applies_command_ignore_filter(monkeypatch):
     diff = (
         "diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-old\n+new\n"
@@ -725,7 +782,8 @@ def test_json_output_accepts_review_aliases(command, input_mode, monkeypatch, tm
 
 
 @pytest.mark.parametrize("command", [
-    *_NON_MARKDOWN_COMMANDS, "auto_review", "ask", "ask_question", "config", "settings", "help",
+    *(name for name in _NON_MARKDOWN_COMMANDS if name != "generate_labels"),
+    "auto_review", "ask", "ask_question", "config", "settings", "help",
 ])
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])
 def test_json_output_rejects_non_review_commands_before_read(
@@ -737,7 +795,62 @@ def test_json_output_rejects_non_review_commands_before_read(
         run(inargs=[*input_args, "--json-output", "out.json", command])
 
     assert exc_info.value.code == 2
-    assert "--json-output is only supported for review, improve, or describe commands" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "--json-output is only supported for review, improve, describe, or generate_labels commands" in error
+
+
+@pytest.mark.parametrize("input_mode", ["stdin", "file"])
+def test_plain_diff_generate_labels_writes_filtered_json(input_mode, monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+    input_args = _valid_input_args(input_mode, monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_generate_labels.PRGenerateLabels._get_prediction",
+        AsyncMock(return_value="labels: [Bug fix, not-a-supported-label]"),
+    )
+    output = tmp_path / "labels.json"
+
+    assert run(inargs=[*input_args, "--json-output", str(output), "generate_labels"]) is None
+
+    result = json.loads(output.read_text(encoding="utf-8"))
+    assert result["labels"] == ["Bug fix"]
+    assert isinstance(result["usage"], dict)
+    assert "## PR Labels:" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("mode", ["hosted", "plain_diff"])
+@pytest.mark.parametrize("json_requested", [False, True])
+def test_generate_labels_policy_skip_only_fails_when_json_is_required(
+    mode, json_requested, monkeypatch, tmp_path, capsys,
+):
+    from pr_agent.agent.request_policy import RequestOutcome
+
+    class SkippedAgent:
+        async def handle_request(self, target, request, notify=None):
+            return RequestOutcome.SKIPPED
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", SkippedAgent)
+    args = ["--pr_url", "https://example/pr/1"] if mode == "hosted" else ["--stdin"]
+    if mode == "plain_diff":
+        monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+    output = tmp_path / "labels.json"
+    if json_requested:
+        args.extend(["--json-output", str(output)])
+
+    assert run(inargs=[*args, "generate_labels"]) == (1 if json_requested else None)
+    assert not output.exists()
+    assert "Usage:" not in capsys.readouterr().out
+
+
+def test_plain_diff_generate_labels_failure_does_not_write_success_json(monkeypatch, tmp_path):
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_generate_labels.retry_with_fallback_models",
+        AsyncMock(side_effect=RuntimeError("model unavailable")),
+    )
+    output = tmp_path / "labels.json"
+
+    assert run(inargs=["--stdin", "--json-output", str(output), "generate_labels"]) == 1
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(

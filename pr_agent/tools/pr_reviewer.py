@@ -19,6 +19,7 @@ from pr_agent.algo.comment_identity import (
     hidden_marker_forms,
     render_hidden_marker,
 )
+from pr_agent.algo.deterministic_risk import build_risk_checks
 from pr_agent.algo.findings import Finding
 from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import (
@@ -57,10 +58,10 @@ from pr_agent.algo.review_json_output import review_json_output_path, write_revi
 from pr_agent.algo.review_merge import all_key_issues, chunk_hit_findings_limit, merge_review_chunks
 from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure, record_model_used
 from pr_agent.algo.run_output import (
+    append_run_details,
     github_action_output,
     push_outputs_async,
     show_relevant_configurations,
-    show_run_details,
 )
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.skills_loader import get_skills_context
@@ -175,6 +176,11 @@ _STATE_BLOCK_SIZE = "state_size"
 def _is_structural_reach_key(key) -> bool:
     """Whether a review key would render like the deterministic structural reach row, whatever its separators."""
     return re.sub(r"[^a-z0-9]", "", str(key).lower()) == "structuralreach"
+
+
+def _is_risk_checks_key(key) -> bool:
+    """Whether a review key would render like the deterministic risk checks row, whatever its separators."""
+    return re.sub(r"[^a-z0-9]", "", str(key).lower()) in ("riskchecks", "deterministicrisk")
 
 
 class PRReviewer:
@@ -1326,7 +1332,7 @@ class PRReviewer:
         if isinstance(data, dict) and isinstance(data.get("review"), dict):
             if not getattr(self, "vars", {}).get("require_failure_modes", False):
                 data["review"].pop("failure_modes", None)
-            for key in [k for k in data["review"] if _is_structural_reach_key(k)]:
+            for key in [k for k in data["review"] if _is_structural_reach_key(k) or _is_risk_checks_key(k)]:
                 data["review"].pop(key)
         if self.prediction_data is None:
             self._validate_review_schema(data)
@@ -1345,6 +1351,26 @@ class PRReviewer:
         structural_reach = build_structural_reach(resolve_artifact_path)
         if structural_reach:
             data["review"] = {"structural_reach": structural_reach, **data["review"]}
+
+        unfiltered_files = None
+        if hasattr(self.git_provider, "get_pr_file_paths"):
+            try:
+                unfiltered_files = self.git_provider.get_pr_file_paths()
+            except Exception:
+                unfiltered_files = None
+        if not unfiltered_files and hasattr(self.git_provider, "get_files"):
+            try:
+                unfiltered_files = self.git_provider.get_files()
+            except Exception:
+                unfiltered_files = None
+
+        filtered_names = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
+        if filtered_names:
+            unfiltered_files = list(unfiltered_files or []) + list(filtered_names)
+
+        risk_checks = build_risk_checks(self.git_provider.get_diff_files(), unfiltered_files=unfiltered_files)
+        if risk_checks and risk_checks.get("has_findings"):
+            data["review"] = {"risk_checks": risk_checks, **data["review"]}
 
         structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
         if callable(structured_publisher) or review_json_output_path.get():
@@ -1430,9 +1456,8 @@ class PRReviewer:
         if get_settings().get('config', {}).get('output_relevant_configurations', False):
             markdown_text += show_relevant_configurations(relevant_section='pr_reviewer')
 
-        # Output the agent run details (model, tokens, time cost) if enabled
-        if get_settings().get('config', {}).get('output_run_details', False):
-            markdown_text += show_run_details(self.git_provider.is_supported("gfm_markdown"))
+        # Output the fallback-model note, and the agent run details (model, tokens, time cost) if enabled
+        markdown_text = append_run_details(markdown_text, self.git_provider)
 
         if self._review_state_result is not None:
             state_result = self._review_state_result
