@@ -297,7 +297,40 @@ async def test_a_diff_that_fits_in_one_chunk_is_reviewed_by_the_single_call_flow
     assert reviewer.prediction == CHUNK_A
     assert reviewer.prediction_data is None
     assert reviewer.review_chunk_count == 1
-    assert reviewer.remaining_files_list == ["b.py"]
+    assert reviewer.patches_diff == "only-chunk"
+    assert reviewer.remaining_files_list == []
+    assert reviewer.partial_files_list == ["unused.py"]
+
+
+@pytest.mark.asyncio
+async def test_larger_fallback_uses_fresh_full_diff_after_primary_single_clipped_chunk(chunking_enabled):
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(side_effect=[RuntimeError("primary failed"), CHUNK_A])
+    clipped_chunk = "## File: 'large.py'\n+first change\n"
+    full_diff = clipped_chunk + "+change beyond primary budget\n"
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", side_effect=[
+            PreparedPRDiff("only filenames", ["large.py"]),
+            PreparedPRDiff(full_diff, []),
+        ]) as get_diff,
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+              return_value=PackedPRDiffs([clipped_chunk], [], ["large.py"])) as get_multi,
+    ):
+        with pytest.raises(RuntimeError, match="primary failed"):
+            await reviewer._prepare_prediction("primary")
+        assert reviewer.patches_diff == clipped_chunk
+        assert reviewer.partial_files_list == ["large.py"]
+        await reviewer._prepare_prediction("fallback")
+
+    assert get_diff.call_count == 2
+    get_multi.assert_called_once()
+    assert [call.args for call in reviewer._get_prediction.await_args_list] == [
+        ("primary",), ("fallback",),
+    ]
+    assert reviewer.patches_diff == full_diff
+    assert reviewer.prediction == CHUNK_A
+    assert reviewer.remaining_files_list == []
     assert reviewer.partial_files_list == []
 
 

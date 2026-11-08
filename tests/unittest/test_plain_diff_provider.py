@@ -12,6 +12,7 @@ from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
 # Diff-mode settings keys these tests mutate on the process-wide singleton.
 _SETTINGS_KEYS = ["plain_diff.content", "plain_diff.output_path",
+                  "plain_diff.title", "plain_diff.description",
                   "config.git_provider", "config.publish_output", "ignore.glob", "ignore.regex"]
 
 
@@ -67,6 +68,52 @@ def test_get_diff_files(cfg):
     assert len(files) == 1
     assert files[0].filename == "foo.py"
     assert files[0].edit_type == EDIT_TYPE.MODIFIED
+
+
+def test_optional_pr_context_updates_after_provider_creation(cfg):
+    cfg("plain_diff.content", DIFF)
+    cfg("plain_diff.title", None)
+    cfg("plain_diff.description", None)
+    provider = PlainDiffGitProvider(None)
+
+    assert provider.pr.title == provider.get_pr_title() == "Local diff review"
+    assert provider.get_pr_description_full() == ""
+    assert provider.get_user_description() == ""
+
+    provider.pr.title = "Manually changed title"
+    assert provider.pr.title == "Manually changed title"
+
+    cfg("plain_diff.title", "Require approval for invoices")
+    cfg("plain_diff.description", "Invoices above the limit need manager approval.")
+
+    assert provider.pr.title == provider.get_pr_title() == "Require approval for invoices"
+    assert provider.get_pr_description_full() == "Invoices above the limit need manager approval."
+    assert provider.get_user_description() == "Invoices above the limit need manager approval."
+
+    caller_markdown = "### **Description**\nRequire manager approval before payment."
+    cfg("plain_diff.description", caller_markdown)
+    assert provider.get_user_description() == caller_markdown
+    assert provider.get_request_policy_metadata({"title"})["title"] is None
+
+    caller_walkthrough = "Require displaying the label File Walkthrough in the UI"
+    cfg("plain_diff.description", caller_walkthrough)
+    assert provider.get_pr_description(split_changes_walkthrough=True) == (caller_walkthrough, [])
+
+
+@pytest.mark.parametrize("invalid", ["", "  ", 123, True, ["not text"]])
+def test_invalid_pr_context_uses_defaults(cfg, invalid):
+    cfg("plain_diff.content", DIFF)
+    cfg("plain_diff.title", "Previously configured title")
+    cfg("plain_diff.description", "Previously configured description")
+    provider = PlainDiffGitProvider(None)
+    assert provider.pr.title == "Previously configured title"
+
+    cfg("plain_diff.title", invalid)
+    cfg("plain_diff.description", invalid)
+
+    assert provider.pr.title == provider.get_pr_title() == "Local diff review"
+    assert provider.get_pr_description_full() == ""
+    assert provider.get_user_description() == ""
 
 
 def test_lf_framed_diff_preserves_crlf_payload(cfg, monkeypatch):
@@ -258,6 +305,19 @@ def test_publish_comment_to_file(cfg, tmp_path):
     provider = PlainDiffGitProvider(None)
     provider.publish_comment("# Review\nsaved")
     assert "saved" in out.read_text(encoding="utf-8")
+
+
+def test_publish_comment_strips_terminal_controls_from_stdout_and_file(cfg, capsys, tmp_path):
+    out = tmp_path / "review.md"
+    cfg("plain_diff.content", DIFF)
+    cfg("plain_diff.output_path", str(out))
+    provider = PlainDiffGitProvider(None)
+
+    provider.publish_comment("## Review\r\n\t\x1b[31mtext\x1b[0m\r\x08\x07\x00\nNext line")
+
+    expected = "## Review\n\t[31mtext[0m\nNext line"
+    assert capsys.readouterr().out == expected + "\n"
+    assert out.read_text(encoding="utf-8") == expected
 
 
 def test_publish_comment_survives_stdout_that_cannot_encode(cfg, tmp_path, monkeypatch):

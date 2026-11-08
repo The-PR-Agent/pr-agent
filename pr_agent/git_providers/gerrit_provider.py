@@ -495,7 +495,10 @@ class GerritProvider(GitProvider):
         if capability in [
             # 'get_issue_comments',
             'get_labels',
-            'gfm_markdown'
+            'gfm_markdown',
+            'head_ci_status',
+            'head_staleness',
+            'author_human_check',
         ]:
             return False
         return True

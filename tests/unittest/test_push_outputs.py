@@ -24,6 +24,17 @@ class TestOutputSinkPreflight:
         assert isinstance(cfg, dict) and isinstance(cfg.get("channels"), list)
         assert output_sinks._check_output_sinks(cfg)[0] is True
 
+    @pytest.mark.parametrize("tools, valid", [
+        (["review", "ask"], True),
+        ("review, ask", True),
+        (["unknown"], False),
+        ("not-ask", False),
+        ([], False),
+    ])
+    def test_tool_selection_uses_supported_exact_names(self, tools, valid):
+        result = output_sinks._check_output_sinks({"enable": True, "channels": ["stdout"], "tools": tools})
+        assert result[0] is valid
+
     @pytest.mark.parametrize("channels, valid", [
         ("stdout", True),
         ("stdout,file", True),
@@ -103,6 +114,7 @@ def _reset_push_outputs():
     s = get_settings()
     s.set('PUSH_OUTPUTS.ENABLE', False)
     s.set('PUSH_OUTPUTS.CHANNELS', [])
+    s.set('PUSH_OUTPUTS.TOOLS', ['review', 'describe', 'improve'])
     s.set('PUSH_OUTPUTS.FILE_PATH', 'pr-agent-outputs/reviews.jsonl')
     s.set('PUSH_OUTPUTS.WEBHOOK_URL', '')
     s.set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', '')
@@ -112,6 +124,90 @@ def _reset_push_outputs():
 
 
 class TestPushOutputs:
+    def test_only_selected_tools_reach_configured_sinks(self, tmp_path):
+        out = tmp_path / 'outputs.jsonl'
+        s = get_settings()
+        s.set('PUSH_OUTPUTS.ENABLE', True)
+        s.set('PUSH_OUTPUTS.CHANNELS', ['file'])
+        s.set('PUSH_OUTPUTS.FILE_PATH', str(out))
+
+        push_outputs('ask', payload={'answer': 'Not enabled yet'})
+        push_outputs('review', payload={'a': 1})
+        s.set('PUSH_OUTPUTS.TOOLS', 'review, ask')
+        push_outputs('ask', payload={'answer': 'Enabled'})
+        push_outputs('describe', payload={'title': 'Not selected'})
+
+        assert [json.loads(line)['type'] for line in out.read_text().splitlines()] == ['review', 'ask']
+
+    @pytest.mark.parametrize("tools", [[], ["unknown"], "review, unknown", ["review", 42]])
+    def test_invalid_tool_selection_reports_configuration_error(self, monkeypatch, tmp_path, tools):
+        out = tmp_path / 'invalid.jsonl'
+        s = get_settings()
+        s.set('PUSH_OUTPUTS.ENABLE', True)
+        s.set('PUSH_OUTPUTS.CHANNELS', ['file'])
+        s.set('PUSH_OUTPUTS.FILE_PATH', str(out))
+        s.set('PUSH_OUTPUTS.TOOLS', tools)
+        warnings = []
+        monkeypatch.setattr(run_output, 'get_logger',
+                            lambda: SimpleNamespace(warning=warnings.append))
+
+        push_outputs('review', payload={'a': 1})
+
+        assert not out.exists()
+        assert warnings == ['push_outputs: invalid push_outputs.tools setting']
+
+    def test_ask_slack_message_neutralizes_mentions(self, monkeypatch):
+        s = get_settings()
+        s.set('PUSH_OUTPUTS.ENABLE', True)
+        s.set('PUSH_OUTPUTS.CHANNELS', ['slack'])
+        s.set('PUSH_OUTPUTS.TOOLS', ['ask'])
+        s.set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', 'https://example.test/slack')
+        posts = []
+        monkeypatch.setattr(
+            output_sinks.requests, 'post',
+            lambda url, **kwargs: posts.append(kwargs['json']) or SimpleNamespace(status_code=200),
+        )
+
+        markdown = 'Q: <!channel> <!here> <!subteam^S123> <@U123> <https://example.test|link>'
+        push_outputs('ask', payload={'question': '<!channel>'}, markdown=markdown)
+
+        assert posts == [{
+            'text': 'Q: &lt;!channel&gt; &lt;!here&gt; &lt;!subteam^S123&gt; &lt;@U123&gt; &lt;https://example.test|link&gt;',
+        }]
+
+    def test_review_slack_message_escapes_control_syntax_before_pr_url(self, monkeypatch):
+        posts = []
+        monkeypatch.setattr(
+            output_sinks.requests, 'post',
+            lambda url, **kwargs: posts.append(kwargs['json']) or SimpleNamespace(status_code=200),
+        )
+        pr_url = 'https://github.com/org/repo/pull/123'
+
+        output_sinks.SlackSink().send({
+            'type': 'review',
+            'markdown': 'R&D: <!channel> see <https://evil.test|docs> <#C1> &lt; a->b',
+            'pr': {'url': pr_url},
+        }, {'slack_webhook_url': 'https://example.test/slack'})
+
+        assert posts == [{
+            'text': 'R&amp;D: &lt;!channel&gt; see &lt;https://evil.test|docs&gt; &lt;#C1&gt; &amp;lt; a-&gt;b'
+                    f'\n\n{pr_url}',
+        }]
+
+    def test_slack_payload_fallback_is_escaped(self, monkeypatch):
+        posts = []
+        monkeypatch.setattr(
+            output_sinks.requests, 'post',
+            lambda url, **kwargs: posts.append(kwargs['json']) or SimpleNamespace(status_code=200),
+        )
+
+        output_sinks.SlackSink().send(
+            {'type': 'describe', 'payload': {'title': '<@U1> & <!here>'}},
+            {'slack_webhook_url': 'https://example.test/slack'},
+        )
+
+        assert posts == [{'text': '{"title": "&lt;@U1&gt; &amp; &lt;!here&gt;"}'}]
+
     @pytest.mark.parametrize("encoding", ["utf-8", "ascii", "cp1252"])
     def test_stdout_preserves_unicode_with_restricted_encodings(self, monkeypatch, encoding):
         get_settings().set('PUSH_OUTPUTS.ENABLE', True)

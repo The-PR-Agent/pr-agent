@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from pr_agent.algo.findings import Finding
 from pr_agent.algo.inline_comment_dedup import key_issue_body_with_markers
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -54,9 +55,15 @@ def test_github_human_resolved_key_issue_is_dismissed_across_pages():
     reply = _comment("root-reply", "By design: caller releases it.", login="alice")
     provider, requester = _provider([[_thread("other", resolver=None)], [_thread("root")]], [root, reply])
 
-    assert _dismissed(provider) == [{"path": "app.py", "body": _BODY,
-                                    "line_start": 2, "line_end": 2,
-                                    "reply": "By design: caller releases it."}]
+    assert _dismissed(provider) == [
+        Finding(
+            path="app.py",
+            body=_BODY,
+            line_start=2,
+            line_end=2,
+            reply="By design: caller releases it.",
+        )
+    ]
     assert requester.graphql_query.call_count == 2
     queries = [call.args[0] for call in requester.graphql_query.call_args_list]
     assert all("resolvedBy { login }" in query for query in queries)
@@ -101,5 +108,6 @@ def test_github_review_thread_root_does_not_fetch_raw_comment_data():
     root = ListBuiltComment(**vars(_comment("root", body)))
     provider, _ = _provider([[_thread("root")]], [root])
 
-    assert _dismissed(provider) == [{"path": "app.py", "body": _BODY,
-                                    "line_start": 2, "line_end": 2}]
+    assert _dismissed(provider) == [
+        Finding(path="app.py", body=_BODY, line_start=2, line_end=2)
+    ]
