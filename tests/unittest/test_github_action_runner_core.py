@@ -396,13 +396,14 @@ async def _run_review_action_with_settings(
     action_config=None,
     action="submitted",
     state="changes_requested",
+    disable_auto_feedback=False,
 ):
     settings = get_settings()
     settings.set("GITHUB_APP.REVIEW_STATES", app_review_states)
     settings.set("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
     settings.set("GITHUB_APP.REVIEW_COMMANDS", app_review_commands)
     settings.set("GITHUB_APP.FEEDBACK_ON_DRAFT_PR", False)
-    settings.set("CONFIG.DISABLE_AUTO_FEEDBACK", False)
+    settings.set("CONFIG.DISABLE_AUTO_FEEDBACK", disable_auto_feedback)
     settings.set("GITHUB_ACTION_CONFIG", dict(action_config or {}), merge=False)
 
     handled = []
@@ -530,6 +531,21 @@ async def test_review_submission_is_disabled_without_review_commands(monkeypatch
         tmp_path,
         app_review_states=["changes_requested"],
         app_review_commands=[],
+    )
+
+    assert handled == []
+
+
+@pytest.mark.asyncio
+async def test_review_submission_treats_invalid_disable_auto_feedback_as_disabled(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    handled = await _run_review_action_with_settings(
+        monkeypatch,
+        tmp_path,
+        app_review_states=["changes_requested"],
+        app_review_commands=["/review"],
+        disable_auto_feedback="y",
     )
 
     assert handled == []
@@ -1282,6 +1298,37 @@ async def test_synchronize_skips_bot_commit(monkeypatch, tmp_path, restore_githu
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(
         tmp_path, sender_type="Bot"
     )))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("setting_name", "event_kwargs"),
+    [
+        (
+            "push_trigger_ignore_merge_commits",
+            {"before_sha": "abc", "after_sha": "merge123", "merge_commit_sha": "merge123"},
+        ),
+        ("push_trigger_ignore_bot_commits", {"sender_type": "Bot"}),
+    ],
+    ids=["merge-commit", "bot-commit"],
+)
+async def test_synchronize_fails_closed_for_invalid_ignore_setting(
+    monkeypatch, tmp_path, restore_github_settings, setting_name, event_kwargs
+):
+    handled = []
+    _patch_synchronize_deps(monkeypatch, handled, ["/describe"])
+    settings = get_settings()
+    monkeypatch.setitem(settings.store["github_action_config"], setting_name, "y")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv(
+        "GITHUB_EVENT_PATH",
+        str(_write_synchronize_event(tmp_path, **event_kwargs)),
+    )
     monkeypatch.setenv("GITHUB_TOKEN", "token")
 
     await github_action_runner.run_action()

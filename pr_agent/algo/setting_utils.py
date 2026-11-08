@@ -1,5 +1,8 @@
-def _as_bool_setting(value, default: bool = False) -> bool:
-    """Interpret a configured value as a boolean, falling back for invalid values."""
+from pr_agent.log import get_logger
+
+
+def _as_bool_setting(value, default: bool = False, *, setting_name: str | None = None) -> bool:
+    """Interpret a configured value as a boolean, warning when a named value is invalid."""
     if isinstance(value, bool):
         return value
     if isinstance(value, int) and value in (0, 1):
@@ -10,6 +13,10 @@ def _as_bool_setting(value, default: bool = False) -> bool:
             return True
         if normalized in ("false", "0", "no", "off"):
             return False
+    if setting_name:
+        get_logger().warning(
+            f"Unrecognized boolean value for {setting_name}: {value!r}; using default {default}"
+        )
     return default
 
 
