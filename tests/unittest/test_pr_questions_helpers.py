@@ -15,7 +15,9 @@ from starlette_context import request_cycle_context
 import pr_agent.agent.pr_agent as pr_agent_module
 import pr_agent.tools.pr_line_questions as plq
 import pr_agent.tools.pr_questions as pq
+from pr_agent.algo import pr_processing
 from pr_agent.algo.comment_identity import format_pr_questions_header
+from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
@@ -1623,3 +1625,90 @@ async def test_line_question_handler_assignment_failure_is_retryable(monkeypatch
     assert good_handler.main_pr_language == tool.main_pr_language
     assert factory.call_count == 2
     retry.assert_awaited_once()
+
+
+@pytest.fixture
+def fallback_chain_settings():
+    keys = ("config.model", "config.fallback_models", "model_routing.enable",
+            "openai.deployment_id", "openai.fallback_deployments")
+    saved = snapshot_settings(keys)
+    get_settings().set("config.model", "primary-model")
+    get_settings().set("config.fallback_models", ["fallback-model"])
+    get_settings().set("model_routing.enable", False)
+    get_settings().set("openai.deployment_id", None)
+    get_settings().set("openai.fallback_deployments", [])
+    yield
+    restore_settings(saved)
+
+
+def _ask_tool(handler):
+    obj = PRQuestions.__new__(PRQuestions)
+    obj.vars = {"question": "q"}
+    obj._attempt_system_prompt = "system"
+    obj._attempt_user_prompt = "user"
+    obj._attempt_variables = {"question": "q"}
+    obj.ai_handler = handler
+    return obj
+
+
+def _line_ask_tool(handler):
+    obj = plq.PR_LineQuestions.__new__(plq.PR_LineQuestions)
+    obj.vars = {"question": "q"}
+    obj.patch_with_lines = "@@ -1 +1 @@\n-old\n+new"
+    obj.selected_lines = "+new"
+    obj._fit_conversation_history = lambda _variables, _model: SimpleNamespace(
+        optional_text="", system_prompt="system", user_prompt="user")
+    obj.ai_handler = handler
+    return obj
+
+
+def _truncates_primary(answer):
+    async def chat_completion(model, **_kwargs):
+        return ("partial", "length") if model == "primary-model" else (answer, "stop")
+    return AsyncMock(side_effect=chat_completion)
+
+
+async def test_ask_length_finish_reason_falls_back_instead_of_publishing():
+    handler = MagicMock(chat_completion=AsyncMock(return_value=("partial answer", "length")))
+    token = pr_processing._effective_fallback_chain.set((("primary-model", None), ("fallback-model", None)))
+    try:
+        with pytest.raises(FallbackEligibleError):
+            await _ask_tool(handler)._get_prediction("primary-model")
+    finally:
+        pr_processing._effective_fallback_chain.reset(token)
+
+
+async def test_ask_length_without_fallback_rejects_partial_answer():
+    handler = MagicMock(chat_completion=AsyncMock(return_value=("partial answer", "length")))
+    with pytest.raises(FallbackEligibleError):
+        await _ask_tool(handler)._get_prediction("primary-model")
+
+
+async def test_ask_truncated_primary_publishes_only_fallback_answer(fallback_chain_settings):
+    handler = MagicMock(chat_completion=_truncates_primary("full answer"))
+    assert await retry_with_fallback_models(_ask_tool(handler)._get_prediction) == "full answer"
+    assert [call.kwargs["model"] for call in handler.chat_completion.await_args_list] == [
+        "primary-model", "fallback-model"]
+
+
+async def test_line_ask_length_finish_reason_falls_back_instead_of_publishing():
+    handler = MagicMock(chat_completion=AsyncMock(return_value=("partial answer", "length")))
+    token = pr_processing._effective_fallback_chain.set((("primary-model", None), ("fallback-model", None)))
+    try:
+        with pytest.raises(FallbackEligibleError):
+            await _line_ask_tool(handler)._get_prediction("primary-model")
+    finally:
+        pr_processing._effective_fallback_chain.reset(token)
+
+
+async def test_line_ask_length_without_fallback_rejects_partial_answer():
+    handler = MagicMock(chat_completion=AsyncMock(return_value=("partial answer", "length")))
+    with pytest.raises(FallbackEligibleError):
+        await _line_ask_tool(handler)._get_prediction("primary-model")
+
+
+async def test_line_ask_truncated_primary_publishes_only_fallback_answer(fallback_chain_settings):
+    handler = MagicMock(chat_completion=_truncates_primary("full answer"))
+    assert await retry_with_fallback_models(_line_ask_tool(handler)._get_prediction) == "full answer"
+    assert [call.kwargs["model"] for call in handler.chat_completion.await_args_list] == [
+        "primary-model", "fallback-model"]

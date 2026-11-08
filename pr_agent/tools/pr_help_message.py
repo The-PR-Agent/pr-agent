@@ -183,6 +183,8 @@ class PRHelpMessage:
         system_prompt, user_prompt, fitted_snippets = self._fit_prompts(variables, model)
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"The /help response was truncated by {model}")
         parsed_response = self._load_help_response(response)
         self._model_visible_docs_files = self._get_fitted_docs_files(
             variables.get("snippets", ""),
