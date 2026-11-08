@@ -9,7 +9,7 @@ from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
 from pr_agent.algo.file_filter import filter_ignored_with_status
 from pr_agent.algo.language_handler import partition_files_by_language_filter
 from pr_agent.algo.review_json_output import write_review_json_output
-from pr_agent.algo.run_output import show_run_details
+from pr_agent.algo.run_output import append_run_details
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file_checked, to_hunk_only_patch
@@ -236,8 +236,7 @@ class PlainDiffGitProvider(GitProvider):
             no_suggestions_message: str = "No code suggestions found for the PR.") -> bool:
         if not code_suggestions:
             content = f"{format_pr_code_suggestions_header()}\n\n{no_suggestions_message}{artifact_footer}"
-            if get_settings().get("config.output_run_details", False):
-                content += show_run_details(self.is_supported("gfm_markdown"))
+            content = append_run_details(content, self)
             self._write_output(content)
             return True
 
