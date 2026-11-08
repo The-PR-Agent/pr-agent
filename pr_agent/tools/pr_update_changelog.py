@@ -24,14 +24,13 @@ from pr_agent.git_providers.git_provider import FileContentSnapshot, get_main_pr
 from pr_agent.log import get_logger
 
 CHANGELOG_LINES = 50
-# A whole answer wrapped in one fenced block, e.g. "```markdown\n...\n```". The opening fence
-# is optional: the prompt ends with a dangling open "```markdown", which primes the model to
-# answer with a closing fence and no opening one. Fences run for 3+ backticks (four-backtick
-# fences are standard Markdown for embedding ``` inside a block). The possessive `{3,}+` keeps
-# a long run of backticks linear: the run is consumed once and never re-tried at a shorter
-# length, which is what a plain `{3,}` backtracks into quadratically.
-_WRAPPING_CODE_FENCE_RE = re.compile(r"\A(?:\s*(?P<open>`{3,}+[^\n]*\n))?(?P<body>.*?)\n?`{3,}+\s*\Z", re.DOTALL)
+# Fence lines: 3+ backticks, optionally indented. Four-backtick fences are
+# standard Markdown for embedding ``` inside a block.
 _FENCE_LINE_RE = re.compile(r"(?m)^[^\S\n]*`{3,}")
+# A long run of backticks inside a fence-line check is scanned once per line
+# (the regex has no backtracking surface), so the whole helper stays linear in
+# the input size — the review of #4652 rejected the earlier whole-text regex
+# whose lazy body made every start position rescan the closing run (O(n²)).
 
 
 def strip_wrapping_code_fence(text: str) -> str:
@@ -47,9 +46,38 @@ def strip_wrapping_code_fence(text: str) -> str:
     leftover fence either unterminates the block, or leaves a wrapper behind that then swallows
     the rest of CHANGELOG.md when the file is committed.
     """
-    match = _WRAPPING_CODE_FENCE_RE.match(text)
-    if match and (match.group("open") or len(_FENCE_LINE_RE.findall(match.group("body"))) % 2 == 0):
-        return match.group("body")
+    # Line-structured rewrite of the earlier whole-text regex: the closing
+    # fence can only be the last line and the opening fence only the first,
+    # so there is no per-position rescanning — linear in the input size at
+    # every shape (review of #4652 rejected the regex version as O(n²)).
+    lines = text.split("\n")
+
+    first = lines[0].strip() if lines else ""
+    open_match = _FENCE_LINE_RE.match(first) if first else None
+    if open_match and len(lines) >= 2:
+        body_lines = lines[1:]
+        had_open = True
+    else:
+        body_lines = lines
+        had_open = False
+
+    if not body_lines:
+        return text
+    last = body_lines[-1]
+    close_match = _FENCE_LINE_RE.match(last.strip()) if last.strip() else None
+    # No closing fence → no wrapper at all (the old regex required
+    # `\n?`{3,}+\s*\Z` after the body and simply did not match otherwise).
+    if not close_match:
+        return text
+
+    body = "\n".join(body_lines[:-1])
+    body_fences = len(_FENCE_LINE_RE.findall(body))
+    # Balance check, mirroring the old regex: with an opening fence consumed
+    # the trailing fence closes the wrapper; without one it closes it only
+    # when the body's own fences are balanced — otherwise the trailing fence
+    # closes an unterminated inner block and the whole text is kept verbatim.
+    if had_open or body_fences % 2 == 0:
+        return body
     return text
 
 
