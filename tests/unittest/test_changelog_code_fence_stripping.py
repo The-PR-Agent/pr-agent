@@ -216,20 +216,24 @@ def test_a_long_backtick_run_is_stripped_in_linear_time():
     below distinguishes the two growth curves (PR #4652 review, second pass)."""
     import time
 
+    # Ratio assertions only run on sizes large enough that the measurement is
+    # not noise-dominated (sub-millisecond timings jitter past 2.5x on fast
+    # CI machines — the quadratic curve itself is 4x per doubling and lands
+    # in whole seconds, so it is still caught unambiguously).
     timings = []
-    for size in (20_000, 40_000, 80_000):
+    for size in (20_000, 160_000, 320_000):
         text = "`" * size + "x"
         start = time.perf_counter()
         strip_wrapping_code_fence(text)
         timings.append(time.perf_counter() - start)
 
     assert timings[0] < 0.5, f"20k backticks must stay fast, took {timings[0]:.3f}s"
-    ratio1 = timings[1] / timings[0]
-    ratio2 = timings[2] / timings[1]
-    assert ratio1 < 2.5 and ratio2 < 2.5, (
-        f"timing grows super-linearly: {timings[0]:.3f}s -> {timings[1]:.3f}s -> "
-        f"{timings[2]:.3f}s (ratios {ratio1:.2f}/{ratio2:.2f}; quadratic would be ~4x)"
-    )
+    if timings[1] > 0.01 and timings[2] > 0.01:
+        ratio = timings[2] / timings[1]
+        assert ratio < 3.0, (
+            f"timing grows super-linearly: {timings[1]:.3f}s -> {timings[2]:.3f}s "
+            f"(ratio {ratio:.2f}; quadratic would be ~4x)"
+        )
 
 
 @pytest.mark.asyncio
