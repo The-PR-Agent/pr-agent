@@ -73,8 +73,9 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "openai": frozenset({"api_base", "api_type", "api_version"}),
     "openrouter": frozenset({"api_base"}),
     # structural_reach_input_file is read from the host and echoed into the review, and outside
-    # GITHUB_WORKSPACE nothing bounds the path.
-    "pr_reviewer": frozenset({"publish_error_details", "structural_reach_input_file"}),
+    # GITHUB_WORKSPACE nothing bounds the path. extra_risky_shapes contains custom regex patterns
+    # compiled and run against diff hunks, so repository settings must not specify untrusted patterns.
+    "pr_reviewer": frozenset({"extra_risky_shapes", "publish_error_details", "structural_reach_input_file"}),
     # List the sibling repositories whose files and GitHub tickets a consuming repo
     # (or a comment command) may select into model context. A repo's .pr_agent.toml alone must
     # not be able to name an arbitrary same-owner private sibling: the actor check bounds who
@@ -180,7 +181,13 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "pr_code_suggestions": frozenset({"parallel_calls", "max_number_of_calls"}),
     "pr_questions": frozenset({"resolve_threads"}),
     # A commenter must not choose which host file the structural-reach row reads.
-    "pr_reviewer": frozenset({"max_number_of_calls", "structural_reach_input_file"}),
+    "pr_reviewer": frozenset({
+        "enable_risk_checks",
+        "extra_risky_shapes",
+        "max_number_of_calls",
+        "sensitive_paths",
+        "structural_reach_input_file",
+    }),
     "pr_similar_issue": frozenset({"force_update_dataset"}),
     "pr_update_changelog": frozenset({"push_changelog_changes"}),
 }
