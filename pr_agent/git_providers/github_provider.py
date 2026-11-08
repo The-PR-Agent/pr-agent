@@ -2723,10 +2723,8 @@ class GithubProvider(GitProvider):
             diff_files = self.get_diff_files()
             if diff_files is None:
                 return None
-            if len(diff_files) == 0:
-                return False
 
-            pr_filenames = set()
+            pr_filenames = set(self.get_filtered_diff_file_names())
             for f in diff_files:
                 fn = getattr(f, "filename", None)
                 if fn:

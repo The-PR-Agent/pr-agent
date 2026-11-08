@@ -729,3 +729,38 @@ def test_github_ci_status_fails_closed_on_combined_status_error():
     commit = provider.repo_obj.get_commit.return_value
     commit.get_combined_status.side_effect = GithubException(403, "Rate limit", {})
     assert provider.get_head_ci_status() is None
+
+
+def test_github_staleness_detects_filtered_file_moved_by_base():
+    now = datetime.now(UTC)
+    runs = [SimpleNamespace(status="completed", conclusion="success", app=None, completed_at=now, name="test")]
+    provider = _make_github_provider(check_runs=runs)
+    provider.get_diff_files = lambda: []
+    provider.get_filtered_diff_file_names = lambda: ["uv.lock"]
+    provider.pr.base = SimpleNamespace(ref="main")
+
+    base_commit = SimpleNamespace(
+        commit=SimpleNamespace(committer=SimpleNamespace(date=now + timedelta(minutes=5))),
+        files=[SimpleNamespace(filename="uv.lock")],
+    )
+    provider.repo_obj.get_commits.return_value = [base_commit]
+    assert provider.is_head_stale_against_base() is True
+
+
+def test_gitlab_staleness_detects_filtered_file_moved_by_base():
+    now_iso = "2026-01-01T12:00:00Z"
+    provider = _make_gitlab_provider(head_pipeline={"status": "success", "created_at": now_iso})
+    provider.mr.target_branch = "main"
+    provider.get_diff_files = lambda: []
+    provider.get_filtered_diff_file_names = lambda: ["uv.lock"]
+
+    proj_mock = MagicMock()
+    commit_stale = SimpleNamespace(
+        committed_date="2026-01-01T12:15:00Z",
+        diff=lambda **kwargs: [{"new_path": "uv.lock", "old_path": "uv.lock"}],
+    )
+    proj_mock.commits.list.return_value = [commit_stale]
+    provider.gl.projects.get.return_value = proj_mock
+
+    assert provider.is_head_stale_against_base() is True
+
