@@ -99,9 +99,9 @@ class SlackSink:
         text = record.get("markdown")
         if text is None:
             text = json.dumps(record["payload"], ensure_ascii=False)
-        if record.get("type") == "ask":
-            # Ask may contain user-supplied Slack mention syntax; do not trigger notifications.
-            text = text.replace("<!", "&lt;!").replace("<@", "&lt;@")
+        # Records carry PR-controlled text and model output; escape Slack control syntax
+        # (mentions, <url|label> links) as Slack's formatting guide asks.
+        text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         _post_json("slack", url, {"text": _append_pr_url(text, record)})
 
 
