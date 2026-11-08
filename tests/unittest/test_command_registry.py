@@ -86,7 +86,8 @@ def test_command_check_run_resolution(spelling, expected):
         ("/improve_code", True),
         ("/auto_review", False),
         ("/describe", False),
-        ("/ask", False),
+        ("/ask", True),
+        ("/ask_question", True),
         ("/unknown_command", False),
     ],
 )

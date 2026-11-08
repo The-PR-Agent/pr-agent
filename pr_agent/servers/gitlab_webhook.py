@@ -486,11 +486,11 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 provider = get_git_provider_with_context(pr_url=url)
                 discussion_id = data.get('object_attributes', {}).get('discussion_id')
                 command = body.split(maxsplit=1)[0].lower() if isinstance(body, str) and body.strip() else ""
-                if (discussion_id and not data.get('object_attributes', {}).get('type')
-                        and command_takes_comment_id(command)):
+                note_type = data.get('object_attributes', {}).get('type')
+                if (discussion_id and command_takes_comment_id(command) and (
+                        not note_type or (note_type == "DiscussionNote" and command in ("/ask", "/ask_question")))):
                     body = f"{body} --comment_id={discussion_id}"
-                if (data.get('object_attributes', {}).get('type') == 'DiffNote'
-                        and is_ask_command_comment(body)):  # /ask_line
+                if note_type == 'DiffNote' and is_ask_command_comment(body):  # /ask_line
                     body = handle_ask_line(body, data)
 
                 # A fresh collector, so the verdict below can only come from this command.
