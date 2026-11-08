@@ -210,17 +210,26 @@ def test_stripping_twice_is_the_same_as_once_for_a_four_backtick_fence():
 
 
 def test_a_long_backtick_run_is_stripped_in_linear_time():
-    """A plain {3,} on the closing fence spends seconds at this size (28s at 80k on a
-    dev box); the possessive quantifier must keep it linear (PR #4652 review)."""
+    """A plain {3,} on the closing fence is quadratic there: 1.8s at 20k, 7.1s at
+    40k, 28.3s at 80k on a dev box — 4x per doubling. The line-structured
+    rewrite must scale linearly (~2x per doubling), and the ratio assertion
+    below distinguishes the two growth curves (PR #4652 review, second pass)."""
     import time
 
-    text = "`" * 30_000 + "x"
+    timings = []
+    for size in (20_000, 40_000, 80_000):
+        text = "`" * size + "x"
+        start = time.perf_counter()
+        strip_wrapping_code_fence(text)
+        timings.append(time.perf_counter() - start)
 
-    start = time.perf_counter()
-    strip_wrapping_code_fence(text)
-    elapsed = time.perf_counter() - start
-
-    assert elapsed < 3.0
+    assert timings[0] < 0.5, f"20k backticks must stay fast, took {timings[0]:.3f}s"
+    ratio1 = timings[1] / timings[0]
+    ratio2 = timings[2] / timings[1]
+    assert ratio1 < 2.5 and ratio2 < 2.5, (
+        f"timing grows super-linearly: {timings[0]:.3f}s -> {timings[1]:.3f}s -> "
+        f"{timings[2]:.3f}s (ratios {ratio1:.2f}/{ratio2:.2f}; quadratic would be ~4x)"
+    )
 
 
 @pytest.mark.asyncio
