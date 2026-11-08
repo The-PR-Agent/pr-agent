@@ -13,6 +13,7 @@ from pr_agent.algo.comment_identity import (
     PRCodeSuggestionsIdentity,
     format_pr_code_suggestions_header,
 )
+from pr_agent.algo.i18n import t
 from pr_agent.algo.pr_processing import PackedPRDiffs
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.token_budget import AttemptTokenBudget
@@ -1799,7 +1800,7 @@ async def test_improve_empty_inline_fallback_uses_response_language():
         await tool.push_inline_code_suggestions({"code_suggestions": []})
 
         provider.publish_comment.assert_called_once_with(
-            "No se encontraron sugerencias para mejorar este PR.")
+            f"{t('improve.merge_notice')}\n\nNo se encontraron sugerencias para mejorar este PR.")
     finally:
         restore_settings(saved)
 
