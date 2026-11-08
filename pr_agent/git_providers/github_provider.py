@@ -2941,7 +2941,7 @@ class GithubProvider(GitProvider):
                                 min_distance = 0
                                 patch_range_min = patch_range
                                 break
-                            elif d1 * d2 <= 0:  # comment is possibly inside the hunk
+                            else:  # comment overlaps, encloses or lies near the hunk
                                 d1_clip = abs(min(0, d1))
                                 d2_clip = abs(min(0, d2))
                                 d = max(d1_clip, d2_clip)

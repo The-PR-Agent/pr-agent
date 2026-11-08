@@ -1277,6 +1277,7 @@ def test_validate_comments_inside_hunks_preserves_backslashes_in_fallback_diff()
         (9, 11, 10, 11),  # overlaps the hunk start
         (5, 7, 10, 10),  # wholly above the hunk
         (13, 15, 11, 11),  # wholly below the hunk
+        (8, 13, 10, 11),  # encloses the hunk
     ],
 )
 def test_suggestion_near_a_hunk_is_published_inside_it(monkeypatch, start, end, expected_start, expected_end):
