@@ -503,8 +503,7 @@ class PRCodeSuggestions:
                 return
             raise RuntimeError("Could not find the published code suggestion comment to update")
         except Exception as error:
-            record_command_failure()
-            get_logger().error(f"Failed to persist code suggestion finding state: {error}")
+            get_logger().warning(f"Failed to persist code suggestion finding state: {error}")
 
     @staticmethod
     def _parse_incremental(args):
