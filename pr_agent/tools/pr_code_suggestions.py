@@ -1182,8 +1182,8 @@ class PRCodeSuggestions:
             if score is None or not 0 <= score <= 10:
                 feedback[i] = None
                 continue
-            expected_file = self._suggestion_file_key(suggestion)
-            reported_file = self._suggestion_file_key(entry)
+            expected_file = self._suggestion_file_key(suggestion).strip("`").removeprefix("./").removeprefix("/")
+            reported_file = self._suggestion_file_key(entry).strip("`").removeprefix("./").removeprefix("/")
             if expected_file and reported_file and expected_file != reported_file:
                 feedback[i] = None
                 continue
