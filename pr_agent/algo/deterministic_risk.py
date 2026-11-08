@@ -90,7 +90,7 @@ _DESTRUCTIVE_SQL_PATTERNS: list[tuple[str, str, re.Pattern]] = [
     (
         "destructive_sql",
         "Privilege revocation",
-        re.compile(r"(?i)\bREVOKE\s+[A-Za-z0-9_\s,]+\s+(?:ON|FROM)\b"),
+        re.compile(r"(?i)\bREVOKE\s+[A-Za-z0-9_,]+(?:\s+[A-Za-z0-9_,]+)*?\s+(?:ON|FROM)\b"),
     ),
     (
         "destructive_sql",
@@ -442,6 +442,8 @@ def render_risk_checks(data: dict, gfm_supported: bool) -> str:
     if not isinstance(data, dict):
         return ""
 
+    from pr_agent.tools.pr_code_suggestions import _markdown_code_span
+
     has_findings = data.get("has_findings", False)
     sensitive_paths = data.get("sensitive_paths") or []
     risky_shapes = data.get("risky_shapes") or []
@@ -458,7 +460,7 @@ def render_risk_checks(data: dict, gfm_supported: bool) -> str:
 
     details = []
     if sensitive_paths:
-        shown = [f"`{html.escape(item['file'])}`" for item in sensitive_paths[:MAX_FINDINGS_PER_CATEGORY]]
+        shown = [_markdown_code_span(item["file"]) for item in sensitive_paths[:MAX_FINDINGS_PER_CATEGORY]]
         more = len(sensitive_paths) - len(shown)
         more_str = f" (+{more} more)" if more > 0 else ""
         if gfm_supported:
@@ -470,7 +472,7 @@ def render_risk_checks(data: dict, gfm_supported: bool) -> str:
 
     if risky_shapes:
         shown = [
-            f"`{html.escape(item['description'])}` in `{html.escape(item['file'])}`"
+            f"`{html.escape(item['description'])}` in {_markdown_code_span(item['file'])}"
             for item in risky_shapes[:MAX_FINDINGS_PER_CATEGORY]
         ]
         more = len(risky_shapes) - len(shown)
@@ -483,7 +485,7 @@ def render_risk_checks(data: dict, gfm_supported: bool) -> str:
             details.append(f"- **Risky shapes ({len(risky_shapes)}):** {', '.join(shown)}{more_str}")
 
     if deleted_files:
-        shown = [f"`{html.escape(f)}`" for f in deleted_files[:MAX_FINDINGS_PER_CATEGORY]]
+        shown = [_markdown_code_span(f) for f in deleted_files[:MAX_FINDINGS_PER_CATEGORY]]
         more = len(deleted_files) - len(shown)
         more_str = f" (+{more} more)" if more > 0 else ""
         if gfm_supported:

@@ -157,6 +157,8 @@ def test_scan_file_diff_prompt_file():
         ("+ ALTER TABLE accounts RENAME COLUMN email TO contact;", "destructive_sql"),
         ("+ ALTER users RENAME TO old_users;", "destructive_sql"),
         ("+ REVOKE SELECT ON accounts FROM public;", "destructive_sql"),
+        ("+ REVOKE ALL PRIVILEGES ON accounts FROM user;", "destructive_sql"),
+        ("+ REVOKE SELECT, INSERT, UPDATE ON accounts FROM user;", "destructive_sql"),
         ("+ TRUNCATE TABLE sessions;", "destructive_sql"),
         ("+ api_key = 'sk-1234567890'", "auth_and_secrets"),
         ("+ jwt_secret: 'topsecret'", "auth_and_secrets"),
@@ -319,6 +321,38 @@ def test_render_risk_checks_findings():
     assert "3 finding(s) detected" in plain
     assert "### ⚠️ Risk checks:" in plain
     assert ".github/workflows/ci.yml" in plain
+
+
+def test_revoke_pattern_linear_timing():
+    import time
+    adversarial_line = "+ REVOKE " + ("word " * 500) + "trailing"
+    start = time.perf_counter()
+    f = _file("service.sql", f"@@ -1,2 +1,2 @@\n context\n{adversarial_line}")
+    dr.scan_file_diff(f)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 0.2
+
+
+def test_render_risk_checks_backtick_filename():
+    findings = {
+        "has_findings": True,
+        "sensitive_paths": [{"file": "path/`file`.yml", "pattern": "*.yml"}],
+        "risky_shapes": [{
+            "category": "destructive_sql",
+            "description": "Destructive DDL",
+            "file": "db/`schema`.sql",
+            "line": "DROP TABLE",
+        }],
+        "deleted_files": ["old/`deleted`.py"],
+    }
+    gfm = dr.render_risk_checks(findings, gfm_supported=True)
+    plain = dr.render_risk_checks(findings, gfm_supported=False)
+    assert "``path/`file`.yml``" in gfm
+    assert "``db/`schema`.sql``" in gfm
+    assert "``old/`deleted`.py``" in gfm
+    assert "``path/`file`.yml``" in plain
+    assert "``db/`schema`.sql``" in plain
+    assert "``old/`deleted`.py``" in plain
 
 
 # 8. PRReviewer and convert_to_markdown_v2 integration
