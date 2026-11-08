@@ -396,13 +396,14 @@ async def _run_review_action_with_settings(
     action_config=None,
     action="submitted",
     state="changes_requested",
+    disable_auto_feedback=False,
 ):
     settings = get_settings()
     settings.set("GITHUB_APP.REVIEW_STATES", app_review_states)
     settings.set("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
     settings.set("GITHUB_APP.REVIEW_COMMANDS", app_review_commands)
     settings.set("GITHUB_APP.FEEDBACK_ON_DRAFT_PR", False)
-    settings.set("CONFIG.DISABLE_AUTO_FEEDBACK", False)
+    settings.set("CONFIG.DISABLE_AUTO_FEEDBACK", disable_auto_feedback)
     settings.set("GITHUB_ACTION_CONFIG", dict(action_config or {}), merge=False)
 
     handled = []
@@ -530,6 +531,21 @@ async def test_review_submission_is_disabled_without_review_commands(monkeypatch
         tmp_path,
         app_review_states=["changes_requested"],
         app_review_commands=[],
+    )
+
+    assert handled == []
+
+
+@pytest.mark.asyncio
+async def test_review_submission_treats_invalid_disable_auto_feedback_as_disabled(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    handled = await _run_review_action_with_settings(
+        monkeypatch,
+        tmp_path,
+        app_review_states=["changes_requested"],
+        app_review_commands=["/review"],
+        disable_auto_feedback="y",
     )
 
     assert handled == []

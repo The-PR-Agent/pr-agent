@@ -13,21 +13,11 @@ def _as_bool_setting(value, default: bool = False, *, setting_name: str | None =
             return True
         if normalized in ("false", "0", "no", "off"):
             return False
-    if setting_name and _has_non_empty_setting_value(value):
+    if setting_name:
         get_logger().warning(
             f"Unrecognized boolean value for {setting_name}: {value!r}; using default {default}"
         )
     return default
-
-
-def _has_non_empty_setting_value(value) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, (list, tuple, set, dict)):
-        return bool(value)
-    return True
 
 
 def normalize_setting_list(value, *, split_commas: bool = False) -> list:

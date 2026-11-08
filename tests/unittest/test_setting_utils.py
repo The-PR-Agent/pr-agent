@@ -26,12 +26,13 @@ def test_invalid_named_boolean_setting_logs_key_and_uses_default(monkeypatch, va
 
 
 @pytest.mark.parametrize("value", [None, "", "  ", [], {}])
-def test_empty_named_boolean_setting_does_not_log(monkeypatch, value):
+def test_empty_named_boolean_setting_logs_warning(monkeypatch, value):
     logger = Mock()
     monkeypatch.setattr(setting_utils, "get_logger", lambda: logger)
 
     assert setting_utils._as_bool_setting(value, default=True, setting_name="sample.setting") is True
-    logger.warning.assert_not_called()
+    logger.warning.assert_called_once()
+    assert "sample.setting" in logger.warning.call_args.args[0]
 
 
 @pytest.mark.parametrize(
