@@ -845,7 +845,7 @@ For example: `GITHUB.WEBHOOK_SECRET` --> `GITHUB__WEBHOOK_SECRET`
     docker push <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pr-agent:github_lambda
     ```
 
-4. Create a lambda function that uses the uploaded image. Set the lambda timeout to be at least 3m.
+4. Create a lambda function that uses the uploaded image. Add the IAM permission `lambda:InvokeFunction` on the function itself to the execution role: the webhook is acknowledged as soon as its signature is verified, and the review runs in a second, asynchronous invocation of the same function. Set the lambda timeout for the review length (for example 5m) — it no longer needs to cover the webhook acknowledgement.
 5. Configure the lambda function to have a Function URL.
 6. In the environment variables of the Lambda function, specify `AZURE_DEVOPS_CACHE_DIR` to a writable location such as /tmp. (see [link](https://github.com/the-pr-agent/pr-agent/pull/450#issuecomment-1840242269))
 7. Go back to steps 8-9 of [Method 5](#run-as-a-github-app) with the function url as your Webhook URL.

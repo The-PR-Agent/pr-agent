@@ -22,6 +22,7 @@ from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers import lambda_handoff
 from pr_agent.servers.github_common import (
     _normalise_setting_list,
     _reformat_quote_ask_command,
@@ -72,12 +73,18 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
     context["installation_id"] = installation_id
     context["settings"] = copy.deepcopy(global_settings)
     context["git_provider"] = {}
-    background_tasks.add_task(
-        handle_request,
-        body,
-        event=request.headers.get("X-GitHub-Event", None),
-        delivery_id=request.headers.get("X-GitHub-Delivery", None),
-    )
+    handed_off = lambda_handoff.handoff_enabled() and await lambda_handoff.try_handoff(
+        "github", body, request.headers)
+    if not handed_off:
+        # Not a Lambda deployment, or the hand-off failed: process the webhook in a
+        # background task, after the response is sent. Under Lambda (Mangum) the
+        # hand-off above replaces this task with a second invocation (#4748).
+        background_tasks.add_task(
+            handle_request,
+            body,
+            event=request.headers.get("X-GitHub-Event", None),
+            delivery_id=request.headers.get("X-GitHub-Delivery", None),
+        )
     return {}
 
 
