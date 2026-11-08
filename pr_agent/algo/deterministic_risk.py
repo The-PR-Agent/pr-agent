@@ -446,7 +446,10 @@ def render_risk_checks(data: dict, gfm_supported: bool) -> str:
 
     def _markdown_code_span(text: str) -> str:
         # inside the <table> row the backticks stay literal, so escape for HTML instead
-        return f"<code>{html.escape(text)}</code>" if gfm_supported else plain_code_span(text)
+        if not gfm_supported:
+            return plain_code_span(text)
+        text = text.replace("\r", "\\r").replace("\n", "\\n")
+        return f"<code>{html.escape(text)}</code>"
 
     has_findings = data.get("has_findings", False)
     sensitive_paths = data.get("sensitive_paths") or []

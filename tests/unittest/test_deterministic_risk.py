@@ -358,6 +358,12 @@ def test_render_risk_checks_backtick_filename():
     assert "``old/`deleted`.py``" in plain
 
 
+def test_render_risk_checks_gfm_newline_filename():
+    out = dr.render_risk_checks({"has_findings": True, "deleted_files": ["a\n\n# h\n\nb.tf"]}, gfm_supported=True)
+    assert "<code>a\\n\\n# h\\n\\nb.tf</code>" in out
+    assert "\n\n" not in out
+
+
 # 8. PRReviewer and convert_to_markdown_v2 integration
 def test_convert_to_markdown_v2_renders_risk_checks():
     data = {
