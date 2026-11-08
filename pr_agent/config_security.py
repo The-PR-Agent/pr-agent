@@ -169,6 +169,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
         "ai_timeout",
         "enable_custom_labels",
         "fallback_models",
+        "include_pr_labels",
         "num_retries",
         "output_relevant_configurations",
         "repo_context_files",

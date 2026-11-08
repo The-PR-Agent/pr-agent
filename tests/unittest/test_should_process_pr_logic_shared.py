@@ -12,6 +12,8 @@ pattern on every provider.
 
 import copy
 import importlib
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -27,6 +29,7 @@ IGNORE_KEYS = (
     "CONFIG.IGNORE_PR_LABELS",
     "CONFIG.IGNORE_PR_SOURCE_BRANCHES",
     "CONFIG.IGNORE_PR_TARGET_BRANCHES",
+    "CONFIG.INCLUDE_PR_LABELS",
 )
 
 DEFAULTS = {
@@ -96,8 +99,8 @@ def _gitlab_payload(fields):
             "title": fields["title"],
             "source_branch": fields["source_branch"],
             "target_branch": fields["target_branch"],
-            "labels": [{"title": label} for label in fields["labels"]],
         },
+        "labels": [{"title": label} for label in fields["labels"]],
         "project": {"path_with_namespace": fields["repo_full_name"]},
         "user": {"username": fields["sender"]},
     }
@@ -177,6 +180,128 @@ def test_label_rule_is_shared_by_the_servers_that_carry_labels(providers, ignore
     ignore_settings.set("CONFIG.IGNORE_PR_LABELS", ["skip-pr-agent"])
     _assert_all(providers, _fields(labels=("skip-pr-agent",)), False, "an ignored label", only_with_labels=True)
     _assert_all(providers, _fields(labels=("ready",)), True, "a label that is not ignored", only_with_labels=True)
+
+
+def test_include_labels_requires_at_least_one_matching_label(providers, ignore_settings):
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", ["ai-review", "on-demand"])
+    _assert_all(providers, _fields(labels=("on-demand", "other")), True,
+                "one selected label", only_with_labels=True)
+    _assert_all(providers, _fields(labels=("other",)), False, "no selected label")
+    _assert_all(providers, _fields(), False, "no labels")
+
+
+def test_ignore_labels_still_override_include_labels(providers, ignore_settings):
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", ["ai-review"])
+    ignore_settings.set("CONFIG.IGNORE_PR_LABELS", ["skip"])
+    _assert_all(providers, _fields(labels=("ai-review", "skip")), False,
+                "an explicitly ignored selected PR", only_with_labels=True)
+    _assert_all(providers, _fields(labels=("ai-review",)), True,
+                "an eligible selected PR", only_with_labels=True)
+
+
+def test_include_labels_scalar_is_one_exact_label(providers, ignore_settings):
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", "ready")
+    _assert_all(providers, _fields(labels=("ready",)), True, "the exact label", only_with_labels=True)
+    _assert_all(providers, _fields(labels=("r",)), False, "not a substring")
+
+
+@pytest.mark.parametrize(("setting", "matching_label"), [(0, "0"), (123, "123"), ([0], "0")])
+def test_numeric_include_label_settings_do_not_disable_the_gate(ignore_settings, setting, matching_label):
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", setting)
+    assert shared_should_process_pr_logic(labels=[matching_label]) is True
+    assert shared_should_process_pr_logic(labels=["other"]) is False
+    assert shared_should_process_pr_logic(labels=[]) is False
+
+
+def test_invalid_label_payload_cannot_bypass_an_enabled_include_gate(providers, ignore_settings):
+    gitlab = next(should_process for name, should_process, *_ in providers if name == "gitlab")
+    payload = _gitlab_payload(_fields())
+    payload["labels"] = True  # GitLab normally supplies a list; this value cannot be read.
+
+    assert gitlab(payload) is True  # Existing fail-open behavior without an opt-in gate.
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", ["ai-review"])
+    assert gitlab(payload) is False
+
+
+def test_gitlab_explicit_empty_root_labels_override_nested_labels(ignore_settings):
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", ["ai-review"])
+    payload = _gitlab_payload(_fields())
+    payload["object_attributes"]["labels"] = [{"title": "ai-review"}]
+    assert shared_should_process_pr_logic(payload, provider="gitlab") is False
+
+
+def test_malformed_label_containers_cannot_satisfy_allowlist(ignore_settings):
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", ["ai-review", "a"])
+    assert shared_should_process_pr_logic(labels={"ai-review": True}) is False
+    assert shared_should_process_pr_logic(labels="a") is False
+    assert shared_should_process_pr_logic(data={"pull_request": {"labels": {"name": "ai-review"}}}) is False
+
+
+def test_prefilter_defers_include_labels_but_still_applies_exclusions(ignore_settings):
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", ["host-label"])
+    ignore_settings.set("CONFIG.IGNORE_PR_LABELS", ["skip"])
+    assert shared_should_process_pr_logic(labels=["team-label"]) is False
+    assert shared_should_process_pr_logic(labels=["team-label"], check_include_labels=False) is True
+    assert shared_should_process_pr_logic(labels=["skip"], check_include_labels=False) is False
+
+
+@pytest.mark.asyncio
+async def test_github_and_gitea_prefilters_allow_repository_label_overrides(ignore_settings, monkeypatch):
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", ["host-label"])
+    body = _github_body(_fields(labels=("team-label",)))
+    body["action"] = "opened"
+    body["pull_request"]["url"] = "https://github.com/org/repo/pull/7"
+
+    monkeypatch.setattr(github_app, "get_log_context", lambda *_args: ({}, "human", 1, "User"))
+    monkeypatch.setattr(github_app, "is_bot_user", lambda *_args: False)
+    github_dispatch = AsyncMock()
+    monkeypatch.setattr(github_app, "handle_new_pr_opened", github_dispatch)
+    await github_app._dispatch_request(body, "pull_request", "opened")
+    github_dispatch.assert_awaited_once()
+
+    gitea_dispatch = AsyncMock()
+    monkeypatch.setattr(gitea_app, "handle_pr_event", gitea_dispatch)
+    await gitea_app.handle_request(body, "pull_request")
+    gitea_dispatch.assert_awaited_once()
+
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", ["team-label"])
+    assert github_app.should_process_pr_logic(body) is True
+    assert gitea_app.should_process_pr_logic(body) is True
+
+
+@pytest.mark.asyncio
+async def test_gitlab_prefilter_allows_repository_label_override(gitlab_webhook_module, ignore_settings, monkeypatch):
+    from starlette.background import BackgroundTasks
+    from starlette_context import request_cycle_context
+
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", ["host-label"])
+    payload = _gitlab_payload(_fields(labels=("team-label",)))
+    payload["object_kind"] = "merge_request"
+    payload["object_attributes"].update(action="open", url="https://gitlab.com/org/repo/-/merge_requests/7")
+    monkeypatch.setattr(gitlab_webhook_module, "authenticate_gitlab_webhook", AsyncMock(return_value=None))
+    monkeypatch.setattr(gitlab_webhook_module, "is_bot_user", lambda *_args: False)
+    monkeypatch.setattr(gitlab_webhook_module, "global_settings", ignore_settings)
+
+    async def apply_repo(_url):
+        get_settings().set("CONFIG.INCLUDE_PR_LABELS", ["team-label"])
+
+    run_commands = AsyncMock()
+    monkeypatch.setattr(gitlab_webhook_module, "apply_new_mr_repo_settings", apply_repo)
+    monkeypatch.setattr(gitlab_webhook_module, "_perform_commands_gitlab", run_commands)
+    background = BackgroundTasks()
+    with request_cycle_context({"settings": ignore_settings, "git_provider": {}}):
+        await gitlab_webhook_module.gitlab_webhook(background, SimpleNamespace(json=AsyncMock(return_value=payload)))
+        await background()
+        assert gitlab_webhook_module.should_process_pr_logic(payload) is True
+    run_commands.assert_awaited_once()
+
+
+def test_bitbucket_server_filter_error_respects_opt_in_gate(ignore_settings, monkeypatch):
+    monkeypatch.setattr(bitbucket_server_webhook, "shared_should_process_pr_logic",
+                        Mock(side_effect=ValueError("malformed payload")))
+    assert bitbucket_server_webhook.should_process_pr_logic({}) is True
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", ["ai-review"])
+    assert bitbucket_server_webhook.should_process_pr_logic({}) is False
 
 
 def test_ignore_pr_title_given_as_a_plain_string_is_not_iterated_per_character(providers, ignore_settings):

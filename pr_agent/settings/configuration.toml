@@ -87,6 +87,7 @@ ignore_pr_title = ["^\\[Auto\\]"] # a list of regular expressions to match again
 ignore_pr_target_branches = [] # a list of regular expressions of target branches to ignore from PR agent when an PR is created
 ignore_pr_source_branches = [] # a list of regular expressions of source branches to ignore from PR agent when an PR is created
 ignore_pr_labels = [] # labels to ignore from PR agent when an PR is created
+include_pr_labels = [] # PR label allowlist (exact match; empty disables); see [details](additional_configurations.md#processing-only-prs-with-selected-labels)
 ignore_pr_authors = [] # authors to ignore from PR agent when an PR is created
 # Reactions added to the comment that triggered a command. Names are provider-specific:
 # GitHub accepts only +1, -1, laugh, confused, heart, hooray, rocket, eyes; GitLab and Gitea
