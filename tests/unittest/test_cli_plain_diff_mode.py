@@ -632,6 +632,58 @@ def test_plain_diff_ask_keeps_output_after_command_settings(monkeypatch, tmp_pat
     assert "The changed line is correct." in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(("title", "description"), [
+    ("Fix: invoice approvals", "Acceptance criteria: require approval"),
+    ("true", "123"),
+    ("DEL\x7f title", "C1\x80\x9f description"),
+    ("繁體中文標題", "內容：需審核"),
+    ("Fix 🚀", "Ship 🎯 when ready"),
+])
+def test_plain_diff_cli_preserves_context_text_in_prompts(monkeypatch, tmp_path, title, description):
+    captured = {}
+
+    async def answer(self, model, system, user, temperature=0.2, **kwargs):
+        captured["title"] = get_settings().get("plain_diff.title")
+        captured["description"] = get_settings().get("plain_diff.description")
+        captured["prompt"] = system + "\n" + user
+        return "The changed line is correct.", "stop"
+
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion", answer,
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+
+    run(inargs=["--stdin", "ask", "Explain.",
+                f"--plain_diff.title={title}", f"--plain_diff.description={description}"])
+
+    assert captured["title"] == title
+    assert captured["description"] == description
+    assert title in captured["prompt"]
+    assert description in captured["prompt"]
+
+
+def test_plain_diff_cli_encodes_context_with_issue_target(monkeypatch):
+    captured = {}
+
+    class FakeAgent:
+        async def handle_request(self, target, request, notify=None):
+            captured.update(target=target, request=request)
+            return True
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+
+    run(inargs=["--stdin", "--issue_url", "https://example/issue/1", "ask",
+                "--plain_diff.title=true", "--plain_diff.description=Acceptance: ready"])
+
+    assert captured == {
+        "target": "https://example/issue/1",
+        "request": ["ask", '--plain_diff.title="true"',
+                    '--plain_diff.description="Acceptance: ready"'],
+    }
+
+
 def test_plain_diff_ask_applies_command_ignore_filter(monkeypatch):
     diff = (
         "diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-old\n+new\n"

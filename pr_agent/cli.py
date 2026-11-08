@@ -5,6 +5,7 @@ import os
 import sys
 from contextlib import contextmanager
 
+import yaml
 from starlette_context import context, request_cycle_context
 
 from pr_agent.agent.command_registry import COMMAND_SPECS
@@ -126,6 +127,19 @@ def _validate_output_options(parser, args, diff_mode):
                     pass  # One or both destinations may not exist yet.
             if same_destination:
                 parser.error("--output and --json-output must use different files")
+
+
+def _encode_plain_diff_context_args(args):
+    """Keep Plain Diff context as text when command arguments are parsed as YAML."""
+    encoded = []
+    for arg in args:
+        if arg.startswith("--") and "=" in arg:
+            key, value = arg.split("=", 1)
+            if key[2:].lower() in ("plain_diff.title", "plain_diff.description"):
+                quoted = yaml.safe_dump(value, allow_unicode=True, default_style='"').strip()
+                arg = f"{key}={quoted}"
+        encoded.append(arg)
+    return encoded
 
 
 def set_parser():
@@ -270,11 +284,12 @@ def run(inargs=None, args=None):
             inject_artifact_context()
             init_run_details()
             # Read the verdict in the same task where the request installs its collector.
+            tool_args = _encode_plain_diff_context_args(args.rest) if diff_mode else args.rest
             if args.issue_url:
-                result = await PRAgent().handle_request(args.issue_url, [command] + args.rest)
+                result = await PRAgent().handle_request(args.issue_url, [command] + tool_args)
             else:
                 target = args.pr_url or "local_diff"
-                result = await PRAgent().handle_request(target, [command] + args.rest)
+                result = await PRAgent().handle_request(target, [command] + tool_args)
             if result is RequestOutcome.SKIPPED:
                 # No tool ran, so there are no command callbacks or failures to drain.
                 return RequestOutcome.SKIPPED, False

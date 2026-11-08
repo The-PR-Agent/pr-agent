@@ -72,6 +72,24 @@ state (`auto_review`, `config`, `settings`, and `help`) also honor `--output`.
 `answer` does not: it requires issue-comment history, which is unavailable when
 the input is a standalone diff.
 
+### Optional PR context
+
+Provide a title and description when the diff needs context that is not apparent
+from the code, such as the intended behavior or acceptance criteria:
+
+```bash
+python -m pr_agent.cli --diff-file changes.diff review \
+  --plain_diff.title="Require approval for invoices" \
+  --plain_diff.description="Invoices above the limit need manager approval."
+```
+
+`ask` and `describe` also use the supplied title and description; `improve`
+uses the title, but its suggestion prompts do not use the description. These
+optional command arguments need no configuration file changes or enable flag.
+Without them, the title remains `Local diff review` and the description remains
+empty. Supplying a description may increase model input tokens for commands
+that use it, but does not add model requests.
+
 ## How it works
 
 1. **Diff parsing** — the unified diff is parsed locally into per-file patch objects.
