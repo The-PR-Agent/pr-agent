@@ -1030,6 +1030,10 @@ class PRReviewer:
             self._chunked_remaining_files_list = coverage.remaining_files_list
             self._chunked_partial_files_list = coverage.partial_files_list
             self._chunked_primary_model = model
+            if len(patches_diff_list) == 1:
+                self.patches_diff = patches_diff_list[0]
+                self.remaining_files_list = coverage.remaining_files_list
+                self.partial_files_list = coverage.partial_files_list
         if len(patches_diff_list) < 2:
             get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
             return False
