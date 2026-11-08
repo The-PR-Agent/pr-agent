@@ -445,8 +445,8 @@ def test_unusable_key_issues_are_dropped_without_discarding_the_rest():
 
     findings = PRReviewer._review_findings_from_data(data)
 
-    assert [finding["path"] for finding in findings] == ["src/app.py"]
-    assert "Real finding." in findings[0]["body"]
+    assert [finding.path for finding in findings] == ["src/app.py"]
+    assert "Real finding." in findings[0].rendered_body
 
 
 def test_missing_key_issue_collection_still_fails_closed():

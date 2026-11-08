@@ -1,10 +1,13 @@
+import sys
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
+from github.Issue import Issue
 
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.github_provider import GithubProvider
-from pr_agent.tools.pr_similar_issue import PRSimilarIssue, _provider_supports_issue_indexing
+from pr_agent.tools.pr_similar_issue import PRSimilarIssue, _is_pull_request, _provider_supports_issue_indexing
 
 
 class UnsupportedProvider(GitProvider):
@@ -132,3 +135,32 @@ def test_unknown_provider_configuration_is_unsupported(monkeypatch):
 
     monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_git_provider", raise_unknown)
     assert _provider_supports_issue_indexing() is False
+
+
+@pytest.mark.parametrize("attributes, expected", [
+    ({}, False), ({"pull_request": None}, False), ({"pull_request": {}}, True),
+    ({"pull_request": {"url": "https://api.github.com/repos/Example/Repo/pulls/1"}}, True),
+])
+def test_listed_issue_classification_uses_the_existing_payload(attributes, expected):
+    requester = Mock()
+    requester.requestJsonAndCheck.side_effect = AssertionError("Unexpected issue-detail request")
+    issue = Issue(
+        requester, {}, {"url": "https://api.github.com/repos/Example/Repo/issues/1", **attributes}, completed=False
+    )
+
+    assert _is_pull_request(issue) is expected
+    requester.requestJsonAndCheck.assert_not_called()
+
+    requester.requestJsonAndCheck.side_effect = None
+    requester.requestJsonAndCheck.return_value = {}, {"title": "Fetched title"}
+    assert issue.title == "Fetched title"
+    requester.requestJsonAndCheck.assert_called_once_with("GET", issue.url, parameters=None, headers=None)
+
+
+@pytest.mark.parametrize("github_installed", [True, False])
+def test_custom_issue_classification_keeps_github_optional(monkeypatch, github_installed):
+    if not github_installed:
+        monkeypatch.setitem(sys.modules, "github.GithubObject", None)
+
+    assert _is_pull_request(SimpleNamespace(pull_request=None)) is False
+    assert _is_pull_request(SimpleNamespace(pull_request=SimpleNamespace())) is True

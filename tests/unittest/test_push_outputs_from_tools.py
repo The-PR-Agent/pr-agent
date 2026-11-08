@@ -12,6 +12,7 @@ import pytest
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions, render_suggestions_markdown
 from pr_agent.tools.pr_description import PRDescription
+from pr_agent.tools.pr_questions import NO_ANALYZABLE_FILES_NOTE, PRQuestions
 from pr_agent.tools.pr_reviewer import PRReviewer
 
 SUGGESTION = {
@@ -39,6 +40,53 @@ def test_describe_emits_from_its_publish_path():
 
 def test_improve_emits_from_its_publish_path():
     assert "push_outputs_async" in PRCodeSuggestions.run.__code__.co_names
+
+
+@pytest.mark.parametrize("no_analyzable_files, show_help", [(False, False), (False, True), (True, False)])
+async def test_ask_emits_before_publishing_the_answer(monkeypatch, no_analyzable_files, show_help):
+    tool = PRQuestions.__new__(PRQuestions)
+    tool.pr_url = "https://github.com/org/repo/pull/1"
+    tool.question_str = "What changed?"
+    tool.prediction = None
+    tool.git_provider = MagicMock()
+    tool.git_provider.is_supported.return_value = show_help
+    tool.git_provider.supports_threaded_pr_questions.return_value = False
+    events = []
+
+    async def prepare(_model):
+        tool.no_analyzable_files = no_analyzable_files
+        tool.prediction = "The return value changed."
+
+    async def record(message_type, **kwargs):
+        events.append(("sink", message_type, kwargs))
+
+    def publish(comment, **kwargs):
+        if not kwargs.get("is_temporary"):
+            events.append(("comment", comment))
+
+    tool._prepare_prediction = prepare
+    tool.git_provider.publish_comment.side_effect = publish
+    monkeypatch.setattr("pr_agent.tools.pr_questions.retry_with_fallback_models",
+                        lambda fn, model_type: fn("fake-model"))
+    monkeypatch.setattr("pr_agent.tools.pr_questions.push_outputs_async", record)
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
+    monkeypatch.setitem(get_settings().pr_questions, "enable_help_text", show_help)
+
+    await tool.run()
+
+    assert [event[0] for event in events] == ["sink", "comment"]
+    _, message_type, sink = events[0]
+    assert message_type == "ask"
+    assert sink["payload"] == {
+        "question": "What changed?",
+        "answer": NO_ANALYZABLE_FILES_NOTE if no_analyzable_files else "The return value changed.",
+    }
+    assert "### **Answer:**" in sink["markdown"]
+    assert "What changed?" in sink["markdown"]
+    assert "<details>" not in sink["markdown"]
+    if show_help:
+        assert "<details>" in events[1][1]
+    assert sink["git_provider"] is tool.git_provider
 
 
 # --------------------------------------------------------------------------------------

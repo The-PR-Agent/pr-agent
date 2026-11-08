@@ -1485,6 +1485,40 @@ class TestGiteaProviderUserFacingLinks:
         assert provider.get_line_link("app/storage.py", 24, "not-a-number") == f"{prefix}#L24"
         assert provider.get_line_link("app/storage.py", -1) == prefix
 
+    @staticmethod
+    def _agit_provider(head_sha=None):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.pr_number = 4
+        provider.base_url_html = "http://forgejo:3000"
+        provider.base_url = "http://forgejo:3000"
+        provider.pr_url = "http://forgejo:3000/owner/repo/pulls/4"
+        provider.pr = None
+        if head_sha is not None:
+            provider.pr = MagicMock(head=SimpleNamespace(ref="refs/pull/4/head", sha=head_sha))
+        return provider
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_for_agit_pr_uses_head_sha(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings()
+        provider = self._agit_provider(head_sha="0123456789abcdef")
+        provider.get_pr_branch = MagicMock(return_value="refs/pull/4/head")
+
+        prefix = "http://forgejo:3000/owner/repo/src/commit/0123456789abcdef/app/storage.py"
+        assert provider.get_line_link("app/storage.py", 24) == f"{prefix}#L24"
+        assert provider.get_line_link("app/storage.py", 24, 30) == f"{prefix}#L24-L30"
+        assert provider.get_line_link("app/storage.py", -1) == prefix
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_for_agit_pr_without_head_sha_returns_empty(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings()
+        provider = self._agit_provider(head_sha=None)
+        provider.get_pr_branch = MagicMock(return_value="refs/pull/4/head")
+
+        assert provider.get_line_link("app/storage.py", 24) == ""
+
     @patch("pr_agent.git_providers.gitea_provider.get_settings")
     def test_get_pr_url_uses_user_facing_base_url(self, mock_get_settings):
         # html_url here comes from a stale ROOT_URL; the configured WEB_URL must win.

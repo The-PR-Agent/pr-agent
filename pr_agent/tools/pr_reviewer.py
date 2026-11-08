@@ -2,6 +2,7 @@ import asyncio
 import copy
 import datetime
 import re
+from dataclasses import replace
 from functools import partial
 
 from pydantic import ValidationError
@@ -18,6 +19,8 @@ from pr_agent.algo.comment_identity import (
     hidden_marker_forms,
     render_hidden_marker,
 )
+from pr_agent.algo.deterministic_risk import build_risk_checks
+from pr_agent.algo.findings import Finding
 from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
@@ -40,6 +43,7 @@ from pr_agent.algo.pr_processing import (
     get_pr_diff,
     get_pr_multi_diffs,
     retry_with_fallback_models,
+    run_diff_preparation,
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
@@ -65,7 +69,6 @@ from pr_agent.algo.structural_reach import build_structural_reach
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import (
     ModelType,
-    _as_line,
     convert_to_markdown_v2,
     is_value_no,
     load_yaml,
@@ -90,7 +93,6 @@ from pr_agent.tools.ticket_pr_compliance_check import (
 )
 
 MAX_REVIEW_COVERAGE_FILES = 50
-_SUGGESTION_FENCE_RE = re.compile(r"```[ \t]*suggestion\b", re.IGNORECASE)
 
 _REVIEW_FAILURE_REASONS = (
     (
@@ -173,6 +175,11 @@ _STATE_BLOCK_SIZE = "state_size"
 def _is_structural_reach_key(key) -> bool:
     """Whether a review key would render like the deterministic structural reach row, whatever its separators."""
     return re.sub(r"[^a-z0-9]", "", str(key).lower()) == "structuralreach"
+
+
+def _is_risk_checks_key(key) -> bool:
+    """Whether a review key would render like the deterministic risk checks row, whatever its separators."""
+    return re.sub(r"[^a-z0-9]", "", str(key).lower()) in ("riskchecks", "deterministicrisk")
 
 
 class PRReviewer:
@@ -693,7 +700,7 @@ class PRReviewer:
             return ""
         return render_previous_findings(parsed.state, max_chars, self._load_dismissed_key_issues())
 
-    def _load_dismissed_key_issues(self) -> list[dict]:
+    def _load_dismissed_key_issues(self) -> list[Finding]:
         """Return inline key issues whose threads indicate an eligible dismissal, newest first.
 
         Only threads PR-Agent verifiably opened count. Providers determine eligible dismissal statuses;
@@ -705,11 +712,15 @@ class PRReviewer:
                 if (thread.status != "resolved" or thread.authored_by_agent is not True
                         or not KEY_ISSUE_LOCATION_MARKER_RE.search(thread.suggestion)):
                     continue
-                finding = {"path": thread.file, "body": strip_markers(thread.suggestion).strip(),
-                           "line_start": thread.start_line, "line_end": thread.end_line}
+                finding = Finding(
+                    path=thread.file,
+                    body=strip_markers(thread.suggestion).strip(),
+                    line_start=thread.start_line,
+                    line_end=thread.end_line,
+                )
                 replies = thread.text_replies()
                 if replies:
-                    finding["reply"] = replies[-1][1][:DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS]
+                    finding = replace(finding, reply=replies[-1][1][:DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS])
                 dismissed.append(finding)
         except Exception as e:
             get_logger().warning(f"Could not read resolved key-issue threads, error: {e}")
@@ -717,31 +728,11 @@ class PRReviewer:
         return dismissed
 
     @staticmethod
-    def _review_finding_from_issue(issue: dict) -> dict | None:
-        if not isinstance(issue, dict):
-            return None
-        path = str(issue.get("relevant_file") or issue.get("path") or "").strip()
-        raw_content = issue.get("issue_content") or issue.get("body") or ""
-        content = _SUGGESTION_FENCE_RE.sub("```text", str(raw_content).strip())
-        header = str(issue.get("issue_header") or "").strip()
-        if header.lower() == "possible bug":
-            header = "Possible Issue"
-        if not path or not content:
-            return None
-
-        finding = {
-            "path": path,
-            "body": f"**{header}**\n\n{content}" if header else content,
-        }
-        start = _as_line(issue.get("start_line"))
-        if start is not None:
-            end = _as_line(issue.get("end_line")) or start
-            finding["line_start"] = start
-            finding["line_end"] = max(start, end)
-        return finding
+    def _review_finding_from_issue(issue: dict) -> Finding | None:
+        return Finding.from_review_issue(issue)
 
     @classmethod
-    def _review_findings_from_data(cls, data: dict) -> list[dict] | None:
+    def _review_findings_from_data(cls, data: dict) -> list[Finding] | None:
         review = data.get("review")
         if not isinstance(review, dict):
             return None
@@ -879,8 +870,8 @@ class PRReviewer:
             self._review_state_result = result
 
     def _chunked_findings_for_state(
-        self, published: list[dict], previous_state: dict | None
-    ) -> tuple[list[dict], bool]:
+        self, published: list[Finding], previous_state: dict | None
+    ) -> tuple[list[Finding], bool]:
         """Pick the findings of a chunked review that the state is reconciled against.
 
         The merge cuts the findings to `num_max_findings`, but a cut finding is a known one, so
@@ -949,7 +940,7 @@ class PRReviewer:
             diff_kwargs["output_token_reserve"] = output_token_reserve
         if chunking_enabled:
             diff_kwargs["return_prepared"] = True
-        output = get_pr_diff(self.git_provider, self.token_handler, model, **diff_kwargs)
+        output = await run_diff_preparation(get_pr_diff, self.git_provider, self.token_handler, model, **diff_kwargs)
         if isinstance(output, PreparedPRDiff):
             self.patches_diff = output.diff
             self.remaining_files_list = output.remaining_files_list
@@ -1045,6 +1036,10 @@ class PRReviewer:
             self._chunked_remaining_files_list = coverage.remaining_files_list
             self._chunked_partial_files_list = coverage.partial_files_list
             self._chunked_primary_model = model
+            if len(patches_diff_list) == 1:
+                self.patches_diff = patches_diff_list[0]
+                self.remaining_files_list = coverage.remaining_files_list
+                self.partial_files_list = coverage.partial_files_list
         if len(patches_diff_list) < 2:
             get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
             return False
@@ -1335,7 +1330,7 @@ class PRReviewer:
         if isinstance(data, dict) and isinstance(data.get("review"), dict):
             if not getattr(self, "vars", {}).get("require_failure_modes", False):
                 data["review"].pop("failure_modes", None)
-            for key in [k for k in data["review"] if _is_structural_reach_key(k)]:
+            for key in [k for k in data["review"] if _is_structural_reach_key(k) or _is_risk_checks_key(k)]:
                 data["review"].pop(key)
         if self.prediction_data is None:
             self._validate_review_schema(data)
@@ -1354,6 +1349,26 @@ class PRReviewer:
         structural_reach = build_structural_reach(resolve_artifact_path)
         if structural_reach:
             data["review"] = {"structural_reach": structural_reach, **data["review"]}
+
+        unfiltered_files = None
+        if hasattr(self.git_provider, "get_pr_file_paths"):
+            try:
+                unfiltered_files = self.git_provider.get_pr_file_paths()
+            except Exception:
+                unfiltered_files = None
+        if not unfiltered_files and hasattr(self.git_provider, "get_files"):
+            try:
+                unfiltered_files = self.git_provider.get_files()
+            except Exception:
+                unfiltered_files = None
+
+        filtered_names = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
+        if filtered_names:
+            unfiltered_files = list(unfiltered_files or []) + list(filtered_names)
+
+        risk_checks = build_risk_checks(self.git_provider.get_diff_files(), unfiltered_files=unfiltered_files)
+        if risk_checks and risk_checks.get("has_findings"):
+            data["review"] = {"risk_checks": risk_checks, **data["review"]}
 
         structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
         if callable(structured_publisher) or review_json_output_path.get():
@@ -1506,18 +1521,12 @@ class PRReviewer:
             message_type, payload=payload, markdown=markdown, git_provider=self.git_provider
         )
 
-    def _build_key_issue_comment(self, issue, diff_files: dict) -> dict | None:
-        if not isinstance(issue, dict):
-            return None
-        relevant_file = (issue.get("relevant_file") or "").strip()
-        issue_content = _SUGGESTION_FENCE_RE.sub("```text", (issue.get("issue_content") or "").strip())
-        issue_header = (issue.get("issue_header") or "").strip()
-        if issue_header.lower() == "possible bug":
-            issue_header = "Possible Issue"
-        start_line = _as_line(issue.get("start_line")) or 0
-        end_line = _as_line(issue.get("end_line")) or start_line
+    def _build_key_issue_comment(self, finding: Finding, diff_files: dict) -> dict | None:
+        relevant_file = finding.path
+        start_line = finding.line_start or 0
+        end_line = finding.line_end or start_line
 
-        if not relevant_file or not issue_content or start_line < 1 or end_line < start_line:
+        if not relevant_file or not finding.body or start_line < 1 or end_line < start_line:
             get_logger().warning("Review finding has no usable location, keeping it in the summary",
                                  artifact={"relevant_file": relevant_file, "start_line": start_line,
                                            "end_line": end_line})
@@ -1534,13 +1543,16 @@ class PRReviewer:
                                            "end_line": end_line})
             return None
 
-        relevant_file = file.filename.strip()
-        body = f"**{issue_header}**\n\n{issue_content}" if issue_header else issue_content
-        return {"body": body,
-                "relevant_file": relevant_file,
-                "relevant_lines_start": start_line,
-                "relevant_lines_end": end_line,
-                "fallback_to_pr_comment": False}
+        finding = replace(
+            finding,
+            path=file.filename.strip(),
+            line_start=start_line,
+            line_end=end_line,
+        )
+        return finding.to_inline_comment(
+            finding.rendered_body,
+            fallback_to_pr_comment=False,
+        )
 
     def _can_verify_inline_key_issue_publication(self) -> bool:
         return can_verify_inline_comment_publication(self.git_provider)
@@ -1586,7 +1598,11 @@ class PRReviewer:
         published = 0
         for issue in issues:
             try:
-                comment = self._build_key_issue_comment(issue, diff_files)
+                finding = Finding.from_review_issue(issue)
+                if finding is None:
+                    remaining_issues.append(issue)
+                    continue
+                comment = self._build_key_issue_comment(finding, diff_files)
                 if comment is None:
                     remaining_issues.append(issue)
                     continue

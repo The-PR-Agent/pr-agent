@@ -183,9 +183,12 @@ def test_finding_identity_text_stays_english(language):
     language("es-AR")
     issue = {"relevant_file": "a.py", "issue_header": "Possible bug", "issue_content": "Leak.",
              "start_line": 1, "end_line": 1}
-    assert PRReviewer._review_finding_from_issue(issue)["body"] == "**Possible Issue**\n\nLeak."
+    finding = PRReviewer._review_finding_from_issue(issue)
+    assert finding.rendered_body == "**Possible Issue**\n\nLeak."
     diff_files = {"a.py": SimpleNamespace(filename="a.py", head_file="x = 1\n")}
-    comment = PRReviewer._build_key_issue_comment(PRReviewer.__new__(PRReviewer), issue, diff_files)
+    comment = PRReviewer._build_key_issue_comment(
+        PRReviewer.__new__(PRReviewer), finding, diff_files
+    )
     assert comment["body"] == "**Possible Issue**\n\nLeak."
 
 

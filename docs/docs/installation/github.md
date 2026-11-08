@@ -327,14 +327,14 @@ To use local models via Ollama:
         config.fallback_models: '[]'
         config.custom_model_max_tokens: "128000"
         # Ollama configuration
-        OLLAMA.API_BASE: "http://localhost:11434"
+        OLLAMA.API_BASE: "http://<ollama-host-reachable-from-container>:11434"
         # Tool configuration
         github_action_config.auto_review: "true"
         github_action_config.auto_describe: "true"
         github_action_config.auto_improve: "true"
 ```
 
-**Note:** For local models, you'll need to use a self-hosted runner with Ollama installed, as GitHub Actions hosted runners cannot access localhost services.
+**Note:** Ollama must be reachable from the action's Docker container. `localhost` inside that container refers to the container itself, not the runner host. If Ollama runs on a self-hosted runner, configure a host address and Ollama network binding that the action container can reach.
 
 ##### Using Amazon Bedrock
 
@@ -456,7 +456,7 @@ The remaining knobs live in the `[artifacts]` section of your configuration:
 
 ```toml
 [artifacts]
-enable = false                                              # auto-enabled when artifact_path is set
+enable = true                                               # required when configuring paths here
 artifact_path = [
   { path = "reports/pytest.xml" },
   { path = "reports/coverage.xml" },
@@ -471,6 +471,8 @@ max_artifact_size = 50000                                   # characters; longer
 `path`, `artifact_label`, `artifact_instructions`, `target_tools`, and `truncate_from` on
 its own line; a shared `artifact_label` applies only to a single file, otherwise each file falls
 back to its name.
+
+Automatic enabling applies to the action's `artifact_path` input or the `ARTIFACT_PATH` / `PR_AGENT_ARTIFACT_PATH` environment variables. A path set only in `[artifacts]` requires `enable = true`.
 
 CI artifacts are checked for recognizable URL credentials, authorization headers, standard GitLab tokens, AWS access keys, and common credential assignments before model submission, with redaction matches logged only by type and count; this pattern-based check does not recognize every secret format, so use sanitized CI logs as input.
 
@@ -719,7 +721,7 @@ Allowing you to automate the review process on your private or public repositori
 
    - Set the following permissions:
      - Pull requests: Read & write
-     - Issue comment: Read & write
+     - Issues: Read & write
      - Metadata: Read-only
      - Contents: Read-only (or Read & write if using `resolve_threads` — see note below)
    - Set the following events:
@@ -751,6 +753,7 @@ Allowing you to automate the review process on your private or public repositori
 
    ```bash
    git clone https://github.com/the-pr-agent/pr-agent.git
+   cd pr-agent
    ```
 
 5. Copy the secrets template file and fill in the following:
@@ -787,7 +790,7 @@ Allowing you to automate the review process on your private or public repositori
     > Service images run as UID/GID `10001`: mounted secrets must be readable, and mounted data paths writable, by that user.
     > Home-relative mounts belong under `/home/pragent`.
 
-    > Another option is to set the secrets as environment variables in your deployment environment, for example `OPENAI.KEY` and `GITHUB.USER_TOKEN`.
+    > Another option is to set the secrets as environment variables in your deployment environment, for example `OPENAI__KEY`, `GITHUB__APP_ID`, `GITHUB__PRIVATE_KEY`, and `GITHUB__WEBHOOK_SECRET`.
 
 6. Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
 
@@ -805,7 +808,7 @@ Allowing you to automate the review process on your private or public repositori
 
 8. Go back to your app's settings, and set the following:
 
-   - Webhook URL: The URL of your app's server or the URL of the smee.io channel.
+   - Webhook URL: `https://<PR_AGENT_HOSTNAME>/api/v1/github_webhooks`, or your smee.io channel URL with forwarding configured to that endpoint.
    - Webhook secret: The secret you generated earlier.
 
 9. Install the app by navigating to the "Install App" tab and selecting your desired repositories.
@@ -857,6 +860,7 @@ For production Lambda deployments, use AWS Secrets Manager instead of environmen
    ```json
    {
      "openai.key": "sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+     "github.app_id": 123456,
      "github.webhook_secret": "your-webhook-secret-from-step-2",
      "github.private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----"
    }
@@ -883,9 +887,9 @@ Not all features have been added to CodeCommit yet.  As of right now, CodeCommit
 4. Set the Access Key and Secret using environment variables (see Access Key example below)
 5. Set the `git_provider` value to `codecommit` in the `pr_agent/settings/configuration.toml` settings file
 6. Set the `PYTHONPATH` to include your `pr-agent` project directory
-    - Option A: Add `PYTHONPATH="/PATH/TO/PROJECTS/pr-agent` to your `.env` file
+    - Option A: Run `export PYTHONPATH="/PATH/TO/PROJECTS/pr-agent"` in your shell. PR-Agent does not automatically load `.env` files.
     - Option B: Set `PYTHONPATH` and run the CLI in one command, for example:
-        - `PYTHONPATH="/PATH/TO/PROJECTS/pr-agent python pr_agent/cli.py [--ARGS]`
+        - `PYTHONPATH="/PATH/TO/PROJECTS/pr-agent" python pr_agent/cli.py [--ARGS]`
 
 ---
 

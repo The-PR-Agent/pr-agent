@@ -40,7 +40,7 @@ async def test_run_prepares_diff_with_request_settings(monkeypatch, module, tool
     if module is pr_line_questions:
         for key, value in {
             "ask_diff_hunk": "", "file_name": "app.py", "line_start": 1, "line_end": 1, "side": "RIGHT",
-            "comment_id": "", "pr_questions.use_conversation_history": False,
+            "comment_id": 123, "pr_questions.use_conversation_history": True,
         }.items():
             settings.set(key, value)
     if not scoped:
@@ -60,11 +60,21 @@ async def test_run_prepares_diff_with_request_settings(monkeypatch, module, tool
     provider.get_filtered_diff_file_names.return_value = []
     provider.is_supported.return_value = False
     provider.supports_threaded_pr_questions.return_value = False
+    provider.supports_line_question_history.return_value = module is pr_line_questions
     monkeypatch.setattr(module, "get_git_provider_for_tool", lambda _url: provider)
     handler = SimpleNamespace(chat_completion=AsyncMock(return_value=(response, "stop")))
     started = threading.Event()
     release = threading.Event()
     loop_thread = threading.get_ident()
+
+    def fetch_history(comment_id):
+        assert comment_id == 123
+        assert (threading.get_ident() != loop_thread) is scoped
+        assert get_settings() is settings
+        return [SimpleNamespace(id=99, body="Earlier context", user=SimpleNamespace(login="reviewer"))]
+
+    if module is pr_line_questions:
+        provider.get_review_thread_comments.side_effect = fetch_history
 
     def fetch_diff():
         started.set()
@@ -94,6 +104,9 @@ async def test_run_prepares_diff_with_request_settings(monkeypatch, module, tool
             await tool.run()
 
     provider.get_diff_files.assert_called_once_with()
+    if module is pr_line_questions:
+        provider.get_review_thread_comments.assert_called_once_with(123)
+        assert tool.vars["conversation_history"] == "1. reviewer: Earlier context"
     if has_files:
         handler.chat_completion.assert_awaited_once()
         assert "+value = 2" in handler.chat_completion.await_args.kwargs["user"]

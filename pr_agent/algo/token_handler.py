@@ -11,6 +11,7 @@ from jinja2 import StrictUndefined
 from jinja2.sandbox import SandboxedEnvironment
 from tiktoken import encoding_for_model, get_encoding
 
+from pr_agent.algo.instruction_context import append_protected_system_instructions
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -168,6 +169,7 @@ class TokenHandler:
         try:
             environment = SandboxedEnvironment(undefined=StrictUndefined)
             system_prompt = environment.from_string(system).render(vars)
+            system_prompt = append_protected_system_instructions(system_prompt)
             user_prompt = environment.from_string(user).render(vars)
             system_prompt_tokens = len(encoder.encode(system_prompt, disallowed_special=()))
             user_prompt_tokens = len(encoder.encode(user_prompt, disallowed_special=()))

@@ -11,6 +11,7 @@ from pr_agent.algo.git_patch_processing import extract_hunk_lines_from_patch
 from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    FallbackEligibleError,
     retry_with_fallback_models,
     run_diff_preparation,
 )
@@ -86,7 +87,7 @@ class PR_LineQuestions:
 
         if (get_settings().pr_questions.use_conversation_history
                 and self.git_provider.supports_line_question_history()):
-            conversation_history = self._load_conversation_history()
+            conversation_history = await run_diff_preparation(self._load_conversation_history)
             self.vars["conversation_history"] = conversation_history
 
         self.patch_with_lines = ""
@@ -234,6 +235,8 @@ class PR_LineQuestions:
 
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"The /ask_line response was truncated by {model}")
         return response
 
     def _render_prompts(self, variables):

@@ -50,7 +50,8 @@ def _bare_provider():
 def test_constructor_routes_by_url_resource(monkeypatch, url, repo_name, is_issue):
     client = Mock()
     repo = client.get_repo.return_value
-    repo.get_pull.return_value.get_commits.return_value = [Mock()]
+    repo.get_pull.return_value.head.sha = "a" * 40
+    repo.get_pull.return_value.get_commits.return_value = [SimpleNamespace(sha="a" * 40)]
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: client)
 
     provider = GithubProvider(url)

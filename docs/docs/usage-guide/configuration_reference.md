@@ -68,6 +68,7 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | `num_retries` | 4 | same-model retries of a request the provider rejects (429, 5xx, connection error) before fallback_models, waiting for its Retry-After (up to 30 s) or with exponential backoff; 0 falls back at once. Timeouts and empty responses use retry_same_model_on_timeout / retry_same_model_on_length instead |
 | `skip_keys` | [] |  |
 | `custom_reasoning_model` | false | when true, disables system messages and temperature controls for models that don't support chat-style inputs |
+| `system_instructions` | "" | Host-only instructions appended to every tool's system prompt; repository settings and comment arguments cannot set it. |
 | `response_language` | "en-US" | PR response locale (e.g., "en-US", "it-IT"), also used for fixed comment text; applies only during each command. See additional_configurations.md. |
 | `repo_context_files` | ["AGENTS.md"] | Prompt context files: paths, alternatives, globs, sibling entries; [] disables. See [docs](additional_configurations.md). |
 | `repo_context_from_default_branch` | true | Read repo context files from the repository default branch (trusts only default-branch content). Set to false to read from the PR target branch instead. |
@@ -169,6 +170,9 @@ See [Review](../tools/review.md#configuration-options).
 | `require_failure_modes` | false | ask for up to three concrete failure scenarios and their detection/coverage |
 | `require_priority_files` | false | ask the model which files a human should inspect first |
 | `structural_reach_input_file` | "" | JSON reach facts from a build-graph tool; when the file exists, adds a deterministic change-risk row. See docs/docs/tools/review.md |
+| `enable_risk_checks` | true | Flag sensitive paths and risky change shapes; adds nothing when clean. See docs/docs/tools/review.md |
+| `sensitive_paths` | [".github/workflows/**", ".gitlab-ci.yml", "Jenkinsfile*", ".circleci/**", "azure-pipelines*.yml", ".travis.yml", "bitbucket-pipelines.yml", "*CODEOWNERS", ".pr_agent.toml", "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "requirements*.txt", "Pipfile", "Pipfile.lock", "pyproject.toml", "poetry.lock", "uv.lock", "Cargo.toml", "Cargo.lock", "go.mod", "go.sum", "pom.xml", "build.gradle*", "Gemfile", "Gemfile.lock", "composer.json", "composer.lock", "*Dockerfile*", "docker-compose*.yml", "docker-compose*.yaml", "*.dockerfile", "*.tf", "*.tfvars", "*.hcl", "*migrations*/**", "*migration*", "db/migrate/**", "alembic/**"] | Glob patterns of sensitive paths flagging deterministic review risk findings. See docs/docs/tools/review.md |
+| `extra_risky_shapes` | [] | Custom regex patterns flagging risky changes in diff hunks. See docs/docs/tools/review.md |
 **general options**
 
 | Key | Default | Description |
@@ -275,7 +279,7 @@ See [Improve](../tools/improve.mdx#configuration-options).
 | Key | Default | Description |
 | --- | --- | --- |
 | `committable_code_suggestions` | false | Deprecated alias still accepted until 1.0: pr_code_suggestions.commitable_code_suggestions |
-| `dual_publishing_score_threshold` | -1 | -1 or 0 disables, [1-10] to set the threshold (>=) for publishing a code suggestion both in a table and as committable |
+| `dual_publishing_score_threshold` | -1 | Not settable from a per-directory .pr_agent.toml. -1 or 0 disables, [1-10] also publishes suggestions scoring >= it as committable, besides the table. |
 | `focus_only_on_problems` | true |  |
 | `extra_instructions` | "" |  |
 | `suggestions_heading` | "PR Code Suggestions" | Visible base heading for summary-table /improve comments. Identity is tracked separately. |
@@ -283,7 +287,7 @@ See [Improve](../tools/improve.mdx#configuration-options).
 | `enable_chat_text` | false |  |
 | `persistent_comment` | true |  |
 | `publish_failure_comment` | true | Set to false to suppress /improve failure comments without changing the command's failure status. |
-| `max_history_len` | 4 |  |
+| `max_history_len` | 4 | Previous sets to retain; <=0 keeps latest only (same comment if editable). See https://docs.pr-agent.ai/tools/improve#configuration-options |
 | `publish_output_no_suggestions` | true |  |
 | `enable_suggestions_coverage_footer` | true | show failed chunks and files omitted by the token or AI-call budget |
 **suggestions scoring**
@@ -417,7 +421,7 @@ See [GitLab](../usage-guide/automations_and_usage.md#gitlab-webhook).
 | `feedback_on_draft_pr` | false |  |
 | `publish_review_as_thread` | false | Post the /review summary as a resolvable thread (discussion) instead of a plain note. |
 | `publish_improve_as_thread` | false | Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note. |
-| `reply_to_trigger_comment` | false | On GitLab, reply to the triggering note's discussion for `/review` and `/improve` output when a discussion ID is available. |
+| `reply_to_trigger_comment` | false | Reply in the triggering GitLab discussion for `/review`, `/improve`, or `/ask` (true/false); see docs/docs/usage-guide/additional_configurations.md. |
 | `publish_code_suggestions_as_review` | false | When pr_code_suggestions.committable_code_suggestions is true, queue each suggestion as a GitLab draft note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of posting each as its own live discussion - and its own notification - as soon as it's created. |
 | `resolve_outdated_inline_threads` | false | Resolve the bot's own inline threads that a later push left on an outdated diff version. |
 | `auto_resolve_fixed_inline_threads` | false | Resolve the bot's own inline threads whose flagged line was modified after the comment was posted - i.e. the diff between the comment's head sha and the current head sha removes/replaces that line. Unlike resolve_outdated_inline_threads this is content-based: threads on lines nobody touched (or merely shifted by unrelated insertions) stay open. |
@@ -690,7 +694,8 @@ See [Push outputs](../usage-guide/push_outputs.md#configuration).
 | Key | Default | Description |
 | --- | --- | --- |
 | `enable` | false |  |
-| `channels` | [] | any of: "stdout", "file", "webhook", "slack", "telegram", "teams". Nothing is emitted until a channel is listed here |
+| `channels` | [] | exact names as a list/tuple or comma-separated string: "stdout", "file", "webhook", "slack", "telegram", "teams"; empty emits nothing |
+| `tools` | ["review", "describe", "improve"] | output types to deliver; add "ask" to include Q&A, or select fewer tools; supports comma-separated strings |
 | `file_path` | "pr-agent-outputs/reviews.jsonl" | used by the "file" channel |
 | `webhook_url` | "" | used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL |
 | `slack_webhook_url` | "" | used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL |

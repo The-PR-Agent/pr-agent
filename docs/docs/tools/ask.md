@@ -30,7 +30,7 @@ You can run `/ask` on specific lines of code in the PR from the PR's diff view. 
 
 If no matching diff hunk is found for the selected lines, the tool explains this without calling a model.
 
-Note that the tool does not have "memory" of previous questions, and answers each question independently.
+With `pr_questions.use_conversation_history=true` (the default), line questions on GitHub and Azure DevOps can include earlier comments from the same thread. Azure DevOps also supports history for threaded top-level questions. Other questions are answered independently.
 
 ## Ask on images
 
@@ -93,7 +93,7 @@ See a full video tutorial [here](https://codium.ai/images/pr_agent/ask_image_vid
   </tr>
   <tr>
     <td><b>use_conversation_history</b></td>
-    <td>If set to true, the tool will use the conversation history when answering questions on specific code lines (GitHub only). Default is true.</td>
+    <td>If set to true, the tool will use the conversation history from the same thread when answering questions on specific code lines (GitHub and Azure DevOps) or threaded top-level questions (Azure DevOps only). Default is true.</td>
   </tr>
 </table>
 

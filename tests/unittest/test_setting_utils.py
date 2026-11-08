@@ -1,13 +1,38 @@
 import copy
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from starlette_context import context, request_cycle_context
 
-from pr_agent.algo import language_handler
+from pr_agent.algo import language_handler, setting_utils
 from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.config_loader import global_settings
 from pr_agent.servers import bitbucket_app, gitlab_webhook
+
+
+@pytest.mark.parametrize("value", ["y", 2, {"unexpected": True}])
+def test_invalid_named_boolean_setting_logs_key_and_uses_default(monkeypatch, value):
+    logger = Mock()
+    monkeypatch.setattr(setting_utils, "get_logger", lambda: logger)
+
+    assert setting_utils._as_bool_setting(
+        value,
+        default=True,
+        setting_name="config.disable_auto_feedback",
+    ) is True
+    logger.warning.assert_called_once()
+    assert "config.disable_auto_feedback" in logger.warning.call_args.args[0]
+
+
+@pytest.mark.parametrize("value", [None, "", "  ", [], {}])
+def test_empty_named_boolean_setting_logs_warning(monkeypatch, value):
+    logger = Mock()
+    monkeypatch.setattr(setting_utils, "get_logger", lambda: logger)
+
+    assert setting_utils._as_bool_setting(value, default=True, setting_name="sample.setting") is True
+    logger.warning.assert_called_once()
+    assert "sample.setting" in logger.warning.call_args.args[0]
 
 
 @pytest.mark.parametrize(

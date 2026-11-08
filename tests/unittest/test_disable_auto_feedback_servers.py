@@ -98,3 +98,49 @@ async def test_no_auto_command_runs_when_auto_feedback_is_disabled(auto_settings
     await runner(conf, agent)
 
     assert agent.commands == []
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("false", False), ("False", False), ("0", False), ("off", False),
+    ("true", True), ("on", True), ("1", True),
+])
+def test_the_gate_parses_string_values(auto_settings, value, expected):
+    # repository .pr_agent.toml files are loaded with AUTO_CAST_FOR_DYNACONF=false, so a quoted value stays a string
+    auto_settings.set("config.disable_auto_feedback", value)
+    assert auto_feedback_disabled() is expected
+
+
+@pytest.mark.parametrize("value", ["y", "enabled"])
+def test_invalid_disable_auto_feedback_value_disables_automatic_commands(auto_settings, value):
+    auto_settings.set("config.disable_auto_feedback", value)
+    assert auto_feedback_disabled() is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,runner,section,conf", CASES, ids=[f"{c[0]}-{c[3]}" for c in CASES])
+async def test_auto_commands_run_when_disabled_is_the_string_false(auto_settings, name, runner, section, conf):
+    auto_settings.set("config.disable_auto_feedback", "false")
+    agent = RecordingAgent()
+
+    await runner(conf, agent)
+
+    assert agent.commands != []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("section,runner", [
+    ("github_app",
+     lambda agent: github_app._perform_auto_commands_github(
+         "pr_commands", agent, {"action": "opened", "pull_request": {"draft": True}}, API_URL, {})),
+    ("gitlab",
+     lambda agent: gitlab_webhook._perform_commands_gitlab(
+         "pr_commands", agent, API_URL, {}, {"object_attributes": {"draft": True}})),
+], ids=["github_app", "gitlab"])
+async def test_draft_is_skipped_when_feedback_on_draft_pr_is_the_string_false(auto_settings, section, runner):
+    auto_settings.set("config.disable_auto_feedback", False)
+    auto_settings.set(f"{section}.feedback_on_draft_pr", "false")
+    agent = RecordingAgent()
+
+    await runner(agent)
+
+    assert agent.commands == []

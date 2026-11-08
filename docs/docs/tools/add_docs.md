@@ -41,8 +41,6 @@ Under the section `[pr_add_docs]`, the following options are available:
 |--------|------|---------|-------------|
 | `extra_instructions` | string | `""` | Additional instructions for the AI model |
 | `docs_style` | string | `"Sphinx"` | Documentation style for Python. Options: `"Sphinx"`, `"Google Style with Args, Returns, Attributes...etc"`, `"Numpy Style"`, `"PEP257"`, `"reStructuredText"` |
-| `file` | string | `""` | Specific file to document (useful when multiple components have the same name) |
-| `class_name` | string | `""` | Specific class name to target (useful when methods have the same name in the same file) |
 
 ### Example configuration
 

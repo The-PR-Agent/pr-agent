@@ -9,6 +9,7 @@ import dynaconf
 from opentelemetry.trace import StatusCode
 from starlette_context import context, request_cycle_context
 
+from pr_agent.agent.command_registry import COMMAND_SPECS
 from pr_agent.agent.request_policy import RequestOutcome, enforce_request_policy
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -31,46 +32,16 @@ from pr_agent.log import get_logger
 from pr_agent.telemetry.meter import get_ai_calls_counter, get_commands_counter, get_tokens_counter
 from pr_agent.telemetry.shutdown import flush_telemetry
 from pr_agent.telemetry.tracer import get_tracer
-from pr_agent.tools.pr_add_docs import PRAddDocs
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from pr_agent.tools.pr_config import PRConfig
-from pr_agent.tools.pr_description import PRDescription
-from pr_agent.tools.pr_generate_labels import PRGenerateLabels
-from pr_agent.tools.pr_help_message import PRHelpMessage
-from pr_agent.tools.pr_line_questions import PR_LineQuestions
-from pr_agent.tools.pr_questions import PRQuestions
 from pr_agent.tools.pr_reviewer import PRReviewer
-from pr_agent.tools.pr_similar_issue import PRSimilarIssue
-from pr_agent.tools.pr_update_changelog import PRUpdateChangelog
 
 # Keep the established import path available to integrations and tests while the
 # shared handler works against the provider-neutral base exception.
 IncompleteBitbucketPullRequestFilesError = _IncompleteBitbucketPullRequestFilesError
 IncompletePullRequestFilesError = _IncompletePullRequestFilesError
 
-command2class = {
-    "auto_review": PRReviewer,
-    "answer": PRReviewer,
-    "review": PRReviewer,
-    "review_pr": PRReviewer,
-    "describe": PRDescription,
-    "describe_pr": PRDescription,
-    "improve": PRCodeSuggestions,
-    "improve_code": PRCodeSuggestions,
-    "ask": PRQuestions,
-    "ask_question": PRQuestions,
-    "ask_line": PR_LineQuestions,
-    "update_changelog": PRUpdateChangelog,
-    "config": PRConfig,
-    "settings": PRConfig,
-    "help": PRHelpMessage,
-    "similar_issue": PRSimilarIssue,
-    "add_docs": PRAddDocs,
-    "generate_labels": PRGenerateLabels,
-    # SECURITY: "/help_docs" is temporarily disabled while the clone-target validation
-    # fix is reviewed (see issue #2445). Re-enable by restoring `"help_docs": PRHelpDocs`
-    # and its import once the hardening PR is merged.
-}
+# The single source of truth for commands and aliases is
+# pr_agent/agent/command_registry.py; dispatch reads the tool mapping from it.
+command2class = {name: spec.tool for name, spec in COMMAND_SPECS.items()}
 
 commands = list(command2class.keys())
 

@@ -8,6 +8,10 @@ import urllib.parse
 from bisect import bisect_left
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from http.client import HTTPException
+from socket import SHUT_RDWR
+from threading import Event, Lock, Timer
+from time import monotonic
 from types import SimpleNamespace
 from urllib.parse import quote, urlparse
 
@@ -20,6 +24,7 @@ from gitlab import (
     GitlabUpdateError,
 )
 from requests.exceptions import RequestException
+from urllib3.exceptions import HTTPError
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.setting_utils import _as_bool_setting
@@ -90,6 +95,24 @@ class GitLabDiffNotReadyError(IncompleteGitLabDiffError):
 # counts and mid-collection metadata movement fail immediately.
 _DIFF_READY_RETRY_DELAYS = (2, 5, 10)
 _diff_ready_sleep = time.sleep
+
+# Keep requests small: GitLab limits multi-blob GraphQL responses to 20 MB.
+# The wall-clock budget is best-effort while Requests waits for response headers.
+_GRAPHQL_CONTENT_BATCH = 10
+_GRAPHQL_CONTENT_MIN_READS = 8
+_GRAPHQL_CONTENT_TIME_BUDGET = 5.0
+_GRAPHQL_CONTENT_MAX_BODY_BYTES = 20 * 1024 * 1024
+_GRAPHQL_CONTENT_QUERY = """
+query($project: ID!, $ref: String!, $paths: [String!]!) {
+  project(fullPath: $project) {
+    repository {
+      blobs(paths: $paths, ref: $ref) {
+        nodes { path oid mode rawTextBlob }
+      }
+    }
+  }
+}
+"""
 
 
 def _neutralize_gitlab_mentions(text: str) -> str:
@@ -1245,6 +1268,160 @@ class GitLabProvider(GitProvider):
             get_logger().warning(f"Error retrieving file {file_path} from branch {branch}: {e}")
             return ''
 
+    def _prefetch_diff_file_contents(self, diffs: list[dict], base_sha: str, head_sha: str) -> dict:
+        """Read ordinary changed files in batches, leaving every unverified result to REST."""
+        if len(diffs) < 4 or "/" not in str(self.id_project) or not base_sha or not head_sha:
+            return {}
+
+        reads = []
+        valid_count = 0
+        for diff in diffs:
+            if not is_valid_file(diff['new_path']):
+                continue
+            valid_count += 1
+            if valid_count >= MAX_FILES_ALLOWED_FULL:
+                break
+            if not diff['diff'] or diff.get("_submodule_child"):
+                continue
+            if not diff['new_file']:
+                reads.append((base_sha, diff['old_path']))
+            if not diff['deleted_file']:
+                reads.append((head_sha, diff['new_path']))
+
+        if len(reads) < _GRAPHQL_CONTENT_MIN_READS:
+            return {}
+
+        paths_by_ref = {}
+        for ref, path in dict.fromkeys(reads):
+            paths_by_ref.setdefault(ref, []).append(path)
+
+        content_by_revision = {}
+        deadline = monotonic() + _GRAPHQL_CONTENT_TIME_BUDGET
+        for ref, paths in paths_by_ref.items():
+            for start in range(0, len(paths), _GRAPHQL_CONTENT_BATCH):
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    return content_by_revision
+                batch = paths[start:start + _GRAPHQL_CONTENT_BATCH]
+                try:
+                    response = self.gl.http_request(
+                        "post", f"{self.gl.url.rstrip('/')}/api/graphql",
+                        post_data={"query": _GRAPHQL_CONTENT_QUERY,
+                                   "variables": {"project": str(self.id_project), "ref": ref, "paths": batch}},
+                        timeout=min(get_http_request_timeout(), remaining),
+                        obey_rate_limit=False, retry_transient_errors=False, max_retries=0, streamed=True,
+                    )
+                    fully_read = False
+                    try:
+                        response_socket = getattr(getattr(response.raw, "connection", None), "sock", None)
+                        if response_socket is None:
+                            return content_by_revision
+                        original_release = getattr(response.raw, "release_conn", None)
+                        if not callable(original_release):
+                            return content_by_revision
+                        watchdog_lock = Lock()
+                        watchdog_done = Event()
+
+                        def release_after_watchdog(original=original_release, lock=watchdog_lock,
+                                                   done=watchdog_done):
+                            with lock:
+                                done.set()
+                                original()
+
+                        # Never return a socket to the shared pool while its watchdog may still close it.
+                        response.raw.release_conn = release_after_watchdog
+
+                        def abort_stalled_read(lock=watchdog_lock, done=watchdog_done,
+                                               raw=response.raw, sock=response_socket):
+                            with lock:
+                                if done.is_set() or getattr(raw, "connection", None) is None:
+                                    return
+                                try:
+                                    sock.shutdown(SHUT_RDWR)
+                                except OSError:
+                                    return  # The peer may have already closed this socket.
+
+                        watchdog = Timer(max(0, deadline - monotonic()), abort_stalled_read)
+                        watchdog.daemon = True
+                        body = bytearray()
+                        oversized = False
+                        started = False
+                        try:
+                            watchdog.start()
+                            started = True
+                            while (read_remaining := deadline - monotonic()) > 0:
+                                with watchdog_lock:
+                                    if not watchdog_done.is_set():
+                                        response_socket.settimeout(min(get_http_request_timeout(), read_remaining))
+                                # read1 returns available bytes without waiting for a full-sized chunk.
+                                chunk = response.raw.read1(65536, decode_content=True)
+                                if not chunk:
+                                    fully_read = True
+                                    break
+                                if len(body) + len(chunk) > _GRAPHQL_CONTENT_MAX_BODY_BYTES:
+                                    get_logger().info(
+                                        "GitLab blob prefetch response too large; skipping this batch"
+                                    )
+                                    oversized = True
+                                    break
+                                body.extend(chunk)
+                        finally:
+                            with watchdog_lock:
+                                watchdog_done.set()
+                            watchdog.cancel()
+                            if started:
+                                watchdog.join(timeout=1.0)
+                            response.raw.release_conn = original_release
+                        if oversized:
+                            continue
+                        if monotonic() >= deadline:
+                            get_logger().info("GitLab blob prefetch time budget exhausted; using individual file reads")
+                            return content_by_revision
+                        response_data = json.loads(body)
+                    finally:
+                        if not fully_read:
+                            response.close()
+                except (GitlabError, RequestException, HTTPError, HTTPException, ValueError, AttributeError,
+                        TypeError, OSError, RuntimeError) as error:
+                    get_logger().info(
+                        f"GitLab blob prefetch unavailable ({type(error).__name__}); using individual file reads"
+                    )
+                    return content_by_revision
+
+                if not isinstance(response_data, dict) or response_data.get("errors"):
+                    get_logger().info("GitLab blob prefetch returned errors; using individual file reads")
+                    return content_by_revision
+                data = response_data.get("data")
+                project = data.get("project") if isinstance(data, dict) else None
+                repository = project.get("repository") if isinstance(project, dict) else None
+                blobs = repository.get("blobs") if isinstance(repository, dict) else None
+                nodes = blobs.get("nodes") if isinstance(blobs, dict) else None
+                if not isinstance(nodes, list):
+                    get_logger().info(
+                        "GitLab blob prefetch returned an unexpected response; using individual file reads"
+                    )
+                    return content_by_revision
+
+                wanted = set(batch)
+                for blob in nodes:
+                    if not isinstance(blob, dict) or not isinstance(blob.get("path"), str):
+                        continue
+                    if blob["path"] not in wanted:
+                        continue
+                    if blob.get("mode") not in ("100644", "100755"):
+                        continue  # Only ordinary files can bypass the REST path.
+                    content, oid = blob.get("rawTextBlob"), blob.get("oid")
+                    if not isinstance(content, str) or not isinstance(oid, str):
+                        continue
+                    try:
+                        data = content.encode("utf-8")
+                        digest = hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
+                    except (UnicodeEncodeError, ValueError, TypeError):
+                        continue
+                    if digest == oid:
+                        content_by_revision[(ref, blob["path"])] = content
+        return content_by_revision
+
     def get_pr_file_content_snapshot(self, file_path: str, branch: str) -> FileContentSnapshot:
         try:
             file_obj = self.gl.projects.get(self.id_project, lazy=True).files.get(file_path, branch)
@@ -1379,6 +1556,16 @@ class GitLabProvider(GitProvider):
                 # Keep logging best-effort: a diff entry without a path must not stop diff collection.
                 pass
 
+        prefetched = (
+            self._prefetch_diff_file_contents(diffs, base_sha_for_content, head_sha_for_content)
+            if not incremental_active else {}
+        )
+
+        def read_content(path, ref, **options):
+            # Missing patches require strict REST reads even if another entry used the same path.
+            cached = prefetched.get((ref, path)) if not options else None
+            return cached if cached is not None else self.get_pr_file_content(path, ref, **options)
+
         diff_files = []
         invalid_files_names = []
         counter_valid = 0
@@ -1406,12 +1593,12 @@ class GitLabProvider(GitProvider):
                     original_file_content_str = (
                         ''
                         if not incremental_active and diff['new_file']
-                        else self.get_pr_file_content(diff['old_path'], base_sha_for_content, **old_options)
+                        else read_content(diff['old_path'], base_sha_for_content, **old_options)
                     )
                     new_file_content_str = (
                         ''
                         if not incremental_active and diff['deleted_file']
-                        else self.get_pr_file_content(diff['new_path'], head_sha_for_content, **new_options)
+                        else read_content(diff['new_path'], head_sha_for_content, **new_options)
                     )
                 except Exception as e:
                     if diff['diff']:
@@ -1542,6 +1729,197 @@ class GitLabProvider(GitProvider):
             "number": self.id_mr if self.id_mr is not None else "",
             "head_sha": self.get_pr_head_sha(),
         }
+
+    def get_head_ci_status(self, sha: str | None = None) -> str | None:
+        """Return the head CI state for `sha` (or the MR head SHA if None).
+
+        Returns 'passed', 'failed', 'pending', 'none', or None if unsupported or on error.
+        """
+        try:
+            mr = getattr(self, "mr", None)
+            if not mr:
+                return None
+            target_sha = sha or self.get_pr_head_sha()
+
+            pipeline = None
+            head_pipe = getattr(mr, "head_pipeline", None)
+            if head_pipe:
+                p_sha = head_pipe.get("sha") if isinstance(head_pipe, dict) else getattr(head_pipe, "sha", None)
+                if not target_sha or p_sha == target_sha:
+                    pipeline = head_pipe
+
+            if pipeline is None and hasattr(mr, "pipelines"):
+                try:
+                    plist = mr.pipelines.list(page=1, per_page=10)
+                    for p in plist:
+                        p_sha = p.get("sha") if isinstance(p, dict) else getattr(p, "sha", None)
+                        if not target_sha or p_sha == target_sha:
+                            pipeline = p
+                            break
+                except Exception as e:
+                    get_logger().warning(f"Could not list GitLab MR pipelines: {e}")
+
+            if pipeline is None:
+                return "none"
+
+            status = pipeline.get("status") if isinstance(pipeline, dict) else getattr(pipeline, "status", None)
+            if not status or not isinstance(status, str):
+                return "none"
+            status = status.lower()
+
+            if status == "success":
+                return "passed"
+            if status in ("failed", "canceled", "cancelled"):
+                return "failed"
+            if status in ("running", "pending", "waiting_for_resource", "preparing", "created", "manual", "scheduled"):
+                return "pending"
+            if status == "skipped":
+                return "passed"
+            return "failed"
+        except Exception as e:
+            get_logger().warning(f"Failed to get GitLab head CI status: {e}")
+            return None
+
+    def is_head_stale_against_base(self) -> bool | None:
+        """Return whether any file in the PR changed on the base branch after the head's last CI run.
+
+        Returns True (stale), False (not stale), or None if unsupported or on error.
+        """
+        try:
+            mr = getattr(self, "mr", None)
+            if not mr:
+                return None
+            diff_files = self.get_diff_files()
+            if diff_files is None:
+                return None
+
+            pr_filenames = set(self.get_filtered_diff_file_names())
+            for f in diff_files:
+                fn = getattr(f, "filename", None)
+                if fn:
+                    pr_filenames.add(fn)
+                old_fn = getattr(f, "old_filename", None) or getattr(f, "previous_filename", None)
+                if old_fn:
+                    pr_filenames.add(old_fn)
+            if not pr_filenames:
+                return False
+
+            target_branch = getattr(mr, "target_branch", None)
+            if not target_branch:
+                return None
+
+            ref_dt = None
+            head_pipe = getattr(mr, "head_pipeline", None)
+            if head_pipe:
+                created_at = (
+                    head_pipe.get("created_at")
+                    if isinstance(head_pipe, dict)
+                    else getattr(head_pipe, "created_at", None)
+                )
+                if created_at:
+                    ref_dt = _parse_gitlab_iso_datetime(created_at)
+
+            if ref_dt is None:
+                head_sha = self.get_pr_head_sha()
+                if head_sha and hasattr(self, "gl"):
+                    try:
+                        proj = self.gl.projects.get(self.id_project, lazy=True)
+                        commit = proj.commits.get(head_sha)
+                        c_date = getattr(commit, "committed_date", None) or getattr(commit, "created_at", None)
+                        if c_date:
+                            ref_dt = _parse_gitlab_iso_datetime(c_date)
+                    except Exception as e:
+                        get_logger().warning(f"Could not retrieve GitLab commit {head_sha} for timestamp: {e}")
+
+            if ref_dt is None:
+                return None
+
+            proj = self.gl.projects.get(self.id_project, lazy=True)
+            since_iso = ref_dt.isoformat() + "Z"
+            commits = proj.commits.list(ref_name=target_branch, since=since_iso, page=1, per_page=50)
+
+            stale = False
+            for c in commits:
+                c_date_str = getattr(c, "committed_date", None) or getattr(c, "created_at", None)
+                if c_date_str:
+                    c_dt = _parse_gitlab_iso_datetime(c_date_str)
+                    if c_dt and c_dt <= ref_dt:
+                        continue
+                try:
+                    c_diffs = c.diff(get_all=True, per_page=100)
+                    for d in c_diffs:
+                        new_path = d.get("new_path") if isinstance(d, dict) else getattr(d, "new_path", None)
+                        old_path = d.get("old_path") if isinstance(d, dict) else getattr(d, "old_path", None)
+                        if (new_path and new_path in pr_filenames) or (old_path and old_path in pr_filenames):
+                            stale = True
+                            break
+                except Exception as e:
+                    get_logger().warning(f"Could not read a base commit diff for staleness: {e}")
+                    return None
+                if stale:
+                    break
+
+            if stale:
+                return True
+            if commits and len(commits) >= 50:
+                get_logger().warning("Base commit history reached pagination limit (50); failing closed as unknown")
+                return None
+            return False
+        except Exception as e:
+            get_logger().warning(f"Failed to check GitLab head staleness: {e}")
+            return None
+
+    def are_all_authors_human(self) -> bool | None:
+        """Return whether the PR author and every commit author are human (not bot accounts).
+
+        Returns True (all human), False (contains bot account), or None if unsupported or on error.
+        """
+        try:
+            mr = getattr(self, "mr", None)
+            if not mr:
+                return None
+            author = getattr(mr, "author", None)
+            if not author:
+                return None
+
+            def is_access_token_bot(val: str) -> bool:
+                if not val or not isinstance(val, str):
+                    return False
+                low = val.lower().strip()
+                return bool(re.search(r"^(?:project|group)_\d+_bot(?:_|\b)", low)) or "_bot_" in low
+
+            def is_bot_identity(val: str) -> bool:
+                if not val or not isinstance(val, str):
+                    return False
+                low = val.lower().strip()
+                return low.endswith("[bot]") or "[bot]" in low or low in ("gitlab-bot", "dependabot")
+
+            is_bot = author.get("bot", False) if isinstance(author, dict) else getattr(author, "bot", False)
+            username = (
+                author.get("username", "") if isinstance(author, dict) else getattr(author, "username", "")
+            ) or ""
+            author_name = (
+                author.get("name", "") if isinstance(author, dict) else getattr(author, "name", "")
+            ) or ""
+            if is_access_token_bot(username) or is_access_token_bot(author_name):
+                return None
+            if is_bot or is_bot_identity(username) or is_bot_identity(author_name):
+                return False
+
+            commits = mr.commits() if callable(getattr(mr, "commits", None)) else getattr(mr, "commits", [])
+            if hasattr(commits, "_list"):
+                commits = commits._list
+            for c in commits:
+                name = (c.get("author_name", "") if isinstance(c, dict) else getattr(c, "author_name", "")) or ""
+                email = (c.get("author_email", "") if isinstance(c, dict) else getattr(c, "author_email", "")) or ""
+                if is_access_token_bot(name) or is_access_token_bot(email):
+                    return None
+                if is_bot_identity(name) or is_bot_identity(email):
+                    return False
+            return True
+        except Exception as e:
+            get_logger().warning(f"Failed to check if GitLab authors are human: {e}")
+            return None
 
     def get_comment_url(self, comment):
         return f"{self.mr.web_url}#note_{comment.id}"
