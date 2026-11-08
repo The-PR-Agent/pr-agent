@@ -293,6 +293,8 @@ class PRQuestions:
         else:
             response, finish_reason = await self.ai_handler.chat_completion(
                 model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"The /ask response was truncated by {model}")
         return response
 
     def _prepare_pr_answer(self) -> str:

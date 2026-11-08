@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from pr_agent.algo.findings import Finding
 from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import key_issue_fingerprint
 from pr_agent.algo.utils import _as_line
@@ -49,35 +50,27 @@ def _timestamp(value: str | None) -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-def normalize_finding(finding: Mapping[str, Any]) -> dict[str, Any] | None:
+def normalize_finding(finding: Finding | Mapping[str, Any]) -> dict[str, Any] | None:
     """Return the stable, display-oriented fields needed for reconciliation."""
-    if not isinstance(finding, Mapping):
+    if isinstance(finding, Finding):
+        path = finding.path
+        body = finding.rendered_body.strip()
+        start = finding.line_start
+        end = finding.line_end
+    elif isinstance(finding, Mapping):
+        path = str(finding.get("path") or "").strip()
+        body = str(finding.get("body") or "").strip()
+        start = _as_line(finding.get("line_start"))
+        end = _as_line(finding.get("line_end"))
+    else:
         return None
-
-    path = str(finding.get("path") or finding.get("relevant_file") or "").strip()
     path = path.strip().strip(chr(96)).lstrip("/")
-    body = str(
-        finding.get("body")
-        or finding.get("issue_content")
-        or finding.get("description")
-        or ""
-    ).strip()
     if not path or not body:
         return None
 
     # The fingerprint ignores whitespace so re-wrapped prose stays the same finding, but the
     # body is what the resolved section renders, so it keeps the line breaks the reviewer used.
     finding_id = key_issue_fingerprint(path, _WHITESPACE_RE.sub(" ", body).lower())
-    start = _as_line(
-        finding.get("line_start")
-        or finding.get("relevant_lines_start")
-        or finding.get("start_line")
-    )
-    end = _as_line(
-        finding.get("line_end")
-        or finding.get("relevant_lines_end")
-        or finding.get("end_line")
-    )
     if start is not None and end is None:
         end = start
     if start is not None and end is not None and end < start:
@@ -96,7 +89,7 @@ def normalize_finding(finding: Mapping[str, Any]) -> dict[str, Any] | None:
     return normalized
 
 
-def normalize_findings(findings: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def normalize_findings(findings: Iterable[Finding | Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Normalize and de-duplicate current structured findings deterministically."""
     by_id: dict[str, dict[str, Any]] = {}
     for finding in findings or []:
@@ -202,7 +195,7 @@ def _retained_findings(
 
 def reconcile_review_findings(
     previous_state: Mapping[str, Any] | None,
-    current_findings: Iterable[Mapping[str, Any]],
+    current_findings: Iterable[Finding | Mapping[str, Any]],
     *,
     allow_resolution: bool,
     excluded_files: Iterable[str] | None = None,
@@ -318,7 +311,7 @@ def _previous_finding_entry(finding: Mapping[str, Any]) -> dict[str, Any]:
 def render_previous_findings(
     state: Mapping[str, Any] | None,
     max_chars: int,
-    dismissed: Iterable[Mapping[str, Any]] = (),
+    dismissed: Iterable[Finding | Mapping[str, Any]] = (),
 ) -> str:
     """Return the stored findings as a JSON block for the /review prompt, empty when none fit.
 
@@ -336,8 +329,9 @@ def render_previous_findings(
         normalized = normalize_finding(finding)
         if normalized is not None:
             normalized["state"] = "DISMISSED"
-            if finding.get("reply"):
-                normalized["reply"] = finding["reply"]
+            reply = finding.reply if isinstance(finding, Finding) else finding.get("reply")
+            if reply:
+                normalized["reply"] = reply
             dismissed_by_id.setdefault(normalized["finding_id"], normalized)
     findings = [finding for finding in (state or {}).get("findings", [])
                 if finding.get("finding_id") not in dismissed_by_id]

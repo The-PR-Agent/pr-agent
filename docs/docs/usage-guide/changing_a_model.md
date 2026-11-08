@@ -22,7 +22,8 @@ retried on the same model up to `config.num_retries` times (default 4) before th
 are tried, waiting for the provider's `Retry-After` (up to 30 seconds) or with exponential backoff
 between attempts. Set it to `0` to move to the fallback models at once.
 
-`/describe`, `/add_docs`, `/generate_labels`, and `/update_changelog` reject responses with
+`/describe`, `/add_docs`, `/generate_labels`, `/update_changelog`, `/ask`, `/ask_line`, and `/help`
+reject responses with
 `finish_reason="length"` before publication and use the existing failure and fallback handling.
 If every model attempt fails, they do not publish the truncated result. For large-PR `/describe`,
 successful chunks can still produce an output with an incomplete-coverage notice when other chunks

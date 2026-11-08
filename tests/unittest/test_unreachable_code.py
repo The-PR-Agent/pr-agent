@@ -54,6 +54,42 @@ _ALLOWLIST = {
         "pr_agent/algo/ai_handlers/cloud_auth.py",
         "get_aws_region",
     ): "google.auth.aws.AwsSecurityCredentialsSupplier interface method, called by google-auth",
+    (
+        "pr_agent/git_providers/git_provider.py",
+        "get_head_ci_status",
+    ): "GitProvider interface method for review verdict (#4694, #4696)",
+    (
+        "pr_agent/git_providers/git_provider.py",
+        "is_head_stale_against_base",
+    ): "GitProvider interface method for review verdict (#4694, #4696)",
+    (
+        "pr_agent/git_providers/git_provider.py",
+        "are_all_authors_human",
+    ): "GitProvider interface method for review verdict (#4694, #4696)",
+    (
+        "pr_agent/git_providers/github_provider.py",
+        "get_head_ci_status",
+    ): "GithubProvider interface implementation for review verdict (#4694, #4696)",
+    (
+        "pr_agent/git_providers/github_provider.py",
+        "is_head_stale_against_base",
+    ): "GithubProvider interface implementation for review verdict (#4694, #4696)",
+    (
+        "pr_agent/git_providers/github_provider.py",
+        "are_all_authors_human",
+    ): "GithubProvider interface implementation for review verdict (#4694, #4696)",
+    (
+        "pr_agent/git_providers/gitlab_provider.py",
+        "get_head_ci_status",
+    ): "GitLabProvider interface implementation for review verdict (#4694, #4696)",
+    (
+        "pr_agent/git_providers/gitlab_provider.py",
+        "is_head_stale_against_base",
+    ): "GitLabProvider interface implementation for review verdict (#4694, #4696)",
+    (
+        "pr_agent/git_providers/gitlab_provider.py",
+        "are_all_authors_human",
+    ): "GitLabProvider interface implementation for review verdict (#4694, #4696)",
 }
 
 

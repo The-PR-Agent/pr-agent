@@ -110,6 +110,12 @@ def test_the_gate_parses_string_values(auto_settings, value, expected):
     assert auto_feedback_disabled() is expected
 
 
+@pytest.mark.parametrize("value", ["y", "enabled"])
+def test_invalid_disable_auto_feedback_value_disables_automatic_commands(auto_settings, value):
+    auto_settings.set("config.disable_auto_feedback", value)
+    assert auto_feedback_disabled() is True
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name,runner,section,conf", CASES, ids=[f"{c[0]}-{c[3]}" for c in CASES])
 async def test_auto_commands_run_when_disabled_is_the_string_false(auto_settings, name, runner, section, conf):

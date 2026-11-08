@@ -71,7 +71,14 @@ class LocalGitProvider(GitProvider):
             raise KeyError(f'Branch: {self.target_branch_name} does not exist')
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ['get_issue_comments', 'get_labels', 'gfm_markdown']:
+        if capability in [
+            'get_issue_comments',
+            'get_labels',
+            'gfm_markdown',
+            'head_ci_status',
+            'head_staleness',
+            'author_human_check',
+        ]:
             return False
         return True
 

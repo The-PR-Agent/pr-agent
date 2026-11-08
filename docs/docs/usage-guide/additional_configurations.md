@@ -216,14 +216,19 @@ publish_review_as_thread = true
 
 ## Reply to the triggering GitLab discussion
 
-By default, `/review` and `/improve` publish a new comment. To reply inside the GitLab discussion that triggered the command, enable (default: `false`):
+By default, `/review`, `/improve`, and `/ask` publish new comments. To reply inside the GitLab discussion
+that triggered the command, enable (default: `false`):
 
 ```toml
 [gitlab]
 reply_to_trigger_comment = true
 ```
 
-This is opt-in and GitLab-only. The webhook supplies the discussion ID for top-level `/review` and `/improve` notes. If the ID is unavailable or the reply fails, PR-Agent falls back to a normal note so output is not lost. GitHub Conversation comments do not expose a compatible reply endpoint.
+This is opt-in and GitLab-only. The webhook supplies the discussion ID for top-level `/review` and `/improve`
+notes, and for `/ask` (including `/ask_question`) in top-level notes or existing discussions. Diff-line `/ask`
+still uses `/ask_line` and its existing reply behavior. If the ID is unavailable or the reply fails, PR-Agent
+falls back to a normal note so output is not lost. GitHub Conversation comments do not expose a compatible
+reply endpoint.
 
 With `persistent_comment=true` (the default for both tools), a rerun updates the earlier result where it was first posted, which may be a different discussion; `/review` also posts a short link to it in the new command's discussion.
 
@@ -690,7 +695,7 @@ and CLI `--pr_url` requests, just like the existing exclusion rules. Repository 
 may select the labels; individual comment or CLI command arguments cannot override this gate.
 
 If the labels cannot be read, PR-Agent skips the request while this opt-in gate is enabled;
-GitHub and GitLab supply labels through their PR/MR APIs and webhook payloads. Inputs
+GitHub, GitLab, Gitea and Azure DevOps supply labels through their PR/MR APIs. Inputs
 without hosted PR labels, including Bitbucket Cloud/Server, local, and plain-diff mode,
 will not pass this gate. The setting selects eligible PRs; it does not itself trigger
 a run when a label is assigned after the PR was opened.

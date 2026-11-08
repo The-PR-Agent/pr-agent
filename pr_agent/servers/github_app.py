@@ -310,7 +310,11 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
     apply_repo_settings(api_url)
     if not _as_bool_setting(get_settings().github_app.handle_push_trigger):
         return {}
-    if (_as_bool_setting(get_settings().github_app.push_trigger_ignore_bot_commits, default=True)
+    if (_as_bool_setting(
+            get_settings().github_app.push_trigger_ignore_bot_commits,
+            default=True,
+            setting_name="github_app.push_trigger_ignore_bot_commits",
+        )
             and body.get("sender", {}).get("type") == "Bot"):
         get_logger().info(f"Skipping {event}: bot commit detected")
         return {}
@@ -320,7 +324,11 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
     merge_commit_sha = pull_request.get("merge_commit_sha")
     if before_sha == after_sha:
         return {}
-    if (_as_bool_setting(get_settings().github_app.push_trigger_ignore_merge_commits, default=True)
+    if (_as_bool_setting(
+            get_settings().github_app.push_trigger_ignore_merge_commits,
+            default=True,
+            setting_name="github_app.push_trigger_ignore_merge_commits",
+        )
             and after_sha == merge_commit_sha):
         return {}
 
@@ -451,7 +459,11 @@ async def handle_request(body: dict[str, Any], event: str, delivery_id: str | No
         get_logger().debug("No action found in request body, exiting handle_request")
         return {}
     settings = get_settings()
-    if not delivery_id or not _as_bool_setting(settings.get("GITHUB_APP.WEBHOOK_DELIVERY_DEDUPLICATION", False)):
+    if not delivery_id or not _as_bool_setting(
+        settings.get("GITHUB_APP.WEBHOOK_DELIVERY_DEDUPLICATION", False),
+        default=True,
+        setting_name="github_app.webhook_delivery_deduplication",
+    ):
         await _dispatch_request(body, event, action)
         return {}
 

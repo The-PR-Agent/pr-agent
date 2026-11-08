@@ -34,6 +34,7 @@ CHANGELOG_ANSWER = "## 1.1.0\n- Added run details\n- Fixed a bug"
 
 def _make_changelog(*, commit, fail_primary=False, provider=None, read_error=None):
     tool = PRUpdateChangelog.__new__(PRUpdateChangelog)
+    tool.changelog_path = "CHANGELOG.md"
     tool.git_provider = provider or _provider()
     tool.commit_changelog = commit
     tool.push_changelog_changes = commit

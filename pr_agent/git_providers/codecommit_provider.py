@@ -105,6 +105,9 @@ class CodeCommitProvider(GitProvider):
             "get_labels",
             "gfm_markdown",
             "markdown_backslash_escapes",
+            "head_ci_status",
+            "head_staleness",
+            "author_human_check",
         ]:
             return False
         return True

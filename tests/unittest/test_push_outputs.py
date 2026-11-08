@@ -172,8 +172,41 @@ class TestPushOutputs:
         push_outputs('ask', payload={'question': '<!channel>'}, markdown=markdown)
 
         assert posts == [{
-            'text': 'Q: &lt;!channel> &lt;!here> &lt;!subteam^S123> &lt;@U123> <https://example.test|link>',
+            'text': 'Q: &lt;!channel&gt; &lt;!here&gt; &lt;!subteam^S123&gt; &lt;@U123&gt; &lt;https://example.test|link&gt;',
         }]
+
+    def test_review_slack_message_escapes_control_syntax_before_pr_url(self, monkeypatch):
+        posts = []
+        monkeypatch.setattr(
+            output_sinks.requests, 'post',
+            lambda url, **kwargs: posts.append(kwargs['json']) or SimpleNamespace(status_code=200),
+        )
+        pr_url = 'https://github.com/org/repo/pull/123'
+
+        output_sinks.SlackSink().send({
+            'type': 'review',
+            'markdown': 'R&D: <!channel> see <https://evil.test|docs> <#C1> &lt; a->b',
+            'pr': {'url': pr_url},
+        }, {'slack_webhook_url': 'https://example.test/slack'})
+
+        assert posts == [{
+            'text': 'R&amp;D: &lt;!channel&gt; see &lt;https://evil.test|docs&gt; &lt;#C1&gt; &amp;lt; a-&gt;b'
+                    f'\n\n{pr_url}',
+        }]
+
+    def test_slack_payload_fallback_is_escaped(self, monkeypatch):
+        posts = []
+        monkeypatch.setattr(
+            output_sinks.requests, 'post',
+            lambda url, **kwargs: posts.append(kwargs['json']) or SimpleNamespace(status_code=200),
+        )
+
+        output_sinks.SlackSink().send(
+            {'type': 'describe', 'payload': {'title': '<@U1> & <!here>'}},
+            {'slack_webhook_url': 'https://example.test/slack'},
+        )
+
+        assert posts == [{'text': '{"title": "&lt;@U1&gt; &amp; &lt;!here&gt;"}'}]
 
     @pytest.mark.parametrize("encoding", ["utf-8", "ascii", "cp1252"])
     def test_stdout_preserves_unicode_with_restricted_encodings(self, monkeypatch, encoding):
