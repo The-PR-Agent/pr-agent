@@ -763,4 +763,3 @@ def test_gitlab_staleness_detects_filtered_file_moved_by_base():
     provider.gl.projects.get.return_value = proj_mock
 
     assert provider.is_head_stale_against_base() is True
-
