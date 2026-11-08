@@ -71,6 +71,8 @@ def test_a_wrapping_fence_is_removed(fenced, expected):
     "- one\n\n```python\nx = 1\n```\n\n- two",
     # Balanced fences of the entry's own: the trailing fence closes them, it is not a wrapper.
     "- one\n\n```python\nx = 1\n```",
+    # A trailing line that merely starts with a fence is content (main keeps it).
+    "- a\n```python",
 ])
 def test_text_without_a_wrapping_fence_is_untouched(text):
     assert strip_wrapping_code_fence(text) == text
@@ -194,8 +196,7 @@ def test_a_four_backtick_fence_is_stripped():
 
 
 def test_a_four_backtick_fence_leaves_no_stray_backtick():
-    """Before the fence run was matched as {3,}, the closing ```` matched its first
-    three backticks and the last one leaked into the body (PR #4652 review)."""
+    """A four-backtick closer must consume all four backticks, not three."""
     out = strip_wrapping_code_fence("````yaml\n- one\n- two\n````")
 
     assert out == "- one\n- two"
@@ -210,10 +211,9 @@ def test_stripping_twice_is_the_same_as_once_for_a_four_backtick_fence():
 
 
 def test_a_long_backtick_run_is_stripped_in_linear_time():
-    """A plain {3,} on the closing fence is quadratic there: 1.8s at 20k, 7.1s at
-    40k, 28.3s at 80k on a dev box — 4x per doubling. The line-structured
-    rewrite must scale linearly (~2x per doubling), and the ratio assertion
-    below distinguishes the two growth curves (PR #4652 review, second pass)."""
+    """A whole-text regex over the fence is quadratic there (4x per doubling);
+    the line-structured scan must stay linear (~2x per doubling), and the ratio
+    assertion below separates the two growth curves."""
     import time
 
     # Ratio assertions only run on sizes large enough that the measurement is
