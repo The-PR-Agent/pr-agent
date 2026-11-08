@@ -442,7 +442,11 @@ def render_risk_checks(data: dict, gfm_supported: bool) -> str:
     if not isinstance(data, dict):
         return ""
 
-    from pr_agent.tools.pr_code_suggestions import _markdown_code_span
+    from pr_agent.tools.pr_code_suggestions import _markdown_code_span as plain_code_span
+
+    def _markdown_code_span(text: str) -> str:
+        # inside the <table> row the backticks stay literal, so escape for HTML instead
+        return f"<code>{html.escape(text)}</code>" if gfm_supported else plain_code_span(text)
 
     has_findings = data.get("has_findings", False)
     sensitive_paths = data.get("sensitive_paths") or []
@@ -472,7 +476,7 @@ def render_risk_checks(data: dict, gfm_supported: bool) -> str:
 
     if risky_shapes:
         shown = [
-            f"`{html.escape(item['description'])}` in {_markdown_code_span(item['file'])}"
+            f"{_markdown_code_span(item['description'])} in {_markdown_code_span(item['file'])}"
             for item in risky_shapes[:MAX_FINDINGS_PER_CATEGORY]
         ]
         more = len(risky_shapes) - len(shown)

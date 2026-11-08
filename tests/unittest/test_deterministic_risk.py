@@ -347,9 +347,12 @@ def test_render_risk_checks_backtick_filename():
     }
     gfm = dr.render_risk_checks(findings, gfm_supported=True)
     plain = dr.render_risk_checks(findings, gfm_supported=False)
-    assert "``path/`file`.yml``" in gfm
-    assert "``db/`schema`.sql``" in gfm
-    assert "``old/`deleted`.py``" in gfm
+    assert "<code>path/`file`.yml</code>" in gfm
+    assert "<code>db/`schema`.sql</code>" in gfm
+    assert "<code>old/`deleted`.py</code>" in gfm
+    assert "<code>&lt;img src=x&gt;</code>" in dr.render_risk_checks(
+        {"has_findings": True, "deleted_files": ["<img src=x>"]}, gfm_supported=True
+    )
     assert "``path/`file`.yml``" in plain
     assert "``db/`schema`.sql``" in plain
     assert "``old/`deleted`.py``" in plain
