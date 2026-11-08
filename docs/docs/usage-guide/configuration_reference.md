@@ -69,10 +69,12 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | `num_retries` | 4 | same-model retries of a request the provider rejects (429, 5xx, connection error) before fallback_models, waiting for its Retry-After (up to 30 s) or with exponential backoff; 0 falls back at once. Timeouts and empty responses use retry_same_model_on_timeout / retry_same_model_on_length instead |
 | `skip_keys` | [] |  |
 | `custom_reasoning_model` | false | when true, disables system messages and temperature controls for models that don't support chat-style inputs |
-| `response_language` | "en-US" | Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...) |
+| `system_instructions` | "" | Host-only instructions appended to every tool's system prompt; repository settings and comment arguments cannot set it. |
+| `response_language` | "en-US" | PR response locale (e.g., "en-US", "it-IT"), also used for fixed comment text; applies only during each command. See additional_configurations.md. |
 | `repo_context_files` | ["AGENTS.md"] | Prompt context files: paths, alternatives, globs, sibling entries; [] disables. See [docs](additional_configurations.md). |
 | `repo_context_from_default_branch` | true | Read repo context files from the repository default branch (trusts only default-branch content). Set to false to read from the PR target branch instead. |
 | `repo_context_max_lines` | 500 | Maximum total rendered lines for repo context, including wrapper tags |
+| `repo_context_expand_imports` | false | Expand @path imports in local context files; comment arguments cannot set it. See [docs](additional_configurations.md). |
 | `repo_context_max_glob_matches` | 20 | Maximum number of files one repo_context_files glob entry (e.g. "docs/adr/*.md") expands to, in name order; each match is one file fetch. A repository's .pr_agent.toml may set it, comment arguments cannot. Clamped to 100. Matches still share the repo_context_max_lines budget. |
 | `repo_context_sibling_repos` | [] | Host-only list of approved sibling repository identifiers (GitHub owner/repo, GitLab group/project or numeric ID strings) that repo_context_files sibling entries may select. On GitHub and GitLab, this also approves repositories for cross-repository issue and ticket context. Empty disables sibling reads. Approve only repositories whose content may be disclosed in consuming PRs, because the actor check bounds who triggers a read, not who chose the target or where the output lands. Repository settings and comment arguments cannot change this list. Canonical identities and owning namespaces are checked after resolution |
 | `repo_context_max_sibling_files` | 5 | Maximum number of sibling-repository files fetched per repo-context build. The fetch count is bounded separately from repo_context_max_lines so selected sibling files cannot trigger an unbounded number of cross-repository calls; sibling files still compete for the repo_context_max_lines budget. Host-only (cannot be raised by a repository's .pr_agent.toml or a comment command) and clamped to a hard ceiling of 20 fetches per build. |
@@ -275,7 +277,7 @@ See [Improve](../tools/improve.mdx#configuration-options).
 | Key | Default | Description |
 | --- | --- | --- |
 | `committable_code_suggestions` | false | Deprecated alias still accepted until 1.0: pr_code_suggestions.commitable_code_suggestions |
-| `dual_publishing_score_threshold` | -1 | -1 or 0 disables, [1-10] to set the threshold (>=) for publishing a code suggestion both in a table and as committable |
+| `dual_publishing_score_threshold` | -1 | Not settable from a per-directory .pr_agent.toml. -1 or 0 disables, [1-10] also publishes suggestions scoring >= it as committable, besides the table. |
 | `focus_only_on_problems` | true |  |
 | `extra_instructions` | "" |  |
 | `suggestions_heading` | "PR Code Suggestions" | Visible base heading for summary-table /improve comments. Identity is tracked separately. |
@@ -283,7 +285,7 @@ See [Improve](../tools/improve.mdx#configuration-options).
 | `enable_chat_text` | false |  |
 | `persistent_comment` | true |  |
 | `publish_failure_comment` | true | Set to false to suppress /improve failure comments without changing the command's failure status. |
-| `max_history_len` | 4 |  |
+| `max_history_len` | 4 | Previous sets to retain; <=0 keeps latest only (same comment if editable). See https://docs.pr-agent.ai/tools/improve#configuration-options |
 | `publish_output_no_suggestions` | true |  |
 | `enable_suggestions_coverage_footer` | true | show failed chunks and files omitted by the token or AI-call budget |
 **suggestions scoring**
@@ -690,9 +692,11 @@ See [Push outputs](../usage-guide/push_outputs.md#configuration).
 | Key | Default | Description |
 | --- | --- | --- |
 | `enable` | false |  |
-| `channels` | [] | any of: "stdout", "file", "webhook", "slack", "telegram". Nothing is emitted until a channel is listed here |
+| `channels` | [] | exact names as a list/tuple or comma-separated string: "stdout", "file", "webhook", "slack", "telegram", "teams"; empty emits nothing |
+| `tools` | ["review", "describe", "improve"] | output types to deliver; add "ask" to include Q&A, or select fewer tools; supports comma-separated strings |
 | `file_path` | "pr-agent-outputs/reviews.jsonl" | used by the "file" channel |
 | `webhook_url` | "" | used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL |
 | `slack_webhook_url` | "" | used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL |
 | `telegram_bot_token` | "" | used by the "telegram" channel; kept in the fixed api.telegram.org URL path |
 | `telegram_chat_id` | "" | used by the "telegram" channel as sendMessage's destination chat |
+| `teams_webhook_url` | "" | used by the "teams" channel: Teams Workflows webhook URL. Must be an absolute https:// URL |

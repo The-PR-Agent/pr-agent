@@ -11,7 +11,6 @@ from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import (
     TRUNCATION_MARKER,
     build_repo_context,
-    render_instruction_files,
     render_instruction_files_with_line_budget,
 )
 from pr_agent.config_loader import get_settings
@@ -68,12 +67,25 @@ class SiblingFakeProvider(FakeProvider):
         return self.sibling_files.get(f"{repo_id}:{file_path}")
 
 
+def _load_repo_context_files(git_provider, context_files, from_default_branch=None):
+    """Adapt the live _iter_repo_context_files loader to the (files, had_fetch_error) shape."""
+    state = repo_context._RepoContextLoadState()
+    files = [
+        (label, content.rstrip())
+        for label, content in repo_context._iter_repo_context_files(
+            git_provider, context_files, from_default_branch, state=state
+        )
+    ]
+    return files, state.had_fetch_error
+
+
 @pytest.fixture
 def repo_context_settings():
     settings = get_settings()
     original_files = settings.config.get("repo_context_files", [])
     original_max_lines = settings.config.get("repo_context_max_lines", 500)
     original_from_default_branch = settings.config.get("repo_context_from_default_branch", True)
+    original_expand_imports = settings.config.get("repo_context_expand_imports", False)
     original_sibling_repos = settings.config.get("repo_context_sibling_repos", [])
     settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", [])
     original_max_sibling_files = settings.config.get("repo_context_max_sibling_files", 5)
@@ -86,6 +98,7 @@ def repo_context_settings():
     settings.set("CONFIG.REPO_CONTEXT_FILES", original_files)
     settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", original_max_lines)
     settings.set("CONFIG.REPO_CONTEXT_FROM_DEFAULT_BRANCH", original_from_default_branch)
+    settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", original_expand_imports)
     settings.set("CONFIG.REPO_CONTEXT_MAX_SIBLING_FILES", original_max_sibling_files)
     repo_context._unsupported_repo_context_provider_classes = original_warned_provider_classes
     repo_context._repo_context_process_cache = original_process_cache
@@ -367,7 +380,7 @@ def test_load_repo_context_files_normalizes_fetch_results():
         "MISSING.md": None,
     })
 
-    files, had_fetch_error = repo_context._load_repo_context_files(
+    files, had_fetch_error = _load_repo_context_files(
         provider, ["AGENTS.md", "EMPTY.md", "MISSING.md", " "]
     )
 
@@ -380,7 +393,7 @@ def test_load_repo_context_files_reports_fetch_errors():
     provider = FakeProvider({})
     provider.get_repo_file_content = Mock(side_effect=Exception("temporary outage"))
 
-    files, had_fetch_error = repo_context._load_repo_context_files(provider, ["AGENTS.md"])
+    files, had_fetch_error = _load_repo_context_files(provider, ["AGENTS.md"])
 
     assert files == []
     assert had_fetch_error is True
@@ -445,7 +458,7 @@ def test_load_repo_context_files_fetches_sibling_and_same_repo_files():
         sibling_files={"group/lib-api:src/interfaces/api.py": "Sibling contract"},
     )
 
-    files, had_fetch_error = repo_context._load_repo_context_files(
+    files, had_fetch_error = _load_repo_context_files(
         provider,
         ["AGENTS.md", {"repo_id": "group/lib-api", "file_path": "src/interfaces/api.py"}],
         from_default_branch=True,
@@ -467,7 +480,7 @@ def test_load_repo_context_files_treats_colon_string_as_local_path():
         sibling_files={"docs/guide:part.md": "Sibling content"},
     )
 
-    files, had_fetch_error = repo_context._load_repo_context_files(
+    files, had_fetch_error = _load_repo_context_files(
         provider, ["docs/guide:part.md"], from_default_branch=True
     )
 
@@ -482,7 +495,7 @@ def test_load_repo_context_files_reports_sibling_fetch_errors():
     provider = SiblingFakeProvider(files={})
     provider.get_sibling_repo_file_content = Mock(side_effect=Exception("temporary outage"))
 
-    files, had_fetch_error = repo_context._load_repo_context_files(
+    files, had_fetch_error = _load_repo_context_files(
         provider, [{"repo_id": "group/lib-api", "file_path": "src/api.py"}], from_default_branch=True
     )
 
@@ -494,7 +507,7 @@ def test_load_repo_context_files_skips_siblings_for_unsupported_provider():
     provider = FakeProvider({"AGENTS.md": "Repo purpose"})
     provider.get_sibling_repo_file_content = Mock()
 
-    files, had_fetch_error = repo_context._load_repo_context_files(
+    files, had_fetch_error = _load_repo_context_files(
         provider, ["AGENTS.md", {"repo_id": "group/lib-api", "file_path": "src/api.py"}], from_default_branch=True
     )
 
@@ -515,7 +528,7 @@ def test_load_repo_context_files_respects_sibling_file_cap(repo_context_settings
         },
     )
 
-    files, had_fetch_error = repo_context._load_repo_context_files(
+    files, had_fetch_error = _load_repo_context_files(
         provider,
         [
             {"repo_id": "group/g1", "file_path": "README.md"},
@@ -547,7 +560,7 @@ def test_sibling_fetch_cap_counts_unique_pairs_not_duplicate_entries(repo_contex
         },
     )
 
-    files, had_fetch_error = repo_context._load_repo_context_files(
+    files, had_fetch_error = _load_repo_context_files(
         provider,
         [
             {"repo_id": "group/g1", "file_path": "README.md"},
@@ -593,7 +606,7 @@ def test_load_repo_context_files_clamps_sibling_fetches_to_hard_ceiling(repo_con
         sibling_files={f"group/g{i}:README.md": str(i) for i in range(hard_max + 5)},
     )
 
-    files, had_fetch_error = repo_context._load_repo_context_files(
+    files, had_fetch_error = _load_repo_context_files(
         provider, context_files, from_default_branch=True
     )
 
@@ -611,7 +624,7 @@ def test_sibling_fetch_cap_counts_attempts_not_just_content(repo_context_setting
         },
     )
 
-    files, had_fetch_error = repo_context._load_repo_context_files(
+    files, had_fetch_error = _load_repo_context_files(
         provider,
         [
             {"repo_id": "group/g1", "file_path": "README.md"},
@@ -644,7 +657,7 @@ def test_sibling_fetch_cap_counts_exceptions(repo_context_settings):
     provider.get_sibling_repo_file_content = Mock(side_effect=counting_call)
     provider.requested_siblings = []
 
-    files, had_fetch_error = repo_context._load_repo_context_files(
+    files, had_fetch_error = _load_repo_context_files(
         provider,
         [
             {"repo_id": "group/g1", "file_path": "README.md"},
@@ -1524,9 +1537,9 @@ def test_build_repo_context_cache_invalidates_when_line_budget_changes(repo_cont
 
 
 def test_render_instruction_files_escapes_path_and_derives_scope():
-    context = render_instruction_files({
+    context = render_instruction_files_with_line_budget({
         'docs/Agent "Notes".md': "Use <literal> markers.\n",
-    })
+    }, 10_000)
 
     assert context == (
         "You are being given instruction files. Follow them as project-specific guidance when reviewing code.\n"
@@ -1541,9 +1554,9 @@ def test_render_instruction_files_escapes_path_and_derives_scope():
 
 
 def test_render_instruction_files_uses_longer_fence_when_content_contains_default_fence():
-    context = render_instruction_files({
+    context = render_instruction_files_with_line_budget({
         "AGENTS.md": "Avoid closing this fence:\n`````",
-    })
+    }, 10_000)
 
     assert context == (
         "You are being given instruction files. Follow them as project-specific guidance when reviewing code.\n"
@@ -1832,7 +1845,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
             {
                 "extra_instructions": "",
                 "artifact_context": None,
-                "repo_context": render_instruction_files({"AGENTS.md": "Repo purpose"}),
+                "repo_context": render_instruction_files_with_line_budget({"AGENTS.md": "Repo purpose"}, 10_000),
                 "previous_findings": "",
                 "skills_context": "",
                 "require_can_be_split_review": False,
@@ -1858,7 +1871,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
             {
                 "extra_instructions": "",
                 "artifact_context": None,
-                "repo_context": render_instruction_files({"AGENTS.md": "Repo purpose"}),
+                "repo_context": render_instruction_files_with_line_budget({"AGENTS.md": "Repo purpose"}, 10_000),
                 "skills_context": "",
                 "enable_custom_labels": False,
                 "custom_labels_class": "",
@@ -1873,7 +1886,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
             {
                 "extra_instructions": "",
                 "artifact_context": None,
-                "repo_context": render_instruction_files({"AGENTS.md": "Repo purpose"}),
+                "repo_context": render_instruction_files_with_line_budget({"AGENTS.md": "Repo purpose"}, 10_000),
                 "skills_context": "",
                 "focus_only_on_problems": True,
                 "num_code_suggestions": 3,
@@ -1885,7 +1898,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
             {
                 "extra_instructions": "",
                 "artifact_context": None,
-                "repo_context": render_instruction_files({"AGENTS.md": "Repo purpose"}),
+                "repo_context": render_instruction_files_with_line_budget({"AGENTS.md": "Repo purpose"}, 10_000),
                 "skills_context": "",
                 "focus_only_on_problems": True,
                 "num_code_suggestions": 3,
@@ -2224,7 +2237,7 @@ def test_load_repo_context_files_expands_single_directory_glob():
         {"docs/adr": ["docs/adr/0002-b.md", "docs/adr/README.txt", "docs/adr/0001-a.md"]},
     )
 
-    files, had_fetch_error = repo_context._load_repo_context_files(
+    files, had_fetch_error = _load_repo_context_files(
         provider, ["AGENTS.md", "docs/adr/*.md", "docs/adr/0001-a.md"], from_default_branch=True
     )
 
@@ -2242,7 +2255,7 @@ def test_load_repo_context_files_caps_glob_matches(monkeypatch, configured, expe
     listed = [f"adr/{index:03}.md" for index in range(150)]
     provider = ListingFakeProvider({path: path for path in listed}, {"adr": listed})
 
-    files, _ = repo_context._load_repo_context_files(provider, ["adr/*.md"], from_default_branch=True)
+    files, _ = _load_repo_context_files(provider, ["adr/*.md"], from_default_branch=True)
 
     assert [label for label, _ in files] == listed[:expected]
 
@@ -2276,7 +2289,7 @@ AGENT_INSTRUCTION_ALTERNATIVES = ["AGENTS.md", "CLAUDE.md", ".kiro/steering/*.md
 def test_load_repo_context_files_uses_first_available_alternative(files, expected):
     provider = ListingFakeProvider(files, {".kiro/steering": sorted(files, reverse=True)})
 
-    loaded, had_fetch_error = repo_context._load_repo_context_files(
+    loaded, had_fetch_error = _load_repo_context_files(
         provider, [AGENT_INSTRUCTION_ALTERNATIVES], from_default_branch=True
     )
 
@@ -2287,13 +2300,162 @@ def test_load_repo_context_files_uses_first_available_alternative(files, expecte
 def test_load_repo_context_files_alternatives_skip_structured_entries_and_duplicates():
     provider = FakeProvider({"AGENTS.md": "agents", "CLAUDE.md": "claude"})
 
-    loaded, _ = repo_context._load_repo_context_files(
+    loaded, _ = _load_repo_context_files(
         provider,
         ["AGENTS.md", [{"repo_id": "org/other", "file_path": "AGENTS.md"}, "AGENTS.md"], ["CLAUDE.md"]],
         from_default_branch=True,
     )
 
     assert loaded == [("AGENTS.md", "agents"), ("CLAUDE.md", "claude")]
+
+
+def test_repo_context_imports_are_disabled_by_default(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["CLAUDE.md"])
+    provider = FakeProvider({"CLAUDE.md": "@AGENTS.md", "AGENTS.md": "agents"})
+
+    loaded, _ = _load_repo_context_files(
+        provider, ["CLAUDE.md"], from_default_branch=True
+    )
+
+    assert loaded == [("CLAUDE.md", "@AGENTS.md")]
+    assert provider.requested_paths == ["CLAUDE.md"]
+
+
+def test_repo_context_alternatives_keep_first_available_after_duplicate_entry(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", False)
+    provider = FakeProvider({"AGENTS.md": "agents", "CLAUDE.md": "claude"})
+
+    loaded, _ = _load_repo_context_files(
+        provider, ["AGENTS.md", ["AGENTS.md", "CLAUDE.md"]], from_default_branch=True
+    )
+
+    assert loaded == [("AGENTS.md", "agents")]
+    assert "CLAUDE.md" not in provider.requested_paths
+
+
+def test_repo_context_expands_imports_relative_to_the_containing_file(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
+    provider = FakeProvider({
+        "docs/CLAUDE.md": "See @rules.md and @Design\\ Docs/style.md",
+        "docs/rules.md": "rules",
+        "docs/Design Docs/style.md": "style",
+    })
+
+    loaded, _ = _load_repo_context_files(
+        provider, ["docs/CLAUDE.md"], from_default_branch=True
+    )
+
+    assert loaded == [
+        ("docs/CLAUDE.md", "See @rules.md and @Design\\ Docs/style.md"),
+        ("docs/rules.md", "rules"),
+        ("docs/Design Docs/style.md", "style"),
+    ]
+    assert provider.from_default_branch_calls == [True, True, True]
+
+
+def test_repo_context_import_parsing_skips_code_urls_and_escaping_paths(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
+    provider = FakeProvider({
+        "CLAUDE.md": (
+            "`@inline.md`\n"
+            "```\n@fenced.md\n```\n"
+            "@https://example.com/remote.md\n"
+            "@../outside.md\n"
+            "@/absolute.md\n"
+            "@~/.claude/private.md\n"
+            "@real.md"
+        ),
+        "inline.md": "inline",
+        "fenced.md": "fenced",
+        "outside.md": "outside",
+        "absolute.md": "absolute",
+        "real.md": "real",
+    })
+
+    loaded, _ = _load_repo_context_files(
+        provider, ["CLAUDE.md"], from_default_branch=True
+    )
+
+    assert [label for label, _ in loaded] == ["CLAUDE.md", "real.md"]
+    assert provider.requested_paths == ["CLAUDE.md", "real.md"]
+
+
+def test_repo_context_import_parser_consumes_escaped_space_tokens_once():
+    content = "@first\\ " + "@nested\\ " * 2000 + "last.md"
+
+    paths = list(repo_context._iter_markdown_import_paths(content))
+
+    assert paths == ["first " + "@nested " * 2000 + "last.md"]
+
+
+def test_repo_context_imports_follow_at_most_four_hops(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
+    provider = FakeProvider({
+        "a.md": "@b.md",
+        "b.md": "@c.md",
+        "c.md": "@d.md",
+        "d.md": "@e.md",
+        "e.md": "@f.md",
+        "f.md": "too deep",
+    })
+
+    loaded, _ = _load_repo_context_files(provider, ["a.md"], from_default_branch=True)
+
+    assert [label for label, _ in loaded] == ["a.md", "b.md", "c.md", "d.md", "e.md"]
+
+
+def test_repo_context_import_fetches_have_a_hard_cap(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
+    imports = " ".join(f"@missing-{index}.md" for index in range(30))
+    provider = FakeProvider({"CLAUDE.md": imports})
+
+    loaded, _ = _load_repo_context_files(provider, ["CLAUDE.md"], from_default_branch=True)
+
+    assert loaded == [("CLAUDE.md", imports)]
+    assert len(provider.requested_paths) == 1 + repo_context._HARD_MAX_IMPORT_FETCHES
+    assert len(set(provider.requested_paths)) == len(provider.requested_paths)
+
+
+def test_repo_context_includes_each_imported_file_once(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["CLAUDE.md", "AGENTS.md"])
+    provider = FakeProvider({
+        "CLAUDE.md": "@AGENTS.md\n@AGENTS.md",
+        "AGENTS.md": "@CLAUDE.md\nagents",
+    })
+
+    loaded, _ = _load_repo_context_files(
+        provider, ["CLAUDE.md", "AGENTS.md"], from_default_branch=True
+    )
+
+    assert [label for label, _ in loaded] == ["CLAUDE.md", "AGENTS.md"]
+    assert provider.requested_paths == ["CLAUDE.md", "AGENTS.md"]
+
+
+def test_repo_context_imported_lines_share_the_line_budget(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["CLAUDE.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 15)
+    provider = FakeProvider({"CLAUDE.md": "@AGENTS.md", "AGENTS.md": "one\ntwo\nthree"})
+
+    context = build_repo_context(provider)
+
+    assert TRUNCATION_MARKER in context
+    assert "three" not in context
+
+
+def test_repo_context_cache_invalidates_when_import_expansion_changes(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["CLAUDE.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    provider = FakeProvider({"CLAUDE.md": "@AGENTS.md", "AGENTS.md": "agents"})
+
+    literal_context = build_repo_context(provider)
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
+    expanded_context = build_repo_context(provider)
+
+    assert "@AGENTS.md" in literal_context
+    assert "agents" in expanded_context
+    assert provider.requested_paths == ["CLAUDE.md", "CLAUDE.md", "AGENTS.md"]
 
 
 def test_repo_context_cache_key_tracks_glob_limit_for_nested_glob_alternatives(monkeypatch):
@@ -2308,7 +2470,7 @@ def test_repo_context_cache_key_tracks_glob_limit_for_nested_glob_alternatives(m
 def test_load_repo_context_files_rejects_wildcards_in_directory_part():
     provider = ListingFakeProvider({}, {})
 
-    files, had_fetch_error = repo_context._load_repo_context_files(
+    files, had_fetch_error = _load_repo_context_files(
         provider, ["docs/*/rules.md", "docs/**/*.md"], from_default_branch=True
     )
 
@@ -2321,7 +2483,7 @@ def test_load_repo_context_files_rejects_wildcards_in_directory_part():
 def test_load_repo_context_files_rejects_escaping_glob_directories(pattern):
     provider = ListingFakeProvider({}, {})
 
-    files, had_fetch_error = repo_context._load_repo_context_files(
+    files, had_fetch_error = _load_repo_context_files(
         provider, [pattern], from_default_branch=True
     )
 
@@ -2334,7 +2496,7 @@ def test_load_repo_context_files_skips_glob_when_provider_cannot_list():
     provider = FakeProvider({"AGENTS.md": "rules"})
     provider.list_repo_directory = lambda dir_path, from_default_branch=False: None
 
-    files, had_fetch_error = repo_context._load_repo_context_files(
+    files, had_fetch_error = _load_repo_context_files(
         provider, ["AGENTS.md", "docs/adr/*.md"], from_default_branch=True
     )
 
@@ -2346,7 +2508,7 @@ def test_load_repo_context_files_reports_listing_errors():
     provider = FakeProvider({})
     provider.list_repo_directory = Mock(side_effect=Exception("temporary outage"))
 
-    files, had_fetch_error = repo_context._load_repo_context_files(
+    files, had_fetch_error = _load_repo_context_files(
         provider, ["docs/adr/*.md"], from_default_branch=True
     )
 
@@ -2462,7 +2624,7 @@ def test_build_repo_context_stops_fetching_glob_alternative_after_budget(repo_co
 def test_load_repo_context_files_reads_bracketed_path_literally():
     provider = ListingFakeProvider({"src/app/[locale]/AGENTS.md": "rules"}, {})
 
-    files, _ = repo_context._load_repo_context_files(
+    files, _ = _load_repo_context_files(
         provider, ["src/app/[locale]/AGENTS.md"], from_default_branch=True
     )
 

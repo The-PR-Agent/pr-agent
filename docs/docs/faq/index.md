@@ -65,7 +65,7 @@ ___
 
 #### Answer:<span style="display:none;">4</span>
 
-No. PR-Agent strict privacy policy ensures that your code is not stored or used for training purposes.
+When self-hosting PR-Agent, code is sent to your configured LLM provider. Storage and training policies depend on that provider and your deployment configuration.
 
 For a detailed overview of our data privacy policy, please refer to [this link](../overview/data_privacy.md)
 

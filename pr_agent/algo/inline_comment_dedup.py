@@ -221,13 +221,8 @@ def iter_existing_inline_comment_bodies(git_provider) -> Iterator[str]:
             for note in attrs.get("notes", []) or []:
                 if isinstance(note, dict):
                     yield note.get("body", "") or ""
-        # The committable-suggestion fallback posts via mr.notes.create, which
-        # may not surface as a discussion; scan plain notes too so their markers
-        # are seen on later runs.
-        for note in git_provider.mr.notes.list(get_all=True):
-            yield getattr(note, "body", "") or ""
         # gitlab.publish_code_suggestions_as_review queues suggestions as draft notes
-        # (invisible in the discussions/notes listings above until published). Scan
+        # (invisible in the discussions listing above until published). Scan
         # them too, so a marker from a draft that's still pending - e.g. because a
         # prior run's bulk-publish failed - is still seen, instead of being re-posted
         # as a duplicate once it (or a fresh copy) is eventually published.

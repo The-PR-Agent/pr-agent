@@ -543,12 +543,13 @@ def _stub_constructor_dependencies(monkeypatch, fake_db):
     monkeypatch.setattr("pr_agent.tools.pr_similar_issue.time.sleep", lambda seconds: None)
 
 
-def test_constructor_second_repo_joins_existing_table(monkeypatch):
+def test_constructor_second_repo_joins_existing_table(monkeypatch, github_issue_pages):
     """Construct the tool for a second repo on an existing table and construct it again."""
     _install_fake_pandas(monkeypatch)
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.table = _FakeSearchableTable([_lancedb_row("example_issue_org-repo-a", "org-repo-a")])
     _stub_constructor_dependencies(monkeypatch, fake_db)
+    monkeypatch.setattr(_FakeRepo, "get_issues", lambda self, state: github_issue_pages((5, 6)))
 
     tool = PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
 

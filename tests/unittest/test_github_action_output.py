@@ -3,6 +3,7 @@ import os
 
 import pytest
 
+from pr_agent.algo import run_output
 from pr_agent.algo.run_output import github_action_output
 from pr_agent.algo.utils import get_settings
 
@@ -83,3 +84,23 @@ class TestGitHubOutput:
         github_action_output(output_data, key_name)
 
         assert not os.path.exists(str(tmp_path / 'output'))
+
+
+@pytest.mark.parametrize("text", ["café", "שלום", "你好 👋"])
+def test_github_output_uses_utf8_on_non_utf8_locales(monkeypatch, tmp_path, text):
+    get_settings().set("GITHUB_ACTION_CONFIG.ENABLE_OUTPUT", True)
+    output_path = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    real_open = open
+
+    def locale_open(path, mode="r", **kwargs):
+        kwargs.setdefault("encoding", "cp1252")
+        return real_open(path, mode, **kwargs)
+
+    monkeypatch.setattr(run_output, "open", locale_open, raising=False)
+
+    github_action_output({"review": {"summary": text}}, "review")
+
+    key, payload = output_path.read_bytes().decode("utf-8").strip().split("=", 1)
+    assert key == "review"
+    assert json.loads(payload) == {"summary": text}

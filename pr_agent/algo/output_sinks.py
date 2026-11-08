@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Protocol
 from urllib.parse import quote, urlparse
 
 import requests
 
+from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.log import get_logger
 
 
@@ -44,9 +46,32 @@ def _post_json(channel: str, url: str, body: dict) -> None:
         get_logger().warning(f"push_outputs: {channel} failed with status {response.status_code}")
 
 
+def _pr_url(record: dict) -> str:
+    pr = record.get("pr")
+    if not isinstance(pr, dict):
+        return ""
+    url = pr.get("url")
+    return url if isinstance(url, str) else ""
+
+
+def _append_pr_url(text: str, record: dict) -> str:
+    url = _pr_url(record)
+    if not url:
+        return text
+    return f"{text}\n\n{url}" if text else url
+
+
+def _truncate_utf16(text: str, max_units: int = 4096) -> str:
+    """Limit text to `max_units` UTF-16 code units without splitting a surrogate pair."""
+    return text.encode("utf-16-le", "surrogatepass")[:max_units * 2].decode("utf-16-le", "ignore")
+
+
 class StdoutSink:
     def send(self, record: dict, cfg: dict) -> None:
-        print(json.dumps(record, ensure_ascii=False))
+        try:
+            print(json.dumps(record, ensure_ascii=False))
+        except UnicodeEncodeError:
+            sys.stdout.write(json.dumps(record, ensure_ascii=True) + "\n")
 
 
 class FileSink:
@@ -74,7 +99,10 @@ class SlackSink:
         text = record.get("markdown")
         if text is None:
             text = json.dumps(record["payload"], ensure_ascii=False)
-        _post_json("slack", url, {"text": text})
+        # Records carry PR-controlled text and model output; escape Slack control syntax
+        # (mentions, <url|label> links) as Slack's formatting guide asks.
+        text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        _post_json("slack", url, {"text": _append_pr_url(text, record)})
 
 
 class TelegramSink:
@@ -94,9 +122,75 @@ class TelegramSink:
             text = json.dumps(record["payload"], ensure_ascii=False)
         # Keep the host fixed and encode the token as a path component, not a URL.
         url = f"https://api.telegram.org/bot{quote(bot_token, safe=':')}/sendMessage"
-        # Limit to 4096 UTF-16 code units, dropping an incomplete surrogate pair at the boundary.
-        text = text.encode("utf-16-le", "surrogatepass")[:8192].decode("utf-16-le", "ignore")
+        # Reserve room for the PR link so truncating a long message never drops it.
+        pr_url = _pr_url(record)
+        if pr_url:
+            suffix = f"\n\n{pr_url}" if text else pr_url
+            suffix_units = len(suffix.encode("utf-16-le", "surrogatepass")) // 2
+            text = _truncate_utf16(text, max(0, 4096 - suffix_units)) + suffix
+        text = _truncate_utf16(text)
         _post_json("telegram", url, {"chat_id": chat_id, "text": text})
+
+
+class TeamsSink:
+    message_size_limit = 28 * 1024
+    truncation_marker = "\n\n[Output truncated]"
+
+    @staticmethod
+    def _card(record: dict, markdown: str) -> dict:
+        title = str(record.get("type") or "output").replace("_", " ").title()
+        card = {
+            "type": "message",
+            "attachments": [{
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "contentUrl": None,
+                "content": {
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard",
+                    "version": "1.4",
+                    "body": [
+                        {"type": "TextBlock", "text": f"PR-Agent {title}", "weight": "Bolder", "size": "Medium"},
+                        {"type": "TextBlock", "text": markdown, "wrap": True},
+                    ],
+                },
+            }],
+        }
+        pr = record.get("pr")
+        pr_url = pr.get("url") if isinstance(pr, dict) else ""
+        if not isinstance(pr_url, str):
+            pr_url = ""
+        if pr_url:
+            card["attachments"][0]["content"]["actions"] = [{
+                "type": "Action.OpenUrl", "title": "Open pull request", "url": pr_url,
+            }]
+        return card
+
+    @staticmethod
+    def _serialized_size(card: dict) -> int:
+        # Measure the default JSON encoding used by requests.post(json=card).
+        return len(json.dumps(card).encode("utf-8"))
+
+    def send(self, record: dict, cfg: dict) -> None:
+        url = _push_outputs_sink_url(cfg, "teams_webhook_url")
+        if not url:
+            return
+        markdown = record.get("markdown")
+        if markdown is None:
+            markdown = json.dumps(record.get("payload", {}), ensure_ascii=False)
+
+        card = self._card(record, markdown)
+        if self._serialized_size(card) > self.message_size_limit:
+            low, high = 0, len(markdown)
+            while low < high:
+                middle = (low + high + 1) // 2
+                candidate = self._card(record, markdown[:middle] + self.truncation_marker)
+                if self._serialized_size(candidate) <= self.message_size_limit:
+                    low = middle
+                else:
+                    high = middle - 1
+            markdown = markdown[:low] + self.truncation_marker
+            card = self._card(record, markdown)
+        _post_json("teams", url, card)
 
 
 # Keep local channels before network channels, regardless of configuration order.
@@ -107,7 +201,20 @@ OUTPUT_SINK_TYPES: dict[str, type[OutputSink]] = {
     "webhook": WebhookSink,
     "slack": SlackSink,
     "telegram": TelegramSink,
+    "teams": TeamsSink,
 }
+
+
+def _selected_output_tools(cfg: dict) -> list[str] | None:
+    """Return selected output types, or None for an invalid configuration."""
+    tools = cfg.get("tools", ["review", "describe", "improve"])
+    if isinstance(tools, str):
+        tools = normalize_setting_list(tools, split_commas=True)
+    if (not isinstance(tools, (list, tuple)) or not tools
+            or any(not isinstance(name, str) or name not in ("review", "describe", "improve", "ask")
+                   for name in tools)):
+        return None
+    return list(tools)
 
 
 def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
@@ -118,15 +225,17 @@ def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
     if not enable:
         return None
 
+    if _selected_output_tools(cfg) is None:
+        return False, "push_outputs.tools must select supported tool names"
+
     channels = cfg.get("channels", [])
     if isinstance(channels, str):
-        selected = [name for name in OUTPUT_SINK_TYPES if name in channels]
-    elif isinstance(channels, (list, tuple)):
-        if any(not isinstance(name, str) or name not in OUTPUT_SINK_TYPES for name in channels):
-            return False, "push_outputs.channels must select registered output sinks"
-        selected = [name for name in OUTPUT_SINK_TYPES if name in channels]
-    else:
+        channels = normalize_setting_list(channels, split_commas=True)
+    if not isinstance(channels, (list, tuple)):
         return False, "push_outputs.channels must select registered output sinks"
+    if any(not isinstance(name, str) or name not in OUTPUT_SINK_TYPES for name in channels):
+        return False, "push_outputs.channels must select registered output sinks"
+    selected = [name for name in OUTPUT_SINK_TYPES if name in channels]
     if not selected:
         return False, "push_outputs.channels must select registered output sinks"
 
@@ -134,7 +243,9 @@ def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
         path = cfg.get("file_path", "pr-agent-outputs/reviews.jsonl")
         if not isinstance(path, str) or not path:
             return False, "push_outputs.file_path must be a nonempty string"
-    for channel, key in (("webhook", "webhook_url"), ("slack", "slack_webhook_url")):
+    for channel, key in (
+        ("webhook", "webhook_url"), ("slack", "slack_webhook_url"), ("teams", "teams_webhook_url"),
+    ):
         if channel not in selected:
             continue
         url = cfg.get(key)

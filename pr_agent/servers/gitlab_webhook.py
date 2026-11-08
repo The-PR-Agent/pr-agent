@@ -16,6 +16,7 @@ from starlette.middleware import Middleware
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
+from pr_agent.agent.command_registry import command_takes_comment_id
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
@@ -89,9 +90,7 @@ async def handle_request(
 
 async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: str,
                                    log_context: dict, data: dict):
-    feedback_on_draft = get_settings().get(
-        "gitlab.feedback_on_draft_pr", False
-    )
+    feedback_on_draft = _as_bool_setting(get_settings().get("gitlab.feedback_on_draft_pr", False))
     if is_draft(data) and not feedback_on_draft:
         get_logger().info(f"Skipping draft MR: {api_url}")
         return
@@ -400,11 +399,11 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 get_logger().info(f"Draft MR is ready: {url}")
 
                 apply_repo_settings(url)
-                if get_settings().get("gitlab.feedback_on_draft_pr", False):
+                if _as_bool_setting(get_settings().get("gitlab.feedback_on_draft_pr", False)):
                     # the draft was already getting feedback, so only the push half of this update is new
                     if (object_attributes.get('oldrev')
                             and normalize_setting_list(get_settings().get("gitlab.push_commands", {}))
-                            and get_settings().get("gitlab.handle_push_trigger", False)):
+                            and _as_bool_setting(get_settings().get("gitlab.handle_push_trigger", False))):
                         get_logger().debug(f'A push event has been received: {url}')
                         async with push_trigger_slot(url, allow_backlog=True, ttl=300) as proceed:
                             if proceed:
@@ -422,7 +421,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 apply_repo_settings(url)
 
                 commands_on_push = normalize_setting_list(get_settings().get("gitlab.push_commands", {}))
-                handle_push_trigger = get_settings().get("gitlab.handle_push_trigger", False)
+                handle_push_trigger = _as_bool_setting(get_settings().get("gitlab.handle_push_trigger", False))
                 if not commands_on_push or not handle_push_trigger:
                     get_logger().info("Push event, but no push commands found or push trigger is disabled")
                     return
@@ -488,7 +487,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 discussion_id = data.get('object_attributes', {}).get('discussion_id')
                 command = body.split(maxsplit=1)[0].lower() if isinstance(body, str) and body.strip() else ""
                 if (discussion_id and not data.get('object_attributes', {}).get('type')
-                        and command in ("/review", "/review_pr", "/improve", "/improve_code")):
+                        and command_takes_comment_id(command)):
                     body = f"{body} --comment_id={discussion_id}"
                 if (data.get('object_attributes', {}).get('type') == 'DiffNote'
                         and is_ask_command_comment(body)):  # /ask_line

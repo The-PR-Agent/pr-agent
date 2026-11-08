@@ -26,6 +26,18 @@ EMBEDDING_INPUT_TOKEN_LIMIT = MAX_TOKENS[MODEL] - 1
 _EMBEDDING_CLIENTS = {}
 
 
+def _is_pull_request(issue) -> bool:
+    """Classify listed issues without refetching their details."""
+    try:
+        from github.GithubObject import GithubObject
+    except ImportError:
+        return bool(issue.pull_request)
+    if isinstance(issue, GithubObject):
+        # The completable getter fetches ordinary issues whose list payload omits pull_request.
+        return GithubObject.raw_data.fget(issue).get("pull_request") is not None
+    return bool(issue.pull_request)
+
+
 def _embedding_token_ids(text: str) -> list[int]:
     """Use the embedding model's tokenizer, not the configured chat model's."""
     return tiktoken.encoding_for_model(MODEL).encode(text, disallowed_special=())
@@ -289,7 +301,7 @@ class PRSimilarIssue:
                 self.pinecone_index = self.pc.Index(name=index_name)
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                issues = (issue for issue in issues_paginated_list if not issue.pull_request)
+                issues = (issue for issue in issues_paginated_list if not _is_pull_request(issue))
                 for batch in batched(islice(issues, max(0, self.max_issues_to_scan)), ISSUE_LOOKUP_BATCH_SIZE):
                     issue_ids = [f"issue_{issue.number}.issue" for issue in batch]
                     res = self.pinecone_index.fetch(ids=issue_ids, namespace=self.pinecone_namespace).to_dict()
@@ -348,7 +360,7 @@ class PRSimilarIssue:
             else:  # update table if needed
                 issues_to_scan = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                for scanned, issue in enumerate(i for i in issues_paginated_list if not i.pull_request):
+                for scanned, issue in enumerate(i for i in issues_paginated_list if not _is_pull_request(i)):
                     if scanned >= self.max_issues_to_scan:
                         break
                     issues_to_scan.append(issue)
@@ -430,7 +442,7 @@ class PRSimilarIssue:
             else:
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                issues = (issue for issue in issues_paginated_list if not issue.pull_request)
+                issues = (issue for issue in issues_paginated_list if not _is_pull_request(issue))
                 for batch in batched(islice(issues, max(0, self.max_issues_to_scan)), ISSUE_LOOKUP_BATCH_SIZE):
                     point_ids = [
                         uuid.uuid5(uuid.NAMESPACE_DNS, f"{repo_name_for_index}:issue_{issue.number}.issue").hex
@@ -623,7 +635,7 @@ class PRSimilarIssue:
                 issue = next(issues_iterator)
             except StopIteration:
                 break
-            if issue.pull_request:
+            if _is_pull_request(issue):
                 continue
 
             issue_str, comments, number = self._process_issue(issue)
@@ -747,7 +759,7 @@ class PRSimilarIssue:
                 issue = next(issues_iterator)
             except StopIteration:
                 break
-            if issue.pull_request:
+            if _is_pull_request(issue):
                 continue
 
             issue_str, comments, number = self._process_issue(issue)
@@ -857,7 +869,7 @@ class PRSimilarIssue:
                 issue = next(issues_iterator)
             except StopIteration:
                 break
-            if issue.pull_request:
+            if _is_pull_request(issue):
                 continue
 
             issue_str, comments, number = self._process_issue(issue)

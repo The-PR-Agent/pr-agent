@@ -621,7 +621,7 @@ class TestFindJiraTickets:
         assert find_jira_tickets("nothing here") == []
 
     def test_short_uppercase_prefix_not_matched(self):
-        # Requires at least 2 uppercase letters; single-letter prefixes ignored.
+        # Requires a prefix of at least 2 characters; single-letter prefixes ignored.
         assert find_jira_tickets("A-1 should not match") == []
 
     def test_deduplicates_repeated_tickets(self):

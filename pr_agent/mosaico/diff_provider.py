@@ -7,6 +7,7 @@ get_settings().data rather than calling the publish path).
 The diff is parsed by parse_unified_diff(); per-request the parsed files/languages/title
 are read from MOSAICO.INPUT on the (context) settings.
 """
+import io
 import re
 from urllib.parse import unquote, urlsplit
 
@@ -67,7 +68,7 @@ def parse_unified_diff(diff_text: str) -> list[FilePatchInfo]:
     if not diff_text or not isinstance(diff_text, str):
         return []
 
-    lines = diff_text.splitlines(keepends=True)
+    lines = list(io.StringIO(diff_text, newline="\n"))
     # Find the start index of each "diff --git" section.
     starts = [i for i, ln in enumerate(lines) if _DIFF_GIT_RE.match(ln.rstrip("\r\n"))]
     if not starts:

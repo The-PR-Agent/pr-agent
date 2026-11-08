@@ -260,6 +260,19 @@ def test_publish_comment_to_file(cfg, tmp_path):
     assert "saved" in out.read_text(encoding="utf-8")
 
 
+def test_publish_comment_strips_terminal_controls_from_stdout_and_file(cfg, capsys, tmp_path):
+    out = tmp_path / "review.md"
+    cfg("plain_diff.content", DIFF)
+    cfg("plain_diff.output_path", str(out))
+    provider = PlainDiffGitProvider(None)
+
+    provider.publish_comment("## Review\r\n\t\x1b[31mtext\x1b[0m\r\x08\x07\x00\nNext line")
+
+    expected = "## Review\n\t[31mtext[0m\nNext line"
+    assert capsys.readouterr().out == expected + "\n"
+    assert out.read_text(encoding="utf-8") == expected
+
+
 def test_publish_comment_survives_stdout_that_cannot_encode(cfg, tmp_path, monkeypatch):
     # Simulate a redirected Windows stdout (cp1252) and check that emoji in tool
     # output neither abort publishing nor skip the --output file.

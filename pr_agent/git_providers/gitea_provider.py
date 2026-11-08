@@ -351,6 +351,18 @@ class GiteaProvider(GitProvider):
         sha = getattr(self.last_commit, "sha", None)
         return sha if isinstance(sha, str) else ""
 
+    def get_pr_identity(self) -> dict:
+        repo = "/".join(
+            str(part) for part in (self.owner, self.repo) if part
+        )
+        return {
+            "url": self.get_pr_url() or "",
+            "provider": "gitea",
+            "repo": repo,
+            "number": self.pr_number if self.pr_number is not None else "",
+            "head_sha": self.get_pr_head_sha(),
+        }
+
     def get_comment_url(self, comment) -> str:
         if isinstance(comment, dict):
             return comment.get("html_url") or comment.get("url") or ""
@@ -716,7 +728,20 @@ class GiteaProvider(GitProvider):
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
         encoded_file = quote(relevant_file, safe="/")
-        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{encoded_file}"
+        branch = self.get_pr_branch()
+        if branch.startswith("refs/pull/"):
+            # AGit-flow PRs have no head branch; Gitea reports
+            # head.ref == "refs/pull/<N>/head", and a branch link 404s.
+            # Link the file at the PR's head commit instead.
+            head_sha = self.pr.head.sha if self.pr and self.pr.head else ""
+            if not head_sha:
+                self.logger.warning(
+                    "AGit-flow PR without a head SHA; cannot generate a file link"
+                )
+                return ""
+            link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/commit/{quote(head_sha, safe='')}/{encoded_file}"
+        else:
+            link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(branch)}/{encoded_file}"
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
@@ -1406,12 +1431,6 @@ class RepoApi(giteapy.RepositoryApi):
             owner=owner,
             repo=repo,
             index=issue_number
-        )
-
-    def list_all_commits(self, owner: str, repo: str):
-        return self.repository.repo_get_all_commits(
-            owner=owner,
-            repo=repo
         )
 
     def add_reaction_comment(self, owner: str, repo: str, comment_id: int, reaction: str):

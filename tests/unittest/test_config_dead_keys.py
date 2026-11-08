@@ -139,6 +139,10 @@ _ALLOWLIST = {
     ): "cfg.get(\"channels\", []) in pr_agent/algo/run_output.py",
     (
         "push_outputs",
+        "tools",
+    ): "cfg.get(\"tools\", [\"review\", \"describe\", \"improve\"]) in pr_agent/algo/output_sinks.py",
+    (
+        "push_outputs",
         "file_path",
     ): "cfg.get(\"file_path\", \"pr-agent-outputs/reviews.jsonl\") in pr_agent/algo/output_sinks.py",
     (
@@ -149,6 +153,10 @@ _ALLOWLIST = {
         "push_outputs",
         "slack_webhook_url",
     ): "_push_outputs_sink_url(cfg, \"slack_webhook_url\") in pr_agent/algo/output_sinks.py",
+    (
+        "push_outputs",
+        "teams_webhook_url",
+    ): "_push_outputs_sink_url(cfg, \"teams_webhook_url\") in pr_agent/algo/output_sinks.py",
     (
         "push_outputs",
         "telegram_bot_token",

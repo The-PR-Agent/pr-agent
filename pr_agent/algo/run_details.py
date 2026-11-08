@@ -136,7 +136,7 @@ def _read_token_field(usage, name: str) -> int:
         value = usage.get(name)
     else:
         value = getattr(usage, name, None)
-    return value if isinstance(value, int) else 0
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
 def _read_cache_token_field(usage, public_name: str, private_name: str) -> int:
@@ -175,7 +175,7 @@ def _read_cache_token_field(usage, public_name: str, private_name: str) -> int:
                     value = getattr(details, "cached_tokens", None)
                 if value is not None:
                     break
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
 def add_token_usage(usage) -> None:

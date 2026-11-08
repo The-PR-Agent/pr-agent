@@ -15,7 +15,7 @@ Which tools, triggers and core abilities work on each git provider.
 |       | [Add Docs](../tools/add_docs.md)                                                       |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
 |       | [Generate Labels](../tools/generate_labels.md)                                         |   ✅   |   ✅   |       💬        |       💬        |      ✅       |  ✅   |
 |       | [Similar Issues](../tools/similar_issues.md)                                           |   ✅   |        |                 |                 |              |       |
-|       | [Help](../tools/help.md)                                                               |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
+|       | [Help](../tools/help.md)                                                               |   ✅   |   ✅   |   ✅[^help]    |       ✅        |      ✅       |  ✅   |
 |       | [Help Docs](../tools/help_docs.md) ⚠️                                                   |        |        |                 |                 |              |       |
 |       | [Update CHANGELOG](../tools/update_changelog.md)                                       |   ✅   |   ✅   |       ✅        |       💬        |      💬       |  💬  |
 |       |                                                                                       |        |        |                 |                 |              |       |
@@ -40,6 +40,10 @@ Legend: ✅ = supported. 💬 = the tool runs, but its output is posted as a PR 
 
 [^tickets]: On Bitbucket Cloud, Bitbucket Server, and Gitea, fetching ticket context means the Jira, Asana, and Linear integrations. Native issue links are used on GitHub and GitLab, and work items on Azure DevOps.
 
+[^help]: `/help <question>` is supported, but `/help` without a question displays an unsupported-format notice instead of the tool list on Bitbucket Cloud, Gerrit and CodeCommit.
+
+[^help-list]: Plain-diff mode supports the `/help` tool list only. `/help <question>` is currently unavailable in both local and plain-diff modes; local mode displays an unsupported-format notice for `/help` without a question.
+
 ## Diff-only providers
 
 The `local`, `plain-diff`, and MOSAICO modes do not use a hosting platform. The [local provider](../usage-guide/local_git_provider.md) compares branches in a local checkout, [plain-diff](../usage-guide/plain_diff_mode.md) reads a unified diff from stdin or a file, and the [MOSAICO A2A server](../installation/mosaico_server.md) accepts a PR URL or diff over A2A. They write results to files or stdout, or return them as a task artifact, instead of publishing comments or applying changes.
@@ -50,12 +54,12 @@ The `local`, `plain-diff`, and MOSAICO modes do not use a hosting platform. The 
 |       | [Add Docs](../tools/add_docs.md)                                                       |   ✅   |   ✅   |       |
 |       | [Generate Labels](../tools/generate_labels.md)                                         |   💬   |   💬   |       |
 |       | [Similar Issues](../tools/similar_issues.md)                                           |        |        |       |
-|       | [Help](../tools/help.md)                                                               |   ✅   |   ✅   |       |
+|       | [Help](../tools/help.md)                                                               |        | ✅[^help-list] |       |
 |       | [Update CHANGELOG](../tools/update_changelog.md)                                       |   💬   |   💬   |       |
 | [USAGE](../usage-guide/index.md) | [CLI](../usage-guide/automations_and_usage.md#local-repo-cli)                  |   ✅   |   ✅   |       |
 |       | A2A server                                                                             |        |        |   ✅   |
 
-Core abilities that work from the diff itself, such as compression, dynamic context, multiple models, and self reflection, apply to all three modes. Repo context files apply only to local mode. Output marked 💬 is written to the local output instead of a PR comment.
+Core abilities that work from the diff itself, such as compression, multiple models, and self reflection, apply to all three modes. Dynamic context cannot add lines absent from a supplied diff unless matching working-tree files are available in plain-diff mode; local mode uses the checkout's file contents. Repo context files apply only to local mode. Output marked 💬 is written to the local output instead of a PR comment.
 
 ## Gerrit and CodeCommit
 
@@ -63,7 +67,8 @@ Gerrit and CodeCommit are registered providers but are kept out of the main tabl
 
 |       |    | <span class="pra-provider"><span class="pra-logo pra-logo--gerrit" aria-hidden="true"></span>Gerrit</span> | <span class="pra-provider"><span class="pra-logo pra-logo--codecommit" aria-hidden="true"></span>CodeCommit</span> |
 | ----- |---------------------------------------------------------------------------------------|:------:|:----------:|
-| [TOOLS](../tools/index.md) | [Describe](../tools/describe.md), [Review](../tools/review.md), [Improve](../tools/improve.mdx), [Ask](../tools/ask.md), [Add Docs](../tools/add_docs.md), [Help](../tools/help.md) |   ✅   |     ✅     |
+| [TOOLS](../tools/index.md) | [Describe](../tools/describe.md), [Review](../tools/review.md), [Improve](../tools/improve.mdx), [Ask](../tools/ask.md), [Add Docs](../tools/add_docs.md) |   ✅   |     ✅     |
+|       | [Help](../tools/help.md)                                                               | ✅[^help] | ✅[^help] |
 |       | [Ask on code lines](../tools/ask.md#ask-lines)                                         |        |            |
 |       | [Generate Labels](../tools/generate_labels.md)                                         |   💬   |     💬     |
 |       | [Update CHANGELOG](../tools/update_changelog.md)                                       |   💬   |     💬     |

@@ -8,11 +8,14 @@ network access is performed.
 import asyncio
 import copy
 import json
+import threading
+from contextlib import nullcontext
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from github.Repository import Repository
+from starlette_context import context, request_cycle_context
 
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import AzureDevopsProvider, GithubProvider, GitLabProvider
@@ -190,6 +193,173 @@ def settings_snapshot():
         yield s
     finally:
         restore_settings(snapshot)
+
+
+@pytest.fixture
+def scoped_ticket_settings():
+    base = get_settings(use_context=False)
+    base.get("pr_reviewer")  # Load the lazy defaults before copying them.
+    settings = copy.deepcopy(base)
+    settings.set("related_tickets", [])
+    settings.set("pr_reviewer.require_ticket_analysis_review", True)
+    settings.set("pr_reviewer.max_previous_findings_chars", 0)
+    settings.set("config.repo_context_files", [])
+    settings.set("config.publish_output", False)
+    settings.set("config.propagate_tool_errors", True)
+    settings.set("jira", {})
+    with request_cycle_context({"settings": settings}):
+        yield settings
+
+
+@pytest.mark.parametrize("kind", ["github", "github-uninitialized", "gitlab", "gitlab-sibling", "azure", "jira"])
+async def test_ticket_reads_use_workers_and_request_settings(monkeypatch, scoped_ticket_settings, kind):
+    calls = []
+
+    def record(name, function):
+        def call(*args):
+            calls.append((name, threading.get_ident(), get_settings()))
+            return function(*args)
+        return call
+
+    jira = SimpleNamespace(issue=record("jira", lambda key: {"fields": {"summary": "Jira ticket"}}))
+    monkeypatch.setattr(tpc, "_get_jira_client", lambda: jira)
+    expected = []
+    native_ids = [7]
+    if kind.startswith("github"):
+        child_url = "https://github.com/org/other/issues/8"
+        parent_repo = _FakeRepoObj({7: _FakeIssue(7)})
+        child_repo = _FakeRepoObj({8: _FakeIssue(8, raw_data={"sub_issues_summary": {"total": 0}})})
+        provider = _make_github_provider(
+            user_description=f"Fixes #7 {child_url} PROJ-9", repo_obj=parent_repo,
+        )
+        if kind == "github-uninitialized":
+            provider.repo_obj = None
+            provider.github_client = SimpleNamespace(get_repo=record("repo", lambda name: parent_repo))
+            expected.append("repo")
+        provider.get_sibling_repo = record("sibling", lambda name: child_repo)
+        provider.get_issue_content = record("issue", lambda repo, number: repo.get_issue(number))
+        provider.fetch_sub_issues = record("subissues", lambda url: [child_url])
+        expected += ["issue", "subissues", "sibling", "issue"]
+        native_ids = [7, 8]
+    elif kind.startswith("gitlab"):
+        reference = "group/other#7" if kind == "gitlab-sibling" else "#7"
+        provider, project = _make_gitlab_provider(f"Fixes {reference} PROJ-9")
+        provider.get_pr_branch = lambda: "main"
+        issue = project.issues.get.return_value
+        issue.confidential = False
+        project.issues.get.side_effect = record("issue", lambda number: issue)
+        if kind == "gitlab-sibling":
+            provider.get_sibling_repo = record("sibling", lambda name: project)
+            expected.append("sibling")
+        expected.append("issue")
+    elif kind == "azure":
+        provider = _make_azure_provider([])
+        provider.get_user_description = lambda: "PROJ-9"
+        provider.get_pr_branch = lambda: "main"
+        provider.get_linked_work_items = record("work_items", lambda: [{"id": 7, "body": "Work item"}])
+        expected.append("work_items")
+    else:
+        provider = SimpleNamespace(get_user_description=lambda: "PROJ-9", get_pr_branch=lambda: "main")
+        native_ids = []
+
+    result = await extract_tickets(provider)
+
+    assert [ticket["ticket_id"] for ticket in result] == [*native_ids, "PROJ-9"]
+    assert [name for name, _, _ in calls] == [*expected, "jira"]
+    assert all(thread_id != threading.get_ident() for _, thread_id, _ in calls)
+    assert all(settings is scoped_ticket_settings for _, _, settings in calls)
+    if kind.startswith("github"):
+        assert result[0]["sub_issues"][0]["ticket_url"] == child_url
+        assert child_repo.get_issue_calls == [8]  # Reuse the child when it is also linked directly.
+
+
+@pytest.mark.parametrize("with_context", [False, True])
+async def test_ticket_reads_keep_shared_settings_on_the_event_loop(monkeypatch, with_context):
+    settings = get_settings(use_context=False)
+    provider, project = _make_gitlab_provider("Fixes #7")
+    provider.get_pr_branch = lambda: "main"
+    calls = []
+    issue = project.issues.get.return_value
+
+    def fetch_issue(number):
+        calls.append((threading.get_ident(), get_settings()))
+        return issue
+
+    def unexpected_worker(*args, **kwargs):
+        pytest.fail("Shared settings must not be used from a worker")
+
+    project.issues.get.side_effect = fetch_issue
+    monkeypatch.setattr(tpc.asyncio, "to_thread", unexpected_worker)
+    scope = request_cycle_context({"settings": settings}) if with_context else nullcontext()
+    with scope:
+        result = await extract_tickets(provider)
+
+    assert [ticket["ticket_id"] for ticket in result] == [7]
+    assert calls == [(threading.get_ident(), settings)]
+
+
+@pytest.mark.parametrize("cancel", [False, True], ids=["complete", "cancel"])
+async def test_review_ticket_wait_keeps_loop_responsive(monkeypatch, scoped_ticket_settings, cancel):
+    from pr_agent.tools import pr_reviewer as reviewer_module
+
+    loop = asyncio.get_running_loop()
+    started, finished = asyncio.Event(), asyncio.Event()
+    release = threading.Event()
+    calls = []
+    repo = _FakeRepoObj({number: _FakeIssue(number) for number in (7, 8)})
+    provider = _make_github_provider(user_description="Fixes #7 #8", repo_obj=repo)
+
+    def fetch_issue(repository, number):
+        calls.append(number)
+        try:
+            if number == 7:
+                loop.call_soon_threadsafe(started.set)
+                assert release.wait(10)
+            return repository.get_issue(number)
+        finally:
+            if number == 7:
+                loop.call_soon_threadsafe(finished.set)
+
+    provider.get_issue_content = fetch_issue
+    provider.pr = SimpleNamespace(title="Update app", body="Fixes #7 #8")
+    provider.git_files = ["app.py"]
+    provider.get_languages = lambda: {"Python": 100}
+    provider.get_files = lambda: ["app.py"]
+    provider.get_diff_files = MagicMock(return_value=[])
+    provider.get_commit_messages = lambda: ""
+    pr_url = "https://github.com/org/repo/pull/1"
+    context["git_provider"] = {pr_url: provider}
+    predict = AsyncMock()
+    monkeypatch.setattr(reviewer_module, "retry_with_fallback_models", predict)
+    reviewer = reviewer_module.PRReviewer(pr_url, ai_handler=SimpleNamespace)
+
+    run = asyncio.create_task(reviewer.run())
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        assert not run.done()
+        assert scoped_ticket_settings.get("related_tickets") == []
+        if cancel:
+            run.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await run
+    finally:
+        release.set()
+        await asyncio.wait_for(finished.wait(), 5)
+        if not run.cancelled():
+            await asyncio.wait_for(run, 5)
+
+    if cancel:
+        assert calls == [7]
+        assert scoped_ticket_settings.get("related_tickets") == []
+        assert reviewer.vars["related_tickets"] == []
+        predict.assert_not_awaited()
+        provider.get_diff_files.assert_not_called()
+    else:
+        assert calls == [7, 8]
+        assert [ticket["ticket_id"] for ticket in reviewer.vars["related_tickets"]] == [7, 8]
+        assert reviewer._raw_prompt_vars["related_tickets"] == reviewer.vars["related_tickets"]
+        assert scoped_ticket_settings.get("related_tickets") == reviewer.vars["related_tickets"]
+        predict.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

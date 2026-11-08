@@ -7,6 +7,7 @@ from contextlib import contextmanager
 
 from starlette_context import context, request_cycle_context
 
+from pr_agent.agent.command_registry import COMMAND_SPECS
 from pr_agent.agent.pr_agent import PRAgent, commands, parse_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.ai_handlers.litellm_helpers import (
@@ -26,16 +27,20 @@ from pr_agent.log import get_logger, setup_logger
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 setup_logger(log_level)
 
-_PLAIN_DIFF_MARKDOWN_COMMANDS = frozenset({
-    "review", "review_pr", "auto_review",
-    "describe", "describe_pr",
-    "improve", "improve_code",
-    "ask", "ask_question",
-    "config", "settings", "help",
-})
-_JSON_REVIEW_COMMANDS = frozenset({"review", "review_pr"})
-_JSON_IMPROVE_COMMANDS = frozenset({"improve", "improve_code"})
-_JSON_DESCRIBE_COMMANDS = frozenset({"describe", "describe_pr"})
+# --output / --json-output eligibility, derived from the command registry so a
+# new alias is eligible wherever its canonical command is.
+_PLAIN_DIFF_MARKDOWN_COMMANDS = frozenset(
+    name for name, spec in COMMAND_SPECS.items() if spec.plain_diff_markdown
+)
+_JSON_REVIEW_COMMANDS = frozenset(
+    name for name, spec in COMMAND_SPECS.items() if spec.json_output == "review"
+)
+_JSON_IMPROVE_COMMANDS = frozenset(
+    name for name, spec in COMMAND_SPECS.items() if spec.json_output == "improve"
+)
+_JSON_DESCRIBE_COMMANDS = frozenset(
+    name for name, spec in COMMAND_SPECS.items() if spec.json_output == "describe"
+)
 _OUTPUT_OPTIONS = ("--output", "--json-output")
 _CLI_CONTEXT_CACHES = (
     "git_provider", "repo_settings", "git_files", "diff_files", "authenticated_provider_settings",
@@ -104,13 +109,20 @@ def _validate_output_options(parser, args, diff_mode):
     if json_output is not None:
         pr_tool_commands = _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS
         if command not in _JSON_REVIEW_COMMANDS | pr_tool_commands:
-            parser.error("--json-output is only supported for review commands (review or review_pr), "
-                         "and for improve or describe commands with --pr_url")
-        if diff_mode and command in pr_tool_commands:
-            parser.error("--json-output is only supported for review commands in plain-diff mode; "
-                         "use --pr_url to write improve suggestions or the description as JSON")
+            parser.error("--json-output is only supported for review, improve, or describe commands")
         if not diff_mode and (not args.pr_url or args.issue_url):
             parser.error("--json-output requires --pr_url, --stdin, or --diff-file")
+        if diff_mode and output is not None and command in pr_tool_commands | _JSON_REVIEW_COMMANDS:
+            same_destination = os.path.normcase(os.path.realpath(output)) == os.path.normcase(
+                os.path.realpath(json_output)
+            )
+            if not same_destination:
+                try:
+                    same_destination = os.path.samefile(output, json_output)
+                except OSError:
+                    pass  # One or both destinations may not exist yet.
+            if same_destination:
+                parser.error("--output and --json-output must use different files")
 
 
 def set_parser():
@@ -170,8 +182,8 @@ def set_parser():
                         help=("Write Plain Diff Markdown output to this file "
                               "(place before the command)"))
     parser.add_argument("--json-output", dest="json_output", type=str, default=None,
-                        help=("Write a parsed review and token usage to this JSON file "
-                              "(place before the review command)"))
+                        help=("Write parsed review, improve, or describe results and token usage "
+                              "to this JSON file (place before the command)"))
     parser.add_argument('command', type=str, help='The', choices=[*commands, *DOCTOR_COMMANDS], default='review')
     parser.add_argument('rest', nargs=argparse.REMAINDER, default=[])
     return parser
@@ -238,7 +250,12 @@ def run(inargs=None, args=None):
         get_settings().set("CONFIG.CONFIG_BRANCH", cli_branch or env_branch or None)
         get_settings().set("CONFIG.EXTRA_CONFIG_URL", getattr(args, "extra_config_url", None))
         async def inner():
-            output_token = review_json_output_path.set(getattr(args, "json_output", None) if not diff_mode else None)
+            # Plain-diff reviews write through their provider; describe and improve
+            # already use the shared JSON writer, as they do with --pr_url.
+            tool_json_output = getattr(args, "json_output", None) if (
+                not diff_mode or command in _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS
+            ) else None
+            output_token = review_json_output_path.set(tool_json_output)
             try:
                 return await run_inner()
             finally:
@@ -273,7 +290,11 @@ def run(inargs=None, args=None):
         result, recorded_failure = asyncio.run(inner())
         if not result:
             parser.print_help()
-        if settings.config.get("propagate_tool_errors", False) and (result is False or recorded_failure):
+        json_artifact_required = bool(diff_mode and getattr(args, "json_output", None) is not None and
+                                      command in _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS)
+        if (settings.config.get("propagate_tool_errors", False) or json_artifact_required) and (
+            result is False or recorded_failure
+        ):
             if result is not False and recorded_failure:
                 get_logger().warning("Tool reported success but recorded a failure; exiting with an error")
             return 1

@@ -803,21 +803,28 @@ async def test_handle_request_propagates_cancellation(monkeypatch):
             started.set()
             await asyncio.Event().wait()
 
-    _patch_request_dependencies(monkeypatch)
+    _patch_request_dependencies(monkeypatch, update_settings_fn=pr_agent_module.update_settings_from_args)
     monkeypatch.setitem(
         pr_agent_module.command2class, "blocking", BlockingTool
     )
 
-    task = asyncio.create_task(
-        pr_agent_module.PRAgent(ai_handler="fake-ai").handle_request(
-            "https://example/pr/1", "/blocking"
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        settings = get_settings()
+        settings.set("CONFIG.RESPONSE_LANGUAGE", "de-DE")
+        settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "Keep original instructions")
+        task = asyncio.create_task(
+            pr_agent_module.PRAgent(ai_handler="fake-ai").handle_request(
+                "https://example/pr/1", "/blocking --config.response_language=fr-FR"
+            )
         )
-    )
-    await started.wait()
-    task.cancel()
+        await asyncio.wait_for(started.wait(), timeout=5)
+        assert "'fr-FR'" in settings.pr_reviewer.extra_instructions
+        task.cancel()
 
-    with pytest.raises(asyncio.CancelledError):
-        await task
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+        assert settings.pr_reviewer.extra_instructions == "Keep original instructions"
+        assert settings.config.response_language == "de-DE"
 
 
 @pytest.mark.asyncio
@@ -999,42 +1006,123 @@ async def test_unscoped_dispatcher_does_not_load_artifact_or_change_instructions
 
 @pytest.mark.asyncio
 async def test_handle_request_returns_false_for_unknown_command(monkeypatch):
-    _patch_request_dependencies(monkeypatch)
+    _patch_request_dependencies(monkeypatch, update_settings_fn=pr_agent_module.update_settings_from_args)
 
-    handled = await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", "/unknown")
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        settings = get_settings()
+        settings.set("CONFIG.RESPONSE_LANGUAGE", "en-us")
+        handled = await pr_agent_module.PRAgent()._handle_request(
+            "https://example/pr/1", "/unknown --config.response_language=fr-FR"
+        )
+        assert settings.config.response_language == "en-us"
 
     assert handled is False
 
 
 @pytest.mark.asyncio
-async def test_handle_request_language_instruction_preserves_control_values(monkeypatch):
-    settings = get_settings()
-    original = {
-        key: settings.get(key).extra_instructions
-        for key in settings
-        if hasattr(settings.get(key), "extra_instructions")
-    }
-    settings.config.response_language = "de-DE"
+@pytest.mark.parametrize("error_stage", ["arguments", "setup"])
+async def test_handle_request_restores_language_after_invalid_arguments(monkeypatch, error_stage):
+    _patch_request_dependencies(monkeypatch, update_settings_fn=pr_agent_module.update_settings_from_args)
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        settings = get_settings()
+        settings.set("CONFIG.RESPONSE_LANGUAGE", "de-DE")
+        settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+        command = "/review --config.response_language=fr-FR"
+        if error_stage == "arguments":
+            command += " --config=123"
+        else:
+            monkeypatch.setattr(pr_agent_module, "init_run_details", Mock(side_effect=RuntimeError("setup failed")))
+        handled = await pr_agent_module.PRAgent()._handle_request(
+            "https://example/pr/1", command, propagate_tool_errors=True
+        )
+        assert handled is False
+        assert settings.config.response_language == "de-DE"
+        assert settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("original_instructions", ["Keep user instructions", None])
+@pytest.mark.parametrize("base_language", ["en-us", "de-DE"])
+@pytest.mark.parametrize("prepare_automatic", [False, True])
+async def test_handle_request_scopes_language_instructions_to_each_command(
+    monkeypatch, original_instructions, base_language, prepare_automatic
+):
+    observed = []
 
     class FakeReviewer:
-        def __init__(self, pr_url, is_answer=False, is_auto=False, args=None, ai_handler=None):
-            pass
+        def __init__(self, *_args, **_kwargs):
+            self.instructions = get_settings().pr_reviewer.extra_instructions
 
         async def run(self):
-            pass
+            await asyncio.sleep(0)
+            assert get_settings().pr_reviewer.extra_instructions == self.instructions
+            observed.append(self.instructions)
 
-    try:
-        _patch_request_dependencies(monkeypatch)
-        monkeypatch.setattr(pr_agent_module, "PRReviewer", FakeReviewer)
+    _patch_request_dependencies(monkeypatch, update_settings_fn=pr_agent_module.update_settings_from_args)
+    monkeypatch.setitem(pr_agent_module.command2class, "review", FakeReviewer)
 
-        await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", "/review")
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        settings = get_settings()
+        settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", original_instructions)
+        settings.set("CONFIG.RESPONSE_LANGUAGE", base_language)
+        worker = pr_agent_module.PRAgent()
+        for language in ("de-DE", "de-DE", "fr-FR", "EN-US"):
+            command = f"/review --config.response_language={language}"
+            if prepare_automatic:
+                command = pr_agent_module.prepare_command(command)
+                assert settings.config.response_language == base_language
+            assert await worker._handle_request("https://example/pr/1", command) is True
+            assert settings.pr_reviewer.extra_instructions == original_instructions
+            assert settings.config.response_language == base_language
+        plain_command = pr_agent_module.prepare_command("/review") if prepare_automatic else "/review"
+        assert await worker._handle_request("https://example/pr/1", plain_command) is True
+        assert settings.config.response_language == base_language
 
-        instructions = str(settings.pr_reviewer.extra_instructions)
-        assert "de-DE" in instructions
+    assert observed[0] == observed[1]
+    for instructions, language in zip(observed[:3], ("de-DE", "de-DE", "fr-FR"), strict=True):
+        assert instructions.count("locale code:") == 1
+        assert f"'{language}'" in instructions
         assert "Keep schema control values" in instructions
         assert "'No'" in instructions
         assert "do not translate them" in instructions
-    finally:
-        settings.config.response_language = "en-us"
-        for key, value in original.items():
-            settings.get(key).extra_instructions = value
+        if original_instructions:
+            assert instructions.startswith(original_instructions)
+    assert "de-DE" not in observed[2]
+    assert observed[3] == original_instructions
+    if base_language == "en-us":
+        assert observed[4] == original_instructions
+    else:
+        assert observed[4].count("locale code:") == 1
+        assert "'de-DE'" in observed[4]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["constructor", "run"])
+async def test_handle_request_restores_language_instructions_after_failure(monkeypatch, failure_stage):
+    observed = []
+
+    class BrokenReviewer:
+        def __init__(self, *_args, **_kwargs):
+            observed.append(get_settings().pr_reviewer.extra_instructions)
+            if failure_stage == "constructor":
+                raise RuntimeError("Tool setup failed")
+
+        async def run(self):
+            observed.append(get_settings().pr_reviewer.extra_instructions)
+            raise RuntimeError("Tool execution failed")
+
+    _patch_request_dependencies(monkeypatch, update_settings_fn=pr_agent_module.update_settings_from_args)
+    monkeypatch.setitem(pr_agent_module.command2class, "review", BrokenReviewer)
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        settings = get_settings()
+        settings.set("CONFIG.RESPONSE_LANGUAGE", "de-DE")
+        settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "Keep user instructions")
+        assert await pr_agent_module.PRAgent()._handle_request(
+            "https://example/pr/1", "/review --config.response_language=fr-FR"
+        ) is False
+        assert settings.pr_reviewer.extra_instructions == "Keep user instructions"
+        assert settings.config.response_language == "de-DE"
+
+    assert len(observed) == (1 if failure_stage == "constructor" else 2)
+    assert all("'fr-FR'" in instructions for instructions in observed)

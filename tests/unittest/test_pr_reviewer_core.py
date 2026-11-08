@@ -1,10 +1,13 @@
 import asyncio
+import copy
 import json
 import threading
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from starlette_context import request_cycle_context
 
 from pr_agent.algo.comment_identity import PRReviewHeader, PRReviewIdentity
 from pr_agent.algo.inline_comment_dedup import (
@@ -221,6 +224,32 @@ async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_r
     )
     assert reviewer.patches_diff == "diff"
     assert reviewer.remaining_files_list == ["src/one.py", "docs/two.md"]
+    assert reviewer.prediction == _VALID_PREDICTION
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_scoped", [False, True], ids=["shared-settings", "request-settings"])
+async def test_prepare_prediction_offloads_diff_only_with_request_settings(request_scoped):
+    reviewer = _make_prediction_reviewer()
+    reviewer._get_prediction = AsyncMock(return_value=_VALID_PREDICTION)
+    settings = copy.deepcopy(get_settings()) if request_scoped else get_settings()
+    seen = []
+    loop_thread = threading.get_ident()
+
+    def get_diff(*_args, **_kwargs):
+        seen.append((threading.get_ident(), get_settings()))
+        return "diff", ["src/one.py"]
+
+    scope = request_cycle_context({"settings": settings}) if request_scoped else nullcontext()
+    with scope, patch("pr_agent.tools.pr_reviewer.get_pr_diff", side_effect=get_diff) as get_pr_diff:
+        await reviewer._prepare_prediction("model")
+
+    get_pr_diff.assert_called_once()
+    assert len(seen) == 1
+    assert (seen[0][0] != loop_thread) is request_scoped
+    assert seen[0][1] is settings
+    assert reviewer.patches_diff == "diff"
+    assert reviewer.remaining_files_list == ["src/one.py"]
     assert reviewer.prediction == _VALID_PREDICTION
 
 

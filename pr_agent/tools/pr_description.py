@@ -168,9 +168,20 @@ class PRDescription:
 
             if self.prediction:
                 self._prepare_data()
-                self._write_json_output(self.data)
+                try:
+                    self._write_json_output(self.data)
+                except (OSError, TypeError, ValueError):
+                    if not (review_json_output_path.get() and
+                            get_settings().config.git_provider == "plain-diff"):
+                        raise
+                    # Keep Markdown available even when a requested JSON file cannot be written.
+                    record_command_failure()
             else:
                 get_logger().warning(f"Empty prediction, PR: {self.pr_id}")
+                # A skipped Plain Diff description cannot satisfy an explicit
+                # JSON artifact request, even though skipping is otherwise valid.
+                if review_json_output_path.get() and get_settings().config.git_provider == "plain-diff":
+                    record_command_failure()
                 return None
 
             if get_settings().pr_description.enable_semantic_files_types:
@@ -236,7 +247,8 @@ class PRDescription:
                 # Emit to the optional external sinks before touching the provider, so a sink
                 # still receives the description if publishing it to the PR fails.
                 await push_outputs_async(
-                    "describe", payload=self._prepare_output_payload(pr_title, label_data), markdown=pr_body
+                    "describe", payload=self._prepare_output_payload(pr_title, label_data),
+                    markdown=pr_body, git_provider=self.git_provider,
                 )
 
                 # publish labels
@@ -1068,7 +1080,8 @@ class PRDescription:
                                          artifact={"file": file})
                     continue
                 filename = file['filename'].replace("'", "`").replace('"', "`")
-                changes_summary = (file.get('changes_summary') or "").strip()
+                summary = file.get("changes_summary")
+                changes_summary = summary.strip() if isinstance(summary, str) else ""
                 changes_title = file['changes_title'].strip()
                 label = file['label'].strip().lower()
                 if label not in file_label_dict:

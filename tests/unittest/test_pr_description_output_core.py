@@ -93,7 +93,7 @@ class TestPrepareData:
         [
             ({"type": ["Unknown"], "title": "A title"}, "type.0", "Unknown"),
             ({"type": [None], "title": "A title"}, "type.0", None),
-            ({"type": [" ", None], "title": "A title"}, "type.0", " "),
+            ({"type": [" ", None], "title": "A title"}, "type.0", ""),
             ({"type": ["Unknown"], "labels": [None], "title": "A title"}, "type.0", "Unknown"),
             ({"type": ["Bug fix"]}, "title", None),
             (

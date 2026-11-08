@@ -106,3 +106,18 @@ def test_failure_modes_merge_valid_cases_in_chunk_order_and_cap_at_three():
     assert _merged([first], [first], field="failure_modes") == [first, first]
     assert _merged(None, [], field="failure_modes") == []
     assert _merged([first] * 4, field="failure_modes") == [first] * 3
+
+
+@pytest.mark.parametrize("first, second", [
+    (["Add retry"], ["Log failures"]),
+    ("- Add retry", ["Log failures"]),
+    (["Add retry"], "- Log failures"),
+])
+def test_ticket_requirement_lists_from_several_chunks_are_unioned(first, second):
+    def chunk(not_met):
+        return {"review": {"ticket_compliance_check": [
+            {"ticket_url": "https://tracker/1", "not_compliant_requirements": not_met}]}}
+
+    [entry] = merge_review_chunks([chunk(first), chunk(second)])["review"]["ticket_compliance_check"]
+
+    assert entry["not_compliant_requirements"] == "- Add retry\n- Log failures"

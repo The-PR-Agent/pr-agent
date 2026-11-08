@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 
 from unidiff.errors import UnidiffParseError
@@ -14,6 +15,8 @@ from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file_checked, to_hunk_only_patch
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
+
+_OUTPUT_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f]")
 
 
 class PullRequestMimic:
@@ -121,6 +124,9 @@ class PlainDiffGitProvider(GitProvider):
         incremental.is_incremental = False
 
     def _write_output(self, content: str):
+        # Preserve line breaks and tabs while removing controls such as ESC
+        # and standalone carriage returns from rendered output.
+        content = _OUTPUT_CONTROL_CHARS.sub("", content.replace("\r\n", "\n"))
         try:
             print(content)
         except UnicodeEncodeError:
@@ -160,11 +166,12 @@ class PlainDiffGitProvider(GitProvider):
         self._write_output(f"{title}\n\n{pr_body}")
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ["get_issue_comments", "create_inline_comment",
-                          "publish_inline_comments",
-                          "get_labels", "edit_comment", "remove_comment"]:
+        if capability in ["get_issue_comments", "get_labels", "edit_comment", "remove_comment"]:
             return False
         return True
+
+    def get_pr_identity(self) -> dict:
+        return {"url": "", "provider": "plain-diff", "repo": "", "number": "", "head_sha": ""}
 
     def supports_code_suggestions_artifact(self) -> bool:
         return True

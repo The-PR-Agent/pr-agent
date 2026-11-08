@@ -453,3 +453,15 @@ class TestSpikeEndToEnd:
         assert ok is True, "improve handle_request returned False (swallowed exception)"
         assert artifact, "improve produced empty artifact"
         assert incremental == [], f"incremental-only methods were accessed: {incremental}"
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x85", "\f", "\v", "\x1c", "\r"])
+def test_supplied_diff_preserves_non_lf_characters_inside_source_lines(separator):
+    patch = ("diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n"
+             "@@ -1 +1 @@\n" + f"-old{separator}continued\n+new{separator}continued\n")
+
+    files = parse_unified_diff(patch)
+
+    assert len(files) == 1
+    assert files[0].base_file == f"old{separator}continued\n"
+    assert files[0].head_file == f"new{separator}continued\n"

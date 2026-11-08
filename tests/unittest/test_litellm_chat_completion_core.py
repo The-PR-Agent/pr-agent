@@ -7,6 +7,7 @@ import openai
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
+import pr_agent.algo.instruction_context as instruction_context
 
 
 @pytest.fixture(autouse=True)
@@ -665,6 +666,23 @@ def test_request_messages_recognize_routed_user_only_models(monkeypatch, model):
     messages = handler.build_request_messages(model, "sys", "usr")
 
     assert messages == [{"role": "user", "content": "sys\n\n\nusr"}]
+
+
+def test_request_messages_append_protected_system_instructions(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    monkeypatch.setattr(
+        instruction_context,
+        "get_settings",
+        lambda: FakeSettings(config_values={"system_instructions": "TRUSTED POLICY"}),
+    )
+    handler = litellm_handler.LiteLLMAIHandler()
+
+    messages = handler.build_request_messages("gpt-4o", "tool instructions", "usr")
+
+    assert messages == [
+        {"role": "system", "content": "tool instructions\n\nTRUSTED POLICY"},
+        {"role": "user", "content": "usr"},
+    ]
 
 
 @pytest.mark.asyncio

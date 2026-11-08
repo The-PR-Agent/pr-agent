@@ -1,4 +1,3 @@
-import ast
 import copy
 import os
 
@@ -16,7 +15,7 @@ from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
-from pr_agent.algo.setting_utils import normalize_setting_list
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
@@ -167,7 +166,7 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
         if data["eventKey"] == "pr:opened":
             commands_to_run.extend(get_pr_commands("bitbucket_server"))
         else: # Has to be: data["eventKey"] == "pr:from_ref_updated" or "repo:refs_changed"
-            if not get_settings().get("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER"):
+            if not _as_bool_setting(get_settings().get("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER")):
                 get_logger().info(f"Push trigger is disabled, skipping push commands for PR {pr_url}", **log_context)
                 return JSONResponse(
                     status_code=status.HTTP_200_OK,
@@ -240,19 +239,6 @@ def _process_command(command: str, url) -> list[str]:
     # don't think we need this
     apply_repo_settings(url)
     return prepare_command(command)
-
-
-def _to_list(command_string: str) -> list:
-    try:
-        # Use ast.literal_eval to safely parse the string into a list
-        commands = ast.literal_eval(command_string)
-        # Check if the parsed object is a list of strings
-        if isinstance(commands, list) and all(isinstance(cmd, str) for cmd in commands):
-            return commands
-        else:
-            raise ValueError("Parsed data is not a list of strings.")
-    except (SyntaxError, ValueError, TypeError) as e:
-        raise ValueError(f"Invalid command string: {e}") from e
 
 
 def _get_commands_list_from_settings(setting_key: str) -> list:

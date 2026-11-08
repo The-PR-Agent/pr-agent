@@ -126,13 +126,14 @@ JIRA_CLOUD_ID_PATTERN = re.compile(
 )
 
 # A Jira project key as configured in jira.project_keys: the "<PROJECT>" in PROJECT-123.
-# Bounded like the prefix in find_jira_tickets (2-10 letters) so an entry can only ever be
+# Jira Cloud keys start with a letter, followed by letters or digits (PROJ, B2B, P2P).
+# Bounded like the prefix in find_jira_tickets (2-10 characters) so an entry can only ever be
 # a plain label, never a URL or a full ticket key. Case-sensitive: Jira project keys are
 # upper case, so a configured "proj" is a typo rather than a spelling variant, and
 # accepting it silently would widen the lookup to a project the repo never named. Keys
 # found in the PR text are still matched case-insensitively and upper-cased
 # (find_jira_tickets) before they are compared.
-JIRA_PROJECT_KEY_PATTERN = re.compile(r"^[A-Z]{2,10}$")
+JIRA_PROJECT_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
 
 
 def _jira_cloud_base_url():
@@ -230,10 +231,12 @@ def _jira_project_keys():
 def find_jira_tickets(text):
     # Regular expression patterns for JIRA tickets. Matching is case-insensitive so
     # lowercased branch names (e.g. bugfix/abc-123-description) are detected; keys are
-    # normalized to upper case to match Jira's canonical form.
+    # normalized to upper case to match Jira's canonical form. A key never starts inside a
+    # run of letters and digits, so part of a hex ID (4f3a9c1e-2716) or of a long word
+    # (authentication-2) is not a key, while an underscore still separates one (feature_abc-123).
     patterns = [
-        r'\b[A-Z]{2,10}-\d{1,7}\b',  # Standard JIRA ticket format (e.g., PROJ-123)
-        r'(?:https?://[^\s/]+/browse/)?([A-Z]{2,10}-\d{1,7})\b'  # JIRA URL or just the ticket
+        r'\b[A-Z][A-Z0-9]{1,9}-\d{1,7}\b',  # Standard JIRA ticket format (e.g., PROJ-123 or B2B-7)
+        r'(?:https?://[^\s/]+/browse/)?(?<![A-Z0-9])([A-Z][A-Z0-9]{1,9}-\d{1,7})\b'  # JIRA URL or just the ticket
     ]
 
     # Preserve first-seen order while de-duplicating, so the MAX_TICKETS cap applied
@@ -708,10 +711,6 @@ def _get_linear_issue_identity(ticket_url: str) -> tuple[str, str]:
     return match.group(1).lower(), match.group(2).upper()
 
 
-def _get_linear_issue_identifier(ticket_url: str) -> str:
-    return _get_linear_issue_identity(ticket_url)[1]
-
-
 def find_linear_tickets(text: str | None) -> list:
     """Extract canonical Linear issue links, preserving first-seen workspace/issue order."""
     if not isinstance(text, str):
@@ -1071,7 +1070,7 @@ def _normalize_github_host(url):
     return host.removeprefix("api.")
 
 
-def _get_repo_obj_for_ticket(git_provider, ticket_url, repo_name, repo_obj_cache):
+async def _get_repo_obj_for_ticket(git_provider, ticket_url, repo_name, repo_obj_cache):
     """
     Resolve the repository handle that owns the ticket at `ticket_url`.
 
@@ -1108,9 +1107,11 @@ def _get_repo_obj_for_ticket(git_provider, ticket_url, repo_name, repo_obj_cache
     pr_repo_obj = getattr(git_provider, "repo_obj", None)
     try:
         if repo_name.lower() == pr_repo_name.lower():
-            repo_obj = pr_repo_obj if pr_repo_obj is not None else git_provider.github_client.get_repo(repo_name)
+            repo_obj = pr_repo_obj
+            if repo_obj is None:
+                repo_obj = await _run_ticket_io(git_provider.github_client.get_repo, repo_name)
         else:
-            repo_obj = git_provider.get_sibling_repo(repo_name)
+            repo_obj = await _run_ticket_io(git_provider.get_sibling_repo, repo_name)
     except Exception as e:
         repo_obj_cache[cache_key] = e
         raise
@@ -1133,6 +1134,13 @@ def _provider_supports(git_provider, capability: str) -> bool:
         raise AttributeError(f"unknown provider capability: {capability!r}")
     check = getattr(git_provider, capability, None)
     return bool(check()) if callable(check) else False
+
+
+async def _run_ticket_io(function, *args):
+    """Offload ticket reads only when settings are isolated from shared state."""
+    if get_settings() is get_settings(use_context=False):
+        return function(*args)
+    return await asyncio.to_thread(function, *args)
 
 
 async def extract_tickets(git_provider):
@@ -1190,11 +1198,12 @@ async def extract_tickets(git_provider):
             if tickets:
                 issue_cache = {}
 
-                def get_issue_once(ticket_url, repo_name, repo_obj, issue_number):
+                async def get_issue_once(ticket_url, repo_name, repo_obj, issue_number):
                     # Reuse successful reads shared by direct references and sub-issues.
                     key = (_normalize_github_host(ticket_url), repo_name.lower(), issue_number)
                     if key not in issue_cache:
-                        issue_cache[key] = git_provider.get_issue_content(repo_obj, issue_number)
+                        issue_cache[key] = await _run_ticket_io(
+                            git_provider.get_issue_content, repo_obj, issue_number)
                     return issue_cache[key]
 
                 for ticket in tickets:
@@ -1203,10 +1212,10 @@ async def extract_tickets(git_provider):
 
                     try:
                         repo_name, original_issue_number = git_provider._parse_issue_url(ticket)
-                        repo_obj = _get_repo_obj_for_ticket(git_provider, ticket, repo_name, repo_obj_cache)
+                        repo_obj = await _get_repo_obj_for_ticket(git_provider, ticket, repo_name, repo_obj_cache)
                         if repo_obj is None:
                             continue
-                        issue_main = get_issue_once(ticket, repo_name, repo_obj, original_issue_number)
+                        issue_main = await get_issue_once(ticket, repo_name, repo_obj, original_issue_number)
                     except Exception as e:
                         get_logger().error(f"Error getting main issue {ticket!r}: {e}",
                                            artifact={"traceback": traceback.format_exc()})
@@ -1227,7 +1236,9 @@ async def extract_tickets(git_provider):
                         summary = issue_data.get("sub_issues_summary") if isinstance(issue_data, dict) else None
                         total = summary.get("total") if isinstance(summary, dict) else None
                         known_empty = isinstance(total, int) and not isinstance(total, bool) and total == 0
-                        raw_sub_issues = [] if known_empty else git_provider.fetch_sub_issues(ticket) or []
+                        raw_sub_issues = (
+                            [] if known_empty else await _run_ticket_io(git_provider.fetch_sub_issues, ticket) or []
+                        )
                         valid_sub_issues = [
                             url for url in raw_sub_issues
                             if isinstance(url, str) and url.strip()
@@ -1235,11 +1246,12 @@ async def extract_tickets(git_provider):
                         for sub_issue_url in sorted(valid_sub_issues)[:MAX_SUB_ISSUES_PER_TICKET]:
                             try:
                                 sub_repo, sub_issue_number = git_provider._parse_issue_url(sub_issue_url)
-                                sub_repo_obj = _get_repo_obj_for_ticket(git_provider, sub_issue_url, sub_repo,
-                                                                        repo_obj_cache)
+                                sub_repo_obj = await _get_repo_obj_for_ticket(
+                                    git_provider, sub_issue_url, sub_repo, repo_obj_cache)
                                 if sub_repo_obj is None:
                                     continue
-                                sub_issue = get_issue_once(sub_issue_url, sub_repo, sub_repo_obj, sub_issue_number)
+                                sub_issue = await get_issue_once(
+                                    sub_issue_url, sub_repo, sub_repo_obj, sub_issue_number)
 
                                 sub_body = sub_issue.body or ""
                                 if len(sub_body) > MAX_TICKET_CHARACTERS:
@@ -1286,7 +1298,7 @@ async def extract_tickets(git_provider):
 
             tickets_content.extend(asana_tickets_content)
             # Provider-agnostic Jira lookup (see add_jira_tickets); no-op when Jira is unconfigured.
-            add_jira_tickets(git_provider, tickets_content)
+            await _run_ticket_io(add_jira_tickets, git_provider, tickets_content)
             tickets_content.extend(linear_tickets_content)
             return tickets_content
 
@@ -1318,10 +1330,10 @@ async def extract_tickets(git_provider):
                         # Only the issue manager is needed; avoid fetching unused project metadata.
                         project = git_provider.gl.projects.get(project_path, lazy=True)
                     else:
-                        project = git_provider.get_sibling_repo(project_path)
+                        project = await _run_ticket_io(git_provider.get_sibling_repo, project_path)
                         if project is None:
                             continue
-                    issue = project.issues.get(issue_iid)
+                    issue = await _run_ticket_io(project.issues.get, issue_iid)
                     if not is_own_project and getattr(issue, "confidential", False):
                         get_logger().warning(
                             f"Ignoring confidential cross-project GitLab issue: {project_path}#{issue_iid}"
@@ -1353,13 +1365,13 @@ async def extract_tickets(git_provider):
 
             tickets_content.extend(asana_tickets_content)
             # Provider-agnostic Jira lookup (see add_jira_tickets); no-op when Jira is unconfigured.
-            add_jira_tickets(git_provider, tickets_content)
+            await _run_ticket_io(add_jira_tickets, git_provider, tickets_content)
             tickets_content.extend(linear_tickets_content)
             return tickets_content
 
         elif _provider_supports(git_provider, "supports_linked_work_item_tickets"):
             try:
-                tickets_info = git_provider.get_linked_work_items()
+                tickets_info = await _run_ticket_io(git_provider.get_linked_work_items)
             except Exception:
                 get_logger().warning("Failed to get linked work items; continuing without them")
                 tickets_info = []
@@ -1397,7 +1409,7 @@ async def extract_tickets(git_provider):
             # Asana results add context without imposing a new cap on Azure's established behaviour.
             tickets_content.extend(asana_tickets_content)
             # Provider-agnostic Jira lookup (see add_jira_tickets); no-op when Jira is unconfigured.
-            add_jira_tickets(git_provider, tickets_content)
+            await _run_ticket_io(add_jira_tickets, git_provider, tickets_content)
             tickets_content.extend(linear_tickets_content)
             return tickets_content
 
@@ -1406,7 +1418,7 @@ async def extract_tickets(git_provider):
         # provider-native link. The Asana results seed the list so they count against
         # MAX_TICKETS, as on the provider-specific paths. Returning None when nothing at
         # all was found keeps the "provider unsupported" contract intact.
-        tickets_content = add_jira_tickets(git_provider, list(asana_tickets_content))
+        tickets_content = await _run_ticket_io(add_jira_tickets, git_provider, list(asana_tickets_content))
         tickets_content.extend(linear_tickets_content)
         if asana_ticket_urls or linear_ticket_urls or tickets_content:
             return tickets_content

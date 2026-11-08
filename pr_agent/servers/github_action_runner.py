@@ -9,7 +9,12 @@ from dataclasses import dataclass
 import dynaconf
 from starlette_context import context, request_cycle_context
 
-from pr_agent.agent.pr_agent import PRAgent, parse_command, publish_incomplete_files_comment
+from pr_agent.agent.pr_agent import (
+    PRAgent,
+    parse_command,
+    publish_incomplete_files_comment,
+    response_language_instructions,
+)
 from pr_agent.agent.request_policy import RequestOutcome, enforce_request_policy
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
@@ -20,7 +25,7 @@ from pr_agent.algo.artifacts import inject_artifact_context as _inject_artifact_
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings
-from pr_agent.doctor import missing_provider_key_env_vars
+from pr_agent.doctor import PROVIDER_AUTH_CORRECTIONS, missing_provider_key_env_vars
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
 from pr_agent.git_providers.utils import apply_host_settings, apply_repo_settings
@@ -44,8 +49,8 @@ class _ActionStatus:
 _action_status: ContextVar[_ActionStatus | None] = ContextVar("pr_agent_action_status", default=None)
 
 
-def is_true(value: str | bool | int) -> bool:
-    return _as_bool_setting(value)
+def is_true(value: str | bool | int, default: bool = False, setting_name: str | None = None) -> bool:
+    return _as_bool_setting(value, default=default, setting_name=setting_name)
 
 
 def get_setting_or_env(key: str, default: str | bool = None) -> str | bool:
@@ -163,7 +168,8 @@ async def _run_auto_tool(tool_class, pr_url):
     init_run_details()
     _refresh_shared_provider(pr_url)
     try:
-        result = await tool_class(pr_url).run()
+        with response_language_instructions():
+            result = await tool_class(pr_url).run()
     except IncompletePullRequestFilesError as error:
         await asyncio.to_thread(publish_incomplete_files_comment, pr_url, error)
         raise
@@ -231,7 +237,11 @@ async def _run_review_commands(event_payload):
     disable_auto_feedback = get_setting_or_env("CONFIG.DISABLE_AUTO_FEEDBACK", None)
     if disable_auto_feedback is None:
         disable_auto_feedback = get_settings().get("CONFIG.DISABLE_AUTO_FEEDBACK", False)
-    if is_true(disable_auto_feedback):
+    if is_true(
+        disable_auto_feedback,
+        default=True,
+        setting_name="config.disable_auto_feedback",
+    ):
         get_logger().info(f"Auto feedback is disabled, skipping pull_request_review: {pr_url=}")
         return
 
@@ -348,40 +358,21 @@ async def run_action():
         # Raised, not printed, and rendered only from constant-table env var names and
         # static text: CodeQL's clear-text-logging sinks (logging/print/stderr) never
         # see anything derived near key handling, and the raise is not a sink itself.
+        correction = PROVIDER_AUTH_CORRECTIONS.get(env_var_names)
+        if correction is not None:
+            raise SystemExit(
+                f"Stopping before any tool runs: {correction} "
+                "'pr-agent doctor' preflights the same check by hand."
+            )
+        key_hint = (
+            f"Set {' or '.join(env_var_names)} in this workflow's env."
+            if env_var_names else "Replace the placeholder key in provider settings or workflow env."
+        )
         raise SystemExit(
             "Stopping before any tool runs: no usable API key for the active model's provider. "
-            f"Set {' or '.join(env_var_names)} in this workflow's env. "
+            f"{key_hint} "
             "'pr-agent doctor' preflights the same check by hand."
         )
-
-    # Append the response language in the extra instructions
-    try:
-        response_language = get_settings().config.get('response_language', 'en-us')
-        if response_language.lower() != 'en-us':
-            get_logger().info(f'User has set the response language to: {response_language}')
-
-            lang_instruction_text = (
-                f"Your response MUST be written in the language corresponding to locale code: "
-                f"'{response_language}'. This is crucial. Keep schema control values "
-                f"(such as 'No', 'Yes', 'None', 'false') in their original English form "
-                f"and do not translate them.")
-            separator_text = "\n======\n\nIn addition, "
-
-            for key in get_settings():
-                setting = get_settings().get(key)
-                if isinstance(setting, dynaconf.DataDict):
-                    if key.lower() in ['pr_description', 'pr_code_suggestions', 'pr_reviewer']:
-                        if hasattr(setting, 'extra_instructions'):
-                            extra_instructions = setting.extra_instructions
-
-                            if lang_instruction_text not in str(extra_instructions):
-                                updated_instructions = (
-                                    str(extra_instructions) + separator_text + lang_instruction_text
-                                    if extra_instructions else lang_instruction_text
-                                )
-                                setting.extra_instructions = updated_instructions
-    except Exception as e:
-        get_logger().info(f"github action: failed to apply language-specific instructions: {e}")
 
     # Handle pull request opened event
     if GITHUB_EVENT_NAME == "pull_request" or GITHUB_EVENT_NAME == "pull_request_target":
@@ -415,7 +406,11 @@ async def run_action():
                     "github_action_config.push_trigger_ignore_merge_commits",
                     get_settings().get("github_app.push_trigger_ignore_merge_commits", True),
                 )
-                if is_true(ignore_merge_commits) and after_sha is not None and after_sha == merge_commit_sha:
+                if is_true(
+                    ignore_merge_commits,
+                    default=True,
+                    setting_name="github_action_config.push_trigger_ignore_merge_commits",
+                ) and after_sha is not None and after_sha == merge_commit_sha:
                     get_logger().info("Skipping synchronize: merge commit detected")
                     return
                 sender_type = event_payload.get("sender", {}).get("type")
@@ -423,7 +418,11 @@ async def run_action():
                     "github_action_config.push_trigger_ignore_bot_commits",
                     get_settings().get("github_app.push_trigger_ignore_bot_commits", True),
                 )
-                if is_true(ignore_bot_commits) and sender_type == "Bot":
+                if is_true(
+                    ignore_bot_commits,
+                    default=True,
+                    setting_name="github_action_config.push_trigger_ignore_bot_commits",
+                ) and sender_type == "Bot":
                     get_logger().info("Skipping synchronize: bot commit detected")
                     return
                 push_commands = get_settings().get(
@@ -443,7 +442,14 @@ async def run_action():
                         return
                 return
         if action in pr_actions:
-            pr_url = event_payload.get("pull_request", {}).get("url")
+            pull_request = event_payload.get("pull_request") or {}
+            created_at = pull_request.get("created_at")
+            if (action == "review_requested" and "opened" in pr_actions
+                    and created_at and created_at == pull_request.get("updated_at")):
+                # The configured opened event already runs the initial automatic tool batch.
+                get_logger().info("Skipping initial review_requested event")
+                return
+            pr_url = pull_request.get("url")
             if pr_url:
                 allowed = enforce_request_policy(pr_url, provider=settings_provider)
                 del settings_provider
