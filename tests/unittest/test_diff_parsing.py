@@ -48,18 +48,21 @@ def test_parse_modify():
     assert f.edit_type == EDIT_TYPE.MODIFIED
     assert f.old_filename is None
     assert "line2-changed" in f.patch
+    assert (f.num_plus_lines, f.num_minus_lines) == (1, 1)
 
 
 def test_parse_add():
     f = parse_unified_diff(ADD_DIFF)[0]
     assert f.filename == "new.py"
     assert f.edit_type == EDIT_TYPE.ADDED
+    assert (f.num_plus_lines, f.num_minus_lines) == (2, 0)
 
 
 def test_parse_delete():
     f = parse_unified_diff(DELETE_DIFF)[0]
     assert f.filename == "gone.py"
     assert f.edit_type == EDIT_TYPE.DELETED
+    assert (f.num_plus_lines, f.num_minus_lines) == (0, 1)
 
 
 def test_parse_rename():
@@ -67,6 +70,7 @@ def test_parse_rename():
     assert f.filename == "renamed.py"
     assert f.edit_type == EDIT_TYPE.RENAMED
     assert f.old_filename == "old.py"
+    assert (f.num_plus_lines, f.num_minus_lines) == (0, 0)
 
 
 _PATCH = """--- a/foo.py

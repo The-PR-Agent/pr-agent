@@ -448,6 +448,7 @@ pr_files:
     markdown = output.read_text(encoding="utf-8")
     assert markdown.startswith(f"{expected_title}\n\n")
     assert "Update the second line." in markdown
+    assert "+1/-1" in markdown
     assert capsys.readouterr().out == markdown + "\n"
 
 
