@@ -24,6 +24,8 @@ def test_e2e_run_bitbucket_app():
     base_branch = "main"  # or any base branch you want
     new_branch = f"bitbucket_app_e2e_test-{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}"
     get_settings().config.git_provider = "bitbucket"
+    branch_created = False
+    pr = None
 
     try:
         # Add username and password for authentication
@@ -38,6 +40,7 @@ def test_e2e_run_bitbucket_app():
         logger.info(f"Creating a new branch {new_branch} from {base_branch}")
         source_branch = repo.branches.get(base_branch)
         repo.branches.create(new_branch,source_branch.hash)
+        branch_created = True
 
         # Update the file content
         url = f"https://api.bitbucket.org/2.0/repositories/{project_key}/{repo_slug}/src"
@@ -46,7 +49,9 @@ def test_e2e_run_bitbucket_app():
             "message": "update cli_pip.py",
             "branch": new_branch,
         }
-        requests.request("POST", url, auth=HTTPBasicAuth(username, password), data=data, files=files)
+        response = requests.request("POST", url, auth=HTTPBasicAuth(username, password), data=data, files=files,
+                                    timeout=30)
+        response.raise_for_status()
 
 
         # Create a pull request
@@ -82,16 +87,25 @@ def test_e2e_run_bitbucket_app():
 
         # cleanup - delete the branch
         pr.decline()
+        pr = None
         repo.branches.delete(new_branch)
+        branch_created = False
 
         # If we reach here, the test is successful
         logger.info("Succeeded in running e2e test for Bitbucket app on the PR")
     except Exception as e:
         logger.error(f"Failed to run e2e test for Bitbucket app: {e}")
-        # delete the branch
-        pr.decline()
-        repo.branches.delete(new_branch)
-        raise AssertionError() from e
+        if pr is not None:
+            try:
+                pr.decline()
+            except Exception:
+                logger.exception("Failed to decline the Bitbucket test PR during cleanup")
+        if branch_created:
+            try:
+                repo.branches.delete(new_branch)
+            except Exception:
+                logger.exception("Failed to delete the Bitbucket test branch during cleanup")
+        raise AssertionError("Bitbucket app e2e test failed") from e
 
 
 if __name__ == '__main__':

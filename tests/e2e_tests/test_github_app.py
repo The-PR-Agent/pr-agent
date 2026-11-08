@@ -34,12 +34,14 @@ def test_e2e_run_github_app():
     git_provider = get_git_provider()()
     github_client = git_provider.github_client
     repo = github_client.get_repo(repo_url)
+    branch_created = False
 
     try:
         # Create a new branch from the base branch
         source = repo.get_branch(base_branch)
         logger.info(f"Creating a new branch {new_branch} from {base_branch}")
         repo.create_git_ref(ref=f"refs/heads/{new_branch}", sha=source.commit.sha)
+        branch_created = True
 
         # Get the file you want to edit
         file = repo.get_contents(FILE_PATH, ref=base_branch)
@@ -87,15 +89,19 @@ def test_e2e_run_github_app():
         # cleanup - delete the branch
         logger.info(f"Deleting the branch {new_branch}")
         repo.get_git_ref(f"heads/{new_branch}").delete()
+        branch_created = False
 
         # If we reach here, the test is successful
         logger.info(f"Succeeded in running e2e test for GitHub app on the PR {pr.html_url}")
     except Exception as e:
         logger.error(f"Failed to run e2e test for GitHub app: {e}")
-        # delete the branch
-        logger.info(f"Deleting the branch {new_branch}")
-        repo.get_git_ref(f"heads/{new_branch}").delete()
-        raise AssertionError() from e
+        if branch_created:
+            try:
+                logger.info(f"Deleting the branch {new_branch}")
+                repo.get_git_ref(f"heads/{new_branch}").delete()
+            except Exception:
+                logger.exception("Failed to delete the GitHub test branch during cleanup")
+        raise AssertionError("GitHub app e2e test failed") from e
 
 
 if __name__ == '__main__':
