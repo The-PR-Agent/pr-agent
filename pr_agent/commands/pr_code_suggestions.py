@@ -353,7 +353,8 @@ class PRCodeSuggestions:
         self.token_handler = TokenHandler(self.git_provider.pr,
                                           self.vars,
                                           self.pr_code_suggestions_prompt_system,
-                                          self.pr_code_suggestions_prompt_user)
+                                          self.pr_code_suggestions_prompt_user,
+                                          ai_handler=self.ai_handler)
 
         self.progress = build_progress_comment()
         self.progress_response = None
