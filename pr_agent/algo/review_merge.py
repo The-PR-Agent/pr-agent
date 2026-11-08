@@ -432,9 +432,13 @@ def _merge_ticket_compliance(values: list[Any], ticket_index: tuple = ({}, {})) 
                 if field == "ticket_url":
                     # the canonical URL is already on the recorded entry; never union link text
                     continue
-                if isinstance(field_value, str) and isinstance(target.get(field), str):
-                    target[field] = _union_bullet_lines(target[field], field_value)
-                elif not target.get(field):
+                current = target.get(field)
+                if isinstance(field_value, (list, dict)) or isinstance(current, (list, dict)):
+                    # A chunk may answer a bullet list as a YAML list; flatten both so neither side is dropped.
+                    current, field_value = as_review_text(current or ""), as_review_text(field_value or "")
+                if isinstance(field_value, str) and isinstance(current, str):
+                    target[field] = _union_bullet_lines(current, field_value)
+                elif not current:
                     target[field] = field_value
     return list(merged.values())
 
