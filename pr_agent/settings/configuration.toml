@@ -307,6 +307,7 @@ extra_instructions = ""
 docs_style = "Sphinx" # "Google Style with Args, Returns, Attributes...etc", "Numpy Style", "Sphinx Style", "PEP257", "reStructuredText"
 
 [pr_update_changelog] # /update_changelog #
+changelog_path="CHANGELOG.md" # Repository-relative Markdown changelog path. Root .pr_agent.toml or host settings only; see tools/update_changelog.md.
 push_changelog_changes=false
 extra_instructions = ""
 add_pr_link=true

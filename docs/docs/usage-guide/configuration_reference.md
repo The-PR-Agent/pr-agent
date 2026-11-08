@@ -333,6 +333,7 @@ See [Update Changelog](../tools/update_changelog.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
+| `changelog_path` | "CHANGELOG.md" | Repository-relative Markdown changelog path. Root .pr_agent.toml or host settings only; see tools/update_changelog.md. |
 | `push_changelog_changes` | false |  |
 | `extra_instructions` | "" |  |
 | `add_pr_link` | true |  |
