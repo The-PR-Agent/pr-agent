@@ -95,7 +95,6 @@ def resolve_bot_display_name(value) -> str:
 
 
 def get_bot_display_name(default: str = DEFAULT_BOT_DISPLAY_NAME) -> str:
-    """Return config.bot_display_name, falling back to DEFAULT_BOT_DISPLAY_NAME when invalid."""
     name = resolve_bot_display_name(
         get_settings().config.get("bot_display_name", DEFAULT_BOT_DISPLAY_NAME)
     )

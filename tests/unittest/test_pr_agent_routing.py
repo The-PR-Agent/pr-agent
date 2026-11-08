@@ -44,6 +44,22 @@ def test_incomplete_file_notices_use_configured_bot_display_name(monkeypatch, er
     assert error.notice_marker == expected_marker
 
 
+def test_incomplete_file_error_subclass_without_template_keeps_class_notice():
+    class LegacyIncompleteFilesError(IncompleteProviderPullRequestFilesError):
+        notice = "Legacy incomplete-files notice"
+
+    error = LegacyIncompleteFilesError("incomplete")
+
+    assert error.notice == "Legacy incomplete-files notice"
+
+
+def test_incomplete_file_base_error_without_template_preserves_exception_type():
+    error = IncompleteProviderPullRequestFilesError("incomplete")
+
+    assert isinstance(error, RuntimeError)
+    assert str(error) == "incomplete"
+
+
 def test_incomplete_file_errors_share_only_provider_neutral_base():
     assert issubclass(IncompletePullRequestFilesError, IncompleteProviderPullRequestFilesError)
     assert issubclass(IncompleteBitbucketPullRequestFilesError, IncompleteProviderPullRequestFilesError)
