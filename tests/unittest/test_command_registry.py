@@ -24,6 +24,7 @@ from pr_agent.agent.pr_agent import command2class, commands
 from pr_agent.cli import (
     _JSON_DESCRIBE_COMMANDS,
     _JSON_IMPROVE_COMMANDS,
+    _JSON_LABEL_COMMANDS,
     _JSON_REVIEW_COMMANDS,
     _PLAIN_DIFF_MARKDOWN_COMMANDS,
 )
@@ -104,6 +105,7 @@ def test_cli_command_sets_match_the_registry():
     assert _JSON_REVIEW_COMMANDS == {"review", "review_pr"}
     assert _JSON_IMPROVE_COMMANDS == {"improve", "improve_code"}
     assert _JSON_DESCRIBE_COMMANDS == {"describe", "describe_pr"}
+    assert _JSON_LABEL_COMMANDS == {"generate_labels"}
 
 
 @pytest.mark.parametrize("succeeded", [True, False])
