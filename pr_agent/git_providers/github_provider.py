@@ -211,7 +211,10 @@ class GithubProvider(GitProvider):
     def _read_pr_commits(self, pr):
         """Read the commits of `pr` and the commit its head points to."""
         commits = list(pr.get_commits())
-        last_commit = commits[-1] if commits else self._get_repo().get_commit(pr.head.sha)
+        last_commit = commits[-1] if commits else None
+        # GitHub caps the PR commits endpoint at 250 entries, so its tail may not be the head.
+        if last_commit is None or last_commit.sha != pr.head.sha:
+            last_commit = self._get_repo().get_commit(pr.head.sha)
         return commits, last_commit
 
     @staticmethod
