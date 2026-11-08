@@ -231,13 +231,32 @@ def show_run_details(gfm_supported: bool) -> str:
     return f"\n___\n\n**{title}**\n\n{body}\n"
 
 
-def append_run_details(body: str, git_provider) -> str:
-    """Append the opt-in run-details section to a comment body.
+def show_fallback_note() -> str:
+    """Render a visible one-line note naming the fallback model that produced the output.
 
-    Returns ``body`` unchanged when ``config.output_run_details`` is off, or when the
+    Shown regardless of ``config.output_run_details``: that footer is off by default and
+    collapsed, yet a fallback answer can differ in quality from the configured model.
+    """
+    details = get_run_details()
+    if details is None or not details.fallback_used or not details.model_used:
+        return ""
+    if len(details.models_used) > 1:
+        models = ", ".join(f"`{model}`" for model in details.models_used)
+        note = t("run_details.fallback_note_partial", models=models)
+    else:
+        note = t("run_details.fallback_note", model=f"`{details.model_used}`")
+    return f"\n\n> {note}\n"
+
+
+def append_run_details(body: str, git_provider) -> str:
+    """Append the fallback note and the opt-in run-details section to a comment body.
+
+    The fallback note is added whenever a fallback model produced the output. The
+    run-details section is skipped when ``config.output_run_details`` is off, or when the
     current run recorded no model (so a message that needed no AI call stays clean).
     A provider without capability checks gets the plain-text section.
     """
+    body += show_fallback_note()
     if not get_settings().get("config.output_run_details", False):
         return body
     is_supported = getattr(git_provider, "is_supported", None)

@@ -55,10 +55,10 @@ from pr_agent.algo.review_json_output import review_json_output_path, write_revi
 from pr_agent.algo.review_merge import all_key_issues, chunk_hit_findings_limit, merge_review_chunks
 from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure, record_model_used
 from pr_agent.algo.run_output import (
+    append_run_details,
     github_action_output,
     push_outputs_async,
     show_relevant_configurations,
-    show_run_details,
 )
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.skills_loader import get_skills_context
@@ -1440,9 +1440,8 @@ class PRReviewer:
         if get_settings().get('config', {}).get('output_relevant_configurations', False):
             markdown_text += show_relevant_configurations(relevant_section='pr_reviewer')
 
-        # Output the agent run details (model, tokens, time cost) if enabled
-        if get_settings().get('config', {}).get('output_run_details', False):
-            markdown_text += show_run_details(self.git_provider.is_supported("gfm_markdown"))
+        # Output the fallback-model note, and the agent run details (model, tokens, time cost) if enabled
+        markdown_text = append_run_details(markdown_text, self.git_provider)
 
         if self._review_state_result is not None:
             state_result = self._review_state_result

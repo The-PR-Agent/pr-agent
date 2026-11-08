@@ -51,7 +51,7 @@ On providers that support GitHub-Flavored Markdown this appends a collapsible se
   - anthropic/claude-sonnet-5: $0.01 USD
 ```
 
-`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. The `Tokens` line appears only when the model provider reports usage. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default.
+`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. A fallback run also adds a visible one-line note naming the fallback model, even when `config.output_run_details` is off, because its output quality can differ from the configured model. The note appears wherever the section below can appear. The `Tokens` line appears only when the model provider reports usage. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default.
 
 `Estimated API cost` is derived synchronously from each completed LiteLLM response and its finalized usage. LiteLLM can account for cache reads, cache writes, reasoning tokens, and provider-specific usage categories when the response and its pricing data include them. Multi-model runs show a compact breakdown of the known costs. Exact `Decimal` values are retained for aggregation, while public currency output is rounded to two decimal places; a tiny positive value that would round to zero is shown as `<$0.01` instead of `$0.00`. If only some successful calls can be priced, the total is marked `partial` with the priced-call count; if none can be priced, the line reports `unavailable`. Missing pricing is never rendered as `$0`.
 

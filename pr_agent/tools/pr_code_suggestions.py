@@ -46,7 +46,7 @@ from pr_agent.algo.run_details import (
     record_command_failure,
     record_model_used,
 )
-from pr_agent.algo.run_output import push_outputs_async, show_relevant_configurations, show_run_details
+from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
 from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget, FittedPrompt
@@ -542,11 +542,8 @@ class PRCodeSuggestions:
                     if get_settings().get('config', {}).get('output_relevant_configurations', False):
                         pr_body += show_relevant_configurations(relevant_section='pr_code_suggestions')
 
-                    # Output the agent run details (model, tokens, time cost) if enabled
-                    if get_settings().get('config', {}).get('output_run_details', False):
-                        # This summary-comment branch already requires GFM support, so the argument is always True;
-                        # keep the call shaped like the reviewer/describe paths for consistency.
-                        pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
+                    # Output the fallback-model note, and the agent run details (model, tokens, time cost) if enabled
+                    pr_body = append_run_details(pr_body, self.git_provider)
 
                     # publish the PR comment
                     if get_settings().pr_code_suggestions.persistent_comment: # true by default
@@ -728,10 +725,9 @@ class PRCodeSuggestions:
                 PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
                 self.git_provider,
             )
-            # Output the agent run details (model, tokens, time cost) if enabled, so the
-            # "no suggestions" result still shows which model produced it.
-            if get_settings().get('config', {}).get('output_run_details', False):
-                pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
+            # Output the fallback-model note, and the agent run details (model, tokens, time cost) if
+            # enabled, so the "no suggestions" result still shows which model produced it.
+            pr_body = append_run_details(pr_body, self.git_provider)
             get_logger().debug("PR output", artifact=pr_body)
             if self.progress_response:
                 progress_response = self.progress_response
