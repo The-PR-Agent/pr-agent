@@ -335,6 +335,11 @@ def omit_deletion_hunks(patch_lines) -> str:
     - patch_lines: a list of strings representing the lines of the patch
     Returns:
     - A string representing the modified patch with deletion hunks omitted
+
+    Lines before the first hunk header (`---`/`+++` file headers that
+    GitLab's older diffs and Gitea's serialized diffs carry) are skipped:
+    counting `+++ b/file` as an addition would set ``add_hunk`` for the
+    whole patch and no deletion hunk would ever be omitted.
     """
 
     temp_hunk = []
@@ -356,6 +361,10 @@ def omit_deletion_hunks(patch_lines) -> str:
                     add_hunk = False
                 temp_hunk.append(line)
                 inside_hunk = True
+        elif not inside_hunk:
+            # Pre-hunk metadata (---/+++ file headers, diff --git, index):
+            # not patch content, never marks a hunk as having additions.
+            continue
         else:
             temp_hunk.append(line)
             if line:
@@ -394,10 +403,26 @@ def handle_patch_deletions(patch: str, original_file_content_str: str,
     else:
         patch_lines = split_diff_lines(patch)
         patch_new = omit_deletion_hunks(patch_lines)
-        if patch_new and patch != patch_new:
-            if get_verbosity_level() > 0:
-                get_logger().info(f"Processing file: {file_name}, hunks were deleted")
-            patch = patch_new
+        if patch_new:
+            if patch != patch_new:
+                if get_verbosity_level() > 0:
+                    get_logger().info(f"Processing file: {file_name}, hunks were deleted")
+                patch = patch_new
+        elif patch_lines:
+            # Every hunk was dropped (deletion-only patch), but the input may
+            # carry pre-hunk metadata: fall back to the hunk-only form so
+            # ---/+++ headers never leak back into the prompt. A patch with no
+            # hunk lines at all keeps its original (non-patch) content.
+            hunk_lines = []
+            inside = False
+            for line in patch_lines:
+                if line.startswith('@@'):
+                    inside = True
+                    hunk_lines.append(line)
+                elif inside:
+                    hunk_lines.append(line)
+            if hunk_lines:
+                patch = '\n'.join(hunk_lines)
     return patch
 
 
