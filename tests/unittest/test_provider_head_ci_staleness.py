@@ -674,4 +674,58 @@ def test_gitlab_staleness_passes_get_all_to_diff():
     provider.gl.projects.get.return_value = proj_mock
 
     assert provider.is_head_stale_against_base() is False
-    diff_mock.assert_called_once_with(get_all=True)
+    diff_mock.assert_called_once_with(get_all=True, per_page=100)
+
+
+def test_github_ci_status_evaluates_completed_sibling_job_in_same_run(monkeypatch):
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    runs = [
+        # Action's own job in progress
+        SimpleNamespace(
+            status="in_progress",
+            conclusion=None,
+            app=None,
+            name="pr-agent-action",
+            details_url="https://github.com/org/repo/actions/runs/123/job/1",
+        ),
+        # Completed sibling job in the same run that failed
+        SimpleNamespace(
+            status="completed",
+            conclusion="failure",
+            app=None,
+            name="tests",
+            details_url="https://github.com/org/repo/actions/runs/123/job/2",
+        ),
+    ]
+    provider = _make_github_provider(check_runs=runs)
+    assert provider.get_head_ci_status() == "failed"
+
+
+def test_github_ci_status_does_not_prefix_match_run_id(monkeypatch):
+    monkeypatch.setenv("GITHUB_RUN_ID", "55")
+    runs = [
+        # Run 555 should not match run 55
+        SimpleNamespace(
+            status="completed",
+            conclusion="success",
+            app=None,
+            name="other-run-job",
+            details_url="https://github.com/org/repo/actions/runs/555/job/1",
+        ),
+    ]
+    provider = _make_github_provider(check_runs=runs)
+    assert provider.get_head_ci_status() == "passed"
+
+
+def test_github_ci_status_fails_closed_on_check_runs_error():
+    provider = _make_github_provider()
+    commit = provider.repo_obj.get_commit.return_value
+    commit.get_check_runs.side_effect = GithubException(403, "Rate limit", {})
+    assert provider.get_head_ci_status() is None
+
+
+def test_github_ci_status_fails_closed_on_combined_status_error():
+    provider = _make_github_provider(check_runs=[])
+    commit = provider.repo_obj.get_commit.return_value
+    commit.get_combined_status.side_effect = GithubException(403, "Rate limit", {})
+    assert provider.get_head_ci_status() is None

@@ -2605,7 +2605,7 @@ class GithubProvider(GitProvider):
             return False
         html_url = getattr(run, "html_url", "") or ""
         details_url = getattr(run, "details_url", "") or ""
-        pattern = f"/actions/runs/{current_run_id}"
+        pattern = f"/actions/runs/{current_run_id}/"
         if pattern in html_url or pattern in details_url:
             return True
         external_id = str(getattr(run, "external_id", "") or "")
@@ -2644,6 +2644,7 @@ class GithubProvider(GitProvider):
                     check_runs = commit.get_check_runs()
                 except (GithubException, RequestException) as e:
                     get_logger().warning(f"Failed to fetch check runs for {target_sha}: {e}")
+                    return None
 
             if check_runs is not None:
                 pr_agent_check_names = self._get_pr_agent_check_names()
@@ -2660,11 +2661,11 @@ class GithubProvider(GitProvider):
                         continue
 
                     # Leave out the running GitHub Action job so it doesn't keep CI pending
-                    if self._is_current_action_run(run):
+                    status = (getattr(run, "status", "") or "").lower()
+                    if self._is_current_action_run(run) and status != "completed":
                         continue
 
                     has_checks = True
-                    status = (getattr(run, "status", "") or "").lower()
                     conclusion = getattr(run, "conclusion", None)
                     conclusion = conclusion.lower() if isinstance(conclusion, str) else None
 
@@ -2684,6 +2685,7 @@ class GithubProvider(GitProvider):
                     combined_status = commit.get_combined_status()
                 except (GithubException, RequestException) as e:
                     get_logger().warning(f"Failed to fetch combined status for {target_sha}: {e}")
+                    return None
 
             if combined_status is not None:
                 total_count = getattr(combined_status, "total_count", 0) or 0

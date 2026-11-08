@@ -1848,10 +1848,7 @@ class GitLabProvider(GitProvider):
                     if c_dt and c_dt <= ref_dt:
                         continue
                 try:
-                    try:
-                        c_diffs = c.diff(get_all=True)
-                    except TypeError:
-                        c_diffs = c.diff()
+                    c_diffs = c.diff(get_all=True, per_page=100)
                     for d in c_diffs:
                         new_path = d.get("new_path") if isinstance(d, dict) else getattr(d, "new_path", None)
                         old_path = d.get("old_path") if isinstance(d, dict) else getattr(d, "old_path", None)
