@@ -1343,6 +1343,11 @@ class PRCodeSuggestions:
             if score is None or not 0 <= score <= 10:
                 feedback[i] = None
                 continue
+            expected_file = self._suggestion_file_key(suggestion).strip("`").removeprefix("./").removeprefix("/")
+            reported_file = self._suggestion_file_key(entry).strip("`").removeprefix("./").removeprefix("/")
+            if expected_file and reported_file and expected_file != reported_file:
+                feedback[i] = None
+                continue
             # Only use reflection anchors when the original suggestion has none.
             if "relevant_lines_start" not in suggestion:
                 start = self._parse_line_number(entry.get("relevant_lines_start"))
