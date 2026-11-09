@@ -42,6 +42,7 @@ def review_tool(monkeypatch):
 
         async def run(self):
             ran["ran"] = True
+            ran["publish_output"] = get_settings().config.publish_output
 
     monkeypatch.setitem(agent_module.command2class, "review", FakeReviewTool)
     monkeypatch.setattr(agent_module, "apply_repo_settings", lambda pr_url: None)
@@ -105,3 +106,23 @@ async def test_a_plain_instruction_reaches_the_tool(monkeypatch, debug_logging, 
 
     assert handled is True
     assert review_tool.get("ran") is True
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    ("false", False),
+    ("off", False),
+    ("", False),
+    ("true", True),
+    ("unexpected", True),
+])
+async def test_quoted_publish_output_is_normalized_before_tool_dispatch(
+    monkeypatch, debug_logging, review_tool, value, expected
+):
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
+
+    handled = await agent_module.PRAgent().handle_request(
+        PR_URL, f'/review --config.publish_output="{value}"'
+    )
+
+    assert handled is True
+    assert review_tool["publish_output"] is expected

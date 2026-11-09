@@ -19,6 +19,7 @@ from pr_agent.algo.comment_identity import (
     comment_matches_identity,
 )
 from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
+from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.utils import _fix_key_value, update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
@@ -314,6 +315,13 @@ def _record_token_metrics(action: str, git_provider: str) -> None:
         get_ai_calls_counter().add(details.num_ai_calls, labels)
 
 
+def _normalize_publish_output_setting() -> None:
+    """Honor false-like strings without changing explicitly empty or invalid setting defaults."""
+    settings = get_settings()
+    value = settings.config.publish_output
+    settings.set("CONFIG.PUBLISH_OUTPUT", _as_bool_setting(value, default=bool(value)))
+
+
 @contextmanager
 def response_language_instructions():
     """Apply generated locale guidance only while a command is running."""
@@ -490,6 +498,7 @@ class PRAgent:
             if settings.config.get("response_language", "en-us") != previous_response_language:
                 settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)
             raise
+        _normalize_publish_output_setting()
         language_overridden = settings.config.get("response_language", "en-us") != previous_response_language
 
         try:

@@ -63,10 +63,9 @@ def push_outputs(
     try:
         cfg = get_settings().get("push_outputs", {}) or {}
         enable = cfg.get("enable", False)
-        # Treat environment-variable strings "false", "0", "no", and "" as disabled.
         if isinstance(enable, str):
-            enable = enable.lower().strip() not in ("false", "0", "no", "")
-        if not enable:
+            enable = enable.strip()
+        if not _as_bool_setting(enable, default=bool(enable)):
             return
 
         tools = _selected_output_tools(cfg)

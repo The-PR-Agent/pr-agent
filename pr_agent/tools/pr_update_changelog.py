@@ -17,6 +17,7 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.run_output import append_run_details, show_relevant_configurations
+from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
@@ -51,7 +52,8 @@ class PRUpdateChangelog:
         # restricted_mode disables the "push_code" capability — degrade gracefully: still
         # generate the changelog and publish it as a comment (which only needs
         # pull-requests: write) instead of skipping the tool and dropping the output entirely.
-        self.push_changelog_changes = get_settings().pr_update_changelog.push_changelog_changes
+        push_changelog_changes = get_settings().pr_update_changelog.push_changelog_changes
+        self.push_changelog_changes = _as_bool_setting(push_changelog_changes, default=bool(push_changelog_changes))
         self.push_skipped_reason = None
         if self.push_changelog_changes:
             if not hasattr(self.git_provider, "create_or_update_pr_file"):
@@ -314,7 +316,8 @@ class PRUpdateChangelog:
             # whenever this capability is missing; kept local so the guard holds even
             # if a future caller reaches this method some other way.
             return
-        if get_settings().pr_update_changelog.get("skip_ci_on_push", True):
+        skip_ci_on_push = get_settings().pr_update_changelog.get("skip_ci_on_push", True)
+        if _as_bool_setting(skip_ci_on_push, default=bool(skip_ci_on_push)):
             commit_message = f"[skip ci] Update {self.changelog_path}"
         else:
             commit_message = f"Update {self.changelog_path}"

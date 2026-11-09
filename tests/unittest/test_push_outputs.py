@@ -13,11 +13,11 @@ from pr_agent.config_loader import get_settings
 
 
 class TestOutputSinkPreflight:
-    @pytest.mark.parametrize("enable", [False, "false", "  FaLsE  ", "0", "no", ""])
+    @pytest.mark.parametrize("enable", [False, "false", "  FaLsE  ", "0", "no", "off", ""])
     def test_disabled_skips_destination_validation(self, enable):
         assert output_sinks._check_output_sinks({"enable": enable, "channels": object()}) is None
 
-    @pytest.mark.parametrize("enable", [True, "true", "yes"])
+    @pytest.mark.parametrize("enable", [True, "true", "yes", "on", "enabled", "  enabled  "])
     def test_enabled_accepts_dynaconf_wrappers(self, enable):
         get_settings().set("push_outputs", {"enable": enable, "channels": ["stdout", "file"]})
         cfg = get_settings().get("push_outputs")
@@ -124,10 +124,11 @@ def _reset_push_outputs():
 
 
 class TestPushOutputs:
-    def test_only_selected_tools_reach_configured_sinks(self, tmp_path):
+    @pytest.mark.parametrize("enable", [True, "enabled"])
+    def test_only_selected_tools_reach_configured_sinks(self, tmp_path, enable):
         out = tmp_path / 'outputs.jsonl'
         s = get_settings()
-        s.set('PUSH_OUTPUTS.ENABLE', True)
+        s.set('PUSH_OUTPUTS.ENABLE', enable)
         s.set('PUSH_OUTPUTS.CHANNELS', ['file'])
         s.set('PUSH_OUTPUTS.FILE_PATH', str(out))
 
@@ -232,9 +233,9 @@ class TestPushOutputs:
 
         assert not (tmp_path / 'out.jsonl').exists()
 
-    def test_string_false_stays_disabled(self, monkeypatch, tmp_path):
-        # env vars arrive as strings; "false" must not enable the feature
-        get_settings().set('PUSH_OUTPUTS.ENABLE', "false")
+    @pytest.mark.parametrize("enable", ["false", "off"])
+    def test_disabled_strings_do_not_emit_outputs(self, tmp_path, enable):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', enable)
         get_settings().set('PUSH_OUTPUTS.CHANNELS', ['file'])
         get_settings().set('PUSH_OUTPUTS.FILE_PATH', str(tmp_path / 'out.jsonl'))
 

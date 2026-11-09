@@ -305,6 +305,26 @@ class TestPRUpdateChangelog:
         provider_factory.assert_not_called()
         mock_ai_handler.chat_completion.assert_not_called()
 
+    @pytest.mark.parametrize("value", [False, "false", "off"])
+    async def test_false_like_push_setting_publishes_a_comment_without_writing(self, mock_ai_handler, value):
+        provider = self._make_push_provider()
+        with (
+            patch("pr_agent.tools.pr_update_changelog.get_git_provider_for_tool", return_value=provider),
+            patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"),
+            patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models"),
+            patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings,
+        ):
+            self._configure_settings(mock_settings)
+            mock_settings.return_value.pr_update_changelog.push_changelog_changes = value
+            tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
+            tool.prediction = "## Changelog entry"
+            await tool.run()
+
+        assert tool.commit_changelog is False
+        provider.get_pr_file_content_snapshot.assert_not_called()
+        provider.create_or_update_pr_file.assert_not_called()
+        assert provider.publish_comment.call_count == 2
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("changelog_path,exists", [
         ("CHANGELOG.md", True), ("docs/HISTORY.md", True), ("packages/測試 API/CHANGELOG", False),
@@ -1141,6 +1161,24 @@ class TestPRUpdateChangelog:
                 message="[skip ci] Update CHANGELOG.md",
                 expected_snapshot=changelog_tool.changelog_snapshot,
             )
+
+    @pytest.mark.parametrize(("value", "expected_message"), [
+        (False, "Update CHANGELOG.md"),
+        (None, "Update CHANGELOG.md"),
+        ("", "Update CHANGELOG.md"),
+        ("false", "Update CHANGELOG.md"),
+        ("off", "Update CHANGELOG.md"),
+        (True, "[skip ci] Update CHANGELOG.md"),
+    ])
+    async def test_skip_ci_on_push_honors_boolean_like_settings(
+        self, changelog_tool, mock_git_provider, value, expected_message
+    ):
+        mock_git_provider.supports_changelog_update_review.return_value = False
+        with patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
+            mock_settings.return_value.pr_update_changelog.get.return_value = value
+            await changelog_tool._push_changelog_update("new content", "answer")
+
+        assert mock_git_provider.create_or_update_pr_file.call_args.kwargs["message"] == expected_message
 
     @pytest.mark.parametrize("has_commit", [True, False])
     @pytest.mark.parametrize("fallback_raises", [True, False])

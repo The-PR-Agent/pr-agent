@@ -91,6 +91,30 @@ async def test_direct_auto_tool_leaves_unexpected_constructor_error_unchanged(mo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("value", "expected"), [
+    ("false", False),
+    ("off", False),
+    ("", False),
+    ("true", True),
+])
+async def test_direct_auto_tool_normalizes_publish_output(value, expected):
+    observed = []
+
+    class AutoTool:
+        def __init__(self, _pr_url):
+            pass
+
+        async def run(self):
+            observed.append(get_settings().config.publish_output)
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        get_settings().set("CONFIG.PUBLISH_OUTPUT", value)
+        await github_action_runner._run_auto_tool(AutoTool, "https://example/pr/1")
+
+    assert observed == [expected]
+
+
+@pytest.mark.asyncio
 async def test_direct_auto_tool_publishes_and_preserves_error_when_comment_decode_fails(
     monkeypatch
 ):
