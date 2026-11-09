@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from pr_agent.algo.git_patch_processing import extract_hunk_lines_from_patch
+from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.servers import github_app
 from pr_agent.servers import utils as servers_utils
 from pr_agent.servers.utils import DefaultDictWithTimeout
@@ -245,6 +247,26 @@ class TestHandleLineComments:
         assert "--file_name=src/file.py" in result
         assert "--comment_id=987654" in result
         assert result[-1] == "Why this change?"
+
+    @pytest.mark.parametrize(
+        "path", ["on", "false", "null", "123", "2026-11-09", "[one, two]", '"on"', "'null'", "docs/notes-", "build "]
+    )
+    def test_ask_line_preserves_literal_filenames(self, monkeypatch, path):
+        values = {}
+        monkeypatch.setattr(
+            "pr_agent.algo.utils.get_settings",
+            lambda: SimpleNamespace(as_dict=lambda: {}, set=lambda key, value: values.__setitem__(key, value)),
+        )
+        patch = "@@ -1 +1 @@\n-old\n+new"
+        command = github_app.handle_line_comments(
+            self._payload(path=path, start_line=1, line=1, diff_hunk=patch), "/ask Why?"
+        )
+        update_settings_from_args(command[1:-1])
+
+        assert values["FILE_NAME"] == path
+        hunk, selected = extract_hunk_lines_from_patch(patch, values["FILE_NAME"], 1, 1, "RIGHT")
+        assert "## File:" in hunk
+        assert "+new" in selected
 
     def test_only_strips_the_leading_ask_command(self):
         # The question is about the /ask command itself, so the inner occurrence

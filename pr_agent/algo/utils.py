@@ -863,14 +863,14 @@ def update_settings_from_args(args: list[str]) -> list[str]:
     other_args = []
     if args:
         for arg in args:
-            arg = arg.strip()
+            arg = arg.lstrip()
             if arg.startswith('--'):
-                arg = arg.strip('-').strip()
+                arg = arg.lstrip('-')
                 vals = arg.split('=', 1)
                 if len(vals) != 2:
                     if len(vals) > 2:  # --extended is a valid argument
                         get_logger().error(f'Invalid argument format: {arg}')
-                    other_args.append(arg)
+                    other_args.append(arg.strip())
                     continue
                 key, value = _fix_key_value(*vals)
                 if '.' not in key:
@@ -905,12 +905,15 @@ def update_settings_from_args(args: list[str]) -> list[str]:
                     get_settings().set(key, value)
                     get_logger().info(f'Updated setting {key} to: "{value}"')
             else:
-                other_args.append(arg)
+                other_args.append(arg.strip())
     return other_args
 
 
 def _fix_key_value(key: str, value: str):
     key = key.strip().upper()
+    # Keep FILE_NAME as a literal path, including filenames that contain quotes.
+    if key == "FILE_NAME":
+        return key, value
     value = value.strip()
     try:
         value = yaml.safe_load(value)
