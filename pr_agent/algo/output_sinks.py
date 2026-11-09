@@ -10,7 +10,7 @@ from urllib.parse import quote, urlparse
 
 import requests
 
-from pr_agent.algo.setting_utils import normalize_setting_list
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.log import get_logger
 
 
@@ -221,8 +221,8 @@ def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
     """Check basic enabled destination settings without constructing sinks or probing resources."""
     enable = cfg.get("enable", False)
     if isinstance(enable, str):
-        enable = enable.lower().strip() not in ("false", "0", "no", "")
-    if not enable:
+        enable = enable.strip()
+    if not _as_bool_setting(enable, default=bool(enable)):
         return None
 
     if _selected_output_tools(cfg) is None:

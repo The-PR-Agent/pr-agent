@@ -11,6 +11,7 @@ from starlette_context import context, request_cycle_context
 
 from pr_agent.agent.pr_agent import (
     PRAgent,
+    _normalize_publish_output_setting,
     parse_command,
     publish_incomplete_files_comment,
     response_language_instructions,
@@ -167,6 +168,7 @@ async def _run_auto_tool(tool_class, pr_url):
     # behind by a previous tool; the tool replaces it with its own on entry.
     init_run_details()
     _refresh_shared_provider(pr_url)
+    _normalize_publish_output_setting()
     try:
         with response_language_instructions():
             result = await tool_class(pr_url).run()
