@@ -470,7 +470,7 @@ def render_risk_checks(data: dict, gfm_supported: bool) -> str:
     if not isinstance(data, dict):
         return ""
 
-    from pr_agent.tools.pr_code_suggestions import _markdown_code_span as plain_code_span
+    from pr_agent.algo.markdown_span import _markdown_code_span as plain_code_span
 
     def _markdown_code_span(text: str) -> str:
         # inside the <table> row the backticks stay literal, so escape for HTML instead
