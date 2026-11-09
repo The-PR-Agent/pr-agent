@@ -119,6 +119,46 @@ def test_neutralize_gitlab_mentions_handles_many_unmatched_tick_lengths():
     assert _neutralize_gitlab_mentions(text).endswith(" @\u200bactive")
 
 
+@pytest.mark.parametrize(("text", "expected"), [
+    (
+        "- uses ` as the delimiter\n- ping @plg-tech/plg about `x`",
+        "- uses ` as the delimiter\n- ping @\u200bplg-tech/plg about `x`",
+    ),
+    (
+        "Note the ` here\n### Ask @plg-tech/plg about `x`",
+        "Note the ` here\n### Ask @\u200bplg-tech/plg about `x`",
+    ),
+    (
+        "the ` char\n> cc @plg-tech/plg on `y`",
+        "the ` char\n> cc @\u200bplg-tech/plg on `y`",
+    ),
+    (
+        "| a | b |\n|---|---|\n| ` | x |\n| @plg-tech/plg | `z` |",
+        "| a | b |\n|---|---|\n| ` | x |\n| @\u200bplg-tech/plg | `z` |",
+    ),
+    (
+        "- item one\n\n    cc @plg-tech/plg please",
+        "- item one\n\n    cc @\u200bplg-tech/plg please",
+    ),
+])
+def test_neutralize_gitlab_mentions_stops_a_code_span_at_a_block_boundary(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_keeps_a_code_span_across_a_soft_break():
+    text = "Start `multi\nline @literal` then @active"
+    expected = "Start `multi\nline @literal` then @\u200bactive"
+
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_leaves_indented_code_inside_a_list():
+    text = "- item\n\n      @literal-code\n@active"
+    expected = "- item\n\n      @literal-code\n@\u200bactive"
+
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
 class TestGitLabProvider:
     """Test suite for GitLab provider functionality."""
 
