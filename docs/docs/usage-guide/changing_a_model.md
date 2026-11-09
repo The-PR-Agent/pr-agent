@@ -113,6 +113,15 @@ configured model, including fallback models, so use it only when all selected
 endpoints support the field. Existing `service_tier` and `processing_mode` options
 can be included in the same JSON object.
 
+An endpoint that accepts `thinking_token_budget`, such as vLLM, can limit the reasoning tokens of a model:
+
+```toml
+[litellm]
+extra_body='{"thinking_token_budget": 4000}'
+```
+
+PR-Agent also sends this field to fallback models.
+
 ### Azure
 
 To use Azure, set in your `.secrets.toml` (working from CLI), or in the GitHub `Settings > Secrets and variables` (working from GitHub App or GitHub Action):
