@@ -573,7 +573,7 @@ async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monke
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-    assert handled_at_validation == [(len(large_preexisting_ids) + 1, True)] * 2
+    assert handled_at_validation == [(len(large_preexisting_ids), True)] * 2
     assert added_at_validation == [expected_comment_ids] * 2
     assert mark_attempts == 3
     assert len(requests) == 2
@@ -581,7 +581,8 @@ async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monke
     expected_dispatch = [(github_polling.process_comment_sync, (pr_url, expected_request, 99))] if valid_command else []
     assert dispatched == expected_dispatch
     assert large_preexisting_ids <= handled_references[-1]
-    assert {preexisting_notification["id"], notification["id"]} | expected_comment_ids <= handled_references[-1]
+    assert expected_comment_ids <= handled_references[-1]
+    assert {preexisting_notification["id"], notification["id"]}.isdisjoint(handled_references[-1])
 
 
 @pytest.mark.asyncio
