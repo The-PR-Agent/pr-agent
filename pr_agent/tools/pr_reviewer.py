@@ -1420,16 +1420,20 @@ class PRReviewer:
                                                files=self.git_provider.get_diff_files())
 
         # The 'since the last review' delta renders what reconciliation already proved, so
-        # the first thing a reader sees is what happened to the previous review's findings.
-        # It is part of the sized body, and the first thing sacrificed when the persistent
-        # state does not fit: advancing the state outranks showing the delta.
+        # the first thing a reader sees after the heading is what happened to the previous
+        # review's findings — under the heading, not above it, so the persistent comment's
+        # identity marker and update note keep their anchors on the first line. It is part
+        # of the sized body, and the first thing sacrificed when the persistent state does
+        # not fit: advancing the state outranks showing the delta.
         lifecycle_summary = ""
         if get_settings().pr_reviewer.get("show_previous_findings_summary", True):
             lifecycle_summary = render_lifecycle_summary(
                 self._review_finding_previous_state, self._review_state_result
             )
             if lifecycle_summary:
-                markdown_text = lifecycle_summary + "\n\n" + (markdown_text or "")
+                summary_block = f"\n\n{lifecycle_summary}\n\n"
+                heading, _, rest = (markdown_text or "").partition("\n")
+                markdown_text = f"{heading}{summary_block}{rest}" if rest else f"{heading}{summary_block.strip()}"
 
         if self.review_chunk_count > 1:
             markdown_text += (
@@ -1485,9 +1489,9 @@ class PRReviewer:
                 # outranks showing it.
                 degraded = True
                 if lifecycle_summary:
-                    summary_prefix = lifecycle_summary + "\n\n"
-                    body_without_summary = markdown_text or ""
-                    body_without_summary = body_without_summary.removeprefix(summary_prefix)
+                    body_without_summary = (markdown_text or "").replace(
+                        f"\n\n{lifecycle_summary}\n\n", "\n", 1
+                    ).replace(f"\n\n{lifecycle_summary}", "", 1)
                     try:
                         markdown_text = append_review_state(
                             body_without_summary,

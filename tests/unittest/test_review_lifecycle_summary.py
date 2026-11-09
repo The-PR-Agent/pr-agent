@@ -1,7 +1,10 @@
 """The 'since the last review' delta rendered from reconciliation results (#4777)."""
 
+from pr_agent.algo.findings import Finding
 from pr_agent.algo.review_finding_state import (
     ReconciliationResult,
+    normalize_findings,
+    reconcile_review_findings,
     render_lifecycle_summary,
 )
 
@@ -61,8 +64,8 @@ def test_full_delta_lists_addressed_and_reappeared_with_locations():
     assert render_lifecycle_summary(previous, result) == "\n".join([
         "**Since the last review** — 3 findings were open on the previous HEAD",
         "",
-        "- ✅ 1 addressed by the pushes since then: src/app.py:7-9",
-        "- ↩️ 1 reappeared after an earlier fix: old.py:3",
+        "- ✅ 1 addressed by the pushes since then: `src/app.py:7-9`",
+        "- ↩️ 1 reappeared after an earlier fix: `old.py:3`",
         "- ⏳ 2 still open",
         "- ✚ 1 newly found in this run",
     ])
@@ -87,7 +90,54 @@ def test_only_new_findings_still_announces_the_previous_count():
     result = _result([_finding("x", "x.py"), _finding("y", "y.py")])
 
     assert render_lifecycle_summary(previous, result) == "\n".join([
-        "**Since the last review** — 1 findings were open on the previous HEAD",
+        "**Since the last review** — 1 finding was open on the previous HEAD",
         "",
         "- ✚ 2 newly found in this run",
     ])
+
+
+def test_summary_from_real_reconcile_output_does_not_count_resolved_records_as_open():
+    # reconcile_review_findings keeps RESOLVED records in the state for the resolved
+    # section, so "still open" must count ACTIVE records only: with two findings open and
+    # one addressed, the section says 1 still open, not 2.
+    previous = {
+        "findings": normalize_findings([
+            Finding(path="a.py", body="alpha issue"),
+            Finding(path="b.py", body="beta issue"),
+        ]),
+        "last_run": {"head_sha": "old"},
+    }
+    result = reconcile_review_findings(
+        previous,
+        [Finding(path="a.py", body="alpha issue")],
+        allow_resolution=True,
+        head_sha="new",
+    )
+
+    assert any(f.get("state") == "RESOLVED" for f in result.state["findings"])
+    assert render_lifecycle_summary(previous, result) == "\n".join([
+        "**Since the last review** — 2 findings were open on the previous HEAD",
+        "",
+        "- ✅ 1 addressed by the pushes since then: `b.py`",
+        "- ⏳ 1 still open",
+    ])
+
+
+def test_reappearance_alone_shows_a_section_without_an_open_count_header():
+    earlier = reconcile_review_findings(
+        None, [Finding(path="c.py", body="gamma issue")], allow_resolution=False, head_sha="h1"
+    )
+    resolved_state = reconcile_review_findings(
+        earlier.state, [], allow_resolution=True, head_sha="h2"
+    )
+    result = reconcile_review_findings(
+        resolved_state.state,
+        [Finding(path="c.py", body="gamma issue")],
+        allow_resolution=True,
+        head_sha="h3",
+    )
+
+    assert result.reopened_ids
+    assert render_lifecycle_summary(resolved_state.state, result) == (
+        "- ↩️ 1 reappeared after an earlier fix: `c.py`"
+    )
