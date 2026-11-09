@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import get_artifact_context
+from pr_agent.algo.code_fence import strip_wrapping_code_fence
 from pr_agent.algo.comment_identity import PRDescriptionHeader, PRDescriptionIdentity
 from pr_agent.algo.output_models import PRDescriptionAssembled
 from pr_agent.algo.pr_processing import (
@@ -608,9 +609,10 @@ class PRDescription:
             prediction_headers = await self._get_prediction(model, patches_diff=files_walkthrough_prompt,
                                                             prompt="pr_description_only_description_prompts")
             if isinstance(prediction_headers, str):
-                prediction_headers = re.sub(
-                    r'^```[ \t]*(?:(?i:yaml|yml)[ \t]*)?(?=\r?\n)', '', prediction_headers.strip()
-                ).strip('`').strip()
+                # Fence-aware stripping: `str.strip("`")` removes characters
+                # rather than the fence, mangling answers that end in an
+                # inline code span.
+                prediction_headers = strip_wrapping_code_fence(prediction_headers.strip()).strip()
             self._require_usable_prediction(prediction_headers)
 
             # extend the tables with the files not shown
