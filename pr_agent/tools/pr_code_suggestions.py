@@ -1536,6 +1536,7 @@ class PRCodeSuggestions:
 
         # remove or edit invalid suggestions
         suggestion_list = []
+        invalid_suggestion_count = 0
         accepted_suggestion_keys = []
         for i, suggestion in enumerate(data['code_suggestions']):
             try:
@@ -1548,6 +1549,7 @@ class PRCodeSuggestions:
                             f"Skipping suggestion {i + 1}, because it does not contain '{key}':\n'{suggestion}")
                         break
                 if not is_valid_keys:
+                    invalid_suggestion_count += 1
                     continue
 
                 if get_settings().get("pr_code_suggestions.focus_only_on_problems", False):
@@ -1580,12 +1582,16 @@ class PRCodeSuggestions:
                     )
                     suggestion_list.append(suggestion)
                 else:
+                    invalid_suggestion_count += 1
                     get_logger().info(
                         f"Skipping suggestion {i + 1}, because it does not contain "
                         f"'existing_code' or 'improved_code': {suggestion}"
                     )
             except Exception as e:
+                invalid_suggestion_count += 1
                 get_logger().error(f"Error processing suggestion {i + 1}: {suggestion}, error: {e}")
+        if data['code_suggestions'] and invalid_suggestion_count == len(data['code_suggestions']):
+            raise FallbackEligibleError("All code suggestions failed processing")
         data['code_suggestions'] = suggestion_list
 
         return data

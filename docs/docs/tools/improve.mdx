@@ -533,9 +533,12 @@ suggestion responses, and responses marked as truncated by the model (`finish_re
 are treated as failed chunks and can use the remaining fallback models. A truncated response is
 retried as a whole, including any complete suggestions before the cutoff. If no chunk succeeds
 after the configured fallbacks are exhausted, the command reports failure.
+A non-empty list whose entries all fail the existing per-suggestion checks or processing is also
+treated as a failed chunk.
 A valid empty suggestion list (including `code_suggestions: []`) in a complete response is a
-successful result and is not retried. Invalid individual suggestions in an otherwise valid list continue to
-be filtered without retrying that entire chunk.
+successful result and is not retried. Invalid individual suggestions continue to be filtered when
+other entries can be processed. Normal quality filtering does not make a chunk fail, even when
+no suggestions remain.
 An ambiguous repeated model/deployment pair skips partial recovery rather than restarting the chain.
 
 ## Understanding AI Code Suggestions
