@@ -52,6 +52,7 @@ from pr_agent.algo.review_finding_state import (
     normalize_findings,
     parse_review_state,
     reconcile_review_findings,
+    render_lifecycle_summary,
     render_previous_findings,
 )
 from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
@@ -1418,6 +1419,18 @@ class PRReviewer:
                                                git_provider=self.git_provider,
                                                files=self.git_provider.get_diff_files())
 
+        # The 'since the last review' delta renders what reconciliation already proved, so
+        # the first thing a reader sees is what happened to the previous review's findings.
+        # It is part of the sized body, and the first thing sacrificed when the persistent
+        # state does not fit: advancing the state outranks showing the delta.
+        lifecycle_summary = ""
+        if get_settings().pr_reviewer.get("show_previous_findings_summary", True):
+            lifecycle_summary = render_lifecycle_summary(
+                self._review_finding_previous_state, self._review_state_result
+            )
+            if lifecycle_summary:
+                markdown_text = lifecycle_summary + "\n\n" + (markdown_text or "")
+
         if self.review_chunk_count > 1:
             markdown_text += (
                 "\n\n<hr>\n\n"
@@ -1468,28 +1481,45 @@ class PRReviewer:
                     max_chars=self._review_comment_max_chars(),
                 )
             except ValueError as error:
-                previous_state = getattr(self, "_review_finding_previous_state", None)
-                self._review_state_result = None
-                self._review_state_blocked = True
-                self._review_state_block_reason = _STATE_BLOCK_SIZE
-                get_logger().warning(
-                    f"Persistent review state did not fit the provider comment limit; "
-                    f"publishing the review without advancing state: {error}"
-                )
-                if previous_state is not None:
+                # The delta section is the first thing to sacrifice: advancing the state
+                # outranks showing it.
+                degraded = True
+                if lifecycle_summary:
+                    summary_prefix = lifecycle_summary + "\n\n"
+                    body_without_summary = markdown_text or ""
+                    body_without_summary = body_without_summary.removeprefix(summary_prefix)
                     try:
                         markdown_text = append_review_state(
-                            markdown_text or "",
-                            previous_state,
+                            body_without_summary,
+                            state_result.state,
                             max_chars=self._review_comment_max_chars(),
                         )
-                    except ValueError as previous_error:
-                        get_logger().warning(
-                            f"Previous persistent review state also did not fit the provider "
-                            f"comment limit; leaving the existing state untouched: {previous_error}"
-                        )
-                    else:
-                        self._review_state_preserved = True
+                        degraded = False
+                    except ValueError:
+                        markdown_text = body_without_summary
+                if degraded:
+                    previous_state = getattr(self, "_review_finding_previous_state", None)
+                    self._review_state_result = None
+                    self._review_state_blocked = True
+                    self._review_state_block_reason = _STATE_BLOCK_SIZE
+                    get_logger().warning(
+                        f"Persistent review state did not fit the provider comment limit; "
+                        f"publishing the review without advancing state: {error}"
+                    )
+                    if previous_state is not None:
+                        try:
+                            markdown_text = append_review_state(
+                                markdown_text or "",
+                                previous_state,
+                                max_chars=self._review_comment_max_chars(),
+                            )
+                        except ValueError as previous_error:
+                            get_logger().warning(
+                                f"Previous persistent review state also did not fit the provider "
+                                f"comment limit; leaving the existing state untouched: {previous_error}"
+                            )
+                        else:
+                            self._review_state_preserved = True
 
         # Emit the review to optional external sinks (stdout/file/webhook/slack/telegram); no-op unless enabled.
         # publish_output gates it so a dry run makes no external calls. The "no major issues"

@@ -380,6 +380,72 @@ def _render_resolved_section(state: Mapping[str, Any]) -> str:
     return "\n".join(lines).rstrip()
 
 
+def _finding_location(finding: Mapping[str, Any]) -> str:
+    location = str(finding.get("path") or "")
+    start = finding.get("line_start")
+    if start:
+        location += f":{start}"
+        end = finding.get("line_end")
+        if end and end != start:
+            location += f"-{end}"
+    return location
+
+
+def render_lifecycle_summary(
+    previous_state: Mapping[str, Any] | None,
+    result: ReconciliationResult | None,
+) -> str:
+    """Render the 'since the last review' delta for the top of a review body.
+
+    Deterministic rendering of what reconciliation already computed: how many findings
+    were open on the previous HEAD, which the pushes since then addressed, which
+    reappeared after an earlier resolution, and how many remain open or are new. No
+    section on a first review or when nothing changed in either direction; zero-count
+    lines are omitted.
+    """
+    if previous_state is None or result is None:
+        return ""
+    previous_findings = [
+        finding for finding in (previous_state or {}).get("findings", []) if isinstance(finding, Mapping)
+    ]
+    previous_by_id = {finding.get("finding_id"): finding for finding in previous_findings}
+    previous_active_ids = [
+        finding.get("finding_id")
+        for finding in previous_findings
+        if finding.get("state") == "ACTIVE"
+    ]
+    if not previous_active_ids:
+        return ""
+    current_ids = [
+        finding.get("finding_id")
+        for finding in result.state.get("findings", [])
+        if isinstance(finding, Mapping)
+    ]
+    resolved = [finding_id for finding_id in result.resolved_ids if finding_id in previous_by_id]
+    reopened_ids = set(result.reopened_ids)
+    reopened = [finding_id for finding_id in result.reopened_ids if finding_id in previous_by_id]
+    new_ids = [finding_id for finding_id in current_ids if finding_id not in previous_by_id]
+    still_open = [
+        finding_id
+        for finding_id in previous_active_ids
+        if finding_id in current_ids and finding_id not in reopened_ids
+    ]
+    if not (resolved or reopened or new_ids):
+        return ""
+    lines = [t("review.lifecycle_header", count=len(previous_active_ids)), ""]
+    if resolved:
+        items = ", ".join(_finding_location(previous_by_id[f]) for f in resolved if f in previous_by_id)
+        lines.append(t("review.lifecycle_addressed", count=len(resolved), items=items))
+    if reopened:
+        items = ", ".join(_finding_location(previous_by_id[f]) for f in reopened if f in previous_by_id)
+        lines.append(t("review.lifecycle_reappeared", count=len(reopened), items=items))
+    if still_open:
+        lines.append(t("review.lifecycle_still_open", count=len(still_open)))
+    if new_ids:
+        lines.append(t("review.lifecycle_new", count=len(new_ids)))
+    return "\n".join(lines)
+
+
 def append_review_state(
     review_body: str,
     state: Mapping[str, Any],
