@@ -227,7 +227,8 @@ def test_gitlab_lambda_handler_acknowledges_and_hands_off(aws_lambda, invoke_cli
         lambda_handoff.HANDOFF_EVENT_KEY: {
             "provider": "gitlab",
             "body": body,
-            "headers": {"x-gitlab-token": "secret-token", "x-gitlab-event-uuid": "uuid-1"},
+            "headers": {"x-gitlab-event-uuid": "uuid-1"},
+            "gitlab_auth": {"secret_name": None},
         }
     }
 
@@ -236,6 +237,7 @@ def test_gitlab_lambda_handler_runs_the_dispatcher_for_a_handoff_event(aws_lambd
     authenticate = mock.AsyncMock(return_value=None)
     process = mock.AsyncMock()
     monkeypatch.setattr(gitlab_webhook, "authenticate_gitlab_webhook", authenticate)
+    monkeypatch.setitem(get_settings().gitlab, "personal_access_token", "host-api-token")
     monkeypatch.setattr(gitlab_webhook, "process_gitlab_event", process)
     body = {"object_kind": "merge_request",
             "object_attributes": {"action": "open", "url": MR_URL}}
@@ -246,26 +248,146 @@ def test_gitlab_lambda_handler_runs_the_dispatcher_for_a_handoff_event(aws_lambd
 
     assert result == {}
     process.assert_awaited_once_with(body, {"server_type": "gitlab_app"})
-    # The webhook token travels with the hand-off so the second invocation can
-    # re-establish the request-scoped credentials.
-    request = authenticate.await_args.args[0]
-    assert request.headers.get("X-Gitlab-Token") == "project-secret:provider-token"
+    authenticate.assert_not_awaited()
     invoke_client.invoke.assert_not_called()
 
 
-def test_gitlab_lambda_drops_the_handoff_when_authentication_fails(aws_lambda, invoke_client, monkeypatch):
-    from fastapi.responses import JSONResponse
-
-    authenticate = mock.AsyncMock(return_value=JSONResponse(status_code=401, content={"message": "unauthorized"}))
+def test_gitlab_lambda_rejects_legacy_token_bearing_handoffs(aws_lambda, invoke_client, monkeypatch):
+    authenticate = mock.AsyncMock()
     process = mock.AsyncMock()
     monkeypatch.setattr(gitlab_webhook, "authenticate_gitlab_webhook", authenticate)
     monkeypatch.setattr(gitlab_webhook, "process_gitlab_event", process)
 
-    event = lambda_handoff.build_handoff_event("gitlab", {"object_kind": "push"}, {"x-gitlab-token": "revoked"})
-    result = gitlab_lambda.lambda_handler(event, SimpleNamespace())
-
-    assert result == {}
+    event = {lambda_handoff.HANDOFF_EVENT_KEY: {
+        "provider": "gitlab", "body": {"object_kind": "push"}, "headers": {"x-gitlab-token": "revoked"}}}
+    with pytest.raises(ValueError, match="authentication outcome"):
+        gitlab_lambda.lambda_handler(event, SimpleNamespace())
+    authenticate.assert_not_awaited()
     process.assert_not_awaited()
+
+
+@pytest.mark.parametrize("auth_method", ["shared", "provider"])
+def test_gitlab_handoff_keeps_credentials_out_and_restores_by_reference(
+    aws_lambda, invoke_client, monkeypatch, auth_method
+):
+    """Authenticate a public delivery, serialize it and process it with fresh API credentials."""
+    from pr_agent.git_providers.utils import _restore_authenticated_provider_settings
+
+    monkeypatch.setitem(get_settings().gitlab, "shared_secret", "fixture-shared-secret")
+    monkeypatch.setitem(get_settings().gitlab, "personal_access_token", "fixture-host-api-token")
+    secret_name = "arn:aws:secretsmanager:region:account:secret:project"
+    provider = mock.Mock()
+    provider.get_secret.return_value = json.dumps({
+        "webhook_token": "fixture-project-webhook-token", "gitlab_token": "fixture-project-api-token",
+        "token_name": "project-webhook"})
+    monkeypatch.setattr(gitlab_webhook, "get_fork_safe_secret_provider", lambda: provider)
+    token = "fixture-shared-secret" if auth_method == "shared" else f"{secret_name}:fixture-project-webhook-token"
+    observed = []
+
+    async def process(body, log_context):
+        observed.append(get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN"))
+        if auth_method == "provider":
+            get_settings().set("GITLAB.PERSONAL_ACCESS_TOKEN", "host-override")
+            _restore_authenticated_provider_settings()
+            assert get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN") == "fixture-rotated-project-api-token"
+            assert log_context["token_id"] == "project-webhook"
+
+    monkeypatch.setattr(gitlab_webhook, "process_gitlab_event", process)
+    body = {"object_kind": "merge_request"}
+    result = gitlab_lambda.lambda_handler(_gitlab_function_url_event(body, token), SimpleNamespace())
+    assert result["statusCode"] == 200
+    assert not observed
+    event = _invoke_payload(invoke_client)
+    serialized = json.dumps(event)
+    for credential in ["fixture-shared-secret", "fixture-project-webhook-token", "fixture-host-api-token",
+                       "fixture-project-api-token"]:
+        assert credential not in serialized
+    assert event[lambda_handoff.HANDOFF_EVENT_KEY]["headers"] == {"x-gitlab-event-uuid": "uuid-1"}
+    assert event[lambda_handoff.HANDOFF_EVENT_KEY]["gitlab_auth"] == {
+        "secret_name": secret_name if auth_method == "provider" else None}
+    provider.get_secret.return_value = json.dumps({
+        "webhook_token": "fixture-rotated-webhook-token", "gitlab_token": "fixture-rotated-project-api-token",
+        "token_name": "project-webhook"})
+    assert gitlab_lambda.lambda_handler(event, SimpleNamespace()) == {}
+    assert observed == ["fixture-rotated-project-api-token" if auth_method == "provider" else "fixture-host-api-token"]
+    if auth_method == "provider":
+        assert provider.get_secret.call_args_list == [mock.call(secret_name), mock.call(secret_name)]
+    else:
+        provider.get_secret.assert_not_called()
+
+
+@pytest.mark.parametrize("token", ["", "wrong-token"])
+def test_public_gitlab_webhook_cannot_supply_an_authentication_outcome(
+    aws_lambda, invoke_client, monkeypatch, token
+):
+    """The Function URL envelope keeps caller-controlled auth fields behind webhook validation."""
+    monkeypatch.setitem(get_settings().gitlab, "shared_secret", "fixture-shared-secret")
+    process = mock.AsyncMock()
+    monkeypatch.setattr(gitlab_webhook, "process_gitlab_event", process)
+    body = lambda_handoff.build_handoff_event("gitlab", {"object_kind": "push"}, {})
+    result = gitlab_lambda.lambda_handler(_gitlab_function_url_event(body, token), SimpleNamespace())
+    assert result["statusCode"] == 401
+    process.assert_not_awaited()
+    invoke_client.invoke.assert_not_called()
+
+
+@pytest.mark.parametrize("auth", [None, {}, {"secret_name": ""}, {"secret_name": 42}])
+def test_gitlab_handoff_rejects_invalid_authentication_outcomes(aws_lambda, invoke_client, monkeypatch, auth):
+    process = mock.AsyncMock()
+    monkeypatch.setattr(gitlab_webhook, "process_gitlab_event", process)
+    event = lambda_handoff.build_handoff_event("gitlab", {"object_kind": "push"}, {})
+    event[lambda_handoff.HANDOFF_EVENT_KEY]["gitlab_auth"] = auth
+    with pytest.raises(ValueError, match="GitLab hand-off"):
+        gitlab_lambda.lambda_handler(event, SimpleNamespace())
+    process.assert_not_awaited()
+    invoke_client.invoke.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [
+    None, "invalid-json", "[]", "{}", '{"gitlab_token":""}', RuntimeError("private-error")])
+def test_gitlab_handoff_fails_without_falling_back_to_host_credentials(
+    aws_lambda, invoke_client, monkeypatch, failure
+):
+    """A revoked/unavailable project credential must never run a job as the host account."""
+    monkeypatch.setitem(get_settings().gitlab, "personal_access_token", "fixture-host-api-token")
+    provider = mock.Mock()
+    if isinstance(failure, Exception):
+        provider.get_secret.side_effect = failure
+    else:
+        provider.get_secret.return_value = failure
+    monkeypatch.setattr(gitlab_webhook, "get_fork_safe_secret_provider", lambda: provider)
+    process = mock.AsyncMock()
+    monkeypatch.setattr(gitlab_webhook, "process_gitlab_event", process)
+    event = lambda_handoff.build_handoff_event("gitlab", {"object_kind": "push"}, {})
+    event[lambda_handoff.HANDOFF_EVENT_KEY]["gitlab_auth"] = {"secret_name": "project"}
+    with pytest.raises(RuntimeError, match="Could not restore") as caught:
+        gitlab_lambda.lambda_handler(event, SimpleNamespace())
+    assert "private-error" not in str(caught.value)
+    process.assert_not_awaited()
+
+
+def test_gitlab_lambda_falls_back_inline_with_authenticated_provider_credentials(
+    aws_lambda, invoke_client, monkeypatch
+):
+    """An invoke failure retains the first invocation's already verified credential context."""
+    from starlette_context import context
+
+    monkeypatch.setitem(get_settings().gitlab, "shared_secret", "fixture-shared-secret")
+    provider = mock.Mock()
+    provider.get_secret.return_value = json.dumps({"webhook_token": "fixture-webhook", "gitlab_token": "fixture-api"})
+    monkeypatch.setattr(gitlab_webhook, "get_fork_safe_secret_provider", lambda: provider)
+    invoke_client.invoke.side_effect = RuntimeError("AccessDeniedException")
+    observed = []
+
+    async def process(body, log_context):
+        observed.append(context["authenticated_provider_settings"]["gitlab.personal_access_token"])
+
+    monkeypatch.setattr(gitlab_webhook, "process_gitlab_event", process)
+    result = gitlab_lambda.lambda_handler(
+        _gitlab_function_url_event({"object_kind": "push"}, "project:fixture-webhook"), SimpleNamespace())
+    assert result["statusCode"] == 200
+    assert observed == ["fixture-api"]
+    assert "fixture-webhook" not in json.dumps(_invoke_payload(invoke_client))
 
 
 async def test_github_route_keeps_background_tasks_outside_lambda(monkeypatch):
