@@ -6,6 +6,11 @@ sidebar_position: 3
 ## Overview
 
 Generate a PR review with feedback on possible issues, security concerns, tests and review effort.
+
+:::note
+`/improve` will be merged into `/review` in the next release. `/improve` will keep working and run `/review`, with a warning.
+:::
+
 <br>
 The tool can be triggered automatically every time a new PR is [opened](../usage-guide/automations_and_usage.md#github-app-automatic-tools-when-a-new-pr-is-opened), or can be invoked manually by commenting on any PR:
 
