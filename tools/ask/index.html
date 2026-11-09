@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">Ask | PR-Agent</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" property="og:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.pr-agent.ai/tools/ask/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Ask | PR-Agent"><meta data-rh="true" name="description" content="Overview"><meta data-rh="true" property="og:description" content="Overview"><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.pr-agent.ai/tools/ask/"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/tools/ask/" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/tools/ask/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Ask","item":"https://docs.pr-agent.ai/tools/ask"}]}</script><script src="https://widget.kapa.ai/kapa-widget.bundle.js" data-website-id="5c89c0b1-b2ee-43c9-8c6f-43ed762b3c1e" data-project-name="PR-Agent" data-project-color="#2459db" data-project-logo="/img/favicon.svg" data-launcher-button-image="/img/favicon-white.svg" data-color-scheme-selector="[data-theme=&#39;dark&#39;]" async></script><link rel="stylesheet" href="/assets/css/styles.928a3cd8.css">
-<script src="/assets/js/runtime~main.6502d556.js" defer="defer"></script>
+<script src="/assets/js/runtime~main.c90af7ff.js" defer="defer"></script>
 <script src="/assets/js/main.8693b73f.js" defer="defer"></script>
 </head>
 <body>
@@ -44,7 +44,15 @@ Including repository instructions can add repository API reads and input tokens,
 </ul>
 <img decoding="async" loading="lazy" src="/img/Ask_line.png" alt="Ask Line" width="512" class="img_ev3q">
 <p>If no matching diff hunk is found for the selected lines, the tool explains this without calling a model.</p>
-<p>With <code>pr_questions.use_conversation_history=true</code> (the default), line questions on GitHub and Azure DevOps can include earlier comments from the same thread. Azure DevOps also supports history for threaded top-level questions. Other questions are answered independently.</p>
+<p>In GitHub Actions, <code>/ask</code> comments attached to an entire file use that file&#x27;s complete diff as context.
+The existing file filters and input budgets still apply. If the file has no analyzable diff, or the question cannot
+be prepared within the configured input budget, the tool explains this without calling a model.
+The answer is posted in the original file-comment thread with a link to the question.
+Earlier replies are included when <code>pr_questions.use_conversation_history</code> is enabled and the input budget allows.
+Text resembling command options is treated as part of the question.</p>
+<p>With <code>pr_questions.use_conversation_history=true</code> (the default), line questions on GitHub and Azure DevOps can
+include earlier comments from the same thread. Azure DevOps also supports history for threaded top-level questions.
+Other questions are answered independently.</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="ask-on-images">Ask on images<a href="#ask-on-images" class="hash-link" aria-label="Direct link to Ask on images" title="Direct link to Ask on images" translate="no">​</a></h2>
 <p>You can also ask questions about images that appear in the comment, where the entire PR code will be used as context.
 <br>
