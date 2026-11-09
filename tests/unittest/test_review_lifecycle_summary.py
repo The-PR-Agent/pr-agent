@@ -141,3 +141,23 @@ def test_reappearance_alone_shows_a_section_without_an_open_count_header():
     assert render_lifecycle_summary(resolved_state.state, result) == (
         "- ↩️ 1 reappeared after an earlier fix: `c.py`"
     )
+
+
+def test_locations_with_a_newline_or_the_state_marker_are_neutralized():
+    # _markdown_code_span escapes newlines so a crafted path cannot leave the span, and
+    # the state-marker opener is broken up so append_review_state never mistakes a path
+    # for the hidden marker.
+    previous = {
+        "findings": normalize_findings([
+            Finding(path="a.py\n恶意.rb", body="newline path"),
+            Finding(path="evil<!-- pr-agent-review-state: bad", body="marker path"),
+        ]),
+        "last_run": {"head_sha": "old"},
+    }
+    result = reconcile_review_findings(
+        previous, [Finding(path="c.py", body="new issue")], allow_resolution=True, head_sha="new"
+    )
+
+    summary = render_lifecycle_summary(previous, result)
+    assert "\n" in summary and "\n恶意.rb" not in summary
+    assert "<\!" in summary and "<!-- pr-agent-review-state" not in summary

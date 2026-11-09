@@ -393,10 +393,12 @@ def _finding_location(finding: Mapping[str, Any]) -> str:
 
 def _location_code_span(location: str) -> str:
     # Keep repository-controlled filenames inside one Markdown code span, the way the
-    # review coverage footer does. Local copy for the same layering reason as
-    # deterministic_risk.
-    delimiter = "`" * (max((len(run.group()) for run in re.finditer(r"`+", location)), default=0) + 1)
-    return f"{delimiter}{location}{delimiter}"
+    # review coverage footer does. A path containing the state-marker opener must not
+    # survive raw: append_review_state would treat it as the hidden marker and cut the
+    # rest of the review.
+    from pr_agent.tools.pr_code_suggestions import _markdown_code_span  # lazy, as in deterministic_risk
+
+    return _markdown_code_span(location.replace("<!--", "<\\!"))
 
 
 def render_lifecycle_summary(
