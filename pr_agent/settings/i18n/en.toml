@@ -16,6 +16,12 @@ progress = "Preparing review..."
 updated_until_commit = "Review updated until commit {commit}"
 persistent_link = "Persistent review"
 persistent_updated = "{link} updated to latest commit {commit}"
+lifecycle_header = "**Since the last review** — {count} findings were open on the previous HEAD"
+lifecycle_header_single = "**Since the last review** — 1 finding was open on the previous HEAD"
+lifecycle_addressed = "- ✅ {count} addressed by the pushes since then: {items}"
+lifecycle_reappeared = "- ↩️ {count} reappeared after an earlier fix: {items}"
+lifecycle_still_open = "- ⏳ {count} still open"
+lifecycle_new = "- ✚ {count} newly found in this run"
 
 [improve]
 merge_notice = "/improve will be merged into /review in the next release."

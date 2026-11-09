@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import html
 import re
+import time
 from collections.abc import Sequence
 from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 from typing import Any
+
+import regex
 
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -22,6 +25,10 @@ MAX_GLOB_LENGTH = 200
 MAX_PATH_LENGTH = 1000
 MAX_LINE_CHARS = 500
 MAX_CUSTOM_PATTERN_LENGTH = 200
+# The static check below cannot rule out every backtracking shape, so each custom search gets a timeout, and each
+# custom pattern a total budget per review, which also drops a pattern that is slow on every line.
+CUSTOM_PATTERN_TIMEOUT_SECONDS = 0.05
+CUSTOM_PATTERN_REVIEW_BUDGET_SECONDS = 1.0
 MAX_FINDINGS_PER_CATEGORY = 10
 
 # Default sensitive path globs
@@ -200,7 +207,7 @@ def is_prompt_file(path: str) -> bool:
     return any(fnmatchcase(norm, pat) or fnmatchcase(PurePosixPath(norm).name, pat) for pat in _PROMPT_FILE_GLOBS)
 
 
-def compile_custom_shapes(patterns: Sequence[str] | None) -> list[re.Pattern]:
+def compile_custom_shapes(patterns: Sequence[str] | None) -> list[regex.Pattern]:
     """Compile custom regex patterns with length cap and ReDoS safety checks."""
     if not patterns or not isinstance(patterns, (list, tuple)):
         return []
@@ -216,17 +223,24 @@ def compile_custom_shapes(patterns: Sequence[str] | None) -> list[re.Pattern]:
             get_logger().warning(f"Rejecting unsafe nested quantifier in custom risk shape: {cleaned!r}")
             continue
         try:
-            compiled.append(re.compile(cleaned))
-        except re.error as e:
+            compiled.append(regex.compile(cleaned))
+        except regex.error as e:
             get_logger().warning(f"Failed to compile custom risk shape {cleaned!r}: {e}")
     return compiled
 
 
 def scan_file_diff(
     file_info: FilePatchInfo,
-    custom_patterns: list[re.Pattern] | None = None,
+    custom_patterns: list[regex.Pattern] | None = None,
+    custom_pattern_seconds: dict | None = None,
 ) -> list[dict]:
-    """Scan diff hunks of a single file for risky shapes."""
+    """Scan diff hunks of a single file for risky shapes.
+
+    custom_pattern_seconds holds the time each custom pattern has spent so far; pass the same dict for
+    every file of a review. A pattern that times out or spends its review budget is removed from
+    custom_patterns, so the caller's later files skip it too.
+    """
+    spent = custom_pattern_seconds if custom_pattern_seconds is not None else {}
     findings = []
     filename = file_info.filename or ""
 
@@ -323,8 +337,21 @@ def scan_file_diff(
 
         # Check custom patterns
         if custom_patterns:
-            for pat in custom_patterns:
-                if pat.search(content_after_prefix):
+            for pat in list(custom_patterns):
+                remaining = CUSTOM_PATTERN_REVIEW_BUDGET_SECONDS - spent.get(pat, 0.0)
+                start = time.perf_counter()
+                try:
+                    matched = pat.search(content_after_prefix,
+                                         timeout=min(CUSTOM_PATTERN_TIMEOUT_SECONDS, remaining))
+                    timed_out = False
+                except TimeoutError:
+                    matched, timed_out = None, True
+                spent[pat] = spent.get(pat, 0.0) + time.perf_counter() - start
+                if timed_out or spent[pat] >= CUSTOM_PATTERN_REVIEW_BUDGET_SECONDS:
+                    custom_patterns.remove(pat)
+                    get_logger().warning(
+                        f"Custom risk shape {pat.pattern!r} exceeded its time budget, skipping it for this review")
+                if matched:
                     findings.append({
                         "category": "custom_shape",
                         "description": f"Custom pattern match ({pat.pattern})",
@@ -373,6 +400,7 @@ def build_risk_checks(
             configured_paths = DEFAULT_SENSITIVE_PATHS
 
         custom_patterns = compile_custom_shapes(settings.pr_reviewer.get("extra_risky_shapes", []))
+        custom_pattern_seconds = {}
 
         sensitive_matches = []
         risky_shapes = []
@@ -406,7 +434,7 @@ def build_risk_checks(
                     deleted_files.append(deleted_name)
 
             # Scan diff patch
-            shapes = scan_file_diff(file, custom_patterns)
+            shapes = scan_file_diff(file, custom_patterns, custom_pattern_seconds)
             for shape in shapes:
                 if shape["category"] != "deleted_file":
                     risky_shapes.append(shape)
@@ -442,7 +470,7 @@ def render_risk_checks(data: dict, gfm_supported: bool) -> str:
     if not isinstance(data, dict):
         return ""
 
-    from pr_agent.tools.pr_code_suggestions import _markdown_code_span as plain_code_span
+    from pr_agent.algo.markdown_span import _markdown_code_span as plain_code_span
 
     def _markdown_code_span(text: str) -> str:
         # inside the <table> row the backticks stay literal, so escape for HTML instead

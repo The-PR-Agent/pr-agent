@@ -13,6 +13,7 @@ from typing import Any
 from pr_agent.algo.findings import Finding
 from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import key_issue_fingerprint
+from pr_agent.algo.markdown_span import _markdown_code_span
 from pr_agent.algo.utils import _as_line
 
 STATE_SCHEMA_VERSION = 1
@@ -378,6 +379,88 @@ def _render_resolved_section(state: Mapping[str, Any]) -> str:
         lines.extend([f"### {location}", "", body, ""])
     lines.extend(["</details>", ""])
     return "\n".join(lines).rstrip()
+
+
+def _finding_location(finding: Mapping[str, Any]) -> str:
+    location = str(finding.get("path") or "")
+    start = finding.get("line_start")
+    if start:
+        location += f":{start}"
+        end = finding.get("line_end")
+        if end and end != start:
+            location += f"-{end}"
+    return location
+
+
+def _location_code_span(location: str) -> str:
+    # Keep repository-controlled filenames inside one Markdown code span, the way the
+    # review coverage footer does. A path containing the state-marker opener must not
+    # survive raw: append_review_state would treat it as the hidden marker and cut the
+    # rest of the review.
+    return _markdown_code_span(location.replace("<!--", "<\\!"))
+
+
+def render_lifecycle_summary(
+    previous_state: Mapping[str, Any] | None,
+    result: ReconciliationResult | None,
+) -> str:
+    """Render the 'since the last review' delta for the top of a review body.
+
+    Deterministic rendering of what reconciliation already computed: how many findings
+    were open on the previous HEAD, which the pushes since then addressed, which
+    reappeared after an earlier resolution, and how many remain open or are new. No
+    section on a first review or when nothing changed in either direction; zero-count
+    lines are omitted. Reconciled state keeps RESOLVED records for the resolved
+    section, so only ACTIVE records count as present here.
+    """
+    if previous_state is None or result is None:
+        return ""
+    previous_findings = [
+        finding for finding in (previous_state or {}).get("findings", []) if isinstance(finding, Mapping)
+    ]
+    previous_by_id = {finding.get("finding_id"): finding for finding in previous_findings}
+    previous_active_ids = [
+        finding.get("finding_id")
+        for finding in previous_findings
+        if finding.get("state") == "ACTIVE"
+    ]
+    current_ids = [
+        finding.get("finding_id")
+        for finding in result.state.get("findings", [])
+        if isinstance(finding, Mapping) and finding.get("state") == "ACTIVE"
+    ]
+    resolved = [finding_id for finding_id in result.resolved_ids if finding_id in previous_by_id]
+    reopened_ids = set(result.reopened_ids)
+    reopened = [finding_id for finding_id in result.reopened_ids if finding_id in previous_by_id]
+    new_ids = [finding_id for finding_id in current_ids if finding_id not in previous_by_id]
+    still_open = [
+        finding_id
+        for finding_id in previous_active_ids
+        if finding_id in current_ids and finding_id not in reopened_ids
+    ]
+    if not (resolved or reopened or new_ids):
+        return ""
+    lines = []
+    if previous_active_ids:
+        header_key = (
+            "review.lifecycle_header_single" if len(previous_active_ids) == 1 else "review.lifecycle_header"
+        )
+        lines.extend([t(header_key, count=len(previous_active_ids)), ""])
+    if resolved:
+        items = ", ".join(
+            _location_code_span(_finding_location(previous_by_id[f])) for f in resolved if f in previous_by_id
+        )
+        lines.append(t("review.lifecycle_addressed", count=len(resolved), items=items))
+    if reopened:
+        items = ", ".join(
+            _location_code_span(_finding_location(previous_by_id[f])) for f in reopened if f in previous_by_id
+        )
+        lines.append(t("review.lifecycle_reappeared", count=len(reopened), items=items))
+    if still_open:
+        lines.append(t("review.lifecycle_still_open", count=len(still_open)))
+    if new_ids:
+        lines.append(t("review.lifecycle_new", count=len(new_ids)))
+    return "\n".join(lines)
 
 
 def append_review_state(

@@ -57,8 +57,6 @@ def providers(monkeypatch):
 
 @pytest.mark.parametrize(("command", "tool_class", "section"), [
     ("review", agent.PRReviewer, "PR_REVIEWER"),
-    ("answer", agent.PRReviewer, "PR_REVIEWER"),
-    ("auto_review", agent.PRReviewer, "PR_REVIEWER"),
     ("describe", agent.PRDescription, "PR_DESCRIPTION"),
     ("improve", agent.PRCodeSuggestions, "PR_CODE_SUGGESTIONS"),
 ])
@@ -73,9 +71,6 @@ async def test_real_initializers_overlap_without_mixing_request_settings(monkeyp
         assert tool.vars["title"] == tool.git_provider.pr_url
         assert tool.vars["extra_instructions"].startswith(tool.git_provider.pr_url)
         assert "fr-fr" in tool.vars["extra_instructions"]
-        if tool_class is agent.PRReviewer:
-            assert tool.is_answer is (command == "answer")
-            assert tool.is_auto is (command == "auto_review")
 
     monkeypatch.setattr(tool_class, "run", run)
 

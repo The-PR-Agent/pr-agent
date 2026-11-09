@@ -52,6 +52,7 @@ from pr_agent.algo.review_finding_state import (
     normalize_findings,
     parse_review_state,
     reconcile_review_findings,
+    render_lifecycle_summary,
     render_previous_findings,
 )
 from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
@@ -199,15 +200,13 @@ class PRReviewer:
     review_chunk_hit_limit = None
     partial_files_list = ()
 
-    def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
+    def __init__(self, pr_url: str, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         """
         Initialize the PRReviewer object with the necessary attributes and objects to review a pull request.
 
         Args:
             pr_url (str): The URL of the pull request to be reviewed.
-            is_answer (bool, optional): Indicates whether the review is being done in answer mode. Defaults to False.
-            is_auto (bool, optional): Indicates whether the review is being done in automatic mode. Defaults to False.
             ai_handler (BaseAiHandler): The AI handler to be used for the review. Defaults to None.
             args (list, optional): List of arguments passed to the PRReviewer class. Defaults to None.
         """
@@ -221,11 +220,6 @@ class PRReviewer:
             self.git_provider.get_languages(), self.git_provider.get_files()
         )
         self.pr_url = pr_url
-        self.is_answer = is_answer
-        self.is_auto = is_auto
-
-        if self.is_answer and not self.git_provider.is_supported("get_issue_comments"):
-            raise Exception(f"Answer mode is not supported for {get_settings().config.git_provider} for now")
         self.ai_handler = ai_handler()
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
@@ -239,7 +233,6 @@ class PRReviewer:
         self._review_state_preserved = False
         self._pending_sink_output = None
         previous_findings = self._load_previous_findings_context()
-        question_str, answer_str = self._get_user_answers()
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
         if (self.pr_description_files and get_settings().get("config.is_auto_command", False) and
@@ -277,8 +270,6 @@ class PRReviewer:
             'require_can_be_split_review': get_settings().pr_reviewer.require_can_be_split_review,
             'require_security_review': get_settings().pr_reviewer.require_security_review,
             'require_todo_scan': get_settings().pr_reviewer.get("require_todo_scan", False),
-            'question_str': question_str,
-            'answer_str': answer_str,
             "extra_instructions": get_settings().pr_reviewer.extra_instructions,
             "artifact_context": get_artifact_context("pr_reviewer"),
             "skills_context": get_skills_context(),
@@ -1304,7 +1295,6 @@ class PRReviewer:
                 ("contribution_time_cost_estimate", "require_estimate_contribution_time_cost"),
                 ("score", "require_score"),
                 ("relevant_tests", "require_tests"),
-                ("insights_from_user_answers", "question_str"),
                 ("security_concerns", "require_security_review"),
                 ("todo_sections", "require_todo_scan"),
                 ("can_be_split", "require_can_be_split_review"),
@@ -1429,6 +1419,22 @@ class PRReviewer:
                                                git_provider=self.git_provider,
                                                files=self.git_provider.get_diff_files())
 
+        # The 'since the last review' delta renders what reconciliation already proved, so
+        # the first thing a reader sees after the heading is what happened to the previous
+        # review's findings — under the heading, not above it, so the persistent comment's
+        # identity marker and update note keep their anchors on the first line. It is part
+        # of the sized body, and the first thing sacrificed when the persistent state does
+        # not fit: advancing the state outranks showing the delta.
+        lifecycle_summary = ""
+        if get_settings().pr_reviewer.get("show_previous_findings_summary", True):
+            lifecycle_summary = render_lifecycle_summary(
+                self._review_finding_previous_state, self._review_state_result
+            )
+            if lifecycle_summary:
+                summary_block = f"\n\n{lifecycle_summary}\n\n"
+                heading, _, rest = (markdown_text or "").partition("\n")
+                markdown_text = f"{heading}{summary_block}{rest}" if rest else f"{heading}{summary_block.strip()}"
+
         if self.review_chunk_count > 1:
             markdown_text += (
                 "\n\n<hr>\n\n"
@@ -1479,28 +1485,45 @@ class PRReviewer:
                     max_chars=self._review_comment_max_chars(),
                 )
             except ValueError as error:
-                previous_state = getattr(self, "_review_finding_previous_state", None)
-                self._review_state_result = None
-                self._review_state_blocked = True
-                self._review_state_block_reason = _STATE_BLOCK_SIZE
-                get_logger().warning(
-                    f"Persistent review state did not fit the provider comment limit; "
-                    f"publishing the review without advancing state: {error}"
-                )
-                if previous_state is not None:
+                # The delta section is the first thing to sacrifice: advancing the state
+                # outranks showing it.
+                degraded = True
+                if lifecycle_summary:
+                    body_without_summary = (markdown_text or "").replace(
+                        f"\n\n{lifecycle_summary}\n\n", "\n", 1
+                    ).replace(f"\n\n{lifecycle_summary}", "", 1)
                     try:
                         markdown_text = append_review_state(
-                            markdown_text or "",
-                            previous_state,
+                            body_without_summary,
+                            state_result.state,
                             max_chars=self._review_comment_max_chars(),
                         )
-                    except ValueError as previous_error:
-                        get_logger().warning(
-                            f"Previous persistent review state also did not fit the provider "
-                            f"comment limit; leaving the existing state untouched: {previous_error}"
-                        )
-                    else:
-                        self._review_state_preserved = True
+                        degraded = False
+                    except ValueError:
+                        markdown_text = body_without_summary
+                if degraded:
+                    previous_state = getattr(self, "_review_finding_previous_state", None)
+                    self._review_state_result = None
+                    self._review_state_blocked = True
+                    self._review_state_block_reason = _STATE_BLOCK_SIZE
+                    get_logger().warning(
+                        f"Persistent review state did not fit the provider comment limit; "
+                        f"publishing the review without advancing state: {error}"
+                    )
+                    if previous_state is not None:
+                        try:
+                            markdown_text = append_review_state(
+                                markdown_text or "",
+                                previous_state,
+                                max_chars=self._review_comment_max_chars(),
+                            )
+                        except ValueError as previous_error:
+                            get_logger().warning(
+                                f"Previous persistent review state also did not fit the provider "
+                                f"comment limit; leaving the existing state untouched: {previous_error}"
+                            )
+                        else:
+                            self._review_state_preserved = True
 
         # Emit the review to optional external sinks (stdout/file/webhook/slack/telegram); no-op unless enabled.
         # publish_output gates it so a dry run makes no external calls. The "no major issues"
@@ -1681,39 +1704,10 @@ class PRReviewer:
             data["review"].pop("key_issues_to_review", None)
         return data
 
-    def _get_user_answers(self) -> tuple[str, str]:
-        """
-        Retrieves the newest question and any answer posted after it from pull-request comments.
-
-        Returns:
-            A tuple containing the question and answer strings.
-        """
-        question_str = ""
-        answer_str = ""
-
-        if self.is_answer and self.git_provider.is_supported("get_issue_comments"):
-            # __init__ already raises when is_answer is True and this is unsupported, so
-            # this repeats that check locally rather than relying on the caller for it.
-            newest_first = self.git_provider.get_issue_comments_newest_first()
-
-            for message in newest_first:
-                if "Questions to better understand the PR:" in message.body:
-                    question_str = message.body
-                    break
-                if not answer_str and '/answer' in message.body:
-                    answer_str = message.body
-
-        return question_str, answer_str
-
     def _can_run_incremental_review(self) -> bool:
         """
         Checks if we can run incremental review according the various configurations and previous review.
         """
-        # checking if running is auto mode but there are no new commits
-        if self.is_auto and not self.incremental.first_new_commit_sha:
-            get_logger().info(f"Incremental review is enabled for {self.pr_url} but there are no new commits")
-            return False
-
         if not hasattr(self.git_provider, "get_incremental_commits"):
             get_logger().info(f"Incremental review is not supported for {get_settings().config.git_provider}")
             return False

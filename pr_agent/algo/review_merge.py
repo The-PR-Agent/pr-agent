@@ -487,7 +487,6 @@ _MERGE_RULES: dict = {
     "failure_modes": _merge_failure_modes,
     "artifact_findings": _union_of_lists(_artifact_finding_identity),
     "security_concerns": _merge_findings_text,
-    "insights_from_user_answers": _merge_findings_text,
     "relevant_tests": _merge_relevant_tests,
     "key_issues_to_review": _union_of_lists(_key_issue_identity),
     "todo_sections": _merge_todo_sections,
