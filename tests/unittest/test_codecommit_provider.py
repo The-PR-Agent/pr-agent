@@ -141,6 +141,7 @@ class TestCodeCommitProvider:
         assert diff_files[0].base_file == "old contents\n"
         assert diff_files[0].head_file == ""
         assert diff_files[0].edit_type == EDIT_TYPE.DELETED
+        assert (diff_files[0].num_plus_lines, diff_files[0].num_minus_lines) == (0, 1)
         assert "-old contents" in diff_files[0].patch
         assert provider.codecommit_client.get_file.call_args_list == [
             call("my_test_repo", "deleted.py", "destination-commit")
