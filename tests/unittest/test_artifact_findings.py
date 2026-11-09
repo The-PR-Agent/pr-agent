@@ -99,3 +99,16 @@ def test_repeated_findings_are_listed_once():
     findings = parse_artifact_findings([_finding(), _finding(evidence='"aws_s3_bucket.exports will be destroyed"')],
                                        ARTIFACT)
     assert len(findings) == 1
+
+
+def test_short_generic_quote_is_not_counted_as_found():
+    context = {"content": "FAILED tests/test_a.py::test_save\nerror: build failed"}
+    findings = parse_artifact_findings([_finding(kind="test_failure", fact="test_load fails.", evidence="FAILED"),
+                                        _finding(kind="failure", fact="The build fails.", evidence="error")], context)
+    assert [finding["quoted"] for finding in findings] == [False, False]
+
+
+def test_short_quote_of_a_whole_line_is_found():
+    context = {"content": "pytest summary\n  Tests: 3 failed  \nexit 1"}
+    [finding] = parse_artifact_findings([_finding(kind="test_failure", evidence="Tests: 3 failed")], context)
+    assert finding["quoted"] is True
