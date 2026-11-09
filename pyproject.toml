@@ -114,7 +114,7 @@ google = [
   "google-cloud-storage==3.12.0; python_version >= '3.13'",
   # Keep protobuf explicit to lock the transitive version resolved with the gRPC dependency stack.
   # Revalidate compatibility when updating grpcio-status or related Google/gRPC dependencies.
-  "protobuf==6.33.6",
+  "protobuf==7.36.2",
 ]
 mosaico = ["a2a-sdk[http-server]==1.3.0"]
 # Preserve the dependency set that the published Docker images shipped before provider SDKs became optional.
