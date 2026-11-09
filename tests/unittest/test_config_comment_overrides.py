@@ -73,7 +73,7 @@ COMMENT_OVERRIDABLE_KEYS = {
         "review_commands", "review_states", "webhook_delivery_deduplication",
     }),
     "gitlab": frozenset({
-        "auto_resolve_fixed_inline_threads", "expand_submodule_diffs", "feedback_on_draft_pr",
+        "auto_resolve_fixed_inline_threads", "diffs_per_page", "expand_submodule_diffs", "feedback_on_draft_pr",
         "handle_push_trigger", "handle_reviewer_assignment", "ignore_user_ids",
         "publish_code_suggestions_as_review", "publish_improve_as_thread", "publish_review_as_thread",
         "push_commands", "reply_to_trigger_comment", "resolve_outdated_inline_threads", "reviewer_commands",

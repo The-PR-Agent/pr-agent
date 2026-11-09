@@ -94,6 +94,31 @@ def test_diff_listing_requests_max_pages():
     assert diffs.calls == [{"get_all": True, "per_page": 100}]
 
 
+def test_diff_listing_respects_custom_per_page():
+    from pr_agent.config_loader import get_settings
+
+    changes = [{"new_path": f"file-{index}.py"} for index in range(50)]
+    diffs = _PaginatedList(changes)
+    provider = object.__new__(GitLabProvider)
+    provider.gl = SimpleNamespace(
+        http_get=lambda _path: {
+            "sha": "head",
+            "diff_refs": {"base_sha": "base", "head_sha": "head"},
+            "changes_count": "50",
+        },
+        http_list=diffs.http_list,
+    )
+
+    get_settings().set("GITLAB.DIFFS_PER_PAGE", 30)
+    try:
+        result = provider._collect_merge_request_changes("/projects/1/merge_requests/1")
+        assert len(result["changes"]) == 50
+        assert diffs.requests == 2
+        assert diffs.calls == [{"get_all": True, "per_page": 30}]
+    finally:
+        get_settings().set("GITLAB.DIFFS_PER_PAGE", 100)
+
+
 def test_every_get_all_call_sets_per_page():
     source = Path(gitlab_provider_module.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -110,4 +135,6 @@ def test_every_get_all_call_sets_per_page():
     assert get_all_calls
     for keywords in get_all_calls:
         per_page = keywords.get("per_page")
-        assert isinstance(per_page, ast.Constant) and per_page.value == 100
+        assert per_page is not None
+        if isinstance(per_page, ast.Constant):
+            assert per_page.value == 100

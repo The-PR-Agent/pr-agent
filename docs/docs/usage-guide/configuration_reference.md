@@ -420,6 +420,7 @@ See [GitLab](../usage-guide/automations_and_usage.md#gitlab-webhook).
 | Key | Default | Description |
 | --- | --- | --- |
 | `url` | "https://gitlab.com" |  |
+| `diffs_per_page` | 100 | Number of diffs to request per page when collecting merge request changes. Some GitLab versions (e.g. 15.7 - 17.10) return HTTP 500 when per_page > 30. |
 | `expand_submodule_diffs` | false | Submodule targets must also be listed in config.repo_context_sibling_repos. |
 | `feedback_on_draft_pr` | false |  |
 | `publish_review_as_thread` | false | Post the /review summary as a resolvable thread (discussion) instead of a plain note. |

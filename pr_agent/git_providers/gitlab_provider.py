@@ -824,9 +824,10 @@ class GitLabProvider(GitProvider):
 
     def _collect_merge_request_changes(self, path: str) -> dict:
         """Collect the diff pages once, failing on unstable or not-yet-ready responses."""
+        diffs_per_page = int(get_settings().get("GITLAB.DIFFS_PER_PAGE", 100) or 100)
         for attempt in range(2):
             before = self.gl.http_get(path)
-            changes = self.gl.http_list(f"{path}/diffs", get_all=True, per_page=100)
+            changes = self.gl.http_list(f"{path}/diffs", get_all=True, per_page=diffs_per_page)
             after = self.gl.http_get(path)
             if any(before.get(key) != after.get(key) for key in ("sha", "diff_refs", "changes_count")):
                 if attempt == 0:
