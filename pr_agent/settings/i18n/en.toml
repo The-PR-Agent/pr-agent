@@ -18,6 +18,7 @@ persistent_link = "Persistent review"
 persistent_updated = "{link} updated to latest commit {commit}"
 
 [improve]
+merge_notice = "/improve will be merged into /review in the next release."
 no_suggestions = "No suggestions found to improve this PR."
 no_suggestions_for_pr = "No code suggestions found for the PR."
 no_suggestions_in_chunks = "No code suggestions found in the successfully analyzed chunks."
