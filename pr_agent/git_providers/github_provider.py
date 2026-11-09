@@ -2925,7 +2925,7 @@ class GithubProvider(GitProvider):
                         comment_start_line = suggestion.get('relevant_lines_start', None)
                         comment_end_line = suggestion.get('relevant_lines_end', None)
                         original_suggestion = suggestion.get('original_suggestion', None) # needed for diff code
-                        if not comment_start_line or not comment_end_line or not original_suggestion:
+                        if not comment_start_line or not comment_end_line:
                             continue
 
                         # check if the comment is inside a valid hunk
@@ -2951,29 +2951,30 @@ class GithubProvider(GitProvider):
                         if not is_valid_hunk:
                             # 10 lines - a reasonable distance to consider the comment inside the hunk
                             if min_distance < 10:
-                                # make the suggestion non-committable, yet multi line
                                 # clamp both ends into the hunk: a suggestion wholly above or below it
                                 # would otherwise get start > end and be dropped by the publisher
                                 new_start = min(max(suggestion['relevant_lines_start'], patch_range_min['start']),
                                                 patch_range_min['end'])
                                 new_end = max(min(suggestion['relevant_lines_end'], patch_range_min['end']), new_start)
-                                body = suggestion['body'].strip()
+                                if original_suggestion:
+                                    # make the suggestion non-committable, yet multi line
+                                    body = suggestion['body'].strip()
 
-                                # present new diff code in collapsible
-                                existing_code = original_suggestion['existing_code'].rstrip() + "\n"
-                                improved_code = original_suggestion['improved_code'].rstrip() + "\n"
-                                diff = difflib.unified_diff(existing_code.split('\n'),
-                                                            improved_code.split('\n'), n=999)
-                                patch_orig = "\n".join(diff)
-                                patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
-                                diff_code = (f"\n\n<details><summary>New proposed code:</summary>\n\n"
-                                             f"```diff\n{patch.rstrip()}\n```")
-                                # replace ```suggestion ... ``` with diff_code:
-                                body = replace_suggestion_blocks(body, diff_code)
-                                body += "\n\n</details>"
+                                    # present new diff code in collapsible
+                                    existing_code = original_suggestion['existing_code'].rstrip() + "\n"
+                                    improved_code = original_suggestion['improved_code'].rstrip() + "\n"
+                                    diff = difflib.unified_diff(existing_code.split('\n'),
+                                                                improved_code.split('\n'), n=999)
+                                    patch_orig = "\n".join(diff)
+                                    patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
+                                    diff_code = (f"\n\n<details><summary>New proposed code:</summary>\n\n"
+                                                 f"```diff\n{patch.rstrip()}\n```")
+                                    # replace ```suggestion ... ``` with diff_code:
+                                    body = replace_suggestion_blocks(body, diff_code)
+                                    body += "\n\n</details>"
+                                    suggestion['body'] = body
                                 suggestion['relevant_lines_start'] = new_start
                                 suggestion['relevant_lines_end'] = new_end
-                                suggestion['body'] = body
                                 get_logger().info(f"Comment was moved to a valid hunk, "
                                                   f"start_line={new_start}, end_line={new_end}, file={file.filename}")
                             else:

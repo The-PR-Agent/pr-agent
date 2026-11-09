@@ -1303,6 +1303,39 @@ def test_suggestion_near_a_hunk_is_published_inside_it(monkeypatch, start, end, 
     assert "```suggestion" not in published[0]["body"]
 
 
+@pytest.mark.parametrize(
+    "start,end,expected_start,expected_end",
+    [
+        (5, 7, 10, 10),  # wholly above the hunk
+        (13, 15, 11, 11),  # wholly below the hunk
+    ],
+)
+def test_comment_near_a_hunk_is_moved_into_it_without_a_suggestion_block(
+    monkeypatch, start, end, expected_start, expected_end
+):
+    """A finding without diff code has no suggestion block to rewrite, so it is only re-anchored."""
+    provider = _make_provider()
+    provider.max_comment_chars = 65000
+    provider.get_diff_files = lambda: [
+        SimpleNamespace(filename="src/example.py", patch="@@ -10,2 +10,2 @@\n-old\n+new\n ctx", language="python")
+    ]
+    published = []
+    monkeypatch.setattr(provider, "publish_inline_comments", lambda comments: published.extend(comments) or True)
+    body = "The loop reads past the end of the buffer."
+
+    assert provider.publish_code_suggestions([{
+        "body": body,
+        "relevant_file": "src/example.py",
+        "relevant_lines_start": start,
+        "relevant_lines_end": end,
+    }]) is True
+
+    assert len(published) == 1
+    assert published[0].get("start_line", published[0]["line"]) == expected_start
+    assert published[0]["line"] == expected_end
+    assert published[0]["body"].startswith(body)
+
+
 def test_validate_comments_inside_hunks_does_not_partially_update_on_render_error(monkeypatch):
     provider = _make_provider()
     provider.get_diff_files = lambda: [
