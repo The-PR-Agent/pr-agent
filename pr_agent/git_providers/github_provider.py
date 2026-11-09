@@ -2927,6 +2927,12 @@ class GithubProvider(GitProvider):
                         original_suggestion = suggestion.get('original_suggestion', None) # needed for diff code
                         if not comment_start_line or not comment_end_line:
                             continue
+                        if (
+                            not original_suggestion
+                            and replace_suggestion_blocks(suggestion["body"], "") != suggestion["body"]
+                        ):
+                            # moving a committable block would apply it to another line
+                            continue
 
                         # check if the comment is inside a valid hunk
                         is_valid_hunk = False

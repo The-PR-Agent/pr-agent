@@ -1336,6 +1336,28 @@ def test_comment_near_a_hunk_is_moved_into_it_without_a_suggestion_block(
     assert published[0]["body"].startswith(body)
 
 
+def test_committable_block_without_diff_code_is_not_moved(monkeypatch):
+    """A suggestion block carries its own line, so moving it would apply it elsewhere."""
+    provider = _make_provider()
+    provider.max_comment_chars = 65000
+    provider.get_diff_files = lambda: [
+        SimpleNamespace(filename="src/example.py", patch="@@ -10,2 +10,2 @@\n-old\n+new\n ctx", language="python")
+    ]
+    published = []
+    monkeypatch.setattr(provider, "publish_inline_comments", lambda comments: published.extend(comments) or True)
+
+    assert provider.publish_code_suggestions([{
+        "body": "```suggestion\nnew\n```",
+        "relevant_file": "src/example.py",
+        "relevant_lines_start": 13,
+        "relevant_lines_end": 15,
+    }]) is True
+
+    assert len(published) == 1
+    assert published[0].get("start_line", published[0]["line"]) == 13
+    assert published[0]["line"] == 15
+
+
 def test_validate_comments_inside_hunks_does_not_partially_update_on_render_error(monkeypatch):
     provider = _make_provider()
     provider.get_diff_files = lambda: [
