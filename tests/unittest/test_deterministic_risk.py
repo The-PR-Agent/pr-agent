@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -203,6 +205,53 @@ def test_scan_file_diff_custom_pattern():
     f = _file("app.py", patch)
     findings = dr.scan_file_diff(f, custom_patterns=custom)
     assert any(item["category"] == "custom_shape" for item in findings)
+
+
+class _TimingOutPattern:
+    pattern = "slow"
+
+    def __init__(self):
+        self.calls = 0
+
+    def search(self, text, timeout=None):
+        self.calls += 1
+        raise TimeoutError("regex timed out")
+
+
+def test_custom_pattern_that_times_out_is_skipped_for_the_rest_of_the_review(monkeypatch):
+    logger = MagicMock()
+    monkeypatch.setattr(dr, "get_logger", lambda: logger)
+    slow = _TimingOutPattern()
+    custom = [slow, *dr.compile_custom_shapes([r"DEPRECATED_FEATURE"])]
+    patch = "@@ -1,2 +1,2 @@\n+first line\n+use DEPRECATED_FEATURE();"
+
+    first = dr.scan_file_diff(_file("a.py", patch), custom_patterns=custom)
+    second = dr.scan_file_diff(_file("b.py", patch), custom_patterns=custom)
+
+    assert slow.calls == 1
+    assert [item["file"] for item in first + second if item["category"] == "custom_shape"] == ["a.py", "b.py"]
+    logger.warning.assert_called_once()
+
+
+def test_backtracking_custom_pattern_stays_within_its_time_budget():
+    code = (
+        "import time\n"
+        "from pr_agent.algo import deterministic_risk as dr\n"
+        "from pr_agent.algo.types import FilePatchInfo\n"
+        "custom = dr.compile_custom_shapes([r'((a+))+$'])\n"
+        "assert len(custom) == 1, 'pattern passes the static check'\n"
+        "line = '+' + 'a' * (dr.MAX_LINE_CHARS - 2) + '!'\n"
+        "f = FilePatchInfo(base_file='', head_file='', patch='\\n'.join([line] * 50), filename='a.py')\n"
+        "start = time.perf_counter()\n"
+        "dr.scan_file_diff(f, custom_patterns=custom)\n"
+        "print(time.perf_counter() - start, len(custom))\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+
+    assert result.returncode == 0, result.stderr
+    elapsed, remaining = result.stdout.split()
+    assert float(elapsed) < 5
+    assert remaining == "0"
 
 
 # 6. build_risk_checks tests
