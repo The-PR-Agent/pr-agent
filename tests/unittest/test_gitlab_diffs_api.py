@@ -314,12 +314,37 @@ def test_missing_diffs_endpoint_propagates_without_fallback(provider_factory, me
     assert [urlparse(request.url).path.rsplit("/", 1)[-1] for request in transport.requests] == ["7", "diffs"]
 
 
-@pytest.mark.parametrize("status", [401, 403, 500])
+@pytest.mark.parametrize("status", [401, 403])
 def test_other_errors_do_not_probe_version_or_use_legacy(provider_factory, status):
     provider, transport = provider_factory([(status, {"message": "denied"}, {})])
     with pytest.raises((gitlab.GitlabHttpError, gitlab.GitlabAuthenticationError)):
         provider.get_files()
     assert len(transport.requests) == 2
+
+
+def test_server_error_on_large_pages_retries_with_the_default_page_size(provider_factory):
+    """GitLab before 17.11 answers HTTP 500 when per_page exceeds 30 on the MR diffs endpoint (#4793)."""
+    provider, transport = provider_factory([
+        (500, {"message": "500 Internal Server Error"}, {}),
+        *_pages([_change("a.py")], [_change("b.py")]),
+    ])
+
+    assert provider.get_files() == ["a.py", "b.py"]
+    assert [urlparse(request.url).query for request in transport.diff_requests] == [
+        "per_page=100", "per_page=20", "page=2&per_page=20"]
+
+
+def test_repeated_server_error_is_raised_after_one_retry(provider_factory):
+    provider, transport = provider_factory([
+        (500, {"message": "500 Internal Server Error"}, {}),
+        (500, {"message": "500 Internal Server Error"}, {}),
+    ])
+
+    with pytest.raises(gitlab.GitlabHttpError) as error:
+        provider.get_files()
+    assert error.value.response_code == 500
+    assert len(transport.diff_requests) == 2
+    assert provider.git_files is None
 
 
 def _prepare_incremental(provider):
