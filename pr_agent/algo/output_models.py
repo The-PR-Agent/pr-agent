@@ -99,6 +99,9 @@ def _squash(text: str) -> str:
 
 def parse_artifact_findings(value: object, artifact_context: dict | None) -> list[dict]:
     """Keep at most five findings, cap each fact, and mark evidence that is not quoted from the artifact."""
+    # Imported here: git_provider imports pr_agent.algo.utils, which imports this module.
+    from pr_agent.git_providers.git_provider import redact_credentials
+
     contexts = (artifact_context or {}).get("artifacts", [artifact_context] if artifact_context else [])
     artifact_text = "\n".join(_squash(context.get("content", "")) for context in contexts)
     artifact_lines = {_squash(line) for context in contexts for line in context.get("content", "").splitlines()}
@@ -108,7 +111,7 @@ def parse_artifact_findings(value: object, artifact_context: dict | None) -> lis
             finding = ArtifactFinding.model_validate(entry).model_dump()
         except ValidationError:
             continue
-        fact_words = _squash(finding["fact"]).split(" ")
+        fact_words = _squash(redact_credentials(finding["fact"])).split(" ")
         finding["fact"] = " ".join(fact_words[:MAX_ARTIFACT_FACT_WORDS]) + (
             " …" if len(fact_words) > MAX_ARTIFACT_FACT_WORDS else ""
         )
@@ -121,6 +124,8 @@ def parse_artifact_findings(value: object, artifact_context: dict | None) -> lis
         finding["quoted"] = bool(evidence) and evidence in artifact_text and (
             len(evidence) >= MIN_ARTIFACT_QUOTE_CHARS or evidence in artifact_lines
         )
+        # Redact before the cut, so a token split by the cut cannot slip past the patterns.
+        evidence = redact_credentials(evidence)
         finding["evidence"] = evidence[:MAX_ARTIFACT_EVIDENCE_CHARS] + (
             " …" if len(evidence) > MAX_ARTIFACT_EVIDENCE_CHARS else ""
         )

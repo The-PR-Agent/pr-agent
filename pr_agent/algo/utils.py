@@ -405,7 +405,7 @@ def convert_to_markdown_v2(output_data: dict,
                 else:
                     # Escape Markdown before HTML, as failure modes do; a code span shows entities verbatim.
                     fact = html.escape(re.sub(r"([\\`*_\[\]()!#|])", r"\\\1", fact))
-                    evidence = evidence.replace("`", "'")
+                    evidence = evidence.replace("`", "'").replace("<!--", "<\\!--")
                     markdown_text += f"- **{kind}:** {fact}\n  `{evidence}`{note}\n"
             if gfm_supported:
                 markdown_text += "</td></tr>\n"

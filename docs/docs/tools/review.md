@@ -221,8 +221,9 @@ for the authoritative default values.
     <td>Off by default, and only active when a <a href="../../installation/github/#ci-artifact-context">CI artifact</a> reaches /review.
     If enabled, adds a "CI artifact findings" section with up to five neutral facts from the artifact: destroyed or replaced
     resources, failed jobs (including allowed-to-fail ones), failed tests, vulnerabilities and notable warnings. Each fact
-    carries a short quote from the artifact; a quote that cannot be found in the artifact is marked. The section reports
-    what the artifact shows and leaves the decision to the reviewer.</td>
+    carries a short quote from the artifact; a quote that cannot be found in the artifact is marked, and credentials in
+    facts and quotes are redacted. The section reports what the artifact shows and leaves the decision to the reviewer.
+    Host configuration only: a repository settings file or comment cannot set it.</td>
   </tr>
   <tr>
     <td><b>require_priority_files</b></td>
