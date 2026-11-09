@@ -192,9 +192,7 @@ class CliArgs:
                 ':cHVzaF9vdXRwdXRzLg==:cHVzaF9vdXRwdXRzPQ=='
             )
 
-            forbidden_cli_args = []
-            for e in _encoded_args.split(':'):
-                forbidden_cli_args.append(b64decode(e).decode())
+            forbidden_cli_args = [b64decode(e).decode() for e in _encoded_args.split(":")]
 
             # lowercase all forbidden args
             for i, _ in enumerate(forbidden_cli_args):

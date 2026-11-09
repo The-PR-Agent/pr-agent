@@ -224,8 +224,7 @@ def _generate_claude_registries(families=None):
                     thinking_regions = fam.get(
                         "thinking_bedrock_regions", ("us", "au", "eu", "jp", "global")
                     )
-                    for reg in thinking_regions:
-                        claude_extended_thinking.append(f"bedrock/{reg}.anthropic.{b_name}")
+                    claude_extended_thinking.extend(f"bedrock/{reg}.anthropic.{b_name}" for reg in thinking_regions)
 
     return claude_tokens, claude_extended_thinking
 

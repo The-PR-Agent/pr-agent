@@ -102,9 +102,11 @@ def _unguarded_call_sites():
             guarded_caps = _is_supported_capability_strings(func_node)
             calls = _git_provider_call_sites(func_node)
             for method, cap in GUARDED_METHODS.items():
-                for call in calls.get(method, []):
-                    if cap not in guarded_caps:
-                        hits.append((path.name, func_node.name, method, call.lineno))
+                hits.extend(
+                    (path.name, func_node.name, method, call.lineno)
+                    for call in calls.get(method, [])
+                    if cap not in guarded_caps
+                )
     return hits
 
 
