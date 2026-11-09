@@ -252,9 +252,9 @@ class PRAddDocs:
             return True
         if not is_successful:
             get_logger().info("Failed to publish code docs, trying to publish each docs separately")
-            retry_results = []
-            for doc_suggestion in docs:
-                retry_results.append(self.git_provider.publish_code_suggestions([doc_suggestion]))
+            retry_results = [
+                self.git_provider.publish_code_suggestions([doc_suggestion]) for doc_suggestion in docs
+            ]
             if is_successful is False and all(result is False for result in retry_results):
                 return False
             if any(result is True for result in retry_results):

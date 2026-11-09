@@ -158,7 +158,7 @@ dev = [
   "pytest-asyncio>=1.4.1",
   "pytest-cov==7.1.0",
   "httpx==0.28.1",
-  "ruff==0.17.3",
+  "ruff==0.17.4",
 ]
 
 [tool.uv]
@@ -168,14 +168,17 @@ required-version = ">=0.13.5"
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+unsafe-fixes=false
+preview=false
 
 lint.select = [
-  "E",    # pycodestyle
-  "F",    # Pyflakes
-  "B",    # flake8-bugbear
-  "I",    # isort
-  "UP",   # pyupgrade
-  "FURB", # refurb
+  "E",      # pycodestyle
+  "F",      # Pyflakes
+  "B",      # flake8-bugbear
+  "I",      # isort
+  "UP",     # pyupgrade
+  "FURB",   # refurb
+  "PERF",   # perflint
 ]
 
 lint.exclude = ["api/code_completions"]

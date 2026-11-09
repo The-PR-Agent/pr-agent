@@ -131,9 +131,7 @@ def _extract_artifact_text(result: dict) -> str:
     artifacts = task.get("artifacts", [])
     texts = []
     for art in artifacts:
-        for part in art.get("parts", []):
-            if isinstance(part.get("text"), str):
-                texts.append(part["text"])
+        texts.extend(part["text"] for part in art.get("parts", []) if isinstance(part.get("text"), str))
     return "\n".join(texts)
 
 

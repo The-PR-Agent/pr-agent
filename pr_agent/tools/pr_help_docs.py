@@ -622,9 +622,9 @@ class PRHelpDocs:
                     for root, _, files in os.walk(returned_cloned_repo_root.path):
                         # Only look at files in the root directory, not subdirectories
                         if root == returned_cloned_repo_root.path:
-                            for file in files:
-                                if file.lower().startswith("readme."):
-                                    doc_files.append(os.path.join(root, file))
+                            doc_files.extend(
+                                os.path.join(root, file) for file in files if file.lower().startswith("readme.")
+                            )
                         break
                 # Resolve docs_path against the clone root and refuse paths that escape it:
                 # an absolute or traversing docs_path (e.g. an attacker-controlled per-directory

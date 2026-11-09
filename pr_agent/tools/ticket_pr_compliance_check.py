@@ -1283,8 +1283,9 @@ async def extract_tickets(git_provider):
                                 # Extract sub-issue labels
                                 sub_labels = []
                                 try:
-                                    for label in sub_issue.labels:
-                                        sub_labels.append(label.name if hasattr(label, 'name') else label)
+                                    sub_labels.extend(
+                                        label.name if hasattr(label, "name") else label for label in sub_issue.labels
+                                    )
                                 except Exception as e:
                                     get_logger().error(f"Error extracting labels error= {e}",
                                                        artifact={"traceback": traceback.format_exc()})
@@ -1304,8 +1305,7 @@ async def extract_tickets(git_provider):
                     # Extract labels
                     labels = []
                     try:
-                        for label in issue_main.labels:
-                            labels.append(label.name if hasattr(label, 'name') else label)
+                        labels.extend(label.name if hasattr(label, "name") else label for label in issue_main.labels)
                     except Exception as e:
                         get_logger().error(f"Error extracting labels error= {e}",
                                            artifact={"traceback": traceback.format_exc()})

@@ -138,20 +138,20 @@ class CodeCommitProvider(GitProvider):
             differences = self.codecommit_client.get_differences(
                 target["repository_name"], target["comparison_base_commit"], target["source_commit"]
             )
-            for item in differences:
-                git_files.append(
-                    CodeCommitFile(
-                        item.before_blob_path,
-                        item.before_blob_id,
-                        item.after_blob_path,
-                        item.after_blob_id,
-                        CodeCommitProvider._get_edit_type(item.change_type),
-                        repository_name=target["repository_name"],
-                        source_commit=target["source_commit"],
-                        destination_commit=target["destination_commit"],
-                        comparison_base_commit=target["comparison_base_commit"],
-                    )
+            git_files.extend(
+                CodeCommitFile(
+                    item.before_blob_path,
+                    item.before_blob_id,
+                    item.after_blob_path,
+                    item.after_blob_id,
+                    CodeCommitProvider._get_edit_type(item.change_type),
+                    repository_name=target["repository_name"],
+                    source_commit=target["source_commit"],
+                    destination_commit=target["destination_commit"],
+                    comparison_base_commit=target["comparison_base_commit"],
                 )
+                for item in differences
+            )
         self.git_files = git_files
         return self.git_files
 
