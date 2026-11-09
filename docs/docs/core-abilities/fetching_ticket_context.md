@@ -72,6 +72,14 @@ A `PR Code Verified` assessment indicates the PR code meets ticket requirements,
     require_ticket_analysis_review=false
     ```
 
+### Ask tool
+
+Set `pr_questions.use_ticket_context=true` to include linked ticket content in top-level `/ask` questions.
+This is disabled by default and is independent of `pr_reviewer.require_ticket_analysis_review`.
+It reuses the ticket integrations below and fits complete ticket records into the space left after the question,
+conversation history and selected diff. See [Linked ticket context](../tools/ask.md#linked-ticket-context)
+for usage and limits.
+
 ## GitHub/GitLab Issues Integration
 
 PR-Agent will automatically recognize GitHub/GitLab issues mentioned in the PR/MR title or description and fetch the issue content.

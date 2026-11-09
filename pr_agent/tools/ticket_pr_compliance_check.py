@@ -499,7 +499,10 @@ def fit_related_tickets_to_prompt_budget(
     model: str,
     *,
     ai_handler=None,
+    image_path: str | None = None,
     output_token_reserve=None,
+    default_output_tokens: int = OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    additional_input_reserve: int = OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
 ) -> tuple[dict, TokenHandler]:
     """Fit complete related-ticket records while preserving room for the PR diff."""
     prompt_vars = copy.deepcopy(raw_vars)
@@ -514,16 +517,17 @@ def fit_related_tickets_to_prompt_budget(
         system_prompt,
         user_prompt,
         ai_handler=ai_handler,
+        image_path=image_path,
         output_token_reserve=output_token_reserve,
     )
     prompt_token_limit = full_budget.input_token_limit(
-        OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+        default_output_tokens,
         preserve_minimum=True,
-        additional_input_reserve=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+        additional_input_reserve=additional_input_reserve,
     )
     if not raw_tickets or full_budget.prompt_tokens <= prompt_token_limit:
         full_budget.require_input_capacity(
-            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            default_output_tokens,
             preserve_minimum=True,
         )
         return prompt_vars, full_budget.token_handler
@@ -548,6 +552,7 @@ def fit_related_tickets_to_prompt_budget(
             system_prompt,
             user_prompt,
             ai_handler=ai_handler,
+            image_path=image_path,
             output_token_reserve=output_token_reserve,
         )
         if candidate_budget.prompt_tokens > prompt_token_limit:
@@ -572,7 +577,7 @@ def fit_related_tickets_to_prompt_budget(
     )
 
     best_budget.require_input_capacity(
-        OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+        default_output_tokens,
         preserve_minimum=True,
     )
 
@@ -1431,11 +1436,13 @@ async def extract_tickets(git_provider):
     return None
 
 
-async def extract_and_cache_pr_tickets(git_provider, vars):
-    if not get_settings().get('pr_reviewer.require_ticket_analysis_review', False):
+async def extract_and_cache_pr_tickets(git_provider, vars, *, enabled: bool | None = None, use_cache: bool = True):
+    if enabled is None:
+        enabled = get_settings().get('pr_reviewer.require_ticket_analysis_review', False)
+    if not enabled:
         return
 
-    related_tickets = get_settings().get('related_tickets', [])
+    related_tickets = get_settings().get('related_tickets', []) if use_cache else []
 
     if not related_tickets:
         tickets_content = await extract_tickets(git_provider)
@@ -1458,7 +1465,8 @@ async def extract_and_cache_pr_tickets(git_provider, vars):
                               artifact={"tickets": related_tickets})
 
             vars['related_tickets'] = related_tickets
-            get_settings().set('related_tickets', related_tickets)
+            if use_cache:
+                get_settings().set('related_tickets', related_tickets)
     else:
         get_logger().info("Using cached tickets", artifact={"tickets": related_tickets})
         vars['related_tickets'] = related_tickets

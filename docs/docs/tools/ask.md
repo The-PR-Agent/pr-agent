@@ -97,6 +97,34 @@ To get a direct link to an image, we recommend using the following scheme:
 
 See a full video tutorial [here](https://codium.ai/images/pr_agent/ask_image_video.mov)
 
+## Linked ticket context
+
+Enable linked ticket context when asking how a PR satisfies an issue's requirements or acceptance criteria:
+
+```toml
+[pr_questions]
+use_ticket_context = true
+```
+
+Set this in host or root repository configuration. PR comment/CLI arguments and per-directory files
+cannot enable it because ticket integrations use the operator's credentials.
+
+This is disabled by default and applies to top-level `/ask` and `ask_question`, not inline `/ask_line` questions.
+It uses the same [ticket integrations](../core-abilities/fetching_ticket_context.md), credentials, reference formats,
+access checks and fetch limits as `/review` and `/describe`. Tickets are discovered from the PR/MR metadata;
+links written only in the question are not additional ticket sources. This option is independent of
+`pr_reviewer.require_ticket_analysis_review`.
+
+Ticket integrations use the operator's configured access policy, not the asker's personal ticket credentials.
+For Jira, the host-controlled `jira.project_keys` allowlist still applies (`[]` disables lookups);
+configure only projects whose ticket content may appear in PR answers.
+
+Ticket content is fetched once per command, after an analyzable diff fits. It adds API reads and input tokens
+when enabled and uses the existing model request. Unavailable tickets are skipped. Each model attempt includes only
+whole ticket records that fit after the existing question, conversation history and selected diff, so ticket
+context does not displace code already selected for the answer. Large tickets may be omitted, including all
+tickets when there is no room. The usual diff-based answer remains available in that case.
+
 ## Configuration options
 
 <details open>
@@ -123,6 +151,10 @@ See a full video tutorial [here](https://codium.ai/images/pr_agent/ask_image_vid
   <tr>
     <td><b>use_conversation_history</b></td>
     <td>If set to true, the tool will use the conversation history from the same thread when answering questions on specific code lines (GitHub and Azure DevOps) or threaded top-level questions (Azure DevOps only). Default is true.</td>
+  </tr>
+  <tr>
+    <td><b>use_ticket_context</b></td>
+    <td>Include linked ticket content in top-level questions using the remaining prompt budget. Default is false. See <a href="#linked-ticket-context">Linked ticket context</a>.</td>
   </tr>
 </table>
 

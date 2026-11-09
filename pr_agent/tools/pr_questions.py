@@ -18,6 +18,7 @@ from pr_agent.algo.pr_processing import (
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.run_output import append_run_details, push_outputs_async
+from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import ModelType, decode_user_text_args
@@ -26,6 +27,10 @@ from pr_agent.git_providers import get_git_provider_for_tool
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
+from pr_agent.tools.ticket_pr_compliance_check import (
+    extract_and_cache_pr_tickets,
+    fit_related_tickets_to_prompt_budget,
+)
 
 NO_ANALYZABLE_FILES_NOTE = (
     "Every file changed in this PR is excluded from analysis (for example lockfiles, generated "
@@ -76,11 +81,14 @@ class PRQuestions:
             "skills_context": skills_context,
             "artifact_context": get_artifact_context("pr_questions"),
             "repo_context": "",
+            "related_tickets": [],
+            "related_tickets_omitted": 0,
         }
         self.patches_diff = None
         self.prediction = None
         self.no_analyzable_files = False
         self._repo_context: str | None = None
+        self._ticket_context_loaded = False
 
     def parse_args(self, args):
         return decode_user_text_args(args)
@@ -207,6 +215,9 @@ class PRQuestions:
     async def _prepare_prediction(self, model: str):
         variables = copy.deepcopy(self.vars)
         repo_context_omitted = False
+        # Select the same history, diff and repository instructions before spending room on tickets.
+        variables["related_tickets"] = []
+        variables["related_tickets_omitted"] = 0
         raw_history = variables.get("conversation_history", "")
         variables["conversation_history"] = ""
         image_path = variables.get("img_path")
@@ -268,27 +279,13 @@ class PRQuestions:
         if not patches_diff:
             raise FallbackEligibleError(f"No PR diff fits the /ask request for {model}")
 
-        fitted = budget.fit_prompt_variable(
-            variables,
-            "diff",
-            patches_diff,
-            ai_handler=self.ai_handler,
-            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
-            preserve_minimum=True,
-            image_path=image_path,
-            require_full_text=True,
-        )
-        if fitted.optional_text != patches_diff:
-            raise FallbackEligibleError(
-                f"The complete packed question diff does not fit the token limit for {model}"
-            )
+        variables["diff"] = patches_diff
         if getattr(self, "_repo_context", None) is None:
             self._repo_context = await run_diff_preparation(build_repo_context, self.git_provider)
         if self._repo_context:
             # Use only the room left after selecting the original history and complete diff.
-            variables["diff"] = patches_diff
             try:
-                fitted = budget.fit_prompt_variable(
+                budget.fit_prompt_variable(
                     variables,
                     "repo_context",
                     self._repo_context,
@@ -304,6 +301,48 @@ class PRQuestions:
             else:
                 variables["repo_context"] = self._repo_context
 
+        if _as_bool_setting(get_settings().pr_questions.get("use_ticket_context", False)):
+            if not self._ticket_context_loaded:
+                try:
+                    await extract_and_cache_pr_tickets(self.git_provider, self.vars, enabled=True, use_cache=False)
+                except Exception:
+                    self.vars["related_tickets"] = []
+                    get_logger().warning("Failed to fetch linked tickets; continuing without ticket context")
+                finally:
+                    self._ticket_context_loaded = True
+            if self.vars.get("related_tickets"):
+                try:
+                    variables, _ = fit_related_tickets_to_prompt_budget(
+                        getattr(self.git_provider, "pr", None),
+                        {**variables, "related_tickets": self.vars["related_tickets"]},
+                        get_settings().pr_questions_prompt.system,
+                        get_settings().pr_questions_prompt.user,
+                        model,
+                        ai_handler=self.ai_handler,
+                        image_path=image_path,
+                        output_token_reserve=output_token_reserve,
+                        default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+                        # The diff is already included; retain the helper's required nonzero headroom.
+                        additional_input_reserve=1,
+                    )
+                except FallbackEligibleError:
+                    # Even the omission notice is optional; retain the original question context.
+                    get_logger().debug("Linked tickets do not fit; keeping the existing question context")
+
+        fitted = budget.fit_prompt_variable(
+            variables,
+            "diff",
+            patches_diff,
+            ai_handler=self.ai_handler,
+            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+            preserve_minimum=True,
+            image_path=image_path,
+            require_full_text=True,
+        )
+        if fitted.optional_text != patches_diff:
+            raise FallbackEligibleError(
+                f"The complete packed question diff does not fit the token limit for {model}"
+            )
         self.patches_diff = patches_diff
         self._attempt_system_prompt = fitted.system_prompt
         self._attempt_user_prompt = fitted.user_prompt
