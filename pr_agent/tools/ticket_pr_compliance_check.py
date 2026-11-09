@@ -863,13 +863,21 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_
                     link_labels.pop()
                 link_labels.append((start, token.start()))
 
+    comment_spans = _html_comment_spans(pr_description)
+    non_reference_starts = None
+    comment_index = 0
     references = []
     seen = set()
     label_index = 0
     for match in GITLAB_TICKET_PATTERN.finditer(pr_description):
-        while label_index < len(link_labels) and link_labels[label_index][1] <= match.start():
+        start, end = match.span()
+        while comment_index < len(comment_spans) and comment_spans[comment_index][1] <= start:
+            comment_index += 1
+        if comment_index < len(comment_spans) and comment_spans[comment_index][0] < end:
+            continue
+        while label_index < len(link_labels) and link_labels[label_index][1] <= start:
             label_index += 1
-        if label_index < len(link_labels) and link_labels[label_index][0] <= match.start():
+        if label_index < len(link_labels) and link_labels[label_index][0] <= start:
             continue
         if match.group("url"):
             try:
@@ -888,16 +896,27 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_
             path_match = GITLAB_ISSUE_PATH_PATTERN.search(ticket_path)
             if not path_match:
                 continue
-            issue_iid = int(path_match.group("iid"))
+            iid_text = path_match.group("iid")
             issue_project = ticket_path[:path_match.start()].strip("/")
         elif match.group("project"):
             issue_project = match.group("project")
-            issue_iid = int(match.group("project_issue"))
+            iid_text = match.group("project_issue")
         else:
+            if non_reference_starts is None:
+                non_reference_starts = _non_reference_hash_starts(pr_description, ())
+            if _is_non_reference_hash(pr_description, start, end, non_reference_starts):
+                continue
+            iid_text = match.group("local_issue")
+            if len(iid_text) > MAX_SHORTHAND_ISSUE_DIGITS:
+                continue
             issue_project = repo_path
-            issue_iid = int(match.group("local_issue"))
 
-        if not issue_project:
+        iid_text = iid_text.lstrip("0")
+        if not issue_project or not iid_text or not (iid_text.isascii() and iid_text.isdigit()):
+            continue
+        try:
+            issue_iid = int(iid_text)
+        except ValueError:
             continue
         reference = (issue_project, issue_iid)
         dedupe_key = (issue_project.casefold(), issue_iid)

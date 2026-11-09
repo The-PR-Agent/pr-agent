@@ -96,8 +96,8 @@ GitHub processes references from the description first, then the branch name, th
 description references before title references. Repeated identical references do not add lookups, and title references use
 the existing ticket lookup and result limits without displacing earlier sources.
 
-The optional `config.description_issue_regex` setting applies only to the GitHub PR description. GitHub titles use
-the built-in reference formats above, including local `#<ISSUE_NUMBER>` references of up to six digits.
+The optional `config.description_issue_regex` setting applies only to the GitHub PR description. Built-in matching on
+GitHub and GitLab recognizes local `#<ISSUE_NUMBER>` references of up to six digits.
 
 Branch names can also be used to link issues, for example:
 - `123-fix-bug` (where `123` is the issue number)
