@@ -1439,7 +1439,7 @@ class GitProvider(ABC):
 
     def get_num_of_files(self):
         try:
-            return len(self.get_diff_files())
+            return len(self.get_files())
         except Exception:
             return -1
 
