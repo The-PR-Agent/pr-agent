@@ -435,9 +435,7 @@ def build_risk_checks(
 
             # Scan diff patch
             shapes = scan_file_diff(file, custom_patterns, custom_pattern_seconds)
-            for shape in shapes:
-                if shape["category"] != "deleted_file":
-                    risky_shapes.append(shape)
+            risky_shapes.extend(shape for shape in shapes if shape["category"] != "deleted_file")
 
         # Check unfiltered file list (e.g. lock files or files omitted by git provider diff filters)
         if unfiltered_files:
