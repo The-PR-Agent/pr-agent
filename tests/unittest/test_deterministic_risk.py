@@ -233,6 +233,35 @@ def test_custom_pattern_that_times_out_is_skipped_for_the_rest_of_the_review(mon
     logger.warning.assert_called_once()
 
 
+class _SlowPattern:
+    """Never times out, but each search takes 1/32 s on the fake clock."""
+
+    pattern = "slow"
+
+    def __init__(self, clock):
+        self.clock = clock
+        self.timeouts = []
+
+    def search(self, text, timeout=None):
+        self.timeouts.append(timeout)
+        self.clock[0] += 1 / 32
+        return None
+
+
+def test_pattern_slow_on_every_line_is_dropped_after_its_review_budget(monkeypatch, risk_settings):
+    clock = [0.0]
+    monkeypatch.setattr(dr, "time", SimpleNamespace(perf_counter=lambda: clock[0]), raising=False)
+    monkeypatch.setattr(dr, "CUSTOM_PATTERN_REVIEW_BUDGET_SECONDS", 1.0, raising=False)
+    slow = _SlowPattern(clock)
+    monkeypatch.setattr(dr, "compile_custom_shapes", lambda patterns: [slow])
+    patch = "@@ -1,20 +1,20 @@\n" + "\n".join(f"+line {i}" for i in range(20))
+
+    dr.build_risk_checks([_file("a.py", patch), _file("b.py", patch)])
+
+    assert len(slow.timeouts) == 32
+    assert all(0 < timeout <= dr.CUSTOM_PATTERN_TIMEOUT_SECONDS for timeout in slow.timeouts)
+
+
 def test_backtracking_custom_pattern_stays_within_its_time_budget():
     code = (
         "import time\n"
