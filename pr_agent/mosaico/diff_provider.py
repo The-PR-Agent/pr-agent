@@ -113,6 +113,8 @@ def parse_unified_diff(diff_text: str) -> list[FilePatchInfo]:
         # Best-effort reconstruct head/base file content from hunk lines.
         base_lines: list[str] = []
         head_lines: list[str] = []
+        num_plus_lines = 0
+        num_minus_lines = 0
         in_hunk = False
         for ln in section:
             if ln.startswith("@@"):
@@ -125,8 +127,10 @@ def parse_unified_diff(diff_text: str) -> list[FilePatchInfo]:
                 continue
             if ln.startswith("+"):
                 head_lines.append(ln[1:])
+                num_plus_lines += 1
             elif ln.startswith("-"):
                 base_lines.append(ln[1:])
+                num_minus_lines += 1
             elif ln.startswith(" "):
                 base_lines.append(ln[1:])
                 head_lines.append(ln[1:])
@@ -140,6 +144,8 @@ def parse_unified_diff(diff_text: str) -> list[FilePatchInfo]:
             filename=filename,
             edit_type=edit_type,
             old_filename=old_filename,
+            num_plus_lines=num_plus_lines,
+            num_minus_lines=num_minus_lines,
             head_file_is_complete=False,
         ))
     return files
