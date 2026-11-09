@@ -200,13 +200,15 @@ def parse_command(command: str) -> list[str]:
     for argument, value_was_quoted in token_args:
         if value_was_quoted and argument.startswith("--") and "=" in argument:
             key, value = argument.split("=", 1)
-            _, parsed = _fix_key_value(key, value)
             # A quoted list such as --ignore.glob="['*.py']" is the user's explicit list value,
             # so JSON-encoding it would collapse it into a string and silently disable list
-            # settings. Other quoted values keep being encoded so update_settings_from_args
-            # cannot coerce "true" to a boolean or a colon-prefixed value to a mapping.
-            if not isinstance(parsed, list):
-                argument = f"{key}={json.dumps(value, ensure_ascii=False)}"
+            # settings. Other quoted values (except opaque FILE_NAME paths) are
+            # encoded so update_settings_from_args cannot coerce "true" to a
+            # boolean or a colon-prefixed value to a mapping.
+            if key.lstrip("-").upper() != "FILE_NAME":
+                _, parsed = _fix_key_value(key, value)
+                if not isinstance(parsed, list):
+                    argument = f"{key}={json.dumps(value, ensure_ascii=False)}"
         args.append(argument)
     return [action] + args
 
@@ -222,6 +224,8 @@ def _reencode_quoted_setting_args(command: str, args: list[str]) -> list[str]:
     Plain scalars such as ``--pr_reviewer.num_max_findings=3`` keep their normal
     type conversion. Quoted lists keep their list type.
     Match quote flags by argument position so repeated values retain their own types.
+    Treat surrounding single quotes as delimiters only for raw FILE_NAME arguments,
+    where quoted provider filenames do not pass through this parser.
     """
     try:
         tokens = _split_command(command, single_quotes=False)[1:]
@@ -230,11 +234,15 @@ def _reencode_quoted_setting_args(command: str, args: list[str]) -> list[str]:
     encoded = []
     for index, argument in enumerate(args):
         value_was_quoted = index < len(tokens) and tokens[index][0] == argument and tokens[index][1]
-        if value_was_quoted and argument.startswith("--") and "=" in argument:
+        if argument.startswith("--") and "=" in argument:
             key, value = argument.split("=", 1)
-            _, parsed = _fix_key_value(key, value)
-            if not isinstance(parsed, (str, list)):
-                argument = f"{key}={json.dumps(value, ensure_ascii=False)}"
+            if key.lstrip("-").upper() == "FILE_NAME":
+                if not value_was_quoted and len(value) >= 2 and value[0] == value[-1] == "'":
+                    argument = f"{key}={value[1:-1]}"
+            elif value_was_quoted:
+                _, parsed = _fix_key_value(key, value)
+                if not isinstance(parsed, (str, list)):
+                    argument = f"{key}={json.dumps(value, ensure_ascii=False)}"
         encoded.append(argument)
     return encoded
 
