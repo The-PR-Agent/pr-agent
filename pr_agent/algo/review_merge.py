@@ -480,7 +480,6 @@ _MERGE_RULES: dict = {
     "merge_recommendation": _worst_of(MERGE_RECOMMENDATIONS),
     "failure_modes": _merge_failure_modes,
     "security_concerns": _merge_findings_text,
-    "insights_from_user_answers": _merge_findings_text,
     "relevant_tests": _merge_relevant_tests,
     "key_issues_to_review": _union_of_lists(_key_issue_identity),
     "todo_sections": _merge_todo_sections,

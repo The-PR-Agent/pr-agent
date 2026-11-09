@@ -66,7 +66,6 @@ def test_can_run_incremental_review_handles_aware_commit_dates():
     from pr_agent.tools.pr_reviewer import PRReviewer
 
     reviewer = PRReviewer.__new__(PRReviewer)
-    reviewer.is_auto = False
     reviewer.git_provider = MagicMock(spec=["get_incremental_commits"])
     reviewer.pr_url = "https://github.com/test/repo/pull/1"
 
@@ -106,7 +105,6 @@ def test_incremental_review_runs_when_commit_is_older_than_utc_threshold():
     from pr_agent.tools.pr_reviewer import PRReviewer
 
     reviewer = PRReviewer.__new__(PRReviewer)
-    reviewer.is_auto = False
     reviewer.git_provider = MagicMock(spec=["get_incremental_commits"])
     reviewer.pr_url = "https://github.com/test/repo/pull/1"
 
@@ -135,7 +133,6 @@ def test_incremental_review_skipped_when_commit_is_newer_than_utc_threshold():
     from pr_agent.tools.pr_reviewer import PRReviewer
 
     reviewer = PRReviewer.__new__(PRReviewer)
-    reviewer.is_auto = False
     reviewer.git_provider = MagicMock(spec=["get_incremental_commits"])
     reviewer.pr_url = "https://github.com/test/repo/pull/1"
 

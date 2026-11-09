@@ -198,15 +198,13 @@ class PRReviewer:
     review_chunk_hit_limit = None
     partial_files_list = ()
 
-    def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
+    def __init__(self, pr_url: str, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         """
         Initialize the PRReviewer object with the necessary attributes and objects to review a pull request.
 
         Args:
             pr_url (str): The URL of the pull request to be reviewed.
-            is_answer (bool, optional): Indicates whether the review is being done in answer mode. Defaults to False.
-            is_auto (bool, optional): Indicates whether the review is being done in automatic mode. Defaults to False.
             ai_handler (BaseAiHandler): The AI handler to be used for the review. Defaults to None.
             args (list, optional): List of arguments passed to the PRReviewer class. Defaults to None.
         """
@@ -220,11 +218,6 @@ class PRReviewer:
             self.git_provider.get_languages(), self.git_provider.get_files()
         )
         self.pr_url = pr_url
-        self.is_answer = is_answer
-        self.is_auto = is_auto
-
-        if self.is_answer and not self.git_provider.is_supported("get_issue_comments"):
-            raise Exception(f"Answer mode is not supported for {get_settings().config.git_provider} for now")
         self.ai_handler = ai_handler()
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
@@ -238,7 +231,6 @@ class PRReviewer:
         self._review_state_preserved = False
         self._pending_sink_output = None
         previous_findings = self._load_previous_findings_context()
-        question_str, answer_str = self._get_user_answers()
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
         if (self.pr_description_files and get_settings().get("config.is_auto_command", False) and
@@ -272,8 +264,6 @@ class PRReviewer:
             'require_can_be_split_review': get_settings().pr_reviewer.require_can_be_split_review,
             'require_security_review': get_settings().pr_reviewer.require_security_review,
             'require_todo_scan': get_settings().pr_reviewer.get("require_todo_scan", False),
-            'question_str': question_str,
-            'answer_str': answer_str,
             "extra_instructions": get_settings().pr_reviewer.extra_instructions,
             "artifact_context": get_artifact_context("pr_reviewer"),
             "skills_context": get_skills_context(),
@@ -1297,7 +1287,6 @@ class PRReviewer:
                 ("contribution_time_cost_estimate", "require_estimate_contribution_time_cost"),
                 ("score", "require_score"),
                 ("relevant_tests", "require_tests"),
-                ("insights_from_user_answers", "question_str"),
                 ("security_concerns", "require_security_review"),
                 ("todo_sections", "require_todo_scan"),
                 ("can_be_split", "require_can_be_split_review"),
@@ -1668,39 +1657,10 @@ class PRReviewer:
             data["review"].pop("key_issues_to_review", None)
         return data
 
-    def _get_user_answers(self) -> tuple[str, str]:
-        """
-        Retrieves the newest question and any answer posted after it from pull-request comments.
-
-        Returns:
-            A tuple containing the question and answer strings.
-        """
-        question_str = ""
-        answer_str = ""
-
-        if self.is_answer and self.git_provider.is_supported("get_issue_comments"):
-            # __init__ already raises when is_answer is True and this is unsupported, so
-            # this repeats that check locally rather than relying on the caller for it.
-            newest_first = self.git_provider.get_issue_comments_newest_first()
-
-            for message in newest_first:
-                if "Questions to better understand the PR:" in message.body:
-                    question_str = message.body
-                    break
-                if not answer_str and '/answer' in message.body:
-                    answer_str = message.body
-
-        return question_str, answer_str
-
     def _can_run_incremental_review(self) -> bool:
         """
         Checks if we can run incremental review according the various configurations and previous review.
         """
-        # checking if running is auto mode but there are no new commits
-        if self.is_auto and not self.incremental.first_new_commit_sha:
-            get_logger().info(f"Incremental review is enabled for {self.pr_url} but there are no new commits")
-            return False
-
         if not hasattr(self.git_provider, "get_incremental_commits"):
             get_logger().info(f"Incremental review is not supported for {get_settings().config.git_provider}")
             return False

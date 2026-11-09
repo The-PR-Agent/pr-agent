@@ -994,7 +994,6 @@ async def test_run_extracts_tickets_only_when_incremental_review_proceeds(monkey
     reviewer.incremental = SimpleNamespace(
         is_incremental=True, commits_range=[] if valid_anchor else None, last_seen_commit=None,
     )
-    reviewer.is_auto = False
     reviewer.vars = {}
     reviewer.prediction = None
     reviewer._load_previous_findings_context = MagicMock(return_value="Previous findings")
@@ -1695,14 +1694,6 @@ def test_prepare_review_json_lists_files_left_out_by_the_token_budget(monkeypatc
     }
 
 
-def test_can_run_incremental_review_skips_auto_mode_without_new_commit():
-    reviewer = _make_reviewer()
-    reviewer.is_auto = True
-    reviewer.incremental = SimpleNamespace(first_new_commit_sha=None)
-
-    assert reviewer._can_run_incremental_review() is False
-
-
 @pytest.fixture
 def review_label_settings():
     settings = get_settings()
@@ -1893,25 +1884,6 @@ def test_set_review_labels_skips_providers_without_label_support(review_label_se
     git_provider.publish_labels.assert_not_called()
 
 
-def test_get_user_answers_collects_question_and_answer_from_issue_comments():
-    git_provider = MagicMock()
-    git_provider.get_issue_comments.return_value = [
-        SimpleNamespace(body="Unrelated"),
-        SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
-        SimpleNamespace(body="/answer Because it fixes production."),
-    ]
-    git_provider.get_issue_comments_newest_first.return_value = list(
-        reversed(git_provider.get_issue_comments.return_value)
-    )
-    reviewer = _make_reviewer(git_provider)
-    reviewer.is_answer = True
-
-    question, answer = reviewer._get_user_answers()
-
-    assert question == "Questions to better understand the PR:\n- Why?"
-    assert answer == "/answer Because it fixes production."
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("persistent", [True, False])
 @pytest.mark.parametrize("thread_enabled", [True, False])
@@ -2043,183 +2015,6 @@ async def test_nonpersistent_review_adds_identity_for_incremental_capable_provid
     ]
     assert len(published_review) == 1
     assert expected_identity in published_review[0].args[0]
-
-
-def test_init_maps_user_question_and_answer_to_correct_prompt_vars(monkeypatch):
-    """Behavioral regression for the swapped-unpacking bug (#2496).
-
-    The bug lived in ``PRReviewer.__init__``: ``_get_user_answers()`` returns
-    ``(question, answer)`` but the tuple was unpacked as ``answer, question``,
-    so the review prompt rendered the user's answer under ``{{ question_str }}``
-    and the question under ``{{ answer_str }}``. This drives the real ``__init__``
-    (external collaborators stubbed) and asserts each value lands in ``self.vars``
-    under the correct key — so it fails if the unpack is ever swapped again,
-    regardless of how the line is formatted.
-    """
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
-
-    provider = MagicMock()
-    provider.is_supported.return_value = True
-    provider.get_languages.return_value = {}
-    provider.get_files.return_value = []
-    provider.get_issue_comments.return_value = [
-        SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
-        SimpleNamespace(body="/answer Because it fixes production."),
-    ]
-    provider.get_pr_description.return_value = ("desc", [])
-    provider.get_issue_comments_newest_first.return_value = list(reversed(provider.get_issue_comments.return_value))
-
-    monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
-    monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
-
-    reviewer = PRReviewer(
-        "https://example/pr/1",
-        is_answer=True,
-        ai_handler=lambda: SimpleNamespace(main_pr_language=None),
-    )
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Why?"
-    assert reviewer.vars["answer_str"] == "/answer Because it fixes production."
-
-
-def _build_answer_mode_reviewer(monkeypatch, issue_comments, *, newest_first=None):
-    """Drive the real ``PRReviewer.__init__`` in answer mode over ``issue_comments``."""
-    from pr_agent.git_providers.git_provider import GitProvider
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
-
-    provider = MagicMock()
-    provider.is_supported.return_value = True
-    provider.get_languages.return_value = {}
-    provider.get_files.return_value = []
-    provider.get_issue_comments.return_value = issue_comments
-    provider.get_pr_description.return_value = ("desc", [])
-    if newest_first is None:
-        provider.get_issue_comments_newest_first.side_effect = (
-            lambda: GitProvider.get_issue_comments_newest_first(provider)
-        )
-    else:
-        provider.get_issue_comments_newest_first.return_value = newest_first
-
-    monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
-    monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
-
-    return PRReviewer(
-        "https://example/pr/1",
-        is_answer=True,
-        ai_handler=lambda: SimpleNamespace(main_pr_language=None),
-    )
-
-
-def test_answer_mode_reads_comments_from_a_non_list_iterable(monkeypatch):
-    """GitHub hands back a PyGithub ``PaginatedList``, GitLab a plain list.
-
-    Answer mode used to reach for the PyGithub-only ``.reversed`` property, which meant
-    it could only ever consume the GitHub shape. Any lazily-paginated iterable must work.
-    """
-
-    class _Paginated:
-        def __init__(self, items):
-            self._items = items
-
-        def __iter__(self):
-            return iter(self._items)
-
-    reviewer = _build_answer_mode_reviewer(monkeypatch, _Paginated([
-        SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
-        SimpleNamespace(body="/answer Because it fixes production."),
-    ]))
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Why?"
-    assert reviewer.vars["answer_str"] == "/answer Because it fixes production."
-
-
-def test_answer_mode_uses_the_lazy_reversed_view_when_the_provider_offers_one(monkeypatch):
-    """PyGithub reverses a PaginatedList lazily, walking pages from the end.
-
-    Materialising it instead would page the whole thread just to read the last exchange,
-    so the lazy view must win when it exists.
-    """
-
-    class _LazyPaginated:
-        def __init__(self, items):
-            self._items = items
-
-        @property
-        def reversed(self):
-            return list(reversed(self._items))
-
-        def __iter__(self):
-            raise AssertionError("the lazy reversed view should have been used")
-
-    reviewer = _build_answer_mode_reviewer(monkeypatch, _LazyPaginated([
-        SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
-        SimpleNamespace(body="/answer Because it fixes production."),
-    ]))
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Why?"
-    assert reviewer.vars["answer_str"] == "/answer Because it fixes production."
-
-
-def test_answer_mode_prefers_the_newest_question_and_answer(monkeypatch):
-    """Comments arrive oldest-first, so the walk must run newest-first to pick the latest exchange."""
-    reviewer = _build_answer_mode_reviewer(monkeypatch, [
-        SimpleNamespace(body="Questions to better understand the PR:\n- Stale question?"),
-        SimpleNamespace(body="/answer Stale answer."),
-        SimpleNamespace(body="Questions to better understand the PR:\n- Current question?"),
-        SimpleNamespace(body="/answer Current answer."),
-    ])
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Current question?"
-    assert reviewer.vars["answer_str"] == "/answer Current answer."
-
-
-def test_answer_mode_keeps_newest_question_when_no_answer_has_been_posted(monkeypatch):
-    reviewer = _build_answer_mode_reviewer(monkeypatch, [
-        SimpleNamespace(body="Questions to better understand the PR:\n- Earlier question?"),
-        SimpleNamespace(body="Questions to better understand the PR:\n- Latest question?"),
-    ])
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Latest question?"
-    assert reviewer.vars["answer_str"] == ""
-
-
-@pytest.mark.parametrize("earlier_comments", [
-    [SimpleNamespace(body="Questions to better understand the PR:\n- Please use /answer for this question")],
-    [
-        SimpleNamespace(body="Questions to better understand the PR:\n- Earlier question?"),
-        SimpleNamespace(body="/answer Earlier answer."),
-    ],
-])
-def test_answer_mode_ignores_answers_older_than_newest_question(monkeypatch, earlier_comments):
-    reviewer = _build_answer_mode_reviewer(monkeypatch, [
-        *earlier_comments,
-        SimpleNamespace(body="Questions to better understand the PR:\n- Latest question?"),
-    ])
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Latest question?"
-    assert reviewer.vars["answer_str"] == ""
-
-
-def test_answer_mode_keeps_the_latest_correction_to_an_answer(monkeypatch):
-    reviewer = _build_answer_mode_reviewer(monkeypatch, [
-        SimpleNamespace(body="Questions to better understand the PR:\n- Timeout?"),
-        SimpleNamespace(body="/answer Use 30 seconds."),
-        SimpleNamespace(body="/answer Correction: use 60 seconds."),
-    ])
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Timeout?"
-    assert reviewer.vars["answer_str"] == "/answer Correction: use 60 seconds."
-
-
-def test_answer_mode_respects_provider_supplied_newest_first_order(monkeypatch):
-    comments = [
-        SimpleNamespace(body="/answer Correction: use 60 seconds."),
-        SimpleNamespace(body="/answer Use 30 seconds."),
-        SimpleNamespace(body="Questions to better understand the PR:\n- Timeout?"),
-    ]
-    reviewer = _build_answer_mode_reviewer(monkeypatch, comments, newest_first=comments)
-
-    assert reviewer.vars["answer_str"] == "/answer Correction: use 60 seconds."
 
 
 async def _render_review_capturing_push(reviewer, publish_output):

@@ -87,7 +87,6 @@ class Review(BaseModel):
     contribution_time_cost_estimate: ContributionTimeCostEstimate | None = None
     score: StrictInt | None = Field(default=None, ge=0, le=100)
     relevant_tests: Literal["Yes", "No"] | None = None
-    insights_from_user_answers: str | None = None
     key_issues_to_review: list[KeyIssuesComponentLink]
     security_concerns: str | None = None
     todo_sections: list[TodoSection] | str | None = None

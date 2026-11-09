@@ -114,7 +114,6 @@ def test_affected_templates_delegate_to_shared_fragment_once(prompt_name, legacy
         ("pr_questions_prompt", "diff"),
         ("pr_custom_labels_prompt", "diff"),
         ("pr_update_changelog_prompt", "diff"),
-        ("pr_information_from_user_prompt", "diff"),
         ("pr_description_prompt", "diff"),
         ("pr_description_only_files_prompts", "diff"),
         ("pr_description_only_description_prompts", "diff"),

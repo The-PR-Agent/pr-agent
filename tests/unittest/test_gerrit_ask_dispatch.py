@@ -64,7 +64,7 @@ def test_dispatch_an_ask_with_the_question_taken_from_msg(client):
     assert calls == [("p:refs/changes/1", "/ask why is this slow?")]
 
 
-@pytest.mark.parametrize("action", ["review", "describe", "improve", "answer"])
+@pytest.mark.parametrize("action", ["review", "describe", "improve"])
 def test_dispatch_a_supported_action(client, action):
     http, calls = client
 
@@ -78,7 +78,8 @@ def test_dispatch_a_supported_action(client, action):
     assert calls == [("p:refs/changes/1", f"/{action}")]
 
 
-def test_reject_reflect_before_constructing_an_agent(client, monkeypatch):
+@pytest.mark.parametrize("action", ["reflect", "answer"])
+def test_reject_unsupported_action_before_constructing_an_agent(client, monkeypatch, action):
     http, calls = client
 
     def construct_agent():
@@ -87,7 +88,7 @@ def test_reject_reflect_before_constructing_an_agent(client, monkeypatch):
     monkeypatch.setattr(gerrit_server, "PRAgent", construct_agent)
 
     response = http.post(
-        "/api/v1/gerrit/reflect",
+        f"/api/v1/gerrit/{action}",
         json={"refspec": "refs/changes/1", "project": "p"},
         auth=AUTH,
     )
@@ -96,11 +97,11 @@ def test_reject_reflect_before_constructing_an_agent(client, monkeypatch):
     assert calls == []
 
 
-def test_openapi_does_not_advertise_reflect(client):
+def test_openapi_lists_only_supported_actions(client):
     http, _ = client
 
     response = http.get("/openapi.json")
 
     assert response.status_code == 200
     action_schema = response.json()["components"]["schemas"]["Action"]
-    assert set(action_schema["enum"]) == {"review", "describe", "ask", "improve", "answer"}
+    assert set(action_schema["enum"]) == {"review", "describe", "ask", "improve"}
