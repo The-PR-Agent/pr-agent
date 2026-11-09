@@ -186,7 +186,8 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "github_action_config": frozenset({"fail_on_tool_errors"}),
     "ignore": frozenset({"regex"}),
     "pr_code_suggestions": frozenset({"parallel_calls", "max_number_of_calls"}),
-    "pr_questions": frozenset({"resolve_threads"}),
+    # PR comments must not enable ticket reads performed with the operator's credentials.
+    "pr_questions": frozenset({"resolve_threads", "use_ticket_context"}),
     # A commenter must not choose which host file the structural-reach row reads, or turn on quoting of CI output.
     "pr_reviewer": frozenset({
         "enable_risk_checks",
@@ -210,7 +211,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
 # controlled. Likewise, keys that rewrite pull-request metadata (AI title generation,
 # comment-only description publication) stay root-controlled so a nested file cannot
 # bypass the operator's choice of which PR fields the bot edits. Ticket extraction
-# (require_ticket_analysis_review) stays root-controlled too: enabling it from a nested
+# (require_ticket_analysis_review, use_ticket_context) stays root-controlled too: enabling it from a nested
 # file would make the bot run authenticated Jira lookups the root config already disabled.
 # The self-review workflow control (demand_code_suggestions_self_review) stays
 # root-controlled as well: a nested file must not be able to make /improve demand a
@@ -232,7 +233,7 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
         "generate_ai_title", "publish_description_as_comment",
         "publish_description_as_comment_persistent",
     }),
-    "pr_questions": frozenset({"resolve_threads", "use_conversation_history"}),
+    "pr_questions": frozenset({"resolve_threads", "use_conversation_history", "use_ticket_context"}),
     "pr_code_suggestions": frozenset({
         "committable_code_suggestions",
         # The deprecated pre-1.0 spelling stays host-only for the same reason: a nested file

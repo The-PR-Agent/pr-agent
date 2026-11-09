@@ -664,6 +664,7 @@ async_ai_calls = false
 resolve_threads = true
 static_questions = ["default"]
 use_conversation_history = true
+use_ticket_context = true
 
 [pr_code_suggestions]
 committable_code_suggestions = true
@@ -748,10 +749,10 @@ dual_publishing_score_threshold = 7
         # /improve demand a self-review checklist.
         assert get_settings().pr_code_suggestions.demand_code_suggestions_self_review is False
 
-    def test_ask_conversation_history_stays_root_controlled(self, host_only_keys_applied):
-        # Thread-history collection for /ask is root-controlled: a nested file cannot
-        # re-enable sending private review-thread discussion bodies to the model.
+    def test_ask_context_collection_stays_root_controlled(self, host_only_keys_applied):
+        # A nested file cannot enable ticket reads or re-enable sending private thread bodies.
         assert get_settings().pr_questions.use_conversation_history is False
+        assert get_settings().pr_questions.use_ticket_context is False
 
     def test_ordinary_keys_in_the_same_sections_still_apply(self, host_only_keys_applied):
         assert get_settings().pr_reviewer.num_max_findings == 4

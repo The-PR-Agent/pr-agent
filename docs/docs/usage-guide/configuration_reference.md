@@ -271,6 +271,7 @@ See [Ask](../tools/ask.md#configuration-options).
 | --- | --- | --- |
 | `enable_help_text` | false |  |
 | `use_conversation_history` | true |  |
+| `use_ticket_context` | false | Include linked ticket context in top-level /ask when true; default false. See tools/ask.md#linked-ticket-context. |
 | `ask_heading` | "Ask" | Set the plain-text heading for top-level /ask answers; provider-specific presentation is added automatically. |
 | `resolve_threads` | false | Enable to let /ask_line resolve the review thread when the LLM judges the issue addressed. Note: also resolves threads started by human reviewers. |
 | `extra_instructions` | "" |  |

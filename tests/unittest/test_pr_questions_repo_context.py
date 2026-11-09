@@ -132,6 +132,35 @@ async def test_ask_uses_shared_repo_context_configuration(monkeypatch, ask_setti
     assert questions_module.REPO_CONTEXT_OMITTED_NOTE not in ask_settings.get("data.answer")
 
 
+async def test_ask_preserves_repo_instructions_ahead_of_optional_tickets(monkeypatch, ask_settings):
+    ask_settings.set("pr_questions.use_conversation_history", False)
+    ask_settings.set("pr_questions.use_ticket_context", True)
+    repo_guidance = REPO_GUIDANCE + "\n" + ("Repository convention: validate inputs.\n" * 230)
+    tickets = [
+        {"ticket_url": f"https://example.test/tickets/{i}", "title": f"Ticket {i}",
+         "body": "Requirement details. " * repeats}
+        for i, repeats in enumerate((200, 500, 1000), start=1)
+    ]
+
+    async def load_tickets(_provider, variables, *, enabled, use_cache):
+        assert enabled is True and use_cache is False
+        variables["related_tickets"] = tickets
+
+    monkeypatch.setattr(questions_module, "extract_and_cache_pr_tickets", load_tickets)
+    tool, provider, handler = _make_question(monkeypatch, repo_guidance)
+
+    await tool.run()
+
+    [request] = handler.requests
+    assert provider.repo_reads == [("AGENTS.md", True)]
+    assert repo_guidance in request["system"]
+    assert "https://example.test/tickets/1" in request["user"]
+    assert "https://example.test/tickets/2" not in request["user"]
+    assert "2 additional related ticket(s) were omitted" in request["user"]
+    assert "+validate(value)" in request["user"]
+    assert questions_module.REPO_CONTEXT_OMITTED_NOTE not in ask_settings.get("data.answer")
+
+
 @pytest.mark.parametrize("publish_output", [False, True])
 async def test_oversized_repo_context_preserves_diff_and_history_and_reports_omission(
     monkeypatch, ask_settings, publish_output,
