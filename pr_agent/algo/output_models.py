@@ -76,6 +76,8 @@ ARTIFACT_FINDING_KINDS = ("destroy", "failure", "test_failure", "vulnerability",
 MAX_ARTIFACT_FINDINGS = 5
 MAX_ARTIFACT_FACT_WORDS = 20
 MAX_ARTIFACT_EVIDENCE_CHARS = 160
+# A shorter quote, such as "FAILED" or "error", appears in almost any CI log, so it counts only as a whole line.
+MIN_ARTIFACT_QUOTE_CHARS = 16
 
 
 class ArtifactFinding(BaseModel):
@@ -99,6 +101,7 @@ def parse_artifact_findings(value: object, artifact_context: dict | None) -> lis
     """Keep at most five findings, cap each fact, and mark evidence that is not quoted from the artifact."""
     contexts = (artifact_context or {}).get("artifacts", [artifact_context] if artifact_context else [])
     artifact_text = "\n".join(_squash(context.get("content", "")) for context in contexts)
+    artifact_lines = {_squash(line) for context in contexts for line in context.get("content", "").splitlines()}
     findings, seen = [], set()
     for entry in value if isinstance(value, list) else []:
         try:
@@ -115,7 +118,9 @@ def parse_artifact_findings(value: object, artifact_context: dict | None) -> lis
         if (finding["kind"], evidence) in seen:
             continue
         seen.add((finding["kind"], evidence))
-        finding["quoted"] = bool(evidence) and evidence in artifact_text
+        finding["quoted"] = bool(evidence) and evidence in artifact_text and (
+            len(evidence) >= MIN_ARTIFACT_QUOTE_CHARS or evidence in artifact_lines
+        )
         finding["evidence"] = evidence[:MAX_ARTIFACT_EVIDENCE_CHARS] + (
             " …" if len(evidence) > MAX_ARTIFACT_EVIDENCE_CHARS else ""
         )
