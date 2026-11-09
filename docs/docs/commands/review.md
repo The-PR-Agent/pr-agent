@@ -168,6 +168,10 @@ for the authoritative default values.
     <td><b>inline_key_issues</b></td>
     <td>If set to true (the default), each key issue is published as an inline comment where the provider supports verified inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab, Gitea). A finding leaves the review summary when a matching comment exists or the provider accepts the new comment. Findings that cannot be anchored or published stay in the summary. A finding that carries a fix is published as a committable suggestion when `pr_code_suggestions.committable_code_suggestions` is true, the fix is at most ten lines and its `existing_code` matches the file at the finding's lines; otherwise the fix appears as a code block in the comment.</td>
   </tr>
+  <tr>
+    <td><b>min_finding_confidence</b></td>
+    <td>When above 0, the model reports an integer confidence from 0 to 10 for each finding, shown in its header in the review summary (inline comments do not show it). Findings below this value are dropped before publishing, and in a chunked review they are dropped before the <code>num_max_findings</code> cut, so they cannot displace a more confident finding. A run that dropped findings does not mark earlier findings as resolved. A missing or out-of-range confidence is treated as absent: the finding is kept. A threshold outside 0-10 is treated as 0 (disabled). Default is 0: keep all findings, and the model is not asked for a confidence.</td>
+  </tr>
 </table>
 
 </details>
