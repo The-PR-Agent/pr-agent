@@ -24,6 +24,32 @@ def test_documentation_text_detection(tmp_path, extension, content, expected_hea
 
 
 @pytest.mark.parametrize(
+    ("extension", "sections", "headings"),
+    [
+        pytest.param(
+            ".md", ["# Overview", "## Setup", "### Linux", "### Mac", "## Usage", "### CLI", "### API", "# Reference"],
+            ["# Overview", "## Setup", "### Linux", "### Mac", "## Usage", "### CLI", "### API", "# Reference"],
+            id="markdown",
+        ),
+        pytest.param(
+            ".mdx", ["# Overview", "## Setup", "### Linux", "### Mac", "## Usage", "### CLI", "### API", "# Reference"],
+            ["# Overview", "## Setup", "### Linux", "### Mac", "## Usage", "### CLI", "### API", "# Reference"],
+            id="mdx",
+        ),
+        pytest.param(
+            ".rst", ["Overview\n========", "Setup\n=====", "Linux\n-----", "Mac\n---", "Usage\n=====",
+                     "CLI\n---", "API\n---", "Reference\n========="],
+            ["Overview", "Setup", "Linux", "Mac", "Usage", "CLI", "API", "Reference"], id="rst",
+        ),
+    ],
+)
+def test_documentation_headings_preserve_order_and_deduplicate(extension, sections, headings):
+    for section_order, expected_order in ((sections, headings), (sections[::-1], headings[::-1])):
+        content = "\n".join([*section_order, section_order[0]])
+        assert return_document_headings(content, extension) == "\n".join(expected_order)
+
+
+@pytest.mark.parametrize(
     ("content", "limit", "expected"),
     [
         (" 123456中文", 5, "1234"),
