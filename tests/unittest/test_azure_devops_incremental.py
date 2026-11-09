@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from azure.devops.released.git import GitCommitRef, GitUserDate
 
 from pr_agent.algo.comment_identity import PRReviewIdentity
 from pr_agent.git_providers import AzureDevopsProvider
@@ -10,12 +11,13 @@ from pr_agent.git_providers.azuredevops_provider import _AzureCommitAdapter, _to
 from pr_agent.git_providers.git_provider import IncrementalPR
 
 
-def _raw_commit(commit_id, comment, author_date, parents=None):
+def _raw_commit(commit_id, comment, author_date, parents=None, committer_date=None):
     raw = MagicMock()
     raw.commit_id = commit_id
     raw.comment = comment
     raw.author = MagicMock()
     raw.author.date = author_date
+    raw.committer = SimpleNamespace(date=committer_date) if committer_date else None
     raw.parents = parents or []
     return raw
 
@@ -56,15 +58,44 @@ class TestAzureCommitAdapter:
         assert adapter.commit.author.date.tzinfo is None
         assert adapter.parents == ["p1"]
 
+    def test_exposes_committer_date_as_naive_utc(self):
+        # An amend or rebase keeps the author date and moves the committer date.
+        utc_plus_2 = _dt.timezone(_dt.timedelta(hours=2))
+        raw = GitCommitRef(
+            commit_id="abc123", comment="amended", parents=["p1"],
+            author=GitUserDate(date=_dt.datetime(2024, 5, 31, 16, 0, tzinfo=_dt.UTC)),
+            committer=GitUserDate(date=_dt.datetime(2024, 6, 2, 11, 0, tzinfo=utc_plus_2)),
+        )
+
+        adapter = _AzureCommitAdapter(raw)
+
+        assert adapter.commit.author.date == _dt.datetime(2024, 5, 31, 16, 0)
+        assert adapter.commit.committer.date == _dt.datetime(2024, 6, 2, 9, 0)
+
     def test_handles_missing_author(self):
         raw = MagicMock()
         raw.commit_id = "x"
         raw.comment = ""
         raw.author = None
+        raw.committer = None
         raw.parents = None
         adapter = _AzureCommitAdapter(raw)
         assert adapter.commit.author.date is None
+        assert adapter.commit.committer.date is None
         assert adapter.parents == []
+
+    def test_missing_author_date_takes_the_committer_date(self):
+        # _get_commit_range can pick the last-seen commit by its committer date, and PRReviewer
+        # then compares that commit's author date, which must not be None.
+        raw = GitCommitRef(
+            commit_id="abc123", comment="", parents=["p1"],
+            committer=GitUserDate(date=_dt.datetime(2024, 5, 30, 10, 0, tzinfo=_dt.UTC)),
+        )
+
+        adapter = _AzureCommitAdapter(raw)
+
+        assert adapter.commit.author.date == _dt.datetime(2024, 5, 30, 10, 0)
+        assert adapter.commit.committer.date == _dt.datetime(2024, 5, 30, 10, 0)
 
 
 class TestGetIncrementalCommits:
@@ -397,6 +428,81 @@ class TestGetIncrementalCommits:
         assert [c.sha for c in provider.incremental.commits_range] == ["mid", "new"]
         assert provider.incremental.last_seen_commit.sha == "old1"
         assert provider.incremental.first_new_commit.sha == "mid"
+
+    @pytest.mark.parametrize("kind", ["review", "suggestions"])
+    def test_amended_commit_pushed_after_review_is_new(self, kind):
+        # Amend, rebase and cherry-pick keep the author date. c2 was written before the review,
+        # then amended and force-pushed after it, so only its committer date shows it is new.
+        provider = self._make_provider()
+        review_time = _dt.datetime(2024, 6, 1, 12, 0, tzinfo=_dt.UTC)
+        seen = _raw_commit(
+            "c1", "seen", _dt.datetime(2024, 5, 30, 10, 0, tzinfo=_dt.UTC), parents=["base"],
+            committer_date=_dt.datetime(2024, 5, 30, 10, 0, tzinfo=_dt.UTC),
+        )
+        amended = _raw_commit(
+            "c2", "amended", _dt.datetime(2024, 5, 31, 16, 0, tzinfo=_dt.UTC), parents=["c1"],
+            committer_date=_dt.datetime(2024, 6, 2, 9, 0, tzinfo=_dt.UTC),
+        )
+        provider.azure_devops_client.get_pull_request_commits.return_value = [amended, seen]
+        provider.get_issue_comments = MagicMock(return_value=[
+            _comment("## PR Reviewer Guide", review_time),
+            _comment("## PR Code Suggestions", review_time),
+        ])
+        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(
+            changes=[{"item": {"path": "/src/parser.py", "gitObjectType": "blob"}}],
+        )
+
+        provider.get_incremental_commits(IncrementalPR(True), kind=kind)
+
+        assert provider.incremental.is_incremental is True
+        assert [c.sha for c in provider.incremental.commits_range] == ["c2"]
+        assert provider.incremental.last_seen_commit_sha == "c1"
+        assert provider.unreviewed_files_map == {"/src/parser.py": "/src/parser.py"}
+        provider.azure_devops_client.get_changes.assert_called_once_with(
+            project="ws", repository_id="repo", commit_id="c2",
+        )
+
+    def test_branch_rebased_after_review_falls_back_to_full_review(self):
+        # A rebase rewrites every commit, so none of them is the reviewed baseline any more.
+        provider = self._make_provider()
+        review_time = _dt.datetime(2024, 6, 1, 12, 0, tzinfo=_dt.UTC)
+        rebased_at = _dt.datetime(2024, 6, 2, 9, 0, tzinfo=_dt.UTC)
+        first = _raw_commit(
+            "c1", "first", _dt.datetime(2024, 5, 30, 10, 0, tzinfo=_dt.UTC), parents=["base"],
+            committer_date=rebased_at,
+        )
+        second = _raw_commit(
+            "c2", "second", _dt.datetime(2024, 5, 31, 16, 0, tzinfo=_dt.UTC), parents=["c1"],
+            committer_date=rebased_at,
+        )
+        provider.azure_devops_client.get_pull_request_commits.return_value = [second, first]
+        provider.get_issue_comments = MagicMock(return_value=[_comment("## PR Reviewer Guide", review_time)])
+
+        provider.get_incremental_commits(IncrementalPR(True))
+
+        assert provider.incremental.is_incremental is False
+        assert provider.incremental.commits_range is None
+        assert provider.incremental.last_seen_commit is None
+        provider.azure_devops_client.get_changes.assert_not_called()
+
+    @pytest.mark.parametrize("committer", [None, SimpleNamespace(date=None)])
+    def test_missing_committer_date_falls_back_to_author_date(self, committer):
+        provider = self._make_provider()
+        review_time = _dt.datetime(2024, 6, 1, 12, 0, tzinfo=_dt.UTC)
+        seen = _raw_commit("c1", "seen", _dt.datetime(2024, 5, 30, 10, 0, tzinfo=_dt.UTC), parents=["base"])
+        new = _raw_commit("c2", "new", _dt.datetime(2024, 6, 2, 9, 0, tzinfo=_dt.UTC), parents=["c1"])
+        seen.committer = new.committer = committer
+        provider.azure_devops_client.get_pull_request_commits.return_value = [new, seen]
+        provider.get_issue_comments = MagicMock(return_value=[_comment("## PR Reviewer Guide", review_time)])
+        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(
+            changes=[{"item": {"path": "/src/parser.py", "gitObjectType": "blob"}}],
+        )
+
+        provider.get_incremental_commits(IncrementalPR(True))
+
+        assert provider.incremental.is_incremental is True
+        assert [c.sha for c in provider.incremental.commits_range] == ["c2"]
+        assert provider.incremental.last_seen_commit_sha == "c1"
 
     def test_incremental_resets_stale_diff_cache(self):
         # Regression for Qodo #1: switching a reused provider into incremental mode must

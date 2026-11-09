@@ -95,7 +95,7 @@ def build_question_tool(tmp_path, monkeypatch, handler):
 
 @pytest.fixture
 def published_output():
-    snapshot = snapshot_settings(["config.publish_output", "config.disable_checkboxes"])
+    snapshot = snapshot_settings(["config.bot_display_name", "config.publish_output", "config.disable_checkboxes"])
     get_settings().set("config.publish_output", True)
     yield
     restore_settings(snapshot)
@@ -114,6 +114,26 @@ async def test_static_help_renders_without_initializing_ai_handler(published_out
     assert len(provider.published) == 1
     assert "## PR Agent Walkthrough" in provider.published[0]
     assert f"{CURRENT_DOCS_URL}/tools/review/" in provider.published[0]
+
+
+@pytest.mark.asyncio
+async def test_static_help_and_help_snippets_use_configured_bot_display_name(published_output, monkeypatch):
+    from pr_agent.servers.help import HelpMessage
+
+    get_settings().set("config.bot_display_name", "Acme Bot")
+    provider = StubProvider(gfm_markdown=True)
+    monkeypatch.setattr(pr_help_message_module, "get_git_provider_with_context", lambda _: provider)
+
+    tool = PRHelpMessage(provider.pr_url, ai_handler=MagicMock())
+    await tool.run()
+
+    assert len(provider.published) == 1
+    assert "## Acme Bot Walkthrough 🤖" in provider.published[0]
+    assert "Welcome to the Acme Bot," in provider.published[0]
+    assert "interact with the Acme Bot:" in provider.published[0]
+    assert "PR Agent" not in provider.published[0]
+    assert "To invoke the Acme Bot," in HelpMessage.get_general_bot_help_text()
+    assert "More Acme Bot commands" in HelpMessage.get_describe_usage_guide()
 
 
 def test_help_question_initializes_provided_ai_handler_once(monkeypatch):

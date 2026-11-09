@@ -846,7 +846,8 @@ class PRCodeSuggestions:
         coverage_footer = self._get_suggestions_coverage_footer(suggestions_present=False)
         no_suggestions_message = (t("improve.no_suggestions_in_chunks")
                                   if coverage_footer else t("improve.no_suggestions_for_pr"))
-        pr_body = f"{format_pr_code_suggestions_header()}\n\n{no_suggestions_message}{coverage_footer}"
+        pr_body = (f"{format_pr_code_suggestions_header()}\n\n{t('improve.merge_notice')}\n\n"
+                   f"{no_suggestions_message}{coverage_footer}")
         if get_settings().config.publish_output:
             markdown = f"## PR Code Suggestions\n\n{no_suggestions_message}{coverage_footer}"
             await push_outputs_async(
@@ -1672,7 +1673,9 @@ class PRCodeSuggestions:
                                      if include_coverage_footer else "")
             no_suggestions_message = (t("improve.no_suggestions_in_chunks_inline")
                                       if empty_coverage_footer else t("improve.no_suggestions"))
-            pr_body = no_suggestions_message + empty_coverage_footer
+            # This comment has no heading, and a body starting with "/" reads as a command, so
+            # emphasize the notice line instead of leading with a bare slash.
+            pr_body = f"**{t('improve.merge_notice')}**\n\n{no_suggestions_message}{empty_coverage_footer}"
             if self.progress_response:
                 if not _edit_comment_safely(self.git_provider, self.progress_response, pr_body):
                     self.git_provider.publish_comment(pr_body)
@@ -2355,7 +2358,7 @@ class PRCodeSuggestions:
 
     def generate_summarized_suggestions(self, data: dict) -> str:
         try:
-            pr_body = f"{format_pr_code_suggestions_header()}\n\n"
+            pr_body = f"{format_pr_code_suggestions_header()}\n\n{t('improve.merge_notice')}\n\n"
 
             if len(data.get('code_suggestions', [])) == 0:
                 pr_body += t("improve.no_suggestions")
@@ -2394,7 +2397,7 @@ class PRCodeSuggestions:
                 suggestions_labels[label].append(suggestion)
 
             if not suggestions_labels:
-                pr_body = f"{format_pr_code_suggestions_header()}\n\n"
+                pr_body = f"{format_pr_code_suggestions_header()}\n\n{t('improve.merge_notice')}\n\n"
                 pr_body += t("improve.no_suggestions")
                 return pr_body
 

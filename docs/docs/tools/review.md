@@ -17,6 +17,11 @@ Note that the main purpose of the `review` tool is to provide the **PR reviewer*
 
 (Read more about the different personas in the PR process and how PR-Agent aims to assist them in our [blog](https://www.qodo.ai/blog/understanding-the-challenges-and-pain-points-of-the-pull-request-cycle/))
 
+:::note
+`/improve` will be merged into `/review` in the next release. `/improve` will keep working and run
+`/review`, with a warning.
+:::
+
 ## Example usage
 
 ### Manual triggering

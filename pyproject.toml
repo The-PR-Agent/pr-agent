@@ -149,6 +149,8 @@ similar-issue = [
 ]
 dev = [
   { include-group = "integration-dev" },
+  # The Lambda webhook hand-off unit tests import the Mangum entry points.
+  "pr-agent[lambda]",
   "pytest==9.2.0",
   "pytest-asyncio>=1.4.1",
   "pytest-cov==7.1.0",

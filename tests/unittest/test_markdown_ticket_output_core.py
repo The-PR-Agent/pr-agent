@@ -99,13 +99,21 @@ class TestConvertToMarkdownV2Branches:
         assert convert_to_markdown_v2({}).strip() == ""
         assert convert_to_markdown_v2({"review": None}).strip() == ""
 
-    def test_incremental_review_header_and_note(self):
+    def test_incremental_review_header_and_note(self, monkeypatch):
         out = convert_to_markdown_v2(
             {"review": {"security_concerns": "No"}},
             incremental_review="2 commits",
         )
         assert "Incremental PR Reviewer Guide" in out
         assert "Review for commits since previous PR-Agent review 2 commits" in out
+
+        monkeypatch.setitem(get_settings().config, "bot_display_name", "Acme Bot")
+        custom_out = convert_to_markdown_v2(
+            {"review": {"security_concerns": "No"}},
+            incremental_review="2 commits",
+        )
+        assert "Review for commits since previous Acme Bot review 2 commits" in custom_out
+        assert "PR-Agent" not in custom_out
 
     def test_relevant_tests_yes_branch_gfm(self):
         out = convert_to_markdown_v2(

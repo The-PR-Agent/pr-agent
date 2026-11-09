@@ -1068,6 +1068,34 @@ class TestCodeCommitProvider:
         provider.codecommit_client.update_comment.assert_not_called()
         provider.codecommit_client.publish_comment.assert_called_once()
 
+    def test_persistent_config_error_updates_legacy_header_after_rename(self):
+        provider = self._make_persistent_provider()
+        legacy_header = "❌ **PR-Agent failed to apply 'local' repo settings**"
+        new_header = "❌ **Acme Bot failed to apply 'local' repo settings**"
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(
+                self._comment(f"{legacy_header}\n\nOld body", comment_id="config-error"),
+                before_commit_id="destination-commit-1",
+                after_commit_id="source-commit-1",
+            )
+        ]
+        provider.codecommit_client.update_comment.side_effect = self._successful_update_response
+
+        result = provider.publish_persistent_comment(
+            f"{new_header}\n\nNew body",
+            initial_header=new_header,
+            update_header=False,
+            final_update_message=False,
+            name="config-errors-local",
+            legacy_initial_header=legacy_header,
+        )
+
+        assert result.id == "config-error"
+        provider.codecommit_client.publish_comment.assert_not_called()
+        comment_id, updated_body = provider.codecommit_client.update_comment.call_args.args
+        assert comment_id == "config-error"
+        assert updated_body == f"{new_header}\n\nNew body"
+
     def test_get_issue_comments_support_does_not_enable_gfm_improve_history(self):
         provider = self._make_persistent_provider()
 
