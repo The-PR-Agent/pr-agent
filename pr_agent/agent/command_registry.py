@@ -10,20 +10,12 @@ module, the same names were repeated in ``command2class``
 (``pr_agent/servers/gitlab_webhook.py``) — and they had already drifted:
 ``/review_pr``, ``/describe_pr`` and ``/improve_code`` dispatch a tool but
 got no check run from the GitHub app. The Gerrit ``Action`` enum
-(``pr_agent/servers/gerrit_server.py``) is intentionally untouched: its
-five canonical actions are a pinned API contract
-(``tests/unittest/test_gerrit_ask_dispatch.py::test_openapi_does_not_advertise_reflect``),
-so accepting aliases there is a separate decision for the maintainers.
+(``pr_agent/servers/gerrit_server.py``) remains a separate provider-specific API.
 
 Facts, per spelling:
-- Dispatch still uses the raw spelling: ``auto_review`` runs the reviewer with
-  ``is_auto=True`` and ``answer`` runs it with ``is_answer=True``
-  (``pr_agent/agent/pr_agent.py``).
 - ``check_run`` is the name the tool passes to ``_publish_check_run`` when
   ``github.publish_as_check_run`` is on. ``None`` preserves the previous
-  behaviour for commands that never published one (``answer``,
-  ``auto_review`` — the dispatcher never calls ``notify`` for it — and the
-  rest).
+  behaviour for commands that never published one.
 - ``takes_comment_id`` marks the commands the GitLab webhook appends
   ``--comment_id=<discussion_id>`` to.
 - ``plain_diff_markdown`` / ``json_output`` carry the CLI's ``--output`` and
@@ -57,8 +49,6 @@ class CommandSpec:
 
 
 COMMAND_SPECS: dict[str, CommandSpec] = {
-    "auto_review": CommandSpec(PRReviewer, plain_diff_markdown=True),
-    "answer": CommandSpec(PRReviewer),
     "review": CommandSpec(
         PRReviewer, check_run="review", takes_comment_id=True,
         plain_diff_markdown=True, json_output="review",

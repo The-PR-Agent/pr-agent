@@ -482,6 +482,7 @@ def test_get_diff_files_preserves_deleted_filename(tmp_path):
     deleted = [file for file in diff_files if file.edit_type == EDIT_TYPE.DELETED]
     assert len(deleted) == 1
     assert deleted[0].filename == "gone.py"
+    assert (deleted[0].num_plus_lines, deleted[0].num_minus_lines) == (0, 1)
 
 
 @pytest.mark.parametrize("change_type", ["added", "modified", "deleted"])

@@ -617,7 +617,6 @@ class TestPrReviewerGuard:
     def test_can_run_returns_false_when_commits_range_none(self):
         from pr_agent.tools.pr_reviewer import PRReviewer
         reviewer = PRReviewer.__new__(PRReviewer)
-        reviewer.is_auto = False
         reviewer.pr_url = "u"
         reviewer.incremental = IncrementalPR(True)
         # incremental.commits_range stays None — provider has the method but didn't populate it.

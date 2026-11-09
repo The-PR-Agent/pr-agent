@@ -18,6 +18,7 @@ from git import Repo
 
 from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.file_filter import filter_ignored, filter_ignored_with_status
+from pr_agent.algo.git_patch_processing import count_patch_lines
 from pr_agent.algo.language_handler import partition_files_by_language_filter
 from pr_agent.algo.token_budget import clip_tokens
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -450,12 +451,15 @@ class GerritProvider(GitProvider):
                 edit_type = EDIT_TYPE.DELETED
             elif diff_item.renamed_file:
                 edit_type = EDIT_TYPE.RENAMED
+            num_plus_lines, num_minus_lines = count_patch_lines(patch)
             diff_files.append(
                 FilePatchInfo(
                     original_file_content_str,
                     new_file_content_str,
                     patch,
                     filename,
+                    num_plus_lines=num_plus_lines,
+                    num_minus_lines=num_minus_lines,
                     edit_type=edit_type,
                     old_filename=None
                     if diff_item.a_path == diff_item.b_path

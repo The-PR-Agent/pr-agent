@@ -532,24 +532,15 @@ class PRAgent:
         try:
             with response_language_instructions(), get_logger().contextualize(command=action, pr_url=pr_url):
                 get_logger().info("PR-Agent request handler started", analytics=True)
-                if action == "answer":
-                    if notify:
-                        notify()
-                    tool = await self._create_tool(PRReviewer, pr_url, is_answer=True, args=args)
-                    await tool.run()
-                elif action == "auto_review":
-                    tool = await self._create_tool(PRReviewer, pr_url, is_auto=True, args=args)
-                    await tool.run()
-                else:
-                    if notify:
-                        notify()
+                if notify:
+                    notify()
 
-                    tool = await self._create_tool(command2class[action], pr_url, args=args)
-                    result = await tool.run()
-                    if action == "add_docs" and result is False:
-                        span.set_status(StatusCode.ERROR)
-                        span.set_attribute("error.type", "documentation_publication_failed")
-                        return False
+                tool = await self._create_tool(command2class[action], pr_url, args=args)
+                result = await tool.run()
+                if action == "add_docs" and result is False:
+                    span.set_status(StatusCode.ERROR)
+                    span.set_attribute("error.type", "documentation_publication_failed")
+                    return False
 
                 if command_failed():
                     span.set_status(StatusCode.ERROR)

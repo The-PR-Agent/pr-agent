@@ -36,7 +36,7 @@ _DIFF = (
     "@@ -1,3 +1,3 @@\n"
     " line1\n-line2\n+line2-changed\n line3\n"
 )
-_REVIEW_MARKER = "plain-diff auto-review output"
+_REVIEW_MARKER = "plain-diff review output"
 _CANNED_REVIEW = f"""\
 review:
   estimated_effort_to_review_[1-5]: '1'
@@ -70,7 +70,6 @@ _OUTPUT_OPTION_PREFIXES = [
 _MARKDOWN_COMMANDS = [
     "review",
     "review_pr",
-    "auto_review",
     "describe",
     "describe_pr",
     "improve",
@@ -83,7 +82,6 @@ _MARKDOWN_COMMANDS = [
 ]
 
 _NON_MARKDOWN_COMMANDS = [
-    "answer",
     "ask_line",
     "update_changelog",
     "similar_issue",
@@ -395,24 +393,6 @@ def test_compatible_non_model_commands_write_markdown_artifacts(
     run(inargs=["--stdin", "--output", str(output), command])
 
     assert output.read_text(encoding="utf-8").strip()
-
-
-def test_auto_review_writes_markdown_artifact_with_stubbed_model(
-    monkeypatch, tmp_path,
-):
-    async def fake_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
-        return _CANNED_REVIEW, "stop"
-
-    monkeypatch.setattr(
-        "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion",
-        fake_chat_completion,
-    )
-    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
-    output = tmp_path / "auto-review.md"
-
-    run(inargs=["--stdin", "--output", str(output), "auto_review"])
-
-    assert _REVIEW_MARKER in output.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -742,12 +722,12 @@ def test_local_git_ask_applies_command_ignore_filter(monkeypatch, tmp_path, cfg,
     assert seen == ["bar.py"]
 
 
-def test_answer_output_is_rejected_without_creating_artifact(monkeypatch, tmp_path, capsys):
+def test_ask_line_output_is_rejected_without_creating_artifact(monkeypatch, tmp_path, capsys):
     input_args = _rejecting_input_args("stdin", monkeypatch)
-    output = tmp_path / "answer.md"
+    output = tmp_path / "ask-line.md"
 
     with pytest.raises(SystemExit) as exc_info:
-        run(inargs=[*input_args, "--output", str(output), "answer"])
+        run(inargs=[*input_args, "--output", str(output), "ask_line"])
 
     assert exc_info.value.code == 2
     assert "--output is not supported for" in capsys.readouterr().err
@@ -783,7 +763,7 @@ def test_json_output_accepts_review_aliases(command, input_mode, monkeypatch, tm
 
 @pytest.mark.parametrize("command", [
     *(name for name in _NON_MARKDOWN_COMMANDS if name != "generate_labels"),
-    "auto_review", "ask", "ask_question", "config", "settings", "help",
+    "ask", "ask_question", "config", "settings", "help",
 ])
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])
 def test_json_output_rejects_non_review_commands_before_read(
