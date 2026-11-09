@@ -345,8 +345,6 @@ def test_review_commit_context(monkeypatch, trim_blocks, estimate_time, commit_m
         require_estimate_contribution_time_cost=estimate_time,
         commit_messages_str=commit_messages,
         description="Description sentinel",
-        question_str="Question sentinel",
-        answer_str="Answer sentinel",
         previous_findings="Finding sentinel",
         diff="Diff sentinel",
     )
@@ -359,7 +357,7 @@ def test_review_commit_context(monkeypatch, trim_blocks, estimate_time, commit_m
     empty_user = environment.from_string(template.user).render(empty_vars)
     if commit_messages.strip():
         assert commit_messages.strip() not in system
-        _assert_fenced(user, reviewer.vars, "Description sentinel", "Question sentinel")
+        _assert_fenced(user, reviewer.vars, "Description sentinel", "Finding sentinel")
         assert user.index("Finding sentinel") < user.index("Diff sentinel")
     else:
         assert _COMMIT_LABEL not in user

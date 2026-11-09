@@ -1773,7 +1773,6 @@ async def test_incremental_fallback_to_full_review_loads_previous_findings(monke
     _settings(monkeypatch)
     provider = MagicMock()
     reviewer = _reviewer_for_run(provider)
-    reviewer.is_auto = False
     reviewer.incremental = SimpleNamespace(is_incremental=True, commits_range=None)
     reviewer._load_previous_findings_context = MagicMock(return_value="[stored findings]")
     _patch_run_dependencies(monkeypatch, reviewer)

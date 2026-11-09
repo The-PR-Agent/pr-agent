@@ -3358,8 +3358,7 @@ class TestGitLabCapabilities:
         return provider
 
     def test_get_issue_comments_is_reported_as_supported(self):
-        """The capability flag used to contradict the working implementation below it,
-        which was the only thing blocking ``/answer`` on GitLab."""
+        """GitLab exposes issue comments for provider features that consume them."""
         assert self._provider().is_supported("get_issue_comments") is True
 
     def test_get_issue_comments_returns_notes_oldest_first(self):
