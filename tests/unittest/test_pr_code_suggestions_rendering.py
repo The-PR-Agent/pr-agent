@@ -16,6 +16,8 @@ TRUNCATION_SETTINGS = (
     "pr_code_suggestions.suggestion_truncation_message",
 )
 
+MERGE_NOTICE = "`/improve` will be merged into `/review` in the next release."
+
 
 def _make_tool(git_provider=None):
     tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
@@ -336,9 +338,10 @@ async def test_push_inline_publishes_no_suggestions_comment_when_empty():
     result = await tool.push_inline_code_suggestions({"code_suggestions": []})
 
     assert result is None
-    git_provider.publish_comment.assert_called_once_with(
-        "No suggestions found to improve this PR."
-    )
+    git_provider.publish_comment.assert_called_once()
+    body = git_provider.publish_comment.call_args.args[0]
+    assert body.startswith(MERGE_NOTICE)
+    assert "No suggestions found to improve this PR." in body
     git_provider.publish_code_suggestions.assert_not_called()
 
 
@@ -416,6 +419,27 @@ async def test_publish_no_suggestions_does_not_resolve_when_not_threaded():
 
 
 @pytest.mark.asyncio
+async def test_publish_no_suggestions_includes_merge_notice():
+    snapshot = snapshot_settings(NO_SUGGESTIONS_SETTINGS)
+    try:
+        get_settings().set("config.publish_output", True)
+        get_settings().pr_code_suggestions.publish_output_no_suggestions = True
+        get_settings().set("config.output_run_details", False)
+
+        git_provider = MagicMock()
+        git_provider.should_publish_improve_as_thread.return_value = False
+        tool = _make_tool(git_provider)
+        tool.progress_response = MagicMock(id=7)
+
+        await tool.publish_no_suggestions()
+
+        body = git_provider.edit_comment.call_args.args[1]
+        assert MERGE_NOTICE in body
+    finally:
+        restore_settings(snapshot)
+
+
+@pytest.mark.asyncio
 async def test_publish_no_suggestions_resolves_freshly_published_thread():
     # No progress comment was published (publish_output_progress is off); the
     # no-suggestions note is published directly as a thread and must be resolved too.
@@ -448,9 +472,18 @@ def test_generate_summarized_suggestions_empty_returns_placeholder():
     tool = _make_tool()
     out = tool.generate_summarized_suggestions({"code_suggestions": []})
     assert "PR Code Suggestions" in out
+    assert MERGE_NOTICE in out
     assert "No suggestions found to improve this PR." in out
     # No table is rendered when empty
     assert "<table>" not in out
+
+
+def test_generate_summarized_suggestions_includes_merge_notice():
+    tool = _make_tool(_provider_with_diff_files("app.py"))
+
+    body = tool.generate_summarized_suggestions({"code_suggestions": [_suggestion()]})
+
+    assert MERGE_NOTICE in body
 
 
 @pytest.mark.parametrize("labels", [
