@@ -826,7 +826,16 @@ class GitLabProvider(GitProvider):
         """Collect the diff pages once, failing on unstable or not-yet-ready responses."""
         for attempt in range(2):
             before = self.gl.http_get(path)
-            changes = self.gl.http_list(f"{path}/diffs", get_all=True, per_page=100)
+            try:
+                changes = self.gl.http_list(f"{path}/diffs", get_all=True, per_page=100)
+            except gitlab.GitlabHttpError as e:
+                # GitLab before 17.11 answers HTTP 500 on this endpoint when per_page exceeds 30.
+                if e.response_code != 500:
+                    raise
+                get_logger().warning(
+                    f"GitLab returned HTTP 500 for merge request {self.id_mr} diffs with per_page=100, "
+                    "retrying with GitLab's default page size")
+                changes = self.gl.http_list(f"{path}/diffs", get_all=True, per_page=20)
             after = self.gl.http_get(path)
             if any(before.get(key) != after.get(key) for key in ("sha", "diff_refs", "changes_count")):
                 if attempt == 0:
