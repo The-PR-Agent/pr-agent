@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 from github import GithubException
 
+from pr_agent.algo.comment_identity import add_pr_review_identity
 from pr_agent.algo.run_details import command_failed, init_run_details, record_command_failure
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
@@ -63,7 +64,7 @@ async def test_each_commit_with_changes_is_reviewed_with_its_own_message(setting
     assert reviewer._review_commit is None
     assert reviewer.vars == {"diff": "", "commit_under_review": "", "commit_messages_str": ALL_MESSAGES}
     assert not reviewer.incremental.is_incremental
-    provider.get_incremental_commits.assert_called_once_with(reviewer.incremental)
+    provider.get_incremental_commits.assert_called_with(reviewer.incremental)
 
 
 @pytest.mark.asyncio
@@ -249,6 +250,89 @@ def test_incremental_selects_commits_from_the_current_history(first_new_sha, exp
         assert reviewer._commits_to_review(list(COMMITS)) == expected
 
 
+def _previous_review(provider, new_shas):
+    def lookup(incremental):
+        if incremental.is_incremental and new_shas is not None:
+            incremental.commits_range = [SimpleNamespace(sha=sha) for sha in new_shas]
+            incremental.first_new_commit = incremental.commits_range[0] if new_shas else None
+
+    provider.get_incremental_commits.side_effect = lookup
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_auto", [False, True])
+@pytest.mark.parametrize(("new_shas", "expected"), [
+    (None, [commit.sha for commit in COMMITS]),
+    (["c" * 40], ["c" * 40]),
+    ([], []),
+])
+async def test_per_commit_review_picks_the_commits_since_the_last_review(settings, is_auto, new_shas, expected):
+    provider = _provider({commit.sha: ["a.py"] for commit in COMMITS})
+    _previous_review(provider, new_shas)
+    reviewer = _reviewer(provider)
+    reviewer.is_auto = is_auto
+    reviewed = []
+
+    async def review():
+        reviewed.append(reviewer._review_commit.sha)
+
+    with patch.object(reviewer, "_run_review", side_effect=review):
+        await reviewer.run()
+
+    assert reviewed == expected
+    assert not reviewer.incremental.is_incremental
+    assert reviewer.vars["commit_messages_str"] == ALL_MESSAGES
+    notices = [call.args[0] for call in provider.publish_comment.call_args_list]
+    assert notices == (["Per commit review skipped: no new commits with changes since the last review."]
+                       if new_shas == [] and not is_auto else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("new_shas", "since_flag", "expected"), [
+    (["b" * 40, "c" * 40], False, (True, "", "")),
+    (None, True, (False, ALL_MESSAGES, "EARLIER")),
+])
+async def test_commits_above_the_cap_are_reviewed_together_with_the_context_of_their_scope(
+        settings, monkeypatch, new_shas, since_flag, expected):
+    monkeypatch.setitem(get_settings().pr_reviewer, "max_commits_per_review", 1)
+    provider = _provider({})
+    provider.get_commit_messages.return_value = ALL_MESSAGES
+    _previous_review(provider, new_shas)
+    reviewer = _reviewer(provider)
+    reviewer.incremental = IncrementalPR(since_flag)
+    reviewer.vars.update(commit_messages_str="" if since_flag else ALL_MESSAGES,
+                         previous_findings="" if since_flag else "EARLIER")
+    base_vars = dict(reviewer.vars)
+    seen = []
+
+    async def review():
+        seen.append((reviewer.incremental.is_incremental, reviewer.vars["commit_messages_str"],
+                     reviewer.vars["previous_findings"]))
+
+    with patch.object(reviewer, "_run_review", side_effect=review), \
+            patch.object(reviewer, "_load_previous_findings_context", return_value="EARLIER"):
+        await reviewer.run()
+
+    assert seen == [expected]
+    assert reviewer.vars == base_vars
+    provider.set_commit_review_scope.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_failing_last_review_lookup_takes_the_review_failure_path(settings):
+    provider = _provider({})
+    provider.get_incremental_commits.side_effect = [RuntimeError("api down"), None]
+    reviewer = _reviewer(provider)
+
+    with patch.object(reviewer, "_run_review") as run_review:
+        await reviewer.run()
+
+    run_review.assert_not_awaited()
+    assert command_failed()
+    assert provider.publish_comment.call_args.args[0].startswith("Failed to review PR")
+    assert not reviewer.incremental.is_incremental
+
+
 def test_incremental_threshold_skip_and_full_fallback():
     reviewer = _reviewer(MagicMock())
     reviewer.incremental = _incremental("b" * 40)
@@ -409,6 +493,7 @@ async def test_per_commit_reviews_publish_labelled_incremental_comments_not_the_
     reviewer = _commit_reviewer(monkeypatch, "review:\n  security_concerns: 'SQL injection: raw query'\n"
                                              "  key_issues_to_review:\n  - relevant_file: a.py\n    issue_header: Bug\n"
                                              "    issue_content: Broken\n    start_line: 1\n    end_line: 1\n")
+    monkeypatch.setattr("pr_agent.tools.pr_reviewer.add_pr_review_identity", add_pr_review_identity)
     provider = reviewer.git_provider
     await reviewer.run()
 
@@ -418,6 +503,10 @@ async def test_per_commit_reviews_publish_labelled_incremental_comments_not_the_
     [suggestions] = provider.publish_code_suggestions.call_args.args
     assert [suggestion["relevant_file"] for suggestion in suggestions] == ["a.py"]
     assert PRReviewIdentity.INCREMENTAL.value in review
+    github = GithubProvider.__new__(GithubProvider)
+    github.comments = [SimpleNamespace(body=review)]
+    with patch.object(GithubProvider, "is_comment_authored_by_pr_agent", return_value=True):
+        assert github.get_previous_review(full=True, incremental=True) is github.comments[0]
     provider.publish_persistent_comment.assert_not_called()
     provider.publish_labels.assert_not_called()
     assert reviewer._review_commit is None
@@ -600,7 +689,7 @@ async def test_incomplete_files_error_propagates_after_restoring_state(settings,
 async def test_failing_scope_restore_does_not_mask_the_review_error(settings, monkeypatch):
     monkeypatch.setitem(get_settings().config, "propagate_tool_errors", True)
     provider = _provider({commit.sha: ["a.py"] for commit in COMMITS})
-    provider.get_incremental_commits.side_effect = RuntimeError("restore failed")
+    provider.get_incremental_commits.side_effect = [None, RuntimeError("restore failed")]
     reviewer = _reviewer(provider)
 
     with patch.object(reviewer, "_run_review", side_effect=ValueError("review failed")):

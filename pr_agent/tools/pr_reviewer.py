@@ -360,17 +360,6 @@ class PRReviewer:
                 f"This PR has {total_commits} commits, more than the {len(commits)} the git provider API "
                 f"returns, so per commit review was skipped and the whole PR was reviewed instead.")
             return
-        commits = self._commits_to_review(commits)
-        if commits is None:
-            return
-        since_last_review = self.incremental.is_incremental
-        max_commits = _as_int(get_settings().pr_reviewer.get("max_commits_per_review", 0), 0)
-        if 0 < max_commits < len(commits):
-            await self._review_as_one(
-                f"{len(commits)} commits to review exceed max_commits_per_review={max_commits}",
-                f"There are {len(commits)} commits to review, more than the limit of {max_commits} for per commit "
-                f"review, so they were reviewed together in one review instead.")
-            return
 
         base_vars = copy.deepcopy(self.vars)
         max_message_tokens = get_settings().config.get("max_commits_tokens", None)
@@ -379,6 +368,33 @@ class PRReviewer:
         first_error = None
         unloaded = []
         try:
+            if not self.incremental.is_incremental:
+                self.incremental = IncrementalPR(True)
+                try:
+                    self.git_provider.get_incremental_commits(self.incremental)
+                except Exception as e:
+                    get_logger().error(f"Failed to find the commits since the last review: {e}")
+                    self._publish_per_commit_failure(e)
+                    if get_settings().config.get("propagate_tool_errors", False):
+                        raise
+                    return
+            commits = self._commits_to_review(commits)
+            if commits is None:
+                return
+            since_last_review = self.incremental.is_incremental
+            max_commits = _as_int(get_settings().pr_reviewer.get("max_commits_per_review", 0), 0)
+            if 0 < max_commits < len(commits):
+                if since_last_review:
+                    self.vars.update(commit_messages_str="", previous_findings="")
+                else:
+                    self.vars.update(commit_messages_str=self.git_provider.get_commit_messages(),
+                                     previous_findings=self._load_previous_findings_context())
+                await self._review_as_one(
+                    f"{len(commits)} commits to review exceed max_commits_per_review={max_commits}",
+                    f"There are {len(commits)} commits to review, more than the limit of {max_commits} for per "
+                    f"commit review, so they were reviewed together in one review instead.")
+                return
+
             for commit in commits:
                 self.incremental = IncrementalPR(True)
                 try:
@@ -439,6 +455,9 @@ class PRReviewer:
 
     def _commits_to_review(self, commits: list[PRCommit]) -> list[PRCommit] | None:
         if not self.incremental.is_incremental:
+            return commits
+        if self.incremental.commits_range is None:
+            self.incremental.is_incremental = False
             return commits
         if not self._can_run_incremental_review():
             return None if self.incremental.is_incremental else commits
