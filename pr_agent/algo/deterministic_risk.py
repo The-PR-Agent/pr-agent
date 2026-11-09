@@ -13,6 +13,8 @@ from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 from typing import Any
 
+import regex
+
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
@@ -22,6 +24,8 @@ MAX_GLOB_LENGTH = 200
 MAX_PATH_LENGTH = 1000
 MAX_LINE_CHARS = 500
 MAX_CUSTOM_PATTERN_LENGTH = 200
+# The static check below cannot rule out every backtracking shape, so each custom search gets a budget.
+CUSTOM_PATTERN_TIMEOUT_SECONDS = 0.05
 MAX_FINDINGS_PER_CATEGORY = 10
 
 # Default sensitive path globs
@@ -200,7 +204,7 @@ def is_prompt_file(path: str) -> bool:
     return any(fnmatchcase(norm, pat) or fnmatchcase(PurePosixPath(norm).name, pat) for pat in _PROMPT_FILE_GLOBS)
 
 
-def compile_custom_shapes(patterns: Sequence[str] | None) -> list[re.Pattern]:
+def compile_custom_shapes(patterns: Sequence[str] | None) -> list[regex.Pattern]:
     """Compile custom regex patterns with length cap and ReDoS safety checks."""
     if not patterns or not isinstance(patterns, (list, tuple)):
         return []
@@ -216,17 +220,21 @@ def compile_custom_shapes(patterns: Sequence[str] | None) -> list[re.Pattern]:
             get_logger().warning(f"Rejecting unsafe nested quantifier in custom risk shape: {cleaned!r}")
             continue
         try:
-            compiled.append(re.compile(cleaned))
-        except re.error as e:
+            compiled.append(regex.compile(cleaned))
+        except regex.error as e:
             get_logger().warning(f"Failed to compile custom risk shape {cleaned!r}: {e}")
     return compiled
 
 
 def scan_file_diff(
     file_info: FilePatchInfo,
-    custom_patterns: list[re.Pattern] | None = None,
+    custom_patterns: list[regex.Pattern] | None = None,
 ) -> list[dict]:
-    """Scan diff hunks of a single file for risky shapes."""
+    """Scan diff hunks of a single file for risky shapes.
+
+    A custom pattern that exceeds its time budget is removed from custom_patterns, so the caller's
+    later files skip it too.
+    """
     findings = []
     filename = file_info.filename or ""
 
@@ -323,8 +331,15 @@ def scan_file_diff(
 
         # Check custom patterns
         if custom_patterns:
-            for pat in custom_patterns:
-                if pat.search(content_after_prefix):
+            for pat in list(custom_patterns):
+                try:
+                    matched = pat.search(content_after_prefix, timeout=CUSTOM_PATTERN_TIMEOUT_SECONDS)
+                except TimeoutError:
+                    custom_patterns.remove(pat)
+                    get_logger().warning(
+                        f"Custom risk shape {pat.pattern!r} exceeded its time budget, skipping it for this review")
+                    continue
+                if matched:
                     findings.append({
                         "category": "custom_shape",
                         "description": f"Custom pattern match ({pat.pattern})",

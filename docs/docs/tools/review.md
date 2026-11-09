@@ -567,6 +567,8 @@ When no findings are detected, the row is omitted completely so clean reviews st
 
 **Custom patterns.** Additional regular expressions can be configured via `extra_risky_shapes`. Because regex execution
 has security implications, `extra_risky_shapes` must be configured through host configuration (such as environment
-variables or host settings) and cannot be overridden by repository `.pr_agent.toml` files.
+variables or host settings) and cannot be overridden by repository `.pr_agent.toml` files. Each search with a custom
+pattern has a 50 ms budget. If a pattern exceeds it, PR-Agent logs a warning and skips that pattern for the rest of the
+review.
 
 :::

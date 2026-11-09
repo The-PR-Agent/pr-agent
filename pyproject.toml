@@ -71,6 +71,9 @@ dependencies = [
   # Prometheus scrape endpoint for [otel] command telemetry (native /metrics on
   # the webhook apps). Multiprocess-capable; see pr_agent/telemetry/prometheus.py.
   "prometheus-client==0.26.0",
+  # pr_agent/algo/deterministic_risk.py matches host-supplied extra_risky_shapes with a per-search
+  # timeout, which re lacks; already resolved transitively via tiktoken, pinned to the tested version.
+  "regex==2026.6.28",
 ]
 
 [project.urls]
