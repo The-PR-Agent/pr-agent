@@ -72,6 +72,35 @@ def get_settings(use_context=True):
     return global_settings
 
 
+DEFAULT_BOT_DISPLAY_NAME = "PR-Agent"
+MAX_BOT_DISPLAY_NAME_LENGTH = 80
+
+
+def resolve_bot_display_name(value) -> str:
+    """Return the configured display name, falling back to the default for invalid values."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        if (
+            stripped
+            and len(stripped) <= MAX_BOT_DISPLAY_NAME_LENGTH
+            and value.splitlines() == [value]
+            and not any(ord(ch) < 32 or 0x7F <= ord(ch) <= 0x9F for ch in value)
+        ):
+            return stripped
+    from pr_agent.log import get_logger
+    get_logger().warning(
+        f"Invalid config.bot_display_name ({value!r}), using {DEFAULT_BOT_DISPLAY_NAME!r}"
+    )
+    return DEFAULT_BOT_DISPLAY_NAME
+
+
+def get_bot_display_name(default: str = DEFAULT_BOT_DISPLAY_NAME) -> str:
+    name = resolve_bot_display_name(
+        get_settings().config.get("bot_display_name", DEFAULT_BOT_DISPLAY_NAME)
+    )
+    return default if name == DEFAULT_BOT_DISPLAY_NAME else name
+
+
 def get_verbosity_level() -> int:
     """Return config.verbosity_level as an int, falling back to the quietest level.
 

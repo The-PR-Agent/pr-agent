@@ -104,11 +104,14 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # for it are already blocked; the repo-settings entry point now matches.
     # Provider request timeouts stay host-controlled so repository settings cannot lengthen
     # worker occupancy across SDK retries. Command arguments enforce this same boundary.
+    # bot_display_name sets the operator branding shown in PR comments, so a reviewed repo or a
+    # comment argument must not be able to impersonate another service (e.g. "GitHub Security").
     # enable_auto_approval lets a reviewed repository switch on an approval action taken with
     # the host's credentials, so only the operator may enable it.
     # system_instructions is appended to every model system prompt. A repository or comment
     # must not be able to remove or replace an operator's mandatory policy.
     "config": frozenset({
+        "bot_display_name",
         "extra_config_url",
         "description_issue_regex",
         "enable_auto_approval",

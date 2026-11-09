@@ -277,9 +277,13 @@ class CodeCommitProvider(GitProvider):
         if as_thread:
             get_logger().debug("CodeCommit does not support threaded persistent comments; publishing as a PR comment")
 
-        if not identity_marker or require_agent_authorship:
+        legacy_header_update = (
+            not identity_marker and not update_header and bool(legacy_initial_header)
+        )
+        if (not identity_marker and not legacy_header_update) or require_agent_authorship:
             get_logger().debug(
-                "CodeCommit persistent comment updates require a stable identity marker; publishing a new comment"
+                "CodeCommit cannot safely update this persistent comment without a stable identity; "
+                "publishing a new comment"
             )
             return self.publish_comment(pr_comment)
 
@@ -292,7 +296,11 @@ class CodeCommitProvider(GitProvider):
             )
             return self.publish_comment(persistent_comment)
 
-        identifiers = [identity_marker, legacy_initial_header]
+        identifiers = (
+            [identity_marker, legacy_initial_header]
+            if identity_marker
+            else [initial_header, legacy_initial_header]
+        )
         used_comment_ids = set()
         published_comments = []
         target_contexts = self._get_target_contexts()
@@ -647,7 +655,7 @@ class CodeCommitProvider(GitProvider):
         comments: list,
         target: dict,
         identifiers: list,
-        identity_marker: str,
+        identity_marker: str | None,
         used_comment_ids: set,
         allow_destination_fallback: bool,
         allow_repository_fallback: bool,
@@ -674,7 +682,7 @@ class CodeCommitProvider(GitProvider):
     def _find_persistent_comment(
         comments: list,
         identifiers: list,
-        identity_marker: str,
+        identity_marker: str | None,
         used_comment_ids: set,
         target_matcher,
     ):

@@ -297,6 +297,22 @@ async def test_a_failed_command_completes_its_check_run_as_failure(check_runs_en
     assert result is False
 
 
+async def test_auto_command_check_run_uses_configured_bot_display_name(
+    check_runs_enabled, auto_commands, restored_config
+):
+    restored_config("bot_display_name", "Acme Bot")
+    agent, events = _agent(True)
+    _record(auto_commands, events)
+
+    await github_app._perform_auto_commands_github("pr_commands", agent, {}, API_URL, {})
+
+    assert events == [
+        ("start", "review", "Acme Bot is running /review"),
+        ("run", "/review"),
+        ("finish", "review", "success", "Acme Bot ran /review"),
+    ]
+
+
 async def test_a_raising_command_completes_its_check_run_as_failure(check_runs_enabled, auto_commands):
     agent, events = _agent(RuntimeError("boom"))
     _record(auto_commands, events)
