@@ -60,6 +60,15 @@ publish_labels = true
 - The `pr_commands` lists commands that will be executed automatically when a PR is opened.
 - The `[pr_description]` section contains the configurations for the `describe` tool you want to edit (if any).
 
+## File walkthrough summaries
+
+On providers that support the HTML walkthrough, short file summaries appear on a new line after the filename.
+When detailed changes are available, expanding the file entry reveals them while the short summary stays visible when collapsed.
+GitLab descriptions no longer use description-list indentation for these summaries.
+
+The description reader can extract file summaries from both the current and legacy walkthrough formats.
+If separate PR-Agent installations generate walkthroughs and reuse their file summaries (for example, `/describe` and `/review`), upgrade them together; older readers cannot extract file summaries from the new format.
+
 ## Preserving the original user description
 
 By default, PR-Agent tries to preserve your original PR description by placing it above the generated content.

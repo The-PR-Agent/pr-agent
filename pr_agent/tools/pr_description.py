@@ -1132,7 +1132,9 @@ class PRDescription:
                     )
                         if len(file_changes_title_code_br) < (delta - 5):
                             file_changes_title_code_br += "&nbsp; " * ((delta - 5) - len(file_changes_title_code_br))
-                        filename_publish = f"<strong>{filename_publish}</strong><dd>{file_changes_title_code_br}</dd>"
+                        filename_publish = (
+                            f"<strong>{filename_publish}</strong><br><span>{file_changes_title_code_br}</span>"
+                        )
                     else:
                         filename_publish = f"<strong>{filename_publish}</strong>"
                     diff_plus_minus = ""
