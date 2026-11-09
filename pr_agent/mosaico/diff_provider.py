@@ -13,7 +13,7 @@ from urllib.parse import unquote, urlsplit
 
 from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.file_filter import filter_ignored_with_status
-from pr_agent.algo.git_patch_processing import to_hunk_only_patch
+from pr_agent.algo.git_patch_processing import count_patch_lines, to_hunk_only_patch
 from pr_agent.algo.language_handler import partition_files_by_language_filter
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
@@ -113,8 +113,6 @@ def parse_unified_diff(diff_text: str) -> list[FilePatchInfo]:
         # Best-effort reconstruct head/base file content from hunk lines.
         base_lines: list[str] = []
         head_lines: list[str] = []
-        num_plus_lines = 0
-        num_minus_lines = 0
         in_hunk = False
         for ln in section:
             if ln.startswith("@@"):
@@ -127,20 +125,20 @@ def parse_unified_diff(diff_text: str) -> list[FilePatchInfo]:
                 continue
             if ln.startswith("+"):
                 head_lines.append(ln[1:])
-                num_plus_lines += 1
             elif ln.startswith("-"):
                 base_lines.append(ln[1:])
-                num_minus_lines += 1
             elif ln.startswith(" "):
                 base_lines.append(ln[1:])
                 head_lines.append(ln[1:])
             # other lines (e.g. index/+++/---) are ignored for content reconstruction
 
         filename = b_path or a_path
+        patch = to_hunk_only_patch("".join(section))
+        num_plus_lines, num_minus_lines = count_patch_lines(patch)
         files.append(FilePatchInfo(
             base_file="".join(base_lines),
             head_file="".join(head_lines),
-            patch=to_hunk_only_patch("".join(section)),
+            patch=patch,
             filename=filename,
             edit_type=edit_type,
             old_filename=old_filename,
