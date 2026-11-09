@@ -599,7 +599,7 @@ class PRDescription:
             if isinstance(prediction_headers, str):
                 # Fence-aware stripping: `str.strip("`")` removes characters
                 # rather than the fence, mangling answers that end in an
-                # inline code span (the #3083 family, large-PR headers path).
+                # inline code span.
                 prediction_headers = strip_wrapping_code_fence(prediction_headers.strip()).strip()
             self._require_usable_prediction(prediction_headers)
 
