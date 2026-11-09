@@ -3,6 +3,8 @@ import re
 from functools import partial
 from urllib.parse import urlparse
 
+from starlette_context import context
+
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import get_artifact_context
@@ -40,6 +42,15 @@ REPO_CONTEXT_OMITTED_NOTE = (
     "Repository instruction files were omitted because they did not fit the model context. "
     "This answer does not use them."
 )
+NO_ANALYZABLE_FILE_NOTE = (
+    "The requested file has no analyzable diff in this PR. It may be excluded by the ignore "
+    "settings or file-type filters, or have no available patch."
+)
+FILE_QUESTION_BUDGET_NOTE = (
+    "This file question could not be prepared within the configured input budget. "
+    "Try shortening the question or other prompt context, asking on specific lines with a line comment, "
+    "or increasing the configured input limit."
+)
 
 
 def _sanitize_slash_commands(text: str) -> str:
@@ -48,6 +59,15 @@ def _sanitize_slash_commands(text: str) -> str:
     if sanitized.startswith("/"):
         sanitized = " " + sanitized
     return sanitized
+
+
+def _get_question_diff(git_provider, *args, **kwargs):
+    file_name = context.get("file_question_path") if context.exists() else None
+    if not file_name:
+        return get_pr_diff(git_provider, *args, **kwargs)
+    diff_files = git_provider.get_diff_files()
+    patch = next((file.patch for file in diff_files if file.filename == file_name), "")
+    return f"## File: '{file_name}'\n\n{patch}" if patch and patch.strip() else ""
 
 
 class PRQuestions:
@@ -111,15 +131,29 @@ class PRQuestions:
             if img_path:
                 get_logger().debug("Image path identified", artifact=img_path)
 
-            await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
+            try:
+                await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
+            except Exception as error:
+                file_name = context.get("file_question_path") if context.exists() else None
+                # A fitted diff survives later retries, so transport failures remain errors.
+                if not (file_name and self.patches_diff is None
+                        and isinstance(error.__cause__, FallbackEligibleError)):
+                    raise
+                if get_settings().config.publish_output:
+                    await self._publish_answer_with_sinks(
+                        self._format_answer(FILE_QUESTION_BUDGET_NOTE), FILE_QUESTION_BUDGET_NOTE,
+                    )
+                else:
+                    get_settings().set("data.answer", FILE_QUESTION_BUDGET_NOTE)
+                return ""
 
             if getattr(self, "no_analyzable_files", False):
                 # No model was called, so there are no run details to report.
                 note = self._prepare_no_analyzable_files_answer()
                 if get_settings().config.publish_output:
-                    await self._publish_answer_with_sinks(note, NO_ANALYZABLE_FILES_NOTE)
+                    await self._publish_answer_with_sinks(note, self._no_analyzable_files_note())
                 else:
-                    get_settings().set("data.answer", NO_ANALYZABLE_FILES_NOTE)
+                    get_settings().set("data.answer", self._no_analyzable_files_note())
                 return ""
 
             pr_comment = self._prepare_pr_answer()
@@ -154,19 +188,26 @@ class PRQuestions:
         return self._publish_answer(comment)
 
     def _publish_answer(self, answer: str):
+        file_comment_id = context.get("file_question_comment_id") if context.exists() else None
+        if file_comment_id:
+            return self.git_provider.reply_to_comment_from_comment_id(file_comment_id, answer)
         comment_id = get_settings().get("comment_id", "")
         if comment_id and self.git_provider.supports_threaded_pr_questions():
             return self.git_provider.reply_to_comment_from_comment_id(comment_id, answer)
         return self.git_provider.publish_comment(answer)
 
     def _load_conversation_history(self) -> str:
-        if (not self.git_provider.supports_threaded_pr_questions()
-                or not get_settings().pr_questions.use_conversation_history):
+        file_question = context.get("file_question_path") if context.exists() else None
+        supports_history = (self.git_provider.supports_line_question_history() if file_question
+                            else self.git_provider.supports_threaded_pr_questions())
+        if not supports_history or not get_settings().pr_questions.use_conversation_history:
             return ""
-        comment_id = get_settings().get("comment_id", "")
+        comment_id = (context["file_question_comment_id"] if file_question
+                      else get_settings().get("comment_id", ""))
         if not comment_id:
             return ""
-        origin_comment_id = get_settings().get("origin_comment_id", comment_id)
+        origin_comment_id = (context["file_question_origin_comment_id"] if file_question
+                             else get_settings().get("origin_comment_id", comment_id))
         try:
             comments = self.git_provider.get_review_thread_comments(comment_id)
         except Exception as e:
@@ -219,33 +260,35 @@ class PRQuestions:
         variables["related_tickets"] = []
         variables["related_tickets_omitted"] = 0
         raw_history = variables.get("conversation_history", "")
+        file_question = context.get("file_question_path") if context.exists() else None
         variables["conversation_history"] = ""
         image_path = variables.get("img_path")
         if not isinstance(image_path, str) or not image_path.strip():
             image_path = None
         output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
-        history_budget = AttemptTokenBudget.for_prompt_attempt(
-            model,
-            getattr(self.git_provider, "pr", None),
-            variables,
-            get_settings().pr_questions_prompt.system,
-            get_settings().pr_questions_prompt.user,
-            ai_handler=self.ai_handler,
-            image_path=image_path,
-            output_token_reserve=output_token_reserve,
-        )
-        fitted_history = history_budget.fit_prompt_variable(
-            variables,
-            "conversation_history",
-            raw_history,
-            ai_handler=self.ai_handler,
-            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
-            preserve_minimum=True,
-            additional_input_reserve=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
-            image_path=image_path,
-            keep="suffix",
-        )
-        variables["conversation_history"] = fitted_history.optional_text
+        if not file_question:
+            history_budget = AttemptTokenBudget.for_prompt_attempt(
+                model,
+                getattr(self.git_provider, "pr", None),
+                variables,
+                get_settings().pr_questions_prompt.system,
+                get_settings().pr_questions_prompt.user,
+                ai_handler=self.ai_handler,
+                image_path=image_path,
+                output_token_reserve=output_token_reserve,
+            )
+            fitted_history = history_budget.fit_prompt_variable(
+                variables,
+                "conversation_history",
+                raw_history,
+                ai_handler=self.ai_handler,
+                default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+                preserve_minimum=True,
+                additional_input_reserve=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+                image_path=image_path,
+                keep="suffix",
+            )
+            variables["conversation_history"] = fitted_history.optional_text
 
         budget = AttemptTokenBudget.for_prompt_attempt(
             model,
@@ -258,11 +301,11 @@ class PRQuestions:
             output_token_reserve=output_token_reserve,
         )
         budget.require_input_capacity(
-            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD if file_question else OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
             preserve_minimum=True,
         )
         output = await run_diff_preparation(
-            get_pr_diff,
+            _get_question_diff,
             self.git_provider,
             budget.token_handler,
             model,
@@ -271,15 +314,34 @@ class PRQuestions:
         )
         patches_diff, remaining_files_list = output if isinstance(output, tuple) else (output, [])
         if not patches_diff and not remaining_files_list:
-            # Every changed file was filtered out (lockfile, asset, ignore rule), so no model can
-            # answer from the diff. Reply with a note instead of failing every model in the chain.
-            get_logger().info(f"PR has no analyzable files: {self.pr_url}, answering /ask with a note")
+            # The requested diff is unavailable. Reply with a note instead of failing
+            # every model in the chain or answering from unrelated files.
+            get_logger().info(f"Requested diff is unavailable: {self.pr_url}, answering /ask with a note")
             self.no_analyzable_files = True
             return
         if not patches_diff:
             raise FallbackEligibleError(f"No PR diff fits the /ask request for {model}")
 
         variables["diff"] = patches_diff
+        if file_question and raw_history:
+            # The required file diff is already included; fit only recent thread
+            # history into the remaining space without shortening the patch.
+            try:
+                fitted_history = budget.fit_prompt_variable(
+                    variables,
+                    "conversation_history",
+                    raw_history,
+                    ai_handler=self.ai_handler,
+                    default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+                    preserve_minimum=True,
+                    image_path=image_path,
+                    keep="suffix",
+                )
+            except FallbackEligibleError:
+                pass  # Even the history truncation marker may not fit.
+            else:
+                variables["conversation_history"] = fitted_history.optional_text
+
         if getattr(self, "_repo_context", None) is None:
             self._repo_context = await run_diff_preparation(build_repo_context, self.git_provider)
         if self._repo_context:
@@ -329,16 +391,14 @@ class PRQuestions:
                     # Even the omission notice is optional; retain the original question context.
                     get_logger().debug("Linked tickets do not fit; keeping the existing question context")
 
-        fitted = budget.fit_prompt_variable(
-            variables,
-            "diff",
-            patches_diff,
+        diff_args = dict(
             ai_handler=self.ai_handler,
             default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
             preserve_minimum=True,
             image_path=image_path,
             require_full_text=True,
         )
+        fitted = budget.fit_prompt_variable(variables, "diff", patches_diff, **diff_args)
         if fitted.optional_text != patches_diff:
             raise FallbackEligibleError(
                 f"The complete packed question diff does not fit the token limit for {model}"
@@ -377,12 +437,22 @@ class PRQuestions:
         return self._format_answer(model_answer_sanitized)
 
     def _prepare_no_analyzable_files_answer(self) -> str:
-        return self._format_answer(NO_ANALYZABLE_FILES_NOTE)
+        return self._format_answer(self._no_analyzable_files_note())
+
+    def _no_analyzable_files_note(self) -> str:
+        file_name = context.get("file_question_path") if context.exists() else None
+        return NO_ANALYZABLE_FILE_NOTE if file_name else NO_ANALYZABLE_FILES_NOTE
 
     def _format_answer(self, answer: str) -> str:
         answer_header = format_pr_questions_header(
             escape_markdown=self.git_provider.is_supported("markdown_backslash_escapes")
         )
-        answer_str = f"{answer_header}\n{_sanitize_slash_commands(self.question_str)}\n\n"
+        # Keep file replies in their original thread without repeating a potentially long question.
+        file_question = context.get("file_question_path") if context.exists() else None
+        question = (
+            f"[View question]({context['file_question_comment_url']})\n\n"
+            if file_question else f"{_sanitize_slash_commands(self.question_str)}\n\n"
+        )
+        answer_str = f"{answer_header}\n{question}"
         answer_str += f"### **Answer:**\n{answer}\n\n"
         return answer_str

@@ -24,6 +24,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
 from pr_agent.algo.artifacts import inject_artifact_context as _inject_artifact_context
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
+from pr_agent.algo.utils import encode_user_text_arg
 from pr_agent.config_loader import get_settings
 from pr_agent.doctor import PROVIDER_AUTH_CORRECTIONS, missing_provider_key_env_vars
 from pr_agent.git_providers import get_git_provider_with_context
@@ -495,7 +496,16 @@ async def run_action():
             try:
                 if GITHUB_EVENT_NAME == "pull_request_review_comment":
                     if is_ask_command_comment(comment_body):
-                        comment_body = handle_line_comments(event_payload, comment_body)
+                        comment = event_payload["comment"]
+                        if comment.get("subject_type") == "file" and comment_body.split(maxsplit=1)[0] == "/ask":
+                            question = comment_body.strip().removeprefix("/ask").strip()
+                            context["file_question_path"] = comment["path"]
+                            context["file_question_comment_id"] = comment.get("in_reply_to_id") or comment["id"]
+                            context["file_question_origin_comment_id"] = comment["id"]
+                            context["file_question_comment_url"] = comment["html_url"]
+                            comment_body = ["/ask", encode_user_text_arg(question)]
+                        else:
+                            comment_body = handle_line_comments(event_payload, comment_body)
             except Exception as e:
                 get_logger().error(f"Failed to handle line comments: {e}")
                 return
