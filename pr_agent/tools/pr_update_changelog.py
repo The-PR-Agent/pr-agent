@@ -6,6 +6,7 @@ from functools import partial
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.code_fence import strip_wrapping_code_fence
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
@@ -24,7 +25,6 @@ from pr_agent.git_providers.git_provider import FileContentSnapshot, get_main_pr
 from pr_agent.log import get_logger
 
 CHANGELOG_LINES = 50
-from pr_agent.algo.code_fence import strip_wrapping_code_fence as strip_wrapping_code_fence
 
 
 class PRUpdateChangelog:
