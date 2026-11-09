@@ -130,6 +130,98 @@ jobs:
               ;;
           esac
 
+      - name: Resolve review context revision
+        id: context-revision
+        if: steps.authorize.outputs.allowed == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ steps.replay.outputs.event_name || github.event_name }}
+          REPLAY_EVENT_FILE: ${{ steps.replay.outputs.host_event_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVENT_FILE=${REPLAY_EVENT_FILE:-$GITHUB_EVENT_PATH}
+          if [[ "$EVENT_NAME" == "issue_comment" ]]; then
+            body=$(jq -r '.comment.body // ""' "$EVENT_FILE")
+            [[ "${body%%[[:space:]]*}" == "/review" ]] || exit 0
+            pr=$(jq -r '.issue.number' "$EVENT_FILE")
+            [[ "$pr" =~ ^[0-9]+$ ]] || exit 1
+            gh api "repos/$GH_REPO/pulls/$pr" > "$RUNNER_TEMP/review-context-pr.json"
+          elif [[ "$EVENT_NAME" == "pull_request_target" ]]; then
+            jq '.pull_request' "$EVENT_FILE" > "$RUNNER_TEMP/review-context-pr.json"
+          else
+            exit 0
+          fi
+          metadata="$RUNNER_TEMP/review-context-pr.json"
+          jq -e --arg repository "$GH_REPO" '.base.repo.full_name == $repository' "$metadata" > /dev/null
+          pr=$(jq -r '.number' "$metadata")
+          base_sha=$(jq -r '.base.sha' "$metadata")
+          head_sha=$(jq -r '.head.sha' "$metadata")
+          [[ "$pr" =~ ^[0-9]+$ && "$base_sha" =~ ^[0-9a-f]{40}$ && "$head_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          {
+            echo "pr=$pr"
+            echo "base_sha=$base_sha"
+            echo "head_sha=$head_sha"
+            echo "enabled=true"
+          } >> "$GITHUB_OUTPUT"
+
+      # Only trusted base code is checked out. Keep replay event files outside the checkout.
+      - name: Check out review context builder from base
+        id: context-checkout
+        if: steps.context-revision.outputs.enabled == 'true'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ steps.context-revision.outputs.base_sha }}
+          path: base
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up review context Python runner
+        id: context-uv
+        if: steps.context-checkout.outcome == 'success'
+        continue-on-error: true
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          version: '0.13.7'
+          enable-cache: false
+
+      - name: Build review context
+        id: context
+        if: steps.context-uv.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          PR: ${{ steps.context-revision.outputs.pr }}
+          BASE_SHA: ${{ steps.context-revision.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.context-revision.outputs.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$GITHUB_WORKSPACE/base"
+          out="$GITHUB_WORKSPACE/review-context"
+          rm -rf -- "$out"
+          # Public ref fetch needs no token; never check out or execute the PR head.
+          timeout 30s git -C "$base" fetch --no-tags --quiet origin "+refs/pull/$PR/head:refs/remotes/pr/head"
+          test "$(git -C "$base" rev-parse refs/remotes/pr/head)" = "$HEAD_SHA"
+          # Native grammars stay in this runner's temp directory, never in actions/cache.
+          timeout 150s uv run --no-project --with tree-sitter-language-pack==1.22.1 --python 3.12 \
+            python -I "$base/scripts/review_context/graph_bundle_ts.py" \
+            --repo "$base" --base "$BASE_SHA" --head "$HEAD_SHA" --pr "$PR" --out-dir "$out" \
+            --generic --grammar-cache "$RUNNER_TEMP/review-context-grammars"
+          test -d "$out"
+          test ! -L "$out"
+          test -f "$out/pr$PR.G6.md"
+          test ! -L "$out/pr$PR.G6.md"
+          instructions=$(cat "$base/scripts/review_context/instructions.txt")
+          delimiter=$(cat /proc/sys/kernel/random/uuid)
+          {
+            printf 'instructions<<%s\n%s\n%s\n' "$delimiter" "$instructions" "$delimiter"
+            echo "path=/github/workspace/review-context/pr$PR.G6.md"
+          } >> "$GITHUB_OUTPUT"
+
       # Post as the "PR Agent" GitHub App instead of github-actions[bot] once its client ID
       # variable and private key secret are configured; until then the workflow token is used.
       - name: Create PR Agent app token
@@ -155,6 +247,9 @@ jobs:
             exec /entrypoint.sh"
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          ARTIFACT_PATH: ${{ steps.context.outcome == 'success' && steps.context.outputs.path || '' }}
+          ARTIFACT_INSTRUCTIONS: ${{ steps.context.outcome == 'success' && steps.context.outputs.instructions || '' }}
+          ARTIFACTS__TARGET_TOOLS: '["pr_reviewer"]'
           # The app token posts as `<app-slug>[bot]` and cannot call `GET /user`, so name that login
           # for the comment-authorship checks; empty keeps the `github-actions[bot]` fallback.
           GITHUB__AGENT_LOGIN: ${{ steps.app-token.outputs.app-slug && format('{0}[bot]', steps.app-token.outputs.app-slug) || '' }}

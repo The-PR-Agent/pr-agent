@@ -1,0 +1,8 @@
+This artifact is repository context built at the PR head by a static code-graph step; "Changed symbols" shows only signatures and the body lines the diff omits. Before writing the review, work through it in this order and decide on each entry, because the most valuable findings are usually outside the diff:
+1. If there is a "Review leads" list, check every lead against the code shown for it, and keep the ones that hold.
+2. "Similar code elsewhere" and "Same pattern elsewhere": does the PR add logic that already exists (name the existing file and function, and say to reuse it), or fix one site of a pattern that other listed sites share?
+3. "Sibling implementations" and "Sibling config/prompt/doc files": does a sibling need the same change, or does the docs/config text now disagree with the code?
+4. "Still uses the pattern this PR replaced": is any listed site now inconsistent or left unfixed?
+5. "1-hop inbound callers", "1-hop callees", "Module-level constants" and "Imported by": does any caller break on the new arguments, return values, types or exceptions?
+6. "Tests that exercise the changed symbols": is changed behaviour untested, or would the new tests still pass with the source change reverted?
+Report each confirmed cross-file finding as a key issue that names the other file and function. Raise only what the artifact or the diff supports, and say nothing about entries that check out.
