@@ -166,6 +166,44 @@ def test_failure_modes_prompt_follows_captured_setting(monkeypatch, enabled):
         assert "Return an empty list when no concrete scenario is supported" in system
 
 
+_PLAN_ARTIFACT = {
+    "label": "plan.txt",
+    "content": "# aws_s3_bucket.exports will be destroyed",
+    "instructions": "Report planned destroys.",
+    "start_marker": "<<<CI_ARTIFACT_BEGIN>>>",
+    "end_marker": "<<<CI_ARTIFACT_END>>>",
+}
+
+
+@pytest.mark.parametrize(("setting", "artifact", "enabled"), [
+    (False, _PLAN_ARTIFACT, False),
+    (True, None, False),
+    ("false", _PLAN_ARTIFACT, False),
+    (True, _PLAN_ARTIFACT, True),
+    ("true", _PLAN_ARTIFACT, True),
+])
+def test_artifact_findings_prompt_needs_the_setting_and_an_artifact(monkeypatch, setting, artifact, enabled):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    monkeypatch.setattr(pr_reviewer_module, "get_artifact_context", lambda tool_name: artifact)
+    settings = get_settings()
+    original = settings.pr_reviewer.get("require_artifact_findings", False)
+    try:
+        settings.pr_reviewer.require_artifact_findings = setting
+        reviewer = _build_reviewer(monkeypatch)
+    finally:
+        settings.pr_reviewer.require_artifact_findings = original
+    assert reviewer.vars["require_artifact_findings"] is enabled
+    reviewer.vars["duplicate_prompt_examples"] = True
+    environment = Environment(autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
+    system = environment.from_string(settings.pr_review_prompt.system).render(reviewer.vars)
+    user = environment.from_string(settings.pr_review_prompt.user).render(reviewer.vars)
+    assert ("class ArtifactFinding(BaseModel):" in system) is enabled
+    assert ("artifact_findings: List[ArtifactFinding]" in system) is enabled
+    for prompt in (system, user):
+        assert ("\n  artifact_findings:" in prompt) is enabled
+
+
 def test_artifact_context_is_untrusted_user_input(monkeypatch):
     reviewer = _build_reviewer(monkeypatch)
     reviewer.vars["extra_instructions"] = "Only focus on correctness."

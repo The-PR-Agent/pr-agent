@@ -76,6 +76,17 @@ def test_security_concerns_flatten():
     assert "['" not in merged
 
 
+def test_artifact_findings_merge_across_chunks_without_duplicates():
+    def finding(evidence, kind="failure"):
+        return {"kind": kind, "fact": "A job failed.", "evidence": evidence}
+
+    lint, unit, destroy = finding("job lint failed"), finding("job unit failed"), finding("bucket destroyed", "destroy")
+    chunks = [{"review": {"artifact_findings": [lint, unit]}},
+              {"review": {"artifact_findings": [{**unit, "fact": "Reworded.", "evidence": " Job  UNIT failed "},
+                                                destroy]}}]
+    assert merge_review_chunks(chunks)["review"]["artifact_findings"] == [lint, unit, destroy]
+
+
 def test_failure_modes_merge_valid_cases_in_chunk_order_and_cap_at_three():
     def mode(what):
         return {"what": what, "where": "app.py:save", "trigger": "Write fails",
