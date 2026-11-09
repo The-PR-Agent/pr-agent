@@ -488,7 +488,7 @@ GITLAB_TICKET_PATTERN = re.compile(
     r"|(?<![\w./-])(?P<project>[\w.-]+(?:/[\w.-]+)+)#(?P<project_issue>\d+)\b"
     r"|(?<![\w/#])#(?P<local_issue>\d+)\b"
 )
-GITLAB_ISSUE_PATH_PATTERN = re.compile(r"/-/issues/(?P<iid>\d+)(?=/|$)")
+GITLAB_ISSUE_PATH_PATTERN = re.compile(r"/-/(?:issues|work_items)/(?P<iid>\d+)(?=/|$)")
 
 
 def fit_related_tickets_to_prompt_budget(
@@ -850,9 +850,27 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_
         provider_origin = None
         provider_base_path = ""
 
+    # Link labels can contain issue-shaped text; their destinations determine the references.
+    link_starts = []
+    link_labels = []
+    for token in re.finditer(r"\\[\\\[\]]|(?P<bracket>[\[\]])(?P<destination>\(\s*<?https?://)?", pr_description):
+        if token.group("bracket") == "[":
+            link_starts.append(token.start())
+        elif token.group("bracket") == "]" and link_starts:
+            start = link_starts.pop()
+            if token.group("destination"):
+                while link_labels and link_labels[-1][0] >= start:
+                    link_labels.pop()
+                link_labels.append((start, token.start()))
+
     references = []
     seen = set()
+    label_index = 0
     for match in GITLAB_TICKET_PATTERN.finditer(pr_description):
+        while label_index < len(link_labels) and link_labels[label_index][1] <= match.start():
+            label_index += 1
+        if label_index < len(link_labels) and link_labels[label_index][0] <= match.start():
+            continue
         if match.group("url"):
             try:
                 parsed_ticket_url = urlparse(match.group("url").rstrip(".:!?'\\\"]}`*"))
