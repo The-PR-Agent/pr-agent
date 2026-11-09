@@ -116,6 +116,45 @@ query($project: ID!, $ref: String!, $paths: [String!]!) {
 """
 
 
+_BLOCK_BOUNDARY_RE = re.compile(
+    r" {0,3}(?:(`{3,}|~{3,})|(?:[-*+]|\d+[.)])(?:\s|$)|#{1,6}(?:\s|$)|>|\|)"
+)
+
+
+def _list_content_indent(line: str) -> int | None:
+    """Return the content indent of a list-item line, or None if it is not one."""
+    match = re.match(r"( {0,3})([-*+]|\d+[.)])( *)", line)
+    if not match:
+        return None
+    indent, marker, spaces = len(match.group(1)), match.group(2), match.group(3)
+    if match.end() < len(line) and not spaces:
+        return None
+    following = len(spaces) if 1 <= len(spaces) <= 4 else 1
+    return indent + len(marker) + following
+
+
+def _is_list_item_continuation(text: str, index: int, line: str) -> bool:
+    """True when an indented line after a blank line continues a list item.
+
+    A 4-space indented line after a blank line is an indented code block only
+    when it reaches past the list item's content indent; anything less indented
+    is a paragraph continuation of the list item, so mentions in it are live text.
+    """
+    end = index - 1
+    while end >= 0 and text[end] == "\n":
+        end -= 1
+    if end < 0:
+        return False
+    start = text.rfind("\n", 0, end) + 1
+    content_indent = _list_content_indent(text[start:end + 1])
+    if content_indent is None:
+        return False
+    indent = len(line) - len(line.lstrip(" "))
+    if line.startswith("\t"):
+        indent = 4
+    return indent < content_indent + 4
+
+
 def _neutralize_gitlab_mentions(text: str) -> str:
     """Disable GitLab notifications while leaving Markdown code spans untouched."""
     if not text:
@@ -133,7 +172,7 @@ def _neutralize_gitlab_mentions(text: str) -> str:
         if line_end < 0:
             line_end = len(text)
         line = text[boundary_line:line_end]
-        if not line.strip() or re.match(r" {0,3}(`{3,}|~{3,})", line):
+        if not line.strip() or _BLOCK_BOUNDARY_RE.match(line):
             boundaries.append(boundary_line)
         if line_end == len(text):
             break
@@ -173,7 +212,8 @@ def _neutralize_gitlab_mentions(text: str) -> str:
                 continue
             if line.startswith(("    ", "\t")) and (indented_code or (
                     (index == 0 or text[index - 2:index] == "\n\n")
-                    and not re.match(r"\s*(?:[-*+]|\d+[.)])\s", line))):
+                    and not re.match(r"\s*(?:[-*+]|\d+[.)])\s", line)
+                    and not _is_list_item_continuation(text, index, line))):
                 indented_code = True
                 output.append(line)
                 index = line_end
