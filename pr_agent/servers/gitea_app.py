@@ -73,7 +73,31 @@ async def get_body(request: Request):
         get_logger().error("Error parsing request body", artifact={'error': e})
         raise HTTPException(status_code=400, detail="Error parsing request body") from e
     return body
+gingFormat, get_logger, setup_logger
+from pr_agent.servers.request_body_limit import create_server_app
+from pr_agent.servers.utils import (
+    auto_feedback_disabled,
+    get_include_pr_labels,
+    get_pr_commands,
+    is_command_comment,
+    push_trigger_slot,
+    shared_should_process_pr_logic,
+    verify_signature,
+)
+from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
+# Setup logging and router
+setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
+router = APIRouter()
+
+@router.post("/api/v1/gitea_webhooks")
+async def handle_gitea_webhooks(background_tasks: BackgroundTasks, request: Request, response: Response):
+    """Handle incoming Gitea webhook requests"""
+    get_logger().debug("Received a Gitea webhook")
+
+    body = await get_body(request)
+
+    # Se
 async def handle_request(body: dict[str, Any], event: str):
     """Process Gitea webhook events"""
     action = body.get("action")
@@ -100,6 +124,31 @@ async def handle_request(body: dict[str, Any], event: str):
 
     return {}
 
+    signature_header = request.headers.get('x-gitea-signature', None)
+    if not signature_header:
+        get_logger().error("Missing signature header")
+        raise HTTPException(status_code=400, detail="Missing signature header")
+
+    try:
+        verify_signature(body_bytes, webhook_secret, f"sha256={signature_header}")
+    except Exception as ex:
+        get_logger().error(f"Invalid signature: {ex}")
+        raise HTTPException(status_code=401, detail="Invalid signature") from ex
+
+    try:
+        body = await request.json()
+    except Exception as e:
+        get_logger().error("Error parsing request body", artifact={'error': e})
+        raise HTTPException(status_code=400, detail="Error parsing request body") from e
+    return body
+gingFormat, get_logger, setup_logger
+from pr_agent.servers.request_body_limit import create_server_app
+from pr_agent.servers.utils import (
+    auto_feedback_disabled,
+    get_include_pr_labels,
+    get_pr_commands,
+    is_command_comment,
+    push_trigg
 async def handle_pr_event(body: dict[str, Any], event: str, action: str, agent: PRAgent):
     """Handle pull request events"""
     pr = body.get("pull_request", {})
@@ -133,7 +182,28 @@ async def handle_pr_event(body: dict[str, Any], event: str, action: str, agent: 
                 await _perform_commands_gitea("push_commands", agent, body, api_url)
         # for command in commands_on_push:
         #     await agent.handle_request(api_url, command)
+_request(api_url, new_command) is RequestOutcome.SKIPPED:
+                return RequestOutcome.SKIPPED
+        except Exception as e:
+            get_logger().error(f"Failed to perform command {command}: {e}")
 
+def should_process_pr_logic(body) -> bool:
+    return shared_should_process_pr_logic(body, provider="gitea")
+
+# FastAPI app setup
+middleware = [Middleware(RawContextMiddleware)]
+if prometheus_metrics_enabled():
+    attach_metrics_endpoint(router)
+app = create_server_app(middleware=middleware)
+app.include_router(router)
+
+def start():
+    """Start the Gitea webhook server"""
+    port = int(os.environ.get("PORT", "3000"))
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+if __name__ == "__ma
 async def handle_comment_event(body: dict[str, Any], event: str, action: str, agent: PRAgent):
     """Handle comment events"""
     comment = body.get("comment", {})
@@ -171,7 +241,40 @@ async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict
                 provider = context.get("git_provider", {}).get(api_url)
                 reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)
                 if callable(reset_diff_cache):
-                    reset_diff_cache()
+         imit import create_server_app
+from pr_agent.servers.utils import (
+    auto_feedback_disabled,
+    get_include_pr_labels,
+    get_pr_commands,
+    is_command_comment,
+    push_trigg
+async def handle_pr_event(body: dict[str, Any], event: str, action: str, agent: PRAgent):
+    """Handle pull request events"""
+    pr = body.get("pull_request", {})
+    if not pr:
+        return
+
+    api_url = pr.get("url")
+    if not api_url:
+        return
+
+    apply_repo_settings(api_url)
+    if not should_process_pr_logic(body):
+        return {}
+
+    # Handle PR based on action
+    if action in ["opened", "reopened"]:
+        # commands = get_settings().get("gitea.pr_commands", [])
+        await _perform_commands_gitea("pr_commands", agent, body, api_url)
+        # for command in commands:
+        #     await agent.handle_request(api_url, command)
+    elif action == "synchronized":
+        # Handle push to PR
+        commands_on_push = normalize_setting_list(get_settings().get("gitea.push_commands", {}))
+        handle_push_trigger = _as_bool_setting(get_settings().get("gitea.handle_push_trigger", False))
+        if not commands_on_push or not handle_push_trigger:
+            get_logger().info("Push event, but no push commands found or push trigger is disabled")
+            return           reset_diff_cache()
             new_command = prepare_command(command)
             get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
             if await agent.handle_request(api_url, new_command) is RequestOutcome.SKIPPED:
