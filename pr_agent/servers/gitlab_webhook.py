@@ -31,6 +31,7 @@ from pr_agent.servers import lambda_handoff
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     auto_feedback_disabled,
+    get_include_pr_labels,
     get_pr_commands,
     is_ask_command_comment,
     is_command_comment,
@@ -402,7 +403,11 @@ async def process_gitlab_event(data: dict, log_context: dict):
     log_context["sender"] = sender
     if data.get('object_kind') == 'merge_request':
         # ignore MRs based on title, labels, source and target branches
-        if not should_process_pr_logic(data):
+        prefilter_allowed = (
+            shared_should_process_pr_logic(data, provider="gitlab", check_include_labels=False)
+            if get_include_pr_labels() else should_process_pr_logic(data)
+        )
+        if not prefilter_allowed:
             return
         object_attributes = data.get('object_attributes', {})
         if object_attributes.get('action') in ['open', 'reopen']:
@@ -504,11 +509,11 @@ async def process_gitlab_event(data: dict, log_context: dict):
             provider = get_git_provider_with_context(pr_url=url)
             discussion_id = data.get('object_attributes', {}).get('discussion_id')
             command = body.split(maxsplit=1)[0].lower() if isinstance(body, str) and body.strip() else ""
-            if (discussion_id and not data.get('object_attributes', {}).get('type')
-                    and command_takes_comment_id(command)):
+            note_type = data.get('object_attributes', {}).get('type')
+            if (discussion_id and command_takes_comment_id(command) and (
+                    not note_type or (note_type == "DiscussionNote" and command in ("/ask", "/ask_question")))):
                 body = f"{body} --comment_id={discussion_id}"
-            if (data.get('object_attributes', {}).get('type') == 'DiffNote'
-                    and is_ask_command_comment(body)):  # /ask_line
+            if note_type == 'DiffNote' and is_ask_command_comment(body):  # /ask_line
                 body = handle_ask_line(body, data)
 
             # A fresh collector, so the verdict below can only come from this command.

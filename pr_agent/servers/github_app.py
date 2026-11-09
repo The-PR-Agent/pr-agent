@@ -16,7 +16,7 @@ from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
-from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.config_loader import get_bot_display_name, get_settings, global_settings
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
@@ -33,6 +33,7 @@ from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     DefaultDictWithTimeout,
     auto_feedback_disabled,
+    get_include_pr_labels,
     get_pr_commands,
     is_ask_command_comment,
     push_trigger_slot,
@@ -234,7 +235,7 @@ def _start_auto_command_check_run(provider, command) -> str | None:
     if provider is None or name is None:
         return None
     try:
-        provider.start_check_run(name, f"PR-Agent is running {action}")
+        provider.start_check_run(name, f"{get_bot_display_name()} is running {action}")
     except Exception as e:
         get_logger().warning(f"Failed to open the {name} check run: {e}")
     return name
@@ -245,7 +246,8 @@ def _finish_auto_command_check_run(provider, name: str | None, command, succeede
     if provider is None or name is None:
         return
     action, _ = _auto_command_check_run(command)
-    summary = f"PR-Agent ran {action}" if succeeded else f"PR-Agent could not finish {action}"
+    bot_display_name = get_bot_display_name()
+    summary = f"{bot_display_name} ran {action}" if succeeded else f"{bot_display_name} could not finish {action}"
     try:
         provider.finish_check_run(name, "success" if succeeded else "failure", summary)
     except Exception as e:
@@ -316,7 +318,11 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
     apply_repo_settings(api_url)
     if not _as_bool_setting(get_settings().github_app.handle_push_trigger):
         return {}
-    if (_as_bool_setting(get_settings().github_app.push_trigger_ignore_bot_commits, default=True)
+    if (_as_bool_setting(
+            get_settings().github_app.push_trigger_ignore_bot_commits,
+            default=True,
+            setting_name="github_app.push_trigger_ignore_bot_commits",
+        )
             and body.get("sender", {}).get("type") == "Bot"):
         get_logger().info(f"Skipping {event}: bot commit detected")
         return {}
@@ -326,7 +332,11 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
     merge_commit_sha = pull_request.get("merge_commit_sha")
     if before_sha == after_sha:
         return {}
-    if (_as_bool_setting(get_settings().github_app.push_trigger_ignore_merge_commits, default=True)
+    if (_as_bool_setting(
+            get_settings().github_app.push_trigger_ignore_merge_commits,
+            default=True,
+            setting_name="github_app.push_trigger_ignore_merge_commits",
+        )
             and after_sha == merge_commit_sha):
         return {}
 
@@ -403,7 +413,12 @@ async def _dispatch_request(body: dict[str, Any], event: str, action: str):
         get_logger().debug("Request ignored: bot user detected")
         return {}
     if action != 'created' and 'check_run' not in body:
-        if not should_process_pr_logic(body):
+        # Defer the opt-in label gate until repository settings have been applied.
+        prefilter_allowed = (
+            shared_should_process_pr_logic(body, provider="github", check_include_labels=False)
+            if get_include_pr_labels() else should_process_pr_logic(body)
+        )
+        if not prefilter_allowed:
             get_logger().debug("Request ignored: PR logic filtering")
             return {}
 
@@ -452,7 +467,11 @@ async def handle_request(body: dict[str, Any], event: str, delivery_id: str | No
         get_logger().debug("No action found in request body, exiting handle_request")
         return {}
     settings = get_settings()
-    if not delivery_id or not _as_bool_setting(settings.get("GITHUB_APP.WEBHOOK_DELIVERY_DEDUPLICATION", False)):
+    if not delivery_id or not _as_bool_setting(
+        settings.get("GITHUB_APP.WEBHOOK_DELIVERY_DEDUPLICATION", False),
+        default=True,
+        setting_name="github_app.webhook_delivery_deduplication",
+    ):
         await _dispatch_request(body, event, action)
         return {}
 

@@ -32,6 +32,7 @@ from pr_agent.secret_providers import get_secret_provider, validate_secret_provi
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     auto_feedback_disabled,
+    get_include_pr_labels,
     get_pr_commands,
     is_command_comment,
     payload_log_summary,
@@ -374,7 +375,11 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
 
             # Check if the PR should be processed
             if data.get("event", "") == "pullrequest:created":
-                if not should_process_pr_logic(data):
+                prefilter_allowed = (
+                    shared_should_process_pr_logic(data, provider="bitbucket_app", check_include_labels=False)
+                    if get_include_pr_labels() else should_process_pr_logic(data)
+                )
+                if not prefilter_allowed:
                     return "OK"
 
             event = data["event"]

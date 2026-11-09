@@ -5,11 +5,12 @@ from unittest.mock import patch
 import pytest
 from starlette_context import request_cycle_context
 
-from pr_agent.agent.pr_agent import PRAgent
+from pr_agent.agent.pr_agent import PRAgent, parse_command
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.review_json_output import review_json_output_path
 from pr_agent.algo.run_details import command_failed
 from pr_agent.config_loader import _find_repository_root, get_settings
+from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
@@ -255,6 +256,72 @@ async def test_commands_through_diff_provider_mocked_llm(
     assert filename in calls[0]["user"]
     assert "line2-changed" in calls[0]["user"]
     assert expected_output in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command,response,description", [
+    ("/ask What changed?", "The approval threshold changed.",
+     "Invoices above the limit need manager approval."),
+    ("/review", "review:\n  estimated_effort_to_review_[1-5]: 1\n"
+                "  relevant_tests: 'No'\n  security_concerns: 'No'\n  key_issues_to_review: []\n",
+     "Invoices above the limit need manager approval."),
+    pytest.param(
+        "/review", "review:\n  estimated_effort_to_review_[1-5]: 1\n"
+                   "  relevant_tests: 'No'\n  security_concerns: 'No'\n  key_issues_to_review: []\n",
+        "Require displaying the label File Walkthrough in the UI",
+        id="review-preserves-literal-file-walkthrough",
+    ),
+    ("/describe", "title: Generated title\ndescription: Approval now required.\n"
+                  "type: [Enhancement]\npr_files: []\n",
+     "### **Description**\nInvoices above the limit need manager approval."),
+])
+async def test_plain_diff_cli_context_reaches_tool_prompts(tmp_path, monkeypatch, command, response, description):
+    """Command settings must reach prompts even after the provider has been cached."""
+    monkeypatch.chdir(tmp_path)
+    prompts = []
+
+    class FakeAiHandler(BaseAiHandler):
+        def __init__(self):
+            pass
+
+        @property
+        def deployment_id(self):
+            return "fake"
+
+        async def chat_completion(self, model: str, system: str, user: str,
+                                  temperature: float = 0.2, img_path: str = None):
+            prompts.append(system + "\n" + user)
+            return response, "stop"
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        for key, value in {
+            "config.git_provider": "plain-diff",
+            "config.model": "gpt-4o-mini",
+            "config.model_weak": "gpt-4o-mini",
+            "config.fallback_models": [],
+            "config.repo_context_files": [],
+            "config.extra_config_url": "",
+            "plain_diff.content": DIFF,
+            "plain_diff.title": None,
+            "plain_diff.description": None,
+            "pr_description.use_description_markers": False,
+            "pr_description.enable_pr_description": True,
+            "push_outputs.enable": False,
+        }.items():
+            get_settings().set(key, value)
+
+        cached_provider = get_git_provider_with_context("local_diff")
+        assert cached_provider.pr.title == "Local diff review"
+        request = [*parse_command(command),
+                   f'--plain_diff.title={json.dumps("Require approval for invoices")}',
+                   f'--plain_diff.description={json.dumps(description)}']
+
+        assert await PRAgent(ai_handler=FakeAiHandler).handle_request("local_diff", request) is True
+        assert cached_provider.pr.title == "Require approval for invoices"
+
+    assert len(prompts) == 1
+    assert "Require approval for invoices" in prompts[0]
+    assert description in prompts[0]
 
 
 @pytest.mark.asyncio

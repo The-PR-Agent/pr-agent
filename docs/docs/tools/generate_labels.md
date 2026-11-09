@@ -19,6 +19,19 @@ Invoke the tool manually by commenting `/generate_labels` on any PR.
 
 The tool will analyze the PR and add appropriate labels.
 
+For local or CI workflows that need label suggestions without a hosting-provider token,
+pass a unified diff and write the filtered labels to a JSON artifact:
+
+```bash
+python -m pr_agent.cli --diff-file changes.diff --json-output labels.json generate_labels
+```
+
+The JSON result contains a `labels` list and a `usage` object (empty when token usage
+is unavailable). Only model-generated labels that pass the existing allowlist are included;
+labels already on a hosted PR are not included. A PR without analyzable changes produces
+an empty list. This option does not change the normal label publication behavior.
+Check the command's exit status before consuming the artifact: a failed run does not delete a previous JSON file.
+
 ## Configuration options
 
 The `generate_labels` tool uses configurations from the `[pr_description]` section for custom labels.

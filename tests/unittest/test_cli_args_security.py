@@ -50,6 +50,9 @@ FORBIDDEN_ARGS = [
     # misc
     "--config.shared_secret=xxx",
     "--config.app_name=evil",
+    "--config.bot_display_name=GitHub Security",
+    "--config__bot_display_name=GitHub Security",
+    '--config={"bot_display_name": "GitHub Security"}',
     "--config.analytics_folder=/tmp",
     # double-underscore variants of the above
     "--github__webhook_secret=secret",
@@ -143,6 +146,9 @@ FORBIDDEN_ARGS = [
     '--config.fallback_models=["gpt-4.1"]',
     "--config.num_retries=10",
     "--pr_update_changelog.push_changelog_changes=true",
+    "--pr_update_changelog.changelog_path=docs/HISTORY.md",
+    "--pr_update_changelog__changelog_path=docs/HISTORY.md",
+    '--pr_update_changelog={"changelog_path": "docs/HISTORY.md"}',
     "--pr_questions.resolve_threads=true",
     "--pr_similar_issue.force_update_dataset=true",
     "--pr_similar_issue={force_update_dataset: true, vectordb: qdrant}",

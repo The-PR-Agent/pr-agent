@@ -30,6 +30,7 @@ from yaml.tokens import (
 )
 
 import pr_agent.algo.comment_identity as _ci
+from pr_agent.algo.deterministic_risk import render_risk_checks
 from pr_agent.algo.git_patch_processing import (
     NO_NEWLINE_AT_EOF_MARKER,
     extract_hunk_headers,
@@ -42,7 +43,7 @@ from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.output_models import PRType, SubPR, parse_failure_modes
 from pr_agent.algo.structural_reach import render_structural_reach
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.config_loader import get_settings, get_verbosity_level
+from pr_agent.config_loader import get_bot_display_name, get_settings, get_verbosity_level
 from pr_agent.log import get_logger
 
 _ENCODED_USER_TEXT_PREFIX = "__pr_agent_encoded_text__:"
@@ -241,7 +242,8 @@ def convert_to_markdown_v2(output_data: dict,
     markdown_text = ""
     markdown_text += f"{_ci.format_pr_review_header(incremental=bool(incremental_review))}\n\n"
     if incremental_review:
-        markdown_text += f"⏮️ Review for commits since previous PR-Agent review {incremental_review}.\n\n"
+        bot_display_name = get_bot_display_name()
+        markdown_text += f"⏮️ Review for commits since previous {bot_display_name} review {incremental_review}.\n\n"
     if not output_data or not output_data.get('review', {}):
         return ""
 
@@ -336,6 +338,8 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"{value}\n\n"
         elif key.lower() == 'structural_reach':
             markdown_text += render_structural_reach(value, gfm_supported)
+        elif key.lower() in ('risk_checks', 'deterministic_risk'):
+            markdown_text += render_risk_checks(value, gfm_supported)
         elif 'risk level' in key_nice.lower():
             risk_value = str(value).strip().lower().replace("_", " ")
             risk_display = risk_value.capitalize() if risk_value else "Unknown"
@@ -595,13 +599,14 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
     if isinstance(value, list):
         for ticket_analysis in value:
             try:
-                ticket_url = ticket_analysis.get('ticket_url', '').strip()
+                ticket_url = str(ticket_analysis.get('ticket_url') or '').strip()
                 explanation = ''
                 ticket_compliance_level = ''  # Individual ticket compliance
-                fully_compliant_str = ticket_analysis.get('fully_compliant_requirements', '').strip()
-                not_compliant_str = ticket_analysis.get('not_compliant_requirements', '').strip()
-                requires_further_human_verification = ticket_analysis.get('requires_further_human_verification',
-                                                                          '').strip()
+                # A model may leave an empty field as YAML null or answer a bullet list as a YAML list.
+                fully_compliant_str = _ci.as_review_text(ticket_analysis.get('fully_compliant_requirements') or '')
+                not_compliant_str = _ci.as_review_text(ticket_analysis.get('not_compliant_requirements') or '')
+                requires_further_human_verification = _ci.as_review_text(
+                    ticket_analysis.get('requires_further_human_verification') or '')
 
                 if not fully_compliant_str and not not_compliant_str and not requires_further_human_verification:
                     get_logger().debug("Ticket compliance has no requirements",

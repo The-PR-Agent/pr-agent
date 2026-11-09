@@ -38,12 +38,13 @@ DEFAULT_GITEA_URL = "https://gitea.com"
 class IncompleteGiteaPullRequestFilesError(IncompleteProviderPullRequestFilesError):
     """Represent an unavailable or malformed Gitea changed-file inventory."""
 
-    notice = (
-        "## PR-Agent command was not run\n\n"
-        "Gitea returned incomplete or unavailable pull-request change data, so PR-Agent stopped "
+    notice_template = (
+        "## {bot_name} command was not run\n\n"
+        "Gitea returned incomplete or unavailable pull-request change data, so {bot_name} stopped "
         "instead of analyzing only part of it.\n\n"
         "Retry the command and check the pull request's changed files and diff in Gitea if the problem persists."
     )
+    notice = notice_template.format(bot_name="PR-Agent")
     notice_marker = "<!-- pr-agent:gitea-incomplete-files -->"
 
 
@@ -918,6 +919,8 @@ class GiteaProvider(GitProvider):
 
     def is_supported(self, capability) -> bool:
         """Check if the provider is supported"""
+        if capability in ("head_ci_status", "head_staleness", "author_human_check"):
+            return False
         return True
 
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:

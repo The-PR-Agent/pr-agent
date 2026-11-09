@@ -21,6 +21,7 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 
 from pr_agent.telemetry import shutdown as shutdown_module
 from pr_agent.telemetry.registry import provider_registry
@@ -62,7 +63,7 @@ class RecordingExporter(InMemorySpanExporter):
 def _batched_provider(events):
     """TracerProvider whose batch processor never exports on its own."""
     exporter = RecordingExporter(events)
-    provider = TracerProvider(shutdown_on_exit=False)
+    provider = TracerProvider(sampler=ALWAYS_ON, shutdown_on_exit=False)
     # Huge schedule delay so nothing exports until a flush/shutdown forces it.
     provider.add_span_processor(BatchSpanProcessor(exporter, schedule_delay_millis=600_000))
     return provider, exporter
@@ -161,9 +162,10 @@ def test_shutdown_swallows_exception_and_still_shuts_down_other_provider():
         "meter must still be shut down when the tracer shutdown fails"
 
 
-def test_flush_exports_queued_spans_without_shutting_down():
+def test_flush_exports_queued_spans_without_shutting_down(monkeypatch):
     """flush_telemetry is the per-request export used by serverless deployments:
     it must push queued spans out but leave the provider fully usable."""
+    monkeypatch.setenv("OTEL_TRACES_SAMPLER", "always_off")
     events = []
     provider, exporter = _batched_provider(events)
     provider_registry.register(provider)

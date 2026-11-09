@@ -1,7 +1,7 @@
 from dynaconf import Dynaconf
 
 from pr_agent.algo.setting_utils import normalize_setting_list
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_bot_display_name, get_settings
 from pr_agent.config_security import should_skip_config_key
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.log import get_logger
@@ -82,7 +82,7 @@ class PRConfig:
         skip_keys.extend(normalize_setting_list(get_settings().config.get("skip_keys", [])))
 
 
-        markdown_text = "<details> <summary><strong>🛠️ PR-Agent Configurations:</strong></summary> \n\n"
+        markdown_text = f"<details> <summary><strong>🛠️ {get_bot_display_name()} Configurations:</strong></summary> \n\n"
         markdown_text += "\n\n```yaml\n\n"
         undeclared_config_keys = []
         for header, configs in relevant_configs.items():

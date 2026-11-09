@@ -17,10 +17,12 @@ from pr_agent.algo.comment_identity import (
     PRCodeSuggestionsIdentity,
     add_comment_identity,
     comment_authorship_available,
+    comment_carries_other_identity,
     comment_matches_identity,
     format_pr_code_suggestions_header,
     hidden_marker_forms,
 )
+from pr_agent.algo.findings import Finding
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers, split_diff_lines
 from pr_agent.algo.i18n import t
 from pr_agent.algo.pr_processing import (
@@ -39,6 +41,12 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
+from pr_agent.algo.review_finding_state import (
+    parse_review_state,
+    reconcile_review_findings,
+    serialize_review_state,
+    split_review_state_marker,
+)
 from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
 from pr_agent.algo.run_details import (
     get_run_details,
@@ -46,7 +54,7 @@ from pr_agent.algo.run_details import (
     record_command_failure,
     record_model_used,
 )
-from pr_agent.algo.run_output import push_outputs_async, show_relevant_configurations, show_run_details
+from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
 from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget, FittedPrompt
@@ -370,6 +378,133 @@ class PRCodeSuggestions:
             get_logger().warning(f"Failed to load prior code suggestion discussions: {e}")
             return ""
 
+    def _suggestion_finding_state_supported(self) -> bool:
+        if not get_settings().pr_code_suggestions.get("persistent_comment", True):
+            return False
+        supports = getattr(self.git_provider, "supports_review_finding_state", None)
+        try:
+            return callable(supports) and supports() is True
+        except Exception as error:
+            get_logger().warning(f"Code suggestion finding state is not supported, error: {error}")
+            return False
+
+    def _load_suggestion_finding_state(self):
+        identities = (
+            PRCodeSuggestionsIdentity.SUMMARY.value,
+            PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
+        )
+        try:
+            comments = self.git_provider.get_issue_comments_newest_first()
+            require_agent_authorship = comment_authorship_available(self.git_provider)
+            for comment in comments:
+                body = GitProvider._get_comment_body(comment)
+                identity = next(
+                    (marker for marker in identities if comment_matches_identity(body, marker)),
+                    None,
+                )
+                if identity is None or comment_carries_other_identity(body, identity):
+                    continue
+                if require_agent_authorship and not self.git_provider.is_comment_authored_by_pr_agent(comment):
+                    continue
+                parsed = parse_review_state(body)
+                if parsed.present:
+                    if not parsed.valid:
+                        get_logger().warning(
+                            "Code suggestion finding state marker is malformed; preserving existing state"
+                        )
+                    return parsed
+            return parse_review_state("")
+        except Exception as error:
+            get_logger().warning(f"Could not read code suggestion finding state, error: {error}")
+            return None
+
+    def _suggestion_state_is_complete(self, data: dict) -> bool:
+        if getattr(getattr(self, "incremental", None), "is_incremental", False):
+            return False
+        if (
+            getattr(self, "failed_chunk_count", 0)
+            or getattr(self, "remaining_files_list", [])
+            or getattr(self, "partial_files_list", [])
+        ):
+            return False
+
+        predictions = getattr(self, "prediction_list", None)
+        if not isinstance(predictions, list):
+            return True
+        try:
+            per_chunk_limit = int(get_settings().pr_code_suggestions.num_code_suggestions_per_chunk)
+        except (TypeError, ValueError):
+            return False
+        raw_count = 0
+        for prediction in predictions:
+            chunk_suggestions = prediction.get("code_suggestions", []) if isinstance(prediction, dict) else []
+            if not isinstance(chunk_suggestions, list):
+                return False
+            raw_count += len(chunk_suggestions)
+            if per_chunk_limit > 0 and len(chunk_suggestions) >= per_chunk_limit:
+                return False
+        return raw_count == len(data.get("code_suggestions") or [])
+
+    def _prepare_suggestion_finding_state(self, data: dict) -> None:
+        self._suggestion_finding_state = None
+        if not get_settings().config.publish_output or not self._suggestion_finding_state_supported():
+            return
+        parsed = self._load_suggestion_finding_state()
+        if parsed is None or not parsed.valid:
+            return
+
+        findings = []
+        for suggestion in data.get("code_suggestions") or []:
+            try:
+                normalized_suggestion = {
+                    **suggestion,
+                    "relevant_lines_start": int(suggestion["relevant_lines_start"]),
+                    "relevant_lines_end": int(suggestion["relevant_lines_end"]),
+                }
+            except (KeyError, TypeError, ValueError):
+                normalized_suggestion = suggestion
+            finding = Finding.from_code_suggestion(normalized_suggestion)
+            if finding is None:
+                get_logger().debug(
+                    "Skipping an untrackable code suggestion",
+                    artifact={"suggestion": suggestion},
+                )
+                continue
+            findings.append(finding)
+
+        try:
+            head_sha = self.git_provider.get_pr_head_sha()
+        except Exception as error:
+            head_sha = ""
+            get_logger().warning(f"Could not read PR head for code suggestion finding state: {error}")
+        self._suggestion_finding_state = reconcile_review_findings(
+            parsed.state,
+            findings,
+            allow_resolution=self._suggestion_state_is_complete(data),
+            head_sha=head_sha if isinstance(head_sha, str) else "",
+        ).state
+
+    def _store_suggestion_finding_state(self, identity: str) -> None:
+        state = getattr(self, "_suggestion_finding_state", None)
+        if state is None:
+            return
+        try:
+            require_agent_authorship = comment_authorship_available(self.git_provider)
+            for comment in self.git_provider.get_issue_comments_newest_first():
+                body = GitProvider._get_comment_body(comment)
+                if not comment_matches_identity(body, identity) or comment_carries_other_identity(body, identity):
+                    continue
+                if require_agent_authorship and not self.git_provider.is_comment_authored_by_pr_agent(comment):
+                    continue
+                human_body, _ = split_review_state_marker(body)
+                updated_body = f"{human_body.rstrip()}\n\n{serialize_review_state(state)}\n"
+                if not _edit_comment_safely(self.git_provider, comment, updated_body):
+                    raise RuntimeError("Provider did not confirm the code suggestion state update")
+                return
+            raise RuntimeError("Could not find the published code suggestion comment to update")
+        except Exception as error:
+            get_logger().warning(f"Failed to persist code suggestion finding state: {error}")
+
     @staticmethod
     def _parse_incremental(args):
         """Parse the `-i` flag for `/improve` exactly like `PRReviewer.parse_incremental`."""
@@ -481,6 +616,7 @@ class PRCodeSuggestions:
             # Handle the case where the PR has no suggestions
             if (data is None or 'code_suggestions' not in data or not data['code_suggestions']):
                 write_plain_diff_json({"code_suggestions": []})
+                self._prepare_suggestion_finding_state({"code_suggestions": []})
                 await self.publish_no_suggestions()
                 if not plain_diff_json:
                     self._write_json_output({"code_suggestions": []})
@@ -500,12 +636,14 @@ class PRCodeSuggestions:
                     ]
                     if not data['code_suggestions']:
                         write_plain_diff_json(data)
+                        self._prepare_suggestion_finding_state({"code_suggestions": []})
                         await self.publish_no_suggestions()
                         if not plain_diff_json:
                             self._write_json_output(data)
                         return
 
                 write_plain_diff_json(data)
+                self._prepare_suggestion_finding_state(data)
                 # Emit to the optional external sinks before touching the provider, so a sink
                 # still receives the suggestions if publishing them to the PR fails.
                 markdown = render_suggestions_markdown(data) + self._get_suggestions_coverage_footer()
@@ -542,11 +680,8 @@ class PRCodeSuggestions:
                     if get_settings().get('config', {}).get('output_relevant_configurations', False):
                         pr_body += show_relevant_configurations(relevant_section='pr_code_suggestions')
 
-                    # Output the agent run details (model, tokens, time cost) if enabled
-                    if get_settings().get('config', {}).get('output_run_details', False):
-                        # This summary-comment branch already requires GFM support, so the argument is always True;
-                        # keep the call shaped like the reviewer/describe paths for consistency.
-                        pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
+                    # Output the fallback-model note, and the agent run details (model, tokens, time cost) if enabled
+                    pr_body = append_run_details(pr_body, self.git_provider)
 
                     # publish the PR comment
                     if get_settings().pr_code_suggestions.persistent_comment: # true by default
@@ -566,6 +701,7 @@ class PRCodeSuggestions:
                         if published_comment is not None:
                             self.progress_response = None
                         self._output_published = True
+                        self._store_suggestion_finding_state(PRCodeSuggestionsIdentity.SUMMARY.value)
                     else:
                         pr_body = add_comment_identity(
                             pr_body,
@@ -587,6 +723,7 @@ class PRCodeSuggestions:
                         else:
                             self.git_provider.publish_comment(pr_body, **self._improve_thread_kwargs())
                         self._output_published = True
+                        self._store_suggestion_finding_state(PRCodeSuggestionsIdentity.SUMMARY.value)
 
                     # dual publishing mode
                     if get_dual_publishing_score_threshold() > 0:
@@ -728,10 +865,9 @@ class PRCodeSuggestions:
                 PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
                 self.git_provider,
             )
-            # Output the agent run details (model, tokens, time cost) if enabled, so the
-            # "no suggestions" result still shows which model produced it.
-            if get_settings().get('config', {}).get('output_run_details', False):
-                pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
+            # Output the fallback-model note, and the agent run details (model, tokens, time cost) if
+            # enabled, so the "no suggestions" result still shows which model produced it.
+            pr_body = append_run_details(pr_body, self.git_provider)
             get_logger().debug("PR output", artifact=pr_body)
             if self.progress_response:
                 progress_response = self.progress_response
@@ -759,6 +895,7 @@ class PRCodeSuggestions:
                 comment = self.git_provider.publish_comment(pr_body, **self._improve_thread_kwargs())
                 if comment and self._improve_thread_kwargs():
                     self.git_provider.resolve_comment_thread(comment.id)
+            self._store_suggestion_finding_state(PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value)
         else:
             get_settings().data = {"artifact": pr_body if coverage_footer else ""}
             if self.progress_response:
@@ -1202,6 +1339,11 @@ class PRCodeSuggestions:
             if score is None or not 0 <= score <= 10:
                 feedback[i] = None
                 continue
+            expected_file = self._suggestion_file_key(suggestion).strip("`").removeprefix("./").removeprefix("/")
+            reported_file = self._suggestion_file_key(entry).strip("`").removeprefix("./").removeprefix("/")
+            if expected_file and reported_file and expected_file != reported_file:
+                feedback[i] = None
+                continue
             # Only use reflection anchors when the original suggestion has none.
             if "relevant_lines_start" not in suggestion:
                 start = self._parse_line_number(entry.get("relevant_lines_start"))
@@ -1551,6 +1693,18 @@ class PRCodeSuggestions:
                 if not isinstance(existing_code, str):
                     raise TypeError("existing_code must be a string")
                 label = d['label'].strip()
+                finding = Finding.from_code_suggestion({
+                    **d,
+                    "relevant_file": relevant_file,
+                    "relevant_lines_start": relevant_lines_start,
+                    "relevant_lines_end": relevant_lines_end,
+                    "suggestion_content": content,
+                    "existing_code": existing_code,
+                    "improved_code": new_code_snippet,
+                    "label": label,
+                })
+                if finding is None:
+                    raise TypeError("suggestion must be a mapping")
             except (AttributeError, KeyError, TypeError, ValueError) as e:
                 get_logger().warning(f"Could not parse suggestion: {d}, error: {e}")
                 continue
@@ -1562,6 +1716,13 @@ class PRCodeSuggestions:
                 new_code_snippet = self.dedent_code(relevant_file, relevant_lines_start, new_code_snippet)
                 existing_code = self.dedent_code(relevant_file, relevant_lines_start, existing_code)
                 d = {**d, "existing_code": existing_code, "improved_code": new_code_snippet}
+                finding = Finding.from_code_suggestion({
+                    **d,
+                    "relevant_lines_start": relevant_lines_start,
+                    "relevant_lines_end": relevant_lines_end,
+                })
+                if finding is None:
+                    raise ValueError("Could not convert a validated suggestion to a finding")
 
             requires_pr_fallback = False
             if d.get('_is_truncated'):
@@ -1580,9 +1741,9 @@ class PRCodeSuggestions:
                     fallback_reason = "the proposed Python code has invalid syntax"
                     requires_pr_fallback = True
 
-            score = d.get("score")
-            header = f"**Suggestion:** {content} [{label}, importance: {score}]" if score \
-                else f"**Suggestion:** {content} [{label}]"
+            score = finding.score
+            header = f"**Suggestion:** {finding.body} [{finding.label}, importance: {score}]" if score \
+                else f"**Suggestion:** {finding.body} [{finding.label}]"
             fence = get_suggestion_fence(new_code_snippet or "")
             if new_code_snippet and is_applicable:
                 body = f"{header}\n{fence}suggestion\n" + new_code_snippet + f"\n{fence}"
@@ -1594,10 +1755,7 @@ class PRCodeSuggestions:
                 elif requires_pr_fallback:
                     body += f"\n\nNot offered as a committable change because {fallback_reason}."
 
-            rendered_suggestion = {'body': body, 'relevant_file': relevant_file,
-                                   'relevant_lines_start': relevant_lines_start,
-                                   'relevant_lines_end': relevant_lines_end,
-                                   'original_suggestion': d}
+            rendered_suggestion = finding.to_inline_comment(body, original_suggestion=d)
             if supports_suggestions_artifact:
                 artifact_suggestions.append(rendered_suggestion)
 

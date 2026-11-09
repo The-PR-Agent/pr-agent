@@ -249,6 +249,30 @@ class TestConvertToMarkdown:
         assert '[]()' not in output
         assert '**Untracked ticket - Fully compliant**' in output
 
+    @pytest.mark.parametrize('ticket_url, not_compliant, expected_header', [
+        (None, None, '**Untracked ticket - Fully compliant**'),
+        ('https://example.com/ticket/123', ['Requirement 2'],
+         '**[123](https://example.com/ticket/123) - Partially compliant**'),
+    ])
+    def test_ticket_compliance_accepts_null_and_list_fields(self, ticket_url, not_compliant, expected_header):
+        # Models may leave an empty field as YAML null and answer a bullet list as a YAML list.
+        input_data = {'review': {
+            'ticket_compliance_check': [
+                {
+                    'ticket_url': ticket_url,
+                    'fully_compliant_requirements': ['Requirement 1'],
+                    'not_compliant_requirements': not_compliant,
+                    'requires_further_human_verification': None,
+                }
+            ]
+        }}
+
+        output = convert_to_markdown_v2(input_data)
+
+        assert expected_header in output
+        assert 'Compliant requirements:\n\n- Requirement 1' in output
+        assert ('Non-compliant requirements:\n\n- Requirement 2' in output) == bool(not_compliant)
+
     _CAN_BE_SPLIT_INPUT = {'review': {
         'can_be_split': [
             {

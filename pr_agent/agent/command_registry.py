@@ -53,7 +53,7 @@ class CommandSpec:
     check_run: str | None = None
     takes_comment_id: bool = False
     plain_diff_markdown: bool = False
-    json_output: str | None = None  # "review" | "improve" | "describe"
+    json_output: str | None = None  # "review" | "improve" | "describe" | "labels"
 
 
 COMMAND_SPECS: dict[str, CommandSpec] = {
@@ -83,8 +83,8 @@ COMMAND_SPECS: dict[str, CommandSpec] = {
         PRCodeSuggestions, check_run="suggestions", takes_comment_id=True,
         plain_diff_markdown=True, json_output="improve",
     ),
-    "ask": CommandSpec(PRQuestions, plain_diff_markdown=True),
-    "ask_question": CommandSpec(PRQuestions, plain_diff_markdown=True),
+    "ask": CommandSpec(PRQuestions, takes_comment_id=True, plain_diff_markdown=True),
+    "ask_question": CommandSpec(PRQuestions, takes_comment_id=True, plain_diff_markdown=True),
     "ask_line": CommandSpec(PR_LineQuestions),
     "update_changelog": CommandSpec(PRUpdateChangelog),
     "config": CommandSpec(PRConfig, plain_diff_markdown=True),
@@ -92,7 +92,7 @@ COMMAND_SPECS: dict[str, CommandSpec] = {
     "help": CommandSpec(PRHelpMessage, plain_diff_markdown=True),
     "similar_issue": CommandSpec(PRSimilarIssue),
     "add_docs": CommandSpec(PRAddDocs),
-    "generate_labels": CommandSpec(PRGenerateLabels),
+    "generate_labels": CommandSpec(PRGenerateLabels, json_output="labels"),
     # SECURITY: "/help_docs" is temporarily disabled while the clone-target validation
     # fix is reviewed (see issue #2445). Re-enable by restoring `"help_docs": PRHelpDocs`
     # and its import once the hardening PR is merged.
