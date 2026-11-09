@@ -54,6 +54,7 @@ def test_github_human_resolved_key_issue_is_dismissed_across_pages():
     root = _comment("root", body)
     reply = _comment("root-reply", "By design: caller releases it.", login="alice")
     provider, requester = _provider([[_thread("other", resolver=None)], [_thread("root")]], [root, reply])
+    provider.pr.review_comments = 2
 
     assert _dismissed(provider) == [
         Finding(
@@ -111,3 +112,28 @@ def test_github_review_thread_root_does_not_fetch_raw_comment_data():
     assert _dismissed(provider) == [
         Finding(path="app.py", body=_BODY, line_start=2, line_end=2)
     ]
+
+
+def test_github_zero_review_comments_skips_graphql_and_identity_lookup():
+    provider, requester = _provider([[_thread("root")]], [])
+    provider.pr.review_comments = 0
+    provider._agent_login = MagicMock(return_value="pr-agent[bot]")
+
+    assert _dismissed(provider) == []
+    provider._agent_login.assert_not_called()
+    requester.graphql_query.assert_not_called()
+    provider.pr.get_comments.assert_not_called()
+
+
+def test_github_unresolved_review_threads_skip_agent_identity_lookup():
+    provider, requester = _provider(
+        [[_thread("open", resolved=False), _thread("unattributed", resolver=None)]],
+        [],
+    )
+    provider.pr.review_comments = 2
+    provider._agent_login = MagicMock(return_value="pr-agent[bot]")
+
+    assert _dismissed(provider) == []
+    provider._agent_login.assert_not_called()
+    assert requester.graphql_query.call_count == 1
+    provider.pr.get_comments.assert_not_called()

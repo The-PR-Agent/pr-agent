@@ -1413,14 +1413,23 @@ class GithubProvider(GitProvider):
 
     def _iter_review_threads(self):
         """Yield human-resolved PR-Agent key issues for the previous-findings context."""
-        agent_login = self._agent_login()
-        if not agent_login or self._deployment_type() not in {"user", "app"}:
+        if self._deployment_type() not in {"user", "app"}:
             return
+        review_comments = getattr(self.pr, "review_comments", None)
+        if type(review_comments) is int and review_comments <= 0:
+            return
+        agent_login = None
         threads = []
         for thread in self._review_thread_nodes():
             resolved_by = (thread.get("resolvedBy") or {}).get("login")
-            if (thread.get("isResolved") is True and isinstance(resolved_by, str)
-                    and resolved_by.strip() and resolved_by.casefold() != agent_login.casefold()):
+            if not (thread.get("isResolved") is True and isinstance(resolved_by, str)
+                    and resolved_by.strip()):
+                continue
+            if agent_login is None:
+                agent_login = self._agent_login()
+                if not agent_login:
+                    return
+            if resolved_by.casefold() != agent_login.casefold():
                 threads.append(thread)
         if not threads:
             return
