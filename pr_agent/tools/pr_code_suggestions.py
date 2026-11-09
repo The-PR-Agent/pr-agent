@@ -1677,7 +1677,9 @@ class PRCodeSuggestions:
                                      if include_coverage_footer else "")
             no_suggestions_message = (t("improve.no_suggestions_in_chunks_inline")
                                       if empty_coverage_footer else t("improve.no_suggestions"))
-            pr_body = f"{t('improve.merge_notice')}\n\n{no_suggestions_message}{empty_coverage_footer}"
+            # This comment has no heading, and a body starting with "/" reads as a command, so
+            # emphasize the notice line instead of leading with a bare slash.
+            pr_body = f"**{t('improve.merge_notice')}**\n\n{no_suggestions_message}{empty_coverage_footer}"
             if self.progress_response:
                 if not _edit_comment_safely(self.git_provider, self.progress_response, pr_body):
                     self.git_provider.publish_comment(pr_body)

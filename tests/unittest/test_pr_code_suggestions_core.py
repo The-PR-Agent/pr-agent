@@ -1800,7 +1800,7 @@ async def test_improve_empty_inline_fallback_uses_response_language():
         await tool.push_inline_code_suggestions({"code_suggestions": []})
 
         provider.publish_comment.assert_called_once_with(
-            f"{t('improve.merge_notice')}\n\nNo se encontraron sugerencias para mejorar este PR.")
+            f"**{t('improve.merge_notice')}**\n\nNo se encontraron sugerencias para mejorar este PR.")
     finally:
         restore_settings(saved)
 

@@ -338,7 +338,7 @@ async def test_push_inline_publishes_no_suggestions_comment_when_empty():
 
     assert result is None
     git_provider.publish_comment.assert_called_once_with(
-        f"{t('improve.merge_notice')}\n\nNo suggestions found to improve this PR."
+        f"**{t('improve.merge_notice')}**\n\nNo suggestions found to improve this PR."
     )
     git_provider.publish_code_suggestions.assert_not_called()
 
