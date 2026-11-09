@@ -2657,7 +2657,7 @@ otel-grpc = [
 [package.dev-dependencies]
 dev = [
     { name = "httpx" },
-    { name = "pr-agent", extra = ["all"] },
+    { name = "pr-agent", extra = ["all", "lambda"] },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -2731,6 +2731,7 @@ provides-extras = ["github", "gitlab", "bitbucket", "azure", "codecommit", "gite
 dev = [
     { name = "httpx", specifier = "==0.28.1" },
     { name = "pr-agent", extras = ["all"] },
+    { name = "pr-agent", extras = ["lambda"] },
     { name = "pytest", specifier = "==9.2.0" },
     { name = "pytest-asyncio", specifier = ">=1.4.1" },
     { name = "pytest-cov", specifier = "==7.1.0" },
