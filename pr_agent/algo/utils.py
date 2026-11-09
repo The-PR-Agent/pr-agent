@@ -1667,6 +1667,108 @@ def is_value_no(value):
     return False
 
 
+class _WalkthroughFileMatch:
+    """Keep the capture offsets available to walkthrough readback consumers."""
+
+    lastindex = 4
+
+    def __init__(self, content: str, spans: tuple[tuple[int, int], ...]):
+        self.content = content
+        self.spans = spans
+
+    def group(self, index: int) -> str:
+        start, end = self.spans[index - 1]
+        return self.content[start:end]
+
+    def start(self, index: int) -> int:
+        return self.spans[index - 1][0]
+
+
+def _match_walkthrough_file(file_data: str) -> _WalkthroughFileMatch | None:
+    """Extract legacy and current file summaries by scanning fixed HTML delimiters."""
+    details_start = file_data.find("<details>")
+    while details_start != -1:
+        position = details_start + len("<details>")
+        while position < len(file_data) and file_data[position].isspace():
+            position += 1
+        if file_data.startswith("<summary><strong>", position):
+            break
+        details_start = file_data.find("<details>", details_start + len("<details>"))
+    if details_start == -1:
+        return None
+
+    filename_start = position + len("<summary><strong>")
+    strong_end = file_data.find("</strong>", filename_start)
+    title_start = -1
+    paragraph_allowed = False
+    while strong_end != -1:
+        position = strong_end + len("</strong>")
+        paragraph_allowed = position < len(file_data) and not file_data[position].isspace()
+        while position < len(file_data) and file_data[position].isspace():
+            position += 1
+        for opening in ("<dd><code>", "<br><span><code>"):
+            if file_data.startswith(opening, position):
+                title_start = position + len(opening)
+                break
+        if title_start != -1:
+            break
+        strong_end = file_data.find("</strong>", strong_end + len("</strong>"))
+    if title_start == -1:
+        return None
+
+    title_end = file_data.find("</code>", title_start)
+    if title_end == -1:
+        return None
+    summary_end = file_data.find("</summary>", title_end + len("</code>"))
+    body_start = -1
+    while summary_end != -1:
+        position = summary_end + len("</summary>")
+        while position < len(file_data) and file_data[position].isspace():
+            position += 1
+        if file_data.startswith("<hr>", position):
+            body_start = position + len("<hr>")
+            break
+        summary_end = file_data.find("</summary>", summary_end + len("</summary>"))
+    if body_start == -1:
+        return None
+
+    hr_end = body_start
+    while body_start < len(file_data) and file_data[body_start].isspace():
+        body_start += 1
+    # Treat closing tags inside Git paths as text, using the final row closer.
+    details_end = file_data.rfind("</details>", body_start)
+    if details_end == -1:
+        return None
+
+    # The original readback gives HTML list markers precedence over the fallbacks.
+    li_start = file_data.find("<li>", body_start, details_end)
+    bullet_start = file_data.find("•", body_start, details_end)
+    if li_start != -1 or bullet_start != -1:
+        marker = min(index for index in (li_start, bullet_start) if index != -1)
+        marker_end = marker + (len("<li>") if marker == li_start else len("•"))
+        detail_start = marker_end
+    else:
+        divider = file_data.find("\n\n", body_start, details_end) if paragraph_allowed else -1
+        if divider == -1 and paragraph_allowed:
+            # Recover the separator after <hr> when none follows the filename.
+            divider = file_data.rfind("\n\n", hr_end, body_start)
+        if divider != -1:
+            marker = divider
+            detail_start = divider + 2
+        else:
+            marker = file_data.find("-", body_start, details_end)
+            if marker == -1:
+                return None
+            detail_start = marker + 1
+        while detail_start < details_end and file_data[detail_start].isspace():
+            detail_start += 1
+
+    return _WalkthroughFileMatch(file_data, (
+        (filename_start, strong_end), (title_start, title_end),
+        (min(body_start, marker), marker), (detail_start, details_end),
+    ))
+
+
 def process_description(description_full: str) -> tuple[str, list]:
     if not description_full:
         return "", []
@@ -1724,18 +1826,7 @@ def process_description(description_full: str) -> tuple[str, list]:
                 try:
                     if isinstance(file_data, tuple):
                         file_data = file_data[0]
-                    pattern = (r'<details>\s*<summary><strong>(.*?)</strong>\s*<dd><code>(.*?)</code>.*?'
-                               r'</summary>\s*<hr>\s*(.*?)\s*(?:<li>|•)(.*?)</details>')
-                    res = re.search(pattern, file_data, re.DOTALL)
-                    if not res or res.lastindex != 4:
-                        pattern_back = (r'<details>\s*<summary><strong>(.*?)</strong><dd><code>(.*?)</code>.*?'
-                                        r'</summary>\s*<hr>\s*(.*?)\n\n\s*(.*?)</details>')
-                        res = re.search(pattern_back, file_data, re.DOTALL)
-                    if not res or res.lastindex != 4:
-                        # looking for hyphen ('- ')
-                        pattern_back = (r'<details>\s*<summary><strong>(.*?)</strong>\s*<dd><code>(.*?)</code>.*?'
-                                        r'</summary>\s*<hr>\s*(.*?)\s*-\s*(.*?)\s*</details>')
-                        res = re.search(pattern_back, file_data, re.DOTALL)
+                    res = _match_walkthrough_file(file_data)
                     if res and res.lastindex == 4:
                         short_filename = res.group(1).strip()
                         short_summary = res.group(2).strip()

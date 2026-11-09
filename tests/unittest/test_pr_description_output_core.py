@@ -19,6 +19,7 @@ Coverage:
 """
 
 import re
+from time import perf_counter
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from urllib.parse import unquote, urlsplit
@@ -623,6 +624,27 @@ class TestProcessPRFilesPrediction:
         obj.git_provider.get_line_link.return_value = "https://example/blob/main/src/app.py#L1"
         return obj
 
+    @pytest.mark.parametrize("description", ["", "Adds a bounded cache."])
+    @pytest.mark.parametrize("title", ["Add cache", " ".join(f"word{i}" for i in range(20))])
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_short_title_uses_phrasing_content(self, mock_get_settings, description, title):
+        mock_get_settings.return_value = _settings(collapsible_file_list=False)
+        obj = self._obj(gfm=True)
+
+        body = obj.process_pr_files_prediction("", {"backend": [("src/app.py", title, description)]})
+
+        assert "<dd>" not in body
+        title_match = re.search(r"<strong>app\.py</strong><br><span>(.*?)</span>", body, re.DOTALL)
+        assert title_match is not None
+        title_html = title_match.group(1)
+        assert re.sub(r"<[^>]+>|&nbsp;", "", title_html).strip() == title
+        if len(title) > 70:
+            assert "</code><br><code>" in title_html
+        if description:
+            assert body[title_match.end():].startswith("</summary>")
+        else:
+            assert body[title_match.end():].startswith("</td>")
+
     @pytest.mark.parametrize("collapsible", [True, False, "adaptive"])
     @pytest.mark.parametrize("groups", [{}, {"backend": [("app.py", "Update app", "Summary")],
                                           "documentation": [("README.md", "Update docs", "Summary")]}])
@@ -742,6 +764,78 @@ class TestProcessPRFilesPrediction:
 # Round-trip: process_description recovers structured files from rendering
 # ---------------------------------------------------------------------------
 class TestRoundTripWithProcessDescription:
+    @pytest.mark.parametrize("title_wrapper", ["<dd>{}</dd>", "<br><span>{}</span>"], ids=["legacy", "phrasing"])
+    @pytest.mark.parametrize(
+        "file_body,expected_path",
+        [
+            ("src/</details>\n<ul><li>Detail</li></ul>", "src/</details>"),
+            ("\n\nscripts/build-server.sh\n- Build server.\n", ""),
+        ],
+        ids=["closing-tag-in-path", "blank-line-before-path"],
+    )
+    def test_readback_preserves_structural_boundaries(self, title_wrapper, file_body, expected_path):
+        title = title_wrapper.format("<code>Title</code>")
+        description = (
+            f"Intro\n<details><summary><h3>{PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>\n"
+            f"<table><tr><td><details><summary><strong>file</strong>{title}</summary>"
+            f"<hr>{file_body}</details></td></tr></table></details>"
+        )
+
+        base, files = process_description(description)
+
+        assert base == "Intro"
+        assert len(files) == 1
+        assert files[0]["full_file_name"] == expected_path
+        assert files[0]["short_summary"] == "Title"
+
+    @pytest.mark.parametrize("title_wrapper", ["<dd>{}</dd>", "<br><span>{}</span>"], ids=["legacy", "phrasing"])
+    def test_long_file_summary_readback_stays_fast(self, title_wrapper):
+        title = "<code>First change</code>" + "<br><code>More context</code>" * 128
+        description = (
+            f"Intro\n<details><summary><h3>{PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>\n"
+            f"<table><tr><td><details><summary><strong>app.py</strong>{title_wrapper.format(title)}</summary>\n"
+            f"<hr>\nsrc/app.py{' ' * 32768}\n\nDetails</details></td></tr></table></details>"
+        )
+
+        started = perf_counter()
+        base, files = process_description(description)
+        elapsed = perf_counter() - started
+
+        assert base == "Intro"
+        assert files == [{
+            "short_file_name": "app.py", "full_file_name": "src/app.py",
+            "short_summary": "First change", "long_summary": "* Details",
+        }]
+        assert elapsed < 1.0, f"Walkthrough readback took {elapsed:.2f}s"
+
+    @pytest.mark.parametrize("title_wrapper", ["<dd>{}</dd>", "<br><span>{}</span>"], ids=["legacy", "phrasing"])
+    @pytest.mark.parametrize(
+        "file_body",
+        [
+            "src/a&amp;b.py\n<ul><li>Details</li></ul>",
+            "src/a&amp;b.py\n\nDetails",
+            "src/a&amp;b.py\n- Details",
+        ],
+        ids=["list", "paragraph", "hyphen"],
+    )
+    def test_readback_accepts_legacy_and_phrasing_titles(self, title_wrapper, file_body):
+        title_html = title_wrapper.format("<code>Keep &amp; names</code>")
+        description = (
+            f"Intro\n<details><summary><h3>{PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>\n"
+            f"<table><tr><td><details><summary><strong>a&amp;b.py</strong>{title_html}</summary>\n"
+            f"<hr>\n{file_body}</details></td></tr></table></details>"
+        )
+
+        base, files = process_description(description)
+
+        assert base == "Intro"
+        assert files == [{
+            "short_file_name": "a&amp;b.py",
+            "full_file_name": "src/a&amp;b.py",
+            "short_summary": "Keep &amp; names",
+            "long_summary": "* Details",
+        }]
+
     @patch("pr_agent.tools.pr_description.get_settings")
     def test_walkthrough_table_round_trips_through_process_description(self, mock_get_settings):
         mock_get_settings.return_value = _settings(collapsible_file_list=False)
