@@ -40,7 +40,8 @@ def test_multiple_artifacts_are_searched():
 
 def test_caps_count_and_fact_length_and_drops_invalid_entries():
     long_fact = " ".join(f"w{i}" for i in range(40))
-    value = [{"kind": "explosion", "fact": "x", "evidence": "y"}, "not a dict"] + [_finding(fact=long_fact)] * 8
+    distinct = [_finding(fact=long_fact, evidence=f"line {i}") for i in range(8)]
+    value = [{"kind": "explosion", "fact": "x", "evidence": "y"}, "not a dict", *distinct]
     findings = parse_artifact_findings(value, ARTIFACT)
     assert len(findings) == MAX_ARTIFACT_FINDINGS
     assert findings[0]["fact"].endswith(" …")
@@ -71,3 +72,30 @@ def test_renders_unquoted_marker_and_empty_list():
     assert "quote not found in the artifact" in _render([finding])
     assert "CI artifact findings</strong>: none" in _render([])
     assert "### 📋 CI artifact findings: none" in _render([], gfm=False)
+
+
+def test_plain_markdown_keeps_apostrophes_and_raw_evidence():
+    context = {"content": "FAILED test_x - KeyError: 'scope' & <b>"}
+    [finding] = parse_artifact_findings(
+        [_finding(kind="test_failure", fact="the job's step fails", evidence="KeyError: 'scope' & <b>")], context)
+    text = _render([finding], gfm=False)
+    assert "the job&#x27;s step fails" in text
+    assert "`KeyError: 'scope' & <b>`" in text
+
+
+def test_evidence_longer_than_the_cap_is_checked_in_full():
+    invented_tail = "aws_s3_bucket.exports will be destroyed " + "x" * 200
+    [finding] = parse_artifact_findings([_finding(evidence=invented_tail)], ARTIFACT)
+    assert finding["quoted"] is False
+    assert finding["evidence"].endswith(" …")
+
+
+def test_hyphenated_kind_is_normalised():
+    [finding] = parse_artifact_findings([_finding(kind="test-failure")], ARTIFACT)
+    assert finding["kind"] == "test_failure"
+
+
+def test_repeated_findings_are_listed_once():
+    findings = parse_artifact_findings([_finding(), _finding(evidence='"aws_s3_bucket.exports will be destroyed"')],
+                                       ARTIFACT)
+    assert len(findings) == 1

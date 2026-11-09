@@ -88,7 +88,7 @@ class ArtifactFinding(BaseModel):
     @field_validator("kind", mode="before")
     @classmethod
     def _normalise_kind(cls, value):
-        return value.strip().lower().replace(" ", "_") if isinstance(value, str) else value
+        return value.strip().lower().replace(" ", "_").replace("-", "_") if isinstance(value, str) else value
 
 
 def _squash(text: str) -> str:
@@ -99,7 +99,7 @@ def parse_artifact_findings(value: object, artifact_context: dict | None) -> lis
     """Keep at most five findings, cap each fact, and mark evidence that is not quoted from the artifact."""
     contexts = (artifact_context or {}).get("artifacts", [artifact_context] if artifact_context else [])
     artifact_text = "\n".join(_squash(context.get("content", "")) for context in contexts)
-    findings = []
+    findings, seen = [], set()
     for entry in value if isinstance(value, list) else []:
         try:
             finding = ArtifactFinding.model_validate(entry).model_dump()
@@ -112,9 +112,13 @@ def parse_artifact_findings(value: object, artifact_context: dict | None) -> lis
         evidence = _squash(finding["evidence"])
         if len(evidence) > 1 and evidence[0] == evidence[-1] and evidence[0] in "\"'`":
             evidence = evidence[1:-1]
-        evidence = evidence[:MAX_ARTIFACT_EVIDENCE_CHARS]
-        finding["evidence"] = evidence
+        if (finding["kind"], evidence) in seen:
+            continue
+        seen.add((finding["kind"], evidence))
         finding["quoted"] = bool(evidence) and evidence in artifact_text
+        finding["evidence"] = evidence[:MAX_ARTIFACT_EVIDENCE_CHARS] + (
+            " …" if len(evidence) > MAX_ARTIFACT_EVIDENCE_CHARS else ""
+        )
         findings.append(finding)
         if len(findings) == MAX_ARTIFACT_FINDINGS:
             break

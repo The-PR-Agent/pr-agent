@@ -396,13 +396,15 @@ def convert_to_markdown_v2(output_data: dict,
                 markdown_text += f"### {emoji} CI artifact findings" + ("\n\n" if findings else ": none\n\n")
             for finding in findings:
                 kind = html.escape(str(finding.get("kind", "")).replace("_", " ").capitalize())
-                fact = html.escape(" ".join(str(finding.get("fact", "")).split()))
-                evidence = html.escape(str(finding.get("evidence", "")))
+                fact = " ".join(str(finding.get("fact", "")).split())
+                evidence = str(finding.get("evidence", ""))
                 note = "" if finding.get("quoted") else " (quote not found in the artifact)"
                 if gfm_supported:
-                    markdown_text += f"<strong>{kind}:</strong> {fact}<br>\n<code>{evidence}</code>{note}<br><br>\n"
+                    markdown_text += (f"<strong>{kind}:</strong> {html.escape(fact)}<br>\n"
+                                      f"<code>{html.escape(evidence)}</code>{note}<br><br>\n")
                 else:
-                    fact = re.sub(r"([\\`*_\[\]()!#|])", r"\\\1", fact)
+                    # Escape Markdown before HTML, as failure modes do; a code span shows entities verbatim.
+                    fact = html.escape(re.sub(r"([\\`*_\[\]()!#|])", r"\\\1", fact))
                     evidence = evidence.replace("`", "'")
                     markdown_text += f"- **{kind}:** {fact}\n  `{evidence}`{note}\n"
             if gfm_supported:
