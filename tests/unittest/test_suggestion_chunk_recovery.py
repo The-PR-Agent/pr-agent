@@ -46,6 +46,7 @@ def configured():
 
 @pytest.fixture(params=[
     pytest.param(None, id="invalid-schema"),
+    pytest.param("code_suggestions:\n- relevant_file: b.py\n", id="all-invalid-entries"),
     pytest.param(("code_suggestions:\n- relevant_file: b.py\n  improved_code: |\n    new(", "length"),
                  id="truncated-yaml"),
 ])
