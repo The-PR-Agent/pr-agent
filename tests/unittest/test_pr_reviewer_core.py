@@ -527,6 +527,33 @@ async def test_failure_modes_reach_output_consumers_only_when_enabled(enabled):
             assert push.call_args.kwargs["payload"]["failure_modes"] == expected
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_artifact_findings_reach_output_consumers_only_when_enabled(enabled):
+    reviewer = _make_prediction_reviewer()
+    reviewer.vars = {"require_artifact_findings": enabled,
+                     "artifact_context": {"content": "FAILED tests/test_a.py::test_save - KeyError"}}
+    quoted = {"kind": "test_failure", "fact": "test_save fails.", "evidence": "FAILED tests/test_a.py::test_save"}
+    invented = {**quoted, "evidence": "FAILED tests/test_b.py::test_load"}
+    reviewer.prediction = "unused prediction"
+    data = {"review": {"key_issues_to_review": [], "artifact_findings": [quoted, "bad", invented]}}
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.set_review_labels = MagicMock()
+    with (
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value=data),
+        patch("pr_agent.tools.pr_reviewer.github_action_output") as action_output,
+        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="review") as render,
+        patch("pr_agent.tools.pr_reviewer.push_outputs_async"),
+    ):
+        reviewer._prepare_pr_review()
+        await reviewer._deliver_sink_output()
+    assert ("artifact_findings" in action_output.call_args.args[0]["review"]) is enabled
+    assert ("artifact_findings" in render.call_args.args[0]["review"]) is enabled
+    if enabled:
+        assert render.call_args.args[0]["review"]["artifact_findings"] == [
+            {**quoted, "quoted": True}, {**invented, "quoted": False}]
+
+
 def test_review_schema_allows_fields_requested_through_extra_instructions():
     reviewer = _make_prediction_reviewer()
     with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:

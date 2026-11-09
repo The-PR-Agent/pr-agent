@@ -143,7 +143,7 @@ COMMENT_OVERRIDABLE_KEYS = {
         "minimal_commits_for_incremental_review", "minimal_minutes_for_incremental_review",
         "num_max_findings", "persistent_comment", "persistent_finding_state", "publish_output_no_suggestions",
         "publish_review_failure_comment", "require_all_thresholds_for_incremental_review",
-        "require_can_be_split_review", "require_estimate_contribution_time_cost",
+        "require_artifact_findings", "require_can_be_split_review", "require_estimate_contribution_time_cost",
         "require_estimate_effort_to_review", "require_failure_modes", "require_merge_recommendation",
         "require_priority_files", "require_risk_assessment", "require_score_review",
         "require_security_review", "require_tests_review", "require_ticket_analysis_review",
