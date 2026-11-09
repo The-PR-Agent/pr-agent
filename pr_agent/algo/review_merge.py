@@ -281,6 +281,12 @@ def _todo_identity(todo: Any) -> Hashable:
             _normalize_text(todo.get("content")))
 
 
+def _artifact_finding_identity(finding: Any) -> Hashable:
+    if not isinstance(finding, dict):
+        return _normalize_text(finding)
+    return _normalize_text(finding.get("kind")), _normalize_text(finding.get("evidence"))
+
+
 def _sub_pr_identity(sub_pr: Any) -> Hashable:
     if not isinstance(sub_pr, dict):
         return _normalize_text(sub_pr)
@@ -479,6 +485,7 @@ _MERGE_RULES: dict = {
     "risk_level": _worst_of(RISK_LEVELS),
     "merge_recommendation": _worst_of(MERGE_RECOMMENDATIONS),
     "failure_modes": _merge_failure_modes,
+    "artifact_findings": _union_of_lists(_artifact_finding_identity),
     "security_concerns": _merge_findings_text,
     "insights_from_user_answers": _merge_findings_text,
     "relevant_tests": _merge_relevant_tests,

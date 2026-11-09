@@ -237,6 +237,7 @@ def convert_to_markdown_v2(output_data: dict,
         "Risk level": "⚠️",
         "Merge recommendation": "✅",
         "Failure modes": "🔎",
+        "Artifact findings": "📋",
         "Review priority files": "📂",
     }
     markdown_text = ""
@@ -257,7 +258,8 @@ def convert_to_markdown_v2(output_data: dict,
     for key, value in review_data.items():
         if value is None or value == '' or value == {} or value == [] or (
                 key.lower() == 'insights_from_user_answers' and is_value_no(value)):
-            if key.lower() not in ['can_be_split', 'key_issues_to_review', 'review_priority_files', 'failure_modes']:
+            if key.lower() not in ['can_be_split', 'key_issues_to_review', 'review_priority_files', 'failure_modes',
+                                   'artifact_findings']:
                 continue
         key_nice = key.replace('_', ' ').capitalize()
         emoji = emojis.get(key_nice, "")
@@ -385,6 +387,28 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"- **Covered in this PR:** {coverage}\n\n"
             if gfm_supported:
                 markdown_text += "</td></tr>\n"
+        elif key.lower() == 'artifact_findings':
+            findings = [f for f in value if isinstance(f, dict)] if isinstance(value, list) else []
+            if gfm_supported:
+                markdown_text += f"<tr><td>{emoji}&nbsp;<strong>CI artifact findings</strong>"
+                markdown_text += "<br><br>\n" if findings else ": none\n"
+            else:
+                markdown_text += f"### {emoji} CI artifact findings" + ("\n\n" if findings else ": none\n\n")
+            for finding in findings:
+                kind = html.escape(str(finding.get("kind", "")).replace("_", " ").capitalize())
+                fact = html.escape(" ".join(str(finding.get("fact", "")).split()))
+                evidence = html.escape(str(finding.get("evidence", "")))
+                note = "" if finding.get("quoted") else " (quote not found in the artifact)"
+                if gfm_supported:
+                    markdown_text += f"<strong>{kind}:</strong> {fact}<br>\n<code>{evidence}</code>{note}<br><br>\n"
+                else:
+                    fact = re.sub(r"([\\`*_\[\]()!#|])", r"\\\1", fact)
+                    evidence = evidence.replace("`", "'")
+                    markdown_text += f"- **{kind}:** {fact}\n  `{evidence}`{note}\n"
+            if gfm_supported:
+                markdown_text += "</td></tr>\n"
+            elif findings:
+                markdown_text += "\n"
         elif 'review priority files' in key_nice.lower():
             priority_files = []
             if isinstance(value, list):

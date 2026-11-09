@@ -217,6 +217,14 @@ for the authoritative default values.
     These scenarios guide human review; they do not gate merging or prove that the PR is safe.</td>
   </tr>
   <tr>
+    <td><b>require_artifact_findings</b></td>
+    <td>Off by default, and only active when a <a href="../../installation/github/#ci-artifact-context">CI artifact</a> reaches /review.
+    If enabled, adds a "CI artifact findings" section with up to five neutral facts from the artifact: destroyed or replaced
+    resources, failed jobs (including allowed-to-fail ones), failed tests, vulnerabilities and notable warnings. Each fact
+    carries a short quote from the artifact; a quote that cannot be found in the artifact is marked. The section reports
+    what the artifact shows and leaves the decision to the reviewer.</td>
+  </tr>
+  <tr>
     <td><b>require_priority_files</b></td>
     <td>If set to true, the tool will add a section listing the files a human reviewer should inspect first.</td>
   </tr>

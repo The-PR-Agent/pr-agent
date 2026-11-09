@@ -111,6 +111,14 @@ class FailureMode(BaseModel):
     covered_in_this_pr: bool = Field(description="True only if a test or check visible in this PR covers the trigger, otherwise false")
 {%- endif %}
 
+{%- if require_artifact_findings %}
+
+class ArtifactFinding(BaseModel):
+    kind: Literal["destroy", "failure", "test_failure", "vulnerability", "warning"] = Field(description="destroy: a resource is destroyed or replaced (Terraform, CDK, Pulumi, Kubernetes, database migrations). failure: a job or step failed, including allowed-to-fail ones. test_failure: a named test failed. vulnerability: a new vulnerability or failed security scan. warning: a deprecation, skipped check or other warning a reviewer would want to know about")
+    fact: str = Field(description="What the artifact shows, stated neutrally in at most 20 words, naming the job, resource or test. Report it; do not judge whether it is acceptable")
+    evidence: str = Field(description="A short verbatim quote from the CI artifact, at most 120 characters, copied exactly so it can be found in the artifact")
+{%- endif %}
+
 class Review(BaseModel):
 {%- if related_tickets %}
     ticket_compliance_check: List[TicketCompliance] = Field(description="A list of compliance checks for the related tickets")
@@ -126,6 +134,9 @@ class Review(BaseModel):
 {%- endif %}
 {%- if require_failure_modes %}
     failure_modes: List[FailureMode] = Field(min_items=0, max_items=3, description="How could this PR break after merge, and what would catch it? Return up to three specific failure scenarios grounded in the visible changes, not generic risks. These scenarios guide review and do not decide whether merging is safe. Return an empty list when no concrete scenario is supported")
+{%- endif %}
+{%- if require_artifact_findings %}
+    artifact_findings: List[ArtifactFinding] = Field(min_items=0, max_items=5, description="Facts from the CI artifact that a reviewer should see before merging: destroyed or replaced resources, failed jobs, failed tests, new vulnerabilities and notable warnings. Up to five, most consequential first. List what the artifact shows even when it is expected; the reviewer decides. Return an empty list when the artifact shows none of these")
 {%- endif %}
 {%- if require_priority_files %}
     review_priority_files: List[str] = Field(description="A short list of the most important files a human reviewer should inspect first. Return an empty list if the PR is too small or no file deserves special attention.")
@@ -194,6 +205,14 @@ review:
       detected_by: |
         A test that injects a write failure and checks cleanup.
       covered_in_this_pr: false
+{%- endif %}
+{%- if require_artifact_findings %}
+  artifact_findings:
+    - kind: test_failure
+      fact: |
+        test_save fails in the test job.
+      evidence: |
+        FAILED tests/test_example.py::test_save
 {%- endif %}
 {%- if require_priority_files %}
   review_priority_files:
@@ -395,6 +414,14 @@ review:
       detected_by: |
         A test that injects a write failure and checks cleanup.
       covered_in_this_pr: false
+{%- endif %}
+{%- if require_artifact_findings %}
+  artifact_findings:
+    - kind: test_failure
+      fact: |
+        test_save fails in the test job.
+      evidence: |
+        FAILED tests/test_example.py::test_save
 {%- endif %}
 {%- if require_priority_files %}
   review_priority_files:
