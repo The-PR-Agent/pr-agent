@@ -1,10 +1,18 @@
-"""The runner's provider-key gate: stop before any tool runs (#4324)."""
+"""Verify the runner's model-key gate while allowing bare static commands (#4324)."""
 
+import copy
 import json
+from unittest.mock import Mock
 
 import pytest
+from starlette_context import request_cycle_context
 
+from pr_agent import doctor, git_providers
+from pr_agent.agent import pr_agent as pr_agent_module
+from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.servers import github_action_runner
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
 @pytest.fixture
@@ -32,6 +40,85 @@ def action_env(action_env_factory):
     }, "pull_request")
 
 
+@pytest.fixture
+def pr_comment_env(action_env_factory):
+    def _factory(body, event_name):
+        pr = {
+            "html_url": "https://github.com/owner/repo/pull/1",
+            "url": "https://api.github.com/repos/owner/repo/pulls/1",
+        }
+        event = {
+            "action": "created", "sender": {"type": "User"},
+            "comment": {"body": body, "id": 123, "pull_request_url": pr["url"]},
+        }
+        if event_name == "issue_comment":
+            event["issue"] = {"pull_request": pr}
+        else:
+            event["pull_request"] = pr
+        action_env_factory(event, event_name)
+
+    return _factory
+
+
+@pytest.mark.parametrize("event_name", ["issue_comment", "pull_request_review_comment"])
+@pytest.mark.parametrize("body", ["/help", "/config", "/settings", " \t/HELP \n", " /CoNfIg \t", "\n/SETTINGS "])
+async def test_static_pr_comments_render_without_model_key(monkeypatch, pr_comment_env, event_name, body):
+    class StaticProvider(GithubProvider):
+        def __init__(self, pr_url=None):
+            super().__init__(None)
+            self.pr_url = pr_url
+
+        publish_comment = Mock()
+        remove_initial_comment = Mock()
+        add_eyes_reaction = Mock()
+
+        def get_request_policy_metadata(self, required_fields):
+            return {"title": "Test PR"}
+
+    gate = Mock(return_value=("openai", ("OPENAI_API_KEY",)))
+    ai_init = Mock(side_effect=AssertionError("Static commands must not initialize an AI handler"))
+    monkeypatch.setattr(github_action_runner, "missing_provider_key_env_vars", gate)
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda url: None)
+    monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda url: None)
+    monkeypatch.setattr(pr_agent_module.LiteLLMAIHandler, "__init__", ai_init)
+    monkeypatch.setitem(git_providers._GIT_PROVIDERS, "github", StaticProvider)
+    monkeypatch.setitem(get_settings().config, "git_provider", "github")
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
+    pr_comment_env(body, event_name)
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        await github_action_runner.run_action()
+
+    gate.assert_not_called()
+    ai_init.assert_not_called()
+    StaticProvider.publish_comment.assert_called_once()
+    expected = "PR Agent Walkthrough" if body.strip().lower() == "/help" else "config.model ="
+    assert expected in StaticProvider.publish_comment.call_args.args[0]
+
+
+@pytest.mark.parametrize("event_name", ["issue_comment", "pull_request_review_comment"])
+@pytest.mark.parametrize("body", ["/help How do I configure reviews?", "/review", "/configuration", "/config typo"])
+async def test_other_pr_commands_still_require_model_key(monkeypatch, pr_comment_env, event_name, body):
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda url: None)
+    monkeypatch.setattr(
+        github_action_runner, "missing_provider_key_env_vars",
+        lambda: ("openai", ("OPENAI_API_KEY",)),
+    )
+    pr_comment_env(body, event_name)
+
+    with pytest.raises(SystemExit, match="Stopping before any tool runs.*OPENAI_API_KEY"):
+        await github_action_runner.run_action()
+
+
+@pytest.mark.parametrize("event_name", ["issue_comment", "pull_request_review_comment"])
+async def test_static_pr_comments_still_require_github_token(monkeypatch, pr_comment_env, event_name):
+    pr_comment_env("/help", event_name)
+    monkeypatch.delenv("GITHUB_TOKEN")
+
+    with pytest.raises(SystemExit, match="GITHUB_TOKEN not set"):
+        await github_action_runner.run_action()
+
+
 async def test_missing_key_stops_before_tools_naming_the_env_variable(
     monkeypatch, action_env
 ):
@@ -42,6 +129,20 @@ async def test_missing_key_stops_before_tools_naming_the_env_variable(
 
     with pytest.raises(SystemExit, match="Stopping before any tool runs.*OPENAI_API_KEY"):
         await github_action_runner.run_action()
+
+
+async def test_placeholder_without_known_env_names_has_actionable_guidance(monkeypatch, action_env):
+    monkeypatch.setattr(
+        github_action_runner, "missing_provider_key_env_vars",
+        lambda: ("unlisted_provider", ()),
+    )
+
+    with pytest.raises(SystemExit) as error:
+        await github_action_runner.run_action()
+
+    message = str(error.value)
+    assert "Replace the placeholder key in provider settings or workflow env." in message
+    assert "Set  in this workflow" not in message
 
 
 async def test_repository_settings_are_applied_before_key_gate(monkeypatch, action_env):
@@ -62,7 +163,7 @@ async def test_repository_settings_are_applied_before_key_gate(monkeypatch, acti
     # be applied before the gate judges the active provider's key.
     with pytest.raises(SystemExit):
         await github_action_runner.run_action()
-    assert order == [("repo_settings", "https://github.com/owner/repo/pull/1"), "gate"]
+    assert order == [("repo_settings", "https://api.github.com/repos/owner/repo/pulls/1"), "gate"]
 
 
 @pytest.mark.parametrize(
@@ -78,7 +179,7 @@ async def test_repository_settings_are_applied_before_key_gate(monkeypatch, acti
                     "url": "https://api.github.com/repos/owner/repo/pulls/1",
                 }},
             },
-            "https://github.com/owner/repo/pull/1",
+            "https://api.github.com/repos/owner/repo/pulls/1",
         ),
         (
             "workflow_run",
@@ -234,3 +335,80 @@ async def test_inline_command_comments_keep_setup_before_line_conversion(monkeyp
     else:
         expected.append(("dispatch", body))
     assert order == expected
+
+
+@pytest.mark.parametrize("provider", ["watsonx", "watsonx_text"])
+@pytest.mark.parametrize(
+    ("source", "value"),
+    [
+        ("LITELLM.EXTRA_HEADERS.Authorization", ""),
+        ("LITELLM.EXTRA_HEADERS.Authorization", "Bearer"),
+        ("LITELLM.EXTRA_HEADERS.Authorization", "Bearer dummy_key"),
+        ("LITELLM.EXTRA_HEADERS.Authorization", "ZenApiKey dummy_key"),
+        ("WATSONX_TOKEN", "dummy_key"),
+        ("WATSONX_ZENAPIKEY", "dummy_key"),
+    ],
+)
+async def test_watsonx_gate_names_the_override_that_must_be_corrected(
+    monkeypatch, action_env, capsys, provider, source, value,
+):
+    from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+
+    # Watsonx's authentication checks must not trigger unrelated AWS discovery.
+    monkeypatch.setattr(LiteLLMAIHandler, "_initialize_aws_request_credentials", lambda self, settings: None)
+    settings = get_settings()
+    snapshot = snapshot_settings((
+        "config.model", "litellm.custom_llm_provider", "litellm.extra_headers",
+        "openai.api_type", "openai.org", "watsonx", "watsonx_text",
+        "github.user_token", "github.deployment_type", "github_action_config.enable_output",
+    ))
+    secret = "synthetic-native-key-not-for-diagnostics"
+    dispatches = []
+
+    async def run_tool(*args):
+        dispatches.append(args)
+
+    try:
+        for key in ("watsonx", "watsonx_text"):
+            settings.set(key, {})
+        settings.set("config.model", f"{provider}/ibm/granite-3-8b-instruct")
+        for key in ("litellm.custom_llm_provider", "litellm.extra_headers", "openai.api_type"):
+            settings.set(key, None)
+        for name in ("WATSONX_APIKEY", "WATSONX_API_KEY", "WX_API_KEY", "WATSONX_TOKEN", "WATSONX_ZENAPIKEY"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("WATSONX_APIKEY", secret)
+        monkeypatch.setenv("WATSONX_URL", "https://watsonx.example")
+        if source == "LITELLM.EXTRA_HEADERS.Authorization":
+            headers = {"authorization": value, "X-Private": secret}
+            if value == "Bearer dummy_key":
+                headers = {"Authorization": "Bearer valid-earlier-entry", **headers}
+            settings.set("litellm.extra_headers", json.dumps(headers))
+        else:
+            monkeypatch.setenv(source, value)
+        monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda url: None)
+        monkeypatch.setattr(github_action_runner, "enforce_request_policy", lambda *args, **kwargs: True)
+        monkeypatch.setattr(github_action_runner, "_run_auto_tool", run_tool)
+
+        # Use the real handler and shared gate; a valid native key cannot fix an overriding credential.
+        assert doctor.missing_provider_key_env_vars() == (provider, (source,))
+        with pytest.raises(SystemExit) as error:
+            await github_action_runner.run_action()
+        message = str(error.value)
+        if source == "LITELLM.EXTRA_HEADERS.Authorization":
+            assert "last case-insensitive Authorization entry in LITELLM.EXTRA_HEADERS" in message
+        else:
+            assert f"Correct or remove {source}" in message
+        assert "Set WATSONX_API" not in message
+        assert secret not in message
+        assert dispatches == []
+        output = capsys.readouterr()
+        assert secret not in output.out + output.err
+
+        # Removing the indicated source allows the already-present native key to be used.
+        if source == "LITELLM.EXTRA_HEADERS.Authorization":
+            settings.set("litellm.extra_headers", None)
+        else:
+            monkeypatch.delenv(source)
+        assert doctor.missing_provider_key_env_vars() is None
+    finally:
+        restore_settings(snapshot)

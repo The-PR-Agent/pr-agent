@@ -529,7 +529,7 @@ def test_pinecone_create_index_path_builds_new_index_then_upserts(monkeypatch):
     assert upserted, "expected the upsert to run after index creation"
 
 
-def test_pinecone_interrupted_ingest_without_sentinel_reingests_full(monkeypatch):
+def test_pinecone_interrupted_ingest_without_sentinel_reingests_full(monkeypatch, github_issue_pages):
     """Re-run the full ingest when an interrupted run left no sentinel.
 
     The sentinel is the last row written, so an index holding the newest issues without a
@@ -571,7 +571,7 @@ def test_pinecone_interrupted_ingest_without_sentinel_reingests_full(monkeypatch
             self.github_client = SimpleNamespace(
                 get_repo=lambda repo_name: SimpleNamespace(
                     full_name="Example/Repo",
-                    get_issues=lambda state: [_make_issue(3), _make_issue(2), _make_issue(1)],
+                    get_issues=lambda state: github_issue_pages((3, 2, 1)),
                 )
             )
 
@@ -637,7 +637,7 @@ def test_pinecone_failed_issue_batch_skips_sentinel_upsert(monkeypatch):
     )
 
 
-def test_pinecone_incremental_backfills_an_older_index_gap(monkeypatch):
+def test_pinecone_incremental_backfills_an_older_index_gap(monkeypatch, github_issue_pages):
     """Keep scanning past indexed issues and backfill an older missing issue.
 
     With the sentinel and the newest issue already indexed, a deleted older issue sits
@@ -687,7 +687,7 @@ def test_pinecone_incremental_backfills_an_older_index_gap(monkeypatch):
             self.github_client = SimpleNamespace(
                 get_repo=lambda repo_name: SimpleNamespace(
                     full_name="Example/Repo",
-                    get_issues=lambda state: [_make_issue(number) for number in (5, 4, 3, 2)],
+                    get_issues=lambda state: github_issue_pages((5, 4, 3, 2)),
                 )
             )
 

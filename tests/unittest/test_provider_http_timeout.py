@@ -297,7 +297,7 @@ def test_the_bitbucket_provider_calls_carry_a_timeout():
 
     provider = BitbucketProvider.__new__(BitbucketProvider)
     provider.headers = {"Authorization": "Bearer token"}
-    response = MagicMock(status_code=200, text="file body")
+    response = MagicMock(status_code=200, content=b"file body")
 
     with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
                return_value=response) as request:
@@ -356,7 +356,7 @@ def test_the_bitbucket_snapshot_read_carries_a_timeout():
                             data={"source": {"repository": {"uuid": "{repository}"},
                                              "commit": {"hash": "a1b2c3d4e5f6"}},
                                   "destination": {"repository": {"uuid": "{repository}"}}})
-    response = MagicMock(status_code=200, text="body")
+    response = MagicMock(status_code=200, content=b"body")
 
     with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
                return_value=response) as request:
@@ -407,7 +407,7 @@ def test_the_bitbucket_local_settings_fetch_carries_a_timeout():
     provider.pr.data = {"destination": {"commit": {"hash": "abc123"}}}
 
     with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
-               return_value=MagicMock(status_code=200, text="")) as request, \
+               return_value=MagicMock(status_code=200, content=b"")) as request, \
          patch.object(BitbucketProvider, "_get_global_repo_settings", MagicMock(return_value="")):
         provider.get_repo_settings()
 
@@ -420,7 +420,7 @@ def test_the_bitbucket_calls_re_read_the_configured_timeout(monkeypatch):
 
     provider = BitbucketProvider.__new__(BitbucketProvider)
     provider.headers = {"Authorization": "Bearer token"}
-    response = MagicMock(status_code=200, text="file body")
+    response = MagicMock(status_code=200, content=b"file body")
 
     with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
                return_value=response) as request:
@@ -446,7 +446,7 @@ def test_the_bitbucket_settings_fetches_carry_a_timeout():
     ref = MagicMock(status_code=200)
     ref.json.return_value = {"target": {"hash": "settings-sha"}}
     config_file = MagicMock(status_code=200)
-    config_file.text = ""
+    config_file.content = b""
 
     with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
                side_effect=[repo, ref, config_file]) as request, \
@@ -502,7 +502,7 @@ def test_a_repository_cannot_change_the_host_timeout_at_a_client(monkeypatch):
                             data={"source": {"repository": {"uuid": "{repository}"},
                                              "commit": {"hash": "a1b2c3d4e5f6"}},
                                   "destination": {"repository": {"uuid": "{repository}"}}})
-    response = MagicMock(status_code=200, text="file body")
+    response = MagicMock(status_code=200, content=b"file body")
 
     with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
                return_value=response) as request:

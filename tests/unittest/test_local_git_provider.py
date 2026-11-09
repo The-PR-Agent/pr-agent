@@ -390,7 +390,7 @@ async def test_publish_no_suggestions_routes_local_git_output_to_improve_file(tm
         get_settings().set("pr_code_suggestions.publish_output_no_suggestions", True)
         get_settings().set("pr_code_suggestions.suggestions_heading", "Team Suggestions")
         monkeypatch.setattr(
-            "pr_agent.git_providers.local_git_provider.show_run_details",
+            "pr_agent.algo.run_output.show_run_details",
             lambda gfm_supported: "\n\nRun details" if not gfm_supported else "",
         )
 

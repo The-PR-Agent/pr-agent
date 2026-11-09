@@ -26,10 +26,11 @@ This integration enriches the review process by automatically surfacing relevant
 
 1. Ticket Title
 2. Ticket Description
-3. Custom Fields (Acceptance criteria)
-4. Subtasks (linked tasks)
+3. Acceptance criteria (configured Jira custom fields and Azure DevOps work items)
+4. GitHub sub-issues
 5. Labels
-6. Attached Images/Screenshots
+
+Image attachments are not fetched or sent to the model as images by the ticket integration.
 
 ## Affected Tools
 
@@ -49,7 +50,7 @@ By understanding the reasoning and intent behind modifications, the LLM can offe
 Similarly to the `describe` tool, the `review` tool will use the ticket content to provide additional context for the code changes.
 
 In addition, this feature will evaluate how well a Pull Request (PR) adheres to its original purpose/intent as defined by the associated ticket or issue.
-Each ticket will be assigned a label (Compliance/Alignment level), Indicates the degree to which the PR fulfills its original purpose:
+Each ticket will be assigned a compliance assessment in the review comment, indicating the degree to which the PR fulfills its original purpose. These assessments are not added as PR labels:
 
 - Fully Compliant
 - Partially Compliant
@@ -58,7 +59,7 @@ Each ticket will be assigned a label (Compliance/Alignment level), Indicates the
 
 <img src="/img/ticket_compliance_review.png" alt="Ticket Compliance" width="768" />
 
-A `PR Code Verified` label indicates the PR code meets ticket requirements, but requires additional manual testing beyond the code scope. For example - validating UI display across different environments (Mac, Windows, mobile, etc.).
+A `PR Code Verified` assessment indicates the PR code meets ticket requirements, but requires additional manual testing beyond the code scope. For example - validating UI display across different environments (Mac, Windows, mobile, etc.).
 
 
 #### Configuration options
@@ -70,15 +71,6 @@ A `PR Code Verified` label indicates the PR code meets ticket requirements, but 
     [pr_reviewer]
     require_ticket_analysis_review=false
     ```
-
-- If you set:
-    ```toml
-    [pr_reviewer]
-    check_pr_additional_content=true
-    ```
-    (default: `false`)
-
-    the `review` tool will also validate that the PR code doesn't contain any additional content that is not related to the ticket. If it does, the PR will be labeled at best as `PR Code Verified`, and the `review` tool will provide a comment with the additional unrelated content found in the PR code.
 
 ## GitHub/GitLab Issues Integration
 
@@ -291,7 +283,8 @@ or a comment command cannot change them.
 project_keys = ["PROJ", "OPS"]
 ```
 
-Entries are plain upper-case project keys (letters only, as Jira writes them) or `"*"` to allow all keys.
+Entries are plain upper-case project keys as Jira writes them (a letter, then letters or digits,
+such as `PROJ` or `B2B`) or `"*"` to allow all keys.
 Anything else (a lower-case label, a full ticket key, a URL, a blank entry) is ignored with a
 warning. If the list is set but none of its entries is valid, no Jira lookup is made at all
 until it is fixed, so a typo cannot silently widen the lookup again.

@@ -350,6 +350,18 @@ class GiteaProvider(GitProvider):
         sha = getattr(self.last_commit, "sha", None)
         return sha if isinstance(sha, str) else ""
 
+    def get_pr_identity(self) -> dict:
+        repo = "/".join(
+            str(part) for part in (self.owner, self.repo) if part
+        )
+        return {
+            "url": self.get_pr_url() or "",
+            "provider": "gitea",
+            "repo": repo,
+            "number": self.pr_number if self.pr_number is not None else "",
+            "head_sha": self.get_pr_head_sha(),
+        }
+
     def get_comment_url(self, comment) -> str:
         if isinstance(comment, dict):
             return comment.get("html_url") or comment.get("url") or ""
@@ -715,7 +727,20 @@ class GiteaProvider(GitProvider):
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
         encoded_file = quote(relevant_file, safe="/")
-        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{encoded_file}"
+        branch = self.get_pr_branch()
+        if branch.startswith("refs/pull/"):
+            # AGit-flow PRs have no head branch; Gitea reports
+            # head.ref == "refs/pull/<N>/head", and a branch link 404s.
+            # Link the file at the PR's head commit instead.
+            head_sha = self.pr.head.sha if self.pr and self.pr.head else ""
+            if not head_sha:
+                self.logger.warning(
+                    "AGit-flow PR without a head SHA; cannot generate a file link"
+                )
+                return ""
+            link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/commit/{quote(head_sha, safe='')}/{encoded_file}"
+        else:
+            link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(branch)}/{encoded_file}"
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
@@ -893,6 +918,8 @@ class GiteaProvider(GitProvider):
 
     def is_supported(self, capability) -> bool:
         """Check if the provider is supported"""
+        if capability in ("head_ci_status", "head_staleness", "author_human_check"):
+            return False
         return True
 
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
@@ -922,25 +949,54 @@ class GiteaProvider(GitProvider):
                 pr_number=self.pr_number
             )
 
-    def publish_labels(self, labels: list[int]) -> bool:
-        """Publish labels to the PR"""
-        if not labels:
-            self.logger.error("No labels provided to publish")
-            return True
-
+    def publish_labels(self, labels: list[str]) -> bool:
+        """Set the PR labels to the given set: remove the labels left out of it, then add the missing ones"""
+        issue_number = self.pr_number if self.enabled_pr else self.issue_number
         try:
-            response = self.repo_api.add_labels(
+            current_labels = self.repo_api.get_issue_labels(
                 owner=self.owner,
                 repo=self.repo,
-                issue_number=self.pr_number if self.enabled_pr else self.issue_number,
-                labels=labels
+                issue_number=issue_number
             )
+            if not isinstance(current_labels, list) or not all(
+                isinstance(getattr(label, "id", None), int) and isinstance(getattr(label, "name", None), str)
+                for label in current_labels
+            ):
+                self.logger.error("Failed to publish labels: the current labels could not be read")
+                return False
+
+            # Compare names case-insensitively, as get_user_labels does, so that a human "enhancement"
+            # is not removed in favour of an "Enhancement" the repository may not have.
+            requested = {name.lower() for name in labels}
+            kept_ids = [label.id for label in current_labels if label.name.lower() in requested]
+            if len(kept_ids) < len(current_labels):
+                if kept_ids:
+                    # By id, not name: Gitea 1.22 resolves names in the repository only, and a replace by
+                    # name drops the organization labels it cannot resolve. Not a delete per label either:
+                    # current Forgejo (15.0.10+, 16.0.6+, 17.x) finds a numeric label id among the
+                    # repository's own labels only.
+                    self.repo_api.replace_labels(
+                        owner=self.owner,
+                        repo=self.repo,
+                        issue_number=issue_number,
+                        label_ids=kept_ids
+                    )
+                else:
+                    self.repo_api.clear_labels(owner=self.owner, repo=self.repo, issue_number=issue_number)
+
+            current_names = {label.name.lower() for label in current_labels}
+            missing_names = [name for name in labels if name.lower() not in current_names]
+            if missing_names:
+                self.repo_api.add_labels(
+                    owner=self.owner,
+                    repo=self.repo,
+                    issue_number=issue_number,
+                    labels=missing_names
+                )
         except ApiException as e:
             self.logger.error(f"Failed to publish labels: {e}")
             return False
 
-        if response:
-            self.logger.info("Labels added successfully")
         return True
 
     def remove_comment(self, comment) -> None:
@@ -1378,12 +1434,6 @@ class RepoApi(giteapy.RepositoryApi):
             index=issue_number
         )
 
-    def list_all_commits(self, owner: str, repo: str):
-        return self.repository.repo_get_all_commits(
-            owner=owner,
-            repo=repo
-        )
-
     def add_reaction_comment(self, owner: str, repo: str, comment_id: int, reaction: str):
         body = {
             "content": reaction
@@ -1406,7 +1456,7 @@ class RepoApi(giteapy.RepositoryApi):
             auth_settings=['AuthorizationHeaderToken']
         )
 
-    def add_labels(self, owner: str, repo: str, issue_number: int, labels: list[int]):
+    def add_labels(self, owner: str, repo: str, issue_number: int, labels: list[str]):
         body = {
             "labels": labels
         }
@@ -1415,6 +1465,21 @@ class RepoApi(giteapy.RepositoryApi):
             repo=repo,
             index=issue_number,
             body=body
+        )
+
+    def replace_labels(self, owner: str, repo: str, issue_number: int, label_ids: list[int]):
+        return self.issue.issue_replace_labels(
+            owner=owner,
+            repo=repo,
+            index=issue_number,
+            body={"labels": label_ids}
+        )
+
+    def clear_labels(self, owner: str, repo: str, issue_number: int):
+        return self.issue.issue_clear_labels(
+            owner=owner,
+            repo=repo,
+            index=issue_number
         )
 
     def get_pr_commits(self, owner: str, repo: str, pr_number: int):

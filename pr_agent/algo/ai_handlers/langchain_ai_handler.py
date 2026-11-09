@@ -75,7 +75,11 @@ class LangChainOpenAIHandler(BaseAiHandler):
             get_logger().warning(
                 f"Image path is not supported for LangChainOpenAIHandler. Ignoring image path: {img_path}")
         try:
-            messages = [SystemMessage(content=system), HumanMessage(content=user)]
+            request_messages = self.build_request_messages(model, system, user)
+            messages = [
+                SystemMessage(content=request_messages[0]["content"]),
+                HumanMessage(content=request_messages[1]["content"]),
+            ]
             llm = await self._create_chat_async(deployment_id=self.deployment_id)
 
             if not isinstance(llm, Runnable):
@@ -127,4 +131,4 @@ class LangChainOpenAIHandler(BaseAiHandler):
             raise
         except Exception as e:
             get_logger().warning(f"Unknown error during LLM inference: {e}")
-            raise openai.APIError from e
+            raise

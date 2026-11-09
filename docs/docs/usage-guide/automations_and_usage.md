@@ -23,7 +23,7 @@ The commands above assume the `pr_agent` package is importable — use the venv 
 1. In addition to editing your local configuration file, you can also change repository-configurable values by adding them to the command line:
 
    ```
-   python -m pr_agent.cli --pr_url=<pr_url>  /review --pr_reviewer.extra_instructions="focus on the file: ..."
+   python -m pr_agent.cli --pr_url=<pr_url>  review --pr_reviewer.extra_instructions='"focus on the file: ..."'
    ```
 
    Host-controlled values, including provider authentication, TLS, and endpoint settings, are rejected in command arguments. See [Configuration Options](./configuration_options.md#local-configuration-file) for details.
@@ -59,7 +59,15 @@ For a quick preflight that needs no token and no PR, run:
 pr-agent doctor
 ```
 
-It checks that `config.model` is set, that the active provider has a real API key, and that a one-token completion against the configured model succeeds. The exit code is `0` only when every check passes, so CI setups can gate on it. It ships with the package, unlike the fuller health check below, which exercises real commands on a real PR.
+It checks that `config.model` is set and that a completion against the configured model succeeds. Where required, it also checks for a real static API key. Azure AD, Bedrock IAM, Anthropic bearer tokens without captured API keys, keyless local endpoints, and custom endpoints defer authentication validation to the completion. For Watsonx, an API URL alone is insufficient: configure an API key, `WATSONX_TOKEN`, `WATSONX_ZENAPIKEY`, or an explicit `Authorization` header. Watsonx checks these credentials in header, bearer-token, Zen-key, then API-key order; placeholder credentials are not accepted. An Anthropic bearer token must also be non-placeholder. Keyless local providers and eligible OpenRouter gateway fallbacks defer placeholder-key validation to the model completion. Native providers that require a real key still reject placeholders. The exit code is `0` only when every check passes, so CI setups can gate on it. It ships with the package, unlike the fuller health check below, which exercises real commands on a real PR.
+
+In Docker, run it from the CLI image (`pragent/pr-agent:<version>` or `pragent/pr-agent:latest`), whose entrypoint takes the command directly:
+
+```bash
+docker run --rm --env-file .env pragent/pr-agent:latest doctor
+```
+
+Service images such as `pragent/pr-agent:<version>-github_app` are intended for long-running servers and do not install the `pr-agent` console script. To run the check from one of them, override the command with `python -m pr_agent.cli doctor`.
 
 When host-configured `push_outputs` is enabled, `doctor` adds a fourth check for the selected output destinations: registered channel names, a nonempty file path, HTTPS scheme and hostname for webhook/Slack URLs, and a nonempty Telegram token string and a chat ID that is a nonempty string or nonzero integer. An omitted file path uses the normal default. Distinct custom sink names receive recognition-only checks; their private settings are not validated.
 
@@ -146,7 +154,7 @@ This means that when a new PR is opened/reopened or marked as ready for review, 
 
 **Draft PRs:**
 
-By default, draft PRs are not considered for automatic tools, but you can change this by setting the `feedback_on_draft_pr` parameter to `true` in the configuration file.
+By default, the GitHub App does not consider draft PRs for automatic tools. You can change this by setting the `feedback_on_draft_pr` parameter to `true` in the configuration file. The GitHub Action applies the same setting to `pull_request_review` events. The GitLab webhook also skips draft MRs by default, while Gitea, Azure DevOps, and Bitbucket do not apply a draft check.
 When enabled, marking the PR as ready does not run `pr_commands` a second time.
 Because this setting can be overridden per repository, draft PR events, including each `synchronize` event caused by a push, still fetch the repository configuration before being skipped.
 
@@ -202,6 +210,8 @@ push_commands = [
 For GitHub Action, settings fall back from `github_action_config.*` to `github_app.*`, so you can set either section.
 
 This means that when new code is pushed to the PR, PR-Agent will run the `describe` and `review` tools, with the specified parameters.
+
+The `push_trigger_pending_tasks_backlog` and `push_trigger_pending_tasks_ttl` settings apply to the GitHub App only; the GitLab, Gitea, and Bitbucket servers use fixed values.
 
 ### GitHub Action
 
@@ -268,6 +278,8 @@ env:
   github_action_config.review_author_types: '["User"]'
   github_action_config.review_commands: '["/improve"]'
 ```
+
+#### Output and Check Run settings
 
 `github_action_config.enable_output` are used to enable/disable github actions [output parameter](https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#outputs-for-docker-container-and-javascript-actions) (default is `true`).
 Review result is output as JSON to `steps.{step-id}.outputs.review` property.
@@ -407,7 +419,7 @@ pr_commands = [
 ]
 ```
 
-Note that we set specifically for bitbucket, we recommend using: `--pr_code_suggestions.suggestions_score_threshold=7` and that is the default value we set for bitbucket.
+For Bitbucket, we recommend using: `--pr_code_suggestions.suggestions_score_threshold=7`. The shipped default value is `1`; Bitbucket does not override it automatically.
 Since this platform only supports inline code suggestions, we want to limit the number of suggestions, and only present a limited number.
 
 To enable BitBucket app to respond to each **push** to the PR, set (for example):

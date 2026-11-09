@@ -16,6 +16,7 @@ from starlette.middleware import Middleware
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
+from pr_agent.agent.command_registry import command_takes_comment_id
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
@@ -29,6 +30,7 @@ from pr_agent.secret_providers import get_secret_provider, validate_secret_provi
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     auto_feedback_disabled,
+    get_include_pr_labels,
     get_pr_commands,
     is_ask_command_comment,
     is_command_comment,
@@ -38,7 +40,7 @@ from pr_agent.servers.utils import (
 )
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
-setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
+setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
 router = APIRouter()
 
 # A new MR can be unreadable for a moment after its webhook fires, so the first lookup answers 404.
@@ -89,9 +91,7 @@ async def handle_request(
 
 async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: str,
                                    log_context: dict, data: dict):
-    feedback_on_draft = get_settings().get(
-        "gitlab.feedback_on_draft_pr", False
-    )
+    feedback_on_draft = _as_bool_setting(get_settings().get("gitlab.feedback_on_draft_pr", False))
     if is_draft(data) and not feedback_on_draft:
         get_logger().info(f"Skipping draft MR: {api_url}")
         return
@@ -128,7 +128,20 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
 def is_bot_user(data) -> bool:
     try:
         # logic to ignore bot users (unlike GitHub, no direct flag for bot users in gitlab)
-        sender_name = data.get("user", {}).get("name", "unknown").lower()
+        user = data.get("user") or {}
+        # gitlab.ignore_user_ids may arrive as a list, a single int (GITLAB__IGNORE_USER_IDS=123)
+        # or a string, including a comma-separated one (GITLAB__IGNORE_USER_IDS=123,456),
+        # so split commas and compare every entry as a stripped string.
+        ignored_ids = {
+            str(entry).strip()
+            for entry in normalize_setting_list(get_settings().get("gitlab.ignore_user_ids", []), split_commas=True)
+            if entry is not None and str(entry).strip()
+        }
+        sender_id = user.get("id")
+        if ignored_ids and sender_id is not None and str(sender_id).strip() in ignored_ids:
+            get_logger().info(f"Skipping GitLab user with ignored id: {sender_id}")
+            return True
+        sender_name = user.get("name", "unknown").lower()
         # Indicators are sourced from config.bot_user_indicators in configuration.toml so the
         # default list has a single source of truth and can be reused by other providers in
         # the future. Normalize the value defensively: a misconfigured .pr_agent.toml (string
@@ -141,7 +154,7 @@ def is_bot_user(data) -> bool:
             raw_indicators = list(raw_indicators)
         except TypeError:
             get_logger().warning(
-                f"Ignoring non-iterable gitlab.bot_user_indicators value: {raw_indicators!r}"
+                f"Ignoring non-iterable config.bot_user_indicators value: {raw_indicators!r}"
             )
             raw_indicators = []
         bot_indicators = [s.lower() for s in raw_indicators if isinstance(s, str)]
@@ -372,7 +385,11 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
         log_context["sender"] = sender
         if data.get('object_kind') == 'merge_request':
             # ignore MRs based on title, labels, source and target branches
-            if not should_process_pr_logic(data):
+            prefilter_allowed = (
+                shared_should_process_pr_logic(data, provider="gitlab", check_include_labels=False)
+                if get_include_pr_labels() else should_process_pr_logic(data)
+            )
+            if not prefilter_allowed:
                 return
             object_attributes = data.get('object_attributes', {})
             if object_attributes.get('action') in ['open', 'reopen']:
@@ -387,11 +404,11 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 get_logger().info(f"Draft MR is ready: {url}")
 
                 apply_repo_settings(url)
-                if get_settings().get("gitlab.feedback_on_draft_pr", False):
+                if _as_bool_setting(get_settings().get("gitlab.feedback_on_draft_pr", False)):
                     # the draft was already getting feedback, so only the push half of this update is new
                     if (object_attributes.get('oldrev')
                             and normalize_setting_list(get_settings().get("gitlab.push_commands", {}))
-                            and get_settings().get("gitlab.handle_push_trigger", False)):
+                            and _as_bool_setting(get_settings().get("gitlab.handle_push_trigger", False))):
                         get_logger().debug(f'A push event has been received: {url}')
                         async with push_trigger_slot(url, allow_backlog=True, ttl=300) as proceed:
                             if proceed:
@@ -409,7 +426,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 apply_repo_settings(url)
 
                 commands_on_push = normalize_setting_list(get_settings().get("gitlab.push_commands", {}))
-                handle_push_trigger = get_settings().get("gitlab.handle_push_trigger", False)
+                handle_push_trigger = _as_bool_setting(get_settings().get("gitlab.handle_push_trigger", False))
                 if not commands_on_push or not handle_push_trigger:
                     get_logger().info("Push event, but no push commands found or push trigger is disabled")
                     return
@@ -474,11 +491,11 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 provider = get_git_provider_with_context(pr_url=url)
                 discussion_id = data.get('object_attributes', {}).get('discussion_id')
                 command = body.split(maxsplit=1)[0].lower() if isinstance(body, str) and body.strip() else ""
-                if (discussion_id and not data.get('object_attributes', {}).get('type')
-                        and command in ("/review", "/review_pr", "/improve", "/improve_code")):
+                note_type = data.get('object_attributes', {}).get('type')
+                if (discussion_id and command_takes_comment_id(command) and (
+                        not note_type or (note_type == "DiscussionNote" and command in ("/ask", "/ask_question")))):
                     body = f"{body} --comment_id={discussion_id}"
-                if (data.get('object_attributes', {}).get('type') == 'DiffNote'
-                        and is_ask_command_comment(body)):  # /ask_line
+                if note_type == 'DiffNote' and is_ask_command_comment(body):  # /ask_line
                     body = handle_ask_line(body, data)
 
                 # A fresh collector, so the verdict below can only come from this command.
@@ -515,8 +532,20 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
 def handle_ask_line(body, data):
     try:
-        line_range_ = data['object_attributes']['position']['line_range']
-        if line_range_['start'].get('type', 'new') == 'old':
+        position = data['object_attributes']['position']
+        line_range_ = position.get('line_range')
+        if line_range_ is None:
+            new_line = position.get('new_line')
+            old_line = position.get('old_line')
+            if isinstance(new_line, int) and not isinstance(new_line, bool) and new_line > 0:
+                start_line = end_line = new_line
+                side = 'RIGHT'
+            elif isinstance(old_line, int) and not isinstance(old_line, bool) and old_line > 0:
+                start_line = end_line = old_line
+                side = 'LEFT'
+            else:
+                return body
+        elif line_range_['start'].get('type', 'new') == 'old':
             start_line = line_range_['start']['old_line']
             end_line = line_range_['end']['old_line']
             side = 'LEFT'
@@ -525,7 +554,7 @@ def handle_ask_line(body, data):
             end_line = line_range_['end']['new_line']
             side = 'RIGHT'
         question = body.strip().removeprefix('/ask').strip()
-        path = data['object_attributes']['position']['new_path']
+        path = position['new_path']
         comment_id = data['object_attributes']["discussion_id"]
         get_logger().info("Handling line ")
         body = [

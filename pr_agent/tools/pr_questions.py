@@ -15,8 +15,9 @@ from pr_agent.algo.pr_processing import (
     retry_with_fallback_models,
     run_diff_preparation,
 )
+from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details
-from pr_agent.algo.run_output import append_run_details
+from pr_agent.algo.run_output import append_run_details, push_outputs_async
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import ModelType, decode_user_text_args
@@ -29,6 +30,10 @@ from pr_agent.servers.help import HelpMessage
 NO_ANALYZABLE_FILES_NOTE = (
     "Every file changed in this PR is excluded from analysis (for example lockfiles, generated "
     "files, or files matched by the ignore settings), so there is no diff to answer this question from."
+)
+REPO_CONTEXT_OMITTED_NOTE = (
+    "Repository instruction files were omitted because they did not fit the model context. "
+    "This answer does not use them."
 )
 
 
@@ -70,10 +75,12 @@ class PRQuestions:
             "extra_instructions": settings.pr_questions.extra_instructions,
             "skills_context": skills_context,
             "artifact_context": get_artifact_context("pr_questions"),
+            "repo_context": "",
         }
         self.patches_diff = None
         self.prediction = None
         self.no_analyzable_files = False
+        self._repo_context: str | None = None
 
     def parse_args(self, args):
         return decode_user_text_args(args)
@@ -102,7 +109,7 @@ class PRQuestions:
                 # No model was called, so there are no run details to report.
                 note = self._prepare_no_analyzable_files_answer()
                 if get_settings().config.publish_output:
-                    self._publish_answer(note)
+                    await self._publish_answer_with_sinks(note, NO_ANALYZABLE_FILES_NOTE)
                 else:
                     get_settings().set("data.answer", NO_ANALYZABLE_FILES_NOTE)
                 return ""
@@ -116,7 +123,9 @@ class PRQuestions:
                 pr_comment += "\n</details>\n"
 
             if get_settings().config.publish_output:
-                self._publish_answer(append_run_details(pr_comment, self.git_provider))
+                await self._publish_answer_with_sinks(
+                    append_run_details(pr_comment, self.git_provider), (self.prediction or "").strip()
+                )
             else:
                 get_settings().set("data.answer", (self.prediction or "").strip())
         finally:
@@ -128,6 +137,13 @@ class PRQuestions:
                         f"Failed to remove the temporary question comment: {cleanup_error}"
                     )
         return ""
+
+    async def _publish_answer_with_sinks(self, comment: str, answer: str):
+        await push_outputs_async(
+            "ask", payload={"question": self.question_str, "answer": answer},
+            markdown=self._format_answer(_sanitize_slash_commands(answer)), git_provider=self.git_provider,
+        )
+        return self._publish_answer(comment)
 
     def _publish_answer(self, answer: str):
         comment_id = get_settings().get("comment_id", "")
@@ -190,6 +206,7 @@ class PRQuestions:
 
     async def _prepare_prediction(self, model: str):
         variables = copy.deepcopy(self.vars)
+        repo_context_omitted = False
         raw_history = variables.get("conversation_history", "")
         variables["conversation_history"] = ""
         image_path = variables.get("img_path")
@@ -265,12 +282,36 @@ class PRQuestions:
             raise FallbackEligibleError(
                 f"The complete packed question diff does not fit the token limit for {model}"
             )
-        self.patches_diff = fitted.optional_text
+        if getattr(self, "_repo_context", None) is None:
+            self._repo_context = await run_diff_preparation(build_repo_context, self.git_provider)
+        if self._repo_context:
+            # Use only the room left after selecting the original history and complete diff.
+            variables["diff"] = patches_diff
+            try:
+                fitted = budget.fit_prompt_variable(
+                    variables,
+                    "repo_context",
+                    self._repo_context,
+                    ai_handler=self.ai_handler,
+                    default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+                    preserve_minimum=True,
+                    image_path=image_path,
+                    require_full_text=True,
+                )
+            except FallbackEligibleError:
+                repo_context_omitted = True
+                get_logger().warning("Repository instructions do not fit; keeping the existing question context")
+            else:
+                variables["repo_context"] = self._repo_context
+
+        self.patches_diff = patches_diff
         self._attempt_system_prompt = fitted.system_prompt
         self._attempt_user_prompt = fitted.user_prompt
         self._attempt_variables = variables
         get_logger().debug("PR diff", artifact=self.patches_diff)
         self.prediction = await self._get_prediction(model)
+        if repo_context_omitted:
+            self.prediction = f"{self.prediction.rstrip()}\n\n> {REPO_CONTEXT_OMITTED_NOTE}"
 
     async def _get_prediction(self, model: str):
         system_prompt = self._attempt_system_prompt
@@ -284,6 +325,8 @@ class PRQuestions:
         else:
             response, finish_reason = await self.ai_handler.chat_completion(
                 model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"The /ask response was truncated by {model}")
         return response
 
     def _prepare_pr_answer(self) -> str:

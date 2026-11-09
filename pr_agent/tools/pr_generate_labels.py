@@ -13,7 +13,8 @@ from pr_agent.algo.pr_processing import (
     retry_with_fallback_models,
     run_diff_preparation,
 )
-from pr_agent.algo.run_details import record_command_failure
+from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
+from pr_agent.algo.run_details import get_run_details, record_command_failure
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import filter_generated_labels, get_user_labels, load_yaml, set_custom_labels
 from pr_agent.config_loader import get_settings
@@ -23,6 +24,20 @@ from pr_agent.log import get_logger
 
 
 class PRGenerateLabels:
+    @staticmethod
+    def _write_json_output(labels: list[str]) -> None:
+        if not review_json_output_path.get():
+            return
+        details = get_run_details()
+        usage = {}
+        if details is not None and details.has_token_usage:
+            usage = {
+                "prompt_tokens": details.prompt_tokens,
+                "completion_tokens": details.completion_tokens,
+                "total_tokens": details.total_tokens,
+            }
+        write_review_json_output({"labels": labels, "usage": usage})
+
     def __init__(self, pr_url: str, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         """
@@ -78,14 +93,17 @@ class PRGenerateLabels:
 
             get_logger().info(f"Preparing answer {self.pr_id}")
             if self.prediction is None:
+                self._write_json_output([])
                 return None
 
             pr_labels = self._prepare_labels()
             if not pr_labels and self.data and self.data.get("labels"):
                 # Preserve existing labels when all generated values are rejected.
                 get_logger().warning("Skipping label publish: all generated labels were rejected")
+                self._write_json_output([])
                 return ""
 
+            self._write_json_output(pr_labels)
             if get_settings().config.publish_output:
                 get_logger().info(f"Pushing labels {self.pr_id}")
 
@@ -107,6 +125,7 @@ class PRGenerateLabels:
             record_command_failure()
             if (
                 isinstance(e, IncompleteProviderPullRequestFilesError)
+                or review_json_output_path.get()
                 or get_settings().config.get("propagate_tool_errors", False)
             ):
                 raise
@@ -207,6 +226,8 @@ class PRGenerateLabels:
             system=self._attempt_system_prompt,
             user=self._attempt_user_prompt,
         )
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"Labels response was truncated by {model}")
 
         return response
 

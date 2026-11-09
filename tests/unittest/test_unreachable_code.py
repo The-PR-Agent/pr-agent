@@ -1,10 +1,12 @@
 """Regression guard for unreachable code.
 
 Every function and method defined in pr_agent/ must be referenced somewhere in
-pr_agent/, tests/ or docs/. Detection is deliberately conservative: entry points
-that are named from outside Python (route handlers, Lambda handlers) and members
-of third-party interfaces called by the library that owns them are recorded in
-the allowlist with a note pointing at the caller.
+pr_agent/ or docs/. References from tests/ do not count: a helper that only its
+own tests call is dead code and must be removed, not kept alive by its tests.
+Detection is deliberately conservative: entry points that are named from outside
+Python (route handlers, Lambda handlers) and members of third-party interfaces
+called by the library that owns them are recorded in the allowlist with a note
+pointing at the caller.
 
 Abstract methods, properties, validators and dunders are skipped: they are
 reached through the interface or the descriptor protocol rather than by name.
@@ -21,7 +23,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 PR_AGENT_SOURCE = ROOT / "pr_agent"
-SEARCH_ROOTS = (ROOT / "pr_agent", ROOT / "tests", ROOT / "docs")
+# tests/ is deliberately absent: a helper referenced only from tests is dead code.
+SEARCH_ROOTS = (ROOT / "pr_agent", ROOT / "docs")
 SEARCH_SUFFIXES = (".py", ".md", ".toml", ".yaml", ".yml")
 
 # Decorators that mark a definition as reachable from outside Python.
@@ -51,6 +54,42 @@ _ALLOWLIST = {
         "pr_agent/algo/ai_handlers/cloud_auth.py",
         "get_aws_region",
     ): "google.auth.aws.AwsSecurityCredentialsSupplier interface method, called by google-auth",
+    (
+        "pr_agent/git_providers/git_provider.py",
+        "get_head_ci_status",
+    ): "GitProvider interface method for review verdict (#4694, #4696)",
+    (
+        "pr_agent/git_providers/git_provider.py",
+        "is_head_stale_against_base",
+    ): "GitProvider interface method for review verdict (#4694, #4696)",
+    (
+        "pr_agent/git_providers/git_provider.py",
+        "are_all_authors_human",
+    ): "GitProvider interface method for review verdict (#4694, #4696)",
+    (
+        "pr_agent/git_providers/github_provider.py",
+        "get_head_ci_status",
+    ): "GithubProvider interface implementation for review verdict (#4694, #4696)",
+    (
+        "pr_agent/git_providers/github_provider.py",
+        "is_head_stale_against_base",
+    ): "GithubProvider interface implementation for review verdict (#4694, #4696)",
+    (
+        "pr_agent/git_providers/github_provider.py",
+        "are_all_authors_human",
+    ): "GithubProvider interface implementation for review verdict (#4694, #4696)",
+    (
+        "pr_agent/git_providers/gitlab_provider.py",
+        "get_head_ci_status",
+    ): "GitLabProvider interface implementation for review verdict (#4694, #4696)",
+    (
+        "pr_agent/git_providers/gitlab_provider.py",
+        "is_head_stale_against_base",
+    ): "GitLabProvider interface implementation for review verdict (#4694, #4696)",
+    (
+        "pr_agent/git_providers/gitlab_provider.py",
+        "are_all_authors_human",
+    ): "GitLabProvider interface implementation for review verdict (#4694, #4696)",
 }
 
 
@@ -84,12 +123,12 @@ def _definitions() -> dict[tuple[str, str], int]:
     return found
 
 
-def _corpus() -> list[str]:
+def _corpus(roots: tuple[Path, ...] = SEARCH_ROOTS) -> list[str]:
     # This file names every allowlisted definition, so reading it would make
     # each of them look referenced.
     this_file = Path(__file__).resolve()
     texts = []
-    for root in SEARCH_ROOTS:
+    for root in roots:
         if not root.exists():
             continue
         for path in root.rglob("*"):
@@ -130,6 +169,25 @@ def test_is_referenced_preserves_match_rules(corpus, expected):
     assert _is_referenced("target", corpus) is expected
 
 
+def test_search_roots_exclude_tests():
+    """A helper referenced only from tests/ is dead code and must not be kept alive by its tests (#4690)."""
+    assert all(root.name != "tests" for root in SEARCH_ROOTS)
+
+
+def test_helper_referenced_only_from_tests_is_dead(tmp_path):
+    """A definition whose sole reference lives under tests/ is reported as unreachable (#4690)."""
+    source = tmp_path / "pr_agent"
+    source.mkdir()
+    (source / "tool.py").write_text("def helper_only_tests_call():\n    return 1\n")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_tool.py").write_text("from pr_agent.tool import helper_only_tests_call\n")
+
+    assert not _is_referenced("helper_only_tests_call", _corpus((source,)))
+    # Control: with tests/ in the corpus the same helper looks referenced.
+    assert _is_referenced("helper_only_tests_call", _corpus((source, tests)))
+
+
 def test_every_definition_is_reachable_or_allowlisted():
     corpus = _corpus()
     unreferenced = {
@@ -140,7 +198,8 @@ def test_every_definition_is_reachable_or_allowlisted():
     allowlisted = set(_ALLOWLIST)
 
     assert unreferenced <= allowlisted, (
-        "definitions in pr_agent/ have no reference in pr_agent/, tests/ or docs/; "
+        "definitions in pr_agent/ have no reference in pr_agent/ or docs/ "
+        "(references from tests/ do not count); "
         f"remove them or allowlist them: {sorted(unreferenced - allowlisted)}"
     )
     assert allowlisted - unreferenced == set(), (

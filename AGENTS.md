@@ -50,6 +50,8 @@ Use `get_settings()` from `pr_agent/config_loader.py` as the shared settings acc
 
 Defaults live in `pr_agent/settings/configuration.toml`. Per-repository overrides come from the repository's `.pr_agent.toml` and are applied by `pr_agent/git_providers/utils.py::apply_repo_settings` before command dispatch. When introducing a configuration section, add its defaults and comments to `configuration.toml` and keep related prompt/config changes synchronized.
 
+When a key's detail belongs in a docs page, keep its `configuration.toml` comment to one line under 160 characters that states what the key does and its allowed values, then point to that page.
+
 `docs/docs/usage-guide/configuration_reference.md` is generated from `configuration.toml` by `python scripts/generate_config_reference.py [output_path]` (run from the repository root), and its header says not to edit it by hand. Write the output to a temporary path and diff it against the page before replacing anything. `tests/unittest/test_config_reference.py` checks that the page matches the generator output, lists exactly the active keys, and asserts a hard-coded active-key count, so update that count when adding or removing keys.
 
 Repository overrides are filtered by `pr_agent/config_security.py`; host-only keys must be supplied through host configuration. Configuration file merges preserve other fields in a section but replace overlapping list/dict values rather than appending or deep-merging; environment variables take precedence.

@@ -83,7 +83,7 @@ the tool will replace every marker of the form `pr_agent:marker_name` in the PR 
   - `type`: the PR type.
   - `summary`: the PR summary.
   - `walkthrough`: the PR walkthrough.
-  - `diagram`: the PR sequence diagram (if enabled).
+  - `diagram`: the PR flowchart (if enabled).
 
 Note that when markers are enabled, if the original PR description does not contain any markers, the tool will not alter the description at all.
 

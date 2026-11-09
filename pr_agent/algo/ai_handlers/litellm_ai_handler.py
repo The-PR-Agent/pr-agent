@@ -141,6 +141,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     _response_field,
     get_repetition_penalty,
 )
+from pr_agent.algo.instruction_context import append_protected_system_instructions
 from pr_agent.algo.prompt_fragments import render_skills_prefix
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.run_output import get_version
@@ -2472,6 +2473,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         image_path: str | None = None,
     ) -> list[dict]:
         """Build the exact message payload for normalized prompt strings."""
+        system_prompt = append_protected_system_instructions(system_prompt)
         combine_prompts = (
             self._uses_user_message_only(model)
             or get_settings().config.custom_reasoning_model
@@ -3146,7 +3148,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # reasoning_effort gate) and config.no_temperature_models as the operator
                 # override for endpoints litellm does not know or providers that reject
                 # temperature despite the metadata. Adaptive-thinking Claude models
-                # (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive it, matching the
+                # (Opus 4.7/4.8, Opus/Sonnet/Fable 5.x and Haiku 5.5) never receive it, matching the
                 # sampling-parameter removal of _configure_claude_adaptive_thinking.
                 # OpenRouter :nitro/:floor routing shortcuts are ignored for temperature
                 # capability checks; model retains the routed id for the actual request.

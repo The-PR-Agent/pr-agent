@@ -603,6 +603,7 @@ num_max_findings = 4
         config = b"""
 [pr_update_changelog]
 push_changelog_changes = true
+changelog_path = "services/CHANGELOG.md"
 add_pr_link = true
 extra_instructions = "keep-me"
 
@@ -616,7 +617,7 @@ enable_help_text = true
         monkeypatch.setattr(
             "pr_agent.git_providers.utils.get_git_provider_with_context",
             lambda url: _provider(
-                root_settings=ROOT_TOML,
+                root_settings=ROOT_TOML + b'\n[pr_update_changelog]\nchangelog_path = "docs/HISTORY.md"\n',
                 tree_paths=["services/.pr_agent.toml"],
                 contents={"services/.pr_agent.toml": config},
                 files=["services/api.py"],
@@ -626,6 +627,7 @@ enable_help_text = true
         git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
 
         assert get_settings().pr_update_changelog.push_changelog_changes is False
+        assert get_settings().pr_update_changelog.changelog_path == "docs/HISTORY.md"
         assert get_settings().get("pr_help_docs.repo_url", "") == ""
         # Collection scope is root-/host-controlled: a nested file cannot point /help_docs
         # at arbitrary repository paths or file extensions to read into the model prompt.
@@ -668,12 +670,13 @@ committable_code_suggestions = true
 # Deprecated alias of the key above: it must be denied per directory too, otherwise a nested
 # file could flip /improve to inline publishing through the spelling the fallback still reads.
 commitable_code_suggestions = true
+# Dual publishing posts suggestions inline through the same path, so it is denied per directory too.
+dual_publishing_score_threshold = 1
 num_code_suggestions_per_chunk = 2
 max_number_of_calls = 99
 parallel_calls = true
 max_discussion_context_chars = 999999
 demand_code_suggestions_self_review = true
-approve_pr_on_self_review = true
 
 [pr_similar_issue]
 force_update_dataset = true
@@ -687,6 +690,8 @@ use_original_title = false
 use_conversation_history = false
 [pr_similar_issue]
 skip_comments = true
+[pr_code_suggestions]
+dual_publishing_score_threshold = 7
 """
 
     @pytest.fixture
@@ -738,11 +743,10 @@ skip_comments = true
         assert get_settings().pr_code_suggestions.parallel_calls is True
         assert get_settings().pr_code_suggestions.max_discussion_context_chars != 999999
 
-    def test_self_review_approval_workflow_stays_root_controlled(self, host_only_keys_applied):
-        # The self-review approval workflow stays root-controlled: a nested file cannot
-        # demand a self-review checklist and then auto-approve on the author's tick.
+    def test_self_review_demand_stays_root_controlled(self, host_only_keys_applied):
+        # The self-review workflow stays root-controlled: a nested file cannot make
+        # /improve demand a self-review checklist.
         assert get_settings().pr_code_suggestions.demand_code_suggestions_self_review is False
-        assert get_settings().pr_code_suggestions.approve_pr_on_self_review is False
 
     def test_ask_conversation_history_stays_root_controlled(self, host_only_keys_applied):
         # Thread-history collection for /ask is root-controlled: a nested file cannot
@@ -755,6 +759,7 @@ skip_comments = true
         assert get_settings().pr_questions.static_questions == ["default"]
         assert get_settings().pr_code_suggestions.committable_code_suggestions is False
         assert get_settings().pr_code_suggestions.get("commitable_code_suggestions") is None
+        assert get_settings().pr_code_suggestions.dual_publishing_score_threshold == 7
         assert get_settings().pr_code_suggestions.num_code_suggestions_per_chunk == 2
         assert get_settings().pr_similar_issue.use_original_title is False
 

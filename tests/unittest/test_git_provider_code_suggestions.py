@@ -114,7 +114,7 @@ def test_publish_error_is_reported_at_default_verbosity(provider_type: type[GitP
     The sink is at INFO rather than DEBUG so the assertion is about the level the
     call uses: a debug() call would not reach it, so downgrading the log from
     error() to debug() fails here. That is about the call site, not about
-    log_level, which ships as DEBUG and is a separate setting from the
+    log_level, which ships as INFO and is a separate setting from the
     verbosity_level this change is about.
     """
     settings = get_settings(use_context=False)

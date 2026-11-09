@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Hashable
 from typing import Any
+from urllib.parse import urlsplit
 
 from pr_agent.algo.comment_identity import as_review_text
 from pr_agent.algo.output_models import parse_failure_modes
@@ -181,9 +182,9 @@ def _merge_effort(values: list[Any]) -> Any:
 
 
 def _merge_score(values: list[Any]) -> Any:
-    """Lowest score wins: a clean chunk must not raise the grade of a bad one."""
+    """Lowest valid score wins: a clean chunk must not raise the grade of a bad one."""
     scored = [(number, value) for number, value in ((_as_int(value), value) for value in values)
-              if number is not None]
+              if number is not None and 0 <= number <= 100]
     if not scored:
         return _first_non_empty(values)
     return min(scored, key=lambda pair: pair[0])[1]
@@ -379,7 +380,24 @@ def _canonical_ticket_url(raw_url: Any, ticket_index: tuple) -> str:
         return by_url[_normalize_text(text)]
     number = _ticket_number(text)
     if number and number in by_number:
-        return by_number[number]
+        canonical_url = by_number[number]
+        if re.fullmatch(r"#?\d+", text):
+            return canonical_url
+        # A full URL or a named tracker ID identifies its own ticket, even when its
+        # numeric suffix happens to match a related ticket in another repository.
+        if text.casefold() == canonical_url.rstrip("/").rsplit("/", 1)[-1].casefold():
+            return canonical_url
+        try:
+            source, target = urlsplit(text), urlsplit(canonical_url)
+        except ValueError:
+            return text
+        if (source.scheme == target.scheme and source.netloc.casefold() == target.netloc.casefold()
+                and not source.query and not source.fragment):
+            parts = source.path.split("/")
+            if parts.count("...") == 1:
+                before, after = source.path.split("...", 1)
+                if target.path.startswith(before) and target.path.endswith(after):
+                    return canonical_url
     return text
 
 
@@ -414,9 +432,13 @@ def _merge_ticket_compliance(values: list[Any], ticket_index: tuple = ({}, {})) 
                 if field == "ticket_url":
                     # the canonical URL is already on the recorded entry; never union link text
                     continue
-                if isinstance(field_value, str) and isinstance(target.get(field), str):
-                    target[field] = _union_bullet_lines(target[field], field_value)
-                elif not target.get(field):
+                current = target.get(field)
+                if isinstance(field_value, (list, dict)) or isinstance(current, (list, dict)):
+                    # A chunk may answer a bullet list as a YAML list; flatten both so neither side is dropped.
+                    current, field_value = as_review_text(current or ""), as_review_text(field_value or "")
+                if isinstance(field_value, str) and isinstance(current, str):
+                    target[field] = _union_bullet_lines(current, field_value)
+                elif not current:
                     target[field] = field_value
     return list(merged.values())
 

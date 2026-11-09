@@ -31,6 +31,7 @@ def _provider_with_state():
     provider = SimpleNamespace(
         diff_files=[MagicMock()],
         incremental=IncrementalPR(True),
+        _latest_commit_url="https://git.example/commit/previous",
     )
     return provider
 
@@ -42,6 +43,7 @@ def test_reset_drops_non_empty_cache_and_incremental_anchor():
 
     assert provider.diff_files is None
     assert provider.incremental.is_incremental is False
+    assert provider._latest_commit_url is None
 
 
 def test_reset_pops_the_request_scoped_diff_cache():
@@ -63,9 +65,17 @@ def test_reset_is_safe_outside_a_request_and_without_diff_state():
 
 
 def _loop_provider_and_agent(monkeypatch, server_module):
-    reset = Mock()
-    provider = SimpleNamespace(reset_diff_cache_for_command=reset)
-    agent = SimpleNamespace(handle_request=AsyncMock(return_value=True))
+    provider = _provider_with_state()
+    reset = Mock(side_effect=lambda: GitProvider.reset_diff_cache_for_command(provider))
+    provider.reset_diff_cache_for_command = reset
+    provider.command_urls = []
+
+    async def handle_request(*_args):
+        provider.command_urls.append(provider._latest_commit_url)
+        provider._latest_commit_url = "https://git.example/commit/current"
+        return True
+
+    agent = SimpleNamespace(handle_request=AsyncMock(side_effect=handle_request))
     monkeypatch.setattr(server_module, "prepare_command", lambda command: command)
     return reset, provider, agent
 
@@ -86,6 +96,7 @@ async def test_gitlab_loop_resets_between_auto_commands(monkeypatch):
 
     assert reset.call_count == len(COMMANDS)
     assert agent.handle_request.await_count == len(COMMANDS)
+    assert provider.command_urls == [None] * len(COMMANDS)
 
 
 async def test_gitea_loop_resets_between_auto_commands(monkeypatch):
@@ -97,6 +108,7 @@ async def test_gitea_loop_resets_between_auto_commands(monkeypatch):
 
     assert reset.call_count == len(COMMANDS)
     assert agent.handle_request.await_count == len(COMMANDS)
+    assert provider.command_urls == [None] * len(COMMANDS)
 
 
 async def test_azure_loop_resets_between_auto_commands(monkeypatch):
@@ -109,6 +121,7 @@ async def test_azure_loop_resets_between_auto_commands(monkeypatch):
 
     assert reset.call_count == len(COMMANDS)
     assert agent.handle_request.await_count == len(COMMANDS)
+    assert provider.command_urls == [None] * len(COMMANDS)
 
 
 async def test_bitbucket_loop_resets_between_auto_commands(monkeypatch):
@@ -119,6 +132,7 @@ async def test_bitbucket_loop_resets_between_auto_commands(monkeypatch):
 
     assert reset.call_count == len(COMMANDS)
     assert agent.handle_request.await_count == len(COMMANDS)
+    assert provider.command_urls == [None] * len(COMMANDS)
 
 
 async def test_bitbucket_server_loop_resets_between_auto_commands(monkeypatch):
@@ -131,3 +145,4 @@ async def test_bitbucket_server_loop_resets_between_auto_commands(monkeypatch):
 
     assert reset.call_count == len(COMMANDS)
     assert agent.handle_request.await_count == len(COMMANDS)
+    assert provider.command_urls == [None] * len(COMMANDS)

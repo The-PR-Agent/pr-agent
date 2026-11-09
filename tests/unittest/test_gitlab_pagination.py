@@ -43,7 +43,7 @@ def _provider_with_lists(count=150):
         SimpleNamespace(attributes={"notes": [{"body": f"discussion-{index}"}]})
         for index in range(count)
     ])
-    notes = _PaginatedList([SimpleNamespace(body=f"note-{index}") for index in range(count)])
+    notes = _PaginatedList([SimpleNamespace(body=f"discussion-{index}") for index in range(count)])
     draft_notes = _PaginatedList([SimpleNamespace(note=f"draft-{index}") for index in range(count)])
     provider = object.__new__(GitLabProvider)
     provider.mr = SimpleNamespace(discussions=discussions, notes=notes, draft_notes=draft_notes)
@@ -55,10 +55,13 @@ def test_persistent_comment_listing_requests_max_pages():
 
     bodies = provider.get_persistent_comment_bodies()
 
-    assert len(bodies) == 450
-    for listing in (discussions, notes, draft_notes):
+    assert len(bodies) == 300
+    for listing in (discussions, draft_notes):
         assert listing.requests == 2
         assert listing.calls == [{"get_all": True, "per_page": 100}]
+
+    assert notes.requests == 0
+    assert notes.calls == []
 
 
 def test_issue_comment_listing_requests_max_pages():

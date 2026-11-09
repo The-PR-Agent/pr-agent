@@ -43,7 +43,6 @@ FORBIDDEN_ARGS = [
     "--config.enable_auto_approval=true",
     "--config.enable_manual_approval=true",
     "--config.enable_comment_approval=true",
-    "--config.approve_pr_on_self_review=true",
     "--config.override_deployment_type=app",
     # local cache
     "--config.enable_local_cache=true",
@@ -85,6 +84,10 @@ FORBIDDEN_ARGS = [
     '--config={"repo_context_files": ["AGENTS.md"]}',
     # the glob match limit bounds how many files repo_context_files fetches
     "--config.repo_context_max_glob_matches=100",
+    # enabling local import expansion adds repository-controlled provider fetches
+    "--config.repo_context_expand_imports=true",
+    "--config__repo_context_expand_imports=true",
+    '--config={"repo_context_expand_imports": true}',
     # repo_context_sibling_repos is the host-only allowlist of sibling repositories whose
     # files may be selected; neither repo settings nor comment arguments can change it.
     "--config.repo_context_sibling_repos=[]",
@@ -140,6 +143,9 @@ FORBIDDEN_ARGS = [
     '--config.fallback_models=["gpt-4.1"]',
     "--config.num_retries=10",
     "--pr_update_changelog.push_changelog_changes=true",
+    "--pr_update_changelog.changelog_path=docs/HISTORY.md",
+    "--pr_update_changelog__changelog_path=docs/HISTORY.md",
+    '--pr_update_changelog={"changelog_path": "docs/HISTORY.md"}',
     "--pr_questions.resolve_threads=true",
     "--pr_similar_issue.force_update_dataset=true",
     "--pr_similar_issue={force_update_dataset: true, vectordb: qdrant}",
@@ -169,6 +175,7 @@ ALLOWED_ARGS_SINGLE = [
     "--skills.enabled=true",
     "--skills.max_skills_tokens=1000",
     "--config.response_language=zh-tw",
+    "--config.approve_pr_on_self_review=true",
     "--pr_description.publish_labels=false",
     # a mapping value whose nested keys are all allowed stays accepted
     "--qdrant={timeout: 5, prefer_grpc: true}",
@@ -186,6 +193,12 @@ ALLOWED_ARGS_SINGLE = [
 
 
 HOST_ONLY_ARGS = [
+    "--config.enable_custom_labels=true",
+    "--config__enable_custom_labels=true",
+    '--config={enable_custom_labels: true}',
+    '--custom_labels={"approved": {description: "Workflow approval"}}',
+    "--custom_labels.approved.description=Workflow approval",
+    "--custom_labels__approved__description=Workflow approval",
     "--skills.paths=/etc",
     "--skills__paths=/etc",
     "--skills.unknown=value",
@@ -395,6 +408,75 @@ def test_validate_user_args_rejects_forbidden_arg_with_leading_whitespace(prefix
     ok, offending = CliArgs.validate_user_args([f"{prefix}--github.webhook_secret=secret"])
     assert ok is False
     assert "webhook_secret" in offending
+
+
+@pytest.mark.parametrize(
+    "spaced",
+    [
+        # update_settings_from_args strips the whitespace around the dot before applying
+        # the setting, so validate_user_args must see the same dotted path for every
+        # host-only key, not just for the tightly written form
+        "--config. num_retries=10",
+        "--config .num_retries=10",
+        "--config\t.num_retries=10",
+        "--github. seconds_between_requests=1",
+        "--github .seconds_between_writes=1",
+        "--github.\tapi_retries=3",
+        "--pr_reviewer. max_number_of_calls=10",
+        "--pr_code_suggestions .parallel_calls=true",
+        "--pr_similar_issue .force_update_dataset=true",
+        "--prompt_fragments .diff_hunk_format=unsafe",
+        "--push_outputs. webhook_url=https://evil.example",
+        "--push_outputs .enable=true",
+        # the whole-section mapping form with a spaced section name is checked too
+        '--config ={num_retries: 10}',
+        '--push_outputs ={webhook_url: "https://evil.example"}',
+        '--skills ={paths: ["/etc"]}',
+    ],
+)
+def test_validate_user_args_rejects_host_only_key_with_whitespace_around_the_section_dot(spaced):
+    ok, offending = CliArgs.validate_user_args([spaced])
+    assert ok is False
+    assert isinstance(offending, str) and offending
+
+
+@pytest.mark.parametrize(
+    "spaced",
+    [
+        # a forbidden key is anchored on the dot, so a name written with whitespace
+        # around the dot evades the raw substring match and must be caught by the
+        # normalized flag name
+        "--config. description_path=docs-output",
+        "--config .review_path=docs-output",
+        "--config. base_url=https://evil.example",
+        "--config .extra_config_url=https://evil.example",
+    ],
+)
+def test_validate_user_args_rejects_forbidden_key_with_whitespace_around_the_section_dot(spaced):
+    ok, offending = CliArgs.validate_user_args([spaced])
+    assert ok is False
+    assert isinstance(offending, str) and offending
+
+
+@pytest.mark.parametrize(
+    "spaced",
+    [
+        # Ordinary (non-host-only, non-forbidden) keys with whitespace before the
+        # section dot still validate today, but update_settings_from_args then
+        # replaces the whole section. Reject any whitespace in the flag name.
+        "--pr_description .extra_instructions=hi",
+        "--pr_description	.extra_instructions=hi",
+        "--config .verbosity_level=2",
+        "--pr_code_suggestions. suggestions_score_threshold=0",
+        # the whitespace check runs before the mapping branch: a mapping-valued flag
+        # `continue`s past the rest of the loop body in validate_user_args
+        "--pr_description .extra_instructions={what: parse}",
+    ],
+)
+def test_validate_user_args_rejects_whitespace_in_ordinary_flag_name(spaced):
+    ok, offending = CliArgs.validate_user_args([spaced])
+    assert ok is False
+    assert isinstance(offending, str) and offending
 
 
 @pytest.mark.parametrize(

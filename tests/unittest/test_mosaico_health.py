@@ -214,7 +214,8 @@ class TestHealthCheckGate:
 
         def controlled_timeout(seconds):
             seen_timeouts.append(seconds)
-            return asyncio.timeout(seconds)
+            # Record the configured value without racing real preparation time on a slow runner.
+            return asyncio.timeout(None)
 
         monkeypatch.setattr(executor_mod, "asyncio", SimpleNamespace(timeout=controlled_timeout))
         completion = AsyncMock()

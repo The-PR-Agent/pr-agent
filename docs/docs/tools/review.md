@@ -116,7 +116,8 @@ for the authoritative default values.
       are also passed as dismissed when the status differs from <code>azure_devops.default_comment_status</code>.
       A matching default stays an ordinary prior finding. This infers a human decision; Azure does not identify
       the status-changing actor here, and the current default may differ from the default used at creation.
-      Stable <code>azure_devops_server.agent_identity</code> configuration is required.
+      PR-Agent resolves its posting identity through Azure DevOps. Set
+      <code>azure_devops_server.agent_identity</code> to override it or when automatic lookup is unavailable.
     </td>
   </tr>
   <tr>
@@ -222,6 +223,31 @@ for the authoritative default values.
     repository settings file or a comment cannot set it, because the file is read from the host. See
     <a href="#structural-reach">Structural reach</a>.</td>
   </tr>
+  <tr>
+    <td><b>enable_risk_checks</b></td>
+    <td>
+      If set to true, deterministically scans diff files and unfiltered PR files for sensitive paths, destructive SQL,
+      cache flushes, and authentication/secrets patterns without making model calls. Findings are rendered as a risk-checks
+      row in the review summary table. When no findings are detected, nothing is added. Default is true. See
+      <a href="#deterministic-risk-checks">Deterministic risk checks</a>.
+    </td>
+  </tr>
+  <tr>
+    <td><b>sensitive_paths</b></td>
+    <td>
+      List of glob patterns identifying files considered sensitive (such as CI workflows, package manifests, lockfiles,
+      migrations, and infrastructure configurations). Changes to matching files flag a deterministic review risk finding.
+      Default includes common CI/CD, package manager, container, infrastructure, and migration paths.
+    </td>
+  </tr>
+  <tr>
+    <td><b>extra_risky_shapes</b></td>
+    <td>
+      List of custom regular expression patterns to scan within added or modified lines in diff hunks. Patterns matching a
+      line flag a deterministic risk finding. Host configuration only: a repository settings file or comment cannot set it.
+      Default is empty.
+    </td>
+  </tr>
 </table>
 
 </details>
@@ -234,7 +260,7 @@ You can enable\disable the `review` tool to add specific labels to the PR:
 <table>
   <tr>
     <td><b>enable_review_labels_security</b></td>
-    <td>If set to true, the tool will publish a 'possible security issue' label if it detects a security issue.</td>
+    <td>If set to true, the tool will publish a 'Possible security concern' label if it detects a security issue.</td>
   </tr>
   <tr>
     <td><b>enable_review_labels_effort</b></td>
@@ -276,7 +302,7 @@ Edit this field to enable/disable the tool, or to change the configurations used
 
 The `review` tool can automatically add labels to your Pull Requests:
 
-- **`possible security issue`**: This label is applied if the tool detects a potential [security vulnerability](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L147) in the PR's code. This feedback is controlled by the 'enable_review_labels_security' flag (default is true).
+- **`Possible security concern`**: This label is applied if the tool detects a potential [security vulnerability](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L147) in the PR's code. This feedback is controlled by the 'enable_review_labels_security' flag (default is true).
 - **`review effort [x/5]`**: This label estimates the [effort](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L119) required to review the PR on a relative scale of 1 to 5, where 'x' represents the assessed effort. This feedback is controlled by the 'enable_review_labels_effort' flag (default is true).
 
 Ticket compliance is reported in the review comment, not as a PR label. It is controlled by
@@ -505,5 +531,37 @@ not match the schema, or anything fails while computing the row, the review is p
 - Beyer, B. et al. *Site Reliability Engineering* (Google, 2016), and the AWS Well-Architected Framework: blast
   radius as the scope of impact of a change or failure.
 - OWASP guidance on sensitive functionality: authentication, session management, cryptography and payments.
+
+:::
+
+### Deterministic risk checks
+
+:::tip
+
+When `enable_risk_checks` is enabled (the default), PR-Agent scans changed files and diff hunks for known risk patterns
+without making model calls. Findings are rendered as a dedicated row in the review table:
+
+```
+⚠️ Risk checks: 3 finding(s) detected
+Sensitive paths (1): .github/workflows/deploy.yml
+Risky shapes (1): `Privilege revocation` in db/migrations/002_revoke.sql
+Deleted files (1): old_auth.py
+```
+
+When no findings are detected, the row is omitted completely so clean reviews stay uncluttered.
+
+**Checks performed.**
+
+- **Sensitive paths**: Flags changes to files matching glob patterns in `sensitive_paths`. By default, this covers
+  CI/CD pipelines, package manager manifests and lockfiles, Dockerfiles, Terraform and infrastructure configs, and
+  database migrations.
+- **Risky change shapes**: Scans added or modified lines in diff hunks for destructive SQL (`DROP TABLE`, `ALTER ... RENAME`,
+  `REVOKE ... ON/FROM`, `TRUNCATE`), authentication and secrets keywords, cache invalidations, and any custom patterns
+  configured in `extra_risky_shapes`.
+- **Deleted files**: Flags removed files.
+
+**Custom patterns.** Additional regular expressions can be configured via `extra_risky_shapes`. Because regex execution
+has security implications, `extra_risky_shapes` must be configured through host configuration (such as environment
+variables or host settings) and cannot be overridden by repository `.pr_agent.toml` files.
 
 :::

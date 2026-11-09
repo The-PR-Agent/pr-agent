@@ -6,7 +6,7 @@ from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
 from pr_agent.algo.file_filter import filter_ignored_with_status
 from pr_agent.algo.language_handler import partition_files_by_language_filter
-from pr_agent.algo.run_output import show_run_details
+from pr_agent.algo.run_output import append_run_details
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.git_provider import GitProvider, cache_languages
@@ -71,10 +71,25 @@ class LocalGitProvider(GitProvider):
             raise KeyError(f'Branch: {self.target_branch_name} does not exist')
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ['get_issue_comments', 'create_inline_comment', 'publish_inline_comments', 'get_labels',
-                          'gfm_markdown']:
+        if capability in [
+            'get_issue_comments',
+            'get_labels',
+            'gfm_markdown',
+            'head_ci_status',
+            'head_staleness',
+            'author_human_check',
+        ]:
             return False
         return True
+
+    def get_pr_identity(self) -> dict:
+        return {
+            "url": "",
+            "provider": "local",
+            "repo": Path(self.repo_path).name if self.repo_path else "",
+            "number": "",
+            "head_sha": self.repo.head.commit.hexsha if self.repo else "",
+        }
 
     def supports_code_suggestions_artifact(self) -> bool:
         return True
@@ -197,8 +212,8 @@ class LocalGitProvider(GitProvider):
         pr_body = f"{header}\n\n" + "\n\n".join(sections) if sections \
             else f"{header}\n\n{no_suggestions_message}"
         pr_body += artifact_footer
-        if not sections and get_settings().get("config.output_run_details", False):
-            pr_body += show_run_details(False)
+        if not sections:
+            pr_body = append_run_details(pr_body, self)
         with open(self.improve_path, "w", encoding="utf-8") as file:
             file.write(pr_body)
         return True

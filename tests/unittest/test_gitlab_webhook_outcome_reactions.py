@@ -248,6 +248,36 @@ def test_a_command_the_dispatcher_rewrote_still_gets_its_outcome(run_comment):
     assert provider.removed == [(COMMENT_ID, 1)]
 
 
+@pytest.mark.parametrize("position, expected_line, expected_side", [
+    ({"new_line": 12, "old_line": None}, 12, "RIGHT"),
+    ({"new_line": 12, "old_line": 9, "line_range": None}, 12, "RIGHT"),
+    ({"new_line": None, "old_line": 9, "line_range": None}, 9, "LEFT"),
+    ({"position_type": "file", "line_range": None}, None, None),
+])
+def test_single_line_diff_note_dispatch(run_comment, position, expected_line, expected_side):
+    question = "explain --file_name=question-text and keep /ask intact"
+    body = f"/ask {question}"
+    payload = _diff_note_event(body)
+    payload["object_attributes"]["position"] = {
+        "new_path": "new/src/app.py", "old_path": "old/src/app.py", **position,
+    }
+
+    provider = run_comment(payload=payload)
+
+    if expected_line is None:
+        assert provider.dispatched == [body]
+    else:
+        assert provider.dispatched == [[
+            "/ask_line",
+            f"--line_start={expected_line}",
+            f"--line_end={expected_line}",
+            f"--side={expected_side}",
+            "--file_name=new/src/app.py",
+            "--comment_id=abc123",
+            question,
+        ]]
+
+
 def test_a_command_with_quoted_arguments_gets_its_outcome(run_comment):
     """The dispatcher reads a comment with shlex, so a quoted first token is still a command."""
     provider = run_comment(success="hooray", body='/review "extra instructions"')

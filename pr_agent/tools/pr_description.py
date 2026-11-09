@@ -24,7 +24,7 @@ from pr_agent.algo.pr_processing import (
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
 from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure
-from pr_agent.algo.run_output import push_outputs_async, show_relevant_configurations, show_run_details
+from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import (
@@ -168,9 +168,20 @@ class PRDescription:
 
             if self.prediction:
                 self._prepare_data()
-                self._write_json_output(self.data)
+                try:
+                    self._write_json_output(self.data)
+                except (OSError, TypeError, ValueError):
+                    if not (review_json_output_path.get() and
+                            get_settings().config.git_provider == "plain-diff"):
+                        raise
+                    # Keep Markdown available even when a requested JSON file cannot be written.
+                    record_command_failure()
             else:
                 get_logger().warning(f"Empty prediction, PR: {self.pr_id}")
+                # A skipped Plain Diff description cannot satisfy an explicit
+                # JSON artifact request, even though skipping is otherwise valid.
+                if review_json_output_path.get() and get_settings().config.git_provider == "plain-diff":
+                    record_command_failure()
                 return None
 
             if get_settings().pr_description.enable_semantic_files_types:
@@ -227,15 +238,15 @@ class PRDescription:
             if get_settings().get('config', {}).get('output_relevant_configurations', False):
                 pr_body += show_relevant_configurations(relevant_section='pr_description')
 
-            # Output the agent run details (model, tokens, time cost) if enabled
-            if get_settings().get('config', {}).get('output_run_details', False):
-                pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
+            # Output the fallback-model note, and the agent run details (model, tokens, time cost) if enabled
+            pr_body = append_run_details(pr_body, self.git_provider)
 
             if get_settings().config.publish_output:
                 # Emit to the optional external sinks before touching the provider, so a sink
                 # still receives the description if publishing it to the PR fails.
                 await push_outputs_async(
-                    "describe", payload=self._prepare_output_payload(pr_title, label_data), markdown=pr_body
+                    "describe", payload=self._prepare_output_payload(pr_title, label_data),
+                    markdown=pr_body, git_provider=self.git_provider,
                 )
 
                 # publish labels
@@ -803,6 +814,8 @@ class PRDescription:
             system=system_prompt,
             user=user_prompt
         )
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"PR description response was truncated by {model}")
 
         return response
 
@@ -815,6 +828,14 @@ class PRDescription:
         # Load the AI prediction data into a dictionary
         self.data = load_yaml(self.prediction.strip(), keys_fix_yaml=self.keys_fix)
         self._validate_description_schema(self.data)
+
+        # Preserve wholly unusable lists so they retain their existing handling.
+        for field in ("type", "labels"):
+            values = self.data.get(field)
+            if isinstance(values, list):
+                valid_values = [value for value in values if isinstance(value, str)]
+                if any(value.strip() for value in valid_values):
+                    self.data[field] = valid_values
 
         # A separate comment leaves the PR body untouched, so repeating the user text would duplicate it.
         if (get_settings().pr_description.add_original_user_description and self.user_description
@@ -1056,7 +1077,8 @@ class PRDescription:
                                          artifact={"file": file})
                     continue
                 filename = file['filename'].replace("'", "`").replace('"', "`")
-                changes_summary = (file.get('changes_summary') or "").strip()
+                summary = file.get("changes_summary")
+                changes_summary = summary.strip() if isinstance(summary, str) else ""
                 changes_title = file['changes_title'].strip()
                 label = file['label'].strip().lower()
                 if label not in file_label_dict:
@@ -1145,7 +1167,7 @@ class PRDescription:
                     pr_body += """</table></details></td></tr>"""
                 else:
                     pr_body += """</table></td></tr>"""
-            pr_body += """</tr></tbody></table>"""
+            pr_body += """</tbody></table>"""
 
         except Exception as e:
             get_logger().error(f"Error processing pr files to markdown {self.pr_id}: {str(e)}")

@@ -5,11 +5,12 @@ from unittest.mock import patch
 import pytest
 from starlette_context import request_cycle_context
 
-from pr_agent.agent.pr_agent import PRAgent
+from pr_agent.agent.pr_agent import PRAgent, parse_command
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.review_json_output import review_json_output_path
 from pr_agent.algo.run_details import command_failed
 from pr_agent.config_loader import _find_repository_root, get_settings
+from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
@@ -178,14 +179,39 @@ def test_base_file_reconstructed_when_run_from_subdirectory(cfg, tmp_path, monke
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("command,response,expected_output", [
-    ("/ask What changed?", "The second line changed.", "The second line changed."),
-    ("/review", "review:\n  key_issues_to_review: []\n", "No major issues detected"),
-    ("/describe", "title: Update the second line\ndescription: The second line changed.\n"
+@pytest.mark.parametrize("command,filename,response,expected_output", [
+    ("/ask What changed?", "foo.py", "The second line changed.", "The second line changed."),
+    ("/review", "foo.py", "review:\n  estimated_effort_to_review_[1-5]: 1\n"
+                         "  relevant_tests: \"No\"\n  security_concerns: \"No\"\n"
+                         "  key_issues_to_review: []\n", "No major issues detected"),
+    pytest.param(
+        "/review", "build.gradle",
+        "review:\n  estimated_effort_to_review_[1-5]: 1\n"
+        "  relevant_tests: \"No\"\n  security_concerns: \"No\"\n  key_issues_to_review: []\n",
+        "No major issues detected",
+        id="review-gradle-build-script",
+    ),
+    ("/describe", "foo.py", "title: Update the second line\ndescription: The second line changed.\n"
                   "type: [Enhancement]\npr_files: []\n", "The second line changed."),
+    pytest.param(
+        "/describe", "foo.py",
+        "title: Update the second line\ndescription: The second line changed.\n"
+        "type: [Enhancement, null]\npr_files:\n- filename: foo.py\n"
+        "  changes_title: Update the second line\n  changes_summary: The second line changed.\n"
+        "  label: enhancement\n",
+        "### **PR Type**\nEnhancement\n",
+        id="describe-mixed-type-with-file-summary",
+    ),
+    pytest.param(
+        "/describe --pr_description.publish_labels=true", "foo.py",
+        "title: Update the second line\ndescription: The second line changed.\n"
+        "type: [Enhancement]\nlabels: [Enhancement, null, {name: Enhancement}, 123, false]\npr_files: []\n",
+        "### **Labels**\nEnhancement\n",
+        id="describe-mixed-labels-with-publishing-enabled",
+    ),
 ])
 async def test_commands_through_diff_provider_mocked_llm(
-    tmp_path, monkeypatch, capsys, command, response, expected_output
+    tmp_path, monkeypatch, capsys, command, filename, response, expected_output
 ):
     """Exercise command dispatch, prompt budgeting and final output with only the model stubbed."""
     monkeypatch.chdir(tmp_path)
@@ -213,7 +239,7 @@ async def test_commands_through_diff_provider_mocked_llm(
             "config.repo_context_files": [],
             "config.publish_output": True,
             "config.extra_config_url": "",
-            "plain_diff.content": DIFF,
+            "plain_diff.content": DIFF.replace("foo.py", filename),
             "plain_diff.output_path": None,
             "plain_diff.json_output_path": None,
             "pr_reviewer.publish_output_no_suggestions": True,
@@ -227,8 +253,238 @@ async def test_commands_through_diff_provider_mocked_llm(
         assert command_failed() is False
 
     assert len(calls) == 1
+    assert filename in calls[0]["user"]
     assert "line2-changed" in calls[0]["user"]
     assert expected_output in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command,response,description", [
+    ("/ask What changed?", "The approval threshold changed.",
+     "Invoices above the limit need manager approval."),
+    ("/review", "review:\n  estimated_effort_to_review_[1-5]: 1\n"
+                "  relevant_tests: 'No'\n  security_concerns: 'No'\n  key_issues_to_review: []\n",
+     "Invoices above the limit need manager approval."),
+    pytest.param(
+        "/review", "review:\n  estimated_effort_to_review_[1-5]: 1\n"
+                   "  relevant_tests: 'No'\n  security_concerns: 'No'\n  key_issues_to_review: []\n",
+        "Require displaying the label File Walkthrough in the UI",
+        id="review-preserves-literal-file-walkthrough",
+    ),
+    ("/describe", "title: Generated title\ndescription: Approval now required.\n"
+                  "type: [Enhancement]\npr_files: []\n",
+     "### **Description**\nInvoices above the limit need manager approval."),
+])
+async def test_plain_diff_cli_context_reaches_tool_prompts(tmp_path, monkeypatch, command, response, description):
+    """Command settings must reach prompts even after the provider has been cached."""
+    monkeypatch.chdir(tmp_path)
+    prompts = []
+
+    class FakeAiHandler(BaseAiHandler):
+        def __init__(self):
+            pass
+
+        @property
+        def deployment_id(self):
+            return "fake"
+
+        async def chat_completion(self, model: str, system: str, user: str,
+                                  temperature: float = 0.2, img_path: str = None):
+            prompts.append(system + "\n" + user)
+            return response, "stop"
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        for key, value in {
+            "config.git_provider": "plain-diff",
+            "config.model": "gpt-4o-mini",
+            "config.model_weak": "gpt-4o-mini",
+            "config.fallback_models": [],
+            "config.repo_context_files": [],
+            "config.extra_config_url": "",
+            "plain_diff.content": DIFF,
+            "plain_diff.title": None,
+            "plain_diff.description": None,
+            "pr_description.use_description_markers": False,
+            "pr_description.enable_pr_description": True,
+            "push_outputs.enable": False,
+        }.items():
+            get_settings().set(key, value)
+
+        cached_provider = get_git_provider_with_context("local_diff")
+        assert cached_provider.pr.title == "Local diff review"
+        request = [*parse_command(command),
+                   f'--plain_diff.title={json.dumps("Require approval for invoices")}',
+                   f'--plain_diff.description={json.dumps(description)}']
+
+        assert await PRAgent(ai_handler=FakeAiHandler).handle_request("local_diff", request) is True
+        assert cached_provider.pr.title == "Require approval for invoices"
+
+    assert len(prompts) == 1
+    assert "Require approval for invoices" in prompts[0]
+    assert description in prompts[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command,partial,complete,partial_marker,complete_marker", [
+    (
+        "/describe",
+        "type: [Enhancement]\ntitle: Increment\ndescription: TRUNCATED_DESCRIPTION",
+        "type: [Enhancement]\ntitle: Increment\ndescription: COMPLETE_DESCRIPTION\npr_files: []\n",
+        "TRUNCATED_DESCRIPTION", "COMPLETE_DESCRIPTION",
+    ),
+    (
+        "/add_docs",
+        'Code Documentation:\n- relevant file: foo.py\n  relevant line: 1\n  doc placement: after\n'
+        '  documentation: |\n    """\n    TRUNCATED_DOCSTRING\n',
+        'Code Documentation:\n- relevant file: foo.py\n  relevant line: 1\n  doc placement: after\n'
+        '  documentation: |\n    """\n    COMPLETE_DOCSTRING\n    """\n',
+        "TRUNCATED_DOCSTRING", "COMPLETE_DOCSTRING",
+    ),
+    (
+        "/generate_labels", "labels: [Enhancement]\n", "labels: [Bug fix]\n",
+        "## PR Labels:\nEnhancement", "## PR Labels:\nBug fix",
+    ),
+    (
+        "/update_changelog", "### Fixed\n- TRUNCATED_CHANGELOG", "### Fixed\n- COMPLETE_CHANGELOG\n",
+        "TRUNCATED_CHANGELOG", "COMPLETE_CHANGELOG",
+    ),
+], ids=["describe", "add-docs", "generate-labels", "update-changelog"])
+@pytest.mark.parametrize("finish_reasons", [
+    pytest.param(["stop"], id="complete-primary"),
+    pytest.param(["length", "stop"], id="complete-fallback"),
+    pytest.param(["length", "length"], id="fallback-exhausted"),
+])
+async def test_publishing_commands_reject_truncated_responses(
+    tmp_path, monkeypatch, capsys, command, partial, complete, partial_marker, complete_marker, finish_reasons,
+):
+    """Keep parseable truncated output out of publication through the real command flow."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".git").mkdir()
+    head = "def increment(x):\n    return x + 1\n"
+    (tmp_path / "foo.py").write_text(head, encoding="utf-8")
+    diff = (
+        "diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n@@ -1,2 +1,2 @@\n"
+        " def increment(x):\n-    return x\n+    return x + 1\n"
+    )
+    calls = []
+
+    class FakeAiHandler(BaseAiHandler):
+        def __init__(self):
+            pass
+
+        @property
+        def deployment_id(self):
+            return "fake"
+
+        async def chat_completion(self, model, system, user, temperature=0.2, img_path=None):
+            reason = finish_reasons[len(calls)]
+            calls.append((model, user))
+            return (partial if reason == "length" else complete), reason
+
+    succeeded = finish_reasons[-1] == "stop"
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        for key, value in {
+            "config.git_provider": "plain-diff",
+            "config.model": "gpt-4o-mini",
+            "config.model_weak": "gpt-4o-mini",
+            "config.fallback_models": ["gpt-4o"],
+            "config.repo_context_files": [],
+            "config.publish_output": True,
+            "config.publish_output_progress": False,
+            "config.propagate_tool_errors": False,
+            "config.extra_config_url": "",
+            "config.enable_custom_labels": False,
+            "plain_diff.content": diff,
+            "plain_diff.output_path": None,
+            "plain_diff.json_output_path": None,
+            "pr_description.use_description_markers": False,
+            "pr_description.enable_pr_description": True,
+            "pr_description.enable_semantic_files_types": True,
+            "push_outputs.enable": False,
+        }.items():
+            get_settings().set(key, value)
+
+        result = await PRAgent(ai_handler=FakeAiHandler).handle_request("local_diff", command)
+        if succeeded:
+            assert result is True
+            assert command_failed() is False
+        else:
+            assert result is False or command_failed()
+
+    assert [model for model, _ in calls] == ["gpt-4o-mini", "gpt-4o"][:len(finish_reasons)]
+    assert all("return x + 1" in user for _, user in calls)
+    output = capsys.readouterr().out
+    assert partial_marker not in output
+    assert (complete_marker in output) is succeeded
+    if command == "/add_docs" and succeeded:
+        suggestion = output.split("```suggestion\n", 1)[1].split("\n```", 1)[0]
+        compile(suggestion + "\n" + head.split("\n", 1)[1], "foo.py", "exec")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response,finish_reason,expected_failure", [
+    pytest.param("code_suggestions: []", "stop", False, id="complete-empty"),
+    pytest.param("code_suggestions: []", "length", True, id="truncated-empty"),
+    pytest.param(
+        "code_suggestions:\n- relevant_file: foo.py\n  language: python\n"
+        "  existing_code: line2-changed\n  suggestion_content: Handle the error.\n"
+        "  improved_code: |\n    new(",
+        "length",
+        True,
+        id="truncated-parseable-yaml",
+    ),
+])
+async def test_improve_rejects_truncated_responses_through_diff_provider(
+    tmp_path, monkeypatch, capsys, response, finish_reason, expected_failure
+):
+    """Verify command dispatch rejects truncated suggestions even when YAML parses."""
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    class FakeAiHandler(BaseAiHandler):
+        def __init__(self):
+            pass
+
+        @property
+        def deployment_id(self):
+            return "fake"
+
+        async def chat_completion(self, model: str, system: str, user: str,
+                                  temperature: float = 0.2, img_path: str = None):
+            calls.append(user)
+            return response, finish_reason
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        for key, value in {
+            "config.git_provider": "plain-diff",
+            "config.model": "gpt-4o-mini",
+            "config.model_weak": "gpt-4o-mini",
+            "config.fallback_models": [],
+            "config.repo_context_files": [],
+            "config.publish_output": True,
+            "config.publish_output_progress": False,
+            "config.propagate_tool_errors": False,
+            "config.extra_config_url": "",
+            "plain_diff.content": DIFF,
+            "plain_diff.output_path": None,
+            "plain_diff.json_output_path": None,
+            "pr_code_suggestions.publish_failure_comment": True,
+            "pr_code_suggestions.decouple_hunks": True,
+            "push_outputs.enable": False,
+        }.items():
+            get_settings().set(key, value)
+
+        assert await PRAgent(ai_handler=FakeAiHandler).handle_request("local_diff", "/improve") is True
+        assert command_failed() is expected_failure
+
+    assert len(calls) == 1
+    assert "line2-changed" in calls[0]
+    output = capsys.readouterr().out
+    if expected_failure:
+        assert "Failed to generate code suggestions for PR" in output
+        assert "No code suggestions found for the PR." not in output
+    else:
+        assert "No code suggestions found for the PR." in output
 
 
 @pytest.mark.asyncio

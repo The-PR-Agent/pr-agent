@@ -60,6 +60,14 @@ You can use our pre-built GitHub Action Docker image to run PR-Agent as a GitHub
 
 See detailed usage instructions in the [USAGE GUIDE](../usage-guide/automations_and_usage.md#github-action)
 
+When a PR opens with a reviewer already requested, GitHub can send both `opened` and
+`review_requested`. With both actions enabled, the Action skips the initial
+`review_requested` event when the PR's creation and update timestamps match, so the
+tools run once for the opening event stream. A configuration that enables only
+`review_requested` still runs that event.
+Later review requests still run the enabled tools when `review_requested` is listed in
+`github_action_config.pr_actions`. This applies to both `pull_request` and `pull_request_target`.
+
 ### Using with pull_request_target (fork/contribution support)
 
 By default, the `pull_request` event does not have access to repository or organization secrets when the PR originates from a forked repository, which means PR-Agent won't be able to access secrets such as `OPENAI_KEY`. The workflow still receives a `GITHUB_TOKEN`, but it has read-only permissions for fork pull requests by default. For private repositories, administrators can enable **Send secrets to workflows from pull requests** to make secrets available, but doing so exposes those secrets to workflows triggered by fork pull requests.
@@ -319,14 +327,14 @@ To use local models via Ollama:
         config.fallback_models: '[]'
         config.custom_model_max_tokens: "128000"
         # Ollama configuration
-        OLLAMA.API_BASE: "http://localhost:11434"
+        OLLAMA.API_BASE: "http://<ollama-host-reachable-from-container>:11434"
         # Tool configuration
         github_action_config.auto_review: "true"
         github_action_config.auto_describe: "true"
         github_action_config.auto_improve: "true"
 ```
 
-**Note:** For local models, you'll need to use a self-hosted runner with Ollama installed, as GitHub Actions hosted runners cannot access localhost services.
+**Note:** Ollama must be reachable from the action's Docker container. `localhost` inside that container refers to the container itself, not the runner host. If Ollama runs on a self-hosted runner, configure a host address and Ollama network binding that the action container can reach.
 
 ##### Using Amazon Bedrock
 
@@ -448,7 +456,7 @@ The remaining knobs live in the `[artifacts]` section of your configuration:
 
 ```toml
 [artifacts]
-enable = false                                              # auto-enabled when artifact_path is set
+enable = true                                               # required when configuring paths here
 artifact_path = [
   { path = "reports/pytest.xml" },
   { path = "reports/coverage.xml" },
@@ -463,6 +471,8 @@ max_artifact_size = 50000                                   # characters; longer
 `path`, `artifact_label`, `artifact_instructions`, `target_tools`, and `truncate_from` on
 its own line; a shared `artifact_label` applies only to a single file, otherwise each file falls
 back to its name.
+
+Automatic enabling applies to the action's `artifact_path` input or the `ARTIFACT_PATH` / `PR_AGENT_ARTIFACT_PATH` environment variables. A path set only in `[artifacts]` requires `enable = true`.
 
 CI artifacts are checked for recognizable URL credentials, authorization headers, standard GitLab tokens, AWS access keys, and common credential assignments before model submission, with redaction matches logged only by type and count; this pattern-based check does not recognize every secret format, so use sanitized CI logs as input.
 
@@ -573,7 +583,8 @@ A 429 is returned immediately; raising `config.ai_timeout` only bounds the durat
 - **Note**: For non-OpenAI models (Gemini, Claude, etc.), you only need the model-specific API key, not `OPENAI_KEY`
 
 **Error: "Incorrect API key provided: dummy_key"**
-- **Cause**: No usable key for the active model's provider reached the run. The step log now shows `Stopping before any tool runs` with the missing variable named, and the job fails at once; older versions logged `OPENAI_KEY not set` near the top and carried on, so the request went out with PR-Agent's placeholder key instead and failed a full run later.
+- **Cause**: No usable key for the active model's provider reached the run. For automatic runs and commands other than bare `/help`, `/config`, or `/settings`, the step log now shows `Stopping before any tool runs` with the missing variable named, and the job fails at once; older versions logged `OPENAI_KEY not set` near the top and carried on, so the request went out with PR-Agent's placeholder key instead and failed a full run later.
+- **Note**: For PR `issue_comment` and `pull_request_review_comment` events, bare `/help`, `/config`, and `/settings` skip this model-key check (ignoring case and surrounding whitespace). They still need `GITHUB_TOKEN`; commands with arguments, including `/help <question>`, retain the check.
 - **Solution**: Check which of the three causes applies:
     - **The run gets no secrets.** On the `pull_request` event, runs triggered from a fork receive no repository secrets, so `${{ secrets.OPENAI_KEY }}` is empty. Use the [`pull_request_target` setup](#using-with-pull_request_target-forkcontribution-support) instead. Dependabot pull requests are the same case: their secrets live under Dependabot secrets, not Actions secrets, and the `github.event.sender.type != 'Bot'` condition in the examples above keeps those runs from starting at all.
     - **The secret is missing or misnamed.** A reference to a secret that does not exist expands to an empty string rather than failing the workflow, so compare the name in the repository secrets with the one used in `env`.
@@ -680,7 +691,7 @@ gh attestation verify \
 ```
 :::
 
-### Action for GitHub enterprise server
+### Action for GitHub enterprise server or GHE.com
 
 :::tip
 To use the action with a GitHub enterprise server, add an environment variable `GITHUB__BASE_URL` with the API URL of your GitHub server.
@@ -690,6 +701,13 @@ For example, if your GitHub server is at `https://github.mycompany.com`, add the
       env:
         # ... previous environment values
         GITHUB__BASE_URL: "https://github.mycompany.com/api/v3"
+```
+
+For GitHub Enterprise Cloud with data residency (GHE.com), set `GITHUB__BASE_URL` to the API host `https://api.<subdomain>.ghe.com`, which the workflow exposes as `github.api_url`:
+```yaml
+      env:
+        # ... previous environment values
+        GITHUB__BASE_URL: ${{ github.api_url }} # e.g. https://api.mycompany.ghe.com
 ```
 :::
 
@@ -703,7 +721,7 @@ Allowing you to automate the review process on your private or public repositori
 
    - Set the following permissions:
      - Pull requests: Read & write
-     - Issue comment: Read & write
+     - Issues: Read & write
      - Metadata: Read-only
      - Contents: Read-only (or Read & write if using `resolve_threads` — see note below)
    - Set the following events:
@@ -735,6 +753,7 @@ Allowing you to automate the review process on your private or public repositori
 
    ```bash
    git clone https://github.com/the-pr-agent/pr-agent.git
+   cd pr-agent
    ```
 
 5. Copy the secrets template file and fill in the following:
@@ -748,7 +767,7 @@ Allowing you to automate the review process on your private or public repositori
    - Copy your app's private key to the private_key field.
    - Copy your app's ID to the app_id field.
    - Copy your app's webhook secret to the webhook_secret field (required).
-   - Set deployment_type to 'app' in [configuration.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)
+   - The GitHub App sets `deployment_type` to `app` automatically by default. No manual configuration is needed unless `github_app.override_deployment_type` is disabled.
 
     > The local `.secrets.toml` file is excluded from the Docker build context. Never bake secrets into a container image.
     > For container deployments, provide secrets at runtime through environment variables or a mounted secret volume.
@@ -771,7 +790,7 @@ Allowing you to automate the review process on your private or public repositori
     > Service images run as UID/GID `10001`: mounted secrets must be readable, and mounted data paths writable, by that user.
     > Home-relative mounts belong under `/home/pragent`.
 
-    > Another option is to set the secrets as environment variables in your deployment environment, for example `OPENAI.KEY` and `GITHUB.USER_TOKEN`.
+    > Another option is to set the secrets as environment variables in your deployment environment, for example `OPENAI__KEY`, `GITHUB__APP_ID`, `GITHUB__PRIVATE_KEY`, and `GITHUB__WEBHOOK_SECRET`.
 
 6. Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
 
@@ -789,7 +808,7 @@ Allowing you to automate the review process on your private or public repositori
 
 8. Go back to your app's settings, and set the following:
 
-   - Webhook URL: The URL of your app's server or the URL of the smee.io channel.
+   - Webhook URL: `https://<PR_AGENT_HOSTNAME>/api/v1/github_webhooks`, or your smee.io channel URL with forwarding configured to that endpoint.
    - Webhook secret: The secret you generated earlier.
 
 9. Install the app by navigating to the "Install App" tab and selecting your desired repositories.
@@ -841,6 +860,7 @@ For production Lambda deployments, use AWS Secrets Manager instead of environmen
    ```json
    {
      "openai.key": "sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+     "github.app_id": 123456,
      "github.webhook_secret": "your-webhook-secret-from-step-2",
      "github.private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----"
    }
@@ -867,9 +887,9 @@ Not all features have been added to CodeCommit yet.  As of right now, CodeCommit
 4. Set the Access Key and Secret using environment variables (see Access Key example below)
 5. Set the `git_provider` value to `codecommit` in the `pr_agent/settings/configuration.toml` settings file
 6. Set the `PYTHONPATH` to include your `pr-agent` project directory
-    - Option A: Add `PYTHONPATH="/PATH/TO/PROJECTS/pr-agent` to your `.env` file
+    - Option A: Run `export PYTHONPATH="/PATH/TO/PROJECTS/pr-agent"` in your shell. PR-Agent does not automatically load `.env` files.
     - Option B: Set `PYTHONPATH` and run the CLI in one command, for example:
-        - `PYTHONPATH="/PATH/TO/PROJECTS/pr-agent python pr_agent/cli.py [--ARGS]`
+        - `PYTHONPATH="/PATH/TO/PROJECTS/pr-agent" python pr_agent/cli.py [--ARGS]`
 
 ---
 

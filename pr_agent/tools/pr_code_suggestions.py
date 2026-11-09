@@ -10,17 +10,21 @@ from functools import partial
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.artifacts import get_artifact_context
+from pr_agent.algo.artifacts import get_artifact_context, prompt_boundary_markers
+from pr_agent.algo.code_replacement import python_replacement_compiles, reindent_to_line
 from pr_agent.algo.comment_identity import (
     PRCodeSuggestionsHeader,
     PRCodeSuggestionsIdentity,
     add_comment_identity,
     comment_authorship_available,
+    comment_carries_other_identity,
     comment_matches_identity,
     format_pr_code_suggestions_header,
     hidden_marker_forms,
 )
+from pr_agent.algo.findings import Finding
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers, split_diff_lines
+from pr_agent.algo.i18n import t
 from pr_agent.algo.pr_processing import (
     DELETED_FILES_,
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
@@ -37,6 +41,12 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
+from pr_agent.algo.review_finding_state import (
+    parse_review_state,
+    reconcile_review_findings,
+    serialize_review_state,
+    split_review_state_marker,
+)
 from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
 from pr_agent.algo.run_details import (
     get_run_details,
@@ -44,7 +54,7 @@ from pr_agent.algo.run_details import (
     record_command_failure,
     record_model_used,
 )
-from pr_agent.algo.run_output import push_outputs_async, show_relevant_configurations, show_run_details
+from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
 from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget, FittedPrompt
@@ -81,8 +91,25 @@ from pr_agent.tools.progress_comment import (
 _deprecated_spellings_warned = False
 
 
+# Self-review marker keys were removed from configuration.toml; keep warning users who still
+# set either one, once per process.
+def _warn_deprecated_self_review_marker_keys() -> None:
+    if getattr(_warn_deprecated_self_review_marker_keys, "_warned", False):
+        return
+    settings = get_settings().pr_code_suggestions
+    if (settings.get("approve_pr_on_self_review", None) is None
+            and settings.get("fold_suggestions_on_self_review", None) is None):
+        return
+    _warn_deprecated_self_review_marker_keys._warned = True
+    get_logger().warning(
+        "pr_code_suggestions.approve_pr_on_self_review and "
+        "pr_code_suggestions.fold_suggestions_on_self_review are deprecated and have no effect; "
+        "remove them from your configuration"
+    )
+
+
 def _as_threshold(setting_name: str, default: int, minimum: int) -> int:
-    """Read a score threshold as an int, so a quoted or unusable value cannot fail the run."""
+    """Read an integer setting, retaining its default when the configured value is unusable."""
     value = get_settings().get(setting_name, default)
     try:
         return max(minimum, int(value))
@@ -296,6 +323,7 @@ class PRCodeSuggestions:
             get_logger().debug("AI metadata is disabled for this command")
 
         is_ai_metadata = get_settings().get("config.enable_ai_metadata", False)
+        commit_messages_begin, commit_messages_end = prompt_boundary_markers("COMMIT_MESSAGES")
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -309,7 +337,9 @@ class PRCodeSuggestions:
             "skills_context": get_skills_context(),
             "repo_context": build_repo_context(self.git_provider),
             "suggestion_discussion_context": self._load_suggestion_discussion_context(),
-            "commit_messages_str": self.git_provider.get_commit_messages(),
+            "commit_messages_str": "" if self.incremental.is_incremental else self.git_provider.get_commit_messages(),
+            "commit_messages_begin": commit_messages_begin,
+            "commit_messages_end": commit_messages_end,
             "relevant_best_practices": "",
             "is_ai_metadata": is_ai_metadata,
             "diff_hunk_format": render_diff_hunk_format(
@@ -348,6 +378,133 @@ class PRCodeSuggestions:
             get_logger().warning(f"Failed to load prior code suggestion discussions: {e}")
             return ""
 
+    def _suggestion_finding_state_supported(self) -> bool:
+        if not get_settings().pr_code_suggestions.get("persistent_comment", True):
+            return False
+        supports = getattr(self.git_provider, "supports_review_finding_state", None)
+        try:
+            return callable(supports) and supports() is True
+        except Exception as error:
+            get_logger().warning(f"Code suggestion finding state is not supported, error: {error}")
+            return False
+
+    def _load_suggestion_finding_state(self):
+        identities = (
+            PRCodeSuggestionsIdentity.SUMMARY.value,
+            PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
+        )
+        try:
+            comments = self.git_provider.get_issue_comments_newest_first()
+            require_agent_authorship = comment_authorship_available(self.git_provider)
+            for comment in comments:
+                body = GitProvider._get_comment_body(comment)
+                identity = next(
+                    (marker for marker in identities if comment_matches_identity(body, marker)),
+                    None,
+                )
+                if identity is None or comment_carries_other_identity(body, identity):
+                    continue
+                if require_agent_authorship and not self.git_provider.is_comment_authored_by_pr_agent(comment):
+                    continue
+                parsed = parse_review_state(body)
+                if parsed.present:
+                    if not parsed.valid:
+                        get_logger().warning(
+                            "Code suggestion finding state marker is malformed; preserving existing state"
+                        )
+                    return parsed
+            return parse_review_state("")
+        except Exception as error:
+            get_logger().warning(f"Could not read code suggestion finding state, error: {error}")
+            return None
+
+    def _suggestion_state_is_complete(self, data: dict) -> bool:
+        if getattr(getattr(self, "incremental", None), "is_incremental", False):
+            return False
+        if (
+            getattr(self, "failed_chunk_count", 0)
+            or getattr(self, "remaining_files_list", [])
+            or getattr(self, "partial_files_list", [])
+        ):
+            return False
+
+        predictions = getattr(self, "prediction_list", None)
+        if not isinstance(predictions, list):
+            return True
+        try:
+            per_chunk_limit = int(get_settings().pr_code_suggestions.num_code_suggestions_per_chunk)
+        except (TypeError, ValueError):
+            return False
+        raw_count = 0
+        for prediction in predictions:
+            chunk_suggestions = prediction.get("code_suggestions", []) if isinstance(prediction, dict) else []
+            if not isinstance(chunk_suggestions, list):
+                return False
+            raw_count += len(chunk_suggestions)
+            if per_chunk_limit > 0 and len(chunk_suggestions) >= per_chunk_limit:
+                return False
+        return raw_count == len(data.get("code_suggestions") or [])
+
+    def _prepare_suggestion_finding_state(self, data: dict) -> None:
+        self._suggestion_finding_state = None
+        if not get_settings().config.publish_output or not self._suggestion_finding_state_supported():
+            return
+        parsed = self._load_suggestion_finding_state()
+        if parsed is None or not parsed.valid:
+            return
+
+        findings = []
+        for suggestion in data.get("code_suggestions") or []:
+            try:
+                normalized_suggestion = {
+                    **suggestion,
+                    "relevant_lines_start": int(suggestion["relevant_lines_start"]),
+                    "relevant_lines_end": int(suggestion["relevant_lines_end"]),
+                }
+            except (KeyError, TypeError, ValueError):
+                normalized_suggestion = suggestion
+            finding = Finding.from_code_suggestion(normalized_suggestion)
+            if finding is None:
+                get_logger().debug(
+                    "Skipping an untrackable code suggestion",
+                    artifact={"suggestion": suggestion},
+                )
+                continue
+            findings.append(finding)
+
+        try:
+            head_sha = self.git_provider.get_pr_head_sha()
+        except Exception as error:
+            head_sha = ""
+            get_logger().warning(f"Could not read PR head for code suggestion finding state: {error}")
+        self._suggestion_finding_state = reconcile_review_findings(
+            parsed.state,
+            findings,
+            allow_resolution=self._suggestion_state_is_complete(data),
+            head_sha=head_sha if isinstance(head_sha, str) else "",
+        ).state
+
+    def _store_suggestion_finding_state(self, identity: str) -> None:
+        state = getattr(self, "_suggestion_finding_state", None)
+        if state is None:
+            return
+        try:
+            require_agent_authorship = comment_authorship_available(self.git_provider)
+            for comment in self.git_provider.get_issue_comments_newest_first():
+                body = GitProvider._get_comment_body(comment)
+                if not comment_matches_identity(body, identity) or comment_carries_other_identity(body, identity):
+                    continue
+                if require_agent_authorship and not self.git_provider.is_comment_authored_by_pr_agent(comment):
+                    continue
+                human_body, _ = split_review_state_marker(body)
+                updated_body = f"{human_body.rstrip()}\n\n{serialize_review_state(state)}\n"
+                if not _edit_comment_safely(self.git_provider, comment, updated_body):
+                    raise RuntimeError("Provider did not confirm the code suggestion state update")
+                return
+            raise RuntimeError("Could not find the published code suggestion comment to update")
+        except Exception as error:
+            get_logger().warning(f"Failed to persist code suggestion finding state: {error}")
+
     @staticmethod
     def _parse_incremental(args):
         """Parse the `-i` flag for `/improve` exactly like `PRReviewer.parse_incremental`."""
@@ -373,11 +530,12 @@ class PRCodeSuggestions:
 
     async def run(self):
         init_run_details()
+        _warn_deprecated_self_review_marker_keys()
         self._output_published = False
         self._progress_base_body = None
         self._chunk_progress = None
         try:
-            if _supports_code_suggestion_state(self.git_provider):
+            if get_settings().config.publish_output and _supports_code_suggestion_state(self.git_provider):
                 try:
                     fixed = self.git_provider.reconcile_code_suggestion_threads()
                     if fixed:
@@ -399,6 +557,7 @@ class PRCodeSuggestions:
 
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping code suggestions")
+                self._write_json_output({"code_suggestions": []})
                 return None
 
             await asyncio.to_thread(self.git_provider.get_diff_files)
@@ -441,11 +600,26 @@ class PRCodeSuggestions:
             if not data:
                 data = {"code_suggestions": []}
             self.data = data
+            # Keep hosted PR publication-before-JSON semantics unchanged. In
+            # plain-diff mode, the JSON artifact must survive stdout failures.
+            plain_diff_json = bool(review_json_output_path.get() and
+                                   get_settings().config.git_provider == "plain-diff")
+
+            def write_plain_diff_json(result):
+                if plain_diff_json:
+                    try:
+                        self._write_json_output(result)
+                    except (OSError, TypeError, ValueError):
+                        # Still publish Markdown; the CLI reports the missing JSON as a failure.
+                        record_command_failure()
 
             # Handle the case where the PR has no suggestions
             if (data is None or 'code_suggestions' not in data or not data['code_suggestions']):
+                write_plain_diff_json({"code_suggestions": []})
+                self._prepare_suggestion_finding_state({"code_suggestions": []})
                 await self.publish_no_suggestions()
-                self._write_json_output({"code_suggestions": []})
+                if not plain_diff_json:
+                    self._write_json_output({"code_suggestions": []})
                 return
 
             # publish the suggestions
@@ -461,14 +635,21 @@ class PRCodeSuggestions:
                         if self._is_suggestion_line_range_valid(suggestion)
                     ]
                     if not data['code_suggestions']:
+                        write_plain_diff_json(data)
+                        self._prepare_suggestion_finding_state({"code_suggestions": []})
                         await self.publish_no_suggestions()
-                        self._write_json_output(data)
+                        if not plain_diff_json:
+                            self._write_json_output(data)
                         return
 
+                write_plain_diff_json(data)
+                self._prepare_suggestion_finding_state(data)
                 # Emit to the optional external sinks before touching the provider, so a sink
                 # still receives the suggestions if publishing them to the PR fails.
                 markdown = render_suggestions_markdown(data) + self._get_suggestions_coverage_footer()
-                await push_outputs_async("improve", payload=data, markdown=markdown)
+                await push_outputs_async(
+                    "improve", payload=data, markdown=markdown, git_provider=self.git_provider
+                )
                 # If a temporary comment was published, remove it
                 self.git_provider.remove_initial_comment()
 
@@ -499,11 +680,8 @@ class PRCodeSuggestions:
                     if get_settings().get('config', {}).get('output_relevant_configurations', False):
                         pr_body += show_relevant_configurations(relevant_section='pr_code_suggestions')
 
-                    # Output the agent run details (model, tokens, time cost) if enabled
-                    if get_settings().get('config', {}).get('output_run_details', False):
-                        # This summary-comment branch already requires GFM support, so the argument is always True;
-                        # keep the call shaped like the reviewer/describe paths for consistency.
-                        pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
+                    # Output the fallback-model note, and the agent run details (model, tokens, time cost) if enabled
+                    pr_body = append_run_details(pr_body, self.git_provider)
 
                     # publish the PR comment
                     if get_settings().pr_code_suggestions.persistent_comment: # true by default
@@ -523,6 +701,7 @@ class PRCodeSuggestions:
                         if published_comment is not None:
                             self.progress_response = None
                         self._output_published = True
+                        self._store_suggestion_finding_state(PRCodeSuggestionsIdentity.SUMMARY.value)
                     else:
                         pr_body = add_comment_identity(
                             pr_body,
@@ -544,6 +723,7 @@ class PRCodeSuggestions:
                         else:
                             self.git_provider.publish_comment(pr_body, **self._improve_thread_kwargs())
                         self._output_published = True
+                        self._store_suggestion_finding_state(PRCodeSuggestionsIdentity.SUMMARY.value)
 
                     # dual publishing mode
                     if get_dual_publishing_score_threshold() > 0:
@@ -552,7 +732,8 @@ class PRCodeSuggestions:
                     await self.push_inline_code_suggestions(data)
                     if self.progress_response:
                         self.git_provider.remove_comment(self.progress_response)
-                self._write_json_output(data)
+                if not plain_diff_json:
+                    self._write_json_output(data)
             else:
                 get_logger().info('Code suggestions generated for PR, but not published since publish_output is False.')
                 pr_body = self.generate_summarized_suggestions(data)
@@ -607,16 +788,10 @@ class PRCodeSuggestions:
                 raise
 
     async def add_self_review_text(self, pr_body):
+        _warn_deprecated_self_review_marker_keys()
         text = get_settings().pr_code_suggestions.code_suggestions_self_review_text
         pr_body += f"\n\n- [ ]  {text}"
-        approve_pr_on_self_review = get_settings().pr_code_suggestions.approve_pr_on_self_review
-        fold_suggestions_on_self_review = get_settings().pr_code_suggestions.fold_suggestions_on_self_review
-        if approve_pr_on_self_review and not fold_suggestions_on_self_review:
-            pr_body += ' <!-- approve pr self-review -->'
-        elif fold_suggestions_on_self_review and not approve_pr_on_self_review:
-            pr_body += ' <!-- fold suggestions self-review -->'
-        else:
-            pr_body += ' <!-- approve and fold suggestions self-review -->'
+        pr_body += ' <!-- fold suggestions self-review -->'
         return pr_body
 
     def _get_suggestions_coverage_footer(self, suggestions_present: bool = True) -> str:
@@ -669,13 +844,15 @@ class PRCodeSuggestions:
 
     async def publish_no_suggestions(self):
         coverage_footer = self._get_suggestions_coverage_footer(suggestions_present=False)
-        no_suggestions_message = ("No code suggestions found in the successfully analyzed chunks."
-                                  if coverage_footer else "No code suggestions found for the PR.")
+        no_suggestions_message = (t("improve.no_suggestions_in_chunks")
+                                  if coverage_footer else t("improve.no_suggestions_for_pr"))
         pr_body = f"{format_pr_code_suggestions_header()}\n\n{no_suggestions_message}{coverage_footer}"
         if get_settings().config.publish_output:
             markdown = f"## PR Code Suggestions\n\n{no_suggestions_message}{coverage_footer}"
-            await push_outputs_async("improve", payload=getattr(self, "data", None) or {"code_suggestions": []},
-                                     markdown=markdown)
+            await push_outputs_async(
+                "improve", payload=getattr(self, "data", None) or {"code_suggestions": []},
+                markdown=markdown, git_provider=self.git_provider,
+            )
         if (get_settings().config.publish_output and
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
             get_logger().warning("No code suggestions found for the PR.")
@@ -688,10 +865,9 @@ class PRCodeSuggestions:
                 PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
                 self.git_provider,
             )
-            # Output the agent run details (model, tokens, time cost) if enabled, so the
-            # "no suggestions" result still shows which model produced it.
-            if get_settings().get('config', {}).get('output_run_details', False):
-                pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
+            # Output the fallback-model note, and the agent run details (model, tokens, time cost) if
+            # enabled, so the "no suggestions" result still shows which model produced it.
+            pr_body = append_run_details(pr_body, self.git_provider)
             get_logger().debug("PR output", artifact=pr_body)
             if self.progress_response:
                 progress_response = self.progress_response
@@ -719,6 +895,7 @@ class PRCodeSuggestions:
                 comment = self.git_provider.publish_comment(pr_body, **self._improve_thread_kwargs())
                 if comment and self._improve_thread_kwargs():
                     self.git_provider.resolve_comment_thread(comment.id)
+            self._store_suggestion_finding_state(PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value)
         else:
             get_settings().data = {"artifact": pr_body if coverage_footer else ""}
             if self.progress_response:
@@ -880,7 +1057,7 @@ class PRCodeSuggestions:
         latest_commit_html_comment = f"<!-- {last_commit_num} -->"
         new_suggestion_table = _without_heading(pr_comment)
 
-        if max_previous_comments > 0:
+        if max_previous_comments > 0 or git_provider.supports_comment_editing():
             try:
                 comment = None
                 legacy_comment = None
@@ -906,11 +1083,11 @@ class PRCodeSuggestions:
                     prev_suggestions = _comment_body(comment)
                     comment_url = git_provider.get_comment_url(comment)
 
-                    if history_header.strip() not in prev_suggestions:
-                        # no history section
+                    if max_previous_comments <= 0 or history_header.strip() not in prev_suggestions:
+                        # Replace the current table when history is disabled, or start a history section.
                         # extract everything between <table> and </table> in comment.body including <table> and </table>
                         table_index = prev_suggestions.find("<table>")
-                        if table_index == -1:
+                        if max_previous_comments <= 0 or table_index == -1:
                             pr_comment_updated = _with_identity(
                                 f"{initial_header}\n\n{latest_commit_html_comment}\n\n"
                                 f"{new_suggestion_table}\n\n"
@@ -1095,6 +1272,9 @@ class PRCodeSuggestions:
             get_settings().system_prompt = system_prompt
             get_settings().user_prompt = user_prompt
 
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"Code suggestions response was truncated by {model}")
+
         # load suggestions from the AI response
         data = self._prepare_pr_code_suggestions(response)
 
@@ -1157,6 +1337,11 @@ class PRCodeSuggestions:
                 continue
             score = self._parse_line_number(entry.get("suggestion_score"))
             if score is None or not 0 <= score <= 10:
+                feedback[i] = None
+                continue
+            expected_file = self._suggestion_file_key(suggestion).strip("`").removeprefix("./").removeprefix("/")
+            reported_file = self._suggestion_file_key(entry).strip("`").removeprefix("./").removeprefix("/")
+            if expected_file and reported_file and expected_file != reported_file:
                 feedback[i] = None
                 continue
             # Only use reflection anchors when the original suggestion has none.
@@ -1258,7 +1443,7 @@ class PRCodeSuggestions:
     @staticmethod
     def _truncate_if_needed(suggestion):
         suggestion.pop('_is_truncated', None)
-        max_code_suggestion_length = get_settings().get("PR_CODE_SUGGESTIONS.MAX_CODE_SUGGESTION_LENGTH", 0)
+        max_code_suggestion_length = _as_threshold("pr_code_suggestions.max_code_suggestion_length", 0, 0)
         suggestion_truncation_message = get_settings().get("PR_CODE_SUGGESTIONS.SUGGESTION_TRUNCATION_MESSAGE", "")
         if max_code_suggestion_length > 0:
             if len(suggestion['improved_code']) > max_code_suggestion_length:
@@ -1389,13 +1574,10 @@ class PRCodeSuggestions:
                     continue
 
                 suggestion_content = suggestion['suggestion_content']
-                if (
-                    'instead' in suggestion_content
-                    and re.search(r"\bconst\b", suggestion_content)
-                    and re.search(r"\blet\b", suggestion_content)
-                ):
+                # Only filter direct advice; preserve reverse or negated recommendations for reflection.
+                if re.match(r"\s*(?i:use)\s+`?\bconst\b`?\s+instead\s+of\s+`?\blet\b", suggestion_content):
                     get_logger().debug(
-                        f"Skipping suggestion {i + 1}, because it uses 'const instead let': {suggestion}")
+                        f"Skipping suggestion {i + 1}, because it recommends 'const instead of let': {suggestion}")
                     continue
 
                 if ('existing_code' in suggestion) and ('improved_code' in suggestion):
@@ -1488,8 +1670,8 @@ class PRCodeSuggestions:
             get_logger().info('No suggestions found to improve this PR.')
             empty_coverage_footer = (self._get_suggestions_coverage_footer(suggestions_present=False)
                                      if include_coverage_footer else "")
-            no_suggestions_message = ("No suggestions found in the successfully analyzed chunks."
-                                      if empty_coverage_footer else "No suggestions found to improve this PR.")
+            no_suggestions_message = (t("improve.no_suggestions_in_chunks_inline")
+                                      if empty_coverage_footer else t("improve.no_suggestions"))
             pr_body = no_suggestions_message + empty_coverage_footer
             if self.progress_response:
                 if not _edit_comment_safely(self.git_provider, self.progress_response, pr_body):
@@ -1511,6 +1693,18 @@ class PRCodeSuggestions:
                 if not isinstance(existing_code, str):
                     raise TypeError("existing_code must be a string")
                 label = d['label'].strip()
+                finding = Finding.from_code_suggestion({
+                    **d,
+                    "relevant_file": relevant_file,
+                    "relevant_lines_start": relevant_lines_start,
+                    "relevant_lines_end": relevant_lines_end,
+                    "suggestion_content": content,
+                    "existing_code": existing_code,
+                    "improved_code": new_code_snippet,
+                    "label": label,
+                })
+                if finding is None:
+                    raise TypeError("suggestion must be a mapping")
             except (AttributeError, KeyError, TypeError, ValueError) as e:
                 get_logger().warning(f"Could not parse suggestion: {d}, error: {e}")
                 continue
@@ -1522,6 +1716,13 @@ class PRCodeSuggestions:
                 new_code_snippet = self.dedent_code(relevant_file, relevant_lines_start, new_code_snippet)
                 existing_code = self.dedent_code(relevant_file, relevant_lines_start, existing_code)
                 d = {**d, "existing_code": existing_code, "improved_code": new_code_snippet}
+                finding = Finding.from_code_suggestion({
+                    **d,
+                    "relevant_lines_start": relevant_lines_start,
+                    "relevant_lines_end": relevant_lines_end,
+                })
+                if finding is None:
+                    raise ValueError("Could not convert a validated suggestion to a finding")
 
             requires_pr_fallback = False
             if d.get('_is_truncated'):
@@ -1540,9 +1741,9 @@ class PRCodeSuggestions:
                     fallback_reason = "the proposed Python code has invalid syntax"
                     requires_pr_fallback = True
 
-            score = d.get("score")
-            header = f"**Suggestion:** {content} [{label}, importance: {score}]" if score \
-                else f"**Suggestion:** {content} [{label}]"
+            score = finding.score
+            header = f"**Suggestion:** {finding.body} [{finding.label}, importance: {score}]" if score \
+                else f"**Suggestion:** {finding.body} [{finding.label}]"
             fence = get_suggestion_fence(new_code_snippet or "")
             if new_code_snippet and is_applicable:
                 body = f"{header}\n{fence}suggestion\n" + new_code_snippet + f"\n{fence}"
@@ -1554,10 +1755,7 @@ class PRCodeSuggestions:
                 elif requires_pr_fallback:
                     body += f"\n\nNot offered as a committable change because {fallback_reason}."
 
-            rendered_suggestion = {'body': body, 'relevant_file': relevant_file,
-                                   'relevant_lines_start': relevant_lines_start,
-                                   'relevant_lines_end': relevant_lines_end,
-                                   'original_suggestion': d}
+            rendered_suggestion = finding.to_inline_comment(body, original_suggestion=d)
             if supports_suggestions_artifact:
                 artifact_suggestions.append(rendered_suggestion)
 
@@ -1657,30 +1855,8 @@ class PRCodeSuggestions:
                 or not diff_file.head_file
                 or not getattr(diff_file, "head_file_is_complete", True)):
             return None
-
-        try:
-            compile(diff_file.head_file, relevant_file, "exec", dont_inherit=True)
-        except (SyntaxError, ValueError):
-            return None
-        except Exception as e:
-            get_logger().warning(f"Could not validate Python suggestion syntax: {e}")
-            return None
-
-        file_lines = split_diff_lines(diff_file.head_file)
-        if (relevant_lines_start < 1
-                or relevant_lines_end < relevant_lines_start
-                or relevant_lines_end > len(file_lines)):
-            return None
-        file_lines[relevant_lines_start - 1:relevant_lines_end] = split_diff_lines(new_code_snippet)
-
-        try:
-            compile("\n".join(file_lines), relevant_file, "exec", dont_inherit=True)
-        except (SyntaxError, ValueError):
-            return False
-        except Exception as e:
-            get_logger().warning(f"Could not validate Python suggestion syntax: {e}")
-            return None
-        return True
+        return python_replacement_compiles(relevant_file, diff_file.head_file, relevant_lines_start,
+                                           relevant_lines_end, new_code_snippet)
 
     @staticmethod
     def _get_patch_range_lines(patch, relevant_lines_start, relevant_lines_end) -> list[str] | None:
@@ -1733,153 +1909,6 @@ class PRCodeSuggestions:
             return False, "the existing code does not match the anchored range", True
         return True, "", True
 
-    def _suggestion_applyability(self, relevant_file, relevant_lines_start, relevant_lines_end,
-                                 existing_code) -> tuple[bool, str]:
-        is_applicable, fallback_reason, _ = self._validate_suggestion(
-            relevant_file, relevant_lines_start, relevant_lines_end, existing_code)
-        return is_applicable, fallback_reason
-
-    def is_applicable_suggestion(self, relevant_file, relevant_lines_start, relevant_lines_end,
-                                 existing_code) -> bool:
-        return self._suggestion_applyability(relevant_file, relevant_lines_start,
-                                             relevant_lines_end, existing_code)[0]
-
-    @staticmethod
-    def _shift_code_indentation(code_snippet: str, delta_spaces: int) -> str:
-        shifted_lines = []
-        for line in split_diff_lines(code_snippet):
-            if not line.strip(" \t"):
-                shifted_lines.append("")
-                continue
-            if delta_spaces > 0:
-                shifted_lines.append(" " * delta_spaces + line)
-            elif delta_spaces < 0:
-                shift = -delta_spaces
-                leading_whitespace = len(line) - len(line.lstrip(" \t"))
-                shifted_lines.append(line[min(shift, leading_whitespace):])
-            else:
-                shifted_lines.append(line)
-        return "\n".join(shifted_lines)
-
-    @staticmethod
-    def _infer_space_indentation_unit(space_deltas: list[int]) -> int:
-        if not space_deltas:
-            return 1
-        unique_deltas = sorted(set(space_deltas))
-        for delta in unique_deltas:
-            if delta * 2 in unique_deltas:
-                return delta
-        return unique_deltas[0]
-
-    @staticmethod
-    def _continuation_space_adjustments(
-        lines: list[str],
-        leading_whitespace: list[str],
-    ) -> list[int]:
-        openers = []
-        adjustments = [0] * len(lines)
-        closer_for = {"(": ")", "[": "]"}
-        for index, (line, prefix) in enumerate(
-            zip(lines, leading_whitespace, strict=True)
-        ):
-            stripped = line.strip(" \t")
-            if not stripped:
-                continue
-            for opener_position in range(len(openers) - 1, -1, -1):
-                opener_index, opener_prefix, closer = openers[opener_position]
-                if prefix == opener_prefix and stripped.startswith(closer):
-                    interior_indexes = [
-                        line_index
-                        for line_index in range(opener_index + 1, index)
-                        if lines[line_index].strip(" \t")
-                    ]
-                    opener_spaces = opener_prefix.count(" ")
-                    positive_offsets = [
-                        leading_whitespace[line_index].count(" ") - opener_spaces
-                        for line_index in interior_indexes
-                        if leading_whitespace[line_index].count(" ") > opener_spaces
-                    ]
-                    if positive_offsets:
-                        continuation_offset = min(positive_offsets)
-                        for line_index in interior_indexes:
-                            if leading_whitespace[line_index].count(" ") > opener_spaces:
-                                adjustments[line_index] += continuation_offset
-                    del openers[opener_position:]
-                    break
-            if stripped[-1] in closer_for:
-                openers.append((index, prefix, closer_for[stripped[-1]]))
-        return adjustments
-
-    @staticmethod
-    def _align_code_with_tabs(code_snippet: str, anchor_prefix: str) -> str:
-        lines = split_diff_lines(code_snippet)
-        if not lines:
-            return code_snippet
-        leading_whitespace = [line[:len(line) - len(line.lstrip(" \t"))] for line in lines]
-        anchor_depth = len(anchor_prefix) - len(anchor_prefix.lstrip("\t"))
-        anchor_alignment = anchor_prefix[anchor_depth:]
-        initial_index, initial_prefix = next(
-            (
-                (index, prefix)
-                for index, (line, prefix) in enumerate(
-                    zip(lines, leading_whitespace, strict=True)
-                )
-                if line.strip(" \t")
-            ),
-            (0, ""),
-        )
-        initial_spaces = initial_prefix.count(" ")
-        initial_tabs = initial_prefix.count("\t")
-        continuation_adjustments = PRCodeSuggestions._continuation_space_adjustments(
-            lines,
-            leading_whitespace,
-        )
-        initial_continuation_adjustment = continuation_adjustments[initial_index]
-        adjusted_initial_spaces = initial_spaces - initial_continuation_adjustment
-        space_deltas = [
-            abs(
-                prefix.count(" ")
-                - continuation_adjustments[index]
-                - adjusted_initial_spaces
-            )
-            for index, (line, prefix) in enumerate(
-                zip(lines, leading_whitespace, strict=True)
-            )
-            if (
-                line.strip(" \t")
-                and prefix.count(" ") - continuation_adjustments[index]
-                != adjusted_initial_spaces
-            )
-        ]
-        space_unit = PRCodeSuggestions._infer_space_indentation_unit(space_deltas)
-        aligned_lines = []
-        for index, (line, prefix) in enumerate(
-            zip(lines, leading_whitespace, strict=True)
-        ):
-            if not line.strip(" \t"):
-                aligned_lines.append("")
-                continue
-            continuation_alignment = (
-                continuation_adjustments[index] - initial_continuation_adjustment
-            )
-            relative_space_depth, alignment_spaces = divmod(
-                prefix.count(" ")
-                - initial_spaces
-                - continuation_alignment,
-                space_unit,
-            )
-            relative_depth = (
-                prefix.count("\t") - initial_tabs
-                + relative_space_depth
-            )
-            aligned_lines.append(
-                "\t" * max(0, anchor_depth + relative_depth)
-                + anchor_alignment
-                + " " * (alignment_spaces + continuation_alignment)
-                + line[len(prefix):]
-            )
-        return "\n".join(aligned_lines).rstrip("\n")
-
     def dedent_code(self, relevant_file, relevant_lines_start, new_code_snippet):
         try:  # dedent code snippet
             self.diff_files = getattr(self.git_provider, "diff_files", None)
@@ -1913,18 +1942,7 @@ class PRCodeSuggestions:
                         original_initial_line = patch_lines[0]
                     break
             if original_initial_line:
-                suggested_initial_line = next(
-                    (line for line in split_diff_lines(new_code_snippet) if line.strip(" \t")),
-                    "",
-                )
-                original_initial_spaces = len(original_initial_line) - len(original_initial_line.lstrip(" \t"))
-                suggested_initial_spaces = len(suggested_initial_line) - len(suggested_initial_line.lstrip(" \t"))
-                if original_initial_line.startswith("\t"):
-                    original_prefix = original_initial_line[:original_initial_spaces]
-                    new_code_snippet = self._align_code_with_tabs(new_code_snippet, original_prefix)
-                else:
-                    delta_spaces = original_initial_spaces - suggested_initial_spaces
-                    new_code_snippet = self._shift_code_indentation(new_code_snippet, delta_spaces)
+                new_code_snippet = reindent_to_line(new_code_snippet, original_initial_line)
         except Exception as e:
             get_logger().error(f"Error when dedenting code snippet for file {relevant_file}, error: {e}")
 
@@ -2340,11 +2358,11 @@ class PRCodeSuggestions:
             pr_body = f"{format_pr_code_suggestions_header()}\n\n"
 
             if len(data.get('code_suggestions', [])) == 0:
-                pr_body += "No suggestions found to improve this PR."
+                pr_body += t("improve.no_suggestions")
                 return pr_body
 
             if get_settings().config.is_auto_command:
-                pr_body += "Explore these optional code suggestions:\n\n"
+                pr_body += f"{t('improve.optional_intro')}\n\n"
 
             language_extension_map_org = get_settings().language_extension_map_org
             extension_to_language = {}
@@ -2353,12 +2371,13 @@ class PRCodeSuggestions:
                     extension_to_language[ext] = language
 
             pr_body += "<table>"
-            header = "Suggestion"
+            header = t("improve.suggestion")
             delta = 66
             header += "&nbsp; " * delta
             pr_body += (
-                f"""<thead><tr><td><strong>Category</strong></td><td align=left><strong>{header}</strong>"""
-                f"""</td><td align=center><strong>Impact</strong></td></tr>"""
+                f"""<thead><tr><td><strong>{t('improve.category')}</strong></td>"""
+                f"""<td align=left><strong>{header}</strong>"""
+                f"""</td><td align=center><strong>{t('improve.impact')}</strong></td></tr>"""
             )
             pr_body += """<tbody>"""
             suggestions_labels = dict()
@@ -2376,7 +2395,7 @@ class PRCodeSuggestions:
 
             if not suggestions_labels:
                 pr_body = f"{format_pr_code_suggestions_header()}\n\n"
-                pr_body += "No suggestions found to improve this PR."
+                pr_body += t("improve.no_suggestions")
                 return pr_body
 
             # sort suggestions_labels by the suggestion with the highest score
@@ -2449,8 +2468,9 @@ class PRCodeSuggestions:
 {example_code.rstrip()}
 """
                     if suggestion.get('score_why'):
-                        pr_body += f"<details><summary>Suggestion importance[1-10]: {suggestion['score']}</summary>\n\n"
-                        pr_body += f"__\n\nWhy: {suggestion['score_why']}\n\n"
+                        pr_body += (f"<details><summary>{t('improve.importance')}[1-10]: "
+                                    f"{suggestion['score']}</summary>\n\n")
+                        pr_body += f"__\n\n{t('improve.why')}: {suggestion['score_why']}\n\n"
                         pr_body += "</details>"
 
                     pr_body += "</details>"
@@ -2466,7 +2486,7 @@ class PRCodeSuggestions:
 
                 # pr_body += "</details>"
                 # pr_body += """</td></tr>"""
-            pr_body += """</tr></tbody></table>"""
+            pr_body += """</tbody></table>"""
             return pr_body
         except Exception as e:
             # Returning "" here is not a safe "no suggestions" answer: the caller appends the
@@ -2480,12 +2500,12 @@ class PRCodeSuggestions:
     def get_score_str(self, score: int) -> str:
         th_high = _as_threshold("pr_code_suggestions.new_score_mechanism_th_high", 9, 0)
         if score >= th_high:
-            return "High"
+            return t("improve.high")
         th_medium = _as_threshold("pr_code_suggestions.new_score_mechanism_th_medium", 7, 0)
         if score >= th_medium:
-            return "Medium"
+            return t("improve.medium")
         else:  # score < 7
-            return "Low"
+            return t("improve.low")
 
     async def self_reflect_on_suggestions(self,
                                           suggestion_list: list,
