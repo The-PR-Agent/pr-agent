@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import get_artifact_context
+from pr_agent.algo.code_fence import strip_wrapping_code_fence
 from pr_agent.algo.comment_identity import PRDescriptionHeader, PRDescriptionIdentity
 from pr_agent.algo.output_models import PRDescriptionAssembled
 from pr_agent.algo.pr_processing import (
@@ -39,7 +40,6 @@ from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError, get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
-from pr_agent.algo.code_fence import strip_wrapping_code_fence
 from pr_agent.tools.progress_comment import ChunkProgressReporter
 from pr_agent.tools.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
