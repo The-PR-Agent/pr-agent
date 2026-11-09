@@ -112,3 +112,29 @@ def test_short_quote_of_a_whole_line_is_found():
     context = {"content": "pytest summary\n  Tests: 3 failed  \nexit 1"}
     [finding] = parse_artifact_findings([_finding(kind="test_failure", evidence="Tests: 3 failed")], context)
     assert finding["quoted"] is True
+
+
+def test_comment_cannot_turn_on_artifact_findings():
+    from pr_agent.algo.cli_args import CliArgs
+
+    assert not CliArgs.validate_user_args(["--pr_reviewer.require_artifact_findings=true"])[0]
+
+
+def test_plain_markdown_evidence_cannot_open_an_html_comment():
+    marker = "<!-- pr-agent-review-state:v1"
+    [finding] = parse_artifact_findings([_finding(kind="warning", evidence=marker)], {"content": marker})
+    assert "<!--" not in _render([finding], gfm=False)
+
+
+def test_credentials_are_redacted_after_the_quote_check_and_before_the_cut():
+    token = "ghp_" + "A1b2C3d4" * 5
+    line = f"export GITHUB_TOKEN={token}"
+    long_line = "x" * 150 + " " + token
+    findings = parse_artifact_findings(
+        [_finding(kind="warning", fact=f"The job prints {token}.", evidence=line),
+         _finding(kind="failure", fact="A long line.", evidence=long_line)],
+        {"content": f"{line}\n{long_line}"})
+    assert [finding["quoted"] for finding in findings] == [True, True]
+    for finding in findings:
+        assert "ghp_" not in finding["fact"] and "ghp_" not in finding["evidence"]
+        assert "A1b2C3d4" not in finding["evidence"]
