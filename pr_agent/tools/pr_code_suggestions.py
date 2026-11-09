@@ -25,6 +25,7 @@ from pr_agent.algo.comment_identity import (
 from pr_agent.algo.findings import Finding
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers, split_diff_lines
 from pr_agent.algo.i18n import t
+from pr_agent.algo.markdown_span import _markdown_code_span
 from pr_agent.algo.pr_processing import (
     DELETED_FILES_,
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
@@ -61,7 +62,6 @@ from pr_agent.algo.token_budget import AttemptTokenBudget, FittedPrompt
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
-    _markdown_code_span,
     get_model,
     get_suggestion_fence,
     load_yaml,

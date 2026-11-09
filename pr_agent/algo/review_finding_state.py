@@ -13,7 +13,8 @@ from typing import Any
 from pr_agent.algo.findings import Finding
 from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import key_issue_fingerprint
-from pr_agent.algo.utils import _as_line, _markdown_code_span
+from pr_agent.algo.markdown_span import _markdown_code_span
+from pr_agent.algo.utils import _as_line
 
 STATE_SCHEMA_VERSION = 1
 DEFAULT_MAX_RESOLVED_FINDINGS = 20
