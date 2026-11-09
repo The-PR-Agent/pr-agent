@@ -314,6 +314,7 @@ async def apply_new_mr_repo_settings(url: str):
 async def authenticate_gitlab_webhook(request: Request, log_context: dict):
     request_token = request.headers.get("X-Gitlab-Token", "")
     shared_secret = get_settings().get("GITLAB.SHARED_SECRET")
+    secret_name = None
     # Check the shared credential first to avoid cloud lookups, even during provider outages.
     if not shared_secret or not hmac.compare_digest(request_token.encode(), str(shared_secret).encode()):
         # Split at the last colon so a secret name or ARN can itself contain colons.
@@ -359,7 +360,36 @@ async def authenticate_gitlab_webhook(request: Request, log_context: dict):
         get_logger().error("No gitlab token found")
         return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
                             content=jsonable_encoder({"message": "unauthorized"}))
+    context["gitlab_webhook_secret_name"] = secret_name
     return None
+
+
+async def restore_gitlab_handoff_auth(auth: dict | None, log_context: dict):
+    """Restore API credentials for an IAM-authorized, already authenticated hand-off."""
+    if not isinstance(auth, dict) or "secret_name" not in auth:
+        raise ValueError("Missing GitLab hand-off authentication outcome")
+    secret_name = auth["secret_name"]
+    if secret_name is not None:
+        if not isinstance(secret_name, str) or not secret_name:
+            raise ValueError("Invalid GitLab hand-off secret reference")
+        try:
+            provider = get_fork_safe_secret_provider()
+            secret = provider.get_secret(secret_name) if provider else None
+            secret_dict = json.loads(secret)
+            gitlab_token = secret_dict.get("gitlab_token")
+            if not isinstance(gitlab_token, str) or not gitlab_token:
+                raise ValueError("Missing GitLab API credential")
+        except Exception:
+            # The async invocation must fail for Lambda retry/DLQ handling, without
+            # copying provider exception text or credentials into the failure.
+            raise RuntimeError("Could not restore GitLab hand-off credentials") from None
+        context["settings"].set("GITLAB.PERSONAL_ACCESS_TOKEN", gitlab_token)
+        context["authenticated_provider_settings"] = {"gitlab.personal_access_token": gitlab_token}
+        log_context["token_id"] = secret_dict.get("token_name", secret_dict.get("id", "unknown"))
+    if not get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None):
+        await asyncio.to_thread(apply_host_settings)
+    if not get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None):
+        raise RuntimeError("No GitLab API credential available for the hand-off")
 
 
 @router.post("/webhook")
@@ -375,7 +405,8 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
     request_json = await request.json()
 
     handed_off = lambda_handoff.handoff_enabled() and await lambda_handoff.try_handoff(
-        "gitlab", request_json, request.headers)
+        "gitlab", request_json, request.headers,
+        gitlab_secret_name=context.get("gitlab_webhook_secret_name"))
     if not handed_off:
         # Not a Lambda deployment, or the hand-off failed: process the webhook in a
         # background task, after the response is sent. Under Lambda (Mangum) the

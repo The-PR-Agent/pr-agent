@@ -32,7 +32,6 @@ import copy
 import json
 import os
 
-from starlette.requests import Request
 from starlette_context import context, request_cycle_context
 
 from pr_agent.config_loader import global_settings
@@ -41,11 +40,10 @@ from pr_agent.log import get_logger
 HANDOFF_EVENT_KEY = "pr_agent_lambda_handoff"
 
 # Headers the second invocation needs. The delivery and event UUIDs keep the
-# existing webhook dedup keys working across the hand-off; the GitLab token
-# re-establishes the request-scoped personal access token on the other side of
-# the hand-off when the webhook authenticates through the secret provider.
+# existing webhook dedup keys working across the hand-off. Credentials must
+# not be retained in async events or their failure destinations.
 _GITHUB_HANDOFF_HEADERS = ("x-github-event", "x-github-delivery")
-_GITLAB_HANDOFF_HEADERS = ("x-gitlab-token", "x-gitlab-event-uuid")
+_GITLAB_HANDOFF_HEADERS = ("x-gitlab-event-uuid",)
 
 
 def handoff_enabled() -> bool:
@@ -57,7 +55,7 @@ def handoff_enabled() -> bool:
     return bool(os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
 
 
-def build_handoff_event(provider: str, body, headers) -> dict:
+def build_handoff_event(provider: str, body, headers, *, gitlab_secret_name: str | None = None) -> dict:
     """Build the second invocation's event from a verified webhook."""
     wanted = _GITHUB_HANDOFF_HEADERS if provider == "github" else _GITLAB_HANDOFF_HEADERS
     carried = {}
@@ -65,7 +63,10 @@ def build_handoff_event(provider: str, body, headers) -> dict:
         value = headers.get(name)
         if value is not None:
             carried[name] = value
-    return {HANDOFF_EVENT_KEY: {"provider": provider, "body": body, "headers": carried}}
+    handoff = {"provider": provider, "body": body, "headers": carried}
+    if provider == "gitlab":
+        handoff["gitlab_auth"] = {"secret_name": gitlab_secret_name}
+    return {HANDOFF_EVENT_KEY: handoff}
 
 
 def extract_handoff(event):
@@ -92,14 +93,14 @@ def _invoke_self_async(event: dict) -> None:
     )
 
 
-async def try_handoff(provider: str, body, headers) -> bool:
+async def try_handoff(provider: str, body, headers, *, gitlab_secret_name: str | None = None) -> bool:
     """Hand a verified webhook to a second invocation; True when it was accepted.
 
     Failures — a missing IAM ``lambda:InvokeFunction`` permission, a payload over
     the 256 KB asynchronous-invocation quota, throttling — are logged and
     returned as False so the caller can process the webhook inline instead.
     """
-    event = build_handoff_event(provider, body, headers)
+    event = build_handoff_event(provider, body, headers, gitlab_secret_name=gitlab_secret_name)
     headers_carried = event[HANDOFF_EVENT_KEY]["headers"]
     delivery = headers_carried.get("x-github-delivery") or headers_carried.get("x-gitlab-event-uuid")
     try:
@@ -142,12 +143,6 @@ def _run_handoff_on_event_loop(handoff: dict):
     return loop.run_until_complete(_run_handoff(handoff))
 
 
-def _request_with_headers(headers: dict) -> Request:
-    """A Request carrying the handed-off headers, for re-running webhook authentication."""
-    scope_headers = [(name.encode("latin-1"), str(value).encode("latin-1")) for name, value in headers.items()]
-    return Request({"type": "http", "method": "POST", "headers": scope_headers})
-
-
 async def _run_handoff(handoff: dict) -> dict:
     """Dispatch a hand-off event to the provider's webhook processor."""
     if handoff["provider"] == "github":
@@ -187,17 +182,10 @@ async def _run_gitlab_handoff(handoff: dict) -> dict:
     get_logger().info("Processing a handed-off GitLab webhook",
                       artifact={"delivery": headers.get("x-gitlab-event-uuid")})
     with request_cycle_context({}):
-        # Re-run the webhook authentication with the carried token: on the
-        # secret-provider path it is what installs the request-scoped personal
-        # access token the event processor needs. The check runs twice per
-        # delivery (once per invocation), which is the price of acknowledging
-        # only authenticated webhooks.
+        # Only IAM-authorized direct invocations carry this envelope. The public
+        # webhook already authenticated it; restore credentials by reference.
         context["settings"] = copy.deepcopy(global_settings)
         log_context = {"server_type": "gitlab_app"}
-        unauthorized = await gitlab_webhook.authenticate_gitlab_webhook(
-            _request_with_headers(headers), log_context)
-        if unauthorized is not None:
-            get_logger().error("A handed-off GitLab webhook no longer passes authentication")
-            return {}
+        await gitlab_webhook.restore_gitlab_handoff_auth(handoff.get("gitlab_auth"), log_context)
         await gitlab_webhook.process_gitlab_event(body, log_context)
     return {}

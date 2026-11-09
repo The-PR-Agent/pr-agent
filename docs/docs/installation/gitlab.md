@@ -213,6 +213,24 @@ For example: `GITLAB.PERSONAL_ACCESS_TOKEN` --> `GITLAB__PERSONAL_ACCESS_TOKEN`
 7. Go back to steps 8-9 of [Run a GitLab webhook server](#run-a-gitlab-webhook-server) with the function URL as your Webhook URL.
     The Webhook URL would look like `https://<LAMBDA_FUNCTION_URL>/webhook`
 
+The asynchronous hand-off carries the verified payload, event UUID and authentication
+outcome, without forwarding `X-Gitlab-Token` or the GitLab personal access token. For
+secret-provider authentication it carries only the resolved secret name; the worker
+loads the current API credential from that secret. Shared-secret deliveries use the
+worker's host configuration. Accepted deliveries are not re-authenticated against the
+original webhook token, so webhook-token rotation does not cancel queued work. Removing
+the project secret or its API credential prevents that work from being dispatched.
+
+Only trusted IAM principals should have `lambda:InvokeFunction` permission: the worker
+trusts the authentication outcome of direct hand-off events. Public Function URL requests
+still pass through webhook authentication and cannot supply this internal event envelope.
+
+Hand-offs queued by older versions contain the webhook token and lack the new authentication
+outcome. They are rejected after upgrading; drain pending invocations before deployment.
+Existing retry queues, dead-letter queues and on-failure destinations may still contain
+old token-bearing payloads; account for their access controls and retention when rotating
+webhook credentials. New hand-offs do not forward those credentials to failure destinations.
+
 ### Using AWS Secrets Manager
 
 For production Lambda deployments, use AWS Secrets Manager instead of environment variables:
