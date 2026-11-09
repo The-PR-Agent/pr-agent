@@ -101,6 +101,26 @@ def _thread(notes, discussion_id='d1'):
         "`unclosed\n\n@all `closed`",
         "`unclosed\n\n@\u200ball `closed`",
     ),
+    (
+        "- uses ` as the delimiter\n- ping @plg-tech/plg about `x`",
+        "- uses ` as the delimiter\n- ping @\u200bplg-tech/plg about `x`",
+    ),
+    (
+        "Note the ` here\n### Ask @plg-tech/plg about `x`",
+        "Note the ` here\n### Ask @\u200bplg-tech/plg about `x`",
+    ),
+    (
+        "the ` char\n> cc @plg-tech/plg on `y`",
+        "the ` char\n> cc @\u200bplg-tech/plg on `y`",
+    ),
+    (
+        "| a | b |\n|---|---|\n| ` | x |\n| @plg-tech/plg | `z` |",
+        "| a | b |\n|---|---|\n| ` | x |\n| @\u200bplg-tech/plg | `z` |",
+    ),
+    (
+        "- item one\n\n    cc @plg-tech/plg please",
+        "- item one\n\n    cc @\u200bplg-tech/plg please",
+    ),
 ])
 def test_neutralize_gitlab_mentions_preserves_literals(text, expected):
     assert _neutralize_gitlab_mentions(text) == expected
@@ -117,6 +137,16 @@ def test_neutralize_gitlab_mentions_handles_many_unmatched_tick_lengths():
     text = " ".join("`" * length for length in range(1, 128)) + " @active"
 
     assert _neutralize_gitlab_mentions(text).endswith(" @\u200bactive")
+
+
+def test_neutralize_gitlab_mentions_keeps_indented_code_inside_a_list_item():
+    text = "- item one\n\n      cc @plg-tech/plg please"
+    assert _neutralize_gitlab_mentions(text) == text
+
+
+def test_neutralize_gitlab_mentions_keeps_multiline_code_span_in_a_paragraph():
+    text = "text `code @user\nmore` end"
+    assert _neutralize_gitlab_mentions(text) == text
 
 
 class TestGitLabProvider:
