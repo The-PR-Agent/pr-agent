@@ -13,7 +13,7 @@ from typing import Any
 from pr_agent.algo.findings import Finding
 from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import key_issue_fingerprint
-from pr_agent.algo.utils import _as_line
+from pr_agent.algo.utils import _as_line, _markdown_code_span
 
 STATE_SCHEMA_VERSION = 1
 DEFAULT_MAX_RESOLVED_FINDINGS = 20
@@ -396,8 +396,6 @@ def _location_code_span(location: str) -> str:
     # review coverage footer does. A path containing the state-marker opener must not
     # survive raw: append_review_state would treat it as the hidden marker and cut the
     # rest of the review.
-    from pr_agent.tools.pr_code_suggestions import _markdown_code_span  # lazy, as in deterministic_risk
-
     return _markdown_code_span(location.replace("<!--", "<\\!"))
 
 

@@ -61,6 +61,7 @@ from pr_agent.algo.token_budget import AttemptTokenBudget, FittedPrompt
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
+    _markdown_code_span,
     get_model,
     get_suggestion_fence,
     load_yaml,
@@ -202,15 +203,6 @@ def get_committable_code_suggestions() -> bool:
             "1.0; rename it to pr_code_suggestions.committable_code_suggestions"
         )
     return deprecated
-
-
-def _markdown_code_span(text: str) -> str:
-    """Keep repository-controlled filenames inside one Markdown code span."""
-    text = text.replace("\r", "\\r").replace("\n", "\\n")
-    delimiter = "`" * (max((len(run.group()) for run in re.finditer(r"`+", text)), default=0) + 1)
-    if text.startswith(("`", " ")) or text.endswith(("`", " ")):
-        text = f" {text} "
-    return f"{delimiter}{text}{delimiter}"
 
 
 def render_suggestions_markdown(data: dict) -> str:

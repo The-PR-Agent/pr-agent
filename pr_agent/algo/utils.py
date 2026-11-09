@@ -1822,3 +1822,16 @@ def format_todo_items(value: list[TodoItem] | TodoItem | str, git_provider, gfm_
         for entry in entries:
             markdown_text += f"- {entry}\n"
     return markdown_text
+
+
+def _markdown_code_span(text: str) -> str:
+    """Keep repository-controlled filenames inside one Markdown code span.
+
+    Newlines and carriage returns are escaped so a crafted path cannot leave the span,
+    and the delimiter grows past any backtick run the text itself contains.
+    """
+    text = text.replace("\r", "\\r").replace("\n", "\\n")
+    delimiter = "`" * (max((len(run.group()) for run in re.finditer(r"`+", text)), default=0) + 1)
+    if text.startswith(("`", " ")) or text.endswith(("`", " ")):
+        text = f" {text} "
+    return f"{delimiter}{text}{delimiter}"
