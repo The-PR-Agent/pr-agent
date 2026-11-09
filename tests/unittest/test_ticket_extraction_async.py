@@ -1651,6 +1651,18 @@ class TestGitLabExtraction:
                 'https://gitlab.com/gitlab',
                 [],
             ),
+            (
+                "[other #7](https://gitlab.example.com/gitlab/group/other-project/-/issues/9) and #8",
+                "group/repo",
+                "https://gitlab.example.com/gitlab",
+                [("group/other-project", 9), ("group/repo", 8)],
+            ),
+            (
+                "[#7](https://gitlab.com/group/other-project/-/work_items/9)",
+                "group/repo",
+                "https://gitlab.com",
+                [("group/other-project", 9)],
+            ),
         ],
     )
     def test_url_reference_boundaries(self, description, repo_path, gitlab_url, expected):
