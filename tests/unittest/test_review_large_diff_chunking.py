@@ -12,8 +12,8 @@ import pytest
 
 from pr_agent.algo.pr_processing import PackedPRDiffs, PreparedPRDiff, _pack_pr_multi_diffs
 from pr_agent.algo.review_finding_state import ParsedReviewState, reconcile_review_findings
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _TRACKED_KEYS = ("pr_reviewer.enable_large_pr_chunking", "pr_reviewer.max_number_of_calls",
@@ -73,8 +73,8 @@ async def test_chunking_is_off_by_default_even_when_the_token_budget_truncated_t
     reviewer._get_prediction = AsyncMock(return_value=CHUNK_A)
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["left_out.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs") as get_pr_multi_diffs,
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["left_out.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs") as get_pr_multi_diffs,
     ):
         await reviewer._prepare_prediction("model")
 
@@ -90,8 +90,8 @@ async def test_a_diff_that_fits_is_never_chunked(chunking_enabled):
     reviewer._get_prediction = AsyncMock(return_value=CHUNK_A)
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", [])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs") as get_pr_multi_diffs,
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", [])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs") as get_pr_multi_diffs,
     ):
         await reviewer._prepare_prediction("model")
 
@@ -105,8 +105,8 @@ async def test_a_truncated_diff_is_reviewed_chunk_by_chunk_and_merged(chunking_e
     reviewer._get_prediction = AsyncMock(side_effect=[CHUNK_A, CHUNK_B])
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs(["chunk-a", "chunk-b"], ["still_left_out.py"], [])) as get_pr_multi_diffs,
     ):
         await reviewer._prepare_prediction("model")
@@ -159,8 +159,8 @@ async def test_chunked_review_caps_findings_to_the_configured_limit(chunking_ena
         side_effect=[_findings_chunk("a", 3), _findings_chunk("b", 3)])
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], [])),
     ):
         await reviewer._prepare_prediction("model")
@@ -180,8 +180,8 @@ async def test_a_capped_chunked_review_does_not_resolve_earlier_findings(chunkin
         side_effect=[_findings_chunk("a", 3), _findings_chunk("b", 3)])
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], [])),
     ):
         await reviewer._prepare_prediction("model")
@@ -221,13 +221,13 @@ async def test_final_fit_clipping_marks_a_review_chunk_failed(chunking_enabled):
             )
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
         patch(
-            "pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+            "pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
             return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], []),
         ),
         patch(
-            "pr_agent.tools.pr_reviewer.AttemptTokenBudget.for_attempt",
+            "pr_agent.commands.pr_reviewer.AttemptTokenBudget.for_attempt",
             return_value=SelectiveBudget(),
         ),
         pytest.raises(ValueError, match="complete packed review diff"),
@@ -250,8 +250,8 @@ async def test_chunked_review_reuses_the_prepared_diff_for_the_same_model_attemp
     )
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=prepared) as get_pr_diff,
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=prepared) as get_pr_diff,
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs(["chunk-a", "chunk-b"], ["still_left_out.py"], [])) as get_pr_multi_diffs,
     ):
         await reviewer._prepare_prediction("model")
@@ -271,8 +271,8 @@ async def test_max_number_of_calls_bounds_the_number_of_chunks(chunking_enabled)
     reviewer._get_prediction = AsyncMock(side_effect=[CHUNK_A, CHUNK_B])
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], [])) as get_pr_multi_diffs,
     ):
         await reviewer._prepare_prediction("model")
@@ -287,8 +287,8 @@ async def test_a_diff_that_fits_in_one_chunk_is_reviewed_by_the_single_call_flow
     reviewer._get_prediction = AsyncMock(return_value=CHUNK_A)
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs(["only-chunk"], [], ["unused.py"])),
     ):
         await reviewer._prepare_prediction("model")
@@ -310,11 +310,11 @@ async def test_larger_fallback_uses_fresh_full_diff_after_primary_single_clipped
     full_diff = clipped_chunk + "+change beyond primary budget\n"
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", side_effect=[
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", side_effect=[
             PreparedPRDiff("only filenames", ["large.py"]),
             PreparedPRDiff(full_diff, []),
         ]) as get_diff,
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs([clipped_chunk], [], ["large.py"])) as get_multi,
     ):
         with pytest.raises(RuntimeError, match="primary failed"):
@@ -340,8 +340,8 @@ async def test_a_chunk_that_fails_does_not_lose_the_chunks_that_succeeded(chunki
     reviewer._get_prediction = AsyncMock(side_effect=[RuntimeError("model refused"), CHUNK_B])
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], [])),
         pytest.raises(RuntimeError, match="model refused"),
     ):
@@ -365,8 +365,8 @@ async def test_a_failed_chunk_recovery_preserves_finding_state_lifecycle(chunkin
     reviewer._get_prediction = AsyncMock(side_effect=[RuntimeError("model refused"), CHUNK_B])
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], [])),
         pytest.raises(RuntimeError, match="model refused"),
     ):
@@ -403,8 +403,8 @@ async def test_a_malformed_chunk_is_retried_without_repeating_successful_chunks(
     reviewer._get_prediction = AsyncMock(side_effect=[CHUNK_A, "review: {}", chunk_c])
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs(["chunk-a", "chunk-b", "chunk-c"], [], [])),
         pytest.raises(ValueError, match="non-empty review"),
     ):
@@ -444,7 +444,7 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
         "config.fallback_models": ["fallback"],
         "config.publish_output": True,
         "config.is_auto_command": False,
-        "config.propagate_tool_errors": False,
+        "config.propagate_command_errors": False,
         "pr_reviewer.persistent_comment": False,
         "pr_reviewer.publish_error_details": False,
     }
@@ -453,13 +453,13 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
         for key, value in settings_values.items():
             get_settings().set(key, value)
         with (
-            patch("pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets", new_callable=AsyncMock),
-            patch("pr_agent.tools.pr_reviewer.fit_related_tickets_to_prompt_budget",
+            patch("pr_agent.commands.pr_reviewer.extract_and_cache_pr_tickets", new_callable=AsyncMock),
+            patch("pr_agent.commands.pr_reviewer.fit_related_tickets_to_prompt_budget",
                   return_value=({}, reviewer.token_handler)),
             patch("pr_agent.algo.pr_processing.route_primary_model", return_value=None),
             patch("pr_agent.algo.pr_processing._get_all_deployments", return_value=[None, None]),
-            patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-            patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+            patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+            patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
                   return_value=PackedPRDiffs(["chunk-a", "chunk-b", "chunk-c"], [], [])),
             patch.object(reviewer, "_prepare_pr_review", side_effect=lambda: _render_review(reviewer)) as render,
         ):
@@ -500,9 +500,9 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("propagate_tool_errors", [True, False])
+@pytest.mark.parametrize("propagate_command_errors", [True, False])
 async def test_exhausted_fallbacks_propagate_partial_review_failure_when_configured(
-    chunking_enabled, propagate_tool_errors,
+    chunking_enabled, propagate_command_errors,
 ):
     reviewer = _make_reviewer()
     reviewer.vars = {}
@@ -517,7 +517,7 @@ async def test_exhausted_fallbacks_propagate_partial_review_failure_when_configu
         "config.fallback_models": ["fallback"],
         "config.publish_output": True,
         "config.is_auto_command": False,
-        "config.propagate_tool_errors": propagate_tool_errors,
+        "config.propagate_command_errors": propagate_command_errors,
         "pr_reviewer.persistent_comment": False,
         "pr_reviewer.publish_error_details": False,
     }
@@ -526,17 +526,17 @@ async def test_exhausted_fallbacks_propagate_partial_review_failure_when_configu
         for key, value in settings_values.items():
             get_settings().set(key, value)
         with (
-            patch("pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets", new_callable=AsyncMock),
-            patch("pr_agent.tools.pr_reviewer.fit_related_tickets_to_prompt_budget",
+            patch("pr_agent.commands.pr_reviewer.extract_and_cache_pr_tickets", new_callable=AsyncMock),
+            patch("pr_agent.commands.pr_reviewer.fit_related_tickets_to_prompt_budget",
                   return_value=({}, reviewer.token_handler)),
             patch("pr_agent.algo.pr_processing.route_primary_model", return_value=None),
             patch("pr_agent.algo.pr_processing._get_all_deployments", return_value=[None, None]),
-            patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-            patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+            patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+            patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
                   return_value=PackedPRDiffs(["chunk-a", "chunk-b", "chunk-c"], [], [])),
             patch.object(reviewer, "_prepare_pr_review", side_effect=lambda: _render_review(reviewer)) as render,
         ):
-            if propagate_tool_errors:
+            if propagate_command_errors:
                 with pytest.raises(Exception, match="Failed to generate prediction with any model"):
                     await reviewer.run()
             else:
@@ -558,9 +558,9 @@ async def test_cached_chunks_are_used_when_fallback_diff_fits(chunking_enabled):
     reviewer._get_prediction = AsyncMock(side_effect=[CHUNK_A, RuntimeError("model refused"), CHUNK_B])
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff",
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff",
               side_effect=[("diff", ["b.py"]), ("full diff", [])]),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], [])),
         pytest.raises(RuntimeError, match="model refused"),
     ):
@@ -587,11 +587,11 @@ async def test_larger_fallback_includes_omitted_files_without_repeating_successe
     reviewer._get_prediction = AsyncMock(side_effect=[CHUNK_A, RuntimeError("model refused"), CHUNK_B])
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", side_effect=[
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", side_effect=[
             (chunk_a, ["b.py", "c.py"]),
             (chunk_a + chunk_b + chunk_c, []),
         ]) as get_diff,
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs([chunk_a, chunk_b], ["c.py"], [])) as get_multi,
         patch("pr_agent.algo.token_budget.get_max_tokens",
               return_value=10000 if fallback_fits else 1500 + len(chunk_b)),
@@ -628,9 +628,9 @@ async def test_a_smaller_fallback_splits_an_oversized_pending_chunk(chunking_ena
     reviewer._get_prediction = AsyncMock(side_effect=[RuntimeError("model refused"), CHUNK_B])
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff",
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff",
               side_effect=[(combined_chunk, ["c.py", "blong.py"]), (combined_chunk, [])]),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs([combined_chunk, chunk_c], [], [])),
         patch("pr_agent.algo.token_budget.get_max_tokens",
               side_effect=lambda model, **_kwargs: 10000 if model == "primary" else 1540),
@@ -659,8 +659,8 @@ async def test_a_review_where_every_chunk_failed_raises_so_a_fallback_model_is_t
                                                       RuntimeError("model refused again")])
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], [])),
         pytest.raises(RuntimeError, match="model refused"),
     ):
@@ -678,8 +678,8 @@ async def test_chunks_without_nonempty_reviews_fail_the_model_attempt(chunking_e
     reviewer._get_prediction = AsyncMock(side_effect=chunk_predictions)
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], [])),
         pytest.raises(ValueError, match="non-empty review"),
     ):
@@ -698,10 +698,10 @@ async def test_invalid_chunk_emits_one_schema_warning_before_rendering(chunking_
     ])
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], [])),
-        patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger,
+        patch("pr_agent.commands.pr_reviewer.get_logger") as get_logger,
     ):
         await reviewer._prepare_prediction("model")
         reviewer._prepare_pr_review()
@@ -724,9 +724,9 @@ def _render_review(reviewer):
     reviewer.set_review_labels = MagicMock()
 
     with (
-        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"summary": "test"}}),
-        patch("pr_agent.tools.pr_reviewer.github_action_output"),
-        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
+        patch("pr_agent.commands.pr_reviewer.load_yaml", return_value={"review": {"summary": "test"}}),
+        patch("pr_agent.commands.pr_reviewer.github_action_output"),
+        patch("pr_agent.commands.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
     ):
         return PRReviewer._prepare_pr_review(reviewer)
 
@@ -804,8 +804,8 @@ async def test_clipped_prompt_keeps_prior_findings_active(chunking_enabled, chun
     }
     reviewer._get_prediction = AsyncMock(side_effect=predictions[chunk_outcome])
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("single diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs", return_value=coverage) as pack,
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("single diff", ["b.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs", return_value=coverage) as pack,
     ):
         if chunk_outcome != "success":
             with pytest.raises(RuntimeError, match="model unavailable"):

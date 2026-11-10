@@ -1,6 +1,6 @@
 import copy
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from starlette_context import request_cycle_context
@@ -9,10 +9,14 @@ from pr_agent.agent.pr_agent import PRAgent, parse_command
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.review_json_output import review_json_output_path
 from pr_agent.algo.run_details import command_failed
+from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.algo.token_handler import TokenHandler
+from pr_agent.commands import ticket_pr_compliance_check as tickets_module
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.commands.pr_questions import NO_ANALYZABLE_FILES_NOTE, PRQuestions
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
 # Diff-mode settings keys these tests mutate on the process-wide singleton.
 _SETTINGS_KEYS = ["plain_diff.content", "plain_diff.output_path", "plain_diff.json_output_path",
@@ -258,6 +262,228 @@ async def test_commands_through_diff_provider_mocked_llm(
     assert expected_output in capsys.readouterr().out
 
 
+@pytest.fixture
+def ask_with_stubbed_ticket_source(tmp_path, monkeypatch):
+    """Use local diff input; replace remote ticket retrieval and the model, not Ask's processing."""
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    source = AsyncMock(return_value=[])
+    monkeypatch.setattr(tickets_module, "extract_tickets", source)
+
+    class FakeAiHandler(BaseAiHandler):
+        def __init__(self):
+            pass
+
+        @property
+        def deployment_id(self):
+            return "fake"
+
+        def get_output_token_reserve(self, model, default):
+            return 1600
+
+        def build_request_messages(self, model, system_prompt, user_prompt, *, image_path=None):
+            messages = super().build_request_messages(model, system_prompt, user_prompt)
+            if image_path:
+                messages[1]["content"] = [
+                    {"type": "text", "text": user_prompt},
+                    {"type": "image_url", "image_url": {"url": image_path}},
+                ]
+            return messages
+
+        async def chat_completion(self, model, system, user, temperature=0.2, img_path=None):
+            calls.append({"model": model, "system": system, "user": user, "image": img_path})
+            if model == "gpt-4o":
+                raise TimeoutError("Primary model unavailable")
+            return "The change implements the requirement.", "stop"
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        for key, value in {
+            "config.git_provider": "plain-diff",
+            "config.model": "gpt-4o-mini",
+            "config.model_weak": "gpt-4o-mini",
+            "config.fallback_models": [],
+            "config.repo_context_files": [],
+            "config.publish_output": True,
+            "config.extra_config_url": "",
+            "config.image_input_token_allowance": 4096,
+            "plain_diff.content": DIFF,
+            "plain_diff.output_path": None,
+            "plain_diff.json_output_path": None,
+            "pr_reviewer.require_ticket_analysis_review": False,
+            "related_tickets": [],
+            "push_outputs.enable": False,
+        }.items():
+            get_settings().set(key, value)
+        yield PRAgent(ai_handler=FakeAiHandler), calls, source
+
+
+@pytest.mark.parametrize("enabled", [None, "false", True], ids=["default-off", "string-false", "opt-in"])
+async def test_ask_ticket_context_is_opt_in(ask_with_stubbed_ticket_source, enabled, capsys):
+    agent, calls, source = ask_with_stubbed_ticket_source
+    ticket = {
+        "ticket_url": "https://example.test/issues/123",
+        "title": "Linked requirement",
+        "body": "The ticket body specifies an acceptance criterion.",
+        "requirements": "A separately supplied requirement.",
+    }
+    source.return_value = [ticket]
+    foreign_ticket = {
+        "ticket_url": "u/foreign", "title": "Another PR's ticket", "body": "Unrelated cached requirement."
+    }
+    get_settings().set("related_tickets", [foreign_ticket])
+    command = "/ask Which requirement does this change implement?"
+    if enabled is not None:
+        get_settings().set("pr_questions.use_ticket_context", enabled)
+
+    assert await agent.handle_request("local_diff", command) is True
+    assert command_failed() is False
+    assert len(calls) == 1
+    assert "line2-changed" in calls[0]["user"]
+    for value in ticket.values():
+        assert (value in calls[0]["user"]) is (enabled is True)
+    assert foreign_ticket["body"] not in calls[0]["user"]
+    assert get_settings().get("related_tickets") == [foreign_ticket]
+    assert source.await_count == int(enabled is True)
+    assert "The change implements the requirement." in capsys.readouterr().out
+
+
+async def test_ask_comment_cannot_enable_ticket_lookups(ask_with_stubbed_ticket_source):
+    agent, calls, source = ask_with_stubbed_ticket_source
+
+    assert await agent.handle_request(
+        "local_diff", "/ask What changed? --pr_questions.use_ticket_context=true"
+    ) is False
+    source.assert_not_awaited()
+    assert calls == []
+
+
+async def test_ask_ticket_fetch_failure_preserves_diff_answer(ask_with_stubbed_ticket_source):
+    agent, calls, source = ask_with_stubbed_ticket_source
+    get_settings().set("pr_questions.use_ticket_context", True)
+    get_settings().set("config.model_weak", "gpt-4o")
+    get_settings().set("config.fallback_models", ["gpt-4o-mini"])
+    source.side_effect = RuntimeError("Ticket source unavailable")
+
+    assert await agent.handle_request("local_diff", "/ask What changed?") is True
+    assert command_failed() is False
+    assert [call["model"] for call in calls] == ["gpt-4o", "gpt-4o-mini"]
+    assert all("line2-changed" in call["user"] for call in calls)
+    assert all("Linked ticket context" not in call["user"] for call in calls)
+    assert source.await_count == 1
+
+
+@pytest.mark.parametrize("has_tickets", [True, False], ids=["bounded-tickets", "unavailable-tickets"])
+async def test_ask_ticket_context_preserves_diff_across_image_fallback(
+    ask_with_stubbed_ticket_source, monkeypatch, has_tickets
+):
+    agent, calls, source = ask_with_stubbed_ticket_source
+    limits = {"gpt-4o": 20000, "gpt-4o-mini": 11000}
+    monkeypatch.setattr("pr_agent.algo.token_budget.get_max_tokens", lambda model, **_: limits[model])
+    monkeypatch.setattr(
+        PRQuestions, "_load_conversation_history", lambda self: "1. Reviewer: Keep the original contract."
+    )
+    get_settings().set("config.model_weak", "gpt-4o")
+    get_settings().set("config.fallback_models", ["gpt-4o-mini"])
+    get_settings().set("plain_diff.content", "--- /dev/null\n+++ b/foo.py\n@@ -0,0 +1,200 @@\n" + "".join(
+        f"+value_{index} = compute_requirement({index})\n" for index in range(200)
+    ))
+    source.return_value = [
+        {"ticket_url": "u/1", "title": "Short ticket", "body": "Retain this acceptance criterion."},
+        {"ticket_url": "u/2", "title": "Remaining-budget ticket", "body": "remaining_budget_requirement " * 500},
+        {"ticket_url": "u/3", "title": "Long ticket", "body": "important_requirement " * 750},
+    ] if has_tickets else []
+    original_tickets = copy.deepcopy(source.return_value)
+    command = "/ask Does the change meet the requirements? ![image](https://example.test/screenshot.png)"
+
+    assert await agent.handle_request("local_diff", command) is True
+    assert command_failed() is False
+    baseline = list(calls)
+    calls.clear()
+    get_settings().set("pr_questions.use_ticket_context", True)
+    assert await agent.handle_request("local_diff", command) is True
+    assert command_failed() is False
+
+    assert [call["model"] for call in calls] == ["gpt-4o", "gpt-4o-mini"]
+    assert source.await_count == 1
+    assert source.return_value == original_tickets
+    for before, after in zip(baseline, calls, strict=True):
+        assert after["image"] == "https://example.test/screenshot.png"
+        assert after["system"] == before["system"]
+        # All original context precedes the optional ticket section.
+        assert after["user"].split("\n\nLinked ticket context")[0].split("\n\nResponse to")[0] == (
+            before["user"].split("\n\nResponse to")[0]
+        )
+        assert "value_199" in after["user"]
+        assert "Keep the original contract." in after["user"]
+    if has_tickets:
+        assert "Long ticket" in calls[0]["user"]
+        assert "Short ticket" in calls[1]["user"]
+        assert "Remaining-budget ticket" in calls[1]["user"]
+        assert "Long ticket" not in calls[1]["user"]
+        assert "1 additional related ticket(s) were omitted" in calls[1]["user"]
+    else:
+        assert calls == baseline
+    assert get_settings().get("related_tickets") == []
+
+
+async def test_ask_skips_ticket_source_without_analyzable_diff(ask_with_stubbed_ticket_source, capsys):
+    agent, calls, source = ask_with_stubbed_ticket_source
+    get_settings().set("plain_diff.content", DIFF.replace("foo.py", "package-lock.json"))
+
+    get_settings().set("pr_questions.use_ticket_context", True)
+    assert await agent.handle_request("local_diff", "/ask What changed?") is True
+
+    source.assert_not_awaited()
+    assert calls == []
+    assert NO_ANALYZABLE_FILES_NOTE in capsys.readouterr().out
+
+
+async def test_ask_keeps_answer_when_ticket_omission_notice_cannot_fit(ask_with_stubbed_ticket_source, monkeypatch):
+    agent, calls, source = ask_with_stubbed_ticket_source
+    monkeypatch.setattr("pr_agent.algo.token_budget.get_max_tokens", lambda model, **_: 5000)
+    # Custom templates can make even the zero-ticket omission notice too large.
+    get_settings().set("pr_questions_prompt.user", get_settings().pr_questions_prompt.user.replace(
+        "Context notice:", "omission detail " * 5000 + "Context notice:"
+    ))
+    source.return_value = [{"ticket_url": "u/1", "title": "Large ticket", "body": "requirement " * 10000}]
+    command = "/ask What changed?"
+    assert await agent.handle_request("local_diff", command) is True
+    baseline = list(calls)
+    calls.clear()
+
+    get_settings().set("pr_questions.use_ticket_context", True)
+    assert await agent.handle_request("local_diff", command) is True
+
+    assert command_failed() is False
+    source.assert_awaited_once()
+    assert calls == baseline
+
+
+async def test_ask_keeps_ticket_prefix_when_full_context_exactly_fills_budget(
+    ask_with_stubbed_ticket_source, monkeypatch
+):
+    agent, calls, source = ask_with_stubbed_ticket_source
+    source.return_value = [
+        {"ticket_url": "u/1", "title": "First requirement", "body": "Keep this useful requirement."},
+        {"ticket_url": "u/2", "title": "Large requirement", "body": "requirement " * 2000},
+    ]
+    get_settings().set("pr_questions.use_ticket_context", True)
+    command = "/ask What changed?"
+    assert await agent.handle_request("local_diff", command) is True
+    counter = AttemptTokenBudget.for_attempt("gpt-4o-mini", TokenHandler(None, {}, "", "", model="gpt-4o-mini"))
+    exact_limit = counter.count_request_tokens(calls[0]["system"], calls[0]["user"]) + 1600
+    monkeypatch.setattr("pr_agent.algo.token_budget.get_max_tokens", lambda model, **_: exact_limit)
+    calls.clear()
+
+    assert await agent.handle_request("local_diff", command) is True
+
+    assert command_failed() is False
+    assert len(calls) == 1
+    assert "First requirement" in calls[0]["user"]
+    assert "Large requirement" not in calls[0]["user"]
+    assert "1 additional related ticket(s) were omitted" in calls[0]["user"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("command,response,description", [
     ("/ask What changed?", "The approval threshold changed.",
@@ -275,7 +501,7 @@ async def test_commands_through_diff_provider_mocked_llm(
                   "type: [Enhancement]\npr_files: []\n",
      "### **Description**\nInvoices above the limit need manager approval."),
 ])
-async def test_plain_diff_cli_context_reaches_tool_prompts(tmp_path, monkeypatch, command, response, description):
+async def test_plain_diff_cli_context_reaches_command_prompts(tmp_path, monkeypatch, command, response, description):
     """Command settings must reach prompts even after the provider has been cached."""
     monkeypatch.chdir(tmp_path)
     prompts = []
@@ -391,7 +617,7 @@ async def test_publishing_commands_reject_truncated_responses(
             "config.repo_context_files": [],
             "config.publish_output": True,
             "config.publish_output_progress": False,
-            "config.propagate_tool_errors": False,
+            "config.propagate_command_errors": False,
             "config.extra_config_url": "",
             "config.enable_custom_labels": False,
             "plain_diff.content": diff,
@@ -463,7 +689,7 @@ async def test_improve_rejects_truncated_responses_through_diff_provider(
             "config.repo_context_files": [],
             "config.publish_output": True,
             "config.publish_output_progress": False,
-            "config.propagate_tool_errors": False,
+            "config.propagate_command_errors": False,
             "config.extra_config_url": "",
             "plain_diff.content": DIFF,
             "plain_diff.output_path": None,

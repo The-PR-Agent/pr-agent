@@ -175,7 +175,7 @@ _CREDENTIAL_ASSIGNMENT_RE = re.compile(
     r"(?i)((?<![a-z0-9])(?:aws_secret_access_key|aws_session_token|aws_access_key_id|"
     r"secretaccesskey|sessiontoken|accesskeyid|github_token|gitlab_token|ci_job_token|openai_key|openai_api_key|"
     r"user_token|personal_access_token|bearer_token|basic_token|api_token|api_key|pat|client_secret|"
-    r"webhook_secret|shared_secret|webhook_password)\b[\"']?[ \t]*[:=][ \t]*)"
+    r"webhook_secret|shared_secret|webhook_password|password|passwd|secret|token)\b[\"']?[ \t]*[:=][ \t]*)"
     r"(\"(?:\\[^\r\n]|[^\"\\\r\n])*(?:\"|\\?(?=[\r\n]|\Z))|"
     r"'(?:\\[^\r\n]|[^'\\\r\n])*(?:'|\\?(?=[\r\n]|\Z))|[^\s\"']+)"
 )
@@ -386,8 +386,8 @@ def _is_line_number(value) -> bool:
 
 
 class GitProvider(ABC):
-    # Keep manual-tool reuse opt-in because providers can retain PR revision state.
-    reuse_for_manual_tool = False
+    # Keep manual-command reuse opt-in because providers can retain PR revision state.
+    reuse_for_manual_command = False
 
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         """Return policy fields; None means unknown, empty values mean not applicable.
@@ -413,7 +413,7 @@ class GitProvider(ABC):
         for GitHub; the semantics live here so every provider inherits them. Drop the
         latest commit URL too, so the next command can see newly pushed commits.
         """
-        self._tool_provider_stale = True
+        self._command_provider_stale = True
         self.diff_files = None
         self._latest_commit_url = None
         if getattr(self, "incremental", None) is not None:
@@ -424,7 +424,7 @@ class GitProvider(ABC):
     def supports_incremental_kind(self, kind: str) -> bool:
         """Whether `get_incremental_commits()` can scope an incremental run to `kind`
         (e.g. "suggestions" for `/improve -i`). Providers implementing kind-aware
-        incremental anchoring override this; the default is no support, so tools
+        incremental anchoring override this; the default is no support, so commands
         fall back to a full run."""
         return False
 
@@ -516,7 +516,7 @@ class GitProvider(ABC):
         """Whether a published comment renders command checkboxes as checkboxes.
 
         Providers that render `- [ ]` as a tickable box override this; the default is no
-        support, so tools render commands as text instead."""
+        support, so commands render commands as text instead."""
         return False
 
     def supports_pr_chat(self) -> bool:
@@ -527,10 +527,10 @@ class GitProvider(ABC):
     def supports_issue_indexing(cls) -> bool:
         """Whether `/similar_issue` can read and index this provider's issues.
 
-        Declared on the class rather than on an instance because the tool consults it before
+        Declared on the class rather than on an instance because the command consults it before
         constructing a provider: `PRSimilarIssue` needs to know whether to build one at all.
         The indexing path relies on issue listing, issue bodies and issue comments, so a
-        provider that exposes those overrides this; the default is no support, so the tool
+        provider that exposes those overrides this; the default is no support, so the command
         reports the command as unsupported instead of failing part-way through.
         """
         return False
@@ -556,7 +556,7 @@ class GitProvider(ABC):
     def supports_markdown_tables(self) -> bool:
         """Whether comments render pipe-table markdown.
 
-        Only consulted for providers without `gfm_markdown`, so that tools can degrade to
+        Only consulted for providers without `gfm_markdown`, so that commands can degrade to
         a plain table instead of refusing to render. Providers that render Markdown tables
         but not GitHub-flavored markdown override this."""
         return False
@@ -1117,8 +1117,8 @@ class GitProvider(ABC):
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         pass
 
-    def publish_tool_failure(self, tool: str, message: str):
-        """Report that `tool` ("describe", "improve") failed. Providers with per-tool outputs override this."""
+    def publish_command_failure(self, command: str, message: str):
+        """Report that `command` ("describe", "improve") failed. Providers with per-command outputs override this."""
         return self.publish_comment(message)
 
     def should_publish_review_as_thread(self) -> bool:
@@ -1466,7 +1466,7 @@ class GitProvider(ABC):
 
     def get_num_of_files(self):
         try:
-            return len(self.get_diff_files())
+            return len(self.get_files())
         except Exception:
             return -1
 

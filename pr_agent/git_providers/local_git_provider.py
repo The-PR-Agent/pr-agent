@@ -5,6 +5,7 @@ from git import Repo
 from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
 from pr_agent.algo.file_filter import filter_ignored_with_status
+from pr_agent.algo.git_patch_processing import count_patch_lines
 from pr_agent.algo.language_handler import partition_files_by_language_filter
 from pr_agent.algo.run_output import append_run_details
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -107,6 +108,14 @@ class LocalGitProvider(GitProvider):
         diff_files = []
         for diff_item in diffs:
             filename = diff_item.b_path or diff_item.a_path
+            old_filename = None if diff_item.a_path == diff_item.b_path else diff_item.a_path
+            edit_type = EDIT_TYPE.MODIFIED
+            if diff_item.new_file:
+                edit_type = EDIT_TYPE.ADDED
+            elif diff_item.deleted_file:
+                edit_type = EDIT_TYPE.DELETED
+            elif diff_item.renamed_file:
+                edit_type = EDIT_TYPE.RENAMED
             try:
                 if diff_item.a_blob is not None:
                     original_file_content_str = diff_item.a_blob.data_stream.read().decode("utf-8")
@@ -118,22 +127,29 @@ class LocalGitProvider(GitProvider):
                     new_file_content_str = ""  # empty file
                 patch = diff_item.diff.decode("utf-8")
             except UnicodeDecodeError as e:
-                get_logger().warning(f"Skipping non-UTF-8 file in local diff: {filename!r} ({e})")
+                # Keep the file in the inventory: the shared diff renderer shows a manual-review
+                # notice for it. Dropping it would make the review look complete without it.
+                get_logger().warning(f"Could not decode non-UTF-8 file in local diff: {filename!r} ({e})")
+                diff_files.append(FilePatchInfo(
+                    base_file="",
+                    head_file="",
+                    patch="",
+                    filename=filename,
+                    edit_type=edit_type,
+                    old_filename=old_filename,
+                    content_fetch_failed=True,
+                ))
                 continue
-            edit_type = EDIT_TYPE.MODIFIED
-            if diff_item.new_file:
-                edit_type = EDIT_TYPE.ADDED
-            elif diff_item.deleted_file:
-                edit_type = EDIT_TYPE.DELETED
-            elif diff_item.renamed_file:
-                edit_type = EDIT_TYPE.RENAMED
+            num_plus_lines, num_minus_lines = count_patch_lines(patch)
             diff_files.append(
                 FilePatchInfo(original_file_content_str,
                               new_file_content_str,
                               patch,
                               filename,
+                              num_plus_lines=num_plus_lines,
+                              num_minus_lines=num_minus_lines,
                               edit_type=edit_type,
-                              old_filename=None if diff_item.a_path == diff_item.b_path else diff_item.a_path
+                              old_filename=old_filename
                               )
             )
         self.diff_files, ignore_complete = filter_ignored_with_status(diff_files, platform="local")
@@ -162,13 +178,13 @@ class LocalGitProvider(GitProvider):
             # Write the string to the file
             file.write(pr_comment)
 
-    def publish_tool_failure(self, tool: str, message: str):
-        # Write the failure to the tool's own file so it does not clobber review.md.
+    def publish_command_failure(self, command: str, message: str):
+        # Write the failure to the command's own file so it does not clobber review.md.
         path = {
             "describe": self.description_path,
             "improve": self.improve_path,
             "add_docs": self.improve_path,
-        }.get(tool, self.review_path)
+        }.get(command, self.review_path)
         with open(path, "w", encoding="utf-8") as file:
             file.write(message)
 
@@ -192,7 +208,7 @@ class LocalGitProvider(GitProvider):
         Write /improve output to a file (improve.md by default).
 
         There is no hosted PR to attach inline suggestions to, so the suggestions the
-        tool built for inline publishing are rendered as a single markdown document,
+        command built for inline publishing are rendered as a single markdown document,
         mirroring how /review and /describe persist their output locally. Each entry
         carries a rendered 'body' plus its file and line range; format them into a
         readable section per suggestion. Returns True so the caller does not fall back

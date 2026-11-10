@@ -113,6 +113,15 @@ configured model, including fallback models, so use it only when all selected
 endpoints support the field. Existing `service_tier` and `processing_mode` options
 can be included in the same JSON object.
 
+An endpoint that accepts `thinking_token_budget`, such as vLLM, can limit the reasoning tokens of a model:
+
+```toml
+[litellm]
+extra_body='{"thinking_token_budget": 4000}'
+```
+
+PR-Agent also sends this field to fallback models.
+
 ### Azure
 
 To use Azure, set in your `.secrets.toml` (working from CLI), or in the GitHub `Settings > Secrets and variables` (working from GitHub App or GitHub Action):
@@ -898,7 +907,7 @@ All three map `max` to `xhigh` on Azure and OpenRouter, and the legacy `minimal`
 mapped to `low`.
 Each has a 1,050,000-token context window, a 922,000-token input ceiling,
 and support up to 128,000 output tokens. PR-Agent also applies `config.max_model_tokens` unless
-a tool bypasses that configured cap, as `/help` does; the native input ceiling still applies.
+a command bypasses that configured cap, as `/help` does; the native input ceiling still applies.
 The existing Chat Completions path is used for PR-Agent's
 text requests. For GPT-6 Sol and Luna, OpenAI requires the Responses API for built-in tools and
 function calling with reasoning; Chat Completions function calling is limited to
@@ -952,7 +961,7 @@ The existing Chat Completions path is used; access depends on your OpenAI accoun
 
 ### Anthropic models
 
-PR-Agent registers existing Claude Sonnet 4.6 and Opus 4.6 aliases with a 1,000,000-token context window. `config.max_model_tokens` still caps the usable prompt budget unless a tool explicitly bypasses that cap.
+PR-Agent registers existing Claude Sonnet 4.6 and Opus 4.6 aliases with a 1,000,000-token context window. `config.max_model_tokens` still caps the usable prompt budget unless a command explicitly bypasses that cap.
 
 ```toml
 [config]
@@ -1072,7 +1081,7 @@ uniqueness checks remain: repeated complete pairs in unchanged, noncolliding or 
 disable chunk recovery; those chains are not deduplicated by this routing-specific repair.
 
 Routing applies only to calls that ask for the regular model: `/review`, `/improve`, `/generate_labels` and
-`/add_docs`. Tools that already use `config.model_weak` (`/describe`, `/ask`, `/update_changelog`) are left
+`/add_docs`. Commands that already use `config.model_weak` (`/describe`, `/ask`, `/update_changelog`) are left
 alone, and a dedicated `config.model_reasoning` is still used for self-reflection. With `config.output_run_details`
 enabled, the run details show which model a routed pull request ended up on.
 

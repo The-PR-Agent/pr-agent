@@ -136,7 +136,7 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
 
 
 class GithubProvider(GitProvider):
-    reuse_for_manual_tool = True
+    reuse_for_manual_command = True
 
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         pr = self.pr
@@ -1065,7 +1065,7 @@ class GithubProvider(GitProvider):
         return False
 
     def start_check_run(self, name: str, summary: str) -> bool:
-        """Open the tool's check run as in_progress before it has any output to publish.
+        """Open the command's check run as in_progress before it has any output to publish.
 
         Automatic commands publish no progress comment, so this is the first sign that the
         pull request was picked up. `_publish_check_run` completes the same run in place.
@@ -1111,9 +1111,9 @@ class GithubProvider(GitProvider):
         return updated
 
     def finish_check_run(self, name: str, conclusion: str, summary: str) -> bool:
-        """Complete a check run opened by `start_check_run` that no tool completed.
+        """Complete a check run opened by `start_check_run` that no command completed.
 
-        A no-op when the tool already published its output to the run, so its conclusion
+        A no-op when the command already published its output to the run, so its conclusion
         and text are kept. Otherwise the run would stay in_progress on the commit forever.
         """
         if name not in self._check_runs_in_progress:
@@ -1413,14 +1413,23 @@ class GithubProvider(GitProvider):
 
     def _iter_review_threads(self):
         """Yield human-resolved PR-Agent key issues for the previous-findings context."""
-        agent_login = self._agent_login()
-        if not agent_login or self._deployment_type() not in {"user", "app"}:
+        if self._deployment_type() not in {"user", "app"}:
             return
+        review_comments = getattr(self.pr, "review_comments", None)
+        if type(review_comments) is int and review_comments <= 0:
+            return
+        agent_login = None
         threads = []
         for thread in self._review_thread_nodes():
             resolved_by = (thread.get("resolvedBy") or {}).get("login")
-            if (thread.get("isResolved") is True and isinstance(resolved_by, str)
-                    and resolved_by.strip() and resolved_by.casefold() != agent_login.casefold()):
+            if not (thread.get("isResolved") is True and isinstance(resolved_by, str)
+                    and resolved_by.strip()):
+                continue
+            if agent_login is None:
+                agent_login = self._agent_login()
+                if not agent_login:
+                    return
+            if resolved_by.casefold() != agent_login.casefold():
                 threads.append(thread)
         if not threads:
             return

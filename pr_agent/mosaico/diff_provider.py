@@ -1,7 +1,7 @@
 """DiffInputProvider — a GitProvider that feeds a SUPPLIED unified diff to pr-agent's
-tools (no host, no checkout). Used by the MOSAICO path (b): the inbound text is a
+commands (no host, no checkout). Used by the MOSAICO path (b): the inbound text is a
 pasted unified diff. INPUT methods are real; publish/label/comment/reaction methods
-are safe no-op stubs (with publish_output=False the tools render into
+are safe no-op stubs (with publish_output=False the commands render into
 get_settings().data rather than calling the publish path).
 
 The diff is parsed by parse_unified_diff(); per-request the parsed files/languages/title
@@ -21,7 +21,7 @@ from pr_agent.git_providers.git_provider import GitProvider
 
 
 class _PullRequestMimic:
-    """Mimics the PullRequest object the tools touch (.title, .diff_files)."""
+    """Mimics the PullRequest object the commands touch (.title, .diff_files)."""
 
     def __init__(self, title: str, diff_files: list[FilePatchInfo]):
         self.title = title
@@ -176,7 +176,7 @@ class DiffInputProvider(GitProvider):
 
     # ---- INPUT methods (real) ----
     def is_supported(self, capability: str) -> bool:
-        # Steer tools to the simplest render branches (no gfm table, no inline comments, no labels).
+        # Steer commands to the simplest render branches (no gfm table, no inline comments, no labels).
         return False
 
     def get_diff_files(self) -> list[FilePatchInfo]:

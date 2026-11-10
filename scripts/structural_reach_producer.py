@@ -230,8 +230,7 @@ def python_imports(root):
     out = []
     for node in walk(root, ("import_statement", "import_from_statement")):
         if node.type == "import_statement":
-            for child in node.children_by_field_name("name"):
-                out.append((0, _dotted(child), []))
+            out.extend((0, _dotted(child), []) for child in node.children_by_field_name("name"))
             continue
         module_node = node.child_by_field_name("module_name")
         level, module = 0, ""

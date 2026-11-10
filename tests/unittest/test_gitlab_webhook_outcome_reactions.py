@@ -2,9 +2,9 @@
 
 The GitHub App handler already does this; the GitLab webhook only added the start reaction, so
 `reaction_on_success` and `reaction_on_failure` did nothing there. The interesting part is not the
-extra call but the verdict: `propagate_tool_errors` is off, so a tool that fails internally still
+extra call but the verdict: `propagate_command_errors` is off, so a command that fails internally still
 returns normally, and reacting as if it had succeeded would tick a comment whose command never
-ran. `command_failed()` is the signal that does not change how the tool handles its own error.
+ran. `command_failed()` is the signal that does not change how the command handles its own error.
 
 Both outcome reactions default to empty, so this path is inert until an operator configures one;
 `test_the_shipped_defaults_ask_for_no_outcome_reaction` below pins that.
@@ -46,11 +46,10 @@ def _first_token(request):
 def _acknowledges(request):
     """Whether `PRAgent` would call `notify` for this comment.
 
-    It runs a command it knows and then acknowledges it, with one exception: `auto_review` is
-    silent, because it runs on every merge request rather than on somebody asking for something.
+    It runs a command it knows and then acknowledges it.
     """
     action = _first_token(request).lstrip("/").lower()
-    return action in pr_agent_module.command2class and action != "auto_review"
+    return action in pr_agent_module.command2class
 
 
 def _note_event(body="/review"):
@@ -83,7 +82,7 @@ def run_comment(monkeypatch):
     """Post a comment through the real webhook endpoint, faking only what talks to GitLab.
 
     ``success`` and ``failure`` are the operator's `reaction_on_success` / `reaction_on_failure`.
-    ``outcome`` is what the agent reports, ``record_failure`` is a tool that failed internally and
+    ``outcome`` is what the agent reports, ``record_failure`` is a command that failed internally and
     therefore returned normally.
     """
     import pr_agent.servers.gitlab_webhook as gitlab_webhook
@@ -114,7 +113,7 @@ def run_comment(monkeypatch):
             dispatched.append(request)
             if notify and _acknowledges(request):
                 notify()
-            if record_failure:  # what a tool does just before swallowing its own error
+            if record_failure:  # what a command does just before swallowing its own error
                 record_command_failure()
             return outcome
 
@@ -154,8 +153,8 @@ def test_a_command_that_reported_failure_adds_the_failure_reaction(run_comment):
     assert provider.removed == [(COMMENT_ID, 1)]
 
 
-def test_a_tool_that_failed_internally_is_not_reported_as_success(run_comment):
-    """The trap this change exists to avoid: the tool swallowed its error and returned True."""
+def test_a_command_that_failed_internally_is_not_reported_as_success(run_comment):
+    """The trap this change exists to avoid: the command swallowed its error and returned True."""
     provider = run_comment(success="hooray", failure="confused", record_failure=True)
 
     assert provider.reactions == [(COMMENT_ID, "eyes"), (COMMENT_ID, "confused")]
@@ -286,14 +285,9 @@ def test_a_command_with_quoted_arguments_gets_its_outcome(run_comment):
     assert provider.removed == [(COMMENT_ID, 1)]
 
 
-def test_auto_review_from_a_comment_gets_no_reaction(run_comment):
-    """`auto_review` never acknowledges, so there is no start reaction for an outcome to replace.
-
-    It runs on every merge request rather than on somebody asking for something, and
-    `tests/unittest/test_pr_agent_routing.py` pins that it stays silent. Nothing is orphaned
-    here because the start reaction is missing too.
-    """
-    provider = run_comment(success="hooray", body="/auto_review")
+@pytest.mark.parametrize("command", ["/answer", "/auto_review"])
+def test_removed_command_from_a_comment_is_ignored(run_comment, command):
+    provider = run_comment(success="hooray", body=command)
 
     assert provider.reactions == []
     assert provider.removed == []
@@ -303,11 +297,10 @@ def test_auto_review_from_a_comment_gets_no_reaction(run_comment):
 def test_the_dispatcher_acknowledges_every_command_it_runs(monkeypatch, command):
     """`notify` is how a caller learns a command was dispatched, which is the webhook's gate.
 
-    `auto_review` is the exception and stays that way: it runs on every merge request rather than
-    on somebody asking for something, and its silence is pinned in test_pr_agent_routing.py.
+    Removed command names are rejected before this notification path.
     """
 
-    class _Tool:
+    class _Command:
         def __init__(self, pr_url, ai_handler=None, args=None, **kwargs):
             self.pr_url = pr_url
 
@@ -315,12 +308,12 @@ def test_the_dispatcher_acknowledges_every_command_it_runs(monkeypatch, command)
             return True
 
     acknowledged = []
-    monkeypatch.setattr(pr_agent_module, "PRReviewer", _Tool)  # `answer` builds one directly
+    monkeypatch.setattr(pr_agent_module, "PRReviewer", _Command)  # `answer` builds one directly
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context",
                         lambda pr_url: _RecordingProvider())
-    monkeypatch.setitem(pr_agent_module.command2class, command.lstrip("/"), _Tool)
+    monkeypatch.setitem(pr_agent_module.command2class, command.lstrip("/"), _Command)
 
     result = asyncio.run(pr_agent_module.PRAgent(ai_handler="fake-ai").handle_request(
         "https://github.com/org/repo/pull/1", command, notify=lambda: acknowledged.append(command)))
@@ -329,30 +322,21 @@ def test_the_dispatcher_acknowledges_every_command_it_runs(monkeypatch, command)
     assert acknowledged == [command], f"{command} ran without acknowledging"
 
 
-def test_auto_review_never_acknowledges_on_the_real_dispatcher(monkeypatch):
-    """The negative half of the gate, on the real dispatcher rather than a stand-in for it.
-
-    The three "no reaction" tests above run through `run_comment`, whose fake `handle_request`
-    decides what to notify on its own, so they would stay green even if the dispatcher started
-    acknowledging `auto_review`. This one goes through `PRAgent`.
-    """
-
-    class _Tool:
-        def __init__(self, pr_url, ai_handler=None, args=None, **kwargs):
-            self.pr_url = pr_url
-
-        async def run(self):
-            return True
-
+@pytest.mark.parametrize("command", ["/answer", "/auto_review"])
+def test_removed_command_is_rejected_without_acknowledgment(monkeypatch, command):
     acknowledged = []
-    monkeypatch.setattr(pr_agent_module, "PRReviewer", _Tool)
+
+    def fail_if_dispatched(*_args, **_kwargs):
+        pytest.fail("unknown command dispatched")
+
+    monkeypatch.setattr(pr_agent_module, "PRReviewer", fail_if_dispatched)
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context",
                         lambda pr_url: _RecordingProvider())
 
     result = asyncio.run(pr_agent_module.PRAgent(ai_handler="fake-ai").handle_request(
-        "https://github.com/org/repo/pull/1", "/auto_review", notify=lambda: acknowledged.append("auto")))
+        "https://github.com/org/repo/pull/1", command, notify=lambda: acknowledged.append(command)))
 
-    assert result is True, "auto_review runs, it just does not acknowledge"
-    assert acknowledged == [], "the webhook gates on this, so a notification here means a stray reaction"
+    assert result is False
+    assert acknowledged == []

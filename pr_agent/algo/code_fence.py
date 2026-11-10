@@ -1,6 +1,6 @@
 """Helpers for stripping a Markdown code fence that wraps a whole model answer.
 
-Kept in its own module so the tools that need it (the changelog and the
+Kept in its own module so the commands that need it (the changelog and the
 description paths) do not import each other.
 """
 

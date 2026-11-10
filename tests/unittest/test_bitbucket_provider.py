@@ -18,6 +18,7 @@ from pr_agent.algo.comment_identity import (
     PRReviewIdentity,
 )
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.config_loader import global_settings
 from pr_agent.git_providers import BitbucketServerProvider
 from pr_agent.git_providers.bitbucket_provider import (
@@ -27,7 +28,6 @@ from pr_agent.git_providers.bitbucket_provider import (
 )
 from pr_agent.git_providers.git_provider import FileContentSnapshot, IncompleteBitbucketPullRequestFilesError
 from pr_agent.git_providers.request_timeout import DEFAULT_HTTP_REQUEST_TIMEOUT
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
 
 def _added_file(filename="src/example.py", lines=("a = 1", "b = 2", "c = 3")):
@@ -1029,6 +1029,41 @@ index 1111111..2222222 100644
 
         assert [file.filename for file in files] == ["src/second.py"]
         assert provider.get_filtered_diff_file_names() == ["pnpm-lock.yaml"]
+
+    def test_get_diff_files_decodes_each_file_of_a_diff_that_is_not_all_utf8(self):
+        provider, diffstats = self._aggregate_diff_provider([])
+        diffstats[1].new.path = diffstats[1].old.path = "messages_de.properties"
+        utf8_patch = "@@ -1,2 +1,2 @@\n # Grüße aus Köln – 你好\n-print('café')\n+print('café ☕')\n"
+        latin1_patch = "@@ -1 +1 @@\n-greeting=Grüße\n+greeting=Schöne Grüße\n"
+        raw_diff = (
+            ("diff --git a/src/first.py b/src/first.py\n--- a/src/first.py\n+++ b/src/first.py\n"
+             + utf8_patch).encode("utf-8")
+            + ("diff --git a/messages_de.properties b/messages_de.properties\n"
+               "--- a/messages_de.properties\n+++ b/messages_de.properties\n" + latin1_patch).encode("iso-8859-1")
+        )
+        # Like atlassian's PullRequest.diff(), which decodes the response bytes with the requested encoding.
+        provider.pr.diff.side_effect = lambda encoding="utf-8": str(raw_diff, encoding)
+        with patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", return_value=diffstats):
+            files = provider.get_diff_files()
+
+        assert [file.patch for file in files] == [utf8_patch, latin1_patch]
+        assert provider.pr.diff.call_args_list == [call(), call(encoding="iso-8859-1")]
+
+    def test_get_diff_files_keeps_utf8_text_when_the_first_diff_request_fails(self):
+        provider, diffstats = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        raw_diff = provider.pr.diff.return_value.replace("+new\n", "+new café ☕\n").encode("utf-8")
+        failures = [RequestsConnectionError("Connection reset by peer")]
+
+        def diff(encoding="utf-8"):
+            if failures:
+                raise failures.pop()
+            return str(raw_diff, encoding)
+
+        provider.pr.diff.side_effect = diff
+        with patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", return_value=diffstats):
+            files = provider.get_diff_files()
+
+        assert [file.patch for file in files] == ["@@ -1 +1 @@\n-old\n+new café ☕\n"] * 2
 
     def test_get_repo_file_content_reads_from_target_branch(self):
         # Repo-context files must be read from the PR destination (target) branch,

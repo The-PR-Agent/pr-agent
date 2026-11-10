@@ -12,9 +12,9 @@ Local execution has two distinct cases: use the hosted-provider examples below f
 
 ## Using Docker image
 
-A list of the relevant tools can be found in the [tools guide](../tools/index.md).
+A list of the relevant commands can be found in the [commands guide](../commands/index.md).
 
-To invoke a tool (for example `review`), you can run PR-Agent directly from the Docker image. Here's how:
+To invoke a command (for example `review`), you can run PR-Agent directly from the Docker image. Here's how:
 
 - For GitHub:
 
@@ -87,7 +87,7 @@ OPENAI__KEY="<your key>"
 Then, you can run `pr_agent` using Docker with the following command:
 
 ```shell
-docker run --rm -it --env-file .env pragent/pr-agent:latest --pr_url <pr_url> <tool> <tool parameter>
+docker run --rm -it --env-file .env pragent/pr-agent:latest --pr_url <pr_url> <command> <command parameter>
 ```
 
 ---
@@ -114,7 +114,7 @@ pip install "pr-agent[github]"
 Git provider SDKs are optional extras, so install the one for your provider: `github`, `gitlab`, `bitbucket` (Bitbucket Cloud, Bitbucket Server and Jira), `azure`, `codecommit` or `gitea`.
 `google` adds Vertex AI, `mosaico` adds the Mosaico server, and `pr-agent[all]` installs every integration.
 
-Then run the relevant tool with the script below.
+Then run the relevant command with the script below.
 <br>
 Make sure to fill in the required parameters (`user_token`, `openai_key`, `pr_url`, `command`):
 
@@ -145,7 +145,7 @@ if __name__ == '__main__':
 
 For other providers, change `provider` to its provider ID (for example, `gitlab`, `bitbucket`, or `azure`) and replace `github.user_token` with that provider's required credentials and connection settings.
 
-With `config.propagate_tool_errors` enabled, forwarding the return value through `SystemExit` makes this script exit with status 1 after a propagated tool error. The default remains status 0.
+With `config.propagate_command_errors` enabled, forwarding the return value through `SystemExit` makes this script exit with status 1 after a propagated command error. The default remains status 0.
 
 The Python helper accepts quoted arguments, for example
 `cli.run_command(pr_url, "/review --pr_reviewer.extra_instructions='be concise please'")`.
@@ -192,7 +192,7 @@ This does not change how interactive PR comments are parsed.
    ...
    ```
 
-   *Note: the `similar_issue` tool needs extra dependencies that a bare `uv sync` does not install. Install them with `uv sync --group similar-issue` before running it.*
+   *Note: the `similar_issue` command needs extra dependencies that a bare `uv sync` does not install. Install them with `uv sync --group similar-issue` before running it.*
 
 [Optional] Add the pr_agent folder to your PYTHONPATH
 

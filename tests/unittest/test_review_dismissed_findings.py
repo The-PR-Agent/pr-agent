@@ -16,10 +16,10 @@ from pr_agent.algo.review_finding_state import (
     render_previous_findings,
     serialize_review_state,
 )
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 _BOT_USER_ID = 7
 _KEY_ISSUE_BODY = "**Possible Issue**\n\nThe lock is never released."

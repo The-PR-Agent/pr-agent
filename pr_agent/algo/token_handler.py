@@ -42,7 +42,7 @@ def _await_coroutine(coro):
     """Run a coroutine to completion from a synchronous call site.
 
     ``asyncio.run`` cannot be called from a running event loop, and the accurate
-    token-count path is invoked synchronously from tools that run inside one, so
+    token-count path is invoked synchronously from commands that run inside one, so
     an active loop runs the coroutine on a dedicated worker loop instead. The
     caller's contextvars are copied into the worker so request-scoped settings
     (e.g. starlette ``context``) stay visible to the token-count coroutine.

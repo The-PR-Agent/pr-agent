@@ -158,7 +158,7 @@ async def test_github_line_review_mentioning_ask_stays_review(monkeypatch):
     handled = []
 
     class FakeAgent:
-        async def handle_request(self, api_url, body, notify=None, propagate_tool_errors=False):
+        async def handle_request(self, api_url, body, notify=None, propagate_command_errors=False):
             handled.append((api_url, body))
             return True
 
@@ -204,7 +204,7 @@ async def test_github_line_comment_prefixing_ask_is_not_rewritten_to_ask_line(mo
     handled = []
 
     class FakeAgent:
-        async def handle_request(self, api_url, body, notify=None, propagate_tool_errors=False):
+        async def handle_request(self, api_url, body, notify=None, propagate_command_errors=False):
             handled.append((api_url, body))
             return True
 

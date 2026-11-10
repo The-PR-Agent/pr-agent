@@ -22,7 +22,7 @@ _SETTINGS_KEYS = [
     "plain_diff.json_output_path",
     "config.git_provider",
     "config.publish_output",
-    "config.propagate_tool_errors",
+    "config.propagate_command_errors",
     "config.cli_mode",
     "config.config_branch",
     "config.extra_config_url",
@@ -36,7 +36,7 @@ _DIFF = (
     "@@ -1,3 +1,3 @@\n"
     " line1\n-line2\n+line2-changed\n line3\n"
 )
-_REVIEW_MARKER = "plain-diff auto-review output"
+_REVIEW_MARKER = "plain-diff review output"
 _CANNED_REVIEW = f"""\
 review:
   estimated_effort_to_review_[1-5]: '1'
@@ -70,7 +70,6 @@ _OUTPUT_OPTION_PREFIXES = [
 _MARKDOWN_COMMANDS = [
     "review",
     "review_pr",
-    "auto_review",
     "describe",
     "describe_pr",
     "improve",
@@ -83,7 +82,6 @@ _MARKDOWN_COMMANDS = [
 ]
 
 _NON_MARKDOWN_COMMANDS = [
-    "answer",
     "ask_line",
     "update_changelog",
     "similar_issue",
@@ -229,7 +227,7 @@ def test_json_output_accepts_pr_review(command, monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("command", ["improve", "improve_code", "describe", "describe_pr"])
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])
-def test_json_output_accepts_plain_diff_tool_aliases(command, input_mode, monkeypatch, tmp_path):
+def test_json_output_accepts_plain_diff_command_aliases(command, input_mode, monkeypatch, tmp_path):
     from pr_agent.algo.review_json_output import review_json_output_path
 
     captured = {}
@@ -397,24 +395,6 @@ def test_compatible_non_model_commands_write_markdown_artifacts(
     assert output.read_text(encoding="utf-8").strip()
 
 
-def test_auto_review_writes_markdown_artifact_with_stubbed_model(
-    monkeypatch, tmp_path,
-):
-    async def fake_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
-        return _CANNED_REVIEW, "stop"
-
-    monkeypatch.setattr(
-        "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion",
-        fake_chat_completion,
-    )
-    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
-    output = tmp_path / "auto-review.md"
-
-    run(inargs=["--stdin", "--output", str(output), "auto_review"])
-
-    assert _REVIEW_MARKER in output.read_text(encoding="utf-8")
-
-
 @pytest.mark.parametrize(
     ("generate_ai_title", "expected_title"),
     [(False, "Local diff review"), (True, "Update foo.py")],
@@ -495,7 +475,7 @@ def test_plain_diff_improve_preserves_nonempty_json_even_if_markdown_fails(
         "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion",
         fake_chat_completion,
     )
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.PRCodeSuggestions._self_reflect_with_fallback",
+    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.PRCodeSuggestions._self_reflect_with_fallback",
                         no_reflection)
     if publish_failure:
         def broken_output(self, content):
@@ -530,7 +510,7 @@ def test_plain_diff_improve_still_publishes_markdown_when_json_unwritable(
         "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion",
         fake_chat_completion,
     )
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.PRCodeSuggestions._self_reflect_with_fallback",
+    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.PRCodeSuggestions._self_reflect_with_fallback",
                         no_reflection)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     unreachable_path = tmp_path / "missing" / "suggestions.json"
@@ -592,7 +572,7 @@ def test_plain_diff_describe_fails_when_all_files_are_ignored(monkeypatch, tmp_p
         unexpected_model_call,
     )
     failure_recorder = Mock(wraps=record_command_failure)
-    monkeypatch.setattr("pr_agent.tools.pr_description.record_command_failure", failure_recorder)
+    monkeypatch.setattr("pr_agent.commands.pr_description.record_command_failure", failure_recorder)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     cfg("ignore.glob", ["foo.py"])
     output = tmp_path / "description.json"
@@ -602,7 +582,7 @@ def test_plain_diff_describe_fails_when_all_files_are_ignored(monkeypatch, tmp_p
     assert not output.exists()
 
 
-def test_plain_diff_json_tool_failure_returns_nonzero_without_error_propagation(monkeypatch, tmp_path, cfg):
+def test_plain_diff_json_command_failure_returns_nonzero_without_error_propagation(monkeypatch, tmp_path, cfg):
     from pr_agent.algo.run_details import record_command_failure
 
     class FailedAgent:
@@ -610,7 +590,7 @@ def test_plain_diff_json_tool_failure_returns_nonzero_without_error_propagation(
             record_command_failure()
             return True
 
-    cfg("config.propagate_tool_errors", False)
+    cfg("config.propagate_command_errors", False)
     monkeypatch.setattr("pr_agent.cli.PRAgent", FailedAgent)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
 
@@ -695,7 +675,7 @@ def test_plain_diff_ask_applies_command_ignore_filter(monkeypatch):
     async def capture(self):
         seen.extend(f.filename for f in self.git_provider.get_diff_files())
 
-    monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions.run", capture)
+    monkeypatch.setattr("pr_agent.commands.pr_questions.PRQuestions.run", capture)
     monkeypatch.setattr("sys.stdin", io.StringIO(diff))
     run(inargs=["--stdin", "ask", "Explain.", '--ignore.glob=["foo.py"]'])
 
@@ -736,18 +716,18 @@ def test_local_git_ask_applies_command_ignore_filter(monkeypatch, tmp_path, cfg,
     async def capture(self):
         seen.extend(f.filename for f in self.git_provider.get_diff_files())
 
-    monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions.run", capture)
+    monkeypatch.setattr("pr_agent.commands.pr_questions.PRQuestions.run", capture)
     run(inargs=["--pr_url", "main", "ask", "Explain.", '--ignore.glob=["foo.py"]'])
 
     assert seen == ["bar.py"]
 
 
-def test_answer_output_is_rejected_without_creating_artifact(monkeypatch, tmp_path, capsys):
+def test_ask_line_output_is_rejected_without_creating_artifact(monkeypatch, tmp_path, capsys):
     input_args = _rejecting_input_args("stdin", monkeypatch)
-    output = tmp_path / "answer.md"
+    output = tmp_path / "ask-line.md"
 
     with pytest.raises(SystemExit) as exc_info:
-        run(inargs=[*input_args, "--output", str(output), "answer"])
+        run(inargs=[*input_args, "--output", str(output), "ask_line"])
 
     assert exc_info.value.code == 2
     assert "--output is not supported for" in capsys.readouterr().err
@@ -783,7 +763,7 @@ def test_json_output_accepts_review_aliases(command, input_mode, monkeypatch, tm
 
 @pytest.mark.parametrize("command", [
     *(name for name in _NON_MARKDOWN_COMMANDS if name != "generate_labels"),
-    "auto_review", "ask", "ask_question", "config", "settings", "help",
+    "ask", "ask_question", "config", "settings", "help",
 ])
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])
 def test_json_output_rejects_non_review_commands_before_read(
@@ -804,7 +784,7 @@ def test_plain_diff_generate_labels_writes_filtered_json(input_mode, monkeypatch
     monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
     input_args = _valid_input_args(input_mode, monkeypatch, tmp_path)
     monkeypatch.setattr(
-        "pr_agent.tools.pr_generate_labels.PRGenerateLabels._get_prediction",
+        "pr_agent.commands.pr_generate_labels.PRGenerateLabels._get_prediction",
         AsyncMock(return_value="labels: [Bug fix, not-a-supported-label]"),
     )
     output = tmp_path / "labels.json"
@@ -844,7 +824,7 @@ def test_generate_labels_policy_skip_only_fails_when_json_is_required(
 def test_plain_diff_generate_labels_failure_does_not_write_success_json(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     monkeypatch.setattr(
-        "pr_agent.tools.pr_generate_labels.retry_with_fallback_models",
+        "pr_agent.commands.pr_generate_labels.retry_with_fallback_models",
         AsyncMock(side_effect=RuntimeError("model unavailable")),
     )
     output = tmp_path / "labels.json"
@@ -881,7 +861,7 @@ def test_output_options_after_command_fail_before_read(
     assert f"{option} must appear before the command" in err
 
 
-def test_near_match_after_command_remains_a_tool_argument(monkeypatch):
+def test_near_match_after_command_remains_a_command_argument(monkeypatch):
     captured = {}
 
     class FakeAgent:

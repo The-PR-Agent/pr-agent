@@ -516,7 +516,6 @@ async def polling_loop():
                                 last_modified[0] = None
                                 get_logger().exception("Failed to mark polling notification as read; retrying later")
                                 break
-                            handled_ids.add(notification['id'])
                             if output[0]:
                                 _, handled_ids, comment, comment_body, pr_url, user_tag = output
                                 rest_of_comment = comment_body.split(user_tag, 1)[1].strip()

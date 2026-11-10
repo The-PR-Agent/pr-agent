@@ -72,6 +72,69 @@ def parse_failure_modes(value: object) -> list[dict]:
     return modes
 
 
+ARTIFACT_FINDING_KINDS = ("destroy", "failure", "test_failure", "vulnerability", "warning")
+MAX_ARTIFACT_FINDINGS = 5
+MAX_ARTIFACT_FACT_WORDS = 20
+MAX_ARTIFACT_EVIDENCE_CHARS = 160
+# A shorter quote, such as "FAILED" or "error", appears in almost any CI log, so it counts only as a whole line.
+MIN_ARTIFACT_QUOTE_CHARS = 16
+
+
+class ArtifactFinding(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    kind: Literal[ARTIFACT_FINDING_KINDS]
+    fact: str
+    evidence: str
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _normalise_kind(cls, value):
+        return value.strip().lower().replace(" ", "_").replace("-", "_") if isinstance(value, str) else value
+
+
+def _squash(text: str) -> str:
+    return " ".join(text.split())
+
+
+def parse_artifact_findings(value: object, artifact_context: dict | None) -> list[dict]:
+    """Keep at most five findings, cap each fact, and mark evidence that is not quoted from the artifact."""
+    # Imported here: git_provider imports pr_agent.algo.utils, which imports this module.
+    from pr_agent.git_providers.git_provider import redact_credentials
+
+    contexts = (artifact_context or {}).get("artifacts", [artifact_context] if artifact_context else [])
+    artifact_text = "\n".join(_squash(context.get("content", "")) for context in contexts)
+    artifact_lines = {_squash(line) for context in contexts for line in context.get("content", "").splitlines()}
+    findings, seen = [], set()
+    for entry in value if isinstance(value, list) else []:
+        try:
+            finding = ArtifactFinding.model_validate(entry).model_dump()
+        except ValidationError:
+            continue
+        fact_words = _squash(redact_credentials(finding["fact"])).split(" ")
+        finding["fact"] = " ".join(fact_words[:MAX_ARTIFACT_FACT_WORDS]) + (
+            " …" if len(fact_words) > MAX_ARTIFACT_FACT_WORDS else ""
+        )
+        evidence = _squash(finding["evidence"])
+        if len(evidence) > 1 and evidence[0] == evidence[-1] and evidence[0] in "\"'`":
+            evidence = evidence[1:-1]
+        if (finding["kind"], evidence) in seen:
+            continue
+        seen.add((finding["kind"], evidence))
+        finding["quoted"] = bool(evidence) and evidence in artifact_text and (
+            len(evidence) >= MIN_ARTIFACT_QUOTE_CHARS or evidence in artifact_lines
+        )
+        # Redact before the cut, so a token split by the cut cannot slip past the patterns.
+        evidence = redact_credentials(evidence)
+        finding["evidence"] = evidence[:MAX_ARTIFACT_EVIDENCE_CHARS] + (
+            " …" if len(evidence) > MAX_ARTIFACT_EVIDENCE_CHARS else ""
+        )
+        findings.append(finding)
+        if len(findings) == MAX_ARTIFACT_FINDINGS:
+            break
+    return findings
+
+
 class Review(BaseModel):
     # extra_instructions and [artifacts] may request fields beyond the prompt schema
     model_config = ConfigDict(extra="allow")
@@ -83,11 +146,11 @@ class Review(BaseModel):
     risk_level: Literal["low", "medium", "high"] | None = None
     merge_recommendation: Literal["no_concerns_found", "needs_review", "changes_required"] | None = None
     failure_modes: list[FailureMode] | None = Field(default=None, max_length=3)
+    artifact_findings: list[ArtifactFinding] | None = None
     review_priority_files: list[str] | None = None
     contribution_time_cost_estimate: ContributionTimeCostEstimate | None = None
     score: StrictInt | None = Field(default=None, ge=0, le=100)
     relevant_tests: Literal["Yes", "No"] | None = None
-    insights_from_user_answers: str | None = None
     key_issues_to_review: list[KeyIssuesComponentLink]
     security_concerns: str | None = None
     todo_sections: list[TodoSection] | str | None = None

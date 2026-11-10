@@ -52,7 +52,6 @@ class Action(StrEnum):
     describe = "describe"
     ask = "ask"
     improve = "improve"
-    answer = "answer"
 
 
 class Item(BaseModel):

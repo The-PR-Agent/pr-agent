@@ -266,7 +266,7 @@ def _process_litellm_extra_body(kwargs: dict) -> dict:
     Raises:
         ValueError: If extra_body contains invalid JSON, unsupported keys, or colliding keys
     """
-    allowed_extra_body_keys = {"processing_mode", "service_tier", "chat_template_kwargs"}
+    allowed_extra_body_keys = {"processing_mode", "service_tier", "chat_template_kwargs", "thinking_token_budget"}
     extra_body = getattr(getattr(get_settings(), "litellm", None), "extra_body", None)
     if extra_body:
         try:

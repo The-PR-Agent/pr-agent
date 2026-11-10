@@ -10,7 +10,7 @@ from importlib.metadata import PackageNotFoundError, version
 import yaml
 
 from pr_agent.algo.i18n import t
-from pr_agent.algo.output_sinks import OUTPUT_SINK_TYPES, _selected_output_tools, create_output_sink
+from pr_agent.algo.output_sinks import OUTPUT_SINK_TYPES, _selected_output_commands, create_output_sink
 from pr_agent.algo.run_details import get_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings
@@ -53,7 +53,7 @@ def push_outputs(
     markdown: str | None = None,
     git_provider=None,
 ) -> None:
-    """Emit a tool's output to external sinks, including its PR identity when available.
+    """Emit a command's output to external sinks, including its PR identity when available.
 
     Controlled by the [push_outputs] config section (disabled by default). Supported channels:
     "stdout" (one JSON line), "file" (append JSONL), "webhook" (POST the generic record),
@@ -63,17 +63,16 @@ def push_outputs(
     try:
         cfg = get_settings().get("push_outputs", {}) or {}
         enable = cfg.get("enable", False)
-        # Treat environment-variable strings "false", "0", "no", and "" as disabled.
         if isinstance(enable, str):
-            enable = enable.lower().strip() not in ("false", "0", "no", "")
-        if not enable:
+            enable = enable.strip()
+        if not _as_bool_setting(enable, default=bool(enable)):
             return
 
-        tools = _selected_output_tools(cfg)
-        if tools is None:
-            get_logger().warning("push_outputs: invalid push_outputs.tools setting")
+        commands = _selected_output_commands(cfg)
+        if commands is None:
+            get_logger().warning("push_outputs: invalid push_outputs.commands setting")
             return
-        if message_type not in tools:
+        if message_type not in commands:
             return
 
         channels = cfg.get("channels", []) or []
@@ -108,7 +107,7 @@ async def push_outputs_async(
     markdown: str | None = None,
     git_provider=None,
 ) -> None:
-    """Emit a tool's output to external sinks without blocking the event loop.
+    """Emit a command's output to external sinks without blocking the event loop.
 
     The sinks do blocking HTTP and file I/O, so the delivery runs in a worker thread.
     Awaiting it keeps the event loop free for other work and still delivers the output
@@ -151,7 +150,7 @@ def show_relevant_configurations(relevant_section: str) -> str:
     markdown_text += (
         "<br>These are the relevant [configurations]"
         "(https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml)"
-        " for this tool:\n\n"
+        " for this command:\n\n"
     )
     markdown_text += "**[config**]\n```yaml\n\n"
     for key, value in get_settings().config.items():

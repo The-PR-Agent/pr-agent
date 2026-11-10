@@ -2,7 +2,7 @@
 """Verify every docs URL referenced from the codebase resolves in the built site.
 
 PR-Agent posts absolute documentation links into real pull request comments
-(`pr_agent/tools/pr_help_message.py`, `pr_agent/servers/help.py`), and the README
+(`pr_agent/commands/pr_help_message.py`, `pr_agent/servers/help.py`), and the README
 and package metadata link into the site too. A docs restructure that silently
 breaks one of those is invisible until a user clicks it.
 

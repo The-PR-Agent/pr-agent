@@ -63,7 +63,7 @@ class PlainDiffGitProvider(GitProvider):
         self.json_output_path = get_settings().get("plain_diff.json_output_path", None)
         # cli.run() already forces config.publish_output=True, but apply_repo_settings()
         # runs afterwards and can overwrite it back to False from an extra/repo config
-        # (tools gate all publishing on this flag). This provider is constructed after
+        # (commands gate all publishing on this flag). This provider is constructed after
         # apply_repo_settings, so re-assert it here: stdout/--output is plain-diff mode's
         # only output channel, and it must never be silently suppressed.
         get_settings().set("config.publish_output", True)
@@ -147,7 +147,7 @@ class PlainDiffGitProvider(GitProvider):
             print(content)
         except UnicodeEncodeError:
             # Emit UTF-8 bytes when a redirected stdout uses a locale encoding (cp1252 on
-            # Windows) that cannot encode the emoji in tool output, so publishing does not
+            # Windows) that cannot encode the emoji in command output, so publishing does not
             # abort before --output is written.
             buffer = getattr(sys.stdout, "buffer", None)
             if buffer is None:
@@ -224,7 +224,7 @@ class PlainDiffGitProvider(GitProvider):
 
     # ---- code suggestions: rendered to stdout/--output (no hosting platform) ----
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
-        # The 'improve' tool calls this unconditionally; render the suggestions
+        # The 'improve' command calls this unconditionally; render the suggestions
         # as a single markdown document to stdout/--output instead of pushing
         # them to a (non-existent) hosting platform.
         if not code_suggestions:

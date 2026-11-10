@@ -10,8 +10,8 @@ import pytest
 import requests
 from requests.adapters import BaseAdapter
 
+from pr_agent.commands import ticket_pr_compliance_check as tickets
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.tools import ticket_pr_compliance_check as tickets
 
 
 class IssueTransport(BaseAdapter):
@@ -238,7 +238,7 @@ async def test_confidential_sibling_issue_is_skipped(provider_factory, monkeypat
     monkeypatch.setattr(provider, "get_owning_namespace", Mock(return_value="group"))
     monkeypatch.setattr(provider, "is_sibling_repo_allowed", Mock(return_value=True))
 
-    with patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as logger:
+    with patch("pr_agent.commands.ticket_pr_compliance_check.get_logger") as logger:
         result = await tickets.extract_tickets(provider)
 
     assert result == []

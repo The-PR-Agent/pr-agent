@@ -45,27 +45,27 @@ def test_system_instructions_are_loaded_from_config(system_instructions):
     assert get_protected_system_instructions() == "TRUSTED POLICY"
 
 
-def test_system_instructions_are_appended_after_tool_instructions(system_instructions):
+def test_system_instructions_are_appended_after_command_instructions(system_instructions):
     system_instructions.set("config.system_instructions", "TRUSTED POLICY")
 
-    result = append_protected_system_instructions("TOOL INSTRUCTIONS")
+    result = append_protected_system_instructions("COMMAND INSTRUCTIONS")
 
-    assert result == "TOOL INSTRUCTIONS\n\nTRUSTED POLICY"
+    assert result == "COMMAND INSTRUCTIONS\n\nTRUSTED POLICY"
 
 
 def test_empty_system_instructions_leave_prompt_unchanged(system_instructions):
     system_instructions.set("config.system_instructions", "")
 
-    assert append_protected_system_instructions("TOOL INSTRUCTIONS") == "TOOL INSTRUCTIONS"
+    assert append_protected_system_instructions("COMMAND INSTRUCTIONS") == "COMMAND INSTRUCTIONS"
 
 
 def test_base_handler_adds_system_instructions_to_request(system_instructions):
     system_instructions.set("config.system_instructions", "TRUSTED POLICY")
 
-    messages = _Handler().build_request_messages("model", "TOOL INSTRUCTIONS", "USER CONTEXT")
+    messages = _Handler().build_request_messages("model", "COMMAND INSTRUCTIONS", "USER CONTEXT")
 
     assert messages == [
-        {"role": "system", "content": "TOOL INSTRUCTIONS\n\nTRUSTED POLICY"},
+        {"role": "system", "content": "COMMAND INSTRUCTIONS\n\nTRUSTED POLICY"},
         {"role": "user", "content": "USER CONTEXT"},
     ]
 
@@ -92,11 +92,11 @@ def test_token_estimate_includes_system_instructions(system_instructions, policy
         None,
         CharacterEncoder(),
         {},
-        "TOOL INSTRUCTIONS",
+        "COMMAND INSTRUCTIONS",
         "USER CONTEXT",
     )
 
-    assert token_count == len(f"TOOL INSTRUCTIONS\n\n{policy}") + len("USER CONTEXT")
+    assert token_count == len(f"COMMAND INSTRUCTIONS\n\n{policy}") + len("USER CONTEXT")
 
 
 @pytest.mark.parametrize(

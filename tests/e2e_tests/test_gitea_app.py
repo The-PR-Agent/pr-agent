@@ -16,8 +16,8 @@ log_level = os.environ.get("LOG_LEVEL", "INFO")
 setup_logger(log_level)
 logger = get_logger()
 
-def _missing_gitea_tool_results(repo_api_url, pr_number, headers):
-    """Check the description and the comments for the default tools' final output."""
+def _missing_gitea_command_results(repo_api_url, pr_number, headers):
+    """Check the description and the comments for the default commands' final output."""
     response = requests.get(
         f"{repo_api_url}/pulls/{pr_number}",
         headers=headers,
@@ -141,19 +141,19 @@ def test_e2e_run_gitea_app():
         pr = response.json()
         pr_number = pr['number']
 
-        missing_tools = ["/describe", "/review", "/improve"]
+        missing_commands = ["/describe", "/review", "/improve"]
         for i in range(NUM_MINUTES):
-            logger.info("Waiting for the PR to get all the tool results...")
+            logger.info("Waiting for the PR to get all the command results...")
             time.sleep(60)
 
-            missing_tools = _missing_gitea_tool_results(
+            missing_commands = _missing_gitea_command_results(
                 f"{gitea_url}/api/v1/repos/{owner}/{repo_name}", pr_number, headers
             )
-            if not missing_tools:
+            if not missing_commands:
                 break
-            logger.info(f"Still waiting for {', '.join(missing_tools)} after {i + 1} minute(s)")
+            logger.info(f"Still waiting for {', '.join(missing_commands)} after {i + 1} minute(s)")
         else:
-            raise AssertionError(f"After {NUM_MINUTES} minutes, missing tool results: {', '.join(missing_tools)}")
+            raise AssertionError(f"After {NUM_MINUTES} minutes, missing command results: {', '.join(missing_commands)}")
 
         logger.info(f"Cleaning up: closing PR and deleting branch {new_branch}")
 

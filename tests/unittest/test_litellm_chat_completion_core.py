@@ -189,7 +189,7 @@ async def test_chat_completion_dead_image_uses_current_help_link(monkeypatch):
             img_path="https://example.test/missing.png",
         )
 
-    assert "https://docs.pr-agent.ai/tools/ask/#ask-on-images" in response
+    assert "https://docs.pr-agent.ai/commands/ask/#ask-on-images" in response
     assert "pr-agent-docs.codium.ai" not in response
     assert finish_reason == "error"
     mock_call.assert_not_awaited()
@@ -677,10 +677,10 @@ def test_request_messages_append_protected_system_instructions(monkeypatch):
     )
     handler = litellm_handler.LiteLLMAIHandler()
 
-    messages = handler.build_request_messages("gpt-4o", "tool instructions", "usr")
+    messages = handler.build_request_messages("gpt-4o", "command instructions", "usr")
 
     assert messages == [
-        {"role": "system", "content": "tool instructions\n\nTRUSTED POLICY"},
+        {"role": "system", "content": "command instructions\n\nTRUSTED POLICY"},
         {"role": "user", "content": "usr"},
     ]
 

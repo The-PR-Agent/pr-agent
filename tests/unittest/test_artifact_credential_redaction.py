@@ -15,7 +15,7 @@ from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 @pytest.mark.parametrize("content, credential, kind", [
     ("Authorization: Bearer synthetic-bearer-value", "synthetic-bearer-value", "authorization_header"),
     ("https://ci-user:synthetic-password@example.com/log", "synthetic-password", "url_userinfo"),
-    ("token=glpat-synthetic_token_for_tests", "glpat-synthetic_token_for_tests", "gitlab_token"),
+    ("key=glpat-synthetic_token_for_tests", "glpat-synthetic_token_for_tests", "gitlab_token"),
     ("key=AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE", "aws_access_key"),
     ("key=" + "A3TQ" + "B" * 16, "A3TQ" + "B" * 16, "aws_access_key"),
     ("AWS_SECRET_ACCESS_KEY=" + "x" * 40, "x" * 40, "credential_assignment"),
@@ -129,10 +129,11 @@ def test_shared_redactor_counts_each_type_and_does_not_recount_masked_headers():
     "api_key", "gemini_api_key", "jira_api_token", "pat", "client_secret", "webhook_secret",
     "shared_secret", "webhook_password", "github.user_token", "GITHUB__USER_TOKEN", "BITBUCKET_BEARER_TOKEN",
     "_api_key", "__API_KEY", "github._api_key", "_github.user_token", "GITHUB___USER_TOKEN",
-    "github2.api_key", "git-hub.api_key",
+    "github2.api_key", "git-hub.api_key", "password", "DB_PASSWORD", "Password", "passwd", "MYSQL_PASSWD",
+    "secret", "APP_SECRET", "token", "ACCESS_TOKEN", "X-Auth-Token",
 ])
 @pytest.mark.parametrize("assignment", ["{key}=synthetic-opaque-secret", '{key} = "synthetic-opaque-secret"',
-                                        '"{key}": "synthetic-opaque-secret"'])
+                                        '"{key}": "synthetic-opaque-secret"', "{key}: synthetic-opaque-secret"])
 def test_configured_credential_assignments_are_redacted(tmp_path, monkeypatch, key, assignment):
     path = tmp_path / "ci.log"
     path.write_text(assignment.format(key=key) + "\nFAILED test_boundary", encoding="utf-8")
@@ -152,6 +153,19 @@ def test_configured_credential_assignments_are_redacted(tmp_path, monkeypatch, k
 
 def test_long_dotted_noncredential_assignment_is_unchanged_and_fast():
     content = "a." * 5000 + "ordinary=value\nFAILED test_boundary"
+    counts = {}
+    started = perf_counter()
+
+    redacted = redact_credentials(content, redaction_counts=counts)
+    elapsed = perf_counter() - started
+
+    assert redacted == content
+    assert counts == {}
+    assert elapsed < 1.0
+
+
+def test_long_run_of_unassigned_generic_keys_is_unchanged_and_fast():
+    content = "password token secret " * 5000 + "token" + " \t" * 5000 + "\nFAILED test_boundary"
     counts = {}
     started = perf_counter()
 
@@ -261,6 +275,8 @@ def test_partial_redaction_markers_do_not_hide_credential_suffixes(tmp_path, mon
     "api_key_count=3\nuser_token_length=40\nkey=expected-value",
     "xapi_key=synthetic-value", "1api_key=synthetic-value", "githubxapi_key=synthetic-value",
     'api_token=""', "api_token='  '", 'api_token=" <redacted> "',
+    "PASSWORD_FILE=/run/db_password", "password_hash: expected-value", "token_type=bearer", "max_tokens: 4096",
+    "secrets: inherit", "mytoken=expected-value",
 ])
 def test_masked_values_and_noncredential_assignments_are_not_counted(content):
     counts = {}
@@ -343,8 +359,8 @@ def test_injected_artifacts_retain_redacted_context_after_settings_change(tmp_pa
     try:
         artifacts.inject_artifact_context()
         monkeypatch.setattr(artifacts, "_read_and_truncate", MagicMock(side_effect=AssertionError("Unexpected reread")))
-        for tool in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
-            context = artifacts.get_artifact_context(tool)["content"]
+        for command in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
+            context = artifacts.get_artifact_context(command)["content"]
             assert "synthetic-bearer-value" not in context
             assert "sk-proj-synthetic-value" not in context
             assert "FAILED test_boundary" in context

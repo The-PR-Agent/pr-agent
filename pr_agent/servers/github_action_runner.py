@@ -11,6 +11,7 @@ from starlette_context import context, request_cycle_context
 
 from pr_agent.agent.pr_agent import (
     PRAgent,
+    _normalize_publish_output_setting,
     parse_command,
     publish_incomplete_files_comment,
     response_language_instructions,
@@ -24,6 +25,10 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
 from pr_agent.algo.artifacts import inject_artifact_context as _inject_artifact_context
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
+from pr_agent.algo.utils import encode_user_text_arg
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.commands.pr_description import PRDescription
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 from pr_agent.doctor import PROVIDER_AUTH_CORRECTIONS, missing_provider_key_env_vars
 from pr_agent.git_providers import get_git_provider_with_context
@@ -36,9 +41,6 @@ from pr_agent.servers.github_common import (
     matches_review_state,
 )
 from pr_agent.servers.utils import is_ask_command_comment
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from pr_agent.tools.pr_description import PRDescription
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 
 @dataclass
@@ -94,7 +96,7 @@ def _refresh_shared_provider(pr_url):
 
 async def _handle_request(url, body, notify=None):
     # Install a fresh collector so `command_failed()` below cannot read a verdict left
-    # behind by a previous command; the tool replaces it with its own on entry.
+    # behind by a previous command; the command replaces it with its own on entry.
     init_run_details()
     try:
         _refresh_shared_provider(url)
@@ -108,7 +110,7 @@ async def _handle_request(url, body, notify=None):
         return RequestOutcome.SKIPPED
     if result is False:
         _mark_action_failed()
-    _fail_on_recorded_tool_error()
+    _fail_on_recorded_command_error()
 
 
 async def _handle_configured_command(url, command):
@@ -134,8 +136,8 @@ def _settings_pr_url(event_payload, event_name):
 
     PR events carry it top-level; comment events under "issue"; workflow_run only
     resolves it for pull-request-originated runs, like its own branch below. It is the
-    API url the tools and commands use, so one provider serves the settings, the policy
-    check and the tools.
+    API url the commands use, so one provider serves the settings, the policy
+    check and the commands.
     """
     pull_request = (
         event_payload.get("pull_request")
@@ -150,32 +152,33 @@ def _settings_pr_url(event_payload, event_name):
     return pr_url
 
 
-def _fail_on_recorded_tool_error():
-    # Fail the Action on a failure the tool recorded but swallowed (propagate_tool_errors=false),
+def _fail_on_recorded_command_error():
+    # Fail the Action on a failure the command recorded but swallowed (propagate_command_errors=false),
     # so a PR that got no review is not reported green (#3705). The operator opts out with
-    # GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS=false; comment arguments cannot change it.
-    if not is_true(get_setting_or_env("GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS", True)):
+    # GITHUB_ACTION_CONFIG.FAIL_ON_COMMAND_ERRORS=false; comment arguments cannot change it.
+    if not is_true(get_setting_or_env("GITHUB_ACTION_CONFIG.FAIL_ON_COMMAND_ERRORS", True)):
         return
     if command_failed():
-        get_logger().warning("Tool reported success but recorded a failure; failing the action")
+        get_logger().warning("Command reported success but recorded a failure; failing the action")
         _mark_action_failed()
 
 
-async def _run_auto_tool(tool_class, pr_url):
-    """Run a direct auto tool while preserving GitHub Action failure semantics."""
+async def _run_auto_command(command_class, pr_url):
+    """Run a direct auto command while preserving GitHub Action failure semantics."""
     # Install a fresh collector so `command_failed()` below cannot read a verdict left
-    # behind by a previous tool; the tool replaces it with its own on entry.
+    # behind by a previous command; the command replaces it with its own on entry.
     init_run_details()
     _refresh_shared_provider(pr_url)
+    _normalize_publish_output_setting()
     try:
         with response_language_instructions():
-            result = await tool_class(pr_url).run()
+            result = await command_class(pr_url).run()
     except IncompletePullRequestFilesError as error:
         await asyncio.to_thread(publish_incomplete_files_comment, pr_url, error)
         raise
     if result is False:
         _mark_action_failed()
-    _fail_on_recorded_tool_error()
+    _fail_on_recorded_command_error()
 
 async def _run_review_commands(event_payload):
     action = event_payload.get("action")
@@ -285,9 +288,11 @@ async def run_action():
         enable_output = _as_bool_setting(enable_output, default=True)
     get_settings().set("GITHUB_ACTION_CONFIG.ENABLE_OUTPUT", enable_output)
 
-    # Load the event payload
+    # Load the event payload. GitHub writes it as UTF-8; read it that way instead of
+    # with the runner's locale encoding, which would fail on a non-ASCII PR title or
+    # comment on a cp1252 runner.
     try:
-        with open(GITHUB_EVENT_PATH) as f:
+        with open(GITHUB_EVENT_PATH, encoding="utf-8") as f:
             event_payload = json.load(f)
     except json.decoder.JSONDecodeError as e:
         print(f"Failed to parse JSON: {e}")
@@ -339,7 +344,7 @@ async def run_action():
         settings_provider = None
 
     # Gate on the active provider's key after repo settings are applied (a repo-level
-    # .pr_agent.toml can select a different provider) but before model-backed tools run: carrying
+    # .pr_agent.toml can select a different provider) but before model-backed commands run: carrying
     # on with the placeholder only fails every call a full run later (#4195, #4324).
     # Keyless providers defer to the run, as in `pr-agent doctor`; so do events with no
     # PR, which have no repo settings to judge from. Bare static commands need no model key.
@@ -361,7 +366,7 @@ async def run_action():
         correction = PROVIDER_AUTH_CORRECTIONS.get(env_var_names)
         if correction is not None:
             raise SystemExit(
-                f"Stopping before any tool runs: {correction} "
+                f"Stopping before any command runs: {correction} "
                 "'pr-agent doctor' preflights the same check by hand."
             )
         key_hint = (
@@ -369,7 +374,7 @@ async def run_action():
             if env_var_names else "Replace the placeholder key in provider settings or workflow env."
         )
         raise SystemExit(
-            "Stopping before any tool runs: no usable API key for the active model's provider. "
+            "Stopping before any command runs: no usable API key for the active model's provider. "
             f"{key_hint} "
             "'pr-agent doctor' preflights the same check by hand."
         )
@@ -446,7 +451,7 @@ async def run_action():
             created_at = pull_request.get("created_at")
             if (action == "review_requested" and "opened" in pr_actions
                     and created_at and created_at == pull_request.get("updated_at")):
-                # The configured opened event already runs the initial automatic tool batch.
+                # The configured opened event already runs the initial automatic command batch.
                 get_logger().info("Skipping initial review_requested event")
                 return
             pr_url = pull_request.get("url")
@@ -474,13 +479,13 @@ async def run_action():
                     f"Running auto actions: "
                     f"auto_describe={auto_describe}, auto_review={auto_review}, auto_improve={auto_improve}")
 
-                # invoke by default all three tools
+                # invoke by default all three commands
                 if auto_describe is None or is_true(auto_describe):
-                    await _run_auto_tool(PRDescription, pr_url)
+                    await _run_auto_command(PRDescription, pr_url)
                 if auto_review is None or is_true(auto_review):
-                    await _run_auto_tool(PRReviewer, pr_url)
+                    await _run_auto_command(PRReviewer, pr_url)
                 if auto_improve is None or is_true(auto_improve):
-                    await _run_auto_tool(PRCodeSuggestions, pr_url)
+                    await _run_auto_command(PRCodeSuggestions, pr_url)
         else:
             get_logger().info(f"Skipping action: {action}")
 
@@ -495,7 +500,16 @@ async def run_action():
             try:
                 if GITHUB_EVENT_NAME == "pull_request_review_comment":
                     if is_ask_command_comment(comment_body):
-                        comment_body = handle_line_comments(event_payload, comment_body)
+                        comment = event_payload["comment"]
+                        if comment.get("subject_type") == "file" and comment_body.split(maxsplit=1)[0] == "/ask":
+                            question = comment_body.strip().removeprefix("/ask").strip()
+                            context["file_question_path"] = comment["path"]
+                            context["file_question_comment_id"] = comment.get("in_reply_to_id") or comment["id"]
+                            context["file_question_origin_comment_id"] = comment["id"]
+                            context["file_question_comment_url"] = comment["html_url"]
+                            comment_body = ["/ask", encode_user_text_arg(question)]
+                        else:
+                            comment_body = handle_line_comments(event_payload, comment_body)
             except Exception as e:
                 get_logger().error(f"Failed to handle line comments: {e}")
                 return
@@ -587,11 +601,11 @@ async def run_action():
         )
 
         if auto_describe is None or is_true(auto_describe):
-            await _run_auto_tool(PRDescription, pr_url)
+            await _run_auto_command(PRDescription, pr_url)
         if auto_review is None or is_true(auto_review):
-            await _run_auto_tool(PRReviewer, pr_url)
+            await _run_auto_command(PRReviewer, pr_url)
         if auto_improve is None or is_true(auto_improve):
-            await _run_auto_tool(PRCodeSuggestions, pr_url)
+            await _run_auto_command(PRCodeSuggestions, pr_url)
 
 
 def _inject_ci_conclusion(conclusion):
@@ -612,17 +626,17 @@ def _inject_ci_conclusion(conclusion):
         "and mention it rather than implying the change is clean."
     )
     separator = "\n======\n\n"
-    default_target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
-    target_tools = get_settings().get("ARTIFACTS.TARGET_TOOLS", default_target_tools)
-    if isinstance(target_tools, str):
-        target_tools = [t.strip() for t in target_tools.split(",") if t.strip()]
-    elif not isinstance(target_tools, (list, set, tuple)):
-        target_tools = default_target_tools
-    target_tools = {str(t).lower() for t in target_tools}
+    default_target_commands = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
+    target_commands = get_settings().get("ARTIFACTS.TARGET_COMMANDS", default_target_commands)
+    if isinstance(target_commands, str):
+        target_commands = [t.strip() for t in target_commands.split(",") if t.strip()]
+    elif not isinstance(target_commands, (list, set, tuple)):
+        target_commands = default_target_commands
+    target_commands = {str(t).lower() for t in target_commands}
     for key in get_settings():
         setting = get_settings().get(key)
         if isinstance(setting, dynaconf.DataDict):
-            if key.lower() in target_tools:
+            if key.lower() in target_commands:
                 if hasattr(setting, "extra_instructions"):
                     extra_instructions = str(setting.extra_instructions or "")
                     if text not in extra_instructions:
@@ -664,7 +678,7 @@ async def _run_action_and_drain():
 
     try:
         # One request scope per run, as in the webhook servers and CLI, lets the run's commands share the
-        # GitHub provider and its PR, commit and file-content caches instead of rebuilding them per tool.
+        # GitHub provider and its PR, commit and file-content caches instead of rebuilding them per command.
         with _action_settings_scope():
             try:
                 await run_action()

@@ -1329,7 +1329,7 @@ class AzureDevopsProvider(GitProvider):
     def publish_description(self, pr_title: str, pr_body: str) -> None:
         if len(pr_body) > MAX_PR_DESCRIPTION_AZURE_LENGTH:
 
-            usage_guide_text='<details> <summary><strong>✨ Describe tool usage guide:</strong></summary><hr>'
+            usage_guide_text='<details> <summary><strong>✨ Describe command usage guide:</strong></summary><hr>'
             ind = pr_body.find(usage_guide_text)
             if ind != -1:
                 pr_body = pr_body[:ind]
@@ -2047,20 +2047,15 @@ class AzureDevopsProvider(GitProvider):
         ):
             raise ValueError("Azure work item response is incomplete")
 
-        work_items = []
-        for item in raw_work_items:
-            work_items.append(
-                {
-                    "id": item.id,
-                    "title": item.fields.get("System.Title", ""),
-                    "url": item.url,
-                    "body": item.fields.get("System.Description", ""),
-                    "acceptance_criteria": item.fields.get(
-                        "Microsoft.VSTS.Common.AcceptanceCriteria", ""
-                    ),
-                    "tags": item.fields.get("System.Tags", "").split("; ")
-                    if item.fields.get("System.Tags")
-                    else [],
-                }
-            )
+        work_items = [
+            {
+                "id": item.id,
+                "title": item.fields.get("System.Title", ""),
+                "url": item.url,
+                "body": item.fields.get("System.Description", ""),
+                "acceptance_criteria": item.fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", ""),
+                "tags": item.fields.get("System.Tags", "").split("; ") if item.fields.get("System.Tags") else [],
+            }
+            for item in raw_work_items
+        ]
         return work_items

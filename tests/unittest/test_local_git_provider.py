@@ -1,12 +1,13 @@
 import git
 import pytest
 
+from pr_agent.algo.git_patch_processing import count_patch_lines
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.commands.pr_add_docs import PRAddDocs
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
-from pr_agent.tools.pr_add_docs import PRAddDocs
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
@@ -172,6 +173,7 @@ def test_local_diff_applies_ignore_rules_to_files_and_patches(tmp_path):
         assert provider.get_diff_files() is first
         assert first[1].head_file == "changed\n"
         assert first[1].patch
+        assert (first[1].num_plus_lines, first[1].num_minus_lines) == count_patch_lines(first[1].patch)
 
         get_settings().set("IGNORE.GLOB", ["*.lock"])
         assert provider.get_diff_files() is first
@@ -219,7 +221,7 @@ def test_get_diff_files_deleted_file_falls_back_to_old_path(tmp_path):
 
 
 @pytest.mark.parametrize("change_type", ["added", "modified", "deleted"])
-def test_get_diff_files_skips_non_utf8_file_and_keeps_utf8_sibling(tmp_path, monkeypatch, change_type):
+def test_get_diff_files_marks_non_utf8_file_unreadable_and_keeps_utf8_sibling(tmp_path, monkeypatch, change_type):
     repo = git.Repo.init(tmp_path)
     good_file = tmp_path / "good.py"
     non_utf8_file = tmp_path / "non_utf8.py"
@@ -255,12 +257,26 @@ def test_get_diff_files_skips_non_utf8_file_and_keeps_utf8_sibling(tmp_path, mon
 
     diff_files = provider.pr.diff_files
 
-    assert [file.filename for file in diff_files] == ["good.py"]
-    assert diff_files[0].base_file == "before\n"
-    assert diff_files[0].head_file == "after\n"
-    assert "-before" in diff_files[0].patch
-    assert "+after" in diff_files[0].patch
-    assert diff_files[0].edit_type == EDIT_TYPE.MODIFIED
+    # The undecodable file stays in the inventory as unreadable (as CodeCommit reports it), so
+    # the shared diff renderer shows a manual-review notice instead of the review silently
+    # looking complete without that file. The UTF-8 sibling still gets a normal diff.
+    assert sorted(file.filename for file in diff_files) == ["good.py", "non_utf8.py"]
+    good = next(file for file in diff_files if file.filename == "good.py")
+    unreadable = next(file for file in diff_files if file.filename == "non_utf8.py")
+    assert unreadable.content_fetch_failed is True
+    assert unreadable.patch == ""
+    assert unreadable.base_file == unreadable.head_file == ""
+    # A deletion has no destination path, so the old path is reported as it is for readable files.
+    assert unreadable.old_filename == ("non_utf8.py" if change_type == "deleted" else None)
+    assert unreadable.edit_type == {
+        "added": EDIT_TYPE.ADDED, "modified": EDIT_TYPE.MODIFIED, "deleted": EDIT_TYPE.DELETED,
+    }[change_type]
+    assert good.content_fetch_failed is False
+    assert good.base_file == "before\n"
+    assert good.head_file == "after\n"
+    assert "-before" in good.patch
+    assert "+after" in good.patch
+    assert good.edit_type == EDIT_TYPE.MODIFIED
     assert provider.diff_files is diff_files
 
 
@@ -326,9 +342,9 @@ async def test_mixed_suggestions_stay_in_improve_artifact(tmp_path):
         patch="",
         filename="app.py",
     )]
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = provider
-    tool.progress_response = None
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = provider
+    command.progress_response = None
 
     suggestion = {
         "label": "maintainability",
@@ -338,7 +354,7 @@ async def test_mixed_suggestions_stay_in_improve_artifact(tmp_path):
         "improved_code": "new()",
         "score": 8,
     }
-    await tool.push_inline_code_suggestions({"code_suggestions": [
+    await command.push_inline_code_suggestions({"code_suggestions": [
         {**suggestion, "relevant_lines_start": 1, "relevant_lines_end": 1},
         {**suggestion, "suggestion_content": "Keep this advice.",
          "relevant_lines_start": 40, "relevant_lines_end": 40},
@@ -381,9 +397,9 @@ async def test_publish_no_suggestions_routes_local_git_output_to_improve_file(tm
     provider = object.__new__(LocalGitProvider)
     provider.improve_path = improve_path
     provider.review_path = review_path
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = provider
-    tool.progress_response = None
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = provider
+    command.progress_response = None
     try:
         get_settings().set("config.output_run_details", True)
         get_settings().set("config.publish_output", True)
@@ -394,7 +410,7 @@ async def test_publish_no_suggestions_routes_local_git_output_to_improve_file(tm
             lambda gfm_supported: "\n\nRun details" if not gfm_supported else "",
         )
 
-        await tool.publish_no_suggestions()
+        await command.publish_no_suggestions()
     finally:
         restore_settings(snapshot)
 
@@ -434,15 +450,15 @@ def test_publish_description_writes_utf8_regardless_of_locale(tmp_path, monkeypa
     provider = object.__new__(LocalGitProvider)
     provider.description_path = description_path
 
-    provider.publish_description("my-branch", "✨ Describe tool usage guide")
-    assert description_path.read_text(encoding="utf-8") == "my-branch\n✨ Describe tool usage guide"
+    provider.publish_description("my-branch", "✨ Describe command usage guide")
+    assert description_path.read_text(encoding="utf-8") == "my-branch\n✨ Describe command usage guide"
 
 
 @pytest.mark.parametrize(
-    "tool, output_attr",
+    "command, output_attr",
     [("improve", "improve_path"), ("describe", "description_path"), ("add_docs", "improve_path")],
 )
-def test_publish_tool_failure_keeps_review_file(tmp_path, tool, output_attr):
+def test_publish_command_failure_keeps_review_file(tmp_path, command, output_attr):
     # A failed /improve, /describe or /add_docs must not overwrite the persisted /review result.
     review_path = tmp_path / "review.md"
     review_path.write_text("previous review")
@@ -451,7 +467,7 @@ def test_publish_tool_failure_keeps_review_file(tmp_path, tool, output_attr):
     provider.improve_path = tmp_path / "improve.md"
     provider.description_path = tmp_path / "description.md"
 
-    provider.publish_tool_failure(tool, "Failed")
+    provider.publish_command_failure(command, "Failed")
 
     assert review_path.read_text() == "previous review"
     assert getattr(provider, output_attr).read_text() == "Failed"
@@ -464,10 +480,10 @@ def test_add_docs_empty_result_keeps_review_file(tmp_path):
     provider.review_path = review_path
     provider.improve_path = tmp_path / "improve.md"
     provider.description_path = tmp_path / "description.md"
-    tool = PRAddDocs.__new__(PRAddDocs)
-    tool.git_provider = provider
+    command = PRAddDocs.__new__(PRAddDocs)
+    command.git_provider = provider
 
-    result = tool.push_inline_docs({"Code Documentation": []})
+    result = command.push_inline_docs({"Code Documentation": []})
 
     assert result is None
     assert review_path.read_text() == "previous review"
@@ -528,7 +544,7 @@ def test_add_jira_tickets_scans_local_branch_name(tmp_path, monkeypatch):
     # string. A non-str branch made the join raise, which was logged as
     # "Error extracting Jira tickets: ... expected str instance, HEAD found" on
     # every local run, even with Jira unconfigured.
-    from pr_agent.tools import ticket_pr_compliance_check as tickets
+    from pr_agent.commands import ticket_pr_compliance_check as tickets
 
     _, _, provider = _make_feature_branch_provider(tmp_path, monkeypatch, "feature/PROJ-123-fix")
     scanned = []

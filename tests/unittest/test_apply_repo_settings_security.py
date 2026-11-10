@@ -273,6 +273,23 @@ def test_repo_settings_cannot_set_structural_reach_input_file(monkeypatch, setti
     assert pr_reviewer.get("num_max_findings") == 11
 
 
+def test_repo_settings_cannot_enable_artifact_findings(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=b"[pr_reviewer]\nrequire_artifact_findings = true\nnum_max_findings = 11\n"
+    )
+    _install_provider(monkeypatch, provider)
+
+    get_settings().set("config.use_repo_settings_file", True)
+    settings = get_settings()
+    before = _section(settings, "pr_reviewer").get("require_artifact_findings")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    pr_reviewer = _section(settings, "pr_reviewer")
+    assert pr_reviewer.get("require_artifact_findings") == before
+    assert pr_reviewer.get("num_max_findings") == 11
+
+
 def test_repo_settings_cannot_override_prompt_fragments(monkeypatch, settings_snapshot):
     provider = FakeGitProvider(repo_settings_bytes=b'[prompt_fragments]\ndiff_hunk_format = "UNTRUSTED-FRAGMENT"\n')
     captured = _install_provider(monkeypatch, provider)

@@ -3,7 +3,7 @@ title: "Agent Skills"
 sidebar_position: 2
 ---
 
-`Supported Tools: Review, Improve, Describe, Ask`
+`Supported Commands: Review, Improve, Describe, Ask`
 
 ## Overview
 

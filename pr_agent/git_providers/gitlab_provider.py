@@ -116,35 +116,141 @@ query($project: ID!, $ref: String!, $paths: [String!]!) {
 """
 
 
+_GITLAB_MENTION_RE = re.compile(r"(?<![\w/])@(?=[\w-])", re.UNICODE)
+_GITLAB_TICK_RUN_RE = re.compile(r"`+")
+_GITLAB_FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})")
+_GITLAB_ATX_RE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
+_GITLAB_QUOTE_RE = re.compile(r" {0,3}>")
+_GITLAB_LIST_RE = re.compile(r"( *)([-+*]|\d{1,9}[.)])( +|$)")
+_GITLAB_TABLE_CELL_RE = re.compile(r":?-+:?")
+
+
+def _is_gitlab_table_delimiter(line: str) -> bool:
+    """Return True when the line is a GFM table delimiter row."""
+    if "|" not in line:
+        return False
+    cells = line.strip()
+    cells = cells.removeprefix("|")
+    cells = cells.removesuffix("|")
+    parts = cells.split("|")
+    if len(parts) < 2:
+        return False
+    return all(_GITLAB_TABLE_CELL_RE.fullmatch(part.strip()) for part in parts)
+
+
+def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
+    """Classify each line as code and collect offsets where a new block starts."""
+    code_by_start: dict[int, bool] = {}
+    boundaries: list[int] = []
+    fence_char = None
+    fence_size = 0
+    indented_code = False
+    list_indents: list[int] = []
+    in_table = False
+    prev_blank = True
+    prev_start = None
+    offset = 0
+
+    for raw_line in text.split("\n"):
+        line = raw_line.removesuffix("\r")
+        stripped = line.strip()
+        is_code = False
+        boundary = False
+
+        if fence_char is not None:
+            is_code = True
+            fence = _GITLAB_FENCE_RE.match(line)
+            if fence and fence.group(1)[0] == fence_char and len(fence.group(1)) >= fence_size:
+                fence_char = None
+                fence_size = 0
+        else:
+            fence = _GITLAB_FENCE_RE.match(line)
+            if fence:
+                marker = fence.group(1)
+                fence_char, fence_size = marker[0], len(marker)
+                is_code = True
+                boundary = True
+
+        if not is_code and fence_char is None:
+            indent = 0
+            for char in line:
+                if char == " ":
+                    indent += 1
+                elif char == "\t":
+                    indent += 4 - (indent % 4)
+                else:
+                    break
+
+            if stripped:
+                while list_indents and indent < list_indents[-1]:
+                    list_indents.pop()
+            base_indent = list_indents[-1] if list_indents else 0
+            relative_indent = indent - base_indent
+
+            if indented_code:
+                if not stripped:
+                    is_code = True
+                elif relative_indent >= 4:
+                    is_code = True
+                else:
+                    indented_code = False
+
+            if (not is_code and not indented_code and stripped and prev_blank
+                    and relative_indent >= 4):
+                indented_code = True
+                is_code = True
+                boundary = True
+
+            if not is_code:
+                list_match = _GITLAB_LIST_RE.match(line)
+                is_list_item = bool(list_match) and relative_indent <= 3
+                if not stripped:
+                    boundary = True
+                    in_table = False
+                elif _is_gitlab_table_delimiter(line):
+                    boundary = True
+                    in_table = True
+                    if prev_start is not None and (not boundaries or boundaries[-1] != prev_start):
+                        boundaries.append(prev_start)
+                elif in_table and "|" in line and not (
+                        _GITLAB_ATX_RE.match(line) or _GITLAB_QUOTE_RE.match(line) or is_list_item):
+                    boundary = True
+                else:
+                    in_table = False
+                    if _GITLAB_ATX_RE.match(line) or _GITLAB_QUOTE_RE.match(line) or is_list_item:
+                        boundary = True
+
+                if is_list_item:
+                    leading = len(list_match.group(1))
+                    marker = list_match.group(2)
+                    spaces = len(list_match.group(3))
+                    content_indent = leading + len(marker) + (spaces if 1 <= spaces <= 4 else 1)
+                    list_indents.append(content_indent)
+
+        code_by_start[offset] = is_code
+        if boundary:
+            boundaries.append(offset)
+        prev_blank = not stripped
+        prev_start = offset
+        offset += len(raw_line) + 1
+
+    return code_by_start, boundaries
+
+
 def _neutralize_gitlab_mentions(text: str) -> str:
     """Disable GitLab notifications while leaving Markdown code spans untouched."""
     if not text:
         return text
 
-    mention = re.compile(r"(?<![\w/])@(?=[\w-])", re.UNICODE)
     tick_runs: dict[int, list[int]] = {}
-    for run in re.finditer(r"`+", text):
+    for run in _GITLAB_TICK_RUN_RE.finditer(text):
         tick_runs.setdefault(len(run.group()), []).append(run.start())
 
-    boundaries: list[int] = []
-    boundary_line = 0
-    while boundary_line <= len(text):
-        line_end = text.find("\n", boundary_line)
-        if line_end < 0:
-            line_end = len(text)
-        line = text[boundary_line:line_end]
-        if not line.strip() or re.match(r" {0,3}(`{3,}|~{3,})", line):
-            boundaries.append(boundary_line)
-        if line_end == len(text):
-            break
-        boundary_line = line_end + 1
+    code_by_start, boundaries = _gitlab_line_flags(text)
 
     output = []
     index = 0
-    fence_char = None
-    fence_size = 0
     inline_ticks = 0
-    indented_code = False
     line_start = True
 
     while index < len(text):
@@ -154,38 +260,13 @@ def _neutralize_gitlab_mentions(text: str) -> str:
             line_start = True
             continue
 
-        if line_start and not inline_ticks:
+        if line_start and not inline_ticks and code_by_start.get(index):
             line_end = text.find("\n", index)
             if line_end < 0:
                 line_end = len(text)
-            line = text[index:line_end]
-            fence = re.match(r" {0,3}(`{3,}|~{3,})", line)
-            if fence:
-                marker = fence.group(1)
-                if fence_char is None:
-                    fence_char, fence_size = marker[0], len(marker)
-                elif marker[0] == fence_char and len(marker) >= fence_size:
-                    fence_char = None
-                    fence_size = 0
-                output.append(line)
-                index = line_end
-                line_start = False
-                continue
-            if line.startswith(("    ", "\t")) and (indented_code or (
-                    (index == 0 or text[index - 2:index] == "\n\n")
-                    and not re.match(r"\s*(?:[-*+]|\d+[.)])\s", line))):
-                indented_code = True
-                output.append(line)
-                index = line_end
-                line_start = False
-                continue
-            indented_code = False
-
-        if fence_char:
-            char = text[index]
-            output.append(char)
-            index += 1
-            line_start = char == "\n"
+            output.append(text[index:line_end])
+            index = line_end
+            line_start = False
             continue
 
         if text[index] == "`":
@@ -220,7 +301,7 @@ def _neutralize_gitlab_mentions(text: str) -> str:
             next_special += 1
         chunk = text[index:next_special]
         prefix = text[index - 1:index] if index else ""
-        output.append(mention.sub("@\u200b", prefix + chunk)[len(prefix):])
+        output.append(_GITLAB_MENTION_RE.sub("@\u200b", prefix + chunk)[len(prefix):])
         index = next_special
         if index < len(text) and text[index] == "\n":
             output.append("\n")
@@ -422,7 +503,7 @@ class _GitLabIncrementalNote:
 _GITLAB_ACCESS_LEVEL_REPORTER = 20
 
 class GitLabProvider(GitProvider):
-    reuse_for_manual_tool = True
+    reuse_for_manual_command = True
 
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         return policy_metadata(title=self.mr.title, sender=policy_value(self.mr, "author", "username"),

@@ -259,7 +259,7 @@ async def test_polling_loop_reaps_workers_on_idle_and_failed_polls(workers, monk
             pass
 
         async def json(self):
-            return [{"id": 1}] if polls == 1 else []
+            return [{"id": "1"}] if polls == 1 else []
 
     class Session:
         async def __aenter__(self):
@@ -315,7 +315,7 @@ async def test_polling_loop_keeps_drifted_notification_unread_for_unconditional_
             (False, set()),
         ]),
     )
-    notification = {"id": 1}
+    notification = {"id": "1"}
     requests = []
     finished = asyncio.Event()
 
@@ -380,7 +380,7 @@ async def test_polling_loop_keeps_notification_unread_when_drift_retry_times_out
 
     monkeypatch.setattr(github_polling, "_fetch_comment_history_scan", scan)
     notification = {
-        "id": 1,
+        "id": "1",
         "reason": "mention",
         "repository": {"full_name": "owner/repo"},
         "subject": {
@@ -468,11 +468,12 @@ async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monke
         lambda: lambda: SimpleNamespace(get_user_id=lambda: "bot"),
     )
     monkeypatch.setattr(github_polling, "get_logger", MagicMock())
-    preexisting_notification = {"id": 42}
+    # Thread IDs are strings even when their digits match numeric comment IDs.
+    preexisting_notification = {"id": "100"}
     pr_url = "https://api.github.com/repos/owner/repo/pulls/1"
     latest_url = "https://api.github.com/repos/owner/repo/issues/comments/100"
     notification = {
-        "id": 1, "reason": "mention",
+        "id": "99", "reason": "mention",
         "repository": {"full_name": "owner/repo"},
         "subject": {"type": "PullRequest", "url": pr_url, "latest_comment_url": latest_url},
     }
@@ -573,7 +574,7 @@ async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monke
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-    assert handled_at_validation == [(len(large_preexisting_ids) + 1, True)] * 2
+    assert handled_at_validation == [(len(large_preexisting_ids), True)] * 2
     assert added_at_validation == [expected_comment_ids] * 2
     assert mark_attempts == 3
     assert len(requests) == 2
@@ -581,7 +582,8 @@ async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monke
     expected_dispatch = [(github_polling.process_comment_sync, (pr_url, expected_request, 99))] if valid_command else []
     assert dispatched == expected_dispatch
     assert large_preexisting_ids <= handled_references[-1]
-    assert {preexisting_notification["id"], notification["id"]} | expected_comment_ids <= handled_references[-1]
+    assert expected_comment_ids <= handled_references[-1]
+    assert {preexisting_notification["id"], notification["id"]}.isdisjoint(handled_references[-1])
 
 
 @pytest.mark.asyncio
@@ -643,7 +645,7 @@ async def test_polling_loop_shares_capacity_between_batches(workers, monkeypatch
             return self
 
         async def json(self):
-            return [{"id": i} for i in range(10 if polls == 1 else 2)]
+            return [{"id": str(i)} for i in range(10 if polls == 1 else 2)]
 
     async def sleep(delay):
         if delay == 0.25:
@@ -790,7 +792,7 @@ async def test_polling_loop_logs_accepted_work_cancelled_before_dispatch(workers
             return self
 
         async def json(self):
-            return [{"id": 1}, {"id": 2}]
+            return [{"id": "1"}, {"id": "2"}]
 
     async def sleep(delay):
         await asyncio.sleep(0)
@@ -842,7 +844,7 @@ async def test_polling_loop_stops_after_worker_start_failure(workers, monkeypatc
             return self
 
         async def json(self):
-            return [{"id": 1}]
+            return [{"id": "1"}]
 
     async def sleep(delay):
         await asyncio.sleep(0)

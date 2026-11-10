@@ -133,12 +133,12 @@ FORBIDDEN_ARGS = [
     "--azure_devops_server.agent_identity=attacker",
     "--azure_devops_server__agent_identity=attacker",
     '--azure_devops_server={"agent_identity": "attacker"}',
-    # fail_on_tool_errors decides whether a recorded tool failure fails the GitHub Action, so a
+    # fail_on_command_errors decides whether a recorded command failure fails the GitHub Action, so a
     # commenter must not be able to turn it off for their own command.
-    "--github_action_config.fail_on_tool_errors=false",
-    "--GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS=false",
-    "--github_action_config__fail_on_tool_errors=false",
-    '--github_action_config={"fail_on_tool_errors": false}',
+    "--github_action_config.fail_on_command_errors=false",
+    "--GITHUB_ACTION_CONFIG.FAIL_ON_COMMAND_ERRORS=false",
+    "--github_action_config__fail_on_command_errors=false",
+    '--github_action_config={"fail_on_command_errors": false}',
     # Resource, write, and regex controls stay host-controlled when commands are
     # supplied through comments, even when root repository settings may set them.
     "--pr_reviewer.max_number_of_calls=10",
@@ -196,6 +196,7 @@ ALLOWED_ARGS_SINGLE = [
 
 
 HOST_ONLY_ARGS = [
+    "--pr_questions.use_ticket_context=true",
     "--config.enable_custom_labels=true",
     "--config__enable_custom_labels=true",
     '--config={enable_custom_labels: true}',
@@ -274,17 +275,17 @@ def test_validate_user_args_all_allowed_together():
 )
 async def test_handle_request_uses_real_validator_to_block_forbidden(monkeypatch, forbidden):
     """Integration test: forbidden CLI arg should be rejected by the real
-    CliArgs.validate_user_args, before any settings update, tool
-    instantiation, tool run, or notify call happens."""
+    CliArgs.validate_user_args, before any settings update, command
+    instantiation, command run, or notify call happens."""
 
     notify = Mock()
     update_settings = Mock()
-    tool_factory = Mock()
+    command_factory = Mock()
 
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module, "update_settings_from_args", update_settings)
-    monkeypatch.setitem(pr_agent_module.command2class, "custom", tool_factory)
+    monkeypatch.setitem(pr_agent_module.command2class, "custom", command_factory)
 
     handled = await pr_agent_module.PRAgent(ai_handler="fake-ai")._handle_request(
         "https://example/pr/1",
@@ -294,7 +295,7 @@ async def test_handle_request_uses_real_validator_to_block_forbidden(monkeypatch
 
     assert handled is False
     update_settings.assert_not_called()
-    tool_factory.assert_not_called()
+    command_factory.assert_not_called()
     notify.assert_not_called()
 
 
@@ -316,12 +317,12 @@ async def test_handle_request_rejects_forbidden_mapping_args_in_comment_and_cli(
     """A --section={key: value} arg is rejected for both comment and CLI request forms."""
     notify = Mock()
     update_settings = Mock()
-    tool_factory = Mock()
+    command_factory = Mock()
 
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module, "update_settings_from_args", update_settings)
-    monkeypatch.setitem(pr_agent_module.command2class, "custom", tool_factory)
+    monkeypatch.setitem(pr_agent_module.command2class, "custom", command_factory)
 
     handled = await pr_agent_module.PRAgent(ai_handler="fake-ai")._handle_request(
         "https://example/pr/1", command_request, notify
@@ -329,7 +330,7 @@ async def test_handle_request_rejects_forbidden_mapping_args_in_comment_and_cli(
 
     assert handled is False
     update_settings.assert_not_called()
-    tool_factory.assert_not_called()
+    command_factory.assert_not_called()
     notify.assert_not_called()
 
 
@@ -352,13 +353,13 @@ async def test_handle_request_rejects_mapping_args_as_the_settings_loader_parses
     rejected argument leaves the settings untouched."""
     notify = Mock()
     update_settings = Mock(wraps=pr_agent_module.update_settings_from_args)
-    tool_factory = Mock()
+    command_factory = Mock()
     qdrant_url_before = pr_agent_module.get_settings().get("qdrant.url")
 
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module, "update_settings_from_args", update_settings)
-    monkeypatch.setitem(pr_agent_module.command2class, "custom", tool_factory)
+    monkeypatch.setitem(pr_agent_module.command2class, "custom", command_factory)
 
     handled = await pr_agent_module.PRAgent(ai_handler="fake-ai")._handle_request(
         "https://example/pr/1", command_request, notify
@@ -367,7 +368,7 @@ async def test_handle_request_rejects_mapping_args_as_the_settings_loader_parses
     assert handled is False
     update_settings.assert_not_called()
     assert pr_agent_module.get_settings().get("qdrant.url") == qdrant_url_before
-    tool_factory.assert_not_called()
+    command_factory.assert_not_called()
     notify.assert_not_called()
 
 
@@ -383,15 +384,15 @@ async def test_handle_request_allows_protected_key_names_in_setting_values(monke
     """Validate setting keys while retaining original values for direct string and list requests."""
     expected_args = ["--pr_reviewer.extra_instructions=Flag any hardcoded openai.key in the diff"]
     update_settings = Mock(side_effect=lambda args: args)
-    tool = Mock()
-    tool.run = AsyncMock()
-    tool_factory = Mock(return_value=tool)
+    command = Mock()
+    command.run = AsyncMock()
+    command_factory = Mock(return_value=command)
     notify = Mock()
 
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
     monkeypatch.setattr(pr_agent_module, "update_settings_from_args", update_settings)
-    monkeypatch.setitem(pr_agent_module.command2class, "custom", tool_factory)
+    monkeypatch.setitem(pr_agent_module.command2class, "custom", command_factory)
 
     handled = await pr_agent_module.PRAgent(ai_handler="fake-ai")._handle_request(
         "https://example/pr/1", command_request, notify
@@ -399,8 +400,8 @@ async def test_handle_request_allows_protected_key_names_in_setting_values(monke
 
     assert handled is True
     update_settings.assert_called_once_with(expected_args)
-    tool_factory.assert_called_once_with("https://example/pr/1", ai_handler="fake-ai", args=expected_args)
-    tool.run.assert_awaited_once_with()
+    command_factory.assert_called_once_with("https://example/pr/1", ai_handler="fake-ai", args=expected_args)
+    command.run.assert_awaited_once_with()
     notify.assert_called_once_with()
 
 

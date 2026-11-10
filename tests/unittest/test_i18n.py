@@ -13,11 +13,11 @@ from pr_agent.algo.review_finding_state import append_review_state, parse_review
 from pr_agent.algo.run_details import init_run_details, record_ai_call, record_model_used
 from pr_agent.algo.run_output import show_run_details
 from pr_agent.algo.utils import convert_to_markdown_v2
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
 from pr_agent.git_providers.git_provider import GitProvider
-from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 

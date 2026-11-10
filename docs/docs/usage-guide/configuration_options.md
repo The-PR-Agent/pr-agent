@@ -3,7 +3,7 @@ title: "Configuration File"
 sidebar_position: 3
 ---
 
-The different tools and sub-tools used by PR-Agent are adjustable via a Git configuration file.
+The different commands and sub-commands used by PR-Agent are adjustable via a Git configuration file.
 There are three main ways to set persistent configurations:
 
 1. [Local](./configuration_options.md#local-configuration-file) configuration file
@@ -14,14 +14,14 @@ In terms of precedence, local configurations will override global configurations
 
 
 For a list of all possible configurations, see the [configuration options](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) page, or the rendered [Configuration Reference](./configuration_reference.md) which lists every option grouped by section.
-In addition to general configuration options, each tool has its own configurations. For example, the `review` tool will use parameters from the [pr_reviewer](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) section in the configuration file.
+In addition to general configuration options, each command has its own configurations. For example, the `review` command will use parameters from the [pr_reviewer](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) section in the configuration file.
 
 :::tip[Tip1: Edit only what you need]
 Your configuration file should be minimal, and edit only the relevant values. Don't copy the entire configuration options, since it can lead to legacy problems when something changes.
 :::
 
 :::tip[Tip2: Show relevant configurations]
-If you set `config.output_relevant_configurations` to True, each tool will also output in a collapsible section its relevant configurations. This can be useful for debugging, or getting to know the configurations better.
+If you set `config.output_relevant_configurations` to True, each command will also output in a collapsible section its relevant configurations. This can be useful for debugging, or getting to know the configurations better.
 :::
 
 
@@ -30,7 +30,7 @@ If you set `config.output_relevant_configurations` to True, each tool will also 
 
 `Platforms supported: GitHub, GitLab, Bitbucket, Azure DevOps`
 
-By uploading a local `.pr_agent.toml` file to the root of the repo's default branch, you can customize parameters that support repository-level overrides. Note that you need to upload or update `.pr_agent.toml` before using the PR Agent tools (either at PR creation or via manual trigger) for the configuration to take effect.
+By uploading a local `.pr_agent.toml` file to the root of the repo's default branch, you can customize parameters that support repository-level overrides. Note that you need to upload or update `.pr_agent.toml` before using the PR Agent commands (either at PR creation or via manual trigger) for the configuration to take effect.
 
 Provider endpoint settings are host-controlled: `openai.api_base`, `openai.api_type`, `openai.api_version`, `azure_ad.api_base`, `databricks.api_base`, `huggingface.api_base`, `moonshot.api_base`, `ollama.api_base`, and `openrouter.api_base` are ignored when set in repository-local `.pr_agent.toml` and must be configured on the host. The same restriction applies to provider authentication and TLS settings: `github.deployment_type`, `bitbucket.auth_type`, `gitlab.auth_type`, `gitlab.ssl_verify`, `gitea.skip_ssl_verification`, and `gitea.ssl_ca_cert`. Jira ticket lookups run with the host's Atlassian credentials, so `jira.cloud_id`, `jira.jira_site`, `jira.jira_api_email`, and `jira.project_keys` are host-controlled as well. These settings are also rejected in command arguments.
 
@@ -45,7 +45,7 @@ extra_instructions="""\
 """
 ```
 
-Then you can give a list of extra instructions to the `review` tool.
+Then you can give a list of extra instructions to the `review` command.
 
 ### Loading the local configuration from a non-default branch
 

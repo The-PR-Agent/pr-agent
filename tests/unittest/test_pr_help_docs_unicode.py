@@ -2,7 +2,7 @@ from io import StringIO
 
 import pytest
 
-from pr_agent.tools.pr_help_docs import map_documentation_files_to_contents, return_document_headings
+from pr_agent.commands.pr_help_docs import map_documentation_files_to_contents, return_document_headings
 
 
 @pytest.mark.parametrize(
@@ -21,6 +21,32 @@ def test_documentation_text_detection(tmp_path, extension, content, expected_hea
     assert return_document_headings(content, extension) == expected_heading
     expected_contents = {f"/{document.name}": content.strip()} if expected_heading else {}
     assert map_documentation_files_to_contents(str(tmp_path), [str(document)]) == expected_contents
+
+
+@pytest.mark.parametrize(
+    ("extension", "sections", "headings"),
+    [
+        pytest.param(
+            ".md", ["# Overview", "## Setup", "### Linux", "### Mac", "## Usage", "### CLI", "### API", "# Reference"],
+            ["# Overview", "## Setup", "### Linux", "### Mac", "## Usage", "### CLI", "### API", "# Reference"],
+            id="markdown",
+        ),
+        pytest.param(
+            ".mdx", ["# Overview", "## Setup", "### Linux", "### Mac", "## Usage", "### CLI", "### API", "# Reference"],
+            ["# Overview", "## Setup", "### Linux", "### Mac", "## Usage", "### CLI", "### API", "# Reference"],
+            id="mdx",
+        ),
+        pytest.param(
+            ".rst", ["Overview\n========", "Setup\n=====", "Linux\n-----", "Mac\n---", "Usage\n=====",
+                     "CLI\n---", "API\n---", "Reference\n========="],
+            ["Overview", "Setup", "Linux", "Mac", "Usage", "CLI", "API", "Reference"], id="rst",
+        ),
+    ],
+)
+def test_documentation_headings_preserve_order_and_deduplicate(extension, sections, headings):
+    for section_order, expected_order in ((sections, headings), (sections[::-1], headings[::-1])):
+        content = "\n".join([*section_order, section_order[0]])
+        assert return_document_headings(content, extension) == "\n".join(expected_order)
 
 
 @pytest.mark.parametrize(
@@ -43,7 +69,7 @@ def test_documentation_read_modes(monkeypatch, content, limit, expected):
             return super().read(min(size, 3))
 
     monkeypatch.setattr(
-        "pr_agent.tools.pr_help_docs.open", lambda *args, **kwargs: BoundedReader(content), raising=False
+        "pr_agent.commands.pr_help_docs.open", lambda *args, **kwargs: BoundedReader(content), raising=False
     )
 
     result = map_documentation_files_to_contents("/docs", ["/docs/guide.md"], limit)
