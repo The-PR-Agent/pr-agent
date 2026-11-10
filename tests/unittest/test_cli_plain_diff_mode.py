@@ -467,6 +467,24 @@ def test_plain_diff_improve_writes_the_review_json_from_model_response(monkeypat
     assert "code_suggestions" not in result
 
 
+@pytest.mark.parametrize("command", ["review", "improve"])
+def test_plain_diff_review_with_all_files_ignored_calls_no_model(command, monkeypatch, tmp_path, cfg):
+    async def unexpected_model_call(self, model, system, user, temperature=0.2, **kwargs):
+        pytest.fail("A fully ignored diff must not call the model")
+
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion",
+        unexpected_model_call,
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+    cfg("ignore.glob", ["foo.py"])
+    output = tmp_path / "review.json"
+
+    run(inargs=["--stdin", "--json-output", str(output), command])
+
+    assert not output.exists()
+
+
 def test_plain_diff_describe_still_publishes_markdown_when_json_unwritable(
     monkeypatch, tmp_path, capsys,
 ):
