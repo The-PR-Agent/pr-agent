@@ -581,3 +581,37 @@ pattern has a 50 ms limit, and each custom pattern has 1 s in total per review. 
 PR-Agent logs a warning and skips that pattern for the rest of the review.
 
 :::
+
+### Gated auto-approval
+
+:::warning
+
+Off by default. An approval counts toward a protected branch's required reviews, so enable it only where an
+automated approval of small, clean changes is acceptable. PR-Agent never merges.
+
+:::
+
+When the host sets `config.enable_auto_approval` (for example `CONFIG__ENABLE_AUTO_APPROVAL=true`), `/review` on
+GitHub approves the exact commit it reviewed when all of these hold:
+
+- the computed merge recommendation is `no_concerns_found`;
+- the model returned both a merge recommendation and a risk level, so `require_merge_recommendation` and
+  `require_risk_assessment` must be on;
+- the review covered the whole pull request: not an incremental review, and no part of the diff failed;
+- the review's finding state could be updated, and `publish_output` is on.
+
+Any other `/review` run withdraws the approval PR-Agent gave, because the evidence behind it no longer holds. On a
+push, the GitHub App and the GitHub Action dismiss it before any other event filter runs. PR-Agent only dismisses
+approvals it gave automatically; manual approvals from the same account are left alone.
+
+`enable_auto_approval` is host-only: a repository `.pr_agent.toml` or a comment argument cannot turn it on.
+
+**Required repository settings.**
+
+- Turn on "Dismiss stale pull request approvals when new commits are pushed" in the branch protection rule or
+  ruleset. PR-Agent can miss a push (a failed webhook delivery, a polling deployment, or a workflow that does not
+  listen to `synchronize`), and GitHub only removes a stale approval itself when this is on.
+- For the GitHub Action, allow "GitHub Actions to create and approve pull requests" in the repository's Actions
+  settings. Pull requests from forks get a read-only token, so they cannot be approved.
+
+GitHub does not let an account approve a pull request it opened. Other git providers are not supported yet.
