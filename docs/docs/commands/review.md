@@ -601,7 +601,7 @@ GitHub approves the exact commit it reviewed when all of these hold:
 - the review's finding state could be updated, and `publish_output` is on.
 
 Any other `/review` run withdraws the approval PR-Agent gave, because the evidence behind it no longer holds. On a
-push, the GitHub App and the GitHub Action dismiss it before any other event filter runs. PR-Agent only dismisses
+push or a change of base branch, the GitHub App and the GitHub Action dismiss it before any other event filter runs. PR-Agent only dismisses
 approvals it gave automatically; manual approvals from the same account are left alone.
 
 `enable_auto_approval` is host-only: a repository `.pr_agent.toml` or a comment argument cannot turn it on.

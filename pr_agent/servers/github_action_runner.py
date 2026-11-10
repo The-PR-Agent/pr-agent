@@ -333,8 +333,8 @@ async def run_action():
             raise SystemExit("GITHUB_TOKEN not set; provide it in this workflow's env before running PR-Agent.")
         return
 
-    if GITHUB_EVENT_NAME in ("pull_request", "pull_request_target") and event_payload.get("action") == "synchronize":
-        revoke_auto_approval_on_push(event_payload.get("pull_request", {}).get("url"))
+    if GITHUB_EVENT_NAME in ("pull_request", "pull_request_target"):
+        revoke_auto_approval_on_push(event_payload)
 
     settings_provider = None
     try:

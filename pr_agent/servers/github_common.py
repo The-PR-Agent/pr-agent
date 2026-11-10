@@ -19,18 +19,27 @@ def _normalise_setting_list(value):
     return normalize_setting_list(value)
 
 
-def revoke_auto_approval_on_push(pr_url: str | None) -> None:
-    """Dismiss PR-Agent's approval when new commits arrive.
+def revoke_auto_approval_on_push(payload: dict) -> None:
+    """Dismiss PR-Agent's approval when a pull_request event changes the code it approved.
 
-    Call this before any filter that may skip the event: an approval must not outlive the
-    commit it was given for just because the push came from a bot or the PR is ignored.
+    That is a push, or a retarget onto another base branch. Call this before any filter that
+    may skip the event: an approval must not outlive what it was given for just because the
+    push came from a bot or the PR is ignored.
     """
+    action = payload.get("action")
+    if action == "synchronize":
+        why = "new commits were pushed"
+    elif action == "edited" and "base" in (payload.get("changes") or {}):
+        why = "the base branch changed"
+    else:
+        return
+    pr_url = (payload.get("pull_request") or {}).get("url")
     if not pr_url or not _as_bool_setting(
             get_settings().config.get("enable_auto_approval", False), setting_name="config.enable_auto_approval"):
         return
     try:
         get_git_provider_with_context(pr_url).revoke_auto_approval(
-            f"{get_bot_display_name()} withdrew its approval: new commits were pushed."
+            f"{get_bot_display_name()} withdrew its approval: {why}."
         )
     except Exception as e:
         get_logger().exception(f"Failed to dismiss PR-Agent approvals after a push, error: {e}")
