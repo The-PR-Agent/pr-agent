@@ -400,6 +400,19 @@ class GithubProvider(GitProvider):
         if not self.pr_commits:
             self.pr_commits = list(self.pr.get_commits())
 
+        if (
+            not self.pr_commits
+            or len(self.pr_commits) != self.pr.commits
+            or self.pr_commits[-1].sha != self.pr.head.sha
+        ):
+            get_logger().info(
+                f"PR commit list inconsistent ({len(self.pr_commits)}/{self.pr.commits} commits, "
+                f"last={self.pr_commits[-1].sha if self.pr_commits else 'none'}, head={self.pr.head.sha}); "
+                "falling back to a full review"
+            )
+            self.incremental.is_incremental = False
+            return
+
         self.previous_review = self.get_previous_review(full=True, incremental=True)
         if self.previous_review:
             self.incremental.commits_range = self.get_commit_range()
