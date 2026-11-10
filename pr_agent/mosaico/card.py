@@ -54,7 +54,7 @@ def _build_skills() -> list:
         AgentSkill(
             id="improve",
             name="Improve",
-            description="Propose concrete code suggestions to improve a pull request or "
+            description="Alias of review: findings can carry suggested code fixes for a pull request or "
                         "supplied diff.",
             tags=["improve", "code-suggestions", "pull-request"],
             examples=["Improve https://github.com/org/repo/pull/1",

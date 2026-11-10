@@ -22,6 +22,7 @@ from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     auto_feedback_disabled,
+    dedupe_review_commands,
     get_include_pr_labels,
     get_pr_commands,
     is_command_comment,
@@ -244,7 +245,7 @@ def _process_command(command: str, url) -> list[str]:
 
 def _get_commands_list_from_settings(setting_key: str) -> list:
     try:
-        return normalize_setting_list(get_settings().get(setting_key, []))
+        return dedupe_review_commands(normalize_setting_list(get_settings().get(setting_key, [])))
     except ValueError as e:
         get_logger().error(f"Failed to get commands list from settings {setting_key}: {e}")
         return []

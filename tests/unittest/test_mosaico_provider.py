@@ -389,29 +389,6 @@ review:
   security_concerns: 'No'
 """
 
-CANNED_IMPROVE_YAML = """\
-code_suggestions:
-  - relevant_file: existing.py
-    language: python
-    existing_code: |
-      x = 2
-    suggestion_content: 'Consider a named constant instead of a magic number'
-    improved_code: |
-      X = 2
-    one_sentence_summary: 'Use a named constant'
-    label: 'best practice'
-"""
-
-# The /improve flow makes a mandatory second LLM call (self-reflection) that scores
-# each suggestion and injects relevant_lines_start/end. The mock returns this on call 2.
-CANNED_IMPROVE_REFLECTION_YAML = """\
-code_suggestions:
-  - suggestion_score: 8
-    why: 'Improves readability'
-    relevant_lines_start: 1
-    relevant_lines_end: 1
-"""
-
 
 def _setup_request_settings(verb_provider_input):
     """Mimic the per-request isolation the executor will do: deepcopy global_settings
@@ -492,9 +469,9 @@ class TestSpikeEndToEnd:
 
     @pytest.mark.asyncio
     async def test_improve_end_to_end(self, monkeypatch, isolated_settings):
+        # /improve runs /review, so it answers from the review prompt.
         ok, artifact, incremental = await _run_command_via_spy(
-            monkeypatch, isolated_settings, "improve", CANNED_IMPROVE_YAML,
-            second_yaml=CANNED_IMPROVE_REFLECTION_YAML)
+            monkeypatch, isolated_settings, "improve", CANNED_REVIEW_YAML)
         assert ok is True, "improve handle_request returned False (swallowed exception)"
         assert artifact, "improve produced empty artifact"
         assert incremental == [], f"incremental-only methods were accessed: {incremental}"

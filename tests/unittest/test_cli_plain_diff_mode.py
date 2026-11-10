@@ -50,17 +50,6 @@ review:
       end_line: 2
   security_concerns: 'No'
 """
-_CANNED_IMPROVE = """\
-code_suggestions:
-  - one_sentence_summary: Improve the changed line
-    label: maintainability
-    relevant_file: foo.py
-    relevant_lines_start: 2
-    relevant_lines_end: 2
-    suggestion_content: Use the shared helper.
-    existing_code: line2-changed
-    improved_code: line2-improved
-"""
 _OUTPUT_OPTION_PREFIXES = [
     (option[:length], option)
     for option in ("--output", "--json-output")
@@ -225,7 +214,7 @@ def test_json_output_accepts_pr_review(command, monkeypatch, tmp_path):
     assert review_json_output_path.get() is None
 
 
-@pytest.mark.parametrize("command", ["improve", "improve_code", "describe", "describe_pr"])
+@pytest.mark.parametrize("command", ["describe", "describe_pr"])
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])
 def test_json_output_accepts_plain_diff_command_aliases(command, input_mode, monkeypatch, tmp_path):
     from pr_agent.algo.review_json_output import review_json_output_path
@@ -439,9 +428,8 @@ pr_files:
         "description: Update the second line.\npr_files: []\n",
         "description", "Update the second line.",
     ),
-    ("improve", "code_suggestions: []", "code_suggestions", []),
 ])
-def test_plain_diff_describe_and_improve_write_json_from_model_response(
+def test_plain_diff_describe_writes_json_from_model_response(
     command, prediction, expected_key, expected_value, monkeypatch, tmp_path,
 ):
     async def fake_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
@@ -461,63 +449,22 @@ def test_plain_diff_describe_and_improve_write_json_from_model_response(
     assert isinstance(result["usage"], dict)
 
 
-@pytest.mark.parametrize("publish_failure", [False, True])
-def test_plain_diff_improve_preserves_nonempty_json_even_if_markdown_fails(
-    publish_failure, monkeypatch, tmp_path,
-):
+def test_plain_diff_improve_writes_the_review_json_from_model_response(monkeypatch, tmp_path):
     async def fake_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
-        return _CANNED_IMPROVE, "stop"
-
-    async def no_reflection(self, *args, **kwargs):
-        return {}
+        return _CANNED_REVIEW, "stop"
 
     monkeypatch.setattr(
         "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion",
         fake_chat_completion,
     )
-    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.PRCodeSuggestions._self_reflect_with_fallback",
-                        no_reflection)
-    if publish_failure:
-        def broken_output(self, content):
-            raise OSError("Simulated Markdown output failure")
-
-        monkeypatch.setattr("pr_agent.git_providers.plain_diff_provider.PlainDiffGitProvider._write_output",
-                            broken_output)
-
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
-    output = tmp_path / "suggestions.json"
+    output = tmp_path / "improve.json"
 
-    exit_code = run(inargs=["--stdin", "--json-output", str(output), "improve"])
+    run(inargs=["--stdin", "--json-output", str(output), "improve"])
 
-    assert exit_code == (1 if publish_failure else None)
-    suggestions = json.loads(output.read_text(encoding="utf-8"))["code_suggestions"]
-    assert len(suggestions) == 1
-    assert suggestions[0]["one_sentence_summary"] == "Improve the changed line"
-    assert suggestions[0]["relevant_file"] == "foo.py"
-
-
-@pytest.mark.parametrize("prediction", ["code_suggestions: []", _CANNED_IMPROVE])
-def test_plain_diff_improve_still_publishes_markdown_when_json_unwritable(
-    prediction, monkeypatch, tmp_path, capsys,
-):
-    async def fake_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
-        return prediction, "stop"
-
-    async def no_reflection(self, *args, **kwargs):
-        return {}
-
-    monkeypatch.setattr(
-        "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion",
-        fake_chat_completion,
-    )
-    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.PRCodeSuggestions._self_reflect_with_fallback",
-                        no_reflection)
-    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
-    unreachable_path = tmp_path / "missing" / "suggestions.json"
-
-    assert run(inargs=["--stdin", "--json-output", str(unreachable_path), "improve"]) == 1
-    assert "PR Code Suggestions" in capsys.readouterr().out
-    assert not unreachable_path.exists()
+    result = json.loads(output.read_text(encoding="utf-8"))
+    assert "review" in result
+    assert "code_suggestions" not in result
 
 
 def test_plain_diff_describe_still_publishes_markdown_when_json_unwritable(
@@ -540,23 +487,6 @@ def test_plain_diff_describe_still_publishes_markdown_when_json_unwritable(
     assert run(inargs=["--stdin", "--json-output", str(unreachable_path), "describe"]) == 1
     assert "Update the second line." in capsys.readouterr().out
     assert not unreachable_path.exists()
-
-
-def test_plain_diff_improve_writes_empty_json_when_all_files_are_ignored(monkeypatch, tmp_path, cfg):
-    async def unexpected_model_call(self, model, system, user, temperature=0.2, **kwargs):
-        pytest.fail("A fully ignored diff must not call the model")
-
-    monkeypatch.setattr(
-        "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion",
-        unexpected_model_call,
-    )
-    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
-    cfg("ignore.glob", ["foo.py"])
-    output = tmp_path / "suggestions.json"
-
-    run(inargs=["--stdin", "--json-output", str(output), "improve"])
-
-    assert json.loads(output.read_text(encoding="utf-8")) == {"code_suggestions": [], "usage": {}}
 
 
 def test_plain_diff_describe_fails_when_all_files_are_ignored(monkeypatch, tmp_path, cfg):
@@ -734,7 +664,7 @@ def test_ask_line_output_is_rejected_without_creating_artifact(monkeypatch, tmp_
     assert not output.exists()
 
 
-@pytest.mark.parametrize("command", ["review", "review_pr"])
+@pytest.mark.parametrize("command", ["review", "review_pr", "improve", "improve_code"])
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])
 def test_json_output_accepts_review_aliases(command, input_mode, monkeypatch, tmp_path):
     from pr_agent.algo.review_json_output import review_json_output_path

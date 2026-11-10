@@ -25,7 +25,6 @@ Facts, per spelling:
 from dataclasses import dataclass
 
 from pr_agent.commands.pr_add_docs import PRAddDocs
-from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.commands.pr_config import PRConfig
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.commands.pr_generate_labels import PRGenerateLabels
@@ -45,7 +44,7 @@ class CommandSpec:
     check_run: str | None = None
     takes_comment_id: bool = False
     plain_diff_markdown: bool = False
-    json_output: str | None = None  # "review" | "improve" | "describe" | "labels"
+    json_output: str | None = None  # "review" | "describe" | "labels"
 
 
 COMMAND_SPECS: dict[str, CommandSpec] = {
@@ -65,13 +64,14 @@ COMMAND_SPECS: dict[str, CommandSpec] = {
         PRDescription, check_run="describe",
         plain_diff_markdown=True, json_output="describe",
     ),
+    # /improve runs /review since 0.52 (PRCodeSuggestions stays importable but is no longer dispatched).
     "improve": CommandSpec(
-        PRCodeSuggestions, check_run="suggestions", takes_comment_id=True,
-        plain_diff_markdown=True, json_output="improve",
+        PRReviewer, check_run="review", takes_comment_id=True,
+        plain_diff_markdown=True, json_output="review",
     ),
     "improve_code": CommandSpec(
-        PRCodeSuggestions, check_run="suggestions", takes_comment_id=True,
-        plain_diff_markdown=True, json_output="improve",
+        PRReviewer, check_run="review", takes_comment_id=True,
+        plain_diff_markdown=True, json_output="review",
     ),
     "ask": CommandSpec(PRQuestions, takes_comment_id=True, plain_diff_markdown=True),
     "ask_question": CommandSpec(PRQuestions, takes_comment_id=True, plain_diff_markdown=True),

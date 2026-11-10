@@ -18,6 +18,7 @@ from pr_agent.algo.comment_identity import (
     add_comment_identity,
     comment_matches_identity,
 )
+from pr_agent.algo.i18n import t
 from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.utils import _fix_key_value, update_settings_from_args
@@ -47,6 +48,7 @@ IncompletePullRequestFilesError = _IncompletePullRequestFilesError
 command2class = {name: spec.command for name, spec in COMMAND_SPECS.items()}
 
 commands = list(command2class.keys())
+_IMPROVE_ALIASES = frozenset({"improve", "improve_code"})
 
 def publish_incomplete_files_comment(
     pr_url: str, error: IncompleteProviderPullRequestFilesError
@@ -552,7 +554,11 @@ class PRAgent:
                 if notify:
                     notify()
 
-                command = await self._create_command(command2class[action], pr_url, args=args)
+                command_kwargs = {}
+                if action in _IMPROVE_ALIASES:
+                    get_logger().warning(f"/{action} now runs /review")
+                    command_kwargs["alias_notice"] = t("improve.alias_notice")
+                command = await self._create_command(command2class[action], pr_url, args=args, **command_kwargs)
                 result = await command.run()
                 if action == "add_docs" and result is False:
                     span.set_status(StatusCode.ERROR)

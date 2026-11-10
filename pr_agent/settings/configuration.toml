@@ -355,7 +355,7 @@ publish_as_check_run = false # when true, publish review/description/improve out
 [github_action_config]
 # auto_review = true    # set as env var in .github/workflows/pr-agent.yaml
 # auto_describe = true  # set as env var in .github/workflows/pr-agent.yaml
-# auto_improve = true   # set as env var in .github/workflows/pr-agent.yaml
+# auto_improve = true   # set as env var in .github/workflows/pr-agent.yaml; /improve runs /review, so either flag runs the one review
 # pr_actions = ['opened', 'reopened', 'ready_for_review', 'review_requested']
 # handle_push_trigger = false  # when true, handle synchronize events using push_commands (falls back to github_app.handle_push_trigger)
 # push_trigger_ignore_bot_commits = true
@@ -671,7 +671,7 @@ agent_identity = "" # Host-only GUID, unique name, descriptor, or list; empty re
 [push_outputs] # push command outputs to external sinks without calling git-provider APIs (disabled by default)
 enable = false
 channels = [] # exact names as a list/tuple or comma-separated string: "stdout", "file", "webhook", "slack", "telegram", "teams"; empty emits nothing
-commands = ["review", "describe", "improve"] # output types to deliver; add "ask" to include Q&A, or select fewer commands; supports comma-separated strings
+commands = ["review", "describe"] # output types to deliver; add "ask" to include Q&A, or select fewer commands; supports comma-separated strings
 file_path = "pr-agent-outputs/reviews.jsonl" # used by the "file" channel
 webhook_url = "" # used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL
 slack_webhook_url = "" # used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL

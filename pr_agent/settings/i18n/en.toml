@@ -24,6 +24,7 @@ lifecycle_still_open = "- ⏳ {count} still open"
 lifecycle_new = "- ✚ {count} newly found in this run"
 
 [improve]
+alias_notice = "/improve now runs /review."
 merge_notice = "/improve will be merged into /review in the next release."
 no_suggestions = "No suggestions found to improve this PR."
 no_suggestions_for_pr = "No code suggestions found for the PR."

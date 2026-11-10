@@ -26,7 +26,6 @@ from pr_agent.algo.artifacts import inject_artifact_context as _inject_artifact_
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.algo.utils import encode_user_text_arg
-from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
@@ -40,7 +39,7 @@ from pr_agent.servers.github_common import (
     handle_line_comments,
     matches_review_state,
 )
-from pr_agent.servers.utils import is_ask_command_comment
+from pr_agent.servers.utils import dedupe_review_commands, is_ask_command_comment
 
 
 @dataclass
@@ -222,10 +221,10 @@ async def _run_review_commands(event_payload):
         get_logger().info(f"Skipping pull_request_review with {review_state=}: state is not configured")
         return
 
-    review_commands = get_list_setting_or_env(
+    review_commands = dedupe_review_commands(get_list_setting_or_env(
         "GITHUB_ACTION_CONFIG.REVIEW_COMMANDS",
         get_settings().get("GITHUB_APP.REVIEW_COMMANDS", []),
-    )
+    ))
     if not review_commands:
         get_logger().info("No review_commands configured, skipping pull_request_review")
         return
@@ -434,7 +433,7 @@ async def run_action():
                     "github_action_config.push_commands",
                     get_settings().get("github_app.push_commands", []),
                 )
-                push_commands = normalize_setting_list(push_commands)
+                push_commands = dedupe_review_commands(normalize_setting_list(push_commands))
                 if not push_commands:
                     get_logger().info("No push_commands configured, skipping synchronize")
                     return
@@ -479,13 +478,12 @@ async def run_action():
                     f"Running auto actions: "
                     f"auto_describe={auto_describe}, auto_review={auto_review}, auto_improve={auto_improve}")
 
-                # invoke by default all three commands
+                # invoke by default describe and review
                 if auto_describe is None or is_true(auto_describe):
                     await _run_auto_command(PRDescription, pr_url)
-                if auto_review is None or is_true(auto_review):
+                # /improve runs /review, so either flag runs the one review.
+                if auto_review is None or is_true(auto_review) or auto_improve is None or is_true(auto_improve):
                     await _run_auto_command(PRReviewer, pr_url)
-                if auto_improve is None or is_true(auto_improve):
-                    await _run_auto_command(PRCodeSuggestions, pr_url)
         else:
             get_logger().info(f"Skipping action: {action}")
 
@@ -602,10 +600,9 @@ async def run_action():
 
         if auto_describe is None or is_true(auto_describe):
             await _run_auto_command(PRDescription, pr_url)
-        if auto_review is None or is_true(auto_review):
+        # /improve runs /review, so either flag runs the one review.
+        if auto_review is None or is_true(auto_review) or auto_improve is None or is_true(auto_improve):
             await _run_auto_command(PRReviewer, pr_url)
-        if auto_improve is None or is_true(auto_improve):
-            await _run_auto_command(PRCodeSuggestions, pr_url)
 
 
 def _inject_ci_conclusion(conclusion):

@@ -220,9 +220,10 @@ class PRReviewer:
     review_all_issues = None
     review_chunk_hit_limit = None
     partial_files_list = ()
+    alias_notice = ""  # one line under the heading when an alias such as /improve ran this review
 
     def __init__(self, pr_url: str, args: list = None,
-                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
+                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, alias_notice: str = ""):
         """
         Initialize the PRReviewer object with the necessary attributes and objects to review a pull request.
 
@@ -230,9 +231,11 @@ class PRReviewer:
             pr_url (str): The URL of the pull request to be reviewed.
             ai_handler (BaseAiHandler): The AI handler to be used for the review. Defaults to None.
             args (list, optional): List of arguments passed to the PRReviewer class. Defaults to None.
+            alias_notice (str, optional): One line shown under the review heading when the review runs for an alias.
         """
         self.git_provider = get_git_provider_with_context(pr_url)
         self.args = args
+        self.alias_notice = alias_notice
         self.incremental = self.parse_incremental(args)  # -i command
         if self.incremental and self.incremental.is_incremental:
             self.git_provider.get_incremental_commits(self.incremental)
@@ -1460,10 +1463,11 @@ class PRReviewer:
             lifecycle_summary = render_lifecycle_summary(
                 self._review_finding_previous_state, self._review_state_result
             )
-            if lifecycle_summary:
-                summary_block = f"\n\n{lifecycle_summary}\n\n"
-                heading, _, rest = (markdown_text or "").partition("\n")
-                markdown_text = f"{heading}{summary_block}{rest}" if rest else f"{heading}{summary_block.strip()}"
+        under_heading = "\n\n".join(part for part in (self.alias_notice, lifecycle_summary) if part)
+        if under_heading:
+            summary_block = f"\n\n{under_heading}\n\n"
+            heading, _, rest = (markdown_text or "").partition("\n")
+            markdown_text = f"{heading}{summary_block}{rest}" if rest else f"{heading}{summary_block.strip()}"
 
         if self.review_chunk_count > 1:
             markdown_text += (

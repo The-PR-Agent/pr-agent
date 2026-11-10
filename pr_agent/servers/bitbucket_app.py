@@ -32,6 +32,7 @@ from pr_agent.secret_providers import get_secret_provider, validate_secret_provi
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     auto_feedback_disabled,
+    dedupe_review_commands,
     get_include_pr_labels,
     get_pr_commands,
     is_command_comment,
@@ -233,7 +234,7 @@ async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_ur
     commands = (
         get_pr_commands("bitbucket_app")
         if commands_conf == "pr_commands"
-        else normalize_setting_list(get_settings().get(f"bitbucket_app.{commands_conf}", {}))
+        else dedupe_review_commands(normalize_setting_list(get_settings().get(f"bitbucket_app.{commands_conf}", {})))
     )
     if not commands:
         get_logger().info(f"No {commands_conf} configured, skipping auto commands")
