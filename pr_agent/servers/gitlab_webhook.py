@@ -597,7 +597,8 @@ def handle_ask_line(body, data):
             start_line = line_range_['start']['new_line']
             end_line = line_range_['end']['new_line']
             side = 'RIGHT'
-        question = body.strip().removeprefix('/ask').strip()
+        parts = body.strip().split(maxsplit=1)
+        question = parts[1] if len(parts) > 1 else ""
         path = position['new_path']
         comment_id = data['object_attributes']["discussion_id"]
         get_logger().info("Handling line ")

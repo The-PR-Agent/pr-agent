@@ -233,9 +233,10 @@ class TestHandleLineComments:
     def test_returns_empty_string_for_empty_body(self):
         assert github_app.handle_line_comments({}, "") == ""
 
-    def test_converts_ask_to_ask_line_with_metadata(self):
+    @pytest.mark.parametrize("command", ["/ask", "/ask_question", "/ASK", "/ask_line", "/ASK_LINE"])
+    def test_converts_ask_to_ask_line_with_metadata(self, command):
         body = self._payload()
-        result = github_app.handle_line_comments(body, "/ask Why this change?")
+        result = github_app.handle_line_comments(body, f"{command} Why this change?")
         # handle_line_comments returns an argv list (not a shell-style string)
         # so attacker-controlled fields cannot inject extra CLI arguments via
         # shlex.quote() being defeated downstream.
