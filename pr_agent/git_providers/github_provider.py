@@ -2555,13 +2555,14 @@ class GithubProvider(GitProvider):
 
         return sub_issues
 
-    def auto_approve(self) -> bool:
+    def auto_approve(self, body: str = "") -> bool:
         """Approve the PR head that was reviewed, not whatever head exists now.
 
         The approval is pinned to the head SHA the provider snapshot was read for
         (``self._pr_revision_loaded``), and skipped when the PR has moved since, so a
         push made between the review and the approval cannot mark unreviewed commits
-        as approved.
+        as approved. An approval that cannot be attributed to PR-Agent is dismissed
+        straight away, since `revoke_auto_approval` would never find it again.
         """
         reviewed_head_sha = self._pr_revision_loaded[0] if self._pr_revision_loaded else None
         try:
@@ -2575,13 +2576,32 @@ class GithubProvider(GitProvider):
             if not reviewed_head_sha:
                 return False
             res = self.pr.create_review(
-                event="APPROVE", commit=self._get_repo().get_commit(reviewed_head_sha)
+                event="APPROVE", commit=self._get_repo().get_commit(reviewed_head_sha), body=body
             )
-            if res.state == "APPROVED":
-                return True
-            return False
+            if res.state != "APPROVED":
+                return False
+            try:
+                authored = self.is_comment_authored_by_pr_agent(res)
+            except RuntimeError as e:
+                get_logger().warning(f"Cannot attribute the approval to PR-Agent: {e}")
+                authored = False
+            if not authored:
+                res.dismiss("PR-Agent could not confirm this approval was its own")
+                return False
+            return True
         except (GithubException, RequestException, AttributeError) as e:
             get_logger().exception(f"Failed to auto-approve, error: {e}")
+            return False
+
+    def revoke_auto_approval(self, reason: str) -> bool:
+        """Dismiss every approval PR-Agent holds on this PR; True when none remains."""
+        try:
+            for review in self.pr.get_reviews():
+                if review.state == "APPROVED" and self.is_comment_authored_by_pr_agent(review):
+                    review.dismiss(reason)
+            return True
+        except (GithubException, RequestException, AttributeError, RuntimeError) as e:
+            get_logger().exception(f"Failed to dismiss PR-Agent approvals, error: {e}")
             return False
 
     def _get_pr_agent_check_names(self) -> set[str]:

@@ -1,4 +1,4 @@
-"""Tests for hardening the GitHub auto-approval path (issue #4693).
+"""Tests for the GitHub auto-approval path (issues #4693 and #4698).
 
 - The approval review is pinned to the reviewed head SHA (``commit`` argument).
 - The approval is skipped when the PR head moved after it was read.
@@ -22,6 +22,7 @@ def make_provider(reviewed_sha, current_sha, review_result=None):
     provider._get_pr = Mock(return_value=SimpleNamespace(head=SimpleNamespace(sha=current_sha)))
     provider._get_repo = Mock()
     provider._get_repo.return_value.get_commit = Mock(return_value=Mock())
+    provider.is_comment_authored_by_pr_agent = Mock(return_value=True)
     return provider
 
 
@@ -31,7 +32,7 @@ def test_auto_approve_pins_the_reviewed_head_sha():
     assert provider.auto_approve() is True
     provider._get_repo.return_value.get_commit.assert_called_once_with("aaa111")
     provider.pr.create_review.assert_called_once_with(
-        event="APPROVE", commit=provider._get_repo.return_value.get_commit.return_value
+        event="APPROVE", commit=provider._get_repo.return_value.get_commit.return_value, body=""
     )
 
 
@@ -104,3 +105,72 @@ def test_real_create_review_rejects_sha_string():
 
     with pytest.raises(AssertionError):
         pull_request.create_review(event="APPROVE", commit="aaa111")
+
+
+def test_auto_approve_passes_the_body():
+    provider = make_provider(reviewed_sha="aaa111", current_sha="aaa111")
+
+    assert provider.auto_approve(body="verdict: no_concerns_found") is True
+    assert provider.pr.create_review.call_args.kwargs["body"] == "verdict: no_concerns_found"
+
+
+def test_auto_approve_dismisses_an_approval_it_cannot_attribute():
+    review = Mock(state="APPROVED")
+    provider = make_provider(reviewed_sha="aaa111", current_sha="aaa111", review_result=review)
+    provider.is_comment_authored_by_pr_agent = Mock(return_value=False)
+
+    assert provider.auto_approve() is False
+    review.dismiss.assert_called_once()
+
+
+def test_auto_approve_dismisses_when_identity_cannot_be_verified():
+    review = Mock(state="APPROVED")
+    provider = make_provider(reviewed_sha="aaa111", current_sha="aaa111", review_result=review)
+    provider.is_comment_authored_by_pr_agent = Mock(side_effect=RuntimeError("GitHub identity cannot be verified"))
+
+    assert provider.auto_approve() is False
+    review.dismiss.assert_called_once()
+
+
+def _provider_with_reviews(reviews, authored):
+    provider = gp.GithubProvider.__new__(gp.GithubProvider)
+    provider.pr = Mock()
+    provider.pr.get_reviews = Mock(return_value=reviews)
+    provider.is_comment_authored_by_pr_agent = Mock(side_effect=authored)
+    return provider
+
+
+def test_revoke_dismisses_only_pr_agent_approvals():
+    own = Mock(state="APPROVED")
+    other_bot = Mock(state="APPROVED")
+    own_comment = Mock(state="COMMENTED")
+    authored = {id(own): True, id(other_bot): False, id(own_comment): True}
+    provider = _provider_with_reviews([own, other_bot, own_comment], lambda review: authored[id(review)])
+
+    assert provider.revoke_auto_approval("stale") is True
+    own.dismiss.assert_called_once_with("stale")
+    other_bot.dismiss.assert_not_called()
+    own_comment.dismiss.assert_not_called()
+
+
+def test_revoke_logs_and_reports_a_forbidden_dismissal():
+    import github
+
+    own = Mock(state="APPROVED")
+    own.dismiss.side_effect = github.GithubException(403, {"message": "Forbidden"}, None)
+    provider = _provider_with_reviews([own], lambda review: True)
+
+    assert provider.revoke_auto_approval("stale") is False
+
+
+def test_revoke_reports_failure_when_identity_cannot_be_verified():
+    provider = _provider_with_reviews([Mock(state="APPROVED")], RuntimeError("cannot verify"))
+
+    assert provider.revoke_auto_approval("stale") is False
+
+
+def test_real_create_review_accepts_a_body():
+    pull_request, commit = _real_pull_request()
+
+    review = pull_request.create_review(event="APPROVE", commit=commit, body="approved")
+    assert review.state == "APPROVED"
