@@ -609,6 +609,9 @@ def handle_ask_line(body, data):
             f"--file_name={path}",
             f"--comment_id={comment_id}",
         ]
+        origin_comment_id = data['object_attributes'].get('id')
+        if origin_comment_id is not None:
+            body.append(f"--origin_comment_id={origin_comment_id}")
         if question:
             body.append(question)
     except Exception as e:

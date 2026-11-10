@@ -2305,6 +2305,41 @@ class GitLabProvider(GitProvider):
                 f"Resolved {resolved} fixed inline thread(s) on merge request {self.id_mr}")
         return resolved
 
+    def supports_line_question_history(self) -> bool:
+        return True
+
+    def get_review_thread_comments(self, discussion_id: str) -> list[SimpleNamespace]:
+        """Return earlier GitLab discussion notes for an inline question."""
+        origin_note_id = get_settings().get("origin_comment_id")
+        if origin_note_id is None:
+            return []
+
+        discussion = self.mr.discussions.get(discussion_id)
+        notes = discussion.attributes.get("notes") or []
+        # python-gitlab returns discussion notes in chronological order.
+        origin_index = next((i for i, note in enumerate(notes)
+                             if isinstance(note, dict) and note.get("id") == origin_note_id), None)
+        if origin_index is None:
+            get_logger().warning(
+                f"Origin note {origin_note_id} not found in GitLab discussion {discussion_id}; skipping history")
+            return []
+        notes = notes[:origin_index]
+
+        comments = []
+        for note in notes:
+            if not isinstance(note, dict) or note.get("system"):
+                continue
+            body = note.get("body")
+            if not isinstance(body, str) or not body.strip():
+                continue
+            author = note.get("author")
+            author = author if isinstance(author, dict) else {}
+            comments.append(SimpleNamespace(
+                id=note.get("id"), body=body,
+                user=SimpleNamespace(login=author.get("username") or "Unknown"),
+            ))
+        return comments
+
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
         body = self.limit_output_characters(_neutralize_gitlab_mentions(body), self.max_comment_chars)
         discussion = self.mr.discussions.get(comment_id)

@@ -76,6 +76,39 @@ def _thread(notes, discussion_id='d1'):
     return discussion
 
 
+@pytest.mark.parametrize(("origin_note_id", "expected"), [
+    (None, []),
+    (102, [(101, "reviewer", "Earlier context")]),
+    (999, []),
+])
+def test_line_question_history_reads_only_selected_gitlab_discussion(origin_note_id, expected):
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.mr = MagicMock()
+    provider.mr.discussions.get.return_value = _thread([
+        {"id": 101, "body": "Earlier context", "author": {"username": "reviewer"}},
+        {"id": 102, "body": "/ask why?", "author": {"username": "alice"}},
+        {"id": 103, "body": "System note", "system": True},
+        {"id": 104, "body": "  "},
+        {"id": 105, "body": "Anonymous reply", "author": None},
+    ])
+
+    assert provider.supports_line_question_history() is True
+    with (patch("pr_agent.git_providers.gitlab_provider.get_settings") as settings,
+          patch("pr_agent.git_providers.gitlab_provider.get_logger") as logger):
+        settings.return_value.get.return_value = origin_note_id
+        comments = provider.get_review_thread_comments("discussion-1")
+
+    if origin_note_id is None:
+        provider.mr.discussions.get.assert_not_called()
+    else:
+        provider.mr.discussions.get.assert_called_once_with("discussion-1")
+    if origin_note_id == 999:
+        logger.return_value.warning.assert_called_once()
+    else:
+        logger.return_value.warning.assert_not_called()
+    assert [(comment.id, comment.user.login, comment.body) for comment in comments] == expected
+
+
 @pytest.mark.parametrize(("text", "expected"), [
     (
         "Ping @user, email x@y.com, package /package/@scope/pkg, and (@group).",
