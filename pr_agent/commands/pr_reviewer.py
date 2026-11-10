@@ -1434,7 +1434,7 @@ class PRReviewer:
             data['review']['key_issues_to_review'] = key_issues_to_review
 
         self._prepare_review_finding_state(data)
-        if get_settings().config.publish_output and get_settings().pr_reviewer.get('inline_key_issues', False):
+        if get_settings().config.publish_output and get_settings().pr_reviewer.get('inline_key_issues', True):
             data = self._publish_key_issues_as_inline_comments(data)
 
         incremental_review_markdown_text = None
@@ -1619,8 +1619,10 @@ class PRReviewer:
         if not improved_code.strip():
             return finding.to_inline_comment(body, fallback_to_pr_comment=False)
 
-        fence = get_suggestion_fence(improved_code)
         existing_code = _strip_line_numbers(finding.existing_code, start_line, end_line)
+        if existing_code and existing_code.strip() == improved_code.strip():
+            return finding.to_inline_comment(body, fallback_to_pr_comment=False)
+        fence = get_suggestion_fence(improved_code)
         original_suggestion = None
         if get_committable_code_suggestions():
             is_applicable, _, has_valid_anchor = validate_suggestion(file, start_line, end_line, existing_code)

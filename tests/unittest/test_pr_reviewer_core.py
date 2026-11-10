@@ -2285,6 +2285,16 @@ def test_fix_not_committable_when_setting_off(monkeypatch):
     assert "original_suggestion" not in comment
 
 
+def test_fix_identical_to_existing_code_is_dropped(committable_on):
+    reviewer, data = _reviewer_with_findings(_key_issue(existing_code="two\nthree", improved_code="two\nthree\n"))
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```" not in comment["body"]
+    assert "original_suggestion" not in comment
+
+
 def test_numbered_existing_code_is_stripped(committable_on):
     issue = _key_issue(existing_code="2  two\n3  three", improved_code="TWO\nTHREE")
     reviewer, data = _reviewer_with_findings(issue)
