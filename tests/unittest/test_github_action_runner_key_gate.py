@@ -412,3 +412,47 @@ async def test_watsonx_gate_names_the_override_that_must_be_corrected(
         assert doctor.missing_provider_key_env_vars() is None
     finally:
         restore_settings(snapshot)
+
+
+@pytest.mark.parametrize("locale_encoding", ["cp1252", "ascii"])
+@pytest.mark.parametrize("text", ["café", "שלום", "你好 👋"])
+async def test_event_payload_is_read_as_utf8_on_non_utf8_locales(
+    monkeypatch, tmp_path, locale_encoding, text
+):
+    # GitHub writes the event file as raw UTF-8 (not \uXXXX escapes). Reading it with the
+    # runner's locale encoding turned a non-ASCII PR title into mojibake on cp1252 and raised
+    # UnicodeDecodeError on an ASCII locale. Emulate the locale through the module's file
+    # opener, as test_github_action_output.py does for GITHUB_OUTPUT, and stop at the first
+    # helper that receives the parsed payload.
+    event = {
+        "action": "opened",
+        "pull_request": {"title": text, "url": "https://api.github.com/repos/owner/repo/pulls/1"},
+    }
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(event, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    real_open = open
+
+    def locale_open(path, mode="r", **kwargs):
+        kwargs.setdefault("encoding", locale_encoding)
+        return real_open(path, mode, **kwargs)
+
+    monkeypatch.setattr(github_action_runner, "open", locale_open, raising=False)
+
+    class _Stop(Exception):
+        pass
+
+    received = {}
+
+    def capture(event_payload, event_name):
+        received["title"] = event_payload["pull_request"]["title"]
+        raise _Stop
+
+    monkeypatch.setattr(github_action_runner, "_settings_pr_url", capture)
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}), pytest.raises(_Stop):
+        await github_action_runner.run_action()
+
+    assert received["title"] == text
