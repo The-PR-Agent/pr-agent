@@ -1389,8 +1389,10 @@ class PRReviewer:
                     "total_tokens": details.total_tokens,
                 }
             structured_data["usage"] = usage
-            # The lists the review coverage footer shows, for a consumer that never sees the comment.
+            # Expose analysis coverage to consumers that never see the review comment.
             structured_data["coverage"] = {
+                "total_chunks": self.review_chunk_count,
+                "failed_chunks": self.review_failed_chunk_count,
                 "files_not_reviewed": list(self.remaining_files_list or []),
                 "files_partially_reviewed": list(self.partial_files_list or []),
             }
