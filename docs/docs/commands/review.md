@@ -365,10 +365,12 @@ Use triple quotes to write multi-line instructions. Use bullet points to make th
 A finding can carry a fix: the model adds `existing_code` (the lines it wants to change, copied from the file) and
 `improved_code` (their replacement) when a concrete change resolves the issue. A finding without a clear fix has neither field.
 
-When `inline_key_issues` is on (the default) and the provider supports inline comments, each finding is posted as an inline comment.
-If `pr_code_suggestions.committable_code_suggestions` is true and `existing_code` matches the file at the finding's lines,
-the fix is posted as a committable suggestion that you can apply from the PR page. Otherwise the fix is shown as a code block
-in the comment. Findings are capped by `pr_reviewer.num_max_findings` (3 by default), and chunked reviews keep the same cap.
+When `inline_key_issues` is on (the default) and the provider can verify inline comments (GitHub, Bitbucket Cloud, Azure DevOps,
+GitLab, Gitea), each finding is posted as an inline comment. If `pr_code_suggestions.committable_code_suggestions` is true and
+`existing_code` matches the file at the finding's lines, the fix is posted as a committable suggestion that you can apply from the
+PR page. Otherwise the fix is shown as a text block in the comment. A finding that is not posted inline (the provider cannot verify
+inline comments, `inline_key_issues` is off, or publishing failed) stays in the review summary, and its fix appears there as a text
+block. Findings are capped by `pr_reviewer.num_max_findings` (3 by default), and chunked reviews keep the same cap.
 
 Two `pr_code_suggestions` settings are honoured: `committable_code_suggestions` and `extra_instructions`
 (added to the review's extra instructions when it differs from `pr_reviewer.extra_instructions`).

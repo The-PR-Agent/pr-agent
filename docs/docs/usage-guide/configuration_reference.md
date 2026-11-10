@@ -382,7 +382,7 @@ See [GitHub](../installation/github.md#run-as-a-github-app).
 | `base_url` | "https://api.github.com" |  |
 | `try_fix_invalid_inline_comments` | true |  |
 | `ignore_bot_pr` | true |  |
-| `publish_as_check_run` | false | when true, publish review/description/improve output as GitHub Checks instead of PR comments |
+| `publish_as_check_run` | false | when true, publish review/description output as GitHub Checks instead of PR comments |
 
 
 ## `[github_action_config]` {#github_action_config}
@@ -426,7 +426,7 @@ See [GitLab](../usage-guide/automations_and_usage.md#gitlab-webhook).
 | `expand_submodule_diffs` | false | Submodule targets must also be listed in config.repo_context_sibling_repos. |
 | `feedback_on_draft_pr` | false |  |
 | `publish_review_as_thread` | false | Post the /review summary as a resolvable thread (discussion) instead of a plain note. |
-| `publish_improve_as_thread` | false | Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note. |
+| `publish_improve_as_thread` | false | Ignored: /improve runs /review, so there is no suggestions comment. Use publish_review_as_thread. |
 | `reply_to_trigger_comment` | false | Reply in the triggering GitLab discussion for `/review`, `/improve`, or `/ask` (true/false); see docs/docs/usage-guide/additional_configurations.md. |
 | `publish_code_suggestions_as_review` | false | When pr_code_suggestions.committable_code_suggestions is true, queue each suggestion as a GitLab draft note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of posting each as its own live discussion - and its own notification - as soon as it's created. |
 | `resolve_outdated_inline_threads` | false | Resolve the bot's own inline threads that a later push left on an outdated diff version. |

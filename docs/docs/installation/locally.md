@@ -185,7 +185,6 @@ This does not change how interactive PR comments are parsed.
    uv run pr-agent --pr_url <pr_url> review
    uv run pr-agent --pr_url <pr_url> ask "<your question>"
    uv run pr-agent --pr_url <pr_url> describe
-   uv run pr-agent --pr_url <pr_url> improve
    uv run pr-agent --pr_url <pr_url> add_docs
    uv run pr-agent --pr_url <pr_url> generate_labels
    uv run pr-agent --issue_url <issue_url> similar_issue

@@ -58,8 +58,8 @@ not existing human-applied PR labels.
 `generate_labels` also works with raw diffs and can write its filtered labels as JSON.
 Because there is no hosting
 platform to push to, `review` writes its findings, including any fixes, as a single markdown
-document to stdout (and to `--output`, if given) instead of as committable inline
-suggestions. Commands that require live platform interaction (such as
+document to stdout (and to `--output`, if given), with each fix as a text block in the
+summary, instead of as committable inline suggestions. Commands that require live platform interaction (such as
 `update_changelog` or `similar_issue`) are not meaningful in this mode.
 
 By default, `describe` uses `Local diff review` as the title in stdout and `--output`;

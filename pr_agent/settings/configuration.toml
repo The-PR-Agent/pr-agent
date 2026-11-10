@@ -8,7 +8,7 @@ bot_display_name="PR-Agent" # product name shown in user-visible PR comments; ho
 # models
 model="gpt-6.1-sol"
 fallback_models=["gpt-6-luna"]
-#model_reasoning="gpt-6.1-sol" # dedicated reasoning model for self-reflection
+#model_reasoning="gpt-6.1-sol" # unused: it served /improve's self-reflection, and /improve now runs /review
 # Leave model_weak unset with the shipped fallbacks: Luna would retry Luna, not a distinct model.
 #model_weak="gpt-6-luna" # optional, a weaker model to use for some easier tasks
 # CLI
@@ -351,7 +351,7 @@ polling_repositories = [] # Host-only allowlist of GitHub repositories ("owner/r
 base_url = "https://api.github.com"
 try_fix_invalid_inline_comments = true
 ignore_bot_pr = true
-publish_as_check_run = false # when true, publish review/description/improve output as GitHub Checks instead of PR comments
+publish_as_check_run = false # when true, publish review/description output as GitHub Checks instead of PR comments
 
 [github_action_config]
 # auto_review = true    # set as env var in .github/workflows/pr-agent.yaml
@@ -404,7 +404,7 @@ expand_submodule_diffs = false
 feedback_on_draft_pr = false
 # Post the /review summary as a resolvable thread (discussion) instead of a plain note.
 publish_review_as_thread = false
-# Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note.
+# Ignored: /improve runs /review, so there is no suggestions comment. Use publish_review_as_thread.
 publish_improve_as_thread = false
 # Reply in the triggering GitLab discussion for `/review`, `/improve`, or `/ask` (true/false); see docs/docs/usage-guide/additional_configurations.md.
 reply_to_trigger_comment = false
