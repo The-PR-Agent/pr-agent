@@ -76,6 +76,15 @@ def test_refused_approval_dismisses(approval_on):
     reviewer.git_provider.revoke_auto_approval.assert_called_once()
 
 
+def test_approval_error_still_dismisses(approval_on):
+    reviewer = _reviewer()
+    reviewer.git_provider.auto_approve.side_effect = RuntimeError("unexpected")
+
+    reviewer.auto_approve_logic(review_completed=True)
+
+    reviewer.git_provider.revoke_auto_approval.assert_called_once()
+
+
 def test_provider_error_is_logged_not_raised(approval_on):
     reviewer = _reviewer(verdict="needs_review")
     reviewer.git_provider.revoke_auto_approval.side_effect = RuntimeError("boom")

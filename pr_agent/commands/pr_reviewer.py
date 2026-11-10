@@ -1858,14 +1858,18 @@ class PRReviewer:
             state_blocked=getattr(self, "_review_state_blocked", False),
         )
         bot_display_name = get_bot_display_name()
-        try:
-            if allowed:
-                body = (f"Approved by {bot_display_name}: the computed merge verdict is `no_concerns_found` and "
-                        "every gated-approval check passed on this commit.")
+        if allowed:
+            body = (f"Approved by {bot_display_name}: the computed merge verdict is `no_concerns_found` and "
+                    "every gated-approval check passed on this commit.")
+            try:
                 if self.git_provider.auto_approve(body=body):
                     get_logger().info("Auto-approved PR")
                     return
                 reason = "the provider did not approve the reviewed commit"
+            except Exception as e:
+                get_logger().exception(f"Auto-approval failed, error: {e}")
+                reason = "the approval could not be submitted"
+        try:
             get_logger().info(f"Not auto-approving: {reason}")
             if not self.git_provider.revoke_auto_approval(f"{bot_display_name} withdrew its approval: {reason}."):
                 get_logger().error("Could not confirm that PR-Agent's earlier approvals were dismissed")

@@ -36,8 +36,12 @@ def revoke_auto_approval_on_push(payload: dict) -> None:
     else:
         return
     pr_url = (payload.get("pull_request") or {}).get("url")
+    config = get_settings().config
     if not pr_url or not _as_bool_setting(
-            get_settings().config.get("enable_auto_approval", False), setting_name="config.enable_auto_approval"):
+            config.get("enable_auto_approval", False), setting_name="config.enable_auto_approval"):
+        return
+    # A dry run writes nothing, dismissals included.
+    if not _as_bool_setting(config.get("publish_output", True), default=True):
         return
     try:
         if not get_git_provider_with_context(pr_url).revoke_auto_approval(

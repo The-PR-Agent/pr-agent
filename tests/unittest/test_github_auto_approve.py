@@ -13,13 +13,15 @@ import pr_agent.git_providers.github_provider as gp
 from pr_agent.config_security import is_repo_host_only_key
 
 
-def make_provider(reviewed_sha, current_sha, review_result=None):
+def make_provider(reviewed_sha, current_sha, review_result=None, current_base_sha="base-sha"):
     provider = gp.GithubProvider.__new__(gp.GithubProvider)
     provider._pr_revision_loaded = (reviewed_sha, "base-sha", 3)
     review = SimpleNamespace(state="APPROVED")
     provider.pr = Mock()
     provider.pr.create_review = Mock(return_value=review_result or review)
-    provider._get_pr = Mock(return_value=SimpleNamespace(head=SimpleNamespace(sha=current_sha)))
+    provider._get_pr = Mock(return_value=SimpleNamespace(
+        head=SimpleNamespace(sha=current_sha), base=SimpleNamespace(sha=current_base_sha)
+    ))
     provider._get_repo = Mock()
     provider._get_repo.return_value.get_commit = Mock(return_value=Mock())
     provider.is_comment_authored_by_pr_agent = Mock(return_value=True)
@@ -204,3 +206,10 @@ def test_revoke_continues_past_a_review_it_cannot_attribute():
 
     assert provider.revoke_auto_approval("stale") is False
     own.dismiss.assert_called_once_with("stale")
+
+
+def test_auto_approve_skips_when_the_base_moved():
+    provider = make_provider(reviewed_sha="aaa111", current_sha="aaa111", current_base_sha="retargeted")
+
+    assert provider.auto_approve() is False
+    provider.pr.create_review.assert_not_called()

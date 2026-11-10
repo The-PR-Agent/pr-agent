@@ -1,5 +1,6 @@
 """A push or a base-branch change dismisses PR-Agent's approval before any filter can skip the event (#4698)."""
 
+import contextlib
 import json
 from unittest.mock import MagicMock
 
@@ -130,9 +131,17 @@ async def test_action_revokes_before_repo_settings_and_push_filters(monkeypatch,
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
     monkeypatch.setenv("GITHUB_TOKEN", "token")
 
-    try:
+    # The API-key gate may stop the run afterwards; revocation must already have happened.
+    with contextlib.suppress(SystemExit):
         await github_action_runner.run_action()
-    except SystemExit:
-        pass
 
     assert calls == [payload]
+
+
+def test_helper_writes_nothing_on_a_dry_run(monkeypatch, provider):
+    monkeypatch.setitem(get_settings().config, "enable_auto_approval", True)
+    monkeypatch.setitem(get_settings().config, "publish_output", False)
+
+    github_common.revoke_auto_approval_on_push(_payload("synchronize"))
+
+    provider.revoke_auto_approval.assert_not_called()

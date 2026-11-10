@@ -2567,9 +2567,10 @@ class GithubProvider(GitProvider):
         as approved. An approval that cannot be attributed to PR-Agent is dismissed
         straight away, since `revoke_auto_approval` would never find it again.
         """
-        reviewed_head_sha = self._pr_revision_loaded[0] if self._pr_revision_loaded else None
+        reviewed_head_sha, reviewed_base_sha = (self._pr_revision_loaded or (None, None))[:2]
         try:
-            current_head_sha = policy_value(self._get_pr(), "head", "sha")
+            current_pr = self._get_pr()
+            current_head_sha = policy_value(current_pr, "head", "sha")
             if reviewed_head_sha and current_head_sha and current_head_sha != reviewed_head_sha:
                 get_logger().info(
                     f"Skipping auto-approve: the PR head moved from {reviewed_head_sha} "
@@ -2577,6 +2578,10 @@ class GithubProvider(GitProvider):
                 )
                 return False
             if not reviewed_head_sha:
+                return False
+            # A retarget changes the reviewed diff without moving the head.
+            if not reviewed_base_sha or policy_value(current_pr, "base", "sha") != reviewed_base_sha:
+                get_logger().info("Skipping auto-approve: the PR base changed after it was read")
                 return False
             marker = render_hidden_marker(PRApprovalIdentity.AUTO.value, self)
             res = self.pr.create_review(
