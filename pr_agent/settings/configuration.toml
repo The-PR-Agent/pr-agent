@@ -207,7 +207,7 @@ max_previous_findings_chars = 8000
 # Show a 'Since the last review' section at the top of the review: addressed, reappeared, still-open and new findings (needs persistent_finding_state).
 show_previous_findings_summary = true
 
-inline_key_issues=false # Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab, Gitea).
+inline_key_issues=true # Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab, Gitea). Findings with a fix become committable suggestions when pr_code_suggestions.committable_code_suggestions is on. Set to false to keep every finding in the review summary.
 extra_instructions = ""
 num_max_findings = 3
 final_update_message = true

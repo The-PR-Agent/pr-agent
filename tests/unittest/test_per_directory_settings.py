@@ -643,7 +643,7 @@ enable_help_text = true
 num_max_findings = 4
 enable_large_pr_chunking = true
 max_number_of_calls = 9999
-inline_key_issues = true
+inline_key_issues = false
 enable_review_labels_security = false
 enable_review_labels_effort = false
 require_security_review = false
@@ -725,7 +725,7 @@ dual_publishing_score_threshold = 7
         assert get_settings().pr_description.generate_ai_title is False
         assert get_settings().pr_description.publish_description_as_comment is False
         assert get_settings().pr_description.publish_description_as_comment_persistent is True
-        assert get_settings().pr_reviewer.inline_key_issues is False
+        assert get_settings().pr_reviewer.inline_key_issues is True
         assert get_settings().pr_reviewer.enable_review_labels_security is True
         assert get_settings().pr_reviewer.enable_review_labels_effort is True
         assert get_settings().pr_reviewer.require_security_review is True

@@ -67,14 +67,16 @@ from pr_agent.algo.run_output import (
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.structural_reach import build_structural_reach
+from pr_agent.algo.suggestion_checks import dedent_code_for_file, python_syntax_is_valid, validate_suggestion
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import (
     ModelType,
     convert_to_markdown_v2,
+    get_suggestion_fence,
     is_value_no,
     load_yaml,
 )
-from pr_agent.commands.pr_code_suggestions import _markdown_code_span
+from pr_agent.commands.pr_code_suggestions import _markdown_code_span, get_committable_code_suggestions
 from pr_agent.commands.progress_comment import ChunkProgressReporter
 from pr_agent.commands.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
@@ -182,6 +184,25 @@ def _is_structural_reach_key(key) -> bool:
 def _is_risk_checks_key(key) -> bool:
     """Whether a review key would render like the deterministic risk checks row, whatever its separators."""
     return re.sub(r"[^a-z0-9]", "", str(key).lower()) in ("riskchecks", "deterministicrisk")
+
+
+_LINE_NUMBER_PREFIX_RE = re.compile(r"(\d+)(?: |$)")
+
+
+def _strip_line_numbers(code: str | None, start_line: int, end_line: int) -> str | None:
+    """Drop the diff's line-number prefix when every line of the model's code carries the expected one."""
+    if not code:
+        return code
+    lines = code.splitlines()
+    if len(lines) != end_line - start_line + 1:
+        return code
+    stripped = []
+    for expected, line in enumerate(lines, start=start_line):
+        match = _LINE_NUMBER_PREFIX_RE.match(line)
+        if match is None or int(match.group(1)) != expected:
+            return code
+        stripped.append(line[match.end():])
+    return "\n".join(stripped)
 
 
 class PRReviewer:
@@ -1593,9 +1614,39 @@ class PRReviewer:
             line_start=start_line,
             line_end=end_line,
         )
+        body = finding.rendered_body
+        improved_code = (finding.improved_code or "").strip("\n")
+        if not improved_code.strip():
+            return finding.to_inline_comment(body, fallback_to_pr_comment=False)
+
+        fence = get_suggestion_fence(improved_code)
+        existing_code = _strip_line_numbers(finding.existing_code, start_line, end_line)
+        original_suggestion = None
+        if get_committable_code_suggestions():
+            is_applicable, _, has_valid_anchor = validate_suggestion(file, start_line, end_line, existing_code)
+            if has_valid_anchor:
+                improved_code = dedent_code_for_file(file, start_line, improved_code)
+                if existing_code:
+                    existing_code = dedent_code_for_file(file, start_line, existing_code)
+            if is_applicable and python_syntax_is_valid(
+                    finding.path, file, start_line, end_line, improved_code) is not False:
+                fence = get_suggestion_fence(improved_code)
+                body += f"\n\n{fence}suggestion\n{improved_code}\n{fence}"
+                original_suggestion = {
+                    "existing_code": existing_code,
+                    "improved_code": improved_code,
+                    "relevant_file": finding.path,
+                    "relevant_lines_start": start_line,
+                    "relevant_lines_end": end_line,
+                    "suggestion_content": finding.body,
+                    "label": finding.header or "",
+                }
+        if original_suggestion is None:
+            body += f"\n\n{fence}text\n{improved_code}\n{fence}"
         return finding.to_inline_comment(
-            finding.rendered_body,
+            body,
             fallback_to_pr_comment=False,
+            original_suggestion=original_suggestion,
         )
 
     def _can_verify_inline_key_issue_publication(self) -> bool:
@@ -1650,7 +1701,7 @@ class PRReviewer:
                 if comment is None:
                     remaining_issues.append(issue)
                     continue
-                fingerprint = key_issue_fingerprint(comment["relevant_file"], comment["body"])
+                fingerprint = key_issue_fingerprint(comment["relevant_file"], finding.rendered_body)
                 if store.seen(fingerprint):
                     published += 1
                     continue
@@ -1678,7 +1729,11 @@ class PRReviewer:
 
         if candidate_comments:
             try:
-                self.git_provider.publish_code_suggestions(list(candidate_comments.values()))
+                batch = list(candidate_comments.values())
+                if not self.git_provider.publish_code_suggestions(batch):
+                    get_logger().info("Failed to publish review findings, trying to publish each one separately")
+                    for comment in batch:
+                        self.git_provider.publish_code_suggestions([comment])
             except Exception as e:
                 locations = [{"relevant_file": comment["relevant_file"],
                               "start_line": comment["relevant_lines_start"],
