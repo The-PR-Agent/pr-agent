@@ -58,3 +58,7 @@ def test_dedupe_keeps_an_unterminated_quote_apart():
     broken = '/review --pr_reviewer.extra_instructions="unfinished'
 
     assert dedupe_review_commands([broken, "/improve"]) == [broken, "/review"]
+
+
+def test_dedupe_treats_review_pr_as_review():
+    assert dedupe_review_commands(["/review_pr", "/improve"]) == ["/review"]

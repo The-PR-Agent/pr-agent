@@ -162,7 +162,9 @@ def _artifact_target_commands(value, default: frozenset[str]) -> frozenset[str]:
         value = [command.strip() for command in value.split(",") if command.strip()]
     if not isinstance(value, (list, set, tuple)):
         return default
-    return frozenset(str(command).lower() for command in value)
+    commands = frozenset(str(command).lower() for command in value)
+    # /improve runs /review, so context meant for code suggestions goes to the review.
+    return commands | {"pr_reviewer"} if "pr_code_suggestions" in commands else commands
 
 
 def _artifact_entries(artifacts_settings: dict) -> list[dict]:

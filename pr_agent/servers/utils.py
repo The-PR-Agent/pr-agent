@@ -105,7 +105,7 @@ def auto_feedback_disabled() -> bool:
 # A command token: bare characters, a quoted run, or a stray quote kept as is. The alternatives cannot
 # match the same character, so matching is linear.
 _COMMAND_TOKEN_RE = re.compile(r"""(?:[^\s"']+|"[^"]*"|'[^']*'|["'])+""")
-_REVIEW_COMMAND_NAMES = frozenset({"review", "improve", "improve_code"})
+_REVIEW_COMMAND_NAMES = frozenset({"review", "review_pr", "improve", "improve_code"})
 
 
 def _review_command_tokens(command) -> list[str]:
@@ -124,7 +124,7 @@ def dedupe_review_commands(commands: Sequence[str]) -> list[str]:
     """Rewrite /improve and /improve_code to /review and keep a single /review entry.
 
     /improve runs /review, so a list naming both would review twice. The first review entry stays in
-    place and takes the arguments of the removed ones, without repeating an identical argument. Other
+    place and takes the arguments of the removed ones, in order, without repeating an identical argument. Other
     commands, and entries that are not strings, pass through untouched and in order.
     """
     result: list = []
