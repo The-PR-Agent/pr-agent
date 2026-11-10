@@ -32,7 +32,7 @@ async def test_run_prepares_diff_with_request_settings(monkeypatch, module, comm
     settings = copy.deepcopy(get_settings())
     for key, value in {
         "config.model": "gpt-4o", "config.model_weak": "gpt-4o", "config.fallback_models": [],
-        "config.publish_output": False, "config.propagate_tool_errors": True,
+        "config.publish_output": False, "config.propagate_command_errors": True,
         "model_routing.enable": False, "skills.enabled": False,
         "pr_update_changelog.push_changelog_changes": False,
     }.items():

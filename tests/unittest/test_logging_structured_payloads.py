@@ -137,7 +137,7 @@ def publishing(monkeypatch):
     monkeypatch.setitem(settings.config, "publish_output", True)
     monkeypatch.setitem(settings.config, "publish_output_progress", True)
     monkeypatch.setitem(settings.config, "is_auto_command", False)
-    monkeypatch.setitem(settings.config, "propagate_tool_errors", False)
+    monkeypatch.setitem(settings.config, "propagate_command_errors", False)
     return settings
 
 
@@ -224,7 +224,7 @@ def test_a_rate_limited_diff_fetch_is_retried(
 
 
 async def test_describe_swallows_a_provider_error(publishing):
-    """`propagate_tool_errors` is false by default, so `run()` logs and returns."""
+    """`propagate_command_errors` is false by default, so `run()` logs and returns."""
     provider = MagicMock()
     provider.publish_comment.side_effect = NOT_ACCESSIBLE
     command = PRDescription.__new__(PRDescription)

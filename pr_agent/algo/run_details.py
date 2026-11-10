@@ -63,7 +63,7 @@ class RunDetails:
     # Monotonic reference taken when the collector is installed, i.e. at the top of the
     # tool's run(). Monotonic so that wall-clock adjustments cannot yield a negative duration.
     start_time: float = field(default_factory=time.monotonic)
-    # Set when a tool caught its own error and, because `propagate_tool_errors` is false by
+    # Set when a tool caught its own error and, because `propagate_command_errors` is false by
     # default, returned normally anyway. Without this a caller cannot tell a run that published
     # nothing because it failed from one that had nothing to say.
     command_failed: bool = False

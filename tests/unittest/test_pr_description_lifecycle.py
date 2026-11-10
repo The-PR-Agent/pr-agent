@@ -21,7 +21,7 @@ from tests.unittest._settings_helpers import (
 _TRACKED_SETTINGS = (
     "config.publish_output",
     "config.is_auto_command",
-    "config.propagate_tool_errors",
+    "config.propagate_command_errors",
     "pr_description.enable_help_comment",
     "pr_description.enable_help_text",
     "pr_description.enable_semantic_files_types",
@@ -49,7 +49,7 @@ def _configure_published_run():
     settings = get_settings()
     settings.config.publish_output = True
     settings.config.is_auto_command = False
-    settings.config.propagate_tool_errors = False
+    settings.config.propagate_command_errors = False
 
 
 @pytest.mark.asyncio
@@ -208,7 +208,7 @@ async def test_run_neutralizes_progress_comment_before_delete(monkeypatch):
             AsyncMock(side_effect=RuntimeError("model unavailable")),
         )
         _configure_published_run()
-        get_settings().config.propagate_tool_errors = True
+        get_settings().config.propagate_command_errors = True
 
         with pytest.raises(RuntimeError, match="model unavailable"):
             await description.run()
@@ -298,7 +298,7 @@ def published_description(monkeypatch):
 async def test_run_reports_description_publication_failure(published_description, propagate_command_errors):
     description, provider, progress_comment = published_description
     provider.publish_description.side_effect = RuntimeError("permission denied")
-    get_settings().config.propagate_tool_errors = propagate_command_errors
+    get_settings().config.propagate_command_errors = propagate_command_errors
 
     if propagate_command_errors:
         with pytest.raises(RuntimeError, match="permission denied"):
@@ -320,7 +320,7 @@ async def test_run_keeps_description_success_when_final_feedback_fails(
     published_description, propagate_command_errors, failed_step
 ):
     description, provider, progress_comment = published_description
-    get_settings().config.propagate_tool_errors = propagate_command_errors
+    get_settings().config.propagate_command_errors = propagate_command_errors
     error = RuntimeError("optional feedback failed")
     if failed_step == "publish_comment":
         # The final comment may have reached the provider before the error; never retry it.
@@ -377,7 +377,7 @@ async def test_run_propagates_cancellation_after_description_update(published_de
 async def test_run_keeps_description_comment_delivery_failures_strict(published_description, persistent):
     description, provider, progress_comment = published_description
     settings = get_settings()
-    settings.config.propagate_tool_errors = True
+    settings.config.propagate_command_errors = True
     settings.pr_description.publish_description_as_comment = True
     settings.pr_description.publish_description_as_comment_persistent = persistent
     error = RuntimeError("description comment failed")

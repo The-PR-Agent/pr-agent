@@ -70,10 +70,10 @@ working but is deprecated: it logs a warning and will be removed in 1.0. Rename 
 
 If batch publication fails, `/improve` retries each suggestion individually. If every retry fails,
 it reports a failure instead of silently removing the progress comment. With
-`config.propagate_tool_errors=true`, the publication error is also raised to the caller.
+`config.propagate_command_errors=true`, the publication error is also raised to the caller.
 Regular fallback comments and coverage notices are published before the error is reported.
 When this fallback output succeeds, it is retained without an additional failure banner;
-error propagation still follows `config.propagate_tool_errors`.
+error propagation still follows `config.propagate_command_errors`.
 If any individual retry succeeds, the existing partial-recovery behavior is preserved.
 
 <img src="/img/improve.png" alt="improve" width="512" />

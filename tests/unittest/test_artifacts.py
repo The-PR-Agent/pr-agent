@@ -144,7 +144,7 @@ class TestLoadArtifactContext:
             "artifact_path": [
                 str(missing),
                 str(first),
-                {"path": str(second), "artifact_label": "Code graph", "target_tools": ["pr_questions"]},
+                {"path": str(second), "artifact_label": "Code graph", "target_commands": ["pr_questions"]},
             ],
             "max_artifact_size": 100,
             "artifact_label": "CI log",
@@ -157,8 +157,8 @@ class TestLoadArtifactContext:
         assert context is not None
         assert [artifact["label"] for artifact in context["artifacts"]] == ["ci.log", "Code graph"]
         assert sum(len(artifact["content"]) for artifact in context["artifacts"]) <= 100
-        assert context["artifacts"][0]["target_tools"] == frozenset(SUPPORTED_ARTIFACT_COMMANDS)
-        assert context["artifacts"][1]["target_tools"] == frozenset({"pr_questions"})
+        assert context["artifacts"][0]["target_commands"] == frozenset(SUPPORTED_ARTIFACT_COMMANDS)
+        assert context["artifacts"][1]["target_commands"] == frozenset({"pr_questions"})
 
     def test_skips_artifact_with_non_string_path(self, tmp_path):
         artifact = tmp_path / "valid.txt"
@@ -324,7 +324,7 @@ class TestInjectArtifactContext:
         "artifacts.artifact_path",
         "artifacts.artifact_label",
         "artifacts.artifact_instructions",
-        "artifacts.target_tools",
+        "artifacts.target_commands",
         "pr_reviewer.extra_instructions",
         "pr_description.extra_instructions",
         "pr_code_suggestions.extra_instructions",
@@ -338,7 +338,7 @@ class TestInjectArtifactContext:
         s.set("artifacts.artifact_path", "")
         s.set("artifacts.artifact_label", "")
         s.set("artifacts.artifact_instructions", "")
-        s.set("artifacts.target_tools", ["pr_reviewer", "pr_description", "pr_code_suggestions"])
+        s.set("artifacts.target_commands", ["pr_reviewer", "pr_description", "pr_code_suggestions"])
         for command in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
             s.set(f"{command}.extra_instructions", "")
         token = _artifact_context.set(None)
@@ -413,7 +413,7 @@ class TestInjectArtifactContext:
         assert context["label"] == directive
 
     def test_unsupported_target_commands_are_skipped_with_a_warning(self, settings, report):
-        settings.set("artifacts.target_tools", ["pr_reviewer", "pr_custom_labels"])
+        settings.set("artifacts.target_commands", ["pr_reviewer", "pr_custom_labels"])
         env = {"GITHUB_WORKSPACE": str(report.parent), "ARTIFACT_PATH": str(report)}
 
         with patch.dict(os.environ, env), patch("pr_agent.algo.artifacts.get_logger") as logger:
@@ -426,7 +426,7 @@ class TestInjectArtifactContext:
         )
 
     def test_pr_questions_is_a_supported_target(self, settings, report):
-        settings.set("artifacts.target_tools", ["pr_questions"])
+        settings.set("artifacts.target_commands", ["pr_questions"])
         with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(report.parent), "ARTIFACT_PATH": str(report)}):
             inject_artifact_context()
 
@@ -444,7 +444,7 @@ class TestInjectArtifactContext:
         assert settings.get("pr_reviewer.extra_instructions") == ""
 
     def test_only_target_commands_get_it_and_existing_instructions_are_kept(self, settings, report):
-        settings.set("artifacts.target_tools", ["pr_reviewer"])
+        settings.set("artifacts.target_commands", ["pr_reviewer"])
         settings.set("pr_reviewer.extra_instructions", "Be terse.")
         with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(report.parent), "ARTIFACT_PATH": str(report)}):
             inject_artifact_context()
@@ -459,8 +459,8 @@ class TestInjectArtifactContext:
         graph.write_text("GRAPH_CONTEXT")
         settings.set("artifacts.enable", True)
         settings.set("artifacts.artifact_path", [
-            {"path": str(report), "target_tools": ["pr_reviewer"]},
-            {"path": str(graph), "target_tools": ["pr_questions"]},
+            {"path": str(report), "target_commands": ["pr_reviewer"]},
+            {"path": str(graph), "target_commands": ["pr_questions"]},
         ])
         with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(tmp_path)}):
             inject_artifact_context()
@@ -477,12 +477,12 @@ class TestInjectArtifactContext:
             {
                 "path": str(report),
                 "artifact_label": "Tests",
-                "target_tools": ["pr_reviewer"],
+                "target_commands": ["pr_reviewer"],
             },
             {
                 "path": str(second),
                 "artifact_label": "Coverage",
-                "target_tools": ["pr_reviewer"],
+                "target_commands": ["pr_reviewer"],
             },
         ])
         with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(tmp_path)}):

@@ -161,7 +161,7 @@ async def test_recorded_review_failure_marks_span_and_next_review_starts_clean(
         "config.fallback_models": ["gpt-4o-mini"],
         "config.use_repo_settings_file": False,
         "config.extra_config_url": None,
-        "config.propagate_tool_errors": False,
+        "config.propagate_command_errors": False,
         "config.repo_context_files": [],
         "plain_diff.output_path": None,
         "plain_diff.json_output_path": None,

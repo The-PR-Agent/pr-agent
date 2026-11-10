@@ -247,17 +247,17 @@ async def test_incomplete_provider_diff_is_re_raised_after_temporary_comment_cle
     settings = get_settings()
     previous = {
         "publish_output": settings.config.publish_output,
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
     }
     settings.config.publish_output = True
-    settings.set("config.propagate_tool_errors", False)
+    settings.set("config.propagate_command_errors", False)
     monkeypatch.setattr("pr_agent.commands.pr_generate_labels.retry_with_fallback_models", fail_with_incomplete_diff)
     try:
         with pytest.raises(incomplete_error_class):
             await command.run()
     finally:
         settings.config.publish_output = previous["publish_output"]
-        settings.set("config.propagate_tool_errors", previous["propagate_tool_errors"])
+        settings.set("config.propagate_command_errors", previous["propagate_command_errors"])
 
     provider.remove_initial_comment.assert_called_once()
 
@@ -283,10 +283,10 @@ async def test_run_skips_without_recording_failure_when_all_changed_files_are_fi
     settings = get_settings()
     previous = {
         "publish_output": settings.config.publish_output,
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
     }
     settings.config.publish_output = True
-    settings.set("config.propagate_tool_errors", False)
+    settings.set("config.propagate_command_errors", False)
     init_run_details()
     output = tmp_path / "labels.json"
     token = review_json_output_path.set(str(output))
@@ -295,7 +295,7 @@ async def test_run_skips_without_recording_failure_when_all_changed_files_are_fi
     finally:
         review_json_output_path.reset(token)
         settings.config.publish_output = previous["publish_output"]
-        settings.set("config.propagate_tool_errors", previous["propagate_tool_errors"])
+        settings.set("config.propagate_command_errors", previous["propagate_command_errors"])
 
     assert command_failed() is False
     assert json.loads(output.read_text(encoding="utf-8")) == {"labels": [], "usage": {}}

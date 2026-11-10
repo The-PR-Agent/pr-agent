@@ -885,7 +885,7 @@ async def test_handle_request_restores_language_after_invalid_arguments(monkeypa
     with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
         settings = get_settings()
         settings.set("CONFIG.RESPONSE_LANGUAGE", "de-DE")
-        settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+        settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", False)
         command = "/review --config.response_language=fr-FR"
         if error_stage == "arguments":
             command += " --config=123"
@@ -896,7 +896,7 @@ async def test_handle_request_restores_language_after_invalid_arguments(monkeypa
         )
         assert handled is False
         assert settings.config.response_language == "de-DE"
-        assert settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False) is False
+        assert settings.get("CONFIG.PROPAGATE_COMMAND_ERRORS", False) is False
 
 
 @pytest.mark.asyncio

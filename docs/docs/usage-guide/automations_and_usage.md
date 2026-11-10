@@ -44,10 +44,10 @@ The commands above assume the `pr_agent` package is importable — use the venv 
 4. For scripts that need a failed request to return a non-zero process status, enable tool error propagation:
 
    ```bash
-   python -m pr_agent.cli --pr_url=<pr_url> review --config.propagate_tool_errors=true
+   python -m pr_agent.cli --pr_url=<pr_url> review --config.propagate_command_errors=true
    ```
 
-   With `config.propagate_tool_errors=true`, the installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1 when a propagated tool error makes the request fail or a tool records a failure even though it returns successfully. In the latter case, the CLI logs a warning explaining the non-zero exit.
+   With `config.propagate_command_errors=true`, the installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1 when a propagated tool error makes the request fail or a tool records a failure even though it returns successfully. In the latter case, the CLI logs a warning explaining the non-zero exit.
 
    Tool error propagation is disabled by default, preserving the existing status 0 behavior for these tool failures. Argparse parse and usage errors continue to exit with status 2.
 
@@ -249,7 +249,7 @@ Adding `"synchronize"` to this list enables auto tools on new commits pushed to 
 
 `github_action_config.push_trigger_ignore_bot_commits` (default `true`) skips processing when the push author is a bot, avoiding redundant runs on automated commits.
 
-`github_action_config.fail_on_tool_errors` (default `true`) makes the Action exit non-zero when a tool recorded a swallowed failure (the default `propagate_tool_errors = false` case), instead of finishing green on a pull request that got no review. Set it to `false` to restore the previous behavior of ignoring recorded tool failures. Set it in the workflow configuration; comment arguments such as `/review --github_action_config.fail_on_tool_errors=false` are rejected.
+`github_action_config.fail_on_command_errors` (default `true`) makes the Action exit non-zero when a tool recorded a swallowed failure (the default `propagate_command_errors = false` case), instead of finishing green on a pull request that got no review. Set it to `false` to restore the previous behavior of ignoring recorded tool failures. Set it in the workflow configuration; comment arguments such as `/review --github_action_config.fail_on_command_errors=false` are rejected.
 
 #### Automatic tools after a submitted GitHub review
 

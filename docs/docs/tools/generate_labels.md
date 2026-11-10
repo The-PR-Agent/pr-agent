@@ -94,7 +94,7 @@ bot-owned labels while preserving human-added labels.
 
 If the current labels cannot be read, `/generate_labels` skips publication and
 records the command as failed. A known provider failure while publishing labels
-also marks the command as failed. With `config.propagate_tool_errors = true`, these
+also marks the command as failed. With `config.propagate_command_errors = true`, these
 failures raise an error after temporary-comment cleanup.
 
 A successful provider acknowledgement means its label operation completed normally;

@@ -953,7 +953,7 @@ def _patch_env_settings(monkeypatch, overrides=None):
             "GITHUB_ACTION.AUTO_REVIEW": True,
             "GITHUB_ACTION.AUTO_DESCRIBE": False,
             "GITHUB_ACTION.AUTO_IMPROVE": False,
-            "GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS": True,
+            "GITHUB_ACTION_CONFIG.FAIL_ON_COMMAND_ERRORS": True,
         }
         if overrides:
             values.update(overrides)
@@ -1044,7 +1044,7 @@ def test_recorded_command_failure_stays_green_when_gate_disabled(monkeypatch, tm
 
     monkeypatch.setattr(github_action_runner, "PRReviewer", FailingCommand)
     _install_action_env(monkeypatch, tmp_path, _write_pull_request_opened_event(tmp_path))
-    _patch_env_settings(monkeypatch, overrides={"GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS": "false"})
+    _patch_env_settings(monkeypatch, overrides={"GITHUB_ACTION_CONFIG.FAIL_ON_COMMAND_ERRORS": "false"})
 
     github_action_runner.main()
 
@@ -1097,7 +1097,7 @@ def test_fresh_collector_per_command_when_gate_off(monkeypatch, tmp_path, restor
     monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
     monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
     settings = get_settings()
-    settings.set("GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS", "false")
+    settings.set("GITHUB_ACTION_CONFIG.FAIL_ON_COMMAND_ERRORS", "false")
     _install_action_env(monkeypatch, tmp_path, _write_synchronize_event(tmp_path))
 
     github_action_runner.main()
@@ -1157,7 +1157,7 @@ def test_comment_argument_cannot_disable_recorded_failure_check(monkeypatch, tmp
     monkeypatch.setitem(pr_agent_module.command2class, "review", FailingReviewer)
     monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
     event_path = _write_issue_comment_event_with_body(
-        tmp_path, "/review --github_action_config.fail_on_tool_errors=false"
+        tmp_path, "/review --github_action_config.fail_on_command_errors=false"
     )
     _install_action_env(monkeypatch, tmp_path, event_path, event_name="issue_comment")
 
@@ -1181,7 +1181,7 @@ def test_command_returning_false_fails_action_even_with_gate_off(monkeypatch, tm
     monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
     monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
     settings = get_settings()
-    settings.set("GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS", "false")
+    settings.set("GITHUB_ACTION_CONFIG.FAIL_ON_COMMAND_ERRORS", "false")
     _install_action_env(monkeypatch, tmp_path, _write_synchronize_event(tmp_path))
 
     with pytest.raises(SystemExit) as exc_info:
@@ -1206,7 +1206,7 @@ def test_auto_command_returning_false_fails_action_even_with_gate_off(monkeypatc
 
     monkeypatch.setattr(github_action_runner, "PRReviewer", FalseCommand)
     _install_action_env(monkeypatch, tmp_path, _write_pull_request_opened_event(tmp_path))
-    _patch_env_settings(monkeypatch, overrides={"GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS": False})
+    _patch_env_settings(monkeypatch, overrides={"GITHUB_ACTION_CONFIG.FAIL_ON_COMMAND_ERRORS": False})
 
     with pytest.raises(SystemExit) as exc_info:
         github_action_runner.main()
@@ -1840,7 +1840,7 @@ async def test_action_configured_commands_share_one_artifact_context_after_real_
     settings.set("ARTIFACTS", {
         "enable": True,
         "artifact_path": str(artifact),
-        "target_tools": ["pr_reviewer"],
+        "target_commands": ["pr_reviewer"],
     }, merge=False)
     settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "Host instruction")
     settings.set("CONFIG.USE_REPO_SETTINGS_FILE", True)
@@ -1908,7 +1908,7 @@ async def test_direct_action_and_workflow_run_keep_artifact_separate_from_ci_con
     settings.set("ARTIFACTS", {
         "enable": True,
         "artifact_path": str(artifact),
-        "target_tools": ["pr_reviewer", "pr_description", "pr_code_suggestions"],
+        "target_commands": ["pr_reviewer", "pr_description", "pr_code_suggestions"],
     }, merge=False)
     monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
     monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda _url: None)
@@ -1972,7 +1972,7 @@ async def test_non_pr_action_routes_do_not_read_artifacts(
     settings.set("ARTIFACTS", {
         "enable": True,
         "artifact_path": str(artifact),
-        "target_tools": ["pr_reviewer"],
+        "target_commands": ["pr_reviewer"],
     }, merge=False)
 
     def fail_if_read(*_args, **_kwargs):

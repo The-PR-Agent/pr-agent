@@ -207,7 +207,7 @@ OUTPUT_SINK_TYPES: dict[str, type[OutputSink]] = {
 
 def _selected_output_commands(cfg: dict) -> list[str] | None:
     """Return selected output types, or None for an invalid configuration."""
-    commands = cfg.get("tools", ["review", "describe", "improve"])
+    commands = cfg.get("commands", ["review", "describe", "improve"])
     if isinstance(commands, str):
         commands = normalize_setting_list(commands, split_commas=True)
     if (not isinstance(commands, (list, tuple)) or not commands
@@ -226,7 +226,7 @@ def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
         return None
 
     if _selected_output_commands(cfg) is None:
-        return False, "push_outputs.tools must select supported tool names"
+        return False, "push_outputs.commands must select supported tool names"
 
     channels = cfg.get("channels", [])
     if isinstance(channels, str):

@@ -133,12 +133,12 @@ FORBIDDEN_ARGS = [
     "--azure_devops_server.agent_identity=attacker",
     "--azure_devops_server__agent_identity=attacker",
     '--azure_devops_server={"agent_identity": "attacker"}',
-    # fail_on_tool_errors decides whether a recorded tool failure fails the GitHub Action, so a
+    # fail_on_command_errors decides whether a recorded tool failure fails the GitHub Action, so a
     # commenter must not be able to turn it off for their own command.
-    "--github_action_config.fail_on_tool_errors=false",
-    "--GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS=false",
-    "--github_action_config__fail_on_tool_errors=false",
-    '--github_action_config={"fail_on_tool_errors": false}',
+    "--github_action_config.fail_on_command_errors=false",
+    "--GITHUB_ACTION_CONFIG.FAIL_ON_COMMAND_ERRORS=false",
+    "--github_action_config__fail_on_command_errors=false",
+    '--github_action_config={"fail_on_command_errors": false}',
     # Resource, write, and regex controls stay host-controlled when commands are
     # supplied through comments, even when root repository settings may set them.
     "--pr_reviewer.max_number_of_calls=10",

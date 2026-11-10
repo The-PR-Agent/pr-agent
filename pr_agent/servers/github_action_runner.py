@@ -153,10 +153,10 @@ def _settings_pr_url(event_payload, event_name):
 
 
 def _fail_on_recorded_command_error():
-    # Fail the Action on a failure the tool recorded but swallowed (propagate_tool_errors=false),
+    # Fail the Action on a failure the tool recorded but swallowed (propagate_command_errors=false),
     # so a PR that got no review is not reported green (#3705). The operator opts out with
-    # GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS=false; comment arguments cannot change it.
-    if not is_true(get_setting_or_env("GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS", True)):
+    # GITHUB_ACTION_CONFIG.FAIL_ON_COMMAND_ERRORS=false; comment arguments cannot change it.
+    if not is_true(get_setting_or_env("GITHUB_ACTION_CONFIG.FAIL_ON_COMMAND_ERRORS", True)):
         return
     if command_failed():
         get_logger().warning("Tool reported success but recorded a failure; failing the action")
@@ -625,7 +625,7 @@ def _inject_ci_conclusion(conclusion):
     )
     separator = "\n======\n\n"
     default_target_commands = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
-    target_commands = get_settings().get("ARTIFACTS.TARGET_TOOLS", default_target_commands)
+    target_commands = get_settings().get("ARTIFACTS.TARGET_COMMANDS", default_target_commands)
     if isinstance(target_commands, str):
         target_commands = [t.strip() for t in target_commands.split(",") if t.strip()]
     elif not isinstance(target_commands, (list, set, tuple)):

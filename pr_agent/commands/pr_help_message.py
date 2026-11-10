@@ -668,7 +668,7 @@ class PRHelpMessage:
         except Exception as e:
             get_logger().exception(f"Error while running PRHelpMessage: {e}")
             record_command_failure()
-            if get_settings().config.get("propagate_tool_errors", False):
+            if get_settings().config.get("propagate_command_errors", False):
                 raise
         return ""
 

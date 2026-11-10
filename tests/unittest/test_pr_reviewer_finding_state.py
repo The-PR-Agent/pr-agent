@@ -1696,7 +1696,7 @@ async def test_successful_persistence_is_not_failed_by_optional_status_result(
 async def test_persistent_publish_exception_is_visible_for_auto_review(monkeypatch):
     settings = _settings(monkeypatch)
     monkeypatch.setitem(settings.config, "is_auto_command", True)
-    monkeypatch.setitem(settings.config, "propagate_tool_errors", False)
+    monkeypatch.setitem(settings.config, "propagate_command_errors", False)
     old_body = add_pr_review_identity("old review", PRReviewIdentity.REGULAR.value)
     old_comment = SimpleNamespace(body=old_body)
 

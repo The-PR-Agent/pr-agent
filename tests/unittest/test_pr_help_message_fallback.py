@@ -29,7 +29,7 @@ def help_command(tmp_path, monkeypatch):
         "config.model": PRIMARY,
         "config.fallback_models": [BACKUP],
         "config.publish_output": True,
-        "config.propagate_tool_errors": False,
+        "config.propagate_command_errors": False,
         "config.max_output_tokens": 0,
         "config.model_token_count_estimate_factor": 0,
         "model_routing.enable": False,
@@ -253,7 +253,7 @@ async def test_invalid_response_shape_uses_backup_answer(help_command, response)
 @pytest.mark.parametrize("propagate_command_errors", [False, True])
 async def test_all_invalid_response_shapes_record_failure(help_command, propagate_command_errors):
     command, details, logger = help_command
-    get_settings().set("config.propagate_tool_errors", propagate_command_errors)
+    get_settings().set("config.propagate_command_errors", propagate_command_errors)
     command.ai_handler.chat_completion.side_effect = [("[]", "stop"), ("true", "stop")]
 
     if propagate_command_errors:

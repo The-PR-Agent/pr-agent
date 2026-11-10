@@ -292,13 +292,13 @@ def test_empty_slash_ask_is_preserved():
 
 class _SwallowingReview:
     """Stand-in for a command that hits its own error and returns normally anyway, which is what
-    the real tools do while `propagate_tool_errors` is false (see pr_reviewer.py:458-464)."""
+    the real tools do while `propagate_command_errors` is false (see pr_reviewer.py:458-464)."""
 
     def __init__(self, pr_url, ai_handler=None, args=None):
         self.observed_propagation = None
 
     async def run(self):
-        self.observed_propagation = get_settings().config.get("propagate_tool_errors", False)
+        self.observed_propagation = get_settings().config.get("propagate_command_errors", False)
         record_command_failure()
         if self.observed_propagation:
             raise RuntimeError("the model call failed")

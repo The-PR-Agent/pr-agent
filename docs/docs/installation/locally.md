@@ -145,7 +145,7 @@ if __name__ == '__main__':
 
 For other providers, change `provider` to its provider ID (for example, `gitlab`, `bitbucket`, or `azure`) and replace `github.user_token` with that provider's required credentials and connection settings.
 
-With `config.propagate_tool_errors` enabled, forwarding the return value through `SystemExit` makes this script exit with status 1 after a propagated tool error. The default remains status 0.
+With `config.propagate_command_errors` enabled, forwarding the return value through `SystemExit` makes this script exit with status 1 after a propagated tool error. The default remains status 0.
 
 The Python helper accepts quoted arguments, for example
 `cli.run_command(pr_url, "/review --pr_reviewer.extra_instructions='be concise please'")`.

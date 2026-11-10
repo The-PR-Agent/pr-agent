@@ -463,12 +463,12 @@ artifact_path = [
 ]
 artifact_instructions = ""                                  # empty = a generic "treat this as CI context" instruction
 artifact_label = ""                                         # shared label; empty = each file's name
-target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions", "pr_questions"]
+target_commands = ["pr_reviewer", "pr_description", "pr_code_suggestions", "pr_questions"]
 max_artifact_size = 50000                                   # characters; longer files are truncated with a marker
 ```
 
 `artifact_path` may also be a single string. For multiple files, each entry can set
-`path`, `artifact_label`, `artifact_instructions`, `target_tools`, and `truncate_from` on
+`path`, `artifact_label`, `artifact_instructions`, `target_commands`, and `truncate_from` on
 its own line; a shared `artifact_label` applies only to a single file, otherwise each file falls
 back to its name.
 

@@ -199,7 +199,7 @@ def load_artifact_context() -> ArtifactPromptContext | None:
     if max_size <= 0:
         max_size = 50000
     default_target_commands = _artifact_target_commands(
-        artifacts_settings.get("target_tools"), frozenset(SUPPORTED_ARTIFACT_COMMANDS)
+        artifacts_settings.get("target_commands"), frozenset(SUPPORTED_ARTIFACT_COMMANDS)
     )
     contexts = []
     remaining_size = max_size
@@ -249,7 +249,7 @@ def load_artifact_context() -> ArtifactPromptContext | None:
             "instructions": instructions or DEFAULT_ARTIFACT_INSTRUCTIONS,
             "start_marker": start_marker,
             "end_marker": end_marker,
-            "target_tools": _artifact_target_commands(entry.get("target_tools"), default_target_commands),
+            "target_commands": _artifact_target_commands(entry.get("target_commands"), default_target_commands),
         })
         remaining_size -= len(content)
     if not contexts:
@@ -295,7 +295,7 @@ def inject_artifact_context() -> None:
         if not artifact_context:
             return
         target_commands = get_settings().get(
-            "ARTIFACTS.TARGET_TOOLS",
+            "ARTIFACTS.TARGET_COMMANDS",
             ["pr_reviewer", "pr_description", "pr_code_suggestions", "pr_questions"]
         )
         default_target_commands = _artifact_target_commands(
@@ -304,7 +304,7 @@ def inject_artifact_context() -> None:
         contexts = artifact_context.get("artifacts", [artifact_context])
         by_command = {command: [] for command in SUPPORTED_ARTIFACT_COMMANDS}
         for context in contexts:
-            requested_commands = context.get("target_tools", default_target_commands)
+            requested_commands = context.get("target_commands", default_target_commands)
             supported_commands = requested_commands & SUPPORTED_ARTIFACT_COMMANDS
             unsupported_commands = sorted(requested_commands - SUPPORTED_ARTIFACT_COMMANDS)
             if unsupported_commands:

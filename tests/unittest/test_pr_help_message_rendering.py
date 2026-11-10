@@ -156,7 +156,7 @@ def non_openai_question_settings():
     keys = [
         "config.model",
         "config.fallback_models",
-        "config.propagate_tool_errors",
+        "config.propagate_command_errors",
         "model_routing.enable",
         "openai.key",
         "openai.deployment_id",
@@ -199,7 +199,7 @@ async def test_question_reaches_configured_handler_without_openai_key(
 async def test_question_uses_configured_handler_error_path_without_openai_key(
     published_output, non_openai_question_settings, tmp_path, monkeypatch, propagate_command_errors
 ):
-    get_settings().set("config.propagate_tool_errors", propagate_command_errors)
+    get_settings().set("config.propagate_command_errors", propagate_command_errors)
     handler = StubAiHandler(error=RuntimeError("provider credentials missing"))
     command = build_question_command(tmp_path, monkeypatch, handler)
 

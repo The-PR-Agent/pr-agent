@@ -22,7 +22,7 @@ async def test_manual_commands_reuse_request_provider(monkeypatch, action):
     settings.set("config.git_provider", "github")
     settings.set("config.use_repo_settings_file", False)
     settings.set("config.publish_output", False)
-    settings.set("config.propagate_tool_errors", True)
+    settings.set("config.propagate_command_errors", True)
     settings.set("github.deployment_type", "user")
     settings.set("github.user_token", "stub-token")
     settings.set("pr_update_changelog.push_changelog_changes", False)
@@ -69,7 +69,7 @@ def hosted_provider_with_repo_diff(monkeypatch):
     settings.set("config.use_repo_settings_file", True)
     settings.set("config.use_per_directory_settings_file", False)
     settings.set("config.publish_output", False)
-    settings.set("config.propagate_tool_errors", True)
+    settings.set("config.propagate_command_errors", True)
     settings.set("skills.enabled", False)
     settings.set("pr_questions.use_conversation_history", False)
     for rule in RULE_FIELDS.values():

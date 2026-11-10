@@ -559,7 +559,7 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
             if result is False:
                 command_succeeded = False
             elif command_failed():
-                # `propagate_tool_errors` is false by default, so a tool that failed internally
+                # `propagate_command_errors` is false by default, so a tool that failed internally
                 # still returns normally. Reporting that as success would put a green tick on a
                 # pull request that never got its review.
                 get_logger().warning(f"Command '{command}' reported success but recorded a failure")

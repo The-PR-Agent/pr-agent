@@ -339,7 +339,7 @@ class PRDescription:
             record_command_failure()
             if (
                 isinstance(e, IncompleteProviderPullRequestFilesError)
-                or get_settings().config.get("propagate_tool_errors", False)
+                or get_settings().config.get("propagate_command_errors", False)
             ):
                 raise
         finally:

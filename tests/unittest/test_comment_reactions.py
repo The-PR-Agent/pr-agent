@@ -330,7 +330,7 @@ async def test_a_swallowed_command_failure_gets_a_failure_outcome(
     import pr_agent.agent.pr_agent as pr_agent_module
 
     reactions(success="hooray", failure="confused")
-    monkeypatch.setitem(get_settings().config, "propagate_tool_errors", False)
+    monkeypatch.setitem(get_settings().config, "propagate_command_errors", False)
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
     monkeypatch.setattr(pr_agent_module.CliArgs, "validate_user_args", lambda _args: (True, None))
@@ -344,12 +344,12 @@ async def test_a_swallowed_command_failure_gets_a_failure_outcome(
 
         async def run(self):
             observed_propagation.append(
-                get_settings().config.get("propagate_tool_errors", False)
+                get_settings().config.get("propagate_command_errors", False)
             )
             try:
                 raise RuntimeError("provider unavailable")
             except RuntimeError:
-                if get_settings().config.get("propagate_tool_errors", False):
+                if get_settings().config.get("propagate_command_errors", False):
                     raise
 
     monkeypatch.setitem(pr_agent_module.command2class, "review", SwallowingReviewCommand)
@@ -364,7 +364,7 @@ async def test_a_swallowed_command_failure_gets_a_failure_outcome(
     assert observed_propagation == [True]
     assert provider.reactions == [(4242, "eyes"), (4242, "confused")]
     assert provider.removed == [(4242, 1)]
-    assert get_settings().config.get("propagate_tool_errors") is False
+    assert get_settings().config.get("propagate_command_errors") is False
 
 
 @pytest.mark.asyncio
@@ -417,7 +417,7 @@ async def test_documentation_and_label_failures_get_failure_outcomes(
 
     reactions(success="hooray", failure="confused")
     settings = get_settings()
-    monkeypatch.setitem(settings.config, "propagate_tool_errors", False)
+    monkeypatch.setitem(settings.config, "propagate_command_errors", False)
     monkeypatch.setitem(settings.config, "publish_output", False)
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
@@ -446,7 +446,7 @@ async def test_documentation_and_label_failures_get_failure_outcomes(
 
     assert provider.reactions == [(4242, "eyes"), (4242, "confused")]
     assert provider.removed == [(4242, 1)]
-    assert get_settings().config.get("propagate_tool_errors") is False
+    assert get_settings().config.get("propagate_command_errors") is False
 
 
 @pytest.mark.asyncio
@@ -454,7 +454,7 @@ async def test_contextless_propagation_override_isolated_from_concurrent_request
     import pr_agent.agent.pr_agent as pr_agent_module
 
     assert get_settings() is global_settings
-    monkeypatch.setitem(global_settings.config, "propagate_tool_errors", False)
+    monkeypatch.setitem(global_settings.config, "propagate_command_errors", False)
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
     monkeypatch.setattr(pr_agent_module.CliArgs, "validate_user_args", lambda _args: (True, None))
@@ -469,14 +469,14 @@ async def test_contextless_propagation_override_isolated_from_concurrent_request
             self.pr_url = pr_url
 
         async def run(self):
-            observed[self.pr_url] = get_settings().config.get("propagate_tool_errors", False)
+            observed[self.pr_url] = get_settings().config.get("propagate_command_errors", False)
             if self.pr_url == "override":
                 override_started.set()
                 await default_observed.wait()
             else:
                 await override_started.wait()
                 observed["default_during_override"] = get_settings().config.get(
-                    "propagate_tool_errors", False
+                    "propagate_command_errors", False
                 )
                 default_observed.set()
 
@@ -495,4 +495,4 @@ async def test_contextless_propagation_override_isolated_from_concurrent_request
         "default": False,
         "default_during_override": False,
     }
-    assert global_settings.config.get("propagate_tool_errors") is False
+    assert global_settings.config.get("propagate_command_errors") is False

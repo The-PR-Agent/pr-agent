@@ -21,7 +21,7 @@ _CONSOLE_SCRIPT_FALLBACK = (
     "import sys; from pr_agent.cli import run; sys.exit(run())"
 )
 _SETTINGS_KEYS = [
-    "config.propagate_tool_errors",
+    "config.propagate_command_errors",
     "config.cli_mode",
     "config.config_branch",
     "config.extra_config_url",
@@ -39,7 +39,7 @@ def restore_cli_settings():
 
 def _run_with_result(monkeypatch, result, *, propagate_command_errors, recorded_failure=False):
     fake_settings = SimpleNamespace(
-        config={"propagate_tool_errors": propagate_command_errors},
+        config={"propagate_command_errors": propagate_command_errors},
         litellm={},
         set=MagicMock(),
     )
@@ -124,13 +124,13 @@ def test_run_does_not_inherit_caller_or_previous_command_failure(monkeypatch):
 
 def test_run_reads_effective_setting_after_dispatch(monkeypatch):
     fake_settings = SimpleNamespace(
-        config={"propagate_tool_errors": False},
+        config={"propagate_command_errors": False},
         litellm={},
         set=MagicMock(),
     )
 
     async def fake_handle_request(*_args, **_kwargs):
-        fake_settings.config["propagate_tool_errors"] = True
+        fake_settings.config["propagate_command_errors"] = True
         return False
 
     monkeypatch.setattr(cli, "get_settings", lambda: fake_settings)
@@ -148,7 +148,7 @@ def test_run_reads_effective_setting_after_dispatch(monkeypatch):
 def test_run_drains_callbacks_before_returning_failure_status(monkeypatch):
     events = []
     fake_settings = SimpleNamespace(
-        config={"propagate_tool_errors": True},
+        config={"propagate_command_errors": True},
         litellm={},
         set=MagicMock(),
     )
@@ -204,7 +204,7 @@ def test_real_request_failure_uses_effective_propagation_setting(
         async def run(self):
             events.append("tool")
             assert (
-                get_settings().config.get("propagate_tool_errors")
+                get_settings().config.get("propagate_command_errors")
                 is expected_effective_value
             )
             if recorded_failure:
@@ -216,7 +216,7 @@ def test_real_request_failure_uses_effective_propagation_setting(
         events.append("callbacks")
 
     def fake_apply_repo_settings(*_args, **_kwargs):
-        get_settings().set("CONFIG.PROPAGATE_TOOL_ERRORS", repo_value)
+        get_settings().set("CONFIG.PROPAGATE_COMMAND_ERRORS", repo_value)
 
     monkeypatch.setitem(pr_agent_module.command2class, "review", FailingReview)
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
@@ -231,7 +231,7 @@ def test_real_request_failure_uses_effective_propagation_setting(
         "review",
     ]
     if cli_value is not None:
-        inargs.append(f"--config.propagate_tool_errors={str(cli_value).lower()}")
+        inargs.append(f"--config.propagate_command_errors={str(cli_value).lower()}")
 
     status = cli.run(inargs=inargs)
 
@@ -268,7 +268,7 @@ def test_run_restores_propagation_setting_between_invocations(
     from pr_agent.agent import pr_agent as pr_agent_module
 
     settings = get_settings()
-    settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", baseline)
+    settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", baseline)
     apply_calls = 0
     observed_values = []
     request_results = iter([first_succeeds, False])
@@ -278,7 +278,7 @@ def test_run_restores_propagation_setting_between_invocations(
             pass
 
         async def run(self):
-            observed_values.append(get_settings().config.get("propagate_tool_errors"))
+            observed_values.append(get_settings().config.get("propagate_command_errors"))
             if next(request_results):
                 return
             raise RuntimeError("controlled tool failure")
@@ -286,7 +286,7 @@ def test_run_restores_propagation_setting_between_invocations(
     def fake_apply_repo_settings(*_args, **_kwargs):
         nonlocal apply_calls
         if override_source == "repository" and apply_calls == 0:
-            get_settings().set("CONFIG.PROPAGATE_TOOL_ERRORS", override)
+            get_settings().set("CONFIG.PROPAGATE_COMMAND_ERRORS", override)
         apply_calls += 1
 
     monkeypatch.setitem(pr_agent_module.command2class, "review", ControlledReview)
@@ -298,7 +298,7 @@ def test_run_restores_propagation_setting_between_invocations(
 
     first_inargs = ["--pr_url=https://example.com/org/repo/pull/1", "review"]
     if override_source == "command":
-        first_inargs.append(f"--config.propagate_tool_errors={str(override).lower()}")
+        first_inargs.append(f"--config.propagate_command_errors={str(override).lower()}")
 
     statuses = [
         cli.run(inargs=first_inargs),
@@ -307,15 +307,15 @@ def test_run_restores_propagation_setting_between_invocations(
 
     assert observed_values == [override, baseline]
     assert statuses == expected_statuses
-    assert settings.config.get("propagate_tool_errors") is baseline
+    assert settings.config.get("propagate_command_errors") is baseline
 
 
 def test_run_restores_propagation_setting_when_callback_drain_raises(monkeypatch):
     settings = get_settings()
-    settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+    settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", False)
 
     async def fake_handle_request(*_args, **_kwargs):
-        get_settings().set("CONFIG.PROPAGATE_TOOL_ERRORS", True)
+        get_settings().set("CONFIG.PROPAGATE_COMMAND_ERRORS", True)
         return False
 
     async def failing_drain(*_args, **_kwargs):
@@ -333,7 +333,7 @@ def test_run_restores_propagation_setting_when_callback_drain_raises(monkeypatch
     with pytest.raises(RuntimeError, match="controlled callback failure"):
         cli.run(inargs=["--pr_url=https://example.com/org/repo/pull/1", "review"])
 
-    assert settings.config.get("propagate_tool_errors") is False
+    assert settings.config.get("propagate_command_errors") is False
 
 
 def test_run_scopes_settings_and_target_caches_between_invocations(monkeypatch):
@@ -493,7 +493,7 @@ from pr_agent.config_loader import get_settings
 
 async def controlled_handle_request(self, pr_url, request, notify=None):
     get_settings().set(
-        \"CONFIG.PROPAGATE_TOOL_ERRORS\",
+        \"CONFIG.PROPAGATE_COMMAND_ERRORS\",
         os.environ.get(\"PR_AGENT_TEST_PROPAGATE\") == \"true\",
     )
     result = os.environ.get(\"PR_AGENT_TEST_RESULT\")

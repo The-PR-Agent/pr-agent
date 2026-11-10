@@ -69,7 +69,7 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | `num_retries` | 4 | same-model retries of a request the provider rejects (429, 5xx, connection error) before fallback_models, waiting for its Retry-After (up to 30 s) or with exponential backoff; 0 falls back at once. Timeouts and empty responses use retry_same_model_on_timeout / retry_same_model_on_length instead |
 | `skip_keys` | [] |  |
 | `custom_reasoning_model` | false | when true, disables system messages and temperature controls for models that don't support chat-style inputs |
-| `system_instructions` | "" | Host-only instructions appended to every tool's system prompt; repository settings and comment arguments cannot set it. |
+| `system_instructions` | "" | Host-only instructions appended to every command's system prompt; repository settings and comment arguments cannot set it. |
 | `response_language` | "en-US" | PR response locale (e.g., "en-US", "it-IT"), also used for fixed comment text; applies only during each command. See additional_configurations.md. |
 | `repo_context_files` | ["AGENTS.md"] | Prompt context files: paths, alternatives, globs, sibling entries; [] disables. See [docs](additional_configurations.md). |
 | `repo_context_from_default_branch` | true | Read repo context files from the repository default branch (trusts only default-branch content). Set to false to read from the PR target branch instead. |
@@ -83,7 +83,7 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | Key | Default | Description |
 | --- | --- | --- |
 | `max_description_tokens` | 500 |  |
-| `max_commits_tokens` | 500 | Token cap on the commit messages sent to the model by /describe, /review, /improve and other tools. 0 means no limit; -1 sends none. |
+| `max_commits_tokens` | 500 | Token cap on the commit messages sent to the model by /describe, /review, /improve and other commands. 0 means no limit; -1 sends none. |
 | `max_model_tokens` | 32000 | Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities. |
 | `custom_model_max_tokens` | -1 | Override unknown models or Sol-tier GPT-6 on non-native custom providers. |
 | `max_output_tokens` | 0 | 0 = unset (the provider's own default applies) |
@@ -130,7 +130,7 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | `bot_user_indicators` | ["codium", "bot_", "bot-", "_bot", "-bot"] | Substring indicators used to skip bot users on webhook events. Currently consumed by the GitLab webhook (`is_bot_user`); other providers may adopt this list in future. The match is case-insensitive against the sender's display name. Overriding this setting REPLACES the default list — include the entries below in your override if you want to keep them (e.g. `["codium", "bot_", "bot-", "_bot", "-bot", "renovate"]`). |
 | `restricted_mode` | false | when true, skip operations that require elevated permissions (e.g. pushing code to the repository) |
 | `is_auto_command` | false | will be auto-set to true if the command is triggered by an automation |
-| `propagate_tool_errors` | false | when true, a tool re-raises instead of swallowing an internal error, so a caller can tell a failed run from an empty one |
+| `propagate_command_errors` | false | when true, a command re-raises instead of swallowing an internal error, so a caller can tell a failed run from an empty one |
 | `enable_ai_metadata` | false | will enable adding ai metadata |
 | `add_user_to_requests` | false | send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user") |
 | `reasoning_effort` | "medium" | "none", "minimal", "low", "medium", "high", "xhigh", "max" |
@@ -635,11 +635,11 @@ See [CI artifacts](../installation/github.md#ci-artifact-context).
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `enable` | false | Enable artifact injection into tool prompts (off by default; auto-enabled when artifact_path input is set) |
+| `enable` | false | Enable artifact injection into command prompts (off by default; auto-enabled when artifact_path input is set) |
 | `artifact_path` | "" | File path or list of paths to artifacts (relative to GITHUB_WORKSPACE, or absolute) |
 | `artifact_instructions` | "" | Analysis guidance rendered separately before the untrusted artifact label and content (leave empty for a sensible default) |
 | `artifact_label` | "" | Label shown to the AI — defaults to the filename when empty. |
-| `target_tools` | ["pr_reviewer", "pr_description", "pr_code_suggestions", "pr_questions"] | Which supported tools receive artifact context; unsupported names are skipped with a warning. |
+| `target_commands` | ["pr_reviewer", "pr_description", "pr_code_suggestions", "pr_questions"] | Which supported commands receive artifact context; unsupported names are skipped with a warning. |
 | `max_artifact_size` | 50000 | Max artifact size in characters (content is truncated if exceeded) |
 | `truncate_from` | "start" | Which end of the file to keep when truncating: "start" (default, keeps the beginning) or "end" (keeps the tail, where build logs carry their verdict - failure, plan summary or test result). |
 
@@ -693,7 +693,7 @@ See [Azure DevOps Server](../usage-guide/automations_and_usage.md#azure-devops-w
 | `agent_identity` | "" | Host-only GUID, unique name, descriptor, or list; empty resolves review authorship automatically. See installation/azure.md |
 
 
-## `[push_outputs]` — push tool outputs to external sinks without calling git-provider APIs (disabled by default) {#push_outputs-push tool outputs to external sinks without calling git-provider APIs (disabled by default)}
+## `[push_outputs]` — push command outputs to external sinks without calling git-provider APIs (disabled by default) {#push_outputs-push command outputs to external sinks without calling git-provider APIs (disabled by default)}
 
 See [Push outputs](../usage-guide/push_outputs.md#configuration).
 
@@ -701,7 +701,7 @@ See [Push outputs](../usage-guide/push_outputs.md#configuration).
 | --- | --- | --- |
 | `enable` | false |  |
 | `channels` | [] | exact names as a list/tuple or comma-separated string: "stdout", "file", "webhook", "slack", "telegram", "teams"; empty emits nothing |
-| `tools` | ["review", "describe", "improve"] | output types to deliver; add "ask" to include Q&A, or select fewer tools; supports comma-separated strings |
+| `commands` | ["review", "describe", "improve"] | output types to deliver; add "ask" to include Q&A, or select fewer commands; supports comma-separated strings |
 | `file_path` | "pr-agent-outputs/reviews.jsonl" | used by the "file" channel |
 | `webhook_url` | "" | used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL |
 | `slack_webhook_url` | "" | used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL |

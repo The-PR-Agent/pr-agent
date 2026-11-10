@@ -404,7 +404,7 @@ async def test_a_provider_without_check_runs_is_left_alone(check_runs_enabled, a
 # --------------------------------------------------------------------------------------
 # A tool that swallows its own error must not be reported as a success.
 #
-# `propagate_tool_errors` is false by default, so `PRReviewer.run()` logs the failure and
+# `propagate_command_errors` is false by default, so `PRReviewer.run()` logs the failure and
 # returns normally. `handle_request` therefore answers True, and without the run-details
 # verdict the check run would complete as a success on a pull request that got no review.
 # --------------------------------------------------------------------------------------
@@ -477,7 +477,7 @@ async def test_swallowed_command_failures_are_recorded(
     command_name, module, propagate_command_errors, monkeypatch, restored_config
 ):
     restored_config("publish_output", False)
-    restored_config("propagate_tool_errors", propagate_command_errors)
+    restored_config("propagate_command_errors", propagate_command_errors)
 
     async def fail(*args, **kwargs):
         raise RuntimeError("injected tool failure")
@@ -510,7 +510,7 @@ async def test_swallowed_command_failures_are_recorded(
 
 async def test_the_reviewer_records_a_swallowed_failure(monkeypatch, restored_config):
     """End to end through the real `PRReviewer.run()`, with the shipped default settings."""
-    restored_config("propagate_tool_errors", False)
+    restored_config("propagate_command_errors", False)
     restored_config("publish_output", False)
     command = PRReviewer.__new__(PRReviewer)
     command.git_provider = MagicMock()

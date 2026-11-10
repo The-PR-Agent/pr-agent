@@ -392,7 +392,7 @@ exceed the model's budget are not sent to it.
 If every fallback is exhausted, successful chunks are published as a partial review with a
 failed-chunk coverage warning, even when `publish_output_no_suggestions = false`. Incomplete
 reviews cannot resolve absent persistent findings. If no chunk succeeds, the review fails.
-With `config.propagate_tool_errors = true`, an exhausted fallback chain still signals failure
+With `config.propagate_command_errors = true`, an exhausted fallback chain still signals failure
 to the caller after publishing the partial review and removing the progress comment.
 Optional run details list all models that contributed to the merged review.
 

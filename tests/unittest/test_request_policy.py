@@ -285,7 +285,7 @@ def test_cli_skip_does_not_print_usage_or_exit_as_failure(environment, monkeypat
     # CLI intentionally snapshots global settings into its own request scope.
     monkeypatch.setattr(cli, "_cli_settings_scope", lambda: request_cycle_context({"settings": settings}))
     settings.set("config.ignore_pr_labels", ["skip"])
-    settings.set("config.propagate_tool_errors", True)
+    settings.set("config.propagate_command_errors", True)
     monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
     command = Mock()
     monkeypatch.setitem(agent.command2class, "review", command)

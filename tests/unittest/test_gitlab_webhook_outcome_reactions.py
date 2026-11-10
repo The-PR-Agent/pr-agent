@@ -2,7 +2,7 @@
 
 The GitHub App handler already does this; the GitLab webhook only added the start reaction, so
 `reaction_on_success` and `reaction_on_failure` did nothing there. The interesting part is not the
-extra call but the verdict: `propagate_tool_errors` is off, so a tool that fails internally still
+extra call but the verdict: `propagate_command_errors` is off, so a tool that fails internally still
 returns normally, and reacting as if it had succeeded would tick a comment whose command never
 ran. `command_failed()` is the signal that does not change how the tool handles its own error.
 

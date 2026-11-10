@@ -165,9 +165,9 @@ def should_skip_config_key(section: str, key: str, skip_keys=()) -> bool:
 # not drift. repo_context_max_glob_matches bounds how many files those entries fetch, so it
 # follows the same rule. repo_context_expand_imports adds repository-controlled provider
 # fetches, so a comment argument cannot enable it either.
-# github_action_config.fail_on_tool_errors decides whether a tool's recorded failure fails the
+# github_action_config.fail_on_command_errors decides whether a tool's recorded failure fails the
 # GitHub Action. The runner reads it after the command has applied its arguments, so a comment
-# such as `/review --github_action_config.fail_on_tool_errors=false` could turn a failed review
+# such as `/review --github_action_config.fail_on_command_errors=false` could turn a failed review
 # into a green workflow; the workflow's operator sets it instead.
 CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "config": frozenset({
@@ -183,7 +183,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
         "repo_context_expand_imports",
         "system_instructions",
     }),
-    "github_action_config": frozenset({"fail_on_tool_errors"}),
+    "github_action_config": frozenset({"fail_on_command_errors"}),
     "ignore": frozenset({"regex"}),
     "pr_code_suggestions": frozenset({"parallel_calls", "max_number_of_calls"}),
     # PR comments must not enable ticket reads performed with the operator's credentials.

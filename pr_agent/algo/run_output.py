@@ -70,7 +70,7 @@ def push_outputs(
 
         commands = _selected_output_commands(cfg)
         if commands is None:
-            get_logger().warning("push_outputs: invalid push_outputs.tools setting")
+            get_logger().warning("push_outputs: invalid push_outputs.commands setting")
             return
         if message_type not in commands:
             return

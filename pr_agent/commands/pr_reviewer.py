@@ -508,7 +508,7 @@ class PRReviewer:
             get_logger().error(f"Failed to review PR: {e}")
             if (
                 isinstance(e, IncompleteProviderPullRequestFilesError)
-                or get_settings().config.get("propagate_tool_errors", False)
+                or get_settings().config.get("propagate_command_errors", False)
             ):
                 raise
         finally:
@@ -539,7 +539,7 @@ class PRReviewer:
                 except Exception as e:
                     get_logger().exception(f"Failed to publish review failure result, error: {e}")
             if (partial_review_error is not None and not review_failed
-                    and get_settings().config.get("propagate_tool_errors", False)):
+                    and get_settings().config.get("propagate_command_errors", False)):
                 raise partial_review_error
             if not review_failed and self._structured_review_data is not None:
                 write_review_json_output(self._structured_review_data)

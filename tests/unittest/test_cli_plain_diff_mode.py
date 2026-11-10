@@ -22,7 +22,7 @@ _SETTINGS_KEYS = [
     "plain_diff.json_output_path",
     "config.git_provider",
     "config.publish_output",
-    "config.propagate_tool_errors",
+    "config.propagate_command_errors",
     "config.cli_mode",
     "config.config_branch",
     "config.extra_config_url",
@@ -590,7 +590,7 @@ def test_plain_diff_json_command_failure_returns_nonzero_without_error_propagati
             record_command_failure()
             return True
 
-    cfg("config.propagate_tool_errors", False)
+    cfg("config.propagate_command_errors", False)
     monkeypatch.setattr("pr_agent.cli.PRAgent", FailedAgent)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
 

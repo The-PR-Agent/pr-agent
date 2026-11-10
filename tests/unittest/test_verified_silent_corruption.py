@@ -337,13 +337,13 @@ async def test_describe_survives_an_unreadable_label_set(monkeypatch):
     settings = get_settings(use_context=False)
     tracked = {
         "publish_output": settings.config.publish_output,
-        "propagate_tool_errors": settings.config.propagate_tool_errors,
+        "propagate_command_errors": settings.config.propagate_command_errors,
         "publish_labels": settings.pr_description.publish_labels,
         "markers": settings.pr_description.use_description_markers,
         "semantic": settings.pr_description.enable_semantic_files_types,
     }
     settings.config.publish_output = True
-    settings.config.propagate_tool_errors = False
+    settings.config.propagate_command_errors = False
     settings.pr_description.publish_labels = True
     settings.pr_description.use_description_markers = False
     settings.pr_description.enable_semantic_files_types = False
@@ -369,7 +369,7 @@ async def test_describe_survives_an_unreadable_label_set(monkeypatch):
         await description.run()
     finally:
         settings.config.publish_output = tracked["publish_output"]
-        settings.config.propagate_tool_errors = tracked["propagate_tool_errors"]
+        settings.config.propagate_command_errors = tracked["propagate_command_errors"]
         settings.pr_description.publish_labels = tracked["publish_labels"]
         settings.pr_description.use_description_markers = tracked["markers"]
         settings.pr_description.enable_semantic_files_types = tracked["semantic"]

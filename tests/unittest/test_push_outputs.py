@@ -32,7 +32,7 @@ class TestOutputSinkPreflight:
         ([], False),
     ])
     def test_command_selection_uses_supported_exact_names(self, commands, valid):
-        result = output_sinks._check_output_sinks({"enable": True, "channels": ["stdout"], "tools": commands})
+        result = output_sinks._check_output_sinks({"enable": True, "channels": ["stdout"], "commands": commands})
         assert result[0] is valid
 
     @pytest.mark.parametrize("channels, valid", [
@@ -114,7 +114,7 @@ def _reset_push_outputs():
     s = get_settings()
     s.set('PUSH_OUTPUTS.ENABLE', False)
     s.set('PUSH_OUTPUTS.CHANNELS', [])
-    s.set('PUSH_OUTPUTS.TOOLS', ['review', 'describe', 'improve'])
+    s.set('PUSH_OUTPUTS.COMMANDS', ['review', 'describe', 'improve'])
     s.set('PUSH_OUTPUTS.FILE_PATH', 'pr-agent-outputs/reviews.jsonl')
     s.set('PUSH_OUTPUTS.WEBHOOK_URL', '')
     s.set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', '')
@@ -134,7 +134,7 @@ class TestPushOutputs:
 
         push_outputs('ask', payload={'answer': 'Not enabled yet'})
         push_outputs('review', payload={'a': 1})
-        s.set('PUSH_OUTPUTS.TOOLS', 'review, ask')
+        s.set('PUSH_OUTPUTS.COMMANDS', 'review, ask')
         push_outputs('ask', payload={'answer': 'Enabled'})
         push_outputs('describe', payload={'title': 'Not selected'})
 
@@ -147,7 +147,7 @@ class TestPushOutputs:
         s.set('PUSH_OUTPUTS.ENABLE', True)
         s.set('PUSH_OUTPUTS.CHANNELS', ['file'])
         s.set('PUSH_OUTPUTS.FILE_PATH', str(out))
-        s.set('PUSH_OUTPUTS.TOOLS', commands)
+        s.set('PUSH_OUTPUTS.COMMANDS', commands)
         warnings = []
         monkeypatch.setattr(run_output, 'get_logger',
                             lambda: SimpleNamespace(warning=warnings.append))
@@ -155,13 +155,13 @@ class TestPushOutputs:
         push_outputs('review', payload={'a': 1})
 
         assert not out.exists()
-        assert warnings == ['push_outputs: invalid push_outputs.tools setting']
+        assert warnings == ['push_outputs: invalid push_outputs.commands setting']
 
     def test_ask_slack_message_neutralizes_mentions(self, monkeypatch):
         s = get_settings()
         s.set('PUSH_OUTPUTS.ENABLE', True)
         s.set('PUSH_OUTPUTS.CHANNELS', ['slack'])
-        s.set('PUSH_OUTPUTS.TOOLS', ['ask'])
+        s.set('PUSH_OUTPUTS.COMMANDS', ['ask'])
         s.set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', 'https://example.test/slack')
         posts = []
         monkeypatch.setattr(

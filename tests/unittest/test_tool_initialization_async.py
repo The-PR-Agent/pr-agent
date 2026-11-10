@@ -21,7 +21,7 @@ def _settings():
     settings.set("CONFIG.RESPONSE_LANGUAGE", "en-us")
     settings.set("CONFIG.REPO_CONTEXT_FILES", [])
     settings.set("CONFIG.PUBLISH_OUTPUT", False)
-    settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+    settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", False)
     settings.set("SKILLS.ENABLED", False)
     return settings
 
@@ -194,13 +194,13 @@ async def test_cancellation_waits_for_initialization_before_restoring_settings(m
                 await asyncio.sleep(0)
                 assert not task.done()
                 assert get_settings().config.response_language == "fr-fr"
-                assert get_settings().get("CONFIG.PROPAGATE_TOOL_ERRORS") is True
+                assert get_settings().get("CONFIG.PROPAGATE_COMMAND_ERRORS") is True
             release.set()
             with pytest.raises(asyncio.CancelledError):
                 await task
             assert observed == ["fr-fr"]
             assert get_settings().config.response_language == "en-us"
-            assert get_settings().get("CONFIG.PROPAGATE_TOOL_ERRORS") is False
+            assert get_settings().get("CONFIG.PROPAGATE_COMMAND_ERRORS") is False
             assert get_settings().pr_reviewer.extra_instructions == original_instructions
             run.assert_not_awaited()
         finally:

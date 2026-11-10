@@ -14,7 +14,7 @@ from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 _TRACKED_SETTINGS = (
     "config.bot_display_name",
     "config.is_auto_command",
-    "config.propagate_tool_errors",
+    "config.propagate_command_errors",
     "config.publish_output",
     "pr_description.enable_help_comment",
     "pr_description.enable_help_text",
@@ -59,7 +59,7 @@ def configured_settings():
     settings = get_settings()
     settings.config.bot_display_name = "PR-Agent"
     settings.config.is_auto_command = True
-    settings.config.propagate_tool_errors = True
+    settings.config.propagate_command_errors = True
     settings.config.publish_output = True
     settings.pr_description.enable_help_comment = True
     settings.pr_description.enable_help_text = False

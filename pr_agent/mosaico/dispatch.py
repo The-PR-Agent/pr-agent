@@ -280,18 +280,18 @@ def _pr_fetch_failed_fallback(pr_url: str) -> str:
 async def _run_pr_agent(target: str, verb: str) -> "RouteResult":
     """Run a review/improve/describe verb via PRAgent.handle_request, defensively.
     publish_output=false makes the tools render into get_settings().data instead of the real PR;
-    propagate_tool_errors makes them re-raise, so a failure cannot read back as an empty run."""
+    propagate_command_errors makes them re-raise, so a failure cannot read back as an empty run."""
     from pr_agent.agent.pr_agent import PRAgent
     settings = get_settings()
-    propagate_before = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+    propagate_before = settings.get("CONFIG.PROPAGATE_COMMAND_ERRORS", False)
     try:
         ok = await PRAgent().handle_request(
             target,
             ["/" + verb, "--config.publish_output=false", "--config.publish_output_progress=false",
-             "--config.propagate_tool_errors=true"],
+             "--config.propagate_command_errors=true"],
         )
     finally:
-        settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_before)
+        settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", propagate_before)
     if ok is RequestOutcome.SKIPPED:
         return RouteResult("Request ignored by policy.", ok=True)
     if ok is False:
@@ -305,14 +305,14 @@ async def _run_ask(target: str, question: str) -> "RouteResult":
     from pr_agent.agent.pr_agent import PRAgent
     settings = get_settings()
     settings.set("data.answer", "")
-    propagate_before = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+    propagate_before = settings.get("CONFIG.PROPAGATE_COMMAND_ERRORS", False)
     try:
         ok = await PRAgent().handle_request(
             target, ["ask", encode_user_text_arg(question), "--config.publish_output=false",
-                     "--config.publish_output_progress=false", "--config.propagate_tool_errors=true"],
+                     "--config.publish_output_progress=false", "--config.propagate_command_errors=true"],
         )
     finally:
-        settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_before)
+        settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", propagate_before)
     if ok is RequestOutcome.SKIPPED:
         return RouteResult("Request ignored by policy.", ok=True)
     if ok is False:

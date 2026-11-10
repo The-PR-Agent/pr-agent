@@ -14,7 +14,7 @@ _TRACKED_KEYS = (
     "config.model",
     "config.fallback_models",
     "config.publish_output",
-    "config.propagate_tool_errors",
+    "config.propagate_command_errors",
     "config.enable_custom_labels",
     "config.custom_model_max_tokens",
     "custom_labels",
@@ -33,7 +33,7 @@ def fallback_models():
     settings.set("config.model", "primary-model")
     settings.set("config.fallback_models", ["fallback-model"])
     settings.set("config.publish_output", True)
-    settings.set("config.propagate_tool_errors", False)
+    settings.set("config.propagate_command_errors", False)
     settings.set("config.enable_custom_labels", False)
     settings.set("config.custom_model_max_tokens", 10_000)
     settings.set("custom_labels", [])
@@ -286,7 +286,7 @@ async def test_cleanup_failure_is_best_effort_after_success(
     provider.remove_initial_comment.side_effect = RuntimeError("cleanup failed")
     command = label_command(provider)
     command._get_prediction = AsyncMock(return_value=_VALID_FALLBACK)
-    get_settings().set("config.propagate_tool_errors", propagate_command_errors)
+    get_settings().set("config.propagate_command_errors", propagate_command_errors)
 
     with patch("pr_agent.commands.pr_generate_labels.get_pr_diff", return_value="diff"):
         assert await command.run() == ""

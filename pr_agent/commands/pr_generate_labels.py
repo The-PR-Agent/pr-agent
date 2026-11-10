@@ -126,7 +126,7 @@ class PRGenerateLabels:
             if (
                 isinstance(e, IncompleteProviderPullRequestFilesError)
                 or review_json_output_path.get()
-                or get_settings().config.get("propagate_tool_errors", False)
+                or get_settings().config.get("propagate_command_errors", False)
             ):
                 raise
         finally:

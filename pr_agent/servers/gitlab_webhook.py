@@ -565,7 +565,7 @@ async def process_gitlab_event(data: dict, log_context: dict):
                 url, body, log_context, sender_id, notify=notify_start_reaction)
             if result is RequestOutcome.SKIPPED or not dispatched:
                 return
-            # `propagate_tool_errors` is off, so a tool that failed internally still returns
+            # `propagate_command_errors` is off, so a tool that failed internally still returns
             # normally. Reading that as success would tick a comment whose command never ran.
             # `bool()` rather than `result is not False`, so a `None` reads as failure here the
             # same way it does in `pr_reviewer` and the GitHub App

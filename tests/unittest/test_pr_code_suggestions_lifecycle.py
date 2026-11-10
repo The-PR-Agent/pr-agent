@@ -23,7 +23,7 @@ _TRACKED_SETTINGS = (
     "config.publish_output",
     "config.publish_output_progress",
     "config.is_auto_command",
-    "config.propagate_tool_errors",
+    "config.propagate_command_errors",
     "pr_code_suggestions.committable_code_suggestions",
     "pr_code_suggestions.dual_publishing_score_threshold",
     "pr_code_suggestions.persistent_comment",
@@ -631,7 +631,7 @@ async def test_run_can_suppress_failure_comment_without_changing_failure_status(
         _configure_published_run()
         settings = get_settings()
         settings.config.publish_output_progress = False
-        settings.config.propagate_tool_errors = True
+        settings.config.propagate_command_errors = True
         settings.pr_code_suggestions.publish_failure_comment = False
 
         with pytest.raises(RuntimeError) as exc_info:
@@ -662,7 +662,7 @@ async def test_run_preserves_original_error_when_failure_comment_publish_fails(m
         _configure_published_run()
         settings = get_settings()
         settings.config.is_auto_command = True
-        settings.config.propagate_tool_errors = True
+        settings.config.propagate_command_errors = True
 
         with pytest.raises(RuntimeError) as exc_info:
             await command.run()
@@ -859,7 +859,7 @@ async def test_run_reports_exhausted_inline_publication_retries(
         _configure_published_run()
         settings = get_settings()
         settings.config.publish_output_progress = show_progress
-        settings.config.propagate_tool_errors = propagate_errors
+        settings.config.propagate_command_errors = propagate_errors
         settings.pr_code_suggestions.committable_code_suggestions = True
 
         await command.run()
@@ -922,7 +922,7 @@ async def test_failed_inline_retries_preserve_fallback_output(
         )
         _configure_published_run()
         settings = get_settings()
-        settings.config.propagate_tool_errors = propagate_errors
+        settings.config.propagate_command_errors = propagate_errors
         settings.pr_code_suggestions.committable_code_suggestions = True
 
         if propagate_errors:

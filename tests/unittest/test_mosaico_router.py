@@ -128,7 +128,7 @@ def restore_settings():
     """Snapshot/restore the settings keys the router mutates, leaving global_settings
     exactly as found."""
     keys = ["CONFIG.GIT_PROVIDER", "CONFIG.PUBLISH_OUTPUT", "CONFIG.PUBLISH_OUTPUT_PROGRESS",
-            "CONFIG.PROPAGATE_TOOL_ERRORS"]
+            "CONFIG.PROPAGATE_COMMAND_ERRORS"]
     before = {k: global_settings.get(k, _SENTINEL) for k in keys}
     mosaico_existed = "MOSAICO" in global_settings
     mosaico_input = global_settings.get("MOSAICO.INPUT", _SENTINEL)
@@ -547,7 +547,7 @@ class TestDefensiveCapture:
 
     @pytest.mark.asyncio
     async def test_legacy_callers_unaffected_when_flag_off(self, monkeypatch, restore_settings):
-        """Blast-radius guard for CLI/webhook callers, which pass no propagate_tool_errors
+        """Blast-radius guard for CLI/webhook callers, which pass no propagate_command_errors
         arg: a tool failing internally must still swallow and still return True, unchanged."""
         import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
         import pr_agent.mosaico.provider_registration  # noqa: F401
@@ -584,7 +584,7 @@ class TestDefensiveCapture:
         monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
 
         await route_and_run_result(f"review {PR_URL}")
-        assert "--config.propagate_tool_errors=true" in seen["args"]
+        assert "--config.propagate_command_errors=true" in seen["args"]
 
     @pytest.mark.asyncio
     async def test_propagate_flag_does_not_outlive_a_contextless_run(self, monkeypatch, restore_settings):
@@ -598,20 +598,20 @@ class TestDefensiveCapture:
         seen = {}
 
         async def failing_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
-            seen["during"] = get_settings().config.get("propagate_tool_errors")
+            seen["during"] = get_settings().config.get("propagate_command_errors")
             raise RuntimeError("provider unavailable")
 
         monkeypatch.setattr(litellm_mod.LiteLLMAIHandler, "chat_completion", failing_chat_completion)
         global_settings.set("MOSAICO.INPUT", {"files": parse_unified_diff(SAMPLE_RAW_DIFF),
                                               "languages": {"py": 1}, "title": "Supplied diff"})
         global_settings.set("CONFIG.GIT_PROVIDER", "mosaico_diff")
-        global_settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+        global_settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", False)
 
         result = await dispatch._run_pr_agent("mosaico://supplied-diff", "review")
 
         assert seen["during"] is True, "the arg never reached the tool run"
         assert result.ok is False, "the re-raise must surface as ok=False"
-        assert global_settings.config.get("propagate_tool_errors") is False, "flag leaked past the run"
+        assert global_settings.config.get("propagate_command_errors") is False, "flag leaked past the run"
 
     @pytest.mark.asyncio
     async def test_ask_that_raises_returns_error_fallback(self, monkeypatch, restore_settings):

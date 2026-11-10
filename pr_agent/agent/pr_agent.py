@@ -539,8 +539,8 @@ class PRAgent:
             if propagate_command_errors is not None:
                 # Apply this after repository and command settings so callers that require an honest
                 # result cannot be overridden by either source. Restore it below for request isolation.
-                previous_propagation = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
-                settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_command_errors)
+                previous_propagation = settings.get("CONFIG.PROPAGATE_COMMAND_ERRORS", False)
+                settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", propagate_command_errors)
         except Exception:
             if language_overridden:
                 settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)
@@ -570,7 +570,7 @@ class PRAgent:
                 settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)
             _record_token_metrics(action, _git_provider)
             if propagate_command_errors is not None:
-                settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", previous_propagation)
+                settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", previous_propagation)
 
     async def handle_request(
         self, pr_url, request, notify=None, propagate_command_errors: bool | None = None

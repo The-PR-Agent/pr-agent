@@ -205,7 +205,7 @@ def scoped_ticket_settings():
     settings.set("pr_reviewer.max_previous_findings_chars", 0)
     settings.set("config.repo_context_files", [])
     settings.set("config.publish_output", False)
-    settings.set("config.propagate_tool_errors", True)
+    settings.set("config.propagate_command_errors", True)
     settings.set("jira", {})
     with request_cycle_context({"settings": settings}):
         yield settings

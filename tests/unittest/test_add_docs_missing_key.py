@@ -136,14 +136,14 @@ async def test_routed_publication_outcome_with_empty_run_details(
     monkeypatch.setitem(pr_agent_module.command2class, "add_docs", lambda *_args, **_kwargs: command)
     span = Mock()
     settings = get_settings()
-    previous = settings.get("config.propagate_tool_errors", False)
-    settings.set("config.propagate_tool_errors", False)
+    previous = settings.get("config.propagate_command_errors", False)
+    settings.set("config.propagate_command_errors", False)
     try:
         result = await pr_agent_module.PRAgent(ai_handler="fake-ai")._run_command(
             "https://example/pr/1", "/add_docs", None, span
         )
     finally:
-        settings.set("config.propagate_tool_errors", previous)
+        settings.set("config.propagate_command_errors", previous)
 
     assert result is expected_result
     span.set_status.assert_called_once_with(StatusCode.OK if expected_result else StatusCode.ERROR)
@@ -364,14 +364,14 @@ def test_terminal_failure_comment_error_propagates_when_configured(publish_outpu
         suggestion_results=[False, False, False],
         comment_error="Failed to publish code documentation",
     )
-    previous = get_settings().get("config.propagate_tool_errors", False)
-    get_settings().set("config.propagate_tool_errors", True)
+    previous = get_settings().get("config.propagate_command_errors", False)
+    get_settings().set("config.propagate_command_errors", True)
     init_run_details()
     try:
         with pytest.raises(RuntimeError, match="fallback comment unavailable"):
             run(DOCUMENTED_TWICE, monkeypatch, provider)
     finally:
-        get_settings().set("config.propagate_tool_errors", previous)
+        get_settings().set("config.propagate_command_errors", previous)
 
     assert command_failed() is True
 
@@ -391,7 +391,7 @@ def fallback_command(publish_output, monkeypatch):
     settings = {
         "config.model": "primary-model",
         "config.fallback_models": ["fallback-model"],
-        "config.propagate_tool_errors": False,
+        "config.propagate_command_errors": False,
         "model_routing.enable": False,
         "openai.deployment_id": None,
         "openai.fallback_deployments": [],

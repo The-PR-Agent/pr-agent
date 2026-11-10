@@ -315,7 +315,7 @@ def run(inargs=None, args=None):
             diff_mode and getattr(args, "json_output", None) is not None
             and command in _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS
         )
-        if (settings.config.get("propagate_tool_errors", False) or json_artifact_required) and (
+        if (settings.config.get("propagate_command_errors", False) or json_artifact_required) and (
             result is False or recorded_failure
             or (label_json_required and result is RequestOutcome.SKIPPED)
         ):

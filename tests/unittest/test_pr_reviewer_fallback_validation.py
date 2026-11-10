@@ -13,7 +13,7 @@ _TRACKED_KEYS = (
     "config.fallback_models",
     "config.publish_output",
     "config.is_auto_command",
-    "config.propagate_tool_errors",
+    "config.propagate_command_errors",
     "openai.deployment_id",
     "openai.fallback_deployments",
     "pr_reviewer.persistent_comment",
@@ -119,7 +119,7 @@ async def test_malformed_primary_then_valid_fallback_publishes_review_without_fa
     settings = get_settings()
     settings.set("config.publish_output", True)
     settings.set("config.is_auto_command", False)
-    settings.set("config.propagate_tool_errors", False)
+    settings.set("config.propagate_command_errors", False)
     settings.set("pr_reviewer.persistent_comment", False)
 
     monkeypatch.setattr("pr_agent.commands.pr_reviewer.extract_and_cache_pr_tickets", AsyncMock())
@@ -152,7 +152,7 @@ async def test_all_malformed_models_publish_one_failure_result(monkeypatch, fall
     settings = get_settings()
     settings.set("config.publish_output", True)
     settings.set("config.is_auto_command", False)
-    settings.set("config.propagate_tool_errors", False)
+    settings.set("config.propagate_command_errors", False)
 
     monkeypatch.setattr("pr_agent.commands.pr_reviewer.extract_and_cache_pr_tickets", AsyncMock())
     monkeypatch.setattr(

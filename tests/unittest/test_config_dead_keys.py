@@ -139,8 +139,8 @@ _ALLOWLIST = {
     ): "cfg.get(\"channels\", []) in pr_agent/algo/run_output.py",
     (
         "push_outputs",
-        "tools",
-    ): "cfg.get(\"tools\", [\"review\", \"describe\", \"improve\"]) in pr_agent/algo/output_sinks.py",
+        "commands",
+    ): "cfg.get(\"commands\", [\"review\", \"describe\", \"improve\"]) in pr_agent/algo/output_sinks.py",
     (
         "push_outputs",
         "file_path",

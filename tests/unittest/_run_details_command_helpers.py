@@ -25,7 +25,7 @@ _TRACKED_KEYS = (
     "config.output_run_cost",
     "config.output_relevant_configurations",
     "config.publish_output",
-    "config.propagate_tool_errors",
+    "config.propagate_command_errors",
     "model_routing.enable",
     "openai.deployment_id",
     "openai.fallback_deployments",
@@ -53,7 +53,7 @@ def command_run_settings():
     settings.set("config.output_run_cost", False)
     settings.set("config.output_relevant_configurations", False)
     settings.set("config.publish_output", True)
-    settings.set("config.propagate_tool_errors", True)
+    settings.set("config.propagate_command_errors", True)
     settings.set("model_routing.enable", False)
     settings.set("openai.deployment_id", None)
     settings.set("openai.fallback_deployments", [])

@@ -444,7 +444,7 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
         "config.fallback_models": ["fallback"],
         "config.publish_output": True,
         "config.is_auto_command": False,
-        "config.propagate_tool_errors": False,
+        "config.propagate_command_errors": False,
         "pr_reviewer.persistent_comment": False,
         "pr_reviewer.publish_error_details": False,
     }
@@ -517,7 +517,7 @@ async def test_exhausted_fallbacks_propagate_partial_review_failure_when_configu
         "config.fallback_models": ["fallback"],
         "config.publish_output": True,
         "config.is_auto_command": False,
-        "config.propagate_tool_errors": propagate_command_errors,
+        "config.propagate_command_errors": propagate_command_errors,
         "pr_reviewer.persistent_comment": False,
         "pr_reviewer.publish_error_details": False,
     }

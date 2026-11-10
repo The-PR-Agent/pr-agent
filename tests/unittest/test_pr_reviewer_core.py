@@ -1096,7 +1096,7 @@ async def test_run_extracts_tickets_only_when_incremental_review_proceeds(monkey
     settings = get_settings()
     monkeypatch.setitem(settings.config, "publish_output", True)
     monkeypatch.setitem(settings.config, "is_auto_command", False)
-    monkeypatch.setitem(settings.config, "propagate_tool_errors", True)
+    monkeypatch.setitem(settings.config, "propagate_command_errors", True)
     monkeypatch.setitem(settings.pr_reviewer, "minimal_commits_for_incremental_review", 0)
 
     await reviewer.run()
@@ -1237,13 +1237,13 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
         "publish_review_failure_comment": settings.pr_reviewer.get("publish_review_failure_comment", True),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = propagate_command_errors
+        settings.config.propagate_command_errors = propagate_command_errors
         if publish_review_failure_comment is not None:
             settings.pr_reviewer.publish_review_failure_comment = publish_review_failure_comment
 
@@ -1256,7 +1256,7 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
         settings.pr_reviewer.publish_review_failure_comment = original["publish_review_failure_comment"]
 
     expected_comments = [(("Preparing review...",), {"is_temporary": True})]
@@ -1296,19 +1296,19 @@ async def test_run_re_raises_incomplete_provider_diff_after_progress_cleanup(mon
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = False
+        settings.config.propagate_command_errors = False
 
         with pytest.raises(incomplete_error_class) as exc_info:
             await reviewer.run()
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
 
     assert exc_info.value is incomplete_diff_error
     git_provider.remove_comment.assert_called_once_with(progress_comment)
@@ -1342,20 +1342,20 @@ async def test_run_publishes_sanitized_failure_reason_when_enabled(monkeypatch):
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
         "publish_error_details": settings.pr_reviewer.get("publish_error_details", False),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = False
+        settings.config.propagate_command_errors = False
         settings.pr_reviewer.publish_error_details = True
 
         await reviewer.run()
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
         settings.pr_reviewer.publish_error_details = original["publish_error_details"]
 
     assert git_provider.publish_comment.call_args_list == [
@@ -1414,13 +1414,13 @@ async def test_run_does_not_publish_an_empty_review(
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
         "persistent_comment": settings.pr_reviewer.persistent_comment,
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = propagate_command_errors
+        settings.config.propagate_command_errors = propagate_command_errors
         settings.pr_reviewer.persistent_comment = persistent_comment
 
         if propagate_command_errors:
@@ -1431,7 +1431,7 @@ async def test_run_does_not_publish_an_empty_review(
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
         settings.pr_reviewer.persistent_comment = original["persistent_comment"]
 
     assert git_provider.publish_comment.call_args_list == [
@@ -1468,18 +1468,18 @@ async def test_run_publishes_failure_result_when_progress_comment_has_no_handle(
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = False
+        settings.config.propagate_command_errors = False
 
         await reviewer.run()
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
 
     assert git_provider.publish_comment.call_args_list == [
         (("Preparing review...",), {"is_temporary": True}),
@@ -1500,18 +1500,18 @@ async def test_run_publishes_failure_result_when_review_fails_before_progress_co
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = False
+        settings.config.propagate_command_errors = False
 
         await reviewer.run()
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
 
     git_provider.publish_comment.assert_called_once_with("Failed to review PR")
     git_provider.remove_comment.assert_not_called()
@@ -1550,12 +1550,12 @@ async def test_run_does_not_publish_failure_result_when_output_disabled_or_auto(
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
     }
     try:
         settings.config.publish_output = publish_output
         settings.config.is_auto_command = is_auto_command
-        settings.config.propagate_tool_errors = propagate_command_errors
+        settings.config.propagate_command_errors = propagate_command_errors
 
         if propagate_command_errors:
             with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
@@ -1566,7 +1566,7 @@ async def test_run_does_not_publish_failure_result_when_output_disabled_or_auto(
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
 
     git_provider.publish_comment.assert_not_called()
     git_provider.remove_comment.assert_not_called()
@@ -1599,12 +1599,12 @@ async def test_run_publishes_failure_result_when_progress_cleanup_fails(monkeypa
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = True
+        settings.config.propagate_command_errors = True
 
         with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
             await reviewer.run()
@@ -1612,7 +1612,7 @@ async def test_run_publishes_failure_result_when_progress_cleanup_fails(monkeypa
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
 
     assert git_provider.publish_comment.call_args_list == [
         (("Preparing review...",), {"is_temporary": True}),
@@ -1649,12 +1649,12 @@ async def test_run_failure_result_publication_does_not_mask_review_error(
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = propagate_command_errors
+        settings.config.propagate_command_errors = propagate_command_errors
 
         if propagate_command_errors:
             with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
@@ -1665,7 +1665,7 @@ async def test_run_failure_result_publication_does_not_mask_review_error(
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
 
     assert git_provider.publish_comment.call_args_list == [
         (("Preparing review...",), {"is_temporary": True}),

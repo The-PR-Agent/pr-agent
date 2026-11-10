@@ -147,7 +147,7 @@ async def test_describe_external_payload_survives_rendering(
     settings_values = {
         "config.publish_output": publish_output,
         "config.is_auto_command": True,
-        "config.propagate_tool_errors": True,
+        "config.propagate_command_errors": True,
         **{f"pr_description.{key}": value for key, value in description_settings.items()},
     }
     snapshot = snapshot_settings((*settings_values, "data"))

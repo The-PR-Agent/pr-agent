@@ -427,10 +427,10 @@ async def test_all_invalid_suggestions_mark_the_command_as_failed(configured, mo
     command.git_provider.is_supported.return_value = False
     command.pr_url = "https://example.invalid/pull/1"
     command.progress_response = None
-    snapshot = snapshot_settings(("config.publish_output_progress", "config.propagate_tool_errors"))
+    snapshot = snapshot_settings(("config.publish_output_progress", "config.propagate_command_errors"))
     try:
         get_settings().set("config.publish_output_progress", False)
-        get_settings().set("config.propagate_tool_errors", False)
+        get_settings().set("config.propagate_command_errors", False)
         await command.run()
         assert get_run_details().command_failed is True
         assert len(calls) == 9
