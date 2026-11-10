@@ -19,6 +19,7 @@ _TRACKED_SETTINGS = (
     "pr_code_suggestions.committable_code_suggestions",
     "pr_code_suggestions.dual_publishing_score_threshold",
     "pr_code_suggestions.persistent_comment",
+    "pr_code_suggestions.enable_suggestions_coverage_footer",
     "github.publish_as_check_run",
 )
 
@@ -100,22 +101,51 @@ async def test_writes_suggestions_and_usage_when_publishing_is_off(monkeypatch, 
         {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42},
     )
 
-    await _make_command().run()
+    command = _make_command()
+    command.total_chunk_count = 1
+    await command.run()
 
     assert json.loads(json_output.read_text()) == {
         "code_suggestions": [_SUGGESTION],
         "usage": {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42},
+        "coverage": {
+            "total_chunks": 1, "failed_chunks": 0,
+            "files_not_reviewed": [], "files_partially_reviewed": [],
+        },
     }
 
 
 @pytest.mark.asyncio
-async def test_writes_an_empty_list_when_there_are_no_suggestions(monkeypatch, settings, json_output):
+@pytest.mark.parametrize("total, failed, omitted, partial", [
+    pytest.param(1, 0, [], [], id="complete-single-chunk"),
+    pytest.param(3, 0, [], [], id="complete-multiple-chunks"),
+    pytest.param(3, 1, [], [], id="failed-chunk"),
+    pytest.param(1, 0, ["omitted.py"], ["clipped.py"], id="limited-input-coverage"),
+])
+async def test_writes_empty_suggestions_with_coverage(
+    monkeypatch, settings, json_output, total, failed, omitted, partial,
+):
     settings.config.publish_output = False
+    settings.pr_code_suggestions.enable_suggestions_coverage_footer = False
     _answer_with(monkeypatch, {"code_suggestions": []})
 
-    await _make_command().run()
+    command = _make_command()
+    command.total_chunk_count = total
+    command.failed_chunk_count = failed
+    command.remaining_files_list = omitted
+    command.partial_files_list = partial
+    await command.run()
 
-    assert json.loads(json_output.read_text()) == {"code_suggestions": [], "usage": {}}
+    assert json.loads(json_output.read_text()) == {
+        "code_suggestions": [],
+        "usage": {},
+        "coverage": {
+            "total_chunks": total,
+            "failed_chunks": failed,
+            "files_not_reviewed": omitted,
+            "files_partially_reviewed": partial,
+        },
+    }
 
 
 @pytest.mark.asyncio

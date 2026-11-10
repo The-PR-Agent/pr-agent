@@ -47,8 +47,12 @@ pr-agent --pr_url https://github.com/org/repo/pull/123 --json-output review.json
 ```
 
 The JSON file is written after the review completes. Place `--json-output` before `review` or `review_pr`.
-Its `coverage` object lists the files the token budget kept out of the review (`files_not_reviewed`) and those whose
-patches were clipped to fit it (`files_partially_reviewed`), the same files the review coverage footer names.
+Its `coverage` object lists the files the token budget or chunk-call limit kept out of the review (`files_not_reviewed`)
+and those whose patches were clipped to fit the token budget (`files_partially_reviewed`).
+The JSON includes the full lists even when the Markdown footer summarizes them.
+It also includes `total_chunks` and `failed_chunks` for the final analysis plan, after fallback recovery.
+These count analysis chunks, not model requests or retry attempts. A nonzero `failed_chunks` means that the
+review is partial even if both file lists are empty; findings from successful chunks are retained.
 
 ### Automatic triggering
 
