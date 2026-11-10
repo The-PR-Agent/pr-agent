@@ -13,13 +13,12 @@ The command can be triggered automatically every time a new PR is [opened](../us
 /review
 ```
 
-Note that the main purpose of the `review` command is to provide the **PR reviewer** with useful feedback and insights. The PR author, in contrast, may prefer to save time and focus on the output of the [improve](./improve.mdx) command, which provides actionable code suggestions.
+Note that the main purpose of the `review` command is to provide the **PR reviewer** with useful feedback and insights. Findings can also carry a fix, which GitHub and the other supported providers offer as a [committable suggestion](#fixes-and-committable-suggestions).
 
 (Read more about the different personas in the PR process and how PR-Agent aims to assist them in our [blog](https://www.qodo.ai/blog/understanding-the-challenges-and-pain-points-of-the-pull-request-cycle/))
 
 :::note
-`/improve` will be merged into `/review` in the next release. `/improve` will keep working and run
-`/review`, with a warning.
+`/improve` runs `/review` as of 0.52. See [Improve](./improve.mdx).
 :::
 
 ## Example usage
@@ -360,6 +359,24 @@ In the code feedback section, emphasize the following:
 ```
 Use triple quotes to write multi-line instructions. Use bullet points to make the instructions more readable.
 :::
+
+### Fixes and committable suggestions
+
+A finding can carry a fix: the model adds `existing_code` (the lines it wants to change, copied from the file) and
+`improved_code` (their replacement) when a concrete change resolves the issue. A finding without a clear fix has neither field.
+
+When `inline_key_issues` is on (the default) and the provider supports inline comments, each finding is posted as an inline comment.
+If `pr_code_suggestions.committable_code_suggestions` is true and `existing_code` matches the file at the finding's lines,
+the fix is posted as a committable suggestion that you can apply from the PR page. Otherwise the fix is shown as a code block
+in the comment. Findings are capped by `pr_reviewer.num_max_findings` (3 by default), and chunked reviews keep the same cap.
+
+Two `pr_code_suggestions` settings are honoured: `committable_code_suggestions` and `extra_instructions`
+(added to the review's extra instructions when it differs from `pr_reviewer.extra_instructions`).
+Every other `pr_code_suggestions` setting is ignored since 0.52.
+
+```
+/review --pr_code_suggestions.committable_code_suggestions=true
+```
 
 ### Reviewing a PR that does not fit in one call
 

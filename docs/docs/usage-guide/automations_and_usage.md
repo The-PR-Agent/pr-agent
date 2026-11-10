@@ -103,7 +103,7 @@ Commands for invoking the different commands via comments:
 
 - **Review**:       `/review`
 - **Describe**:     `/describe`
-- **Improve**:      `/improve`  (or `/improve_code` for bitbucket, since `/improve` is sometimes reserved)
+- **Improve**:      `/improve`  (or `/improve_code` for bitbucket, since `/improve` is sometimes reserved). Runs `/review`; a list that names both runs one review.
 - **Ask**:          `/ask "..."`
 - **Update Changelog**:      `/update_changelog`
 
@@ -146,7 +146,6 @@ The configuration parameter `pr_commands` defines the list of commands that will
 pr_commands = [
     "/describe",
     "/review",
-    "/improve",
 ]
 ```
 
@@ -187,7 +186,6 @@ For instance, to modify the `review` command settings only for newly opened PRs,
 pr_commands = [
     "/describe",
     "/review --pr_reviewer.extra_instructions='focus on the file: ...'",
-    "/improve",
 ]
 ```
 
@@ -260,7 +258,7 @@ The GitHub App can run configured commands after a human reviewer submits a nati
 review_states = ["changes_requested"]
 review_author_types = ["User"]
 review_commands = [
-    "/improve",
+    "/review",
 ]
 ```
 
@@ -276,7 +274,7 @@ on:
 env:
   github_action_config.review_states: '["changes_requested"]'
   github_action_config.review_author_types: '["User"]'
-  github_action_config.review_commands: '["/improve"]'
+  github_action_config.review_commands: '["/review"]'
 ```
 
 #### Output and Check Run settings
@@ -340,7 +338,6 @@ After setting up a GitLab webhook, to control which commands will run automatica
 pr_commands = [
     "/describe",
     "/review",
-    "/improve",
 ]
 ```
 
@@ -414,8 +411,7 @@ Specifically, set the following values:
 ```toml
 [bitbucket_app]
 pr_commands = [
-    "/review",
-    "/improve --pr_code_suggestions.committable_code_suggestions=true --pr_code_suggestions.suggestions_score_threshold=7",
+    "/review --pr_code_suggestions.committable_code_suggestions=true",
 ]
 ```
 
@@ -479,7 +475,6 @@ To control which commands will run automatically when a new PR is opened, you ca
 pr_commands = [
     "/describe",
     "/review",
-    "/improve",
 ]
 ```
 
@@ -492,6 +487,5 @@ After setting up a Gitea webhook, to control which commands will run automatical
 pr_commands = [
     "/describe",
     "/review",
-    "/improve",
 ]
 ```

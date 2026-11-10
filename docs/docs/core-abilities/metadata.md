@@ -14,7 +14,7 @@ sidebar_position: 6
    - The entire content of the files that were modified in the PR
 
    :::note[Tip: Organization-level metadata]
-   In addition to the inputs above, PR-Agent can incorporate supplementary preferences provided by the user, like [`extra_instructions` and `organization best practices`](../commands/improve.mdx#extra-instructions-and-best-practices). This information can be used to enhance the PR analysis.
+   In addition to the inputs above, PR-Agent can incorporate supplementary preferences provided by the user, like [`extra_instructions`](../commands/review.md#extra-instructions). This information can be used to enhance the PR analysis.
    :::
 
 2. By default, the first command that PR-Agent executes is [`describe`](../commands/describe.md), which generates three types of outputs:

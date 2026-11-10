@@ -279,7 +279,7 @@ See [Ask](../commands/ask.md#configuration-options).
 
 ## `[pr_code_suggestions]` — /improve {#pr_code_suggestions-improve}
 
-See [Improve](../commands/improve.mdx#configuration-options).
+See [Fixes and committable suggestions](../commands/review.md#fixes-and-committable-suggestions).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -292,7 +292,7 @@ See [Improve](../commands/improve.mdx#configuration-options).
 | `enable_chat_text` | false |  |
 | `persistent_comment` | true |  |
 | `publish_failure_comment` | true | Set to false to suppress /improve failure comments without changing the command's failure status. |
-| `max_history_len` | 4 | Previous sets to retain; <=0 keeps latest only (same comment if editable). See https://docs.pr-agent.ai/commands/improve#configuration-options |
+| `max_history_len` | 4 | Previous sets to retain; <=0 keeps latest only (same comment if editable). |
 | `publish_output_no_suggestions` | true |  |
 | `enable_suggestions_coverage_footer` | true | show failed chunks and files omitted by the token or AI-call budget |
 **suggestions scoring**
