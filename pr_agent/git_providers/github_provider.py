@@ -2053,7 +2053,8 @@ class GithubProvider(GitProvider):
         current_owner = self.get_owning_namespace(resolved=True)
         # Reject redirects/transfers unless the canonical same-owner repository was selected.
         if (not isinstance(resolved_name, str) or resolved_name.casefold() != repo_id.casefold()
-                or not current_owner or resolved_name.split("/")[0].casefold() != current_owner.casefold()):
+                or not self.is_sibling_namespace_allowed(resolved_name.split("/")[0], current_owner,
+                                                         case_sensitive=False)):
             get_logger().warning(f"Ignoring out-of-owner sibling repo in repo context: {repo_id}")
             return None
         if not self._requester_can_read_sibling_repo(sibling_repo):

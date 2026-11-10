@@ -88,6 +88,10 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # repo_context_max_sibling_files bounds sibling-repository fetches per repo-context build.
     # Letting a repo's .pr_agent.toml or a comment command raise it would defeat the safety
     # bound and let a commenter force unbounded cross-repository API calls; it stays host-only.
+    # repo_context_sibling_namespaces names the namespaces besides its own that a reviewed
+    # repository's approved siblings may resolve into. A repo that could set it would hand
+    # itself the second half of the bound the allowlist above enforces, so the operator who
+    # approves the repositories also approves the namespaces they may live in.
     # description_issue_regex is compiled and run with finditer over the whole
     # pull-request description, which is attacker-supplied and not length-capped. A pattern
     # whose matching is ambiguous backtracks exponentially, so a caller who can choose it can
@@ -123,6 +127,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
         "use_group_settings_file",
         "http_request_timeout",
         "repo_context_max_sibling_files",
+        "repo_context_sibling_namespaces",
         "repo_context_sibling_repos",
         "num_retries",
         "system_instructions",
