@@ -27,7 +27,7 @@ from pr_agent.git_providers.git_provider import (
 )
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.tools.pr_reviewer import PRReviewer
+from pr_agent.commands.pr_reviewer import PRReviewer
 
 COMMITS = [PRCommit("a" * 40, "first\n\nwhy"), PRCommit("b" * 40, "empty"), PRCommit("c" * 40, "third")]
 ALL_MESSAGES = "1. first\n2. empty\n3. third"
@@ -351,7 +351,7 @@ def test_github_lists_commit_parents_and_fingerprints_ignore_line_numbers_only()
 
 
 def _commit_reviewer(monkeypatch, prediction):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
     from tests.unittest.test_pr_reviewer_prompt_contract import _build_reviewer
 
     reviewer = _build_reviewer(monkeypatch)
@@ -385,7 +385,7 @@ async def test_per_commit_reviews_publish_labelled_incremental_comments_not_the_
     reviewer = _commit_reviewer(monkeypatch, "review:\n  security_concerns: 'SQL injection: raw query'\n"
                                              "  key_issues_to_review:\n  - relevant_file: a.py\n    issue_header: Bug\n"
                                              "    issue_content: Broken\n    start_line: 1\n    end_line: 1\n")
-    monkeypatch.setattr("pr_agent.tools.pr_reviewer.add_pr_review_identity", add_pr_review_identity)
+    monkeypatch.setattr("pr_agent.commands.pr_reviewer.add_pr_review_identity", add_pr_review_identity)
     provider = reviewer.git_provider
     await reviewer.run()
 
@@ -525,8 +525,8 @@ async def test_per_commit_prompts_get_no_previous_findings(settings, monkeypatch
     async def predict(prepare, **_):
         await prepare("gpt-4o")
 
-    monkeypatch.setattr("pr_agent.tools.pr_reviewer.retry_with_fallback_models", predict)
-    monkeypatch.setattr("pr_agent.tools.pr_reviewer.get_pr_diff", lambda *_, **__: ("## File: 'a.py'\n+x\n", []))
+    monkeypatch.setattr("pr_agent.commands.pr_reviewer.retry_with_fallback_models", predict)
+    monkeypatch.setattr("pr_agent.commands.pr_reviewer.get_pr_diff", lambda *_, **__: ("## File: 'a.py'\n+x\n", []))
     reviewer.ai_handler = SimpleNamespace(main_pr_language="Python", chat_completion=chat_completion)
     await reviewer.run()
 
@@ -649,7 +649,7 @@ class _Host:
         return [comment.body for comment in self.comments if comment.body.startswith("Per commit review skipped")]
 
     async def run(self, monkeypatch, is_auto=False):
-        from pr_agent.tools import pr_reviewer as pr_reviewer_module
+        from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
         monkeypatch.setitem(get_settings().config, "is_auto_command", is_auto)
         reviewer = _commit_reviewer(monkeypatch, None)
@@ -765,7 +765,7 @@ async def test_a_commit_that_failed_is_reviewed_again_on_the_next_run(settings, 
 
 @pytest.mark.asyncio
 async def test_automatic_runs_stop_retrying_a_commit_that_keeps_failing_but_manual_runs_do_not(settings, monkeypatch):
-    from pr_agent.tools.pr_reviewer import PER_COMMIT_MAX_AUTO_ATTEMPTS
+    from pr_agent.commands.pr_reviewer import PER_COMMIT_MAX_AUTO_ATTEMPTS
 
     host = _Host([A, B])
     host.outcomes = {B.sha: RuntimeError("model down")}
