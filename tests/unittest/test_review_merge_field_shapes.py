@@ -1,14 +1,13 @@
 """Merging chunked reviews must render the same shapes the single-call review accepts.
 
-`security_concerns` and `insights_from_user_answers` are declared as strings, but a model
-enumerating several findings answers with a list; `convert_to_markdown_v2` has rendered that
-since #2899. The chunk merger still stringified the value, so a chunked review printed a
-Python list repr into the PR.
+`security_concerns` is declared as a string, but a model enumerating several findings answers
+with a list; `convert_to_markdown_v2` has rendered that since #2899. The chunk merger still
+stringified the value, so a chunked review printed a Python list repr into the PR.
 """
 import pytest
 
 from pr_agent.algo.review_merge import merge_review_chunks
-from pr_agent.algo.utils import convert_to_markdown_v2, is_value_no
+from pr_agent.algo.utils import is_value_no
 
 
 def _merged(*chunk_values, field="security_concerns"):
@@ -70,26 +69,22 @@ def test_two_different_strings_are_still_unioned():
     assert merged == "First concern\n\nSecond concern"
 
 
-@pytest.mark.parametrize("field", ["security_concerns", "insights_from_user_answers"])
-def test_both_findings_fields_flatten(field):
-    merged = _merged(["A finding"], "No", field=field)
+def test_security_concerns_flatten():
+    merged = _merged(["A finding"], "No")
 
     assert "A finding" in merged
     assert "['" not in merged
 
 
-def test_merged_no_insights_do_not_render_a_no_section():
-    """The merge's canonical "No" is suppressed for security concerns but was
-    rendered verbatim for insights_from_user_answers, so a chunked review with
-    no insights printed 'Insights from user answers: No'."""
-    data = merge_review_chunks([
-        {"review": {"insights_from_user_answers": "No"}},
-        {"review": {"insights_from_user_answers": ""}},
-    ])
+def test_artifact_findings_merge_across_chunks_without_duplicates():
+    def finding(evidence, kind="failure"):
+        return {"kind": kind, "fact": "A job failed.", "evidence": evidence}
 
-    markdown = convert_to_markdown_v2(data)
-
-    assert "Insights from user answers" not in markdown
+    lint, unit, destroy = finding("job lint failed"), finding("job unit failed"), finding("bucket destroyed", "destroy")
+    chunks = [{"review": {"artifact_findings": [lint, unit]}},
+              {"review": {"artifact_findings": [{**unit, "fact": "Reworded.", "evidence": " Job  UNIT failed "},
+                                                destroy]}}]
+    assert merge_review_chunks(chunks)["review"]["artifact_findings"] == [lint, unit, destroy]
 
 
 def test_failure_modes_merge_valid_cases_in_chunk_order_and_cap_at_three():
@@ -106,3 +101,18 @@ def test_failure_modes_merge_valid_cases_in_chunk_order_and_cap_at_three():
     assert _merged([first], [first], field="failure_modes") == [first, first]
     assert _merged(None, [], field="failure_modes") == []
     assert _merged([first] * 4, field="failure_modes") == [first] * 3
+
+
+@pytest.mark.parametrize("first, second", [
+    (["Add retry"], ["Log failures"]),
+    ("- Add retry", ["Log failures"]),
+    (["Add retry"], "- Log failures"),
+])
+def test_ticket_requirement_lists_from_several_chunks_are_unioned(first, second):
+    def chunk(not_met):
+        return {"review": {"ticket_compliance_check": [
+            {"ticket_url": "https://tracker/1", "not_compliant_requirements": not_met}]}}
+
+    [entry] = merge_review_chunks([chunk(first), chunk(second)])["review"]["ticket_compliance_check"]
+
+    assert entry["not_compliant_requirements"] == "- Add retry\n- Log failures"

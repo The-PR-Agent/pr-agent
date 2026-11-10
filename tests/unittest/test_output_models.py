@@ -45,6 +45,7 @@ def _review_fixture():
         "start_line": 10,
         "end_line": 12,
     }
+
     return {
         "review": {
             "estimated_effort_to_review_[1-5]": 3,
@@ -54,7 +55,6 @@ def _review_fixture():
             "contribution_time_cost_estimate": {"best_case": "45m", "average_case": "2h", "worst_case": "5h"},
             "score": 89,
             "relevant_tests": "Yes",
-            "insights_from_user_answers": "The deployment target is Linux.",
             "key_issues_to_review": [issue],
             "security_concerns": "No",
             "todo_sections": [{"relevant_file": "src/app.py", "line_number": 20, "content": "Remove fallback."}],
@@ -68,6 +68,10 @@ def _review_fixture():
             }],
         }
     }
+
+
+def test_review_model_does_not_expose_user_answer_insights():
+    assert "insights_from_user_answers" not in Review.model_fields
 
 
 @pytest.mark.parametrize(

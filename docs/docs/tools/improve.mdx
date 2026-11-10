@@ -15,6 +15,11 @@ The tool can be triggered automatically every time a new PR is [opened](../usage
 /improve
 ```
 
+:::note
+`/improve` will be merged into `/review` in the next release. `/improve` will keep working and run
+`/review`, with a warning.
+:::
+
 ## How it looks
 
 <Tabs>
@@ -29,6 +34,11 @@ The tool can be triggered automatically every time a new PR is [opened](../usage
 
 </TabItem>
 </Tabs>
+
+Fixed labels in summary-style `/improve` comments and no-suggestion messages follow
+`config.response_language` for the shipped English and Spanish catalogs. Model-generated
+suggestion text and persistent-comment identity markers remain unchanged; other languages
+fall back to English for these labels.
 
 ___
 
@@ -74,10 +84,12 @@ From the CLI, save the suggestions and token usage as JSON for a later CI step:
 pr-agent --pr_url https://github.com/org/repo/pull/123 --json-output improve.json improve
 ```
 
-The JSON file is written once the suggestions are ready, after any publishing, and also when
-`config.publish_output=false`, so a caller can post the suggestions itself. It holds a `code_suggestions`
+The JSON file is written once the suggestions are ready, including when
+`config.publish_output=false`, so a caller can post the suggestions itself. In plain-diff mode,
+the file is written before Markdown output; with `--pr_url`, it is written after publishing.
+It holds a `code_suggestions`
 list, empty when there are none, and a `usage` object. Place `--json-output` before `improve` or
-`improve_code`; with `--stdin` or `--diff-file`, `--json-output` is supported for `review` only.
+`improve_code`; it also works with plain-diff input (`--stdin` or `--diff-file`).
 
 ### Automatic triggering
 
@@ -120,7 +132,6 @@ The table format offers several key advantages:
 - **Quick overview and prioritization**: Enables quick review of one-liner summaries, impact levels, and easy prioritization
 - **High-level suggestions**: High-level suggestions that aren't tied to specific code chunks are presented only in the table mode
 - **Centralized tracking**: Shows suggestion implementation status in one place
-- **IDE integration**: Allows applying suggestions directly in your IDE via the CLI tool
 
 Table mode is the default of PR-Agent, and is recommended approach for most users due to these benefits.
 
@@ -429,6 +440,12 @@ for the authoritative default values.
     <td>If set to true, the improve comment will be persistent, meaning that every new improve request will edit the previous one.</td>
   </tr>
   <tr>
+    <td><b>max_history_len</b></td>
+    <td>Maximum number of previous suggestion sets to retain in a persistent summary. Non-positive values keep only the latest
+    suggestions, updating the same comment when the provider supports comment editing. Lowering a positive limit does not
+    shrink an existing history; use 0 for an update to clear it before choosing a new positive limit. Default is 4.</td>
+  </tr>
+  <tr>
     <td><b>suggestions_score_threshold</b></td>
     <td>Any suggestion with importance score less than this threshold will be removed. Values above 7-8 may clip relevant suggestions.</td>
   </tr>
@@ -516,9 +533,12 @@ suggestion responses, and responses marked as truncated by the model (`finish_re
 are treated as failed chunks and can use the remaining fallback models. A truncated response is
 retried as a whole, including any complete suggestions before the cutoff. If no chunk succeeds
 after the configured fallbacks are exhausted, the command reports failure.
+A non-empty list whose entries all fail the existing per-suggestion checks or processing is also
+treated as a failed chunk.
 A valid empty suggestion list (including `code_suggestions: []`) in a complete response is a
-successful result and is not retried. Invalid individual suggestions in an otherwise valid list continue to
-be filtered without retrying that entire chunk.
+successful result and is not retried. Invalid individual suggestions continue to be filtered when
+other entries can be processed. Normal quality filtering does not make a chunk fail, even when
+no suggestions remain.
 An ambiguous repeated model/deployment pair skips partial recovery rather than restarting the chain.
 
 ## Understanding AI Code Suggestions

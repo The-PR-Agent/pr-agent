@@ -12,6 +12,7 @@ from starlette_context import context, request_cycle_context
 from urllib3 import HTTPHeaderDict
 from urllib3.response import HTTPResponse
 
+from pr_agent.algo.git_patch_processing import extend_patch
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import global_settings
 from pr_agent.git_providers.git_provider import GitProvider
@@ -1485,6 +1486,40 @@ class TestGiteaProviderUserFacingLinks:
         assert provider.get_line_link("app/storage.py", 24, "not-a-number") == f"{prefix}#L24"
         assert provider.get_line_link("app/storage.py", -1) == prefix
 
+    @staticmethod
+    def _agit_provider(head_sha=None):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.pr_number = 4
+        provider.base_url_html = "http://forgejo:3000"
+        provider.base_url = "http://forgejo:3000"
+        provider.pr_url = "http://forgejo:3000/owner/repo/pulls/4"
+        provider.pr = None
+        if head_sha is not None:
+            provider.pr = MagicMock(head=SimpleNamespace(ref="refs/pull/4/head", sha=head_sha))
+        return provider
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_for_agit_pr_uses_head_sha(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings()
+        provider = self._agit_provider(head_sha="0123456789abcdef")
+        provider.get_pr_branch = MagicMock(return_value="refs/pull/4/head")
+
+        prefix = "http://forgejo:3000/owner/repo/src/commit/0123456789abcdef/app/storage.py"
+        assert provider.get_line_link("app/storage.py", 24) == f"{prefix}#L24"
+        assert provider.get_line_link("app/storage.py", 24, 30) == f"{prefix}#L24-L30"
+        assert provider.get_line_link("app/storage.py", -1) == prefix
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_for_agit_pr_without_head_sha_returns_empty(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings()
+        provider = self._agit_provider(head_sha=None)
+        provider.get_pr_branch = MagicMock(return_value="refs/pull/4/head")
+
+        assert provider.get_line_link("app/storage.py", 24) == ""
+
     @patch("pr_agent.git_providers.gitea_provider.get_settings")
     def test_get_pr_url_uses_user_facing_base_url(self, mock_get_settings):
         # html_url here comes from a stale ROOT_URL; the configured WEB_URL must win.
@@ -2414,7 +2449,7 @@ class TestGiteaAddedFileBaseFetch:
         "GITEA.SSL_CA_CERT": None,
     }
 
-    def _provider(self, files, mock_get_settings, mock_repo_api_cls):
+    def _provider(self, files, mock_get_settings, mock_repo_api_cls, **pr_fields):
         settings = MagicMock()
         settings.get.side_effect = lambda k, d=None: self.GITEA_SETTINGS.get(k, d)
         mock_get_settings.return_value = settings
@@ -2423,6 +2458,7 @@ class TestGiteaAddedFileBaseFetch:
         repo_api.get_pull_request.return_value = SimpleNamespace(
             head=SimpleNamespace(sha="head-sha"),
             base=SimpleNamespace(sha="base-sha", ref="main"),
+            **pr_fields,
         )
         repo_api.get_change_file_pull_request.return_value = files
         repo_api.get_file_content.return_value = "file content"
@@ -2725,3 +2761,128 @@ class TestGiteaAddedFileBaseFetch:
         ]
         assert base_reads == ["mystery.py"]
         assert diff_files[0].edit_type == EDIT_TYPE.UNKNOWN
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_base_content_is_read_at_the_merge_base(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        """Gitea diffs a PR from its merge base; base.sha is the current tip of the target branch."""
+        files = [
+            {"filename": "changed.py", "additions": 1, "deletions": 1, "status": "modified"},
+            {"filename": "renamed.py", "previous_filename": "original.py",
+             "additions": 1, "deletions": 1, "status": "renamed"},
+            {"filename": "gone.py", "additions": 0, "deletions": 1, "status": "deleted"},
+        ]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls,
+                                            merge_base="merge-base-sha")
+        repo_api.get_file_content.side_effect = lambda **kwargs: (
+            f"{kwargs['commit_sha']}:{kwargs['filepath']}"
+        )
+
+        diff_files = provider.get_diff_files()
+
+        assert [(f.base_file, f.head_file) for f in diff_files] == [
+            ("merge-base-sha:changed.py", "head-sha:changed.py"),
+            ("merge-base-sha:original.py", "head-sha:renamed.py"),
+            ("merge-base-sha:gone.py", ""),
+        ]
+        # Repository files such as AGENTS.md are still read at the tip of the target branch.
+        assert provider.get_repo_context_ref() == "base-sha"
+        assert provider.get_repo_file_content("AGENTS.md") == "base-sha:AGENTS.md"
+
+    @pytest.mark.parametrize("pr_fields", [{}, {"merge_base": ""}, {"merge_base": None}],
+                             ids=["absent", "empty", "null"])
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_base_content_falls_back_to_base_sha_without_a_merge_base(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls, pr_fields
+    ):
+        files = [{"filename": "changed.py", "additions": 1, "deletions": 1, "status": "modified"}]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls, **pr_fields)
+        repo_api.get_file_content.side_effect = lambda **kwargs: (
+            f"{kwargs['commit_sha']}:{kwargs['filepath']}"
+        )
+
+        assert provider.get_diff_files()[0].base_file == "base-sha:changed.py"
+
+    @pytest.mark.parametrize("target_header", [
+        '"""Billing helpers."""\nimport logging\n\n',
+        '"""Billing helpers.\n\nPrices are in cents.\n"""\nimport logging\n\n',
+    ], ids=["no-longer-matches", "matches-by-chance"])
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_extra_context_comes_from_the_merge_base(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls, monkeypatch, target_header
+    ):
+        """The target branch added lines on top of the changed file after the PR branched off.
+
+        Read at base.sha, the hunk either no longer matched the old side and got no extra
+        context, or matched by chance and was extended with a line of the shifted file.
+        """
+        monkeypatch.setitem(global_settings.config, "allow_dynamic_context", True)
+        monkeypatch.setitem(global_settings.config, "max_extra_lines_before_dynamic_context", 10)
+        merge_base_file = (
+            "import math\n\n\n"
+            "def subtotal(items):\n"
+            "    total = 0\n"
+            "    for item in items:\n"
+            "        total += item.price * item.qty\n"
+            "    return total\n\n\n"
+            "def apply_discount(total, percent):\n"
+            "    if percent < 0:\n"
+            '        raise ValueError("negative discount")\n'
+            "    discount = total * percent / 100\n"
+            "    return total - discount\n\n\n"
+            "def tax(total, rate):\n"
+            "    return math.floor(total * rate * 100) / 100\n"
+        )
+        head_file = merge_base_file.replace("percent < 0:", "percent < 0 or percent > 100:").replace(
+            "negative discount", "discount must be between 0 and 100")
+        contents = {"merge-base-sha": merge_base_file, "base-sha": target_header + merge_base_file,
+                    "head-sha": head_file}
+        patch_text = (
+            "@@ -9,8 +9,8 @@ def subtotal(items):\n"
+            " \n"
+            " \n"
+            " def apply_discount(total, percent):\n"
+            "-    if percent < 0:\n"
+            '-        raise ValueError("negative discount")\n'
+            "+    if percent < 0 or percent > 100:\n"
+            '+        raise ValueError("discount must be between 0 and 100")\n'
+            "     discount = total * percent / 100\n"
+            "     return total - discount\n"
+            " \n"
+        )
+        files = [{"filename": "billing.py", "additions": 2, "deletions": 2, "status": "modified"}]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls,
+                                            merge_base="merge-base-sha")
+        repo_api.get_pull_request_diff.return_value = "diff --git a/billing.py b/billing.py\n" + patch_text
+        repo_api.get_file_content.side_effect = lambda **kwargs: contents[kwargs["commit_sha"]]
+
+        file = provider.get_diff_files()[0]
+        extended = extend_patch(file.base_file, file.patch, patch_extra_lines_before=5,
+                                patch_extra_lines_after=1, filename=file.filename, new_file_str=file.head_file)
+
+        assert extended.splitlines()[1:] == [
+            "@@ -4,14 +4,14 @@ ",
+            " def subtotal(items):",
+            "     total = 0",
+            "     for item in items:",
+            "         total += item.price * item.qty",
+            "     return total",
+            " ",
+            " ",
+            " def apply_discount(total, percent):",
+            "-    if percent < 0:",
+            '-        raise ValueError("negative discount")',
+            "+    if percent < 0 or percent > 100:",
+            '+        raise ValueError("discount must be between 0 and 100")',
+            "     discount = total * percent / 100",
+            "     return total - discount",
+            " ",
+            " ",
+        ]

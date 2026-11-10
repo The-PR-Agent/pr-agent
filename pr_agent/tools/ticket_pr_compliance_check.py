@@ -488,7 +488,7 @@ GITLAB_TICKET_PATTERN = re.compile(
     r"|(?<![\w./-])(?P<project>[\w.-]+(?:/[\w.-]+)+)#(?P<project_issue>\d+)\b"
     r"|(?<![\w/#])#(?P<local_issue>\d+)\b"
 )
-GITLAB_ISSUE_PATH_PATTERN = re.compile(r"/-/issues/(?P<iid>\d+)(?=/|$)")
+GITLAB_ISSUE_PATH_PATTERN = re.compile(r"/-/(?:issues|work_items)/(?P<iid>\d+)(?=/|$)")
 
 
 def fit_related_tickets_to_prompt_budget(
@@ -499,7 +499,10 @@ def fit_related_tickets_to_prompt_budget(
     model: str,
     *,
     ai_handler=None,
+    image_path: str | None = None,
     output_token_reserve=None,
+    default_output_tokens: int = OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    additional_input_reserve: int = OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
 ) -> tuple[dict, TokenHandler]:
     """Fit complete related-ticket records while preserving room for the PR diff."""
     prompt_vars = copy.deepcopy(raw_vars)
@@ -514,16 +517,17 @@ def fit_related_tickets_to_prompt_budget(
         system_prompt,
         user_prompt,
         ai_handler=ai_handler,
+        image_path=image_path,
         output_token_reserve=output_token_reserve,
     )
     prompt_token_limit = full_budget.input_token_limit(
-        OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+        default_output_tokens,
         preserve_minimum=True,
-        additional_input_reserve=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+        additional_input_reserve=additional_input_reserve,
     )
     if not raw_tickets or full_budget.prompt_tokens <= prompt_token_limit:
         full_budget.require_input_capacity(
-            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            default_output_tokens,
             preserve_minimum=True,
         )
         return prompt_vars, full_budget.token_handler
@@ -548,6 +552,7 @@ def fit_related_tickets_to_prompt_budget(
             system_prompt,
             user_prompt,
             ai_handler=ai_handler,
+            image_path=image_path,
             output_token_reserve=output_token_reserve,
         )
         if candidate_budget.prompt_tokens > prompt_token_limit:
@@ -572,7 +577,7 @@ def fit_related_tickets_to_prompt_budget(
     )
 
     best_budget.require_input_capacity(
-        OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+        default_output_tokens,
         preserve_minimum=True,
     )
 
@@ -845,9 +850,35 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_
         provider_origin = None
         provider_base_path = ""
 
+    # Link labels can contain issue-shaped text; their destinations determine the references.
+    link_starts = []
+    link_labels = []
+    for token in re.finditer(r"\\[\\\[\]]|(?P<bracket>[\[\]])(?P<destination>\(\s*<?https?://)?", pr_description):
+        if token.group("bracket") == "[":
+            link_starts.append(token.start())
+        elif token.group("bracket") == "]" and link_starts:
+            start = link_starts.pop()
+            if token.group("destination"):
+                while link_labels and link_labels[-1][0] >= start:
+                    link_labels.pop()
+                link_labels.append((start, token.start()))
+
+    comment_spans = _html_comment_spans(pr_description)
+    non_reference_starts = None
+    comment_index = 0
     references = []
     seen = set()
+    label_index = 0
     for match in GITLAB_TICKET_PATTERN.finditer(pr_description):
+        start, end = match.span()
+        while comment_index < len(comment_spans) and comment_spans[comment_index][1] <= start:
+            comment_index += 1
+        if comment_index < len(comment_spans) and comment_spans[comment_index][0] < end:
+            continue
+        while label_index < len(link_labels) and link_labels[label_index][1] <= start:
+            label_index += 1
+        if label_index < len(link_labels) and link_labels[label_index][0] <= start:
+            continue
         if match.group("url"):
             try:
                 parsed_ticket_url = urlparse(match.group("url").rstrip(".:!?'\\\"]}`*"))
@@ -865,16 +896,27 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_
             path_match = GITLAB_ISSUE_PATH_PATTERN.search(ticket_path)
             if not path_match:
                 continue
-            issue_iid = int(path_match.group("iid"))
+            iid_text = path_match.group("iid")
             issue_project = ticket_path[:path_match.start()].strip("/")
         elif match.group("project"):
             issue_project = match.group("project")
-            issue_iid = int(match.group("project_issue"))
+            iid_text = match.group("project_issue")
         else:
+            if non_reference_starts is None:
+                non_reference_starts = _non_reference_hash_starts(pr_description, ())
+            if _is_non_reference_hash(pr_description, start, end, non_reference_starts):
+                continue
+            iid_text = match.group("local_issue")
+            if len(iid_text) > MAX_SHORTHAND_ISSUE_DIGITS:
+                continue
             issue_project = repo_path
-            issue_iid = int(match.group("local_issue"))
 
-        if not issue_project:
+        iid_text = iid_text.lstrip("0")
+        if not issue_project or not iid_text or not (iid_text.isascii() and iid_text.isdigit()):
+            continue
+        try:
+            issue_iid = int(iid_text)
+        except ValueError:
             continue
         reference = (issue_project, issue_iid)
         dedupe_key = (issue_project.casefold(), issue_iid)
@@ -1260,8 +1302,9 @@ async def extract_tickets(git_provider):
                                 # Extract sub-issue labels
                                 sub_labels = []
                                 try:
-                                    for label in sub_issue.labels:
-                                        sub_labels.append(label.name if hasattr(label, 'name') else label)
+                                    sub_labels.extend(
+                                        label.name if hasattr(label, "name") else label for label in sub_issue.labels
+                                    )
                                 except Exception as e:
                                     get_logger().error(f"Error extracting labels error= {e}",
                                                        artifact={"traceback": traceback.format_exc()})
@@ -1281,8 +1324,7 @@ async def extract_tickets(git_provider):
                     # Extract labels
                     labels = []
                     try:
-                        for label in issue_main.labels:
-                            labels.append(label.name if hasattr(label, 'name') else label)
+                        labels.extend(label.name if hasattr(label, "name") else label for label in issue_main.labels)
                     except Exception as e:
                         get_logger().error(f"Error extracting labels error= {e}",
                                            artifact={"traceback": traceback.format_exc()})
@@ -1431,11 +1473,13 @@ async def extract_tickets(git_provider):
     return None
 
 
-async def extract_and_cache_pr_tickets(git_provider, vars):
-    if not get_settings().get('pr_reviewer.require_ticket_analysis_review', False):
+async def extract_and_cache_pr_tickets(git_provider, vars, *, enabled: bool | None = None, use_cache: bool = True):
+    if enabled is None:
+        enabled = get_settings().get('pr_reviewer.require_ticket_analysis_review', False)
+    if not enabled:
         return
 
-    related_tickets = get_settings().get('related_tickets', [])
+    related_tickets = get_settings().get('related_tickets', []) if use_cache else []
 
     if not related_tickets:
         tickets_content = await extract_tickets(git_provider)
@@ -1458,7 +1502,8 @@ async def extract_and_cache_pr_tickets(git_provider, vars):
                               artifact={"tickets": related_tickets})
 
             vars['related_tickets'] = related_tickets
-            get_settings().set('related_tickets', related_tickets)
+            if use_cache:
+                get_settings().set('related_tickets', related_tickets)
     else:
         get_logger().info("Using cached tickets", artifact={"tickets": related_tickets})
         vars['related_tickets'] = related_tickets

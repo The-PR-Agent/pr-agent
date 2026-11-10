@@ -2,6 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from pr_agent.algo.i18n import t
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import (
@@ -337,7 +338,7 @@ async def test_push_inline_publishes_no_suggestions_comment_when_empty():
 
     assert result is None
     git_provider.publish_comment.assert_called_once_with(
-        "No suggestions found to improve this PR."
+        f"**{t('improve.merge_notice')}**\n\nNo suggestions found to improve this PR."
     )
     git_provider.publish_code_suggestions.assert_not_called()
 
@@ -440,6 +441,28 @@ async def test_publish_no_suggestions_resolves_freshly_published_thread():
         restore_settings(snapshot)
 
 
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_shows_merge_notice_under_the_heading():
+    snapshot = snapshot_settings(NO_SUGGESTIONS_SETTINGS)
+    try:
+        get_settings().set("config.publish_output", True)
+        get_settings().pr_code_suggestions.publish_output_no_suggestions = True
+        get_settings().set("config.output_run_details", False)
+
+        git_provider = MagicMock()
+        git_provider.should_publish_improve_as_thread.return_value = False
+        tool = _make_tool(git_provider)
+        tool.progress_response = None
+
+        await tool.publish_no_suggestions()
+
+        body = git_provider.publish_comment.call_args.args[0]
+        visible_lines = [line for line in body.splitlines() if line and not line.startswith("<!--")]
+        assert visible_lines[:2] == ["## PR Code Suggestions ✨", t("improve.merge_notice")]
+    finally:
+        restore_settings(snapshot)
+
+
 # ---------------------------------------------------------------------------
 # generate_summarized_suggestions
 # ---------------------------------------------------------------------------
@@ -451,6 +474,15 @@ def test_generate_summarized_suggestions_empty_returns_placeholder():
     assert "No suggestions found to improve this PR." in out
     # No table is rendered when empty
     assert "<table>" not in out
+
+
+def test_generate_summarized_suggestions_shows_merge_notice_under_the_heading():
+    tool = _make_tool(_provider_with_diff_files("app.py"))
+    notice = t("improve.merge_notice")
+
+    for data in ({"code_suggestions": [_suggestion()]}, {"code_suggestions": []}):
+        out = tool.generate_summarized_suggestions(data)
+        assert out.startswith(f"## PR Code Suggestions ✨\n\n{notice}\n\n")
 
 
 @pytest.mark.parametrize("labels", [

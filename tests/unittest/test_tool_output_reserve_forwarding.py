@@ -626,11 +626,15 @@ async def test_questions_keep_recent_history_before_diff_packing(monkeypatch):
             "diff": "",
             "conversation_history": "",
             "img_path": "https://example.test/image.png",
+            "related_tickets": [],
+            "related_tickets_omitted": 0,
         },
         {
             "diff": "",
             "conversation_history": "recent",
             "img_path": "https://example.test/image.png",
+            "related_tickets": [],
+            "related_tickets_omitted": 0,
         },
     ]
     assert budget_images == ["https://example.test/image.png"] * 2

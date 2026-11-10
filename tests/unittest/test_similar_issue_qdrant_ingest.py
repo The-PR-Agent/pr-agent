@@ -263,7 +263,7 @@ def test_qdrant_oversized_issues_do_not_burn_the_scan_budget(monkeypatch):
     assert [point.payload["id"] for point in sentinel_points] == ["example_issue_example-repo"]
 
 
-def test_qdrant_collection_without_sentinel_reingests_full(monkeypatch):
+def test_qdrant_collection_without_sentinel_reingests_full(monkeypatch, github_issue_pages):
     """Re-ingest the whole repo when an existing collection holds no sentinel.
 
     An interrupted full ingest leaves the collection populated but sentinel-free, so the
@@ -271,7 +271,7 @@ def test_qdrant_collection_without_sentinel_reingests_full(monkeypatch):
     """
     client = _StatefulQdrantClient(ids={"issue_5.issue"})
     _stub_constructor_dependencies(
-        monkeypatch, client, issues=[_make_issue(5), _make_issue(4)]
+        monkeypatch, client, issues=github_issue_pages((5, 4))
     )
 
     psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
@@ -307,7 +307,7 @@ def test_qdrant_full_ingest_stops_fetching_after_the_scan_limit(monkeypatch):
     assert client.upserts[1] == ["example_issue_example-repo"]
 
 
-def test_qdrant_incremental_backfills_an_older_index_gap(monkeypatch):
+def test_qdrant_incremental_backfills_an_older_index_gap(monkeypatch, github_issue_pages):
     """Keep scanning past indexed issues and backfill an older missing issue.
 
     With the sentinel and the newest issue already indexed, a deleted older issue must be
@@ -326,7 +326,7 @@ def test_qdrant_incremental_backfills_an_older_index_gap(monkeypatch):
     }
     client.ids.update(client.payload_overrides)
     _stub_constructor_dependencies(
-        monkeypatch, client, issues=[_make_issue(number) for number in (5, 4, 3, 2, 6, 7, 8, 9, 10)]
+        monkeypatch, client, issues=github_issue_pages((5, 4, 3, 2, 6, 7, 8, 9, 10))
     )
 
     psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)

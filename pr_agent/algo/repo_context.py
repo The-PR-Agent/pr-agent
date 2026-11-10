@@ -5,6 +5,7 @@ import time
 from collections import OrderedDict
 from html import escape
 from itertools import islice
+from threading import Lock
 
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.config_loader import get_settings
@@ -77,6 +78,7 @@ class _RepoContextCache:
 
 
 _repo_context_process_cache = _RepoContextCache()
+_repo_context_process_cache_lock = Lock()
 
 
 def _get_markdown_fence(content: str) -> str:
@@ -328,7 +330,8 @@ def _get_cached_repo_context(
         git_provider, context_files, max_lines, context_ref, expand_imports
     )
     if process_cache_key is not None:
-        cached_repo_context = _repo_context_process_cache.get(process_cache_key, _REPO_CONTEXT_CACHE_MISS)
+        with _repo_context_process_cache_lock:
+            cached_repo_context = _repo_context_process_cache.get(process_cache_key, _REPO_CONTEXT_CACHE_MISS)
         if cached_repo_context is not _REPO_CONTEXT_CACHE_MISS:
             return cached_repo_context
 
@@ -353,7 +356,8 @@ def _store_repo_context(
         git_provider, context_files, max_lines, context_ref, expand_imports
     )
     if process_cache_key:
-        _repo_context_process_cache[process_cache_key] = repo_context
+        with _repo_context_process_cache_lock:
+            _repo_context_process_cache[process_cache_key] = repo_context
 
 
 def _read_bool_setting(key: str, default: bool) -> bool:

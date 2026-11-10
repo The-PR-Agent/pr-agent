@@ -7,6 +7,8 @@ from github import GithubException
 from requests.exceptions import HTTPError, Timeout
 
 from pr_agent.algo.pr_processing import FallbackEligibleError
+from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import ConcurrentFileUpdateError, FileContentSnapshot
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.log import get_logger
@@ -52,6 +54,7 @@ class TestPRUpdateChangelog:
              patch('pr_agent.tools.pr_update_changelog.get_settings') as mock_settings:
 
             # Configure mock settings
+            mock_settings.return_value.pr_update_changelog.changelog_path = "CHANGELOG.md"
             mock_settings.return_value.pr_update_changelog.push_changelog_changes = False
             mock_settings.return_value.pr_update_changelog.extra_instructions = ""
             mock_settings.return_value.pr_update_changelog_prompt.system = "System prompt"
@@ -274,8 +277,9 @@ class TestPRUpdateChangelog:
         return provider
 
     @staticmethod
-    def _configure_settings(mock_settings, publish_output=True):
+    def _configure_settings(mock_settings, publish_output=True, changelog_path="CHANGELOG.md"):
         settings = mock_settings.return_value
+        settings.pr_update_changelog.changelog_path = changelog_path
         settings.pr_update_changelog.push_changelog_changes = True
         settings.pr_update_changelog.extra_instructions = ""
         settings.pr_update_changelog_prompt.system = ""
@@ -284,10 +288,54 @@ class TestPRUpdateChangelog:
         settings.config.temperature = 0.2
         settings.get.return_value = {}
 
-    @pytest.mark.asyncio
-    async def test_push_uses_the_snapshot_that_supplied_the_generated_body(self, mock_ai_handler):
+    @pytest.mark.parametrize("changelog_path", [
+        123, ["CHANGELOG.md"], "", "  ", "/CHANGELOG.md", "C:/CHANGELOG.md", r"docs\CHANGELOG.md",
+        "../CHANGELOG.md", "docs/../CHANGELOG.md", "./CHANGELOG.md", "docs//CHANGELOG.md", "docs/",
+        "docs/CHANGE\nLOG.md", "docs/CHANGE\x7fLOG.md", "docs/CHANGE\x85LOG.md",
+    ])
+    def test_invalid_changelog_path_stops_before_provider_access(self, changelog_path, mock_ai_handler):
+        with (
+            patch("pr_agent.tools.pr_update_changelog.get_git_provider_for_tool") as provider_factory,
+            patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings,
+        ):
+            self._configure_settings(mock_settings, changelog_path=changelog_path)
+            with pytest.raises(ValueError, match="pr_update_changelog.changelog_path"):
+                PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
+
+        provider_factory.assert_not_called()
+        mock_ai_handler.chat_completion.assert_not_called()
+
+    @pytest.mark.parametrize("value", [False, "false", "off"])
+    async def test_false_like_push_setting_publishes_a_comment_without_writing(self, mock_ai_handler, value):
         provider = self._make_push_provider()
-        snapshot = FileContentSnapshot("# Existing changelog", True, "captured-revision")
+        with (
+            patch("pr_agent.tools.pr_update_changelog.get_git_provider_for_tool", return_value=provider),
+            patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"),
+            patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models"),
+            patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings,
+        ):
+            self._configure_settings(mock_settings)
+            mock_settings.return_value.pr_update_changelog.push_changelog_changes = value
+            tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
+            tool.prediction = "## Changelog entry"
+            await tool.run()
+
+        assert tool.commit_changelog is False
+        provider.get_pr_file_content_snapshot.assert_not_called()
+        provider.create_or_update_pr_file.assert_not_called()
+        assert provider.publish_comment.call_count == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("changelog_path,exists", [
+        ("CHANGELOG.md", True), ("docs/HISTORY.md", True), ("packages/測試 API/CHANGELOG", False),
+    ])
+    async def test_push_uses_the_snapshot_that_supplied_the_generated_body(
+        self, mock_ai_handler, changelog_path, exists
+    ):
+        prompts = get_settings().pr_update_changelog_prompt
+        provider = self._make_push_provider()
+        existing_content = "# Existing changelog" if exists else ""
+        snapshot = FileContentSnapshot(existing_content, exists, "captured-revision" if exists else None)
         provider.get_pr_file_content_snapshot.return_value = snapshot
         with (
             patch("pr_agent.tools.pr_update_changelog.get_git_provider_for_tool", return_value=provider),
@@ -296,18 +344,28 @@ class TestPRUpdateChangelog:
             patch("pr_agent.tools.pr_update_changelog.asyncio.sleep", new_callable=AsyncMock),
             patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings,
         ):
-            self._configure_settings(mock_settings)
+            self._configure_settings(mock_settings, changelog_path=changelog_path)
             tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
-            assert tool.changelog_file_str == snapshot.contents
+            assert tool.changelog_file == existing_content
+            assert tool.vars["changelog_file_str"] == (existing_content or tool._get_default_changelog())
+            system_prompt, user_prompt = AttemptTokenBudget(
+                "test-model", prompts, prompts, 200
+            ).render_prompt_templates(tool.vars)
+            assert f"to {changelog_path} file" in system_prompt
+            assert f"to be added to {changelog_path}," in system_prompt
+            assert f"The current '{changelog_path}' file" in user_prompt
+            # Later settings changes must not redirect the write away from the captured snapshot.
+            mock_settings.return_value.pr_update_changelog.changelog_path = "other.md"
             provider.get_pr_file_content_snapshot.return_value = FileContentSnapshot("concurrent edit", True, "newer")
             tool.prediction = "## New entry"
             await tool.run()
-        provider.get_pr_file_content_snapshot.assert_called_once_with("CHANGELOG.md", "feature-branch")
+        provider.get_pr_file_content_snapshot.assert_called_once_with(changelog_path, "feature-branch")
         provider.get_pr_file_content.assert_not_called()
         provider.create_or_update_pr_file.assert_called_once()
         written = provider.create_or_update_pr_file.call_args.kwargs
+        assert written["file_path"] == changelog_path
         assert written["expected_snapshot"] is snapshot
-        assert written["contents"] == "## New entry\n\n# Existing changelog"
+        assert written["contents"] == "## New entry" + (f"\n\n{existing_content}" if existing_content else "")
 
     @pytest.mark.asyncio
     async def test_push_without_snapshot_fails_before_provider_write(self, changelog_tool, mock_git_provider):
@@ -345,8 +403,9 @@ class TestPRUpdateChangelog:
         assert len(fallbacks) == 1 and "Generated entry" in fallbacks[0]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("changelog_path", ["CHANGELOG.md", "docs/HISTORY.md"])
     async def test_strict_read_error_generates_one_fallback_never_writes_and_reraises_original(
-            self, mock_ai_handler):
+            self, mock_ai_handler, changelog_path):
         provider = self._make_push_provider()
         read_error = RuntimeError("read unavailable")
         provider.get_pr_file_content_snapshot.side_effect = read_error
@@ -355,7 +414,7 @@ class TestPRUpdateChangelog:
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
              patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models") as retry, \
              patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
-            self._configure_settings(mock_settings)
+            self._configure_settings(mock_settings, changelog_path=changelog_path)
             tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
             tool.prediction = "## v1.1.0\n- Safe generated entry"
 
@@ -364,7 +423,7 @@ class TestPRUpdateChangelog:
 
         assert exc_info.value is read_error
         provider.get_pr_file_content_snapshot.assert_called_once_with(
-            "CHANGELOG.md", "feature-branch"
+            changelog_path, "feature-branch"
         )
         provider.create_or_update_pr_file.assert_not_called()
         assert retry.await_count == 1
@@ -374,6 +433,7 @@ class TestPRUpdateChangelog:
         ]
         assert len(fallback_calls) == 1
         assert "Safe generated entry" in fallback_calls[0].args[0]
+        assert f"{changelog_path} could not be read safely" in fallback_calls[0].args[0]
         provider.remove_initial_comment.assert_called_once_with()
 
     @pytest.mark.asyncio
@@ -618,16 +678,19 @@ class TestPRUpdateChangelog:
         provider.remove_initial_comment.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_run_without_push_support(self, mock_ai_handler):
+    @pytest.mark.parametrize("changelog_path", ["CHANGELOG.md", "docs/HISTORY.md"])
+    async def test_run_without_push_support(self, mock_ai_handler, changelog_path):
         """When the provider can't push (no create_or_update_pr_file), the changelog must still
         be generated and published as a comment (graceful degradation), not dropped entirely."""
         provider = self._make_no_push_provider()  # spec omits create_or_update_pr_file
         provider.is_supported.return_value = True
+        provider.get_pr_file_content.return_value = "# Existing changelog"
 
         with patch('pr_agent.tools.pr_update_changelog.get_git_provider_for_tool', return_value=provider), \
              patch('pr_agent.tools.pr_update_changelog.get_main_pr_language', return_value="Python"), \
              patch('pr_agent.tools.pr_update_changelog.retry_with_fallback_models'), \
              patch('pr_agent.tools.pr_update_changelog.get_settings') as mock_settings:
+            mock_settings.return_value.pr_update_changelog.changelog_path = changelog_path
             mock_settings.return_value.pr_update_changelog.push_changelog_changes = True
             mock_settings.return_value.config.publish_output = True
             mock_settings.return_value.pr_update_changelog.extra_instructions = ""
@@ -639,6 +702,7 @@ class TestPRUpdateChangelog:
             # Push isn't possible -> degrade to comment mode (don't push, don't drop the output).
             assert tool.push_skipped_reason == "not supported for this git provider"
             assert tool.commit_changelog is False
+            assert tool.vars["changelog_file_str"] == "# Existing changelog"
 
             tool.prediction = "## v1.1.0\n- New feature"
             await tool.run()
@@ -646,6 +710,8 @@ class TestPRUpdateChangelog:
             published = " ".join(str(c) for c in provider.publish_comment.call_args_list)
             assert "Changelog updates" in published  # the generated changelog was posted
             assert "not pushed" in published          # with a note it wasn't committed
+            assert f"to commit the new content to the {changelog_path} file" in published
+            provider.get_pr_file_content.assert_called_once_with(changelog_path, "feature-branch")
 
     @pytest.mark.asyncio
     async def test_run_restricted_mode_publishes_comment_instead_of_pushing(self, mock_ai_handler):
@@ -658,6 +724,7 @@ class TestPRUpdateChangelog:
              patch('pr_agent.tools.pr_update_changelog.get_main_pr_language', return_value="Python"), \
              patch('pr_agent.tools.pr_update_changelog.retry_with_fallback_models'), \
              patch('pr_agent.tools.pr_update_changelog.get_settings') as mock_settings:
+            mock_settings.return_value.pr_update_changelog.changelog_path = "CHANGELOG.md"
             mock_settings.return_value.pr_update_changelog.push_changelog_changes = True
             mock_settings.return_value.config.publish_output = True
             mock_settings.return_value.pr_update_changelog.extra_instructions = ""
@@ -707,8 +774,12 @@ class TestPRUpdateChangelog:
             sleep.assert_awaited_once_with(5)
 
     @pytest.mark.asyncio
-    async def test_push_changelog_update_creates_review_when_supported(self, changelog_tool, mock_git_provider):
+    @pytest.mark.parametrize("changelog_path", ["CHANGELOG.md", "docs/HISTORY.md"])
+    async def test_push_changelog_update_creates_review_when_supported(
+        self, changelog_tool, mock_git_provider, changelog_path
+    ):
         """When supported, pushing the changelog creates a PR review on the committed changes."""
+        changelog_tool.changelog_path = changelog_path
         mock_git_provider.create_or_update_pr_file = MagicMock(return_value="commit-123")
         mock_git_provider.get_pr_branch.return_value = "feature-branch"
         mock_git_provider.supports_changelog_update_review.return_value = True
@@ -725,10 +796,10 @@ class TestPRUpdateChangelog:
             await changelog_tool._push_changelog_update(new_content, answer)
 
             mock_git_provider.create_or_update_pr_file.assert_called_once_with(
-                file_path="CHANGELOG.md",
+                file_path=changelog_path,
                 branch="feature-branch",
                 contents=new_content,
-                message="[skip ci] Update CHANGELOG.md",
+                message=f"[skip ci] Update {changelog_path}",
                 expected_snapshot=changelog_tool.changelog_snapshot,
             )
             mock_git_provider.pr.create_review.assert_called_once_with(
@@ -736,8 +807,8 @@ class TestPRUpdateChangelog:
                 event="COMMENT",
                 comments=[
                     dict(
-                        body="CHANGELOG.md update",
-                        path="CHANGELOG.md",
+                        body=f"{changelog_path} update",
+                        path=changelog_path,
                         line=2,
                         start_line=1,
                     )
@@ -1090,6 +1161,24 @@ class TestPRUpdateChangelog:
                 message="[skip ci] Update CHANGELOG.md",
                 expected_snapshot=changelog_tool.changelog_snapshot,
             )
+
+    @pytest.mark.parametrize(("value", "expected_message"), [
+        (False, "Update CHANGELOG.md"),
+        (None, "Update CHANGELOG.md"),
+        ("", "Update CHANGELOG.md"),
+        ("false", "Update CHANGELOG.md"),
+        ("off", "Update CHANGELOG.md"),
+        (True, "[skip ci] Update CHANGELOG.md"),
+    ])
+    async def test_skip_ci_on_push_honors_boolean_like_settings(
+        self, changelog_tool, mock_git_provider, value, expected_message
+    ):
+        mock_git_provider.supports_changelog_update_review.return_value = False
+        with patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
+            mock_settings.return_value.pr_update_changelog.get.return_value = value
+            await changelog_tool._push_changelog_update("new content", "answer")
+
+        assert mock_git_provider.create_or_update_pr_file.call_args.kwargs["message"] == expected_message
 
     @pytest.mark.parametrize("has_commit", [True, False])
     @pytest.mark.parametrize("fallback_raises", [True, False])

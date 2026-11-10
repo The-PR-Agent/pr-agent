@@ -127,8 +127,8 @@ def test_review_finding_keeps_start_line_when_end_line_is_missing(end_line):
         "end_line": end_line,
     }
     finding = PRReviewer._review_finding_from_issue(issue)
-    assert finding["line_start"] == 5
-    assert finding["line_end"] == 5
+    assert finding.line_start == 5
+    assert finding.line_end == 5
 
 
 def test_build_key_issue_comment_keeps_start_line_when_end_line_is_null():
@@ -142,7 +142,9 @@ def test_build_key_issue_comment_keeps_start_line_when_end_line_is_null():
     diff_files = {"src/app.py": SimpleNamespace(filename="src/app.py", head_file="a\nb\nc\nd\ne\nf\n")}
     reviewer = PRReviewer.__new__(PRReviewer)
 
-    comment = reviewer._build_key_issue_comment(issue, diff_files)
+    comment = reviewer._build_key_issue_comment(
+        PRReviewer._review_finding_from_issue(issue), diff_files
+    )
 
     assert comment is not None
     assert comment["relevant_lines_start"] == 5
@@ -1771,7 +1773,6 @@ async def test_incremental_fallback_to_full_review_loads_previous_findings(monke
     _settings(monkeypatch)
     provider = MagicMock()
     reviewer = _reviewer_for_run(provider)
-    reviewer.is_auto = False
     reviewer.incremental = SimpleNamespace(is_incremental=True, commits_range=None)
     reviewer._load_previous_findings_context = MagicMock(return_value="[stored findings]")
     _patch_run_dependencies(monkeypatch, reviewer)

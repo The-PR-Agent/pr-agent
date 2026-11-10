@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools==84.0.0", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -71,6 +71,9 @@ dependencies = [
   # Prometheus scrape endpoint for [otel] command telemetry (native /metrics on
   # the webhook apps). Multiprocess-capable; see pr_agent/telemetry/prometheus.py.
   "prometheus-client==0.26.0",
+  # pr_agent/algo/deterministic_risk.py matches host-supplied extra_risky_shapes with a per-search
+  # timeout, which re lacks; already resolved transitively via tiktoken, pinned to the tested version.
+  "regex==2026.6.28",
 ]
 
 [project.urls]
@@ -111,7 +114,7 @@ google = [
   "google-cloud-storage==3.12.0; python_version >= '3.13'",
   # Keep protobuf explicit to lock the transitive version resolved with the gRPC dependency stack.
   # Revalidate compatibility when updating grpcio-status or related Google/gRPC dependencies.
-  "protobuf==6.33.6",
+  "protobuf==7.36.2",
 ]
 mosaico = ["a2a-sdk[http-server]==1.3.0"]
 # Preserve the dependency set that the published Docker images shipped before provider SDKs became optional.
@@ -149,28 +152,33 @@ similar-issue = [
 ]
 dev = [
   { include-group = "integration-dev" },
+  # The Lambda webhook hand-off unit tests import the Mangum entry points.
+  "pr-agent[lambda]",
   "pytest==9.2.0",
   "pytest-asyncio>=1.4.1",
   "pytest-cov==7.1.0",
   "httpx==0.28.1",
-  "ruff==0.17.3",
+  "ruff==0.17.4",
 ]
 
 [tool.uv]
 # Keep the floor aligned with the patched uv release used by Docker and CI.
-required-version = ">=0.13.5"
+required-version = ">=0.13.7"
 
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+unsafe-fixes=false
+preview=false
 
 lint.select = [
-  "E",    # pycodestyle
-  "F",    # Pyflakes
-  "B",    # flake8-bugbear
-  "I",    # isort
-  "UP",   # pyupgrade
-  "FURB", # refurb
+  "E",      # pycodestyle
+  "F",      # Pyflakes
+  "B",      # flake8-bugbear
+  "I",      # isort
+  "UP",     # pyupgrade
+  "FURB",   # refurb
+  "PERF",   # perflint
 ]
 
 lint.exclude = ["api/code_completions"]

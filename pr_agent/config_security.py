@@ -73,8 +73,12 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "openai": frozenset({"api_base", "api_type", "api_version"}),
     "openrouter": frozenset({"api_base"}),
     # structural_reach_input_file is read from the host and echoed into the review, and outside
-    # GITHUB_WORKSPACE nothing bounds the path.
-    "pr_reviewer": frozenset({"publish_error_details", "structural_reach_input_file"}),
+    # GITHUB_WORKSPACE nothing bounds the path. extra_risky_shapes contains custom regex patterns
+    # compiled and run against diff hunks, so repository settings must not specify untrusted patterns.
+    # require_artifact_findings quotes CI output into the public review, so only the host turns it on.
+    "pr_reviewer": frozenset({
+        "extra_risky_shapes", "publish_error_details", "require_artifact_findings", "structural_reach_input_file",
+    }),
     # List the sibling repositories whose files and GitHub tickets a consuming repo
     # (or a comment command) may select into model context. A repo's .pr_agent.toml alone must
     # not be able to name an arbitrary same-owner private sibling: the actor check bounds who
@@ -103,9 +107,17 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # for it are already blocked; the repo-settings entry point now matches.
     # Provider request timeouts stay host-controlled so repository settings cannot lengthen
     # worker occupancy across SDK retries. Command arguments enforce this same boundary.
+    # bot_display_name sets the operator branding shown in PR comments, so a reviewed repo or a
+    # comment argument must not be able to impersonate another service (e.g. "GitHub Security").
+    # enable_auto_approval lets a reviewed repository switch on an approval action taken with
+    # the host's credentials, so only the operator may enable it.
+    # system_instructions is appended to every model system prompt. A repository or comment
+    # must not be able to remove or replace an operator's mandatory policy.
     "config": frozenset({
+        "bot_display_name",
         "extra_config_url",
         "description_issue_regex",
+        "enable_auto_approval",
         "enable_custom_labels",
         "global_settings_repo",
         "use_group_settings_file",
@@ -113,6 +125,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
         "repo_context_max_sibling_files",
         "repo_context_sibling_repos",
         "num_retries",
+        "system_instructions",
     }),
 }
 
@@ -162,22 +175,32 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
         "ai_timeout",
         "enable_custom_labels",
         "fallback_models",
+        "include_pr_labels",
         "num_retries",
         "output_relevant_configurations",
         "repo_context_files",
         "repo_context_max_glob_matches",
         "repo_context_expand_imports",
+        "system_instructions",
     }),
     "github_action_config": frozenset({"fail_on_tool_errors"}),
     "ignore": frozenset({"regex"}),
     "pr_code_suggestions": frozenset({"parallel_calls", "max_number_of_calls"}),
-    "pr_questions": frozenset({"resolve_threads"}),
-    # A commenter must not choose which host file the structural-reach row reads.
+    # PR comments must not enable ticket reads performed with the operator's credentials.
+    "pr_questions": frozenset({"resolve_threads", "use_ticket_context"}),
+    # A commenter must not choose which host file the structural-reach row reads, or turn on quoting of CI output.
     "pr_reviewer": frozenset({
-        "max_number_of_calls", "structural_reach_input_file", "per_commit_review", "max_commits_per_review",
+        "enable_risk_checks",
+        "extra_risky_shapes",
+        "max_commits_per_review",
+        "max_number_of_calls",
+        "per_commit_review",
+        "require_artifact_findings",
+        "sensitive_paths",
+        "structural_reach_input_file",
     }),
     "pr_similar_issue": frozenset({"force_update_dataset"}),
-    "pr_update_changelog": frozenset({"push_changelog_changes"}),
+    "pr_update_changelog": frozenset({"push_changelog_changes", "changelog_path"}),
 }
 
 # Keys a per-directory `.pr_agent.toml` can never override, even when their section is
@@ -190,7 +213,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
 # controlled. Likewise, keys that rewrite pull-request metadata (AI title generation,
 # comment-only description publication) stay root-controlled so a nested file cannot
 # bypass the operator's choice of which PR fields the bot edits. Ticket extraction
-# (require_ticket_analysis_review) stays root-controlled too: enabling it from a nested
+# (require_ticket_analysis_review, use_ticket_context) stays root-controlled too: enabling it from a nested
 # file would make the bot run authenticated Jira lookups the root config already disabled.
 # The self-review workflow control (demand_code_suggestions_self_review) stays
 # root-controlled as well: a nested file must not be able to make /improve demand a
@@ -212,7 +235,7 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
         "generate_ai_title", "publish_description_as_comment",
         "publish_description_as_comment_persistent",
     }),
-    "pr_questions": frozenset({"resolve_threads", "use_conversation_history"}),
+    "pr_questions": frozenset({"resolve_threads", "use_conversation_history", "use_ticket_context"}),
     "pr_code_suggestions": frozenset({
         "committable_code_suggestions",
         # The deprecated pre-1.0 spelling stays host-only for the same reason: a nested file
@@ -222,6 +245,9 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
         # an unrecognized key survives the merge, so leaving the alias out of this set would
         # hand a nested file the very control the canonical name is denied.
         "commitable_code_suggestions",
+        # Dual publishing posts every suggestion at or above the threshold through the same
+        # inline path, so a nested file must not be able to turn it on either.
+        "dual_publishing_score_threshold",
         "max_number_of_calls", "parallel_calls", "max_discussion_context_chars",
         "demand_code_suggestions_self_review",
     }),

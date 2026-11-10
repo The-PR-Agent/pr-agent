@@ -116,11 +116,16 @@ class _AzureCommitInner:
         self.message = getattr(raw, "comment", "") or ""
         author = getattr(raw, "author", None)
         author_date = _to_naive_utc(getattr(author, "date", None)) if author else None
-        self.author = type("_AzureAuthor", (), {"date": author_date})()
+        committer = getattr(raw, "committer", None)
+        committer_date = _to_naive_utc(getattr(committer, "date", None)) if committer else None
+        # PRReviewer compares the last-seen commit's author date with a datetime, so a commit
+        # that has only a committer date also gets it as its author date.
+        self.author = type("_AzureAuthor", (), {"date": author_date or committer_date})()
+        self.committer = type("_AzureCommitter", (), {"date": committer_date})()
 
 
 class _AzureCommitAdapter:
-    """Mimics PyGithub `Commit` shape (.sha, .commit.author.date, .commit.message, .parents)."""
+    """Mimics PyGithub `Commit` shape (.sha, .commit.author.date, .commit.committer.date, .commit.message, .parents)."""
 
     def __init__(self, raw):
         self.sha = raw.commit_id
@@ -578,6 +583,8 @@ class AzureDevopsProvider(GitProvider):
             return None
 
     def is_supported(self, capability: str) -> bool:
+        if capability in ("head_ci_status", "head_staleness", "author_human_check"):
+            return False
         return True
 
     def supports_incremental_kind(self, kind: str) -> bool:
@@ -703,12 +710,15 @@ class AzureDevopsProvider(GitProvider):
         # Walk newest -> oldest to find the newest commit that predates the previous review
         # (the "last seen" baseline). The new range is then everything positioned after that
         # baseline, sliced by index — not by re-testing each commit's date — so that commits
-        # with a missing author date (the adapter allows author.date to be None) are still
+        # with no date (the adapter allows both dates to be None) are still
         # included rather than silently dropped from the incremental scope.
         last_seen_index = None
         saw_reliable_date = False
         for index in range(len(self.pr_commits) - 1, -1, -1):
-            cdate = self.pr_commits[index].commit.author.date
+            # Prefer the committer date: amend, rebase and cherry-pick keep the author date, so a
+            # commit rewritten after the previous review would otherwise count as already seen.
+            commit = self.pr_commits[index].commit
+            cdate = commit.committer.date or commit.author.date
             if cdate is None:
                 continue
             saw_reliable_date = True
@@ -718,7 +728,7 @@ class AzureDevopsProvider(GitProvider):
                 break
         if not saw_reliable_date:
             get_logger().info(
-                "All PR commit author dates are missing; cannot compute incremental range. "
+                "All PR commit dates are missing; cannot compute incremental range. "
                 "Falling back to full review."
             )
             self.incremental.is_incremental = False
@@ -2037,20 +2047,15 @@ class AzureDevopsProvider(GitProvider):
         ):
             raise ValueError("Azure work item response is incomplete")
 
-        work_items = []
-        for item in raw_work_items:
-            work_items.append(
-                {
-                    "id": item.id,
-                    "title": item.fields.get("System.Title", ""),
-                    "url": item.url,
-                    "body": item.fields.get("System.Description", ""),
-                    "acceptance_criteria": item.fields.get(
-                        "Microsoft.VSTS.Common.AcceptanceCriteria", ""
-                    ),
-                    "tags": item.fields.get("System.Tags", "").split("; ")
-                    if item.fields.get("System.Tags")
-                    else [],
-                }
-            )
+        work_items = [
+            {
+                "id": item.id,
+                "title": item.fields.get("System.Title", ""),
+                "url": item.url,
+                "body": item.fields.get("System.Description", ""),
+                "acceptance_criteria": item.fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", ""),
+                "tags": item.fields.get("System.Tags", "").split("; ") if item.fields.get("System.Tags") else [],
+            }
+            for item in raw_work_items
+        ]
         return work_items

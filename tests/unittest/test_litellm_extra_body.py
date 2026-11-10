@@ -20,6 +20,15 @@ def test_chat_template_kwargs_is_allowed(monkeypatch):
     }
 
 
+def test_thinking_token_budget_is_allowed(monkeypatch):
+    _configure(monkeypatch, '{"thinking_token_budget": 4000}')
+    kwargs = {"extra_body": {"provider": {"only": ["a"]}}}
+    assert helpers._process_litellm_extra_body(kwargs) == {
+        "extra_body": {"provider": {"only": ["a"]}},
+        "thinking_token_budget": 4000,
+    }
+
+
 def test_other_keys_still_rejected(monkeypatch):
     _configure(monkeypatch, '{"chat_template_kwargs": {}, "api_base": "http://x"}')
     with pytest.raises(ValueError, match="unsupported keys"):

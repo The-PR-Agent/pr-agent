@@ -10,8 +10,8 @@ Scope is intentionally the ENCLOSING FUNCTION, not the enclosing class: a guard 
 frames away (a flag cached in `__init__`, a raise before a later call) is real, but it is
 also invisible to the next person editing the callee, which is the failure mode this test
 exists to catch. Every current call site either already checks locally or was given a
-local check by this change (see `pr_update_changelog.py::_push_changelog_update` and
-`pr_reviewer.py::_get_user_answers`) precisely so this test can be scoped this way without
+local check by this change (see `pr_update_changelog.py::_push_changelog_update` and the
+provider calls in `pr_reviewer.py`) precisely so this test can be scoped this way without
 false positives.
 """
 import ast
@@ -102,9 +102,11 @@ def _unguarded_call_sites():
             guarded_caps = _is_supported_capability_strings(func_node)
             calls = _git_provider_call_sites(func_node)
             for method, cap in GUARDED_METHODS.items():
-                for call in calls.get(method, []):
-                    if cap not in guarded_caps:
-                        hits.append((path.name, func_node.name, method, call.lineno))
+                hits.extend(
+                    (path.name, func_node.name, method, call.lineno)
+                    for call in calls.get(method, [])
+                    if cap not in guarded_caps
+                )
     return hits
 
 

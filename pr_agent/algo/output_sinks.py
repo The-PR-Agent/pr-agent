@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Protocol
 from urllib.parse import quote, urlparse
 
 import requests
 
-from pr_agent.algo.setting_utils import normalize_setting_list
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.log import get_logger
 
 
@@ -67,7 +68,10 @@ def _truncate_utf16(text: str, max_units: int = 4096) -> str:
 
 class StdoutSink:
     def send(self, record: dict, cfg: dict) -> None:
-        print(json.dumps(record, ensure_ascii=False))
+        try:
+            print(json.dumps(record, ensure_ascii=False))
+        except UnicodeEncodeError:
+            sys.stdout.write(json.dumps(record, ensure_ascii=True) + "\n")
 
 
 class FileSink:
@@ -95,6 +99,9 @@ class SlackSink:
         text = record.get("markdown")
         if text is None:
             text = json.dumps(record["payload"], ensure_ascii=False)
+        # Records carry PR-controlled text and model output; escape Slack control syntax
+        # (mentions, <url|label> links) as Slack's formatting guide asks.
+        text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         _post_json("slack", url, {"text": _append_pr_url(text, record)})
 
 
@@ -198,13 +205,28 @@ OUTPUT_SINK_TYPES: dict[str, type[OutputSink]] = {
 }
 
 
+def _selected_output_tools(cfg: dict) -> list[str] | None:
+    """Return selected output types, or None for an invalid configuration."""
+    tools = cfg.get("tools", ["review", "describe", "improve"])
+    if isinstance(tools, str):
+        tools = normalize_setting_list(tools, split_commas=True)
+    if (not isinstance(tools, (list, tuple)) or not tools
+            or any(not isinstance(name, str) or name not in ("review", "describe", "improve", "ask")
+                   for name in tools)):
+        return None
+    return list(tools)
+
+
 def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
     """Check basic enabled destination settings without constructing sinks or probing resources."""
     enable = cfg.get("enable", False)
     if isinstance(enable, str):
-        enable = enable.lower().strip() not in ("false", "0", "no", "")
-    if not enable:
+        enable = enable.strip()
+    if not _as_bool_setting(enable, default=bool(enable)):
         return None
+
+    if _selected_output_tools(cfg) is None:
+        return False, "push_outputs.tools must select supported tool names"
 
     channels = cfg.get("channels", [])
     if isinstance(channels, str):

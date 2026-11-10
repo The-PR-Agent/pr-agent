@@ -18,6 +18,35 @@ It can be invoked manually by commenting on any PR:
 
 <img src="/img/ask.png" alt="Ask" width="512" />
 
+## Repository instructions
+
+Top-level `/ask` can use the same repository instruction files as `/review`, `/describe`, and `/improve`.
+For example, ask whether a migration follows the rollback rules in an existing architecture decision record:
+
+```toml
+[config]
+repo_context_files = ["AGENTS.md", "docs/adr/database-migrations.md"]
+```
+
+```text
+/ask "Does this migration follow our rollback and compatibility rules?"
+```
+
+Like `/review`, `/describe`, and `/improve`, top-level `/ask` reads `AGENTS.md` from the repository root by default.
+Set `config.repo_context_files = []` in the root repository settings to disable repository instructions for all tools.
+Comment arguments cannot change the configured file list.
+
+The existing [repository context settings](../usage-guide/additional_configurations.md#bringing-per-repo-context-files-to-pr-agent)
+control file selection, source branches, imports, and line limits. Files come from the repository's default branch unless
+configured otherwise. Providers without repository file access skip this context; missing or empty files are also skipped.
+This behavior does not affect `/ask_line`.
+
+The question, selected discussion history, and packed diff keep their existing token budget. The instruction block,
+already bounded by `repo_context_max_lines`, is included only if it fits in the remaining model context in full.
+Otherwise, `/ask` keeps its original prompt and adds a short omission notice to the answer. It does not retry another model
+just to fit instructions. Normal model retries reconsider the original instruction block without reading the files again.
+Including repository instructions can add repository API reads and input tokens, but does not add a separate model request.
+
 ## Ask lines
 
 You can run `/ask` on specific lines of code in the PR from the PR's diff view. The tool will answer questions based on the code changes in the selected lines.
@@ -30,7 +59,16 @@ You can run `/ask` on specific lines of code in the PR from the PR's diff view. 
 
 If no matching diff hunk is found for the selected lines, the tool explains this without calling a model.
 
-Note that the tool does not have "memory" of previous questions, and answers each question independently.
+In GitHub Actions, `/ask` comments attached to an entire file use that file's complete diff as context.
+The existing file filters and input budgets still apply. If the file has no analyzable diff, or the question cannot
+be prepared within the configured input budget, the tool explains this without calling a model.
+The answer is posted in the original file-comment thread with a link to the question.
+Earlier replies are included when `pr_questions.use_conversation_history` is enabled and the input budget allows.
+Text resembling command options is treated as part of the question.
+
+With `pr_questions.use_conversation_history=true` (the default), line questions on GitHub and Azure DevOps can
+include earlier comments from the same thread. Azure DevOps also supports history for threaded top-level questions.
+Other questions are answered independently.
 
 ## Ask on images
 
@@ -68,6 +106,34 @@ To get a direct link to an image, we recommend using the following scheme:
 
 See a full video tutorial [here](https://codium.ai/images/pr_agent/ask_image_video.mov)
 
+## Linked ticket context
+
+Enable linked ticket context when asking how a PR satisfies an issue's requirements or acceptance criteria:
+
+```toml
+[pr_questions]
+use_ticket_context = true
+```
+
+Set this in host or root repository configuration. PR comment/CLI arguments and per-directory files
+cannot enable it because ticket integrations use the operator's credentials.
+
+This is disabled by default and applies to top-level `/ask` and `ask_question`, not inline `/ask_line` questions.
+It uses the same [ticket integrations](../core-abilities/fetching_ticket_context.md), credentials, reference formats,
+access checks and fetch limits as `/review` and `/describe`. Tickets are discovered from the PR/MR metadata;
+links written only in the question are not additional ticket sources. This option is independent of
+`pr_reviewer.require_ticket_analysis_review`.
+
+Ticket integrations use the operator's configured access policy, not the asker's personal ticket credentials.
+For Jira, the host-controlled `jira.project_keys` allowlist still applies (`[]` disables lookups);
+configure only projects whose ticket content may appear in PR answers.
+
+Ticket content is fetched once per command, after an analyzable diff fits. It adds API reads and input tokens
+when enabled and uses the existing model request. Unavailable tickets are skipped. Each model attempt includes only
+whole ticket records that fit after the existing question, conversation history and selected diff, so ticket
+context does not displace code already selected for the answer. Large tickets may be omitted, including all
+tickets when there is no room. The usual diff-based answer remains available in that case.
+
 ## Configuration options
 
 <details open>
@@ -93,7 +159,11 @@ See a full video tutorial [here](https://codium.ai/images/pr_agent/ask_image_vid
   </tr>
   <tr>
     <td><b>use_conversation_history</b></td>
-    <td>If set to true, the tool will use the conversation history when answering questions on specific code lines (GitHub only). Default is true.</td>
+    <td>If set to true, the tool will use the conversation history from the same thread when answering questions on specific code lines (GitHub and Azure DevOps) or threaded top-level questions (Azure DevOps only). Default is true.</td>
+  </tr>
+  <tr>
+    <td><b>use_ticket_context</b></td>
+    <td>Include linked ticket content in top-level questions using the remaining prompt budget. Default is false. See <a href="#linked-ticket-context">Linked ticket context</a>.</td>
   </tr>
 </table>
 

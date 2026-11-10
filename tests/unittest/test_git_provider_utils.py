@@ -2,8 +2,15 @@ import copy
 
 import pytest
 
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import (
+    DEFAULT_BOT_DISPLAY_NAME,
+    MAX_BOT_DISPLAY_NAME_LENGTH,
+    get_bot_display_name,
+    get_settings,
+    resolve_bot_display_name,
+)
 from pr_agent.git_providers import utils
+from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.utils import apply_repo_settings, handle_configurations_errors
 
 
@@ -14,13 +21,22 @@ class FakeMarkdownProvider:
     def is_supported(self, capability):
         return capability == "gfm_markdown"
 
-    def publish_persistent_comment(self, body, initial_header, update_header, final_update_message, name='review'):
+    def publish_persistent_comment(
+        self,
+        body,
+        initial_header,
+        update_header,
+        final_update_message,
+        name='review',
+        legacy_initial_header=None,
+    ):
         self.persistent_comments.append({
             "body": body,
             "initial_header": initial_header,
             "update_header": update_header,
             "final_update_message": final_update_message,
             "name": name,
+            "legacy_initial_header": legacy_initial_header,
         })
 
 
@@ -120,6 +136,181 @@ def test_handle_configurations_errors_uses_persistent_comment_when_supported():
     assert "qodo-merge-docs.qodo.ai" not in comment["body"]
     assert "```toml\n[config]\nmodel =\n```" in comment["body"]
     assert "<details><summary>Configuration content:</summary>" in comment["body"]
+
+
+def test_handle_configurations_errors_uses_configured_bot_display_name(monkeypatch):
+    provider = FakeMarkdownProvider()
+    monkeypatch.setitem(get_settings().config, "bot_display_name", "Acme Bot")
+
+    handle_configurations_errors([{
+        "settings": b"[config]\nmodel =",
+        "error": "Invalid value",
+        "category": "local",
+    }], provider)
+
+    assert len(provider.persistent_comments) == 1
+    comment = provider.persistent_comments[0]
+    assert comment["initial_header"] == "❌ **Acme Bot failed to apply 'local' repo settings**"
+    assert comment["legacy_initial_header"] == "❌ **PR-Agent failed to apply 'local' repo settings**"
+    assert comment["body"].startswith(
+        "❌ **Acme Bot failed to apply 'local' repo settings**"
+    )
+    assert "PR-Agent failed to apply" not in comment["body"]
+
+
+def test_handle_configurations_errors_updates_existing_default_comment_after_rename(monkeypatch):
+    class FakePersistentGitProvider(GitProvider):
+        def __init__(self):
+            self.comments = [{
+                "id": 1,
+                "body": "❌ **PR-Agent failed to apply 'local' repo settings**\n\nOld body",
+            }]
+            self.edited = []
+            self.published = []
+
+        def is_supported(self, capability):
+            return capability == "gfm_markdown"
+
+        def get_issue_comments(self):
+            return list(self.comments)
+
+        def get_latest_commit_url(self):
+            return "https://example.com/commit/1"
+
+        def get_comment_url(self, comment):
+            return f"https://example.com/comment/{comment['id']}"
+
+        def edit_comment(self, comment, body):
+            comment["body"] = body
+            self.edited.append((comment["id"], body))
+            return True
+
+        def publish_comment(self, pr_comment, **kwargs):
+            self.published.append(pr_comment)
+            return {"id": 2, "body": pr_comment}
+
+        def get_repo_settings(self):
+            return b""
+
+        def get_diff_files(self):
+            return []
+
+        def get_files(self):
+            return []
+
+        def publish_description(self, pr_title, pr_body):
+            return None
+
+        def publish_inline_comment(self, body, relevant_file, relevant_line_in_file, original_suggestion=None):
+            return None
+
+        def publish_inline_comments(self, comments):
+            return None
+
+        def remove_initial_comment(self):
+            return None
+
+        def remove_comment(self, comment):
+            return None
+
+        def get_title(self):
+            return ""
+
+        def get_languages(self):
+            return {}
+
+        def get_pr_branch(self):
+            return ""
+
+        def get_user_id(self):
+            return ""
+
+        def get_pr_description_full(self):
+            return ""
+
+        def auto_approve(self):
+            return False
+
+        def calc_pr_statistics(self, pull_request_data):
+            return {}
+
+        def publish_code_suggestions(self, code_suggestions):
+            return False
+
+        def publish_labels(self, labels):
+            return None
+
+        def get_pr_labels(self, update=False):
+            return []
+
+        def add_eyes_reaction(self, issue_comment_id, disable_eyes=False):
+            return None
+
+        def remove_reaction(self, issue_comment_id, reaction_id):
+            return None
+
+        def get_commit_messages(self):
+            return ""
+
+    provider = FakePersistentGitProvider()
+    monkeypatch.setitem(get_settings().config, "bot_display_name", "Acme Bot")
+
+    handle_configurations_errors([{
+        "settings": b"[config]\nmodel =",
+        "error": "Invalid value",
+        "category": "local",
+    }], provider)
+
+    assert len(provider.edited) == 1
+    assert provider.published == []
+    assert provider.edited[0][1].startswith("❌ **Acme Bot failed to apply 'local' repo settings**")
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        ("Acme Bot", "Acme Bot"),
+        ("  Acme Bot  ", "Acme Bot"),
+        ("A" * MAX_BOT_DISPLAY_NAME_LENGTH, "A" * MAX_BOT_DISPLAY_NAME_LENGTH),
+    ],
+)
+def test_resolve_bot_display_name_accepts_valid_strings(raw_value, expected):
+    assert resolve_bot_display_name(raw_value) == expected
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    [
+        "",
+        "   ",
+        None,
+        2024,
+        True,
+        False,
+        "Acme\nBot",
+        "Acme\rBot",
+        "Acme\tBot",
+        "Acme\x00Bot",
+        "Acme\x7fBot",
+        "Acme\u2028Bot",
+        "A" * (MAX_BOT_DISPLAY_NAME_LENGTH + 1),
+    ],
+)
+def test_resolve_bot_display_name_falls_back_and_warns_on_invalid_values(monkeypatch, invalid_value):
+    warnings = []
+
+    class DummyLogger:
+        def warning(self, message, *args, **kwargs):
+            warnings.append(message)
+
+    import pr_agent.log as log_module
+
+    monkeypatch.setattr(log_module, "get_logger", lambda: DummyLogger())
+    monkeypatch.setitem(get_settings().config, "bot_display_name", invalid_value)
+
+    assert get_bot_display_name() == DEFAULT_BOT_DISPLAY_NAME
+    assert len(warnings) == 1
+    assert "Invalid config.bot_display_name" in warnings[0]
 
 
 def test_handle_configurations_errors_keeps_markdown_details_when_persistent_comment_is_missing():

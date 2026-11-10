@@ -19,7 +19,7 @@ from pr_agent.algo.token_budget import get_max_input_tokens, get_max_tokens
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.utils import ModelType, load_yaml
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_bot_display_name, get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 
@@ -183,6 +183,8 @@ class PRHelpMessage:
         system_prompt, user_prompt, fitted_snippets = self._fit_prompts(variables, model)
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"The /help response was truncated by {model}")
         parsed_response = self._load_help_response(response)
         self._model_visible_docs_files = self._get_fitted_docs_files(
             variables.get("snippets", ""),
@@ -566,10 +568,13 @@ class PRHelpMessage:
                 relevant_configs = {'pr_help': dict(get_settings().get("pr_help", {})),
                                     'config': dict(get_settings().config)}
                 get_logger().debug("Relevant configs", artifacts=relevant_configs)
-                pr_comment = "## PR Agent Walkthrough 🤖\n\n"
-                pr_comment += ("Welcome to the PR Agent, an AI-powered tool for automated pull request analysis, "
-               "feedback, suggestions and more.")
-                pr_comment += "\n\nHere is a list of tools you can use to interact with the PR Agent:\n"
+                bot_display_name = get_bot_display_name(default="PR Agent")
+                pr_comment = f"## {bot_display_name} Walkthrough 🤖\n\n"
+                pr_comment += (
+                    f"Welcome to the {bot_display_name}, an AI-powered tool for automated pull request analysis, "
+                    "feedback, suggestions and more."
+                )
+                pr_comment += f"\n\nHere is a list of tools you can use to interact with the {bot_display_name}:\n"
                 base_path = f"{DOCS_SITE_URL}/tools"
 
                 tool_names = []

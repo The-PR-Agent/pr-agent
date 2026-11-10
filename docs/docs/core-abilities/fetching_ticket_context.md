@@ -26,10 +26,11 @@ This integration enriches the review process by automatically surfacing relevant
 
 1. Ticket Title
 2. Ticket Description
-3. Custom Fields (Acceptance criteria)
-4. Subtasks (linked tasks)
+3. Acceptance criteria (configured Jira custom fields and Azure DevOps work items)
+4. GitHub sub-issues
 5. Labels
-6. Attached Images/Screenshots
+
+Image attachments are not fetched or sent to the model as images by the ticket integration.
 
 ## Affected Tools
 
@@ -49,7 +50,7 @@ By understanding the reasoning and intent behind modifications, the LLM can offe
 Similarly to the `describe` tool, the `review` tool will use the ticket content to provide additional context for the code changes.
 
 In addition, this feature will evaluate how well a Pull Request (PR) adheres to its original purpose/intent as defined by the associated ticket or issue.
-Each ticket will be assigned a label (Compliance/Alignment level), Indicates the degree to which the PR fulfills its original purpose:
+Each ticket will be assigned a compliance assessment in the review comment, indicating the degree to which the PR fulfills its original purpose. These assessments are not added as PR labels:
 
 - Fully Compliant
 - Partially Compliant
@@ -58,7 +59,7 @@ Each ticket will be assigned a label (Compliance/Alignment level), Indicates the
 
 <img src="/img/ticket_compliance_review.png" alt="Ticket Compliance" width="768" />
 
-A `PR Code Verified` label indicates the PR code meets ticket requirements, but requires additional manual testing beyond the code scope. For example - validating UI display across different environments (Mac, Windows, mobile, etc.).
+A `PR Code Verified` assessment indicates the PR code meets ticket requirements, but requires additional manual testing beyond the code scope. For example - validating UI display across different environments (Mac, Windows, mobile, etc.).
 
 
 #### Configuration options
@@ -71,14 +72,13 @@ A `PR Code Verified` label indicates the PR code meets ticket requirements, but 
     require_ticket_analysis_review=false
     ```
 
-- If you set:
-    ```toml
-    [pr_reviewer]
-    check_pr_additional_content=true
-    ```
-    (default: `false`)
+### Ask tool
 
-    the `review` tool will also validate that the PR code doesn't contain any additional content that is not related to the ticket. If it does, the PR will be labeled at best as `PR Code Verified`, and the `review` tool will provide a comment with the additional unrelated content found in the PR code.
+Set `pr_questions.use_ticket_context=true` to include linked ticket content in top-level `/ask` questions.
+This is disabled by default and is independent of `pr_reviewer.require_ticket_analysis_review`.
+It reuses the ticket integrations below and fits complete ticket records into the space left after the question,
+conversation history and selected diff. See [Linked ticket context](../tools/ask.md#linked-ticket-context)
+for usage and limits.
 
 ## GitHub/GitLab Issues Integration
 
@@ -96,8 +96,8 @@ GitHub processes references from the description first, then the branch name, th
 description references before title references. Repeated identical references do not add lookups, and title references use
 the existing ticket lookup and result limits without displacing earlier sources.
 
-The optional `config.description_issue_regex` setting applies only to the GitHub PR description. GitHub titles use
-the built-in reference formats above, including local `#<ISSUE_NUMBER>` references of up to six digits.
+The optional `config.description_issue_regex` setting applies only to the GitHub PR description. Built-in matching on
+GitHub and GitLab recognizes local `#<ISSUE_NUMBER>` references of up to six digits.
 
 Branch names can also be used to link issues, for example:
 - `123-fix-bug` (where `123` is the issue number)

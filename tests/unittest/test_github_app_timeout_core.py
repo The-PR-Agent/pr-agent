@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from pr_agent.algo.git_patch_processing import extract_hunk_lines_from_patch
+from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.servers import github_app
 from pr_agent.servers import utils as servers_utils
 from pr_agent.servers.utils import DefaultDictWithTimeout
@@ -245,6 +247,26 @@ class TestHandleLineComments:
         assert "--file_name=src/file.py" in result
         assert "--comment_id=987654" in result
         assert result[-1] == "Why this change?"
+
+    @pytest.mark.parametrize(
+        "path", ["on", "false", "null", "123", "2026-11-09", "[one, two]", '"on"', "'null'", "docs/notes-", "build "]
+    )
+    def test_ask_line_preserves_literal_filenames(self, monkeypatch, path):
+        values = {}
+        monkeypatch.setattr(
+            "pr_agent.algo.utils.get_settings",
+            lambda: SimpleNamespace(as_dict=lambda: {}, set=lambda key, value: values.__setitem__(key, value)),
+        )
+        patch = "@@ -1 +1 @@\n-old\n+new"
+        command = github_app.handle_line_comments(
+            self._payload(path=path, start_line=1, line=1, diff_hunk=patch), "/ask Why?"
+        )
+        update_settings_from_args(command[1:-1])
+
+        assert values["FILE_NAME"] == path
+        hunk, selected = extract_hunk_lines_from_patch(patch, values["FILE_NAME"], 1, 1, "RIGHT")
+        assert "## File:" in hunk
+        assert "+new" in selected
 
     def test_only_strips_the_leading_ask_command(self):
         # The question is about the /ask command itself, so the inner occurrence
@@ -556,8 +578,37 @@ class TestPushTriggerDedupe:
 
         assert push_trigger_env["count"] == 0
 
-    def test_skips_when_handle_push_trigger_disabled(self, push_trigger_env):
-        github_app.get_settings().github_app.handle_push_trigger = False
+    @pytest.mark.parametrize("ignore", [False, "false", "off"])
+    def test_processes_bot_commit_when_ignore_is_disabled(self, push_trigger_env, ignore):
+        github_app.get_settings().github_app.push_trigger_ignore_bot_commits = ignore
+        body = _push_body()
+        body["sender"]["type"] = "Bot"
+
+        asyncio.run(
+            github_app.handle_push_trigger_for_new_commits(
+                body, "push", "dependabot[bot]", "1", "synchronize", {}, agent=None
+            )
+        )
+
+        assert push_trigger_env["count"] == 1
+
+    @pytest.mark.parametrize("ignore", [False, "false", "off"])
+    def test_processes_merge_commit_when_ignore_is_disabled(self, push_trigger_env, ignore):
+        github_app.get_settings().github_app.push_trigger_ignore_merge_commits = ignore
+        body = _push_body()
+        body["after"] = body["pull_request"]["merge_commit_sha"]
+
+        asyncio.run(
+            github_app.handle_push_trigger_for_new_commits(
+                body, "push", "alice", "1", "synchronize", {}, agent=None
+            )
+        )
+
+        assert push_trigger_env["count"] == 1
+
+    @pytest.mark.parametrize("disabled", [False, "false", "0", "off"])
+    def test_skips_when_handle_push_trigger_disabled(self, push_trigger_env, disabled):
+        github_app.get_settings().github_app.handle_push_trigger = disabled
 
         asyncio.run(
             github_app.handle_push_trigger_for_new_commits(

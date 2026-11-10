@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
 
+from pr_agent.algo.instruction_context import append_protected_system_instructions
+
 
 class BaseAiHandler(ABC):
     """
@@ -24,6 +26,7 @@ class BaseAiHandler(ABC):
         image_path: str | None = None,
     ) -> list[dict]:
         """Build the text-only message payload dispatched by the base handler contract."""
+        system_prompt = append_protected_system_instructions(system_prompt)
         return [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},

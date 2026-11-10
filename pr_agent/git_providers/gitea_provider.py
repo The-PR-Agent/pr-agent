@@ -38,12 +38,13 @@ DEFAULT_GITEA_URL = "https://gitea.com"
 class IncompleteGiteaPullRequestFilesError(IncompleteProviderPullRequestFilesError):
     """Represent an unavailable or malformed Gitea changed-file inventory."""
 
-    notice = (
-        "## PR-Agent command was not run\n\n"
-        "Gitea returned incomplete or unavailable pull-request change data, so PR-Agent stopped "
+    notice_template = (
+        "## {bot_name} command was not run\n\n"
+        "Gitea returned incomplete or unavailable pull-request change data, so {bot_name} stopped "
         "instead of analyzing only part of it.\n\n"
         "Retry the command and check the pull request's changed files and diff in Gitea if the problem persists."
     )
+    notice = notice_template.format(bot_name="PR-Agent")
     notice_marker = "<!-- pr-agent:gitea-incomplete-files -->"
 
 
@@ -130,6 +131,7 @@ class GiteaProvider(GitProvider):
         self.sha = None
         self.base_sha = ""
         self.base_ref = ""
+        self.merge_base = ""
         self.diff_files = None
         self.incremental = IncrementalPR(False)
         self.comments_list = []
@@ -155,6 +157,7 @@ class GiteaProvider(GitProvider):
             self.last_commit_id = self.last_commit
             self.base_sha = self.pr.base.sha or ""
             self.base_ref = self.pr.base.ref or ""
+            self.merge_base = getattr(self.pr, "merge_base", None) or ""
         elif resource == "issues":
             self.issue_url = url
             self.__set_repo_and_owner_from_issue()
@@ -614,10 +617,12 @@ class GiteaProvider(GitProvider):
             return ""
 
     def _get_file_content_from_base(self, filename: str) -> str:
+        # Gitea and Forgejo diff a PR from its merge base, while base.sha is the current tip of
+        # the target branch, so read the old side where the patch starts.
         return self.repo_api.get_file_content(
             owner=self.owner,
             repo=self.repo,
-            commit_sha=self.base_sha,
+            commit_sha=self.merge_base or self.base_sha,
             filepath=filename
         )
 
@@ -684,7 +689,7 @@ class GiteaProvider(GitProvider):
                 base_file = self._get_file_content_from_latest_commit(filename)
                 self.unreviewed_files_map[filename] = patch
             else:
-                # An added file cannot exist at base_sha, so fetching it there only costs a
+                # An added file cannot exist at the merge base, so fetching it there only costs a
                 # request and logs an error. Matches GithubProvider.get_diff_files().
                 if avoid_load or status == 'added':
                     base_file = ""
@@ -727,7 +732,20 @@ class GiteaProvider(GitProvider):
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
         encoded_file = quote(relevant_file, safe="/")
-        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{encoded_file}"
+        branch = self.get_pr_branch()
+        if branch.startswith("refs/pull/"):
+            # AGit-flow PRs have no head branch; Gitea reports
+            # head.ref == "refs/pull/<N>/head", and a branch link 404s.
+            # Link the file at the PR's head commit instead.
+            head_sha = self.pr.head.sha if self.pr and self.pr.head else ""
+            if not head_sha:
+                self.logger.warning(
+                    "AGit-flow PR without a head SHA; cannot generate a file link"
+                )
+                return ""
+            link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/commit/{quote(head_sha, safe='')}/{encoded_file}"
+        else:
+            link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(branch)}/{encoded_file}"
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
@@ -905,6 +923,8 @@ class GiteaProvider(GitProvider):
 
     def is_supported(self, capability) -> bool:
         """Check if the provider is supported"""
+        if capability in ("head_ci_status", "head_staleness", "author_human_check"):
+            return False
         return True
 
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:

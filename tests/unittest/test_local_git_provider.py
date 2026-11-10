@@ -1,6 +1,7 @@
 import git
 import pytest
 
+from pr_agent.algo.git_patch_processing import count_patch_lines
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
@@ -172,6 +173,7 @@ def test_local_diff_applies_ignore_rules_to_files_and_patches(tmp_path):
         assert provider.get_diff_files() is first
         assert first[1].head_file == "changed\n"
         assert first[1].patch
+        assert (first[1].num_plus_lines, first[1].num_minus_lines) == count_patch_lines(first[1].patch)
 
         get_settings().set("IGNORE.GLOB", ["*.lock"])
         assert provider.get_diff_files() is first
@@ -390,7 +392,7 @@ async def test_publish_no_suggestions_routes_local_git_output_to_improve_file(tm
         get_settings().set("pr_code_suggestions.publish_output_no_suggestions", True)
         get_settings().set("pr_code_suggestions.suggestions_heading", "Team Suggestions")
         monkeypatch.setattr(
-            "pr_agent.git_providers.local_git_provider.show_run_details",
+            "pr_agent.algo.run_output.show_run_details",
             lambda gfm_supported: "\n\nRun details" if not gfm_supported else "",
         )
 

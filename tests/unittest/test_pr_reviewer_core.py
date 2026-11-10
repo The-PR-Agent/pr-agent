@@ -1,10 +1,13 @@
 import asyncio
+import copy
 import json
 import threading
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from starlette_context import request_cycle_context
 
 from pr_agent.algo.comment_identity import PRReviewHeader, PRReviewIdentity
 from pr_agent.algo.inline_comment_dedup import (
@@ -20,6 +23,7 @@ from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.git_provider import (
+    GitProvider,
     IncompleteBitbucketPullRequestFilesError,
     IncompletePullRequestFilesError,
 )
@@ -136,6 +140,58 @@ def test_review_failure_comment_does_not_publish_unknown_exception_text():
     assert "user@example.com" not in comment
 
 
+def test_review_failure_comment_uses_configured_bot_display_name(monkeypatch):
+    settings = get_settings()
+    original = settings.pr_reviewer.get("publish_error_details", False)
+    monkeypatch.setitem(settings.config, "bot_display_name", "Acme Bot")
+    try:
+        settings.pr_reviewer.publish_error_details = True
+        comment = _review_failure_comment(RuntimeError("AuthenticationError: invalid api key"))
+        unknown_comment = _review_failure_comment(RuntimeError("opaque provider failure"))
+    finally:
+        settings.pr_reviewer.publish_error_details = original
+
+    assert "Acme Bot could not authenticate with the model provider" in comment
+    assert "PR-Agent" not in comment
+    assert unknown_comment == (
+        "Failed to review PR\n\n"
+        "**Reason:** Acme Bot encountered an unexpected internal error. "
+        "Check the Acme Bot service logs for details."
+    )
+
+
+def test_non_authoritative_review_uses_configured_bot_display_name(monkeypatch):
+    default_review = PRReviewer._as_non_authoritative_review("## Review\n\nBody")
+    assert (
+        "_PR-Agent could not safely update the persistent review. "
+        "This standalone result will not replace the canonical review._"
+    ) in default_review
+
+    monkeypatch.setitem(get_settings().config, "bot_display_name", "Acme Bot")
+
+    review = PRReviewer._as_non_authoritative_review("## Review\n\nBody")
+
+    assert "_Acme Bot could not safely update the persistent review." in review
+    assert "PR-Agent" not in review
+    assert review.startswith("## Standalone PR Review\n\n")
+    assert review.endswith("## Review\n\nBody")
+
+
+def test_auto_approve_disabled_comment_uses_configured_bot_display_name(monkeypatch):
+    published = []
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = SimpleNamespace(publish_comment=published.append)
+    monkeypatch.setitem(get_settings().config, "enable_auto_approval", False)
+    monkeypatch.setitem(get_settings().config, "bot_display_name", "Acme Bot")
+
+    reviewer.auto_approve_logic()
+
+    assert published == [
+        "Auto-approval option for Acme Bot is disabled. "
+        "You can enable it via a [configuration file](https://docs.pr-agent.ai/usage-guide/configuration_reference/#config)"
+    ]
+
+
 def test_review_failure_comment_treats_quoted_false_as_disabled():
     settings = get_settings()
     original = settings.pr_reviewer.get("publish_error_details", False)
@@ -169,6 +225,32 @@ async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_r
     )
     assert reviewer.patches_diff == "diff"
     assert reviewer.remaining_files_list == ["src/one.py", "docs/two.md"]
+    assert reviewer.prediction == _VALID_PREDICTION
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_scoped", [False, True], ids=["shared-settings", "request-settings"])
+async def test_prepare_prediction_offloads_diff_only_with_request_settings(request_scoped):
+    reviewer = _make_prediction_reviewer()
+    reviewer._get_prediction = AsyncMock(return_value=_VALID_PREDICTION)
+    settings = copy.deepcopy(get_settings()) if request_scoped else get_settings()
+    seen = []
+    loop_thread = threading.get_ident()
+
+    def get_diff(*_args, **_kwargs):
+        seen.append((threading.get_ident(), get_settings()))
+        return "diff", ["src/one.py"]
+
+    scope = request_cycle_context({"settings": settings}) if request_scoped else nullcontext()
+    with scope, patch("pr_agent.tools.pr_reviewer.get_pr_diff", side_effect=get_diff) as get_pr_diff:
+        await reviewer._prepare_prediction("model")
+
+    get_pr_diff.assert_called_once()
+    assert len(seen) == 1
+    assert (seen[0][0] != loop_thread) is request_scoped
+    assert seen[0][1] is settings
+    assert reviewer.patches_diff == "diff"
+    assert reviewer.remaining_files_list == ["src/one.py"]
     assert reviewer.prediction == _VALID_PREDICTION
 
 
@@ -444,6 +526,33 @@ async def test_failure_modes_reach_output_consumers_only_when_enabled(enabled):
         assert render.call_args.args[0]["review"]["failure_modes"] == expected
         if push.called:
             assert push.call_args.kwargs["payload"]["failure_modes"] == expected
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_artifact_findings_reach_output_consumers_only_when_enabled(enabled):
+    reviewer = _make_prediction_reviewer()
+    reviewer.vars = {"require_artifact_findings": enabled,
+                     "artifact_context": {"content": "FAILED tests/test_a.py::test_save - KeyError"}}
+    quoted = {"kind": "test_failure", "fact": "test_save fails.", "evidence": "FAILED tests/test_a.py::test_save"}
+    invented = {**quoted, "evidence": "FAILED tests/test_b.py::test_load"}
+    reviewer.prediction = "unused prediction"
+    data = {"review": {"key_issues_to_review": [], "artifact_findings": [quoted, "bad", invented]}}
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.set_review_labels = MagicMock()
+    with (
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value=data),
+        patch("pr_agent.tools.pr_reviewer.github_action_output") as action_output,
+        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="review") as render,
+        patch("pr_agent.tools.pr_reviewer.push_outputs_async"),
+    ):
+        reviewer._prepare_pr_review()
+        await reviewer._deliver_sink_output()
+    assert ("artifact_findings" in action_output.call_args.args[0]["review"]) is enabled
+    assert ("artifact_findings" in render.call_args.args[0]["review"]) is enabled
+    if enabled:
+        assert render.call_args.args[0]["review"]["artifact_findings"] == [
+            {**quoted, "quoted": True}, {**invented, "quoted": False}]
 
 
 def test_review_schema_allows_fields_requested_through_extra_instructions():
@@ -965,7 +1074,6 @@ async def test_run_extracts_tickets_only_when_incremental_review_proceeds(monkey
     reviewer.incremental = SimpleNamespace(
         is_incremental=True, commits_range=[] if valid_anchor else None, last_seen_commit=None,
     )
-    reviewer.is_auto = False
     reviewer.vars = {}
     reviewer.prediction = None
     reviewer._load_previous_findings_context = MagicMock(return_value="Previous findings")
@@ -1666,14 +1774,6 @@ def test_prepare_review_json_lists_files_left_out_by_the_token_budget(monkeypatc
     }
 
 
-def test_can_run_incremental_review_skips_auto_mode_without_new_commit():
-    reviewer = _make_reviewer()
-    reviewer.is_auto = True
-    reviewer.incremental = SimpleNamespace(first_new_commit_sha=None)
-
-    assert reviewer._can_run_incremental_review() is False
-
-
 @pytest.fixture
 def review_label_settings():
     settings = get_settings()
@@ -1864,25 +1964,6 @@ def test_set_review_labels_skips_providers_without_label_support(review_label_se
     git_provider.publish_labels.assert_not_called()
 
 
-def test_get_user_answers_collects_question_and_answer_from_issue_comments():
-    git_provider = MagicMock()
-    git_provider.get_issue_comments.return_value = [
-        SimpleNamespace(body="Unrelated"),
-        SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
-        SimpleNamespace(body="/answer Because it fixes production."),
-    ]
-    git_provider.get_issue_comments_newest_first.return_value = list(
-        reversed(git_provider.get_issue_comments.return_value)
-    )
-    reviewer = _make_reviewer(git_provider)
-    reviewer.is_answer = True
-
-    question, answer = reviewer._get_user_answers()
-
-    assert question == "Questions to better understand the PR:\n- Why?"
-    assert answer == "/answer Because it fixes production."
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("persistent", [True, False])
 @pytest.mark.parametrize("thread_enabled", [True, False])
@@ -2016,183 +2097,6 @@ async def test_nonpersistent_review_adds_identity_for_incremental_capable_provid
     assert expected_identity in published_review[0].args[0]
 
 
-def test_init_maps_user_question_and_answer_to_correct_prompt_vars(monkeypatch):
-    """Behavioral regression for the swapped-unpacking bug (#2496).
-
-    The bug lived in ``PRReviewer.__init__``: ``_get_user_answers()`` returns
-    ``(question, answer)`` but the tuple was unpacked as ``answer, question``,
-    so the review prompt rendered the user's answer under ``{{ question_str }}``
-    and the question under ``{{ answer_str }}``. This drives the real ``__init__``
-    (external collaborators stubbed) and asserts each value lands in ``self.vars``
-    under the correct key — so it fails if the unpack is ever swapped again,
-    regardless of how the line is formatted.
-    """
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
-
-    provider = MagicMock()
-    provider.is_supported.return_value = True
-    provider.get_languages.return_value = {}
-    provider.get_files.return_value = []
-    provider.get_issue_comments.return_value = [
-        SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
-        SimpleNamespace(body="/answer Because it fixes production."),
-    ]
-    provider.get_pr_description.return_value = ("desc", [])
-    provider.get_issue_comments_newest_first.return_value = list(reversed(provider.get_issue_comments.return_value))
-
-    monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
-    monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
-
-    reviewer = PRReviewer(
-        "https://example/pr/1",
-        is_answer=True,
-        ai_handler=lambda: SimpleNamespace(main_pr_language=None),
-    )
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Why?"
-    assert reviewer.vars["answer_str"] == "/answer Because it fixes production."
-
-
-def _build_answer_mode_reviewer(monkeypatch, issue_comments, *, newest_first=None):
-    """Drive the real ``PRReviewer.__init__`` in answer mode over ``issue_comments``."""
-    from pr_agent.git_providers.git_provider import GitProvider
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
-
-    provider = MagicMock()
-    provider.is_supported.return_value = True
-    provider.get_languages.return_value = {}
-    provider.get_files.return_value = []
-    provider.get_issue_comments.return_value = issue_comments
-    provider.get_pr_description.return_value = ("desc", [])
-    if newest_first is None:
-        provider.get_issue_comments_newest_first.side_effect = (
-            lambda: GitProvider.get_issue_comments_newest_first(provider)
-        )
-    else:
-        provider.get_issue_comments_newest_first.return_value = newest_first
-
-    monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
-    monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
-
-    return PRReviewer(
-        "https://example/pr/1",
-        is_answer=True,
-        ai_handler=lambda: SimpleNamespace(main_pr_language=None),
-    )
-
-
-def test_answer_mode_reads_comments_from_a_non_list_iterable(monkeypatch):
-    """GitHub hands back a PyGithub ``PaginatedList``, GitLab a plain list.
-
-    Answer mode used to reach for the PyGithub-only ``.reversed`` property, which meant
-    it could only ever consume the GitHub shape. Any lazily-paginated iterable must work.
-    """
-
-    class _Paginated:
-        def __init__(self, items):
-            self._items = items
-
-        def __iter__(self):
-            return iter(self._items)
-
-    reviewer = _build_answer_mode_reviewer(monkeypatch, _Paginated([
-        SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
-        SimpleNamespace(body="/answer Because it fixes production."),
-    ]))
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Why?"
-    assert reviewer.vars["answer_str"] == "/answer Because it fixes production."
-
-
-def test_answer_mode_uses_the_lazy_reversed_view_when_the_provider_offers_one(monkeypatch):
-    """PyGithub reverses a PaginatedList lazily, walking pages from the end.
-
-    Materialising it instead would page the whole thread just to read the last exchange,
-    so the lazy view must win when it exists.
-    """
-
-    class _LazyPaginated:
-        def __init__(self, items):
-            self._items = items
-
-        @property
-        def reversed(self):
-            return list(reversed(self._items))
-
-        def __iter__(self):
-            raise AssertionError("the lazy reversed view should have been used")
-
-    reviewer = _build_answer_mode_reviewer(monkeypatch, _LazyPaginated([
-        SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
-        SimpleNamespace(body="/answer Because it fixes production."),
-    ]))
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Why?"
-    assert reviewer.vars["answer_str"] == "/answer Because it fixes production."
-
-
-def test_answer_mode_prefers_the_newest_question_and_answer(monkeypatch):
-    """Comments arrive oldest-first, so the walk must run newest-first to pick the latest exchange."""
-    reviewer = _build_answer_mode_reviewer(monkeypatch, [
-        SimpleNamespace(body="Questions to better understand the PR:\n- Stale question?"),
-        SimpleNamespace(body="/answer Stale answer."),
-        SimpleNamespace(body="Questions to better understand the PR:\n- Current question?"),
-        SimpleNamespace(body="/answer Current answer."),
-    ])
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Current question?"
-    assert reviewer.vars["answer_str"] == "/answer Current answer."
-
-
-def test_answer_mode_keeps_newest_question_when_no_answer_has_been_posted(monkeypatch):
-    reviewer = _build_answer_mode_reviewer(monkeypatch, [
-        SimpleNamespace(body="Questions to better understand the PR:\n- Earlier question?"),
-        SimpleNamespace(body="Questions to better understand the PR:\n- Latest question?"),
-    ])
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Latest question?"
-    assert reviewer.vars["answer_str"] == ""
-
-
-@pytest.mark.parametrize("earlier_comments", [
-    [SimpleNamespace(body="Questions to better understand the PR:\n- Please use /answer for this question")],
-    [
-        SimpleNamespace(body="Questions to better understand the PR:\n- Earlier question?"),
-        SimpleNamespace(body="/answer Earlier answer."),
-    ],
-])
-def test_answer_mode_ignores_answers_older_than_newest_question(monkeypatch, earlier_comments):
-    reviewer = _build_answer_mode_reviewer(monkeypatch, [
-        *earlier_comments,
-        SimpleNamespace(body="Questions to better understand the PR:\n- Latest question?"),
-    ])
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Latest question?"
-    assert reviewer.vars["answer_str"] == ""
-
-
-def test_answer_mode_keeps_the_latest_correction_to_an_answer(monkeypatch):
-    reviewer = _build_answer_mode_reviewer(monkeypatch, [
-        SimpleNamespace(body="Questions to better understand the PR:\n- Timeout?"),
-        SimpleNamespace(body="/answer Use 30 seconds."),
-        SimpleNamespace(body="/answer Correction: use 60 seconds."),
-    ])
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Timeout?"
-    assert reviewer.vars["answer_str"] == "/answer Correction: use 60 seconds."
-
-
-def test_answer_mode_respects_provider_supplied_newest_first_order(monkeypatch):
-    comments = [
-        SimpleNamespace(body="/answer Correction: use 60 seconds."),
-        SimpleNamespace(body="/answer Use 30 seconds."),
-        SimpleNamespace(body="Questions to better understand the PR:\n- Timeout?"),
-    ]
-    reviewer = _build_answer_mode_reviewer(monkeypatch, comments, newest_first=comments)
-
-    assert reviewer.vars["answer_str"] == "/answer Correction: use 60 seconds."
-
-
 async def _render_review_capturing_push(reviewer, publish_output):
     reviewer.prediction = "review: {}"
     reviewer.remaining_files_list = []
@@ -2230,3 +2134,68 @@ async def test_prepare_pr_review_pushes_outputs_when_publishing():
     assert push.call_args.args[0] == "review"
     assert push.call_args.kwargs["payload"] == {"score": "1"}
     assert push.call_args.kwargs["markdown"] == "original review"
+
+
+def _make_git_provider_for_init(files=("a.py", "b.py")):
+    provider = MagicMock()
+    provider.is_supported.return_value = False
+    provider.get_languages.return_value = {"Python": 100}
+    provider.get_files.return_value = list(files)
+    provider.get_pr_description.return_value = ("desc", [])
+    provider.get_pr_branch.return_value = "feature"
+    provider.get_commit_messages.return_value = ""
+    provider.get_num_of_files.side_effect = lambda: GitProvider.get_num_of_files(provider)
+    return provider
+
+
+@pytest.mark.asyncio
+async def test_init_counts_files_without_fetching_diff_before_skipped_incremental_review(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    provider = _make_git_provider_for_init(("a.py", "b.py"))
+    provider.is_supported.side_effect = lambda cap: cap == "get_Commit_Messages"
+    provider.unreviewed_files_map = {}
+    provider.previous_review = SimpleNamespace(html_url="https://gitlab.example/mr/1#note_1")
+    monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
+    monkeypatch.setitem(get_settings().config, "is_auto_command", False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "minimal_commits_for_incremental_review", 0)
+
+    reviewer = PRReviewer(
+        "https://gitlab.example/group/repo/-/merge_requests/1",
+        args=["-i"],
+        ai_handler=lambda: SimpleNamespace(main_pr_language=None),
+    )
+    reviewer.incremental.commits_range = []
+
+    assert reviewer.vars["num_pr_files"] == 2
+    provider.get_diff_files.assert_not_called()
+
+    await reviewer.run()
+
+    provider.get_diff_files.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_init_does_not_pre_invoke_failing_get_diff_files_before_run(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    provider = _make_git_provider_for_init(("a.py",))
+    incomplete_error = IncompletePullRequestFilesError("diff not ready")
+    provider.get_diff_files.side_effect = incomplete_error
+    monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
+    monkeypatch.setitem(get_settings().config, "publish_output", False)
+
+    reviewer = PRReviewer(
+        "https://gitlab.example/group/repo/-/merge_requests/1",
+        ai_handler=lambda: SimpleNamespace(main_pr_language=None),
+    )
+
+    assert reviewer.vars["num_pr_files"] == 1
+    provider.get_diff_files.assert_not_called()
+
+    with pytest.raises(IncompletePullRequestFilesError) as exc_info:
+        await reviewer.run()
+
+    assert exc_info.value is incomplete_error
+    provider.get_diff_files.assert_called_once_with()

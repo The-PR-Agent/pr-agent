@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import get_artifact_context
+from pr_agent.algo.code_fence import strip_wrapping_code_fence
 from pr_agent.algo.comment_identity import PRDescriptionHeader, PRDescriptionIdentity
 from pr_agent.algo.output_models import PRDescriptionAssembled
 from pr_agent.algo.pr_processing import (
@@ -24,7 +25,7 @@ from pr_agent.algo.pr_processing import (
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
 from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure
-from pr_agent.algo.run_output import push_outputs_async, show_relevant_configurations, show_run_details
+from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import (
@@ -34,7 +35,7 @@ from pr_agent.algo.utils import (
     load_yaml,
     set_custom_labels,
 )
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_bot_display_name, get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError, get_main_pr_language
 from pr_agent.log import get_logger
@@ -168,9 +169,20 @@ class PRDescription:
 
             if self.prediction:
                 self._prepare_data()
-                self._write_json_output(self.data)
+                try:
+                    self._write_json_output(self.data)
+                except (OSError, TypeError, ValueError):
+                    if not (review_json_output_path.get() and
+                            get_settings().config.git_provider == "plain-diff"):
+                        raise
+                    # Keep Markdown available even when a requested JSON file cannot be written.
+                    record_command_failure()
             else:
                 get_logger().warning(f"Empty prediction, PR: {self.pr_id}")
+                # A skipped Plain Diff description cannot satisfy an explicit
+                # JSON artifact request, even though skipping is otherwise valid.
+                if review_json_output_path.get() and get_settings().config.git_provider == "plain-diff":
+                    record_command_failure()
                 return None
 
             if get_settings().pr_description.enable_semantic_files_types:
@@ -201,11 +213,12 @@ class PRDescription:
                 pr_body += HelpMessage.get_describe_usage_guide()
                 pr_body += "\n</details>\n"
             elif get_settings().pr_description.enable_help_comment and self.git_provider.is_supported("gfm_markdown"):
+                bot_display_name = get_bot_display_name()
                 if self.git_provider.supports_inline_help_footer():
                     pr_body += (
                         '\n\n___\n\n> <details> <summary>  Need help?</summary>'
                         '<li>Type <code>/help how to ...</code> in the comments thread '
-                        'for any questions about PR-Agent usage.</li>'
+                        f'for any questions about {bot_display_name} usage.</li>'
                         '<li>Check out the '
                         '<a href="https://docs.pr-agent.ai/usage-guide/">documentation</a> '
                         'for more information.</li></details>'
@@ -214,7 +227,7 @@ class PRDescription:
                     pr_body += (
                         "\n\n___\n\n<details><summary>Need help?</summary>"
                         "- Type <code>/help how to ...</code> in the comments "
-                        "thread for any questions about PR-Agent usage.<br>"
+                        f"thread for any questions about {bot_display_name} usage.<br>"
                         "- Check out the "
                         "<a href='https://docs.pr-agent.ai/usage-guide/'>documentation</a> "
                         "for more information.</details>"
@@ -227,9 +240,8 @@ class PRDescription:
             if get_settings().get('config', {}).get('output_relevant_configurations', False):
                 pr_body += show_relevant_configurations(relevant_section='pr_description')
 
-            # Output the agent run details (model, tokens, time cost) if enabled
-            if get_settings().get('config', {}).get('output_run_details', False):
-                pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
+            # Output the fallback-model note, and the agent run details (model, tokens, time cost) if enabled
+            pr_body = append_run_details(pr_body, self.git_provider)
 
             if get_settings().config.publish_output:
                 # Emit to the optional external sinks before touching the provider, so a sink
@@ -597,9 +609,10 @@ class PRDescription:
             prediction_headers = await self._get_prediction(model, patches_diff=files_walkthrough_prompt,
                                                             prompt="pr_description_only_description_prompts")
             if isinstance(prediction_headers, str):
-                prediction_headers = re.sub(
-                    r'^```[ \t]*(?:(?i:yaml|yml)[ \t]*)?(?=\r?\n)', '', prediction_headers.strip()
-                ).strip('`').strip()
+                # Fence-aware stripping: `str.strip("`")` removes characters
+                # rather than the fence, mangling answers that end in an
+                # inline code span.
+                prediction_headers = strip_wrapping_code_fence(prediction_headers.strip()).strip()
             self._require_usable_prediction(prediction_headers)
 
             # extend the tables with the files not shown
@@ -925,7 +938,8 @@ class PRDescription:
         if get_settings().pr_description.include_generated_by_header:
             head_sha = self.git_provider.get_pr_head_sha()
             commit_suffix = f" at {head_sha}" if head_sha else ""
-            ai_header = f"### 🤖 Generated by PR Agent{commit_suffix}\n\n"
+            bot_display_name = get_bot_display_name(default="PR Agent")
+            ai_header = f"### 🤖 Generated by {bot_display_name}{commit_suffix}\n\n"
         else:
             ai_header = ""
 
@@ -1118,7 +1132,9 @@ class PRDescription:
                     )
                         if len(file_changes_title_code_br) < (delta - 5):
                             file_changes_title_code_br += "&nbsp; " * ((delta - 5) - len(file_changes_title_code_br))
-                        filename_publish = f"<strong>{filename_publish}</strong><dd>{file_changes_title_code_br}</dd>"
+                        filename_publish = (
+                            f"<strong>{filename_publish}</strong><br><span>{file_changes_title_code_br}</span>"
+                        )
                     else:
                         filename_publish = f"<strong>{filename_publish}</strong>"
                     diff_plus_minus = ""

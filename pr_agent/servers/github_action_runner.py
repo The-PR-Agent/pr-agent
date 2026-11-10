@@ -11,6 +11,7 @@ from starlette_context import context, request_cycle_context
 
 from pr_agent.agent.pr_agent import (
     PRAgent,
+    _normalize_publish_output_setting,
     parse_command,
     publish_incomplete_files_comment,
     response_language_instructions,
@@ -24,6 +25,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
 from pr_agent.algo.artifacts import inject_artifact_context as _inject_artifact_context
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
+from pr_agent.algo.utils import encode_user_text_arg
 from pr_agent.config_loader import get_settings
 from pr_agent.doctor import PROVIDER_AUTH_CORRECTIONS, missing_provider_key_env_vars
 from pr_agent.git_providers import get_git_provider_with_context
@@ -49,8 +51,8 @@ class _ActionStatus:
 _action_status: ContextVar[_ActionStatus | None] = ContextVar("pr_agent_action_status", default=None)
 
 
-def is_true(value: str | bool | int) -> bool:
-    return _as_bool_setting(value)
+def is_true(value: str | bool | int, default: bool = False, setting_name: str | None = None) -> bool:
+    return _as_bool_setting(value, default=default, setting_name=setting_name)
 
 
 def get_setting_or_env(key: str, default: str | bool = None) -> str | bool:
@@ -167,6 +169,7 @@ async def _run_auto_tool(tool_class, pr_url):
     # behind by a previous tool; the tool replaces it with its own on entry.
     init_run_details()
     _refresh_shared_provider(pr_url)
+    _normalize_publish_output_setting()
     try:
         with response_language_instructions():
             result = await tool_class(pr_url).run()
@@ -237,7 +240,11 @@ async def _run_review_commands(event_payload):
     disable_auto_feedback = get_setting_or_env("CONFIG.DISABLE_AUTO_FEEDBACK", None)
     if disable_auto_feedback is None:
         disable_auto_feedback = get_settings().get("CONFIG.DISABLE_AUTO_FEEDBACK", False)
-    if is_true(disable_auto_feedback):
+    if is_true(
+        disable_auto_feedback,
+        default=True,
+        setting_name="config.disable_auto_feedback",
+    ):
         get_logger().info(f"Auto feedback is disabled, skipping pull_request_review: {pr_url=}")
         return
 
@@ -402,7 +409,11 @@ async def run_action():
                     "github_action_config.push_trigger_ignore_merge_commits",
                     get_settings().get("github_app.push_trigger_ignore_merge_commits", True),
                 )
-                if is_true(ignore_merge_commits) and after_sha is not None and after_sha == merge_commit_sha:
+                if is_true(
+                    ignore_merge_commits,
+                    default=True,
+                    setting_name="github_action_config.push_trigger_ignore_merge_commits",
+                ) and after_sha is not None and after_sha == merge_commit_sha:
                     get_logger().info("Skipping synchronize: merge commit detected")
                     return
                 sender_type = event_payload.get("sender", {}).get("type")
@@ -410,7 +421,11 @@ async def run_action():
                     "github_action_config.push_trigger_ignore_bot_commits",
                     get_settings().get("github_app.push_trigger_ignore_bot_commits", True),
                 )
-                if is_true(ignore_bot_commits) and sender_type == "Bot":
+                if is_true(
+                    ignore_bot_commits,
+                    default=True,
+                    setting_name="github_action_config.push_trigger_ignore_bot_commits",
+                ) and sender_type == "Bot":
                     get_logger().info("Skipping synchronize: bot commit detected")
                     return
                 push_commands = get_settings().get(
@@ -483,7 +498,16 @@ async def run_action():
             try:
                 if GITHUB_EVENT_NAME == "pull_request_review_comment":
                     if is_ask_command_comment(comment_body):
-                        comment_body = handle_line_comments(event_payload, comment_body)
+                        comment = event_payload["comment"]
+                        if comment.get("subject_type") == "file" and comment_body.split(maxsplit=1)[0] == "/ask":
+                            question = comment_body.strip().removeprefix("/ask").strip()
+                            context["file_question_path"] = comment["path"]
+                            context["file_question_comment_id"] = comment.get("in_reply_to_id") or comment["id"]
+                            context["file_question_origin_comment_id"] = comment["id"]
+                            context["file_question_comment_url"] = comment["html_url"]
+                            comment_body = ["/ask", encode_user_text_arg(question)]
+                        else:
+                            comment_body = handle_line_comments(event_payload, comment_body)
             except Exception as e:
                 get_logger().error(f"Failed to handle line comments: {e}")
                 return

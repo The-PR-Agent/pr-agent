@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from pr_agent.algo.comment_identity import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity
+from pr_agent.algo.review_finding_state import ParsedReviewState, reconcile_review_findings
 from pr_agent.algo.run_details import command_failed
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
@@ -82,6 +83,68 @@ def _configure_published_run():
     settings.config.publish_output = True
     settings.config.publish_output_progress = True
     settings.config.is_auto_command = False
+
+
+def test_improve_finding_state_tracks_float_line_suggestions():
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        settings = get_settings()
+        settings.config.publish_output = True
+        provider = MagicMock()
+        provider.get_pr_head_sha.return_value = "head-1"
+        tool = _make_tool(provider)
+        tool._suggestion_finding_state_supported = lambda: True
+        tool._load_suggestion_finding_state = lambda: ParsedReviewState(
+            reconcile_review_findings(None, [], allow_resolution=False, head_sha="").state,
+            present=False,
+            valid=True,
+        )
+        suggestion = {
+            "relevant_file": "app.py",
+            "relevant_lines_start": 6.0,
+            "relevant_lines_end": 6.0,
+            "suggestion_content": "Handle the missing value.",
+            "label": "possible bug",
+            "existing_code": "return value",
+            "improved_code": "return value or default",
+        }
+
+        tool._prepare_suggestion_finding_state({"code_suggestions": [suggestion]})
+
+        assert len(tool._suggestion_finding_state["findings"]) == 1
+        assert tool._suggestion_finding_state["findings"][0]["line_start"] == 6
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_inline_suggestion_keeps_float_anchors_after_dedent():
+    provider = MagicMock()
+    provider.supports_code_suggestions_artifact.return_value = False
+    provider.publish_code_suggestions.return_value = True
+    tool = _make_tool(provider)
+    tool._validate_suggestion = MagicMock(return_value=(True, "", True))
+    tool.dedent_code = MagicMock(side_effect=lambda _file, _line, code: code)
+    tool._validate_python_replacement_syntax = MagicMock(return_value=True)
+
+    await tool.push_inline_code_suggestions(
+        {
+            "code_suggestions": [{
+                "relevant_file": "app.py",
+                "relevant_lines_start": 6.0,
+                "relevant_lines_end": 6.0,
+                "suggestion_content": "Handle the missing value.",
+                "label": "possible bug",
+                "existing_code": "return value",
+                "improved_code": "return value or default",
+            }]
+        }
+    )
+
+    published = provider.publish_code_suggestions.call_args.args[0]
+    assert len(published) == 1
+    assert published[0]["relevant_lines_start"] == 6
+    assert published[0]["relevant_lines_end"] == 6
 
 
 @pytest.mark.asyncio

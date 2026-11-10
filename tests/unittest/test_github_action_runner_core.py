@@ -14,6 +14,7 @@ from pr_agent import config_loader
 from pr_agent.agent.request_policy import enforce_request_policy
 from pr_agent.algo import artifacts
 from pr_agent.algo.run_details import command_failed, get_run_details, record_command_failure
+from pr_agent.algo.utils import decode_user_text_args
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import _GIT_PROVIDERS, get_git_provider_with_context
 from pr_agent.git_providers import utils as git_utils
@@ -88,6 +89,30 @@ async def test_direct_auto_tool_leaves_unexpected_constructor_error_unchanged(mo
 
     assert raised.value is error
     notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("value", "expected"), [
+    ("false", False),
+    ("off", False),
+    ("", False),
+    ("true", True),
+])
+async def test_direct_auto_tool_normalizes_publish_output(value, expected):
+    observed = []
+
+    class AutoTool:
+        def __init__(self, _pr_url):
+            pass
+
+        async def run(self):
+            observed.append(get_settings().config.publish_output)
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        get_settings().set("CONFIG.PUBLISH_OUTPUT", value)
+        await github_action_runner._run_auto_tool(AutoTool, "https://example/pr/1")
+
+    assert observed == [expected]
 
 
 @pytest.mark.asyncio
@@ -356,6 +381,7 @@ def _write_review_comment_event_with_body(tmp_path, body):
         "comment": {
             "body": body,
             "id": 123,
+            "html_url": "https://github.com/org/repo/pull/1#discussion_r123",
             "pull_request_url": "https://api.github.com/repos/org/repo/pulls/1",
             "subject_type": "line",
             "start_line": 10,
@@ -396,13 +422,14 @@ async def _run_review_action_with_settings(
     action_config=None,
     action="submitted",
     state="changes_requested",
+    disable_auto_feedback=False,
 ):
     settings = get_settings()
     settings.set("GITHUB_APP.REVIEW_STATES", app_review_states)
     settings.set("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
     settings.set("GITHUB_APP.REVIEW_COMMANDS", app_review_commands)
     settings.set("GITHUB_APP.FEEDBACK_ON_DRAFT_PR", False)
-    settings.set("CONFIG.DISABLE_AUTO_FEEDBACK", False)
+    settings.set("CONFIG.DISABLE_AUTO_FEEDBACK", disable_auto_feedback)
     settings.set("GITHUB_ACTION_CONFIG", dict(action_config or {}), merge=False)
 
     handled = []
@@ -536,6 +563,21 @@ async def test_review_submission_is_disabled_without_review_commands(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_review_submission_treats_invalid_disable_auto_feedback_as_disabled(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    handled = await _run_review_action_with_settings(
+        monkeypatch,
+        tmp_path,
+        app_review_states=["changes_requested"],
+        app_review_commands=["/review"],
+        disable_auto_feedback="y",
+    )
+
+    assert handled == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["edited", "dismissed"])
 async def test_review_submission_ignores_non_submitted_actions(
     monkeypatch, tmp_path, restore_github_settings, action
@@ -646,6 +688,95 @@ async def test_review_comment_with_review_command_mentioning_ask_stays_review(
     assert handled == [(
         "https://api.github.com/repos/org/repo/pulls/1",
         "/review please, I will /ask later",
+    )]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["created", "edited"])
+@pytest.mark.parametrize("subject_type,command", [
+    ("file", "/ask"), ("line", "/ask"), (None, "/ask"), ("file", "/ask_line"),
+], ids=["file", "line", "omitted", "file-explicit-line"])
+async def test_review_comment_ask_routes_by_subject_type(
+    monkeypatch, tmp_path, restore_github_settings, action, subject_type, command
+):
+    question = "Why does JWTValidator reject RS256 tokens?"
+    body = f"{command} {question}"
+    event_path = _write_review_comment_event_with_body(tmp_path, body)
+    payload = json.loads(event_path.read_text())
+    payload["action"] = action
+    if subject_type is None:
+        payload["comment"].pop("subject_type")
+    else:
+        payload["comment"]["subject_type"] = subject_type
+    if subject_type == "file":
+        payload["comment"].update(start_line=None, line=1, original_line=1, diff_hunk="")
+    event_path.write_text(json.dumps(payload))
+
+    handled = []
+    _patch_issue_comment_deps(monkeypatch, handled)
+    _install_action_env(monkeypatch, tmp_path, event_path, "pull_request_review_comment")
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+
+    await github_action_runner._run_action_and_drain()
+
+    assert len(handled) == 1
+    url, request = handled[0]
+    assert url == "https://api.github.com/repos/org/repo/pulls/1"
+    if subject_type == "file" and command == "/ask":
+        assert request[0] == "/ask"
+        assert decode_user_text_args(request[1:]) == question
+    else:
+        start, end = (1, 1) if subject_type == "file" else (10, 12)
+        assert request[:6] == [
+            "/ask_line", f"--line_start={start}", f"--line_end={end}", "--side=RIGHT",
+            "--file_name=src/app.py", "--comment_id=123",
+        ]
+        assert request[6].endswith(question)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("question,file_path,in_reply_to_id", [
+    ('Why is `"` escaped here?', "src/Other File.py", None),
+    ("Explain --config.publish_output=false in this code.", "src/Other File.py", None),
+    ("--config.publish_output=false", "src/Other File.py", None),
+    ("Why this change?", "src/`<!--draft-->: notes.py", None),
+    ("Why this change?", "src/line\nbreak.py", None),
+    ("Why this change?", r"src/line\nbreak.py", None),
+    ("Why this change?", "src/app.py", 456),
+])
+async def test_file_question_keeps_literal_text_and_path_through_dispatch(
+    monkeypatch, tmp_path, restore_github_settings, question, file_path, in_reply_to_id
+):
+    observed = []
+
+    def question_tool(_url, ai_handler=None, args=None):
+        observed.append((
+            decode_user_text_args(args), get_settings().config.publish_output, context["file_question_path"],
+            context["file_question_comment_id"], context["file_question_origin_comment_id"],
+            context["file_question_comment_url"],
+        ))
+        return SimpleNamespace(run=AsyncMock())
+
+    event_path = _write_review_comment_event_with_body(tmp_path, f"/ask {question}")
+    payload = json.loads(event_path.read_text())
+    payload["comment"].update(subject_type="file", path=file_path, start_line=None, line=1, diff_hunk="")
+    payload["comment"]["in_reply_to_id"] = in_reply_to_id
+    event_path.write_text(json.dumps(payload))
+    _patch_issue_comment_deps(monkeypatch, [])
+    monkeypatch.setattr(github_action_runner, "PRAgent", pr_agent_module.PRAgent)
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+    monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: True)
+    monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
+    monkeypatch.setitem(pr_agent_module.command2class, "ask", question_tool)
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
+    _install_action_env(monkeypatch, tmp_path, event_path, "pull_request_review_comment")
+
+    await github_action_runner._run_action_and_drain()
+
+    assert observed == [(
+        question, True, file_path, in_reply_to_id or 123, 123,
+        "https://github.com/org/repo/pull/1#discussion_r123",
     )]
 
 
@@ -776,7 +907,7 @@ async def test_auto_actions_apply_policy_after_repo_settings_without_rebuilding_
     settings.set("github_action_config.pr_actions", ["opened"])
     pr = SimpleNamespace(
         title=title, html_url="https://github.com/org/repo/pull/1",
-        user=SimpleNamespace(login="author"), head=SimpleNamespace(ref="feature"),
+        user=SimpleNamespace(login="author"), head=SimpleNamespace(ref="feature", sha="head"),
         base=SimpleNamespace(ref="main"), labels=[SimpleNamespace(name="skip-review")],
         get_commits=Mock(return_value=[SimpleNamespace(sha="head")]),
     )
@@ -1282,6 +1413,37 @@ async def test_synchronize_skips_bot_commit(monkeypatch, tmp_path, restore_githu
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(
         tmp_path, sender_type="Bot"
     )))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("setting_name", "event_kwargs"),
+    [
+        (
+            "push_trigger_ignore_merge_commits",
+            {"before_sha": "abc", "after_sha": "merge123", "merge_commit_sha": "merge123"},
+        ),
+        ("push_trigger_ignore_bot_commits", {"sender_type": "Bot"}),
+    ],
+    ids=["merge-commit", "bot-commit"],
+)
+async def test_synchronize_fails_closed_for_invalid_ignore_setting(
+    monkeypatch, tmp_path, restore_github_settings, setting_name, event_kwargs
+):
+    handled = []
+    _patch_synchronize_deps(monkeypatch, handled, ["/describe"])
+    settings = get_settings()
+    monkeypatch.setitem(settings.store["github_action_config"], setting_name, "y")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv(
+        "GITHUB_EVENT_PATH",
+        str(_write_synchronize_event(tmp_path, **event_kwargs)),
+    )
     monkeypatch.setenv("GITHUB_TOKEN", "token")
 
     await github_action_runner.run_action()

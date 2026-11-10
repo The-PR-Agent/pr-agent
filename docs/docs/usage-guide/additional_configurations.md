@@ -51,7 +51,7 @@ On providers that support GitHub-Flavored Markdown this appends a collapsible se
   - anthropic/claude-sonnet-5: $0.01 USD
 ```
 
-`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. The `Tokens` line appears only when the model provider reports usage. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default.
+`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. A fallback run also adds a visible one-line note naming the fallback model, even when `config.output_run_details` is off, because its output quality can differ from the configured model. The note appears wherever the section below can appear. The `Tokens` line appears only when the model provider reports usage. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default.
 
 `Estimated API cost` is derived synchronously from each completed LiteLLM response and its finalized usage. LiteLLM can account for cache reads, cache writes, reasoning tokens, and provider-specific usage categories when the response and its pricing data include them. Multi-model runs show a compact breakdown of the known costs. Exact `Decimal` values are retained for aggregation, while public currency output is rounded to two decimal places; a tiny positive value that would round to zero is shown as `<$0.01` instead of `$0.00`. If only some successful calls can be priced, the total is marked `partial` with the priced-call count; if none can be priced, the line reports `unavailable`. Missing pricing is never rendered as `$0`.
 
@@ -60,7 +60,7 @@ The amount is an estimate based on LiteLLM's pricing data, not provider-invoice-
 Notes:
 
 - `/ask`, `/ask_line`, and `/help <question>` append the section to the published answer. `/update_changelog` appends it to its comment only; the content committed to `CHANGELOG.md` and the review comment that points at it never include it, so a push whose review succeeds shows no section. Messages that need no AI call, such as the static `/help` walkthrough or an `/ask_line` question that matches no diff lines, carry no section.
-- `/improve` appends the section only when it publishes a summary comment. If the provider lacks GFM support or `pr_code_suggestions.committable_code_suggestions` is enabled, `/improve` posts inline comments instead, so no run details section appears.
+- `/improve` appends the section to summary comments and "no suggestions" results. Runs that publish suggestions only as inline comments do not add it. Local and plain-diff providers write artifacts instead of inline comments; their "no suggestions" artifacts can include run details too.
 - With `pr_description.use_description_markers=true`, repeated `/describe` runs accumulate one run details block per run because the existing PR description is preserved and only the markers are replaced.
 
 ## Ignoring files from analysis
@@ -111,11 +111,28 @@ The limit applies separately to `ignore.glob` and each enabled `ignore_language_
 
 ## Extra instructions
 
-All PR-Agent tools have a parameter called `extra_instructions`, that enables to add free-text extra instructions. Example usage:
+All PR-Agent tools have a parameter called `extra_instructions` that adds free-text instructions. Example usage:
 
 ```
 /update_changelog --pr_update_changelog.extra_instructions="Make sure to update also the version ..."
 ```
+
+Repository settings and command arguments can replace `extra_instructions` for a tool. For mandatory
+organization-wide guidance that must apply to every tool, host operators can set `config.system_instructions`:
+
+```toml
+[config]
+system_instructions = """
+Never evaluate the performance, competence, or quality of individual contributors.
+Follow the organization's security and privacy policies.
+"""
+```
+
+PR-Agent appends this value to each tool's own system prompt, after the tool-specific instructions. It is
+host-only: repository settings, namespace settings repositories, per-directory settings, and
+`/command --config.system_instructions=...` arguments cannot set or replace it.
+`extra_instructions` retains its existing behavior; use `system_instructions` when a rule must not be
+overridable by a repository or comment author.
 
 ## Language Settings
 
@@ -199,14 +216,19 @@ publish_review_as_thread = true
 
 ## Reply to the triggering GitLab discussion
 
-By default, `/review` and `/improve` publish a new comment. To reply inside the GitLab discussion that triggered the command, enable (default: `false`):
+By default, `/review`, `/improve`, and `/ask` publish new comments. To reply inside the GitLab discussion
+that triggered the command, enable (default: `false`):
 
 ```toml
 [gitlab]
 reply_to_trigger_comment = true
 ```
 
-This is opt-in and GitLab-only. The webhook supplies the discussion ID for top-level `/review` and `/improve` notes. If the ID is unavailable or the reply fails, PR-Agent falls back to a normal note so output is not lost. GitHub Conversation comments do not expose a compatible reply endpoint.
+This is opt-in and GitLab-only. The webhook supplies the discussion ID for top-level `/review` and `/improve`
+notes, and for `/ask` (including `/ask_question`) in top-level notes or existing discussions. Diff-line `/ask`
+still uses `/ask_line` and its existing reply behavior. If the ID is unavailable or the reply fails, PR-Agent
+falls back to a normal note so output is not lost. GitHub Conversation comments do not expose a compatible
+reply endpoint.
 
 With `persistent_comment=true` (the default for both tools), a rerun updates the earlier result where it was first posted, which may be a different discussion; `/review` also posts a short link to it in the new command's discussion.
 
@@ -478,7 +500,10 @@ Notes:
 
 `Platforms supported: GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, Local`
 
-To give PR-Agent's tools additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/) or [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices) — in the prompts for the `/review`, `/describe` and `/improve` tools.
+To give PR-Agent's tools additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/) or [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices) — in the prompts for the `/review`, `/describe`, `/improve`, and top-level `/ask` tools.
+
+Top-level `/ask` adds instructions only after selecting the question's existing context and diff, and reports when the instruction block does not fit.
+See [Ask: Repository instructions](../tools/ask.md#repository-instructions).
 
 By default, PR-Agent includes the `AGENTS.md` file at the repository root:
 
@@ -496,12 +521,14 @@ repo_context_files = [["AGENTS.md", "CLAUDE.md", ".kiro/steering/*.md"]]
 
 A nested list is a group of alternatives: only the first one that yields content is used, so a repository that keeps the same instructions under several conventions (or symlinks one file to another) sends them once. Alternatives must be repository-relative paths.
 
-You can list any repository-relative paths. By default the files are read from the repository's **default branch**, so only trusted, already-merged content is used and a PR cannot influence the guidance used to review it. A file that is missing is silently skipped. Set the option to an empty list to disable the feature entirely:
+You can list any repository-relative paths. By default the files are read from the repository's **default branch**, so only trusted, already-merged content is used and a PR cannot influence the guidance used to review it. A file that is missing is silently skipped. For example, to include several files:
 
 ```toml
 [config]
 repo_context_files = ["AGENTS.md", "CLAUDE.md", "docs/conventions.md"]
 ```
+
+Set the option to an empty list (`repo_context_files = []`) to disable the feature entirely.
 
 To include architecture decision records (ADRs) or other rule files without listing each one, an entry may use a glob in its file name. On GitHub and GitLab the directory is listed and up to `repo_context_max_glob_matches` matches (default 20, at most 100) are included in name order; other providers skip glob entries with a warning. Wildcards are only allowed in the last path segment, so `docs/**/*.md` is not supported.
 
@@ -634,14 +661,14 @@ Where the `ignore_repositories` is a list of regex patterns to match the reposit
 
 ### Ignoring PRs not from specific folders
 
-To allow only specific folders (often needed in large monorepos), set:
+To allow only specific folders (often needed in large monorepos) for automatic PR-open and push feedback in the Bitbucket Server/Data Center webhook, set:
 
 ```
 [config]
-allow_only_specific_folders=['folder1','folder2']
+allow_only_specific_folders=['folder1/','folder2/']
 ```
 
-For the configuration above, automatic feedback will only be triggered when the PR changes include files where 'folder1' or 'folder2' is in the file path
+When changed files are available, automatic feedback will only be triggered when the PR changes include files whose path starts with `folder1/` or `folder2/`. This filter does not apply to comment commands or other providers.
 
 ### Ignoring PRs containing specific labels
 
@@ -653,6 +680,28 @@ ignore_pr_labels = ["do-not-merge"]
 ```
 
 Where the `ignore_pr_labels` is a list of labels that when present in the PR, the PR will be ignored.
+
+### Processing only PRs with selected labels
+
+To opt in only selected PRs or MRs to PR-Agent, specify one or more label names:
+
+```toml
+[config]
+include_pr_labels = ["ai-review"]
+```
+
+When the list is nonempty, a PR must have **at least one** matching label to be processed.
+Names are matched exactly (case-sensitive), not as regular expressions. The default empty
+list leaves all PRs eligible. If a label appears in both `include_pr_labels` and
+`ignore_pr_labels`, the exclusion wins. This applies to automatic runs, comment commands,
+and CLI `--pr_url` requests, just like the existing exclusion rules. Repository settings
+may select the labels; individual comment or CLI command arguments cannot override this gate.
+
+If the labels cannot be read, PR-Agent skips the request while this opt-in gate is enabled;
+GitHub, GitLab, Gitea and Azure DevOps supply labels through their PR/MR APIs. Inputs
+without hosted PR labels, including Bitbucket Cloud/Server, local, and plain-diff mode,
+will not pass this gate. The setting selects eligible PRs; it does not itself trigger
+a run when a label is assigned after the PR was opened.
 
 ### Ignoring PRs from specific users
 
@@ -676,7 +725,7 @@ ignore_pr_authors = ["my-special-bot-user", ...]
 Where the `ignore_pr_authors` is a regex list of usernames that you want to ignore.
 
 :::note
-There is one specific case where bots will receive an automatic response - when they generated a PR with a _failed test_.
+The GitHub App does not currently trigger tools in response to failed `check_run` webhook events.
 :::
 
 ## Ignoring Generated Files by Language/Framework
@@ -700,14 +749,15 @@ When running PR-Agent with limited GitHub/GitLab permissions, set `restricted_mo
 restricted_mode = true
 ```
 
-With restricted mode, the minimum workflow permissions are:
+For the default tools in GitHub Actions, use:
 
 ```yaml
 permissions:
+  contents: read
   issues: write
   pull-requests: write
 ```
 
-Within an explicit `permissions:` block, any scope you do not list (such as `contents`) is set to `none`, so you do not need to grant `contents` — restricted mode skips every operation that would require `contents: write`. All tools (`/review`, `/describe`, `/improve`, etc.) continue to work normally with just `pull-requests: write`.
+Restricted mode disables the provider's `push_code` capability, but does not remove the need for `contents: read` to fetch repository content. Add `checks: write` when `github.publish_as_check_run` is enabled. Keep `pr_questions.resolve_threads` off unless you grant `contents: write`, since thread resolution requires that scope and is not covered by restricted mode.
 
-> **Note:** this only holds when a `permissions:` block is present (as above). If you omit the `permissions:` block entirely, the effective defaults are governed by your repository/organization GitHub Actions settings and may grant broader access.
+> **Note:** any scope not listed in an explicit `permissions:` block is set to `none`. If you omit the `permissions:` block entirely, the effective defaults are governed by your repository/organization GitHub Actions settings and may grant broader access.

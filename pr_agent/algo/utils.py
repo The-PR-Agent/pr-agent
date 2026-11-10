@@ -30,6 +30,7 @@ from yaml.tokens import (
 )
 
 import pr_agent.algo.comment_identity as _ci
+from pr_agent.algo.deterministic_risk import render_risk_checks
 from pr_agent.algo.git_patch_processing import (
     NO_NEWLINE_AT_EOF_MARKER,
     extract_hunk_headers,
@@ -42,7 +43,7 @@ from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.output_models import PRType, SubPR, parse_failure_modes
 from pr_agent.algo.structural_reach import render_structural_reach
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.config_loader import get_settings, get_verbosity_level
+from pr_agent.config_loader import get_bot_display_name, get_settings, get_verbosity_level
 from pr_agent.log import get_logger
 
 _ENCODED_USER_TEXT_PREFIX = "__pr_agent_encoded_text__:"
@@ -237,6 +238,7 @@ def convert_to_markdown_v2(output_data: dict,
         "Risk level": "⚠️",
         "Merge recommendation": "✅",
         "Failure modes": "🔎",
+        "Artifact findings": "📋",
         "Review priority files": "📂",
     }
     markdown_text = ""
@@ -244,7 +246,8 @@ def convert_to_markdown_v2(output_data: dict,
     if commit_review:
         markdown_text += f"🔂 Review of commit {commit_review}.\n\n"
     elif incremental_review:
-        markdown_text += f"⏮️ Review for commits since previous PR-Agent review {incremental_review}.\n\n"
+        bot_display_name = get_bot_display_name()
+        markdown_text += f"⏮️ Review for commits since previous {bot_display_name} review {incremental_review}.\n\n"
     if not output_data or not output_data.get('review', {}):
         return ""
 
@@ -256,9 +259,9 @@ def convert_to_markdown_v2(output_data: dict,
 
     review_data = {k: v for k, v in output_data["review"].items() if k != "todo_summary"}
     for key, value in review_data.items():
-        if value is None or value == '' or value == {} or value == [] or (
-                key.lower() == 'insights_from_user_answers' and is_value_no(value)):
-            if key.lower() not in ['can_be_split', 'key_issues_to_review', 'review_priority_files', 'failure_modes']:
+        if value is None or value == '' or value == {} or value == []:
+            if key.lower() not in ['can_be_split', 'key_issues_to_review', 'review_priority_files', 'failure_modes',
+                                   'artifact_findings']:
                 continue
         key_nice = key.replace('_', ' ').capitalize()
         emoji = emojis.get(key_nice, "")
@@ -339,6 +342,8 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"{value}\n\n"
         elif key.lower() == 'structural_reach':
             markdown_text += render_structural_reach(value, gfm_supported)
+        elif key.lower() in ('risk_checks', 'deterministic_risk'):
+            markdown_text += render_risk_checks(value, gfm_supported)
         elif 'risk level' in key_nice.lower():
             risk_value = str(value).strip().lower().replace("_", " ")
             risk_display = risk_value.capitalize() if risk_value else "Unknown"
@@ -384,6 +389,30 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"- **Covered in this PR:** {coverage}\n\n"
             if gfm_supported:
                 markdown_text += "</td></tr>\n"
+        elif key.lower() == 'artifact_findings':
+            findings = [f for f in value if isinstance(f, dict)] if isinstance(value, list) else []
+            if gfm_supported:
+                markdown_text += f"<tr><td>{emoji}&nbsp;<strong>CI artifact findings</strong>"
+                markdown_text += "<br><br>\n" if findings else ": none\n"
+            else:
+                markdown_text += f"### {emoji} CI artifact findings" + ("\n\n" if findings else ": none\n\n")
+            for finding in findings:
+                kind = html.escape(str(finding.get("kind", "")).replace("_", " ").capitalize())
+                fact = " ".join(str(finding.get("fact", "")).split())
+                evidence = str(finding.get("evidence", ""))
+                note = "" if finding.get("quoted") else " (quote not found in the artifact)"
+                if gfm_supported:
+                    markdown_text += (f"<strong>{kind}:</strong> {html.escape(fact)}<br>\n"
+                                      f"<code>{html.escape(evidence)}</code>{note}<br><br>\n")
+                else:
+                    # Escape Markdown before HTML, as failure modes do; a code span shows entities verbatim.
+                    fact = html.escape(re.sub(r"([\\`*_\[\]()!#|])", r"\\\1", fact))
+                    evidence = evidence.replace("`", "'").replace("<!--", "<\\!--")
+                    markdown_text += f"- **{kind}:** {fact}\n  `{evidence}`{note}\n"
+            if gfm_supported:
+                markdown_text += "</td></tr>\n"
+            elif findings:
+                markdown_text += "\n"
         elif 'review priority files' in key_nice.lower():
             priority_files = []
             if isinstance(value, list):
@@ -598,13 +627,14 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
     if isinstance(value, list):
         for ticket_analysis in value:
             try:
-                ticket_url = ticket_analysis.get('ticket_url', '').strip()
+                ticket_url = str(ticket_analysis.get('ticket_url') or '').strip()
                 explanation = ''
                 ticket_compliance_level = ''  # Individual ticket compliance
-                fully_compliant_str = ticket_analysis.get('fully_compliant_requirements', '').strip()
-                not_compliant_str = ticket_analysis.get('not_compliant_requirements', '').strip()
-                requires_further_human_verification = ticket_analysis.get('requires_further_human_verification',
-                                                                          '').strip()
+                # A model may leave an empty field as YAML null or answer a bullet list as a YAML list.
+                fully_compliant_str = _ci.as_review_text(ticket_analysis.get('fully_compliant_requirements') or '')
+                not_compliant_str = _ci.as_review_text(ticket_analysis.get('not_compliant_requirements') or '')
+                requires_further_human_verification = _ci.as_review_text(
+                    ticket_analysis.get('requires_further_human_verification') or '')
 
                 if not fully_compliant_str and not not_compliant_str and not requires_further_human_verification:
                     get_logger().debug("Ticket compliance has no requirements",
@@ -836,14 +866,14 @@ def update_settings_from_args(args: list[str]) -> list[str]:
     other_args = []
     if args:
         for arg in args:
-            arg = arg.strip()
+            arg = arg.lstrip()
             if arg.startswith('--'):
-                arg = arg.strip('-').strip()
+                arg = arg.lstrip('-')
                 vals = arg.split('=', 1)
                 if len(vals) != 2:
                     if len(vals) > 2:  # --extended is a valid argument
                         get_logger().error(f'Invalid argument format: {arg}')
-                    other_args.append(arg)
+                    other_args.append(arg.strip())
                     continue
                 key, value = _fix_key_value(*vals)
                 if '.' not in key:
@@ -878,12 +908,15 @@ def update_settings_from_args(args: list[str]) -> list[str]:
                     get_settings().set(key, value)
                     get_logger().info(f'Updated setting {key} to: "{value}"')
             else:
-                other_args.append(arg)
+                other_args.append(arg.strip())
     return other_args
 
 
 def _fix_key_value(key: str, value: str):
     key = key.strip().upper()
+    # Keep FILE_NAME as a literal path, including filenames that contain quotes.
+    if key == "FILE_NAME":
+        return key, value
     value = value.strip()
     try:
         value = yaml.safe_load(value)
@@ -1640,6 +1673,108 @@ def is_value_no(value):
     return False
 
 
+class _WalkthroughFileMatch:
+    """Keep the capture offsets available to walkthrough readback consumers."""
+
+    lastindex = 4
+
+    def __init__(self, content: str, spans: tuple[tuple[int, int], ...]):
+        self.content = content
+        self.spans = spans
+
+    def group(self, index: int) -> str:
+        start, end = self.spans[index - 1]
+        return self.content[start:end]
+
+    def start(self, index: int) -> int:
+        return self.spans[index - 1][0]
+
+
+def _match_walkthrough_file(file_data: str) -> _WalkthroughFileMatch | None:
+    """Extract legacy and current file summaries by scanning fixed HTML delimiters."""
+    details_start = file_data.find("<details>")
+    while details_start != -1:
+        position = details_start + len("<details>")
+        while position < len(file_data) and file_data[position].isspace():
+            position += 1
+        if file_data.startswith("<summary><strong>", position):
+            break
+        details_start = file_data.find("<details>", details_start + len("<details>"))
+    if details_start == -1:
+        return None
+
+    filename_start = position + len("<summary><strong>")
+    strong_end = file_data.find("</strong>", filename_start)
+    title_start = -1
+    paragraph_allowed = False
+    while strong_end != -1:
+        position = strong_end + len("</strong>")
+        paragraph_allowed = position < len(file_data) and not file_data[position].isspace()
+        while position < len(file_data) and file_data[position].isspace():
+            position += 1
+        for opening in ("<dd><code>", "<br><span><code>"):
+            if file_data.startswith(opening, position):
+                title_start = position + len(opening)
+                break
+        if title_start != -1:
+            break
+        strong_end = file_data.find("</strong>", strong_end + len("</strong>"))
+    if title_start == -1:
+        return None
+
+    title_end = file_data.find("</code>", title_start)
+    if title_end == -1:
+        return None
+    summary_end = file_data.find("</summary>", title_end + len("</code>"))
+    body_start = -1
+    while summary_end != -1:
+        position = summary_end + len("</summary>")
+        while position < len(file_data) and file_data[position].isspace():
+            position += 1
+        if file_data.startswith("<hr>", position):
+            body_start = position + len("<hr>")
+            break
+        summary_end = file_data.find("</summary>", summary_end + len("</summary>"))
+    if body_start == -1:
+        return None
+
+    hr_end = body_start
+    while body_start < len(file_data) and file_data[body_start].isspace():
+        body_start += 1
+    # Treat closing tags inside Git paths as text, using the final row closer.
+    details_end = file_data.rfind("</details>", body_start)
+    if details_end == -1:
+        return None
+
+    # The original readback gives HTML list markers precedence over the fallbacks.
+    li_start = file_data.find("<li>", body_start, details_end)
+    bullet_start = file_data.find("•", body_start, details_end)
+    if li_start != -1 or bullet_start != -1:
+        marker = min(index for index in (li_start, bullet_start) if index != -1)
+        marker_end = marker + (len("<li>") if marker == li_start else len("•"))
+        detail_start = marker_end
+    else:
+        divider = file_data.find("\n\n", body_start, details_end) if paragraph_allowed else -1
+        if divider == -1 and paragraph_allowed:
+            # Recover the separator after <hr> when none follows the filename.
+            divider = file_data.rfind("\n\n", hr_end, body_start)
+        if divider != -1:
+            marker = divider
+            detail_start = divider + 2
+        else:
+            marker = file_data.find("-", body_start, details_end)
+            if marker == -1:
+                return None
+            detail_start = marker + 1
+        while detail_start < details_end and file_data[detail_start].isspace():
+            detail_start += 1
+
+    return _WalkthroughFileMatch(file_data, (
+        (filename_start, strong_end), (title_start, title_end),
+        (min(body_start, marker), marker), (detail_start, details_end),
+    ))
+
+
 def process_description(description_full: str) -> tuple[str, list]:
     if not description_full:
         return "", []
@@ -1697,18 +1832,7 @@ def process_description(description_full: str) -> tuple[str, list]:
                 try:
                     if isinstance(file_data, tuple):
                         file_data = file_data[0]
-                    pattern = (r'<details>\s*<summary><strong>(.*?)</strong>\s*<dd><code>(.*?)</code>.*?'
-                               r'</summary>\s*<hr>\s*(.*?)\s*(?:<li>|•)(.*?)</details>')
-                    res = re.search(pattern, file_data, re.DOTALL)
-                    if not res or res.lastindex != 4:
-                        pattern_back = (r'<details>\s*<summary><strong>(.*?)</strong><dd><code>(.*?)</code>.*?'
-                                        r'</summary>\s*<hr>\s*(.*?)\n\n\s*(.*?)</details>')
-                        res = re.search(pattern_back, file_data, re.DOTALL)
-                    if not res or res.lastindex != 4:
-                        # looking for hyphen ('- ')
-                        pattern_back = (r'<details>\s*<summary><strong>(.*?)</strong>\s*<dd><code>(.*?)</code>.*?'
-                                        r'</summary>\s*<hr>\s*(.*?)\s*-\s*(.*?)\s*</details>')
-                        res = re.search(pattern_back, file_data, re.DOTALL)
+                    res = _match_walkthrough_file(file_data)
                     if res and res.lastindex == 4:
                         short_filename = res.group(1).strip()
                         short_summary = res.group(2).strip()

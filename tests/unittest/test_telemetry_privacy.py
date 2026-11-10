@@ -70,6 +70,18 @@ def _all_exported_text(exporter):
     )
 
 
+def test_in_memory_tracer_ignores_host_sampling_policy(monkeypatch):
+    monkeypatch.setenv("OTEL_TRACES_SAMPLER", "always_off")
+    tracer, exporter = build_in_memory_tracer()
+
+    with tracer.start_as_current_span("test-request") as span:
+        span.set_attribute("test.recorded", True)
+
+    finished, = exporter.get_finished_spans()
+    assert finished.name == "test-request"
+    assert finished.attributes["test.recorded"] is True
+
+
 @pytest.mark.asyncio
 async def test_unknown_command_text_not_exported_by_default(telemetry):
     exporter, counter = telemetry

@@ -89,7 +89,7 @@ def get_maximal_text_input_length_for_token_count_estimation():
 def return_document_headings(text: str, ext: str) -> str:
     try:
         lines = text.split('\n')
-        headings = set()
+        headings = {}
 
         if not text or not any(char.isalpha() for char in text):
             get_logger().error(f"Empty or non text content found in text: {text}.")
@@ -97,7 +97,7 @@ def return_document_headings(text: str, ext: str) -> str:
 
         if ext in ['.md', '.mdx']:
             # Extract Markdown headings (lines starting with #)
-            headings = {line.strip() for line in lines if line.strip().startswith('#')}
+            headings = dict.fromkeys(line.strip() for line in lines if line.strip().startswith('#'))
         elif ext == '.rst':
             # Find indices of lines that have all same character:
             # Allowed characters according to list from:
@@ -115,7 +115,7 @@ def return_document_headings(text: str, ext: str) -> str:
             for idx, length in marker_lines:
                 # Check if it's an underline (heading is above it)
                 if idx > 0 and lines[idx - 1].rstrip() and len(lines[idx - 1].rstrip()) <= length:
-                    headings.add(lines[idx - 1].rstrip())
+                    headings[lines[idx - 1].rstrip()] = None
         else:
             get_logger().error(f"Unsupported file extension: {ext}")
             return ""
@@ -622,9 +622,9 @@ class PRHelpDocs:
                     for root, _, files in os.walk(returned_cloned_repo_root.path):
                         # Only look at files in the root directory, not subdirectories
                         if root == returned_cloned_repo_root.path:
-                            for file in files:
-                                if file.lower().startswith("readme."):
-                                    doc_files.append(os.path.join(root, file))
+                            doc_files.extend(
+                                os.path.join(root, file) for file in files if file.lower().startswith("readme.")
+                            )
                         break
                 # Resolve docs_path against the clone root and refuse paths that escape it:
                 # an absolute or traversing docs_path (e.g. an attacker-controlled per-directory

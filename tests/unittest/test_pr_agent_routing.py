@@ -23,6 +23,43 @@ def _identity_args(args):
     return args
 
 
+@pytest.mark.parametrize(
+    ("error_cls", "expected_marker"),
+    [
+        (IncompletePullRequestFilesError, "<!-- pr-agent:github-incomplete-files -->"),
+        (IncompleteBitbucketPullRequestFilesError, "<!-- pr-agent:bitbucket-incomplete-files -->"),
+        (gitea_module.IncompleteGiteaPullRequestFilesError, "<!-- pr-agent:gitea-incomplete-files -->"),
+        (gitlab_module.IncompleteGitLabDiffError, "<!-- pr-agent:gitlab-incomplete-diff -->"),
+        (gitlab_module.GitLabDiffNotReadyError, "<!-- pr-agent:gitlab-incomplete-diff -->"),
+    ],
+)
+def test_incomplete_file_notices_use_configured_bot_display_name(monkeypatch, error_cls, expected_marker):
+    monkeypatch.setitem(get_settings().config, "bot_display_name", "Acme Bot")
+
+    error = error_cls("internal detail")
+
+    assert "## Acme Bot command was not run" in error.notice
+    assert "Acme Bot stopped" in error.notice
+    assert "PR-Agent" not in error.notice
+    assert error.notice_marker == expected_marker
+
+
+def test_incomplete_file_error_subclass_without_template_keeps_class_notice():
+    class LegacyIncompleteFilesError(IncompleteProviderPullRequestFilesError):
+        notice = "Legacy incomplete-files notice"
+
+    error = LegacyIncompleteFilesError("incomplete")
+
+    assert error.notice == "Legacy incomplete-files notice"
+
+
+def test_incomplete_file_base_error_without_template_preserves_exception_type():
+    error = IncompleteProviderPullRequestFilesError("incomplete")
+
+    assert isinstance(error, RuntimeError)
+    assert str(error) == "incomplete"
+
+
 def test_incomplete_file_errors_share_only_provider_neutral_base():
     assert issubclass(IncompletePullRequestFilesError, IncompleteProviderPullRequestFilesError)
     assert issubclass(IncompleteBitbucketPullRequestFilesError, IncompleteProviderPullRequestFilesError)
@@ -791,149 +828,6 @@ async def test_handle_request_propagates_cancellation(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_handle_request_answer_uses_reviewer_answer_mode_and_notifies(monkeypatch):
-    calls = []
-    notify = Mock()
-
-    class FakeReviewer:
-        def __init__(self, pr_url, is_answer=False, is_auto=False, args=None, ai_handler=None):
-            calls.append({
-                "pr_url": pr_url,
-                "is_answer": is_answer,
-                "is_auto": is_auto,
-                "args": args,
-                "ai_handler": ai_handler,
-            })
-
-        async def run(self):
-            calls[-1]["ran"] = True
-
-    _patch_request_dependencies(monkeypatch)
-    monkeypatch.setattr(pr_agent_module, "PRReviewer", FakeReviewer)
-
-    handled = await pr_agent_module.PRAgent(ai_handler="fake-ai")._handle_request(
-        "https://example/pr/1", "/answer yes", notify
-    )
-
-    assert handled is True
-    notify.assert_called_once_with()
-    assert calls == [{
-        "pr_url": "https://example/pr/1",
-        "is_answer": True,
-        "is_auto": False,
-        "args": ["yes"],
-        "ai_handler": "fake-ai",
-        "ran": True,
-    }]
-
-
-@pytest.mark.asyncio
-async def test_handle_request_answer_preserves_quoted_question_as_single_arg(monkeypatch):
-    calls = []
-
-    class FakeReviewer:
-        def __init__(self, pr_url, is_answer=False, is_auto=False, args=None, ai_handler=None):
-            calls.append(args)
-
-        async def run(self):
-            pass
-
-    _patch_request_dependencies(monkeypatch)
-    monkeypatch.setattr(pr_agent_module, "PRReviewer", FakeReviewer)
-
-    handled = await pr_agent_module.PRAgent()._handle_request(
-        "https://example/pr/1", "/answer \"because prod is broken\""
-    )
-
-    assert handled is True
-    assert calls == [["because prod is broken"]]
-
-
-@pytest.mark.asyncio
-async def test_handle_request_auto_review_uses_reviewer_auto_mode(monkeypatch):
-    calls = []
-
-    class FakeReviewer:
-        def __init__(self, pr_url, is_answer=False, is_auto=False, args=None, ai_handler=None):
-            calls.append((pr_url, is_answer, is_auto, args, ai_handler))
-
-        async def run(self):
-            pass
-
-    _patch_request_dependencies(monkeypatch)
-    monkeypatch.setattr(pr_agent_module, "PRReviewer", FakeReviewer)
-
-    handled = await pr_agent_module.PRAgent(ai_handler="fake-ai")._handle_request(
-        "https://example/pr/1", "/auto_review"
-    )
-
-    assert handled is True
-    assert calls == [("https://example/pr/1", False, True, [], "fake-ai")]
-
-
-@pytest.mark.asyncio
-async def test_auto_review_keeps_prepared_artifact_context_without_notifying(monkeypatch, tmp_path):
-    artifact = tmp_path / "artifact.txt"
-    artifact.write_text("AUTO_REVIEW_ARTIFACT", encoding="utf-8")
-    settings = get_settings()
-    original_artifacts = settings.get("ARTIFACTS")
-    original_instructions = settings.pr_reviewer.extra_instructions
-    artifact_token = artifacts._artifact_context.set(None)
-    observed = []
-    notify = Mock()
-
-    class FakeReviewer:
-        def __init__(self, _pr_url, is_answer=False, is_auto=False, args=None, ai_handler=None):
-            observed.append((
-                is_answer,
-                is_auto,
-                args,
-                str(settings.pr_reviewer.extra_instructions),
-                artifacts.get_artifact_context("pr_reviewer"),
-            ))
-
-        async def run(self):
-            return None
-
-    try:
-        settings.set("ARTIFACTS", {
-            "enable": True,
-            "artifact_path": str(artifact),
-            "target_tools": ["pr_reviewer"],
-        }, merge=False)
-        settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "Base instructions")
-        monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
-        _patch_request_dependencies(
-            monkeypatch,
-            update_settings_fn=lambda args: ["--kept"],
-        )
-
-        def replace_instructions(_pr_url):
-            settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "Repository instructions")
-
-        monkeypatch.setattr(pr_agent_module, "apply_repo_settings", replace_instructions)
-        monkeypatch.setattr(pr_agent_module, "PRReviewer", FakeReviewer)
-
-        artifacts.inject_artifact_context()
-        handled = await pr_agent_module.PRAgent(ai_handler="fake-ai")._handle_request(
-            "https://example/pr/1", "/auto_review", notify
-        )
-
-        assert handled is True
-        assert [(is_answer, is_auto, args) for is_answer, is_auto, args, _text, _context in observed] == [
-            (False, True, ["--kept"])
-        ]
-        assert observed[0][3].startswith("Repository instructions")
-        assert observed[0][3].count("AUTO_REVIEW_ARTIFACT") == 0
-        assert observed[0][4]["content"] == "AUTO_REVIEW_ARTIFACT"
-        notify.assert_not_called()
-    finally:
-        settings.set("ARTIFACTS", original_artifacts, merge=False)
-        settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", original_instructions)
-        artifacts._artifact_context.reset(artifact_token)
-
-
-@pytest.mark.asyncio
 async def test_unscoped_dispatcher_does_not_load_artifact_or_change_instructions(monkeypatch):
     settings = get_settings()
     original_instructions = settings.pr_reviewer.extra_instructions
@@ -968,14 +862,15 @@ async def test_unscoped_dispatcher_does_not_load_artifact_or_change_instructions
 
 
 @pytest.mark.asyncio
-async def test_handle_request_returns_false_for_unknown_command(monkeypatch):
+@pytest.mark.parametrize("command", ["/unknown", "/answer", "/auto_review"])
+async def test_handle_request_returns_false_for_unregistered_command(monkeypatch, command):
     _patch_request_dependencies(monkeypatch, update_settings_fn=pr_agent_module.update_settings_from_args)
 
     with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
         settings = get_settings()
         settings.set("CONFIG.RESPONSE_LANGUAGE", "en-us")
         handled = await pr_agent_module.PRAgent()._handle_request(
-            "https://example/pr/1", "/unknown --config.response_language=fr-FR"
+            "https://example/pr/1", f"{command} --config.response_language=fr-FR"
         )
         assert settings.config.response_language == "en-us"
 

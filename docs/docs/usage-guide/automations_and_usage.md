@@ -71,7 +71,7 @@ Service images such as `pragent/pr-agent:<version>-github_app` are intended for 
 
 When host-configured `push_outputs` is enabled, `doctor` adds a fourth check for the selected output destinations: registered channel names, a nonempty file path, HTTPS scheme and hostname for webhook/Slack URLs, and a nonempty Telegram token string and a chat ID that is a nonempty string or nonzero integer. An omitted file path uses the normal default. Distinct custom sink names receive recognition-only checks; their private settings are not validated.
 
-`push_outputs.enable` accepts booleans or strings. String values `false`, `0`, `no`, and the empty string disable it (ignoring case and surrounding whitespace); other strings enable it. Disabled output keeps the existing three checks and output unchanged.
+`push_outputs.enable` accepts booleans or strings. String values `false`, `0`, `no`, `off`, and the empty string disable it (ignoring case and surrounding whitespace); other strings enable it. Disabled output keeps the existing three checks and output unchanged.
 
 The output check reads the active host settings but does not construct sinks, send output, access files, or contact destinations. It checks only the fields listed above; URL ports and other URL components are not validated. Success does not establish delivery, file writability, destination reachability, authentication, or permissions. The existing model ping still contacts the configured model before the output check. No PR URL or git-provider setup is needed.
 
@@ -419,7 +419,7 @@ pr_commands = [
 ]
 ```
 
-Note that we set specifically for bitbucket, we recommend using: `--pr_code_suggestions.suggestions_score_threshold=7` and that is the default value we set for bitbucket.
+For Bitbucket, we recommend using: `--pr_code_suggestions.suggestions_score_threshold=7`. The shipped default value is `1`; Bitbucket does not override it automatically.
 Since this platform only supports inline code suggestions, we want to limit the number of suggestions, and only present a limited number.
 
 To enable BitBucket app to respond to each **push** to the PR, set (for example):

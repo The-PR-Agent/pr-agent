@@ -1651,6 +1651,18 @@ class TestGitLabExtraction:
                 'https://gitlab.com/gitlab',
                 [],
             ),
+            (
+                "[other #7](https://gitlab.example.com/gitlab/group/other-project/-/issues/9) and #8",
+                "group/repo",
+                "https://gitlab.example.com/gitlab",
+                [("group/other-project", 9), ("group/repo", 8)],
+            ),
+            (
+                "[#7](https://gitlab.com/group/other-project/-/work_items/9)",
+                "group/repo",
+                "https://gitlab.com",
+                [("group/other-project", 9)],
+            ),
         ],
     )
     def test_url_reference_boundaries(self, description, repo_path, gitlab_url, expected):
@@ -1662,6 +1674,19 @@ class TestGitLabExtraction:
             ("##7", []),
             ("group/proj#7", [("group/proj", 7)]),
             ("#7", [("group/repo", 7)]),
+            ("#123456", [("group/repo", 123456)]),
+            ("#1234567", []),
+            ("group/proj#1234567", [("group/proj", 1234567)]),
+            (
+                "<!-- Closes #1234 or group/proj#56 or https://gitlab.com/group/repo/-/issues/78 --> #42",
+                [("group/repo", 42)],
+            ),
+            ("See [#6211][release]\n\n[release]: https://example.com/changelog", []),
+            ('<a href="https://example.com/changelog">#42</a> Fixes #7', [("group/repo", 7)]),
+            ('class="bg-[#121212]" dark:bg-[#123456]', []),
+            ("#0 group/proj#0 https://gitlab.com/group/repo/-/issues/000", []),
+            ("#١٢ group/proj#١٢ https://gitlab.com/group/repo/-/issues/١٢", []),
+            (f"group/proj#{'9' * 4301} #42", [("group/repo", 42)]),
         ],
     )
     def test_shorthand_reference_boundaries(self, description, expected):

@@ -147,7 +147,7 @@ COMMENT_OVERRIDABLE_KEYS = {
         "require_estimate_effort_to_review", "require_failure_modes", "require_merge_recommendation",
         "require_priority_files", "require_risk_assessment", "require_score_review",
         "require_security_review", "require_tests_review", "require_ticket_analysis_review",
-        "require_todo_scan", "review_heading",
+        "require_todo_scan", "review_heading", "show_previous_findings_summary",
     }),
     "pr_similar_issue": frozenset({
         "max_issues_to_scan", "skip_comments", "vectordb",

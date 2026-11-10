@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
+from pr_agent.algo.pr_processing import FallbackEligibleError
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import _REFLECTION_FAILURE_SCORE_WHY, PRCodeSuggestions
@@ -563,6 +564,32 @@ code_suggestions:
 
     assert len(data["code_suggestions"]) == 1
     assert data["code_suggestions"][0]["one_sentence_summary"] == "Complete"
+
+
+@pytest.mark.parametrize("suggestion", [
+    pytest.param({}, id="missing-required-fields"),
+    pytest.param({key: value for key, value in _valid_suggestion().items() if key != "improved_code"},
+                 id="missing-improved-code"),
+    pytest.param(_valid_suggestion(suggestion_content=None), id="processing-error"),
+])
+def test_prepare_pr_code_suggestions_retries_when_all_entries_are_invalid(suggestion):
+    tool = _make_tool()
+    prediction = yaml.safe_dump({"code_suggestions": [suggestion]})
+
+    with pytest.raises(FallbackEligibleError, match="All code suggestions failed processing"):
+        tool._prepare_pr_code_suggestions(prediction)
+
+
+@pytest.mark.parametrize("include_invalid", [False, True])
+def test_prepare_pr_code_suggestions_keeps_normally_filtered_empty_results(include_invalid):
+    tool = _make_tool()
+    suggestions = [_valid_suggestion(suggestion_content="Use const instead of let.")]
+    if include_invalid:
+        suggestions.append({})
+
+    data = tool._prepare_pr_code_suggestions(yaml.safe_dump({"code_suggestions": suggestions}))
+
+    assert data == {"code_suggestions": []}
 
 
 def test_prepare_pr_code_suggestions_accepts_list_payload():
