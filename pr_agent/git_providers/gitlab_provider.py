@@ -56,6 +56,7 @@ from .git_provider import (
     IncompleteProviderPullRequestFilesError,
     IncrementalPR,
     PRCommit,
+    commit_patch_fingerprint,
     get_cached_global_settings,
     get_config_branch,
     redact_credentials,
@@ -1152,10 +1153,15 @@ class GitLabProvider(GitProvider):
         return self.mr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
 
     def get_pr_commits(self) -> list[PRCommit]:
-        return [PRCommit(sha=commit.id, message=commit.message or "", url=getattr(commit, "web_url", "") or "")
-                for commit in list(self.mr.commits(per_page=100))[::-1]]
+        commits = []
+        for commit in list(self.mr.commits(per_page=100))[::-1]:
+            parent_ids = getattr(commit, "parent_ids", None)
+            commits.append(PRCommit(sha=commit.id, message=commit.message or "",
+                                    url=getattr(commit, "web_url", "") or "",
+                                    parents=None if parent_ids is None else tuple(parent_ids)))
+        return commits
 
-    def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> list[str]:
+    def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> str | None:
         self.incremental = incremental
         self.diff_files = None
         self.unreviewed_files_map = {}
@@ -1165,17 +1171,21 @@ class GitLabProvider(GitProvider):
         parent_ids = list(getattr(gl_commit, "parent_ids", None) or [])
         if len(parent_ids) != 1:
             get_logger().info(f"Skipping commit {commit.sha} with {len(parent_ids)} parents in per commit review")
-            return []
+            return None
 
         incremental.first_new_commit = SimpleNamespace(sha=commit.sha)
         incremental.last_seen_commit = SimpleNamespace(sha=parent_ids[0])
         self._incremental_head_sha = commit.sha
         self._commit_diff_refs = SimpleNamespace(
             base_commit_sha=parent_ids[0], start_commit_sha=parent_ids[0], head_commit_sha=commit.sha)
-        for diff in gl_commit.diff(get_all=True, per_page=100):
+        diffs = list(gl_commit.diff(get_all=True, per_page=100))
+        for diff in diffs:
             if diff.get("new_path"):
                 self.unreviewed_files_map[diff["new_path"]] = diff
-        return list(self.unreviewed_files_map)
+        if not self.unreviewed_files_map:
+            return None
+        return commit_patch_fingerprint(
+            (f"{diff.get('old_path') or ''}\0{diff.get('new_path') or ''}", diff.get("diff") or "") for diff in diffs)
 
     def get_previous_review(self, *, full: bool, incremental: bool):
         if not (full or incremental):

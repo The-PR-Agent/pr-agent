@@ -60,6 +60,7 @@ from .git_provider import (
     IncrementalPR,
     PRCommit,
     cache_languages,
+    commit_patch_fingerprint,
     get_config_branch,
     redact_credentials,
 )
@@ -445,10 +446,11 @@ class GithubProvider(GitProvider):
         return self.pr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
 
     def get_pr_commits(self) -> list[PRCommit]:
-        return [PRCommit(sha=commit.sha, message=commit.commit.message or "", url=commit.html_url or "")
+        return [PRCommit(sha=commit.sha, message=commit.commit.message or "", url=commit.html_url or "",
+                         parents=tuple(parent.sha for parent in commit.parents))
                 for commit in self.pr.get_commits()]
 
-    def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> list[str]:
+    def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> str | None:
         self.incremental = incremental
         self.diff_files = None
         if context.exists():
@@ -458,15 +460,20 @@ class GithubProvider(GitProvider):
         parents = gh_commit.parents
         if len(parents) != 1:
             get_logger().info(f"Skipping commit {commit.sha} with {len(parents)} parents in per commit review")
-            return []
+            return None
 
         incremental.first_new_commit = gh_commit
         incremental.last_seen_commit = parents[0]
         incremental.head_sha = commit.sha
         self._pr_head_commit = getattr(self, "_pr_head_commit", None) or getattr(self, "last_commit_id", None)
         self.last_commit_id = gh_commit
-        self.unreviewed_files_map = {file.filename: file for file in gh_commit.get_files(commit_files_per_page=300)}
-        return list(self.unreviewed_files_map)
+        files = list(gh_commit.get_files(commit_files_per_page=300))
+        self.unreviewed_files_map = {file.filename: file for file in files}
+        if not files:
+            return None
+        return commit_patch_fingerprint(
+            (f"{file.previous_filename or ''}\0{file.filename}", file.patch if file.patch is not None else file.sha)
+            for file in files)
 
     def get_previous_review(self, *, full: bool, incremental: bool):
         if not (full or incremental):

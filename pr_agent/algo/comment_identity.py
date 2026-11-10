@@ -54,7 +54,8 @@ _ALL_COMMENT_IDENTITIES = (
     PRDescriptionIdentity.PERSISTENT.value,
 )
 _REVIEW_IDENTITY_HEADER_LINES = 5
-_REVIEWED_COMMIT_MARKER_RE = re.compile(r"<!-- pr-agent:reviewed-commit ([0-9a-f]{40}|[0-9a-f]{64}) -->")
+_REVIEWED_COMMIT_MARKER_RE = re.compile(r"<!-- pr-agent:reviewed-commit ([0-9a-f]{64}) ([0-9a-f]{40}|[0-9a-f]{64}) -->")
+_FAILED_COMMIT_MARKER_RE = re.compile(r"<!-- pr-agent:failed-commit ([0-9a-f]{64}) ([1-9][0-9]{0,8}) -->")
 _MARKDOWN_PUNCTUATION_ESCAPE_TABLE = str.maketrans(
     {character: f"\\{character}" for character in string.punctuation}
 )
@@ -171,12 +172,29 @@ def add_pr_review_identity(pr_comment: str, identity_marker: str | None, git_pro
     return add_comment_identity(pr_comment, identity_marker, git_provider)
 
 
-def format_reviewed_commit_marker(sha: str) -> str:
-    return f"<!-- pr-agent:reviewed-commit {sha} -->"
+def format_reviewed_commit_marker(fingerprint: str, sha: str) -> str:
+    return f"<!-- pr-agent:reviewed-commit {fingerprint} {sha} -->"
 
 
-def parse_reviewed_commits(body) -> set[str]:
-    return set(_REVIEWED_COMMIT_MARKER_RE.findall(body)) if isinstance(body, str) else set()
+def format_failed_commit_marker(fingerprint: str, attempts: int) -> str:
+    return f"<!-- pr-agent:failed-commit {fingerprint} {attempts} -->"
+
+
+def parse_commit_review_records(body) -> tuple[dict[str, str], dict[str, int], bool]:
+    lines = body.splitlines() if isinstance(body, str) else []
+    if lines[:1] == [PRCommandNoticeIdentity.REVIEWED_COMMITS.value]:
+        reviewed = {}
+        failed = {}
+        for line in lines[1:]:
+            if match := _REVIEWED_COMMIT_MARKER_RE.fullmatch(line):
+                reviewed[match[2]] = match[1]
+            elif match := _FAILED_COMMIT_MARKER_RE.fullmatch(line):
+                failed[match[1]] = int(match[2])
+        return reviewed, failed, True
+    if len(lines) > 2 and lines[0] == format_pr_review_header(incremental=True):
+        if match := _REVIEWED_COMMIT_MARKER_RE.fullmatch(lines[2]):
+            return {match[2]: match[1]}, {}, False
+    return {}, {}, False
 
 
 def comment_authorship_available(git_provider) -> bool:

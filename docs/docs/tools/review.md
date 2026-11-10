@@ -347,12 +347,16 @@ incremental review comment that names and links the commit. These comments are n
 review comment, and they do not change the review labels.
 
 Each run reviews only the commits of the PR that were not reviewed yet, so `-i` is not needed in `pr_commands` or
-`push_commands`, and the first run reviews every commit. A commit counts as reviewed once its review succeeds: the
-SHA is kept in a hidden marker in the commit's review comment, or, when no comment is published for it, in one
-record comment that lists the count of reviewed commits and is edited in place. A commit whose review failed is reviewed again on the next run.
+`push_commands`, and the first run reviews every commit. A commit is identified by a fingerprint of its own changes
+(file names and patch lines, without line numbers), and counts as reviewed once its review succeeds: the fingerprint
+is kept in a hidden marker in the commit's review comment or, when no comment is published for it, in one record
+comment that is edited in place. A commit whose review failed is reviewed again on the next run; automatic runs stop
+retrying it after 3 failed attempts, while a manual `/review` always retries.
 The commit list is read from the git provider on every run, so after a force push the review follows the rewritten
-history: commits that were rebased, squashed or amended (for example with `git rebase --autosquash` folding fixup
-commits) get new SHAs and are reviewed again, and fixup commits that no longer exist are not reviewed.
+history: a commit that was rebased without changing its own patch is not reviewed again, a commit that was amended or
+had fixups folded into it (for example with `git rebase --autosquash`) is reviewed again, and fixup commits that no
+longer exist are not reviewed. Markers count only in comments PR-Agent wrote; when the git provider cannot confirm
+that, every commit is reviewed on each run.
 
 Set `publish_output_no_suggestions = false` in the `[pr_reviewer]` section
 (`--pr_reviewer.publish_output_no_suggestions=false` on the command line) to skip the comment of a commit where
