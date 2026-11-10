@@ -7,7 +7,7 @@ import pytest
 from starlette_context import request_cycle_context
 
 import pr_agent.agent.pr_agent as agent_module
-import pr_agent.tools.pr_questions as questions_module
+import pr_agent.commands.pr_questions as questions_module
 from pr_agent.algo import token_budget
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings

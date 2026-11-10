@@ -8,9 +8,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from pr_agent.commands.pr_update_changelog import PRUpdateChangelog, strip_wrapping_code_fence
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import FileContentSnapshot
-from pr_agent.tools.pr_update_changelog import PRUpdateChangelog, strip_wrapping_code_fence
 
 EXISTING = "# Changelog\n\n## 2026-01-01\n- Initial release\n"
 
@@ -146,7 +146,7 @@ def committing_tool(monkeypatch):
     async def no_sleep(seconds):
         assert seconds == 5
 
-    monkeypatch.setattr("pr_agent.tools.pr_update_changelog.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("pr_agent.commands.pr_update_changelog.asyncio.sleep", no_sleep)
     monkeypatch.setitem(get_settings().config, "git_provider", "local")
     provider = MagicMock()
     provider.get_pr_branch.return_value = "feature/retry"

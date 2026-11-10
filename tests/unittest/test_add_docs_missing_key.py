@@ -9,12 +9,12 @@ from opentelemetry.trace import StatusCode
 import pr_agent.agent.pr_agent as pr_agent_module
 from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.commands.pr_add_docs import PRAddDocs, get_suggestion_fence
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import (
     IncompleteBitbucketPullRequestFilesError,
     IncompletePullRequestFilesError,
 )
-from pr_agent.tools.pr_add_docs import PRAddDocs, get_suggestion_fence
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 DOCUMENTED = """Code Documentation:
@@ -101,7 +101,7 @@ def run(prediction, monkeypatch, provider=None):
     async def fake_retry(fn=None, model_type=None, **kwargs):
         return tool._prepare_pr_code_docs()
 
-    monkeypatch.setattr("pr_agent.tools.pr_add_docs.retry_with_fallback_models", fake_retry)
+    monkeypatch.setattr("pr_agent.commands.pr_add_docs.retry_with_fallback_models", fake_retry)
     tool = PRAddDocs.__new__(PRAddDocs)
     tool.git_provider = provider or FakeGitProvider()
     tool.prediction = prediction
@@ -131,7 +131,7 @@ async def test_routed_publication_outcome_with_empty_run_details(
     async def fake_retry(*_args, **_kwargs):
         return tool._prepare_pr_code_docs()
 
-    monkeypatch.setattr("pr_agent.tools.pr_add_docs.retry_with_fallback_models", fake_retry)
+    monkeypatch.setattr("pr_agent.commands.pr_add_docs.retry_with_fallback_models", fake_retry)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _url: None)
     monkeypatch.setitem(pr_agent_module.command2class, "add_docs", lambda *_args, **_kwargs: tool)
     span = Mock()
@@ -223,7 +223,7 @@ def test_incomplete_provider_diff_is_re_raised_after_temporary_comment_cleanup(
     async def fail_with_incomplete_diff(*_args, **_kwargs):
         raise incomplete_error_class("incomplete aggregate diff")
 
-    monkeypatch.setattr("pr_agent.tools.pr_add_docs.retry_with_fallback_models", fail_with_incomplete_diff)
+    monkeypatch.setattr("pr_agent.commands.pr_add_docs.retry_with_fallback_models", fail_with_incomplete_diff)
     tool = PRAddDocs.__new__(PRAddDocs)
     tool.git_provider = FakeGitProvider()
 
@@ -244,8 +244,7 @@ def test_partial_inline_publication_keeps_every_retry_and_is_not_a_failure(
     assert command_failed() is False
 
 
-def test_all_false_inline_publication_records_the_existing_command_failure(
-        publish_output, monkeypatch):
+def test_all_false_inline_publication_records_the_existing_command_failure(publish_output, monkeypatch):
     provider = FakeGitProvider(suggestion_results=[False, False, False])
     init_run_details()
 
@@ -295,13 +294,13 @@ def test_run_skips_without_recording_failure_when_all_changed_files_are_filtered
     async def prepare_once(fn, **_kwargs):
         await fn("primary-model")
 
-    monkeypatch.setattr("pr_agent.tools.pr_add_docs.retry_with_fallback_models", prepare_once)
+    monkeypatch.setattr("pr_agent.commands.pr_add_docs.retry_with_fallback_models", prepare_once)
     monkeypatch.setattr(
-        "pr_agent.tools.pr_add_docs.AttemptTokenBudget.for_prompt_attempt",
+        "pr_agent.commands.pr_add_docs.AttemptTokenBudget.for_prompt_attempt",
         lambda *_args, **_kwargs: Mock(),
     )
     # A lockfile-only or asset-only PR has no diff left after file-type filtering.
-    monkeypatch.setattr("pr_agent.tools.pr_add_docs.get_pr_diff", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr("pr_agent.commands.pr_add_docs.get_pr_diff", lambda *_args, **_kwargs: "")
     tool = PRAddDocs.__new__(PRAddDocs)
     tool.git_provider = FakeGitProvider()
     tool.ai_handler = Mock()
@@ -329,7 +328,7 @@ def test_rejected_documentation_is_filtered_before_fence_and_publication(monkeyp
                "documentation": '    """Summary.\n  Incompatible.\n    """'}
     valid = {**invalid, "documentation": '"""Example:\n```python\npass\n```\n"""'}
     fence = Mock(wraps=get_suggestion_fence)
-    monkeypatch.setattr("pr_agent.tools.pr_add_docs.get_suggestion_fence", fence)
+    monkeypatch.setattr("pr_agent.commands.pr_add_docs.get_suggestion_fence", fence)
 
     result = tool.push_inline_docs({"Code Documentation": [invalid, valid] if include_valid else [invalid]})
 
@@ -377,8 +376,7 @@ def test_terminal_failure_comment_error_propagates_when_configured(publish_outpu
     assert command_failed() is True
 
 
-def test_no_documentation_comment_return_value_is_not_terminal_publication_failure(
-        publish_output, monkeypatch):
+def test_no_documentation_comment_return_value_is_not_terminal_publication_failure(publish_output, monkeypatch):
     provider = FakeGitProvider(comment_result=False)
     init_run_details()
 
@@ -411,8 +409,10 @@ def fallback_tool(publish_output, monkeypatch):
     budget.fit_prompt_variable.return_value = SimpleNamespace(
         optional_text="diff", system_prompt="system", user_prompt="user"
     )
-    monkeypatch.setattr("pr_agent.tools.pr_add_docs.AttemptTokenBudget.for_prompt_attempt", lambda *_a, **_kw: budget)
-    monkeypatch.setattr("pr_agent.tools.pr_add_docs.get_pr_diff", lambda *_a, **_kw: "diff")
+    monkeypatch.setattr(
+        "pr_agent.commands.pr_add_docs.AttemptTokenBudget.for_prompt_attempt", lambda *_a, **_kw: budget
+    )
+    monkeypatch.setattr("pr_agent.commands.pr_add_docs.get_pr_diff", lambda *_a, **_kw: "diff")
     init_run_details()
     yield tool
     restore_settings(snapshot)

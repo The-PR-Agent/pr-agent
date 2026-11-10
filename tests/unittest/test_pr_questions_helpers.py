@@ -13,11 +13,12 @@ import pytest
 from starlette_context import request_cycle_context
 
 import pr_agent.agent.pr_agent as pr_agent_module
-import pr_agent.tools.pr_line_questions as plq
-import pr_agent.tools.pr_questions as pq
+import pr_agent.commands.pr_line_questions as plq
+import pr_agent.commands.pr_questions as pq
 from pr_agent.algo import pr_processing
 from pr_agent.algo.comment_identity import format_pr_questions_header
 from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
+from pr_agent.commands.pr_questions import PRQuestions, _sanitize_slash_commands
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
@@ -25,7 +26,6 @@ from pr_agent.git_providers.gerrit_provider import GerritProvider, adopt_to_gerr
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.tools.pr_questions import PRQuestions, _sanitize_slash_commands
 from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings
 
 
@@ -108,8 +108,8 @@ def raw_question_tools(monkeypatch):
 
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
-    monkeypatch.setattr("pr_agent.tools.pr_questions.get_git_provider_for_tool", lambda _url: provider)
-    monkeypatch.setattr("pr_agent.tools.pr_questions.get_main_pr_language", lambda *_args: "Python")
+    monkeypatch.setattr("pr_agent.commands.pr_questions.get_git_provider_for_tool", lambda _url: provider)
+    monkeypatch.setattr("pr_agent.commands.pr_questions.get_main_pr_language", lambda *_args: "Python")
     monkeypatch.setattr(PRQuestions, "run", capture_question)
 
     with request_cycle_context({"settings": deepcopy(get_settings())}):
@@ -518,9 +518,9 @@ class TestLineQuestionAnswerSanitization:
         async def get_answer(*args, **kwargs):
             return "Done.\n\r/merge"
 
-        monkeypatch.setattr("pr_agent.tools.pr_line_questions.extract_hunk_lines_from_patch",
+        monkeypatch.setattr("pr_agent.commands.pr_line_questions.extract_hunk_lines_from_patch",
                             MagicMock(return_value=("@@ -1,1 +1,1 @@\n patch", "selected")))
-        monkeypatch.setattr("pr_agent.tools.pr_line_questions.retry_with_fallback_models", get_answer)
+        monkeypatch.setattr("pr_agent.commands.pr_line_questions.retry_with_fallback_models", get_answer)
 
         await lq.run()
 
@@ -687,8 +687,8 @@ async def test_line_question_decodes_webhook_file_path(monkeypatch, line_questio
     async def get_answer(*args, **kwargs):
         return "answer"
 
-    monkeypatch.setattr("pr_agent.tools.pr_line_questions.extract_hunk_lines_from_patch", extract_hunk)
-    monkeypatch.setattr("pr_agent.tools.pr_line_questions.retry_with_fallback_models", get_answer)
+    monkeypatch.setattr("pr_agent.commands.pr_line_questions.extract_hunk_lines_from_patch", extract_hunk)
+    monkeypatch.setattr("pr_agent.commands.pr_line_questions.retry_with_fallback_models", get_answer)
 
     await lq.run()
 
@@ -1173,7 +1173,7 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
         obj = self._provider()
         saved = self._set_ask_settings("100", "200")
         try:
-            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+            with patch("pr_agent.commands.pr_line_questions.retry_with_fallback_models",
                        new=AsyncMock()) as mock_retry, \
                  patch.object(plq.PR_LineQuestions, "_get_prediction", new=AsyncMock()) as mock_pred:
                 await obj.run()
@@ -1189,7 +1189,7 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
             filename="x.py", patch="this is not a diff")]
         saved = self._set_ask_settings("1", "2")
         try:
-            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+            with patch("pr_agent.commands.pr_line_questions.retry_with_fallback_models",
                        new=AsyncMock()) as mock_retry, \
                  patch.object(plq.PR_LineQuestions, "_get_prediction", new=AsyncMock()) as mock_pred:
                 await obj.run()
@@ -1203,7 +1203,7 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
         obj = self._provider()
         saved = self._set_ask_settings("6", "8")
         try:
-            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+            with patch("pr_agent.commands.pr_line_questions.retry_with_fallback_models",
                        new=AsyncMock(return_value="an answer")) as mock_retry:
                 await obj.run()
             mock_retry.assert_awaited_once()
@@ -1217,7 +1217,7 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
         saved = self._set_ask_settings("100", "200")
         try:
             get_settings().set("ask_diff_hunk", self._PATCH)
-            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+            with patch("pr_agent.commands.pr_line_questions.retry_with_fallback_models",
                        new=AsyncMock()) as mock_retry:
                 await obj.run()
             mock_retry.assert_not_awaited()
@@ -1231,7 +1231,7 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
             filename="other.py", patch=self._PATCH)]
         saved = self._set_ask_settings("6", "8")
         try:
-            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+            with patch("pr_agent.commands.pr_line_questions.retry_with_fallback_models",
                        new=AsyncMock()) as mock_retry:
                 await obj.run()
             mock_retry.assert_not_awaited()
@@ -1244,7 +1244,7 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
         saved = self._set_ask_settings("6", "8")
         try:
             get_settings().set("ask_diff_hunk", self._PATCH)
-            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+            with patch("pr_agent.commands.pr_line_questions.retry_with_fallback_models",
                        new=AsyncMock(return_value="an answer")) as mock_retry:
                 await obj.run()
             mock_retry.assert_awaited_once()
@@ -1264,7 +1264,7 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
             patch="@@ -5,400 +5,400 @@ def main():\n     tail = 1\n     tail = 2\n")]
         saved = self._set_ask_settings("300", "300")
         try:
-            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+            with patch("pr_agent.commands.pr_line_questions.retry_with_fallback_models",
                        new=AsyncMock(return_value="an answer")) as mock_retry:
                 await obj.run()
             mock_retry.assert_awaited_once()
@@ -1277,7 +1277,7 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
         obj = self._provider()
         saved = self._set_ask_settings("100", "200")
         try:
-            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+            with patch("pr_agent.commands.pr_line_questions.retry_with_fallback_models",
                        new=AsyncMock()) as mock_retry:
                 await obj.run()
             mock_retry.assert_not_awaited()

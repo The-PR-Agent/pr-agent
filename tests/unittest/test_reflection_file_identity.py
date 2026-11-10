@@ -1,6 +1,6 @@
 import pytest
 
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 
 
 def test_reordered_cross_file_feedback_is_not_assigned_by_position():

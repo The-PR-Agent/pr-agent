@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from pr_agent.algo import run_details
+from pr_agent.commands import pr_help_message
+from pr_agent.commands.pr_help_message import PRHelpMessage
 from pr_agent.config_loader import get_settings
-from pr_agent.tools import pr_help_message
-from pr_agent.tools.pr_help_message import PRHelpMessage
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 PRIMARY = "gpt-4o"
@@ -48,7 +48,7 @@ def help_tool(tmp_path, monkeypatch):
     doc = tmp_path / "docs" / "docs" / "tools" / "review.md"
     doc.parent.mkdir(parents=True)
     doc.write_text("# Automatic review\n\nEnable automatic review in the repository settings.", encoding="utf-8")
-    monkeypatch.setattr(pr_help_message, "__file__", str(tmp_path / "pr_agent" / "tools" / "pr_help_message.py"))
+    monkeypatch.setattr(pr_help_message, "__file__", str(tmp_path / "pr_agent" / "commands" / "pr_help_message.py"))
 
     details = run_details.RunDetails()
     monkeypatch.setattr(run_details, "get_run_details", lambda: details)

@@ -475,7 +475,7 @@ def test_plain_diff_improve_preserves_nonempty_json_even_if_markdown_fails(
         "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion",
         fake_chat_completion,
     )
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.PRCodeSuggestions._self_reflect_with_fallback",
+    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.PRCodeSuggestions._self_reflect_with_fallback",
                         no_reflection)
     if publish_failure:
         def broken_output(self, content):
@@ -510,7 +510,7 @@ def test_plain_diff_improve_still_publishes_markdown_when_json_unwritable(
         "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion",
         fake_chat_completion,
     )
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.PRCodeSuggestions._self_reflect_with_fallback",
+    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.PRCodeSuggestions._self_reflect_with_fallback",
                         no_reflection)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     unreachable_path = tmp_path / "missing" / "suggestions.json"
@@ -572,7 +572,7 @@ def test_plain_diff_describe_fails_when_all_files_are_ignored(monkeypatch, tmp_p
         unexpected_model_call,
     )
     failure_recorder = Mock(wraps=record_command_failure)
-    monkeypatch.setattr("pr_agent.tools.pr_description.record_command_failure", failure_recorder)
+    monkeypatch.setattr("pr_agent.commands.pr_description.record_command_failure", failure_recorder)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     cfg("ignore.glob", ["foo.py"])
     output = tmp_path / "description.json"
@@ -675,7 +675,7 @@ def test_plain_diff_ask_applies_command_ignore_filter(monkeypatch):
     async def capture(self):
         seen.extend(f.filename for f in self.git_provider.get_diff_files())
 
-    monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions.run", capture)
+    monkeypatch.setattr("pr_agent.commands.pr_questions.PRQuestions.run", capture)
     monkeypatch.setattr("sys.stdin", io.StringIO(diff))
     run(inargs=["--stdin", "ask", "Explain.", '--ignore.glob=["foo.py"]'])
 
@@ -716,7 +716,7 @@ def test_local_git_ask_applies_command_ignore_filter(monkeypatch, tmp_path, cfg,
     async def capture(self):
         seen.extend(f.filename for f in self.git_provider.get_diff_files())
 
-    monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions.run", capture)
+    monkeypatch.setattr("pr_agent.commands.pr_questions.PRQuestions.run", capture)
     run(inargs=["--pr_url", "main", "ask", "Explain.", '--ignore.glob=["foo.py"]'])
 
     assert seen == ["bar.py"]
@@ -784,7 +784,7 @@ def test_plain_diff_generate_labels_writes_filtered_json(input_mode, monkeypatch
     monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
     input_args = _valid_input_args(input_mode, monkeypatch, tmp_path)
     monkeypatch.setattr(
-        "pr_agent.tools.pr_generate_labels.PRGenerateLabels._get_prediction",
+        "pr_agent.commands.pr_generate_labels.PRGenerateLabels._get_prediction",
         AsyncMock(return_value="labels: [Bug fix, not-a-supported-label]"),
     )
     output = tmp_path / "labels.json"
@@ -824,7 +824,7 @@ def test_generate_labels_policy_skip_only_fails_when_json_is_required(
 def test_plain_diff_generate_labels_failure_does_not_write_success_json(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     monkeypatch.setattr(
-        "pr_agent.tools.pr_generate_labels.retry_with_fallback_models",
+        "pr_agent.commands.pr_generate_labels.retry_with_fallback_models",
         AsyncMock(side_effect=RuntimeError("model unavailable")),
     )
     output = tmp_path / "labels.json"

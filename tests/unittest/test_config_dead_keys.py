@@ -50,7 +50,7 @@ _ALLOWLIST = {
         "config",
         "output_relevant_configurations",
     ): "get_settings().get('config', {}).get('output_relevant_configurations', False) in "
-    "pr_agent/tools/pr_description.py",
+    "pr_agent/commands/pr_description.py",
     (
         "config",
         "enable_claude_extended_thinking",
@@ -123,11 +123,11 @@ _ALLOWLIST = {
         "pr_description",
         "pr_diagram_direction",
     ): "description_settings = get_settings().pr_description then "
-    "description_settings.pr_diagram_direction in pr_agent/tools/pr_description.py",
+    "description_settings.pr_diagram_direction in pr_agent/commands/pr_description.py",
     (
         "pr_description",
         "pr_diagram_direction_threshold",
-    ): "description_settings.pr_diagram_direction_threshold in pr_agent/tools/pr_description.py",
+    ): "description_settings.pr_diagram_direction_threshold in pr_agent/commands/pr_description.py",
     # [push_outputs] read as cfg = get_settings().get("push_outputs", {}) or {}
     (
         "push_outputs",

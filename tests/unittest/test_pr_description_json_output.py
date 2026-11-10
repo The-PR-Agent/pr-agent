@@ -6,9 +6,9 @@ import yaml
 
 from pr_agent.algo.review_json_output import review_json_output_path
 from pr_agent.algo.run_details import add_token_usage
+from pr_agent.commands import pr_description as pr_description_module
+from pr_agent.commands.pr_description import PRDescription
 from pr_agent.config_loader import get_settings
-from pr_agent.tools import pr_description as pr_description_module
-from pr_agent.tools.pr_description import PRDescription
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _TRACKED_SETTINGS = (

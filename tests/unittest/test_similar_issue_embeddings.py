@@ -9,7 +9,7 @@ import httpx
 import pytest
 from github.Issue import Issue
 
-import pr_agent.tools.pr_similar_issue as psi
+import pr_agent.commands.pr_similar_issue as psi
 
 
 class SettingsStub:

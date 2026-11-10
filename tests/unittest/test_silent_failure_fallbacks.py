@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 
 from pr_agent.algo.git_patch_processing import check_if_hunk_lines_matches_to_file, extend_patch
+from pr_agent.commands.pr_questions import PRQuestions
 from pr_agent.git_providers.git_provider import get_main_pr_language
-from pr_agent.tools.pr_questions import PRQuestions
 
 # ---------------------------------------------------------------------------
 # 1. image reference extraction

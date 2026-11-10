@@ -1,6 +1,6 @@
 """Range-check the model's line number before the dedent helper indexes the head file."""
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
-from pr_agent.tools.pr_add_docs import PRAddDocs
+from pr_agent.commands.pr_add_docs import PRAddDocs
 
 HEAD = "def f():\n    pass\n    return 1"
 SNIPPET = '"""docs"""'

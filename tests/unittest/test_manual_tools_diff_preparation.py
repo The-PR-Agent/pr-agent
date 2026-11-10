@@ -12,8 +12,8 @@ from starlette_context import request_cycle_context
 
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.commands import pr_add_docs, pr_generate_labels, pr_line_questions, pr_questions, pr_update_changelog
 from pr_agent.config_loader import get_settings
-from pr_agent.tools import pr_add_docs, pr_generate_labels, pr_line_questions, pr_questions, pr_update_changelog
 
 
 @pytest.mark.parametrize("module,tool_class,response", [

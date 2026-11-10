@@ -5,9 +5,9 @@ from unittest.mock import Mock
 import pytest
 from github.Issue import Issue
 
+from pr_agent.commands.pr_similar_issue import PRSimilarIssue, _is_pull_request, _provider_supports_issue_indexing
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.github_provider import GithubProvider
-from pr_agent.tools.pr_similar_issue import PRSimilarIssue, _is_pull_request, _provider_supports_issue_indexing
 
 
 class UnsupportedProvider(GitProvider):
@@ -33,8 +33,8 @@ async def test_similar_issue_unsupported_provider_publishes_message(monkeypatch)
             git_provider = "gitlab"
             publish_output = True
 
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_settings", lambda: FakeSettings)
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_git_provider", lambda: UnsupportedProvider)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_settings", lambda: FakeSettings)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_git_provider", lambda: UnsupportedProvider)
     monkeypatch.setattr(
         "pr_agent.git_providers.get_git_provider_with_context",
         lambda _: fake_provider,
@@ -56,8 +56,8 @@ async def test_similar_issue_unsupported_provider_no_publish(monkeypatch):
             git_provider = "gitlab"
             publish_output = False
 
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_settings", lambda: FakeSettings)
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_git_provider", lambda: UnsupportedProvider)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_settings", lambda: FakeSettings)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_git_provider", lambda: UnsupportedProvider)
 
     tool = PRSimilarIssue("https://gitlab.example.com/group/repo/-/merge_requests/1", None)
     result = await tool.run()
@@ -87,7 +87,7 @@ def test_capability_is_read_off_the_registered_class(monkeypatch):
         def supports_issue_indexing(cls) -> bool:
             return True
 
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_git_provider", lambda: ThirdPartyProvider)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_git_provider", lambda: ThirdPartyProvider)
     assert _provider_supports_issue_indexing() is True
 
 
@@ -120,8 +120,8 @@ def test_declared_capability_beats_the_configured_provider_id(monkeypatch):
         CONFIG = config
         pr_similar_issue = SimpleNamespace(max_issues_to_scan=10, vectordb="pinecone")
 
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_settings", lambda: FakeSettings)
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_git_provider", lambda: CapableProvider)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_settings", lambda: FakeSettings)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_git_provider", lambda: CapableProvider)
 
     with pytest.raises(Sentinel):
         PRSimilarIssue("https://my-forge.example.com/group/repo/issues/1", None)
@@ -133,7 +133,7 @@ def test_unknown_provider_configuration_is_unsupported(monkeypatch):
     def raise_unknown():
         raise ValueError("Unknown git provider: nope")
 
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_git_provider", raise_unknown)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_git_provider", raise_unknown)
     assert _provider_supports_issue_indexing() is False
 
 

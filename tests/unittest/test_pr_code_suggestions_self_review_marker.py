@@ -4,9 +4,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from pr_agent.commands import pr_code_suggestions as module
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.config_loader import get_settings
-from pr_agent.tools import pr_code_suggestions as module
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 KEYS = (
@@ -26,7 +26,7 @@ def clean_self_review_keys():
 
 def _warnings(monkeypatch):
     logger = MagicMock()
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.get_logger", lambda: logger)
+    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.get_logger", lambda: logger)
     return logger
 
 

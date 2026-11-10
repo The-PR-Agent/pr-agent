@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 
 from pr_agent.algo.pr_processing import retry_with_fallback_models
+from pr_agent.commands.pr_generate_labels import PRGenerateLabels
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_generate_labels import PRGenerateLabels
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _TRACKED_KEYS = (
@@ -123,7 +123,7 @@ async def test_malformed_primary_uses_valid_fallback_and_preserves_user_labels(f
     tool = label_tool(provider)
     tool._get_prediction = AsyncMock(side_effect=["not valid labels yaml", _VALID_FALLBACK])
 
-    with patch("pr_agent.tools.pr_generate_labels.get_pr_diff", return_value="diff"):
+    with patch("pr_agent.commands.pr_generate_labels.get_pr_diff", return_value="diff"):
         await tool.run()
 
     assert tool._get_prediction.await_args_list == [call("primary-model"), call("fallback-model")]
@@ -146,7 +146,7 @@ async def test_unchanged_labels_are_not_published(prediction, current_labels, fa
     tool = label_tool(provider)
     tool._get_prediction = AsyncMock(return_value=prediction)
 
-    with patch("pr_agent.tools.pr_generate_labels.get_pr_diff", return_value="diff"):
+    with patch("pr_agent.commands.pr_generate_labels.get_pr_diff", return_value="diff"):
         await tool.run()
 
     tool._get_prediction.assert_awaited_once_with("primary-model")
@@ -164,7 +164,7 @@ async def test_explicit_empty_labels_is_valid_and_clears_generated_labels(fallba
     tool = label_tool(provider)
     tool._get_prediction = AsyncMock(return_value="labels: []\n")
 
-    with patch("pr_agent.tools.pr_generate_labels.get_pr_diff", return_value="diff"):
+    with patch("pr_agent.commands.pr_generate_labels.get_pr_diff", return_value="diff"):
         await tool.run()
 
     tool._get_prediction.assert_awaited_once_with("primary-model")
@@ -192,7 +192,7 @@ async def test_invalid_attempt_shapes_reach_fallback(invalid_prediction, fallbac
     tool = label_tool()
     tool._get_prediction = AsyncMock(side_effect=[invalid_prediction, _VALID_FALLBACK])
 
-    with patch("pr_agent.tools.pr_generate_labels.get_pr_diff", return_value="diff"):
+    with patch("pr_agent.commands.pr_generate_labels.get_pr_diff", return_value="diff"):
         await retry_with_fallback_models(tool._prepare_prediction, git_provider=tool.git_provider)
 
     assert tool._get_prediction.await_args_list == [call("primary-model"), call("fallback-model")]
@@ -205,7 +205,7 @@ async def test_usable_entries_survive_malformed_siblings_without_fallback(fallba
     tool = label_tool()
     tool._get_prediction = AsyncMock(return_value="labels:\n- {}\n- bug fix\n- false\n")
 
-    with patch("pr_agent.tools.pr_generate_labels.get_pr_diff", return_value="diff"):
+    with patch("pr_agent.commands.pr_generate_labels.get_pr_diff", return_value="diff"):
         await retry_with_fallback_models(tool._prepare_prediction, git_provider=tool.git_provider)
 
     tool._get_prediction.assert_awaited_once_with("primary-model")
@@ -222,7 +222,7 @@ async def test_all_invalid_attempts_clear_state_and_cleanup_progress_once(fallba
         side_effect=["types:\n- bug fix\n", "labels:\n- {}\n- false\n"]
     )
 
-    with patch("pr_agent.tools.pr_generate_labels.get_pr_diff", return_value="diff"):
+    with patch("pr_agent.commands.pr_generate_labels.get_pr_diff", return_value="diff"):
         await tool.run()
 
     assert tool._get_prediction.await_args_list == [call("primary-model"), call("fallback-model")]
@@ -243,7 +243,7 @@ async def test_all_invalid_attempts_do_not_cleanup_without_progress_handle(fallb
         side_effect=["types:\n- bug fix\n", "labels:\n- {}\n- false\n"]
     )
 
-    with patch("pr_agent.tools.pr_generate_labels.get_pr_diff", return_value="diff"):
+    with patch("pr_agent.commands.pr_generate_labels.get_pr_diff", return_value="diff"):
         await tool.run()
 
     assert tool._get_prediction.await_args_list == [call("primary-model"), call("fallback-model")]
@@ -264,7 +264,7 @@ async def test_valid_attempt_does_not_cleanup_without_progress_handle(fallback_m
     tool = label_tool(provider)
     tool._get_prediction = AsyncMock(return_value=_VALID_FALLBACK)
 
-    with patch("pr_agent.tools.pr_generate_labels.get_pr_diff", return_value="diff"):
+    with patch("pr_agent.commands.pr_generate_labels.get_pr_diff", return_value="diff"):
         await tool.run()
 
     tool._get_prediction.assert_awaited_once_with("primary-model")
@@ -288,7 +288,7 @@ async def test_cleanup_failure_is_best_effort_after_success(
     tool._get_prediction = AsyncMock(return_value=_VALID_FALLBACK)
     get_settings().set("config.propagate_tool_errors", propagate_tool_errors)
 
-    with patch("pr_agent.tools.pr_generate_labels.get_pr_diff", return_value="diff"):
+    with patch("pr_agent.commands.pr_generate_labels.get_pr_diff", return_value="diff"):
         assert await tool.run() == ""
 
     provider.publish_labels.assert_called_once_with(["bug fix"])
@@ -303,7 +303,7 @@ async def test_cancellation_after_progress_handle_cleans_up_before_propagating(f
 
     with (
         patch(
-            "pr_agent.tools.pr_generate_labels.retry_with_fallback_models",
+            "pr_agent.commands.pr_generate_labels.retry_with_fallback_models",
             new=AsyncMock(side_effect=asyncio.CancelledError()),
         ),
         pytest.raises(asyncio.CancelledError),

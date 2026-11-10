@@ -4,9 +4,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from pr_agent.commands.pr_line_questions import PR_LineQuestions
+from pr_agent.commands.pr_questions import PRQuestions
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_line_questions import PR_LineQuestions
-from pr_agent.tools.pr_questions import PRQuestions
 from tests.unittest._run_details_command_helpers import (
     BACKUP,
     PRIMARY,

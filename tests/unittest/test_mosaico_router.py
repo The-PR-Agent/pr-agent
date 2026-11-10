@@ -362,7 +362,7 @@ index 1111111..2222222 100644
 
         from pr_agent.agent.pr_agent import PRAgent
         monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
-        monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions", _explode_prquestions)
+        monkeypatch.setattr("pr_agent.commands.pr_questions.PRQuestions", _explode_prquestions)
 
         diff_with_q = (
             "```diff\n"

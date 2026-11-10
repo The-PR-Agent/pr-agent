@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from pr_agent.commands.pr_update_changelog import PRUpdateChangelog
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import FileContentSnapshot
-from pr_agent.tools.pr_update_changelog import PRUpdateChangelog
 from tests.unittest._run_details_command_helpers import (
     BACKUP,
     PRIMARY,
@@ -87,7 +87,7 @@ async def test_changelog_push_keeps_committed_file_and_review_range_clean():
     provider = _push_provider()
     tool = _make_changelog(commit=True, provider=provider)
 
-    with patch("pr_agent.tools.pr_update_changelog.asyncio.sleep", new_callable=AsyncMock):
+    with patch("pr_agent.commands.pr_update_changelog.asyncio.sleep", new_callable=AsyncMock):
         await tool.run()
 
     assert provider.create_or_update_pr_file.call_args.kwargs["contents"] == (
@@ -104,7 +104,7 @@ async def test_changelog_review_fallback_comment_reports_the_fallback_model():
     provider.pr.create_review.side_effect = RuntimeError("review rejected")
     tool = _make_changelog(commit=True, fail_primary=True, provider=provider)
 
-    with patch("pr_agent.tools.pr_update_changelog.asyncio.sleep", new_callable=AsyncMock):
+    with patch("pr_agent.commands.pr_update_changelog.asyncio.sleep", new_callable=AsyncMock):
         await tool.run()
 
     assert TITLE not in provider.create_or_update_pr_file.call_args.kwargs["contents"]
@@ -132,7 +132,7 @@ async def test_changelog_cancellation_fallback_appends_run_details():
     tool = _make_changelog(commit=True, provider=provider)
 
     with (
-        patch("pr_agent.tools.pr_update_changelog.asyncio.sleep",
+        patch("pr_agent.commands.pr_update_changelog.asyncio.sleep",
               new_callable=AsyncMock, side_effect=asyncio.CancelledError),
         pytest.raises(asyncio.CancelledError),
     ):

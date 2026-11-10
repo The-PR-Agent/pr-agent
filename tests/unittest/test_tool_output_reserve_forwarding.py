@@ -3,10 +3,10 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
-import pr_agent.tools.pr_add_docs as add_docs_module
-import pr_agent.tools.pr_generate_labels as generate_labels_module
-import pr_agent.tools.pr_questions as questions_module
-import pr_agent.tools.pr_update_changelog as update_changelog_module
+import pr_agent.commands.pr_add_docs as add_docs_module
+import pr_agent.commands.pr_generate_labels as generate_labels_module
+import pr_agent.commands.pr_questions as questions_module
+import pr_agent.commands.pr_update_changelog as update_changelog_module
 from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.config_loader import get_settings

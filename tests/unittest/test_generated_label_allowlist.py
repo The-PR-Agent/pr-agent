@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pr_agent.algo.utils import get_user_labels, set_custom_labels
+from pr_agent.commands.pr_description import PRDescription
+from pr_agent.commands.pr_generate_labels import PRGenerateLabels
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_description import PRDescription
-from pr_agent.tools.pr_generate_labels import PRGenerateLabels
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
@@ -75,7 +75,7 @@ async def test_generate_labels_filters_before_publication(supports_labels):
         tool.git_provider = MagicMock()
         tool.git_provider.is_supported.return_value = supports_labels
         tool.git_provider.get_pr_labels.return_value = ["P0"]
-        with patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new=AsyncMock()):
+        with patch("pr_agent.commands.pr_generate_labels.retry_with_fallback_models", new=AsyncMock()):
             await tool.run()
         if supports_labels:
             tool.git_provider.publish_labels.assert_called_once_with(["Bug fix", "P0"])
@@ -104,7 +104,7 @@ async def test_rejected_output_preserves_existing_labels_but_explicit_empty_can_
         tool.git_provider = MagicMock()
         tool.git_provider.is_supported.return_value = True
         tool.git_provider.get_pr_labels.return_value = ["Enhancement", "P0"]
-        with patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new=AsyncMock()):
+        with patch("pr_agent.commands.pr_generate_labels.retry_with_fallback_models", new=AsyncMock()):
             await tool.run()
         if expected is None:
             tool.git_provider.publish_labels.assert_not_called()
@@ -177,9 +177,9 @@ async def test_describe_external_payload_survives_rendering(
         tool._prepare_data = MagicMock()
         tool._get_description_coverage_footer = MagicMock(return_value="")
         with (
-            patch("pr_agent.tools.pr_description.extract_and_cache_pr_tickets", new=AsyncMock()),
-            patch("pr_agent.tools.pr_description.retry_with_fallback_models", new=AsyncMock()),
-            patch("pr_agent.tools.pr_description.push_outputs_async") as push,
+            patch("pr_agent.commands.pr_description.extract_and_cache_pr_tickets", new=AsyncMock()),
+            patch("pr_agent.commands.pr_description.retry_with_fallback_models", new=AsyncMock()),
+            patch("pr_agent.commands.pr_description.push_outputs_async") as push,
         ):
             await tool.run()
         if not publish_output:

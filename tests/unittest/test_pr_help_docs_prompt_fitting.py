@@ -12,8 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_help_docs import (
+from pr_agent.commands.pr_help_docs import (
     PredictionPreparator,
     PRHelpDocs,
     _clean_markdown_content_preserving_fences,
@@ -21,6 +20,7 @@ from pr_agent.tools.pr_help_docs import (
     clean_markdown_content,
     map_documentation_files_to_contents,
 )
+from pr_agent.config_loader import get_settings
 
 _FIT_MODEL = "gpt-fit-test"
 _LISTENER_XML = '<listener port="18443" mode="isolated-m7">localhost</listener>'
@@ -135,7 +135,7 @@ def test_trim_docs_keeps_cleaned_text_when_it_fits(monkeypatch):
     tool.token_handler = SimpleNamespace(count_tokens=lambda text, force_accurate=False: len(text))
     tool._docs_input_token_limit = lambda: 16
     monkeypatch.setattr(
-        "pr_agent.tools.pr_help_docs.clip_tokens",
+        "pr_agent.commands.pr_help_docs.clip_tokens",
         lambda *args, **kwargs: pytest.fail("cleaned text already fits"),
     )
 
@@ -153,7 +153,7 @@ def test_trim_docs_passes_cleaned_token_count_to_clipper(monkeypatch):
         calls.append((text, limit, num_input_tokens))
         return "clipped"
 
-    monkeypatch.setattr("pr_agent.tools.pr_help_docs.clip_tokens", clip)
+    monkeypatch.setattr("pr_agent.commands.pr_help_docs.clip_tokens", clip)
     docs = "<!--" + "irrelevant " * 100 + "-->\nUseful but longer documentation."
     cleaned = "Useful but longer documentation."
 
@@ -258,8 +258,8 @@ async def test_run_uses_cleaned_full_docs_without_unnecessary_ranking(monkeypatc
         return "unused"
 
     tool._rank_docs_and_return_them_as_prompt = reject_ranking
-    monkeypatch.setattr("pr_agent.tools.pr_help_docs.retry_with_fallback_models", predict)
-    monkeypatch.setattr("pr_agent.tools.pr_help_docs.load_yaml", lambda response: {"response": "answer"})
+    monkeypatch.setattr("pr_agent.commands.pr_help_docs.retry_with_fallback_models", predict)
+    monkeypatch.setattr("pr_agent.commands.pr_help_docs.load_yaml", lambda response: {"response": "answer"})
 
     assert await tool.run() == "answer"
     assert model_snippets == [tool.vars["snippets"]]
@@ -307,8 +307,8 @@ async def test_run_keeps_document_boundaries_with_truncated_comments(tmp_path, m
         return "unused"
 
     tool._rank_docs_and_return_them_as_prompt = rank_docs
-    monkeypatch.setattr("pr_agent.tools.pr_help_docs.retry_with_fallback_models", predict)
-    monkeypatch.setattr("pr_agent.tools.pr_help_docs.load_yaml", lambda response: {"response": "answer"})
+    monkeypatch.setattr("pr_agent.commands.pr_help_docs.retry_with_fallback_models", predict)
+    monkeypatch.setattr("pr_agent.commands.pr_help_docs.load_yaml", lambda response: {"response": "answer"})
 
     assert await tool.run() == "answer"
     assert rankings == [True]
@@ -322,9 +322,9 @@ async def test_run_keeps_document_boundaries_with_truncated_comments(tmp_path, m
         clipping_inputs.append(text)
         return text
 
-    monkeypatch.setattr("pr_agent.tools.pr_help_docs.clip_tokens", capture_clip)
+    monkeypatch.setattr("pr_agent.commands.pr_help_docs.clip_tokens", capture_clip)
     monkeypatch.setattr(
-        "pr_agent.tools.pr_help_docs.load_yaml",
+        "pr_agent.commands.pr_help_docs.load_yaml",
         lambda response: {"relevant_files_ranking": [{"idx": 0}, {"idx": 1}, {"idx": 2}]},
     )
     ranked = await PRHelpDocs._rank_docs_and_return_them_as_prompt(tool, docs, math.inf)
@@ -367,8 +367,8 @@ async def test_ranked_docs_preserve_fitting_xml_example(monkeypatch, comment):
         model_calls.append(True)
         return "unused"
 
-    monkeypatch.setattr("pr_agent.tools.pr_help_docs.retry_with_fallback_models", predict)
-    monkeypatch.setattr("pr_agent.tools.pr_help_docs.load_yaml", lambda response: next(responses))
+    monkeypatch.setattr("pr_agent.commands.pr_help_docs.retry_with_fallback_models", predict)
+    monkeypatch.setattr("pr_agent.commands.pr_help_docs.load_yaml", lambda response: next(responses))
 
     assert await tool.run() == "answer"
     assert len(model_calls) == 2

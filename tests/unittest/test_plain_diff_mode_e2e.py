@@ -11,12 +11,12 @@ from pr_agent.algo.review_json_output import review_json_output_path
 from pr_agent.algo.run_details import command_failed
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
+from pr_agent.commands import ticket_pr_compliance_check as tickets_module
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.commands.pr_questions import NO_ANALYZABLE_FILES_NOTE, PRQuestions
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
-from pr_agent.tools import ticket_pr_compliance_check as tickets_module
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from pr_agent.tools.pr_questions import NO_ANALYZABLE_FILES_NOTE, PRQuestions
 
 # Diff-mode settings keys these tests mutate on the process-wide singleton.
 _SETTINGS_KEYS = ["plain_diff.content", "plain_diff.output_path", "plain_diff.json_output_path",

@@ -4,9 +4,9 @@ import pytest
 
 from pr_agent.cli import set_parser
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
+from pr_agent.commands.pr_help_message import PRHelpMessage
 from pr_agent.config_loader import get_settings
 from pr_agent.servers.help import HelpMessage
-from pr_agent.tools.pr_help_message import PRHelpMessage
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CURRENT_DOCS_URL = "https://docs.pr-agent.ai"

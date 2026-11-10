@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 
 from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _TRACKED_KEYS = (
@@ -57,9 +57,9 @@ async def test_malformed_primary_review_uses_fallback_model(fallback_models):
     reviewer._get_prediction = AsyncMock(side_effect=["not valid review yaml", _VALID_REVIEW])
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value="diff"),
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value="diff"),
         patch(
-            "pr_agent.tools.pr_reviewer.fit_related_tickets_to_prompt_budget",
+            "pr_agent.commands.pr_reviewer.fit_related_tickets_to_prompt_budget",
             side_effect=lambda _pr, raw_vars, _system, _user, _model, **_kwargs: (
                 raw_vars,
                 reviewer.token_handler,
@@ -83,9 +83,9 @@ async def test_empty_primary_diff_uses_fallback_model(fallback_models):
         return "fallback diff", []
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", side_effect=get_pr_diff),
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", side_effect=get_pr_diff),
         patch(
-            "pr_agent.tools.pr_reviewer.fit_related_tickets_to_prompt_budget",
+            "pr_agent.commands.pr_reviewer.fit_related_tickets_to_prompt_budget",
             side_effect=lambda _pr, raw_vars, _system, _user, _model, **_kwargs: (
                 raw_vars,
                 reviewer.token_handler,
@@ -122,13 +122,13 @@ async def test_malformed_primary_then_valid_fallback_publishes_review_without_fa
     settings.set("config.propagate_tool_errors", False)
     settings.set("pr_reviewer.persistent_comment", False)
 
-    monkeypatch.setattr("pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr("pr_agent.commands.pr_reviewer.extract_and_cache_pr_tickets", AsyncMock())
     monkeypatch.setattr(
-        "pr_agent.tools.pr_reviewer.fit_related_tickets_to_prompt_budget",
+        "pr_agent.commands.pr_reviewer.fit_related_tickets_to_prompt_budget",
         lambda _pr, raw_vars, _system, _user, _model, **_kwargs: (raw_vars, reviewer.token_handler),
     )
 
-    with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value="diff"):
+    with patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value="diff"):
         await reviewer.run()
 
     assert reviewer._get_prediction.await_args_list == [call("primary-model"), call("fallback-model")]
@@ -154,13 +154,13 @@ async def test_all_malformed_models_publish_one_failure_result(monkeypatch, fall
     settings.set("config.is_auto_command", False)
     settings.set("config.propagate_tool_errors", False)
 
-    monkeypatch.setattr("pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr("pr_agent.commands.pr_reviewer.extract_and_cache_pr_tickets", AsyncMock())
     monkeypatch.setattr(
-        "pr_agent.tools.pr_reviewer.fit_related_tickets_to_prompt_budget",
+        "pr_agent.commands.pr_reviewer.fit_related_tickets_to_prompt_budget",
         lambda _pr, raw_vars, _system, _user, _model, **_kwargs: (raw_vars, reviewer.token_handler),
     )
 
-    with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value="diff"):
+    with patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value="diff"):
         await reviewer.run()
 
     assert reviewer._get_prediction.await_args_list == [call("primary-model"), call("fallback-model")]
@@ -216,9 +216,9 @@ async def test_truncated_review_enters_existing_fallback_chain(fallback_models, 
     ))
 
     with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value="diff"),
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value="diff"),
         patch(
-            "pr_agent.tools.pr_reviewer.fit_related_tickets_to_prompt_budget",
+            "pr_agent.commands.pr_reviewer.fit_related_tickets_to_prompt_budget",
             side_effect=lambda _pr, raw_vars, _system, _user, _model, **_kwargs: (
                 raw_vars, reviewer.token_handler,
             ),

@@ -5,11 +5,11 @@ from unittest.mock import MagicMock
 import pytest
 from loguru import logger as loguru_logger
 
+from pr_agent.commands import pr_code_suggestions as pr_code_suggestions_module
+from pr_agent.commands.pr_code_suggestions import get_committable_code_suggestions
 from pr_agent.config_loader import get_settings
 from pr_agent.config_security import PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION
 from pr_agent.git_providers import utils as git_utils
-from pr_agent.tools import pr_code_suggestions as pr_code_suggestions_module
-from pr_agent.tools.pr_code_suggestions import get_committable_code_suggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 CANONICAL = "pr_code_suggestions.committable_code_suggestions"
@@ -30,7 +30,7 @@ def clean_spellings():
 def _warnings(monkeypatch):
     """Capture logger warnings emitted by the resolver, and clear the warn-once flag."""
     logger = MagicMock()
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.get_logger", lambda: logger)
+    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.get_logger", lambda: logger)
     return logger
 
 

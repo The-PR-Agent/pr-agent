@@ -4,7 +4,7 @@ import inspect
 import sys
 from types import SimpleNamespace
 
-import pr_agent.tools.pr_similar_issue as psi
+import pr_agent.commands.pr_similar_issue as psi
 
 BASE_INDEX_NAME = "codium-ai-pr-agent-issues"
 

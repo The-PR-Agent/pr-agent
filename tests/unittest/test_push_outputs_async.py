@@ -12,8 +12,8 @@ import pytest
 
 from pr_agent.algo import output_sinks
 from pr_agent.algo.run_output import push_outputs_async
+from pr_agent.commands import pr_code_suggestions, pr_description, pr_reviewer
 from pr_agent.config_loader import get_settings
-from pr_agent.tools import pr_code_suggestions, pr_description, pr_reviewer
 
 SINK_URL = 'https://example.test/webhook'
 

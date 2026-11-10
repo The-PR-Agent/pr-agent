@@ -530,7 +530,7 @@ On this repository, the change merged in pull request 4420 gives:
 ```
 🔗 Structural reach
 Reach: 9 modules
-Dependents: pr_agent/git_providers, pr_agent/tools, pr_agent/servers, pr_agent/algo, pr_agent/mosaico (+4 more)
+Dependents: pr_agent/git_providers, pr_agent/commands, pr_agent/servers, pr_agent/algo, pr_agent/mosaico (+4 more)
 ```
 
 `dependents` is ordered by the number of affected files in each unit. The graph does not see imports built at

@@ -13,13 +13,13 @@ from pr_agent.algo.pr_processing import (
     generate_full_patch,
 )
 from pr_agent.algo.types import EDIT_TYPE
+from pr_agent.commands import pr_description as pr_description_module
+from pr_agent.commands import pr_reviewer as pr_reviewer_module
+from pr_agent.commands import ticket_pr_compliance_check as tickets_module
+from pr_agent.commands.pr_description import PRDescription
+from pr_agent.commands.pr_reviewer import PRReviewer
+from pr_agent.commands.ticket_pr_compliance_check import fit_related_tickets_to_prompt_budget
 from pr_agent.config_loader import get_settings
-from pr_agent.tools import pr_description as pr_description_module
-from pr_agent.tools import pr_reviewer as pr_reviewer_module
-from pr_agent.tools import ticket_pr_compliance_check as tickets_module
-from pr_agent.tools.pr_description import PRDescription
-from pr_agent.tools.pr_reviewer import PRReviewer
-from pr_agent.tools.ticket_pr_compliance_check import fit_related_tickets_to_prompt_budget
 
 
 class _PromptCountingTokenHandler:

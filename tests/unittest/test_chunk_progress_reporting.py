@@ -15,16 +15,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pr_agent.algo.pr_processing import PackedPRDiffs
-from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from pr_agent.tools.pr_description import DESCRIBE_PROGRESS_COMMENT, PRDescription
-from pr_agent.tools.pr_reviewer import PRReviewer
-from pr_agent.tools.progress_comment import (
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.commands.pr_description import DESCRIBE_PROGRESS_COMMENT, PRDescription
+from pr_agent.commands.pr_reviewer import PRReviewer
+from pr_agent.commands.progress_comment import (
     ChunkProgressReporter,
     chunk_progress_line,
     edit_comment_safely,
     supports_editable_progress_comment,
 )
+from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _REVIEW_KEYS = (
@@ -114,7 +114,7 @@ def _stub_ticket_budget_fit(reviewer):
     from `_prepare_prediction` onward.
     """
     return patch(
-        "pr_agent.tools.pr_reviewer.fit_related_tickets_to_prompt_budget",
+        "pr_agent.commands.pr_reviewer.fit_related_tickets_to_prompt_budget",
         side_effect=lambda _pr, variables, _system, _user, _model, **_kwargs:
         (variables, reviewer.token_handler),
     )
@@ -152,12 +152,12 @@ def _make_reviewer(provider, chunk_predictions):
 async def _run_chunked_review(reviewer, chunk_count=2):
     with (
         patch("pr_agent.algo.token_budget.get_max_tokens", return_value=10000),
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
         patch(
-            "pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+            "pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
             return_value=PackedPRDiffs([f"chunk-{index}" for index in range(chunk_count)], [], []),
         ),
-        patch("pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets", AsyncMock()),
+        patch("pr_agent.commands.pr_reviewer.extract_and_cache_pr_tickets", AsyncMock()),
         _stub_ticket_budget_fit(reviewer),
     ):
         await reviewer.run()
@@ -298,7 +298,7 @@ async def test_review_progress_counts_include_chunks_an_earlier_attempt_finished
 
     with (
         patch("pr_agent.algo.token_budget.get_max_tokens", return_value=10000),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs(["chunk-0", "chunk-1"], [], [])),
     ):
         await reviewer._prepare_chunked_prediction("model")
@@ -317,7 +317,7 @@ async def test_review_progress_never_moves_backward_across_a_fallback(published_
 
     with (
         patch("pr_agent.algo.token_budget.get_max_tokens", return_value=10000),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
               return_value=PackedPRDiffs(["chunk-0", "chunk-1"], [], [])),
     ):
         with pytest.raises(RuntimeError):
@@ -437,14 +437,14 @@ async def _run_chunked_suggestions(tool, chunk_count=3, **overrides):
     with (
         patch("pr_agent.algo.token_budget.get_max_tokens", return_value=10000),
         patch(
-            "pr_agent.tools.pr_code_suggestions.get_pr_multi_diffs",
+            "pr_agent.commands.pr_code_suggestions.get_pr_multi_diffs",
             return_value=PackedPRDiffs(chunks, [], []),
         ),
         patch(
-            "pr_agent.tools.pr_code_suggestions.AttemptTokenBudget.for_prompt_attempt",
+            "pr_agent.commands.pr_code_suggestions.AttemptTokenBudget.for_prompt_attempt",
             side_effect=lambda *_args, **_kwargs: _FakeBudget(),
         ),
-        patch("pr_agent.tools.pr_code_suggestions.get_effective_fallback_chain",
+        patch("pr_agent.commands.pr_code_suggestions.get_effective_fallback_chain",
               return_value=overrides.get("fallback_chain")),
     ):
         return await tool.prepare_prediction_main("gpt-4o")
@@ -500,7 +500,7 @@ async def test_suggestion_retried_chunks_count_towards_the_total(published_sugge
 
     # A live fallback chain is what lets the failed chunk be retried with another model.
     with patch(
-        "pr_agent.tools.pr_code_suggestions.get_effective_fallback_chain",
+        "pr_agent.commands.pr_code_suggestions.get_effective_fallback_chain",
         return_value=[("gpt-4o", None), ("gpt-4.1", None)],
     ):
         data = await _run_chunked_suggestions(
@@ -576,9 +576,9 @@ async def _run_chunked_describe(tool, chunk_count=2, **overrides):
     settings.set("pr_description.async_ai_calls", overrides.get("async_ai_calls", True))
     with (
         patch("pr_agent.algo.token_budget.get_max_tokens", return_value=10000),
-        patch("pr_agent.tools.pr_description.get_pr_diff", return_value=("", [])),
+        patch("pr_agent.commands.pr_description.get_pr_diff", return_value=("", [])),
         patch(
-            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs",
+            "pr_agent.commands.pr_description.get_pr_diff_multiple_patchs",
             return_value=(
                 [f"chunk-{index}" for index in range(chunk_count)],
                 [1] * chunk_count,
@@ -589,7 +589,7 @@ async def _run_chunked_describe(tool, chunk_count=2, **overrides):
             ),
         ),
         patch(
-            "pr_agent.tools.pr_description.fit_related_tickets_to_prompt_budget",
+            "pr_agent.commands.pr_description.fit_related_tickets_to_prompt_budget",
             side_effect=lambda _pr, variables, _system, _user, _model, **_kwargs:
             (variables, SimpleNamespace(prompt_tokens=0, count_tokens=len)),
         ),
@@ -721,7 +721,7 @@ async def test_auto_suggestions_anchor_the_check_run_reporter(published_suggesti
         seen.append(tool._progress_base_body)
         return {"code_suggestions": []}
 
-    with patch("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models", side_effect=capture):
+    with patch("pr_agent.commands.pr_code_suggestions.retry_with_fallback_models", side_effect=capture):
         await tool.run()
 
     assert seen == ["Preparing suggestions..."]

@@ -4,12 +4,12 @@ import pytest
 
 from pr_agent.algo.i18n import t
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_code_suggestions import (
+from pr_agent.commands.pr_code_suggestions import (
     PRCodeSuggestions,
     filter_suggestions_by_score_threshold,
     render_suggestions_markdown,
 )
+from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 TRUNCATION_SETTINGS = (
@@ -937,7 +937,7 @@ def test_get_score_str_does_not_coerce_unused_medium_threshold(monkeypatch):
         calls.append(setting_name)
         return default
 
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions._as_threshold", read_threshold)
+    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions._as_threshold", read_threshold)
     tool = _make_tool()
     assert tool.get_score_str(10) == "High"
     assert calls == ["pr_code_suggestions.new_score_mechanism_th_high"]

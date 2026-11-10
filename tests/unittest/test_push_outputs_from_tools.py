@@ -9,11 +9,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions, render_suggestions_markdown
+from pr_agent.commands.pr_description import PRDescription
+from pr_agent.commands.pr_questions import NO_ANALYZABLE_FILES_NOTE, PRQuestions
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions, render_suggestions_markdown
-from pr_agent.tools.pr_description import PRDescription
-from pr_agent.tools.pr_questions import NO_ANALYZABLE_FILES_NOTE, PRQuestions
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 SUGGESTION = {
     "relevant_file": "src/foo.py",
@@ -66,9 +66,9 @@ async def test_ask_emits_before_publishing_the_answer(monkeypatch, no_analyzable
 
     tool._prepare_prediction = prepare
     tool.git_provider.publish_comment.side_effect = publish
-    monkeypatch.setattr("pr_agent.tools.pr_questions.retry_with_fallback_models",
+    monkeypatch.setattr("pr_agent.commands.pr_questions.retry_with_fallback_models",
                         lambda fn, model_type: fn("fake-model"))
-    monkeypatch.setattr("pr_agent.tools.pr_questions.push_outputs_async", record)
+    monkeypatch.setattr("pr_agent.commands.pr_questions.push_outputs_async", record)
     monkeypatch.setitem(get_settings().config, "publish_output", True)
     monkeypatch.setitem(get_settings().pr_questions, "enable_help_text", show_help)
 
@@ -178,8 +178,8 @@ def emitted(monkeypatch):
     async def record(*args, **kwargs):
         calls.append((args, kwargs))
 
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.push_outputs_async", record)
-    monkeypatch.setattr("pr_agent.tools.pr_description.push_outputs_async", record)
+    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.push_outputs_async", record)
+    monkeypatch.setattr("pr_agent.commands.pr_description.push_outputs_async", record)
     monkeypatch.setitem(get_settings().config, "publish_output", True)
     return calls
 
@@ -193,7 +193,7 @@ async def test_improve_sends_readable_markdown(emitted, monkeypatch):
     tool.progress_response = None
     tool._output_published = False
     tool.is_extended = False
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
+    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.retry_with_fallback_models",
                         MagicMock(return_value=_awaitable({"code_suggestions": [SUGGESTION]})))
 
     await tool.run()
@@ -221,7 +221,7 @@ async def test_improve_still_publishes_to_the_provider(emitted, monkeypatch):
     tool.progress_response = None
     tool._output_published = False
     tool.is_extended = False
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
+    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.retry_with_fallback_models",
                         MagicMock(return_value=_awaitable({"code_suggestions": [SUGGESTION]})))
 
     await tool.run()
@@ -240,7 +240,7 @@ async def test_improve_external_output_reports_partial_suggestion_coverage(emitt
     tool.remaining_files_list = ["omitted.py"]
     tool.failed_chunk_count = 1
     tool.total_chunk_count = 2
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
+    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.retry_with_fallback_models",
                         MagicMock(return_value=_awaitable({"code_suggestions": [SUGGESTION]})))
 
     await tool.run()
@@ -261,7 +261,7 @@ async def test_improve_external_output_reports_no_suggestions_and_omitted_files(
     tool.pr_url = "https://github.com/org/repo/pull/1"
     tool.progress_response = None
     tool.remaining_files_list = ["omitted.py"]
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
+    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.retry_with_fallback_models",
                         MagicMock(return_value=_awaitable({"code_suggestions": []})))
 
     await tool.run()
@@ -283,7 +283,7 @@ async def test_improve_external_output_does_not_report_filtered_suggestions(emit
     tool.progress = "Preparing suggestions..."
     tool.progress_response = None
     tool.remaining_files_list = ["omitted.py"]
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
+    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.retry_with_fallback_models",
                         MagicMock(return_value=_awaitable({"code_suggestions": [SUGGESTION]})))
 
     await tool.run()

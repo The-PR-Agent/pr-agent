@@ -8,8 +8,8 @@ import pytest
 from pr_agent.algo import deterministic_risk as dr
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _KEYS = (
@@ -486,7 +486,7 @@ def test_reviewer_drops_model_supplied_risk_checks_row(risk_settings):
     reviewer.review_chunk_count = 1
     reviewer.review_failed_chunk_count = 0
 
-    with patch("pr_agent.tools.pr_reviewer.github_action_output"):
+    with patch("pr_agent.commands.pr_reviewer.github_action_output"):
         markdown = reviewer._prepare_pr_review()
 
     # The clean git diff had no files, so build_risk_checks was None;

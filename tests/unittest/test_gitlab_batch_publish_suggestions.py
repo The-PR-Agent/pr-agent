@@ -9,8 +9,8 @@ from starlette_context import request_cycle_context
 
 import pr_agent.git_providers as providers
 from pr_agent.algo import inline_comment_dedup as dedup
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
 
 class _FakeDiff:

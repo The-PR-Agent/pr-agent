@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from pr_agent.tools import pr_help_message
-from pr_agent.tools.pr_help_message import HELP_DOCS_UNAVAILABLE_MESSAGE, PRHelpMessage
+from pr_agent.commands import pr_help_message
+from pr_agent.commands.pr_help_message import HELP_DOCS_UNAVAILABLE_MESSAGE, PRHelpMessage
 
 
 def _write_document(root: Path, relative_path: str, content: str) -> Path:
@@ -53,7 +53,7 @@ def test_packaged_help_docs_are_filtered_and_priority_sorted(tmp_path, monkeypat
 def test_source_checkout_is_used_when_packaged_docs_are_absent(tmp_path, monkeypatch):
     package_root = tmp_path / "installed" / "pr_agent"
     package_root.mkdir(parents=True)
-    source_module = tmp_path / "checkout" / "pr_agent" / "tools" / "pr_help_message.py"
+    source_module = tmp_path / "checkout" / "pr_agent" / "commands" / "pr_help_message.py"
     _write_document(tmp_path / "checkout" / "docs" / "docs", "tools/review.md", "source checkout")
     monkeypatch.setattr(pr_help_message, "package_files", lambda _package: package_root)
     monkeypatch.setattr(pr_help_message, "__file__", str(source_module))
@@ -66,7 +66,7 @@ def test_source_checkout_is_used_when_packaged_docs_are_absent(tmp_path, monkeyp
 
 
 def test_source_fallback_preserves_packaged_resource_traceback(tmp_path, monkeypatch):
-    source_module = tmp_path / "checkout" / "pr_agent" / "tools" / "pr_help_message.py"
+    source_module = tmp_path / "checkout" / "pr_agent" / "commands" / "pr_help_message.py"
     source_docs = tmp_path / "checkout" / "docs" / "docs"
     _write_document(source_docs, "tools/review.md", "source checkout")
     logger = Mock()
@@ -167,7 +167,7 @@ async def test_missing_corpus_fails_before_model_attempt(tmp_path, monkeypatch):
     monkeypatch.setattr(
         pr_help_message,
         "__file__",
-        str(tmp_path / "checkout" / "pr_agent" / "tools" / "pr_help_message.py"),
+        str(tmp_path / "checkout" / "pr_agent" / "commands" / "pr_help_message.py"),
     )
     monkeypatch.setattr(pr_help_message, "retry_with_fallback_models", retry)
     monkeypatch.setattr(pr_help_message, "get_logger", lambda: logger)
@@ -201,7 +201,7 @@ async def test_missing_corpus_fails_before_model_attempt(tmp_path, monkeypatch):
 async def test_source_fallback_failure_notifies_before_model_attempt(tmp_path, monkeypatch, failure_method):
     package_root = tmp_path / "installed" / "pr_agent"
     package_root.mkdir(parents=True)
-    source_module = tmp_path / "checkout" / "pr_agent" / "tools" / "pr_help_message.py"
+    source_module = tmp_path / "checkout" / "pr_agent" / "commands" / "pr_help_message.py"
     source_error = OSError("broken source checkout")
     retry = AsyncMock()
     logger = Mock()

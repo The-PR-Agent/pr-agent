@@ -5,13 +5,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from pr_agent.commands import pr_help_message as pr_help_message_module
+from pr_agent.commands.pr_help_message import PRHelpMessage
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.tools import pr_help_message as pr_help_message_module
-from pr_agent.tools.pr_help_message import PRHelpMessage
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 INTERACTIVE_MARKER = "Trigger Interactively"
@@ -80,7 +80,7 @@ def build_question_tool(tmp_path, monkeypatch, handler):
     review_doc.parent.mkdir(parents=True)
     review_doc.write_text("# Automatic review\n\nEnable automatic review in the repository settings.", encoding="utf-8")
 
-    source_path = package_root / "pr_agent" / "tools" / "pr_help_message.py"
+    source_path = package_root / "pr_agent" / "commands" / "pr_help_message.py"
     monkeypatch.setattr(pr_help_message_module, "Path", lambda _: source_path)
 
     tool = PRHelpMessage.__new__(PRHelpMessage)

@@ -4,7 +4,7 @@ import warnings
 
 from pydantic.warnings import PydanticDeprecatedSince20
 
-from pr_agent.tools.pr_similar_issue import Corpus, IssueLevel, Metadata, Record
+from pr_agent.commands.pr_similar_issue import Corpus, IssueLevel, Metadata, Record
 
 
 def test_metadata_config_uses_configdict_without_deprecation_warning():
@@ -12,7 +12,7 @@ def test_metadata_config_uses_configdict_without_deprecation_warning():
         "import warnings\n"
         "from pydantic.warnings import PydanticDeprecatedSince20\n"
         "warnings.simplefilter('error', PydanticDeprecatedSince20)\n"
-        "from pr_agent.tools.pr_similar_issue import Metadata\n"
+        "from pr_agent.commands.pr_similar_issue import Metadata\n"
     )
     subprocess.run(
         [sys.executable, "-c", code],

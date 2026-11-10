@@ -2,7 +2,7 @@
 
 from jinja2 import Environment, StrictUndefined, select_autoescape
 
-import pr_agent.tools.pr_questions as pr_questions
+import pr_agent.commands.pr_questions as pr_questions
 from pr_agent.config_loader import get_settings
 from tests.unittest.test_pr_questions_skills import _build_pr_questions
 

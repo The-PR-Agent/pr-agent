@@ -20,10 +20,10 @@ from pr_agent.algo.run_output import append_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import ModelType, decode_user_text_args
+from pr_agent.commands.pr_questions import _sanitize_slash_commands
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider_for_tool
 from pr_agent.log import get_logger
-from pr_agent.tools.pr_questions import _sanitize_slash_commands
 
 
 class PR_LineQuestions:

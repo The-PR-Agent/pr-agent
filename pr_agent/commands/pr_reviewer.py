@@ -74,6 +74,12 @@ from pr_agent.algo.utils import (
     is_value_no,
     load_yaml,
 )
+from pr_agent.commands.pr_code_suggestions import _markdown_code_span
+from pr_agent.commands.progress_comment import ChunkProgressReporter
+from pr_agent.commands.ticket_pr_compliance_check import (
+    extract_and_cache_pr_tickets,
+    fit_related_tickets_to_prompt_budget,
+)
 from pr_agent.config_loader import get_bot_display_name, get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import (
@@ -86,12 +92,6 @@ from pr_agent.git_providers.git_provider import (
 )
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
-from pr_agent.tools.pr_code_suggestions import _markdown_code_span
-from pr_agent.tools.progress_comment import ChunkProgressReporter
-from pr_agent.tools.ticket_pr_compliance_check import (
-    extract_and_cache_pr_tickets,
-    fit_related_tickets_to_prompt_budget,
-)
 
 MAX_REVIEW_COVERAGE_FILES = 50
 

@@ -77,7 +77,7 @@ async def test_gitea_review_rejects_incomplete_real_provider_inventory(monkeypat
     """Verify a failed SDK files page aborts the real /review route before model use."""
     from giteapy.rest import ApiException
 
-    import pr_agent.tools.pr_reviewer as reviewer_module
+    import pr_agent.commands.pr_reviewer as reviewer_module
 
     settings = Mock()
     settings.get.side_effect = lambda key, default=None: {

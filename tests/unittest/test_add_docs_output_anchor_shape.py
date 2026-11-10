@@ -4,7 +4,7 @@ import pytest
 import yaml
 
 from pr_agent.algo.pr_processing import FallbackEligibleError
-from pr_agent.tools.pr_add_docs import PRAddDocs
+from pr_agent.commands.pr_add_docs import PRAddDocs
 
 
 @pytest.mark.parametrize("line", [True, False, 1.9, 0, -1])

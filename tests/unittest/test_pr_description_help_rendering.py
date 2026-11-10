@@ -4,11 +4,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from pr_agent.commands import pr_description as pr_description_module
+from pr_agent.commands.pr_description import PRDescription
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.tools import pr_description as pr_description_module
-from pr_agent.tools.pr_description import PRDescription
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _TRACKED_SETTINGS = (

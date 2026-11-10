@@ -9,13 +9,13 @@ import pytest
 import yaml
 
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_code_suggestions import (
+from pr_agent.commands.pr_code_suggestions import (
     _REFLECTION_FAILURE_SCORE_WHY,
     PRCodeSuggestions,
     apply_reflection_failure_score,
     filter_suggestions_by_score_threshold,
 )
+from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import _remove_key, restore_settings, snapshot_settings
 
 _REFLECTION_FEEDBACK = {"code_suggestions": [{
@@ -55,7 +55,7 @@ class _Settings:
 
 
 def _install(monkeypatch, stub):
-    for module in ("pr_agent.tools.pr_code_suggestions",
+    for module in ("pr_agent.commands.pr_code_suggestions",
                    "pr_agent.algo.pr_processing",
                    "pr_agent.algo.utils"):
         monkeypatch.setattr(f"{module}.get_settings", lambda: stub)

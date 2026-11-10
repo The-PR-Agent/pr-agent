@@ -9,14 +9,14 @@ from pr_agent.algo.comment_identity import PRCodeSuggestionsHeader, PRCodeSugges
 from pr_agent.algo.review_finding_state import ParsedReviewState, reconcile_review_findings
 from pr_agent.algo.run_details import command_failed
 from pr_agent.algo.types import FilePatchInfo
+from pr_agent.commands import pr_code_suggestions as pr_code_suggestions_module
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import (
     IncompleteBitbucketPullRequestFilesError,
     IncompletePullRequestFilesError,
 )
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
-from pr_agent.tools import pr_code_suggestions as pr_code_suggestions_module
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _TRACKED_SETTINGS = (

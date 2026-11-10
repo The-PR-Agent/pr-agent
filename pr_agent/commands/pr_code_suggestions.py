@@ -67,6 +67,13 @@ from pr_agent.algo.utils import (
     load_yaml,
     replace_code_tags,
 )
+from pr_agent.commands.pr_description import insert_br_after_x_chars
+from pr_agent.commands.progress_comment import (
+    ChunkProgressReporter,
+    build_progress_comment,
+    edit_comment_safely,
+    supports_editable_progress_comment,
+)
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import (
@@ -77,13 +84,6 @@ from pr_agent.git_providers.git_provider import (
 )
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
-from pr_agent.tools.pr_description import insert_br_after_x_chars
-from pr_agent.tools.progress_comment import (
-    ChunkProgressReporter,
-    build_progress_comment,
-    edit_comment_safely,
-    supports_editable_progress_comment,
-)
 
 # TODO: in 1.0, remove the deprecated "commitable_code_suggestions" fallback in
 # get_committable_code_suggestions() below, its entry in

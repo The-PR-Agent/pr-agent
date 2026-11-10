@@ -24,17 +24,17 @@ Facts, per spelling:
 
 from dataclasses import dataclass
 
-from pr_agent.tools.pr_add_docs import PRAddDocs
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from pr_agent.tools.pr_config import PRConfig
-from pr_agent.tools.pr_description import PRDescription
-from pr_agent.tools.pr_generate_labels import PRGenerateLabels
-from pr_agent.tools.pr_help_message import PRHelpMessage
-from pr_agent.tools.pr_line_questions import PR_LineQuestions
-from pr_agent.tools.pr_questions import PRQuestions
-from pr_agent.tools.pr_reviewer import PRReviewer
-from pr_agent.tools.pr_similar_issue import PRSimilarIssue
-from pr_agent.tools.pr_update_changelog import PRUpdateChangelog
+from pr_agent.commands.pr_add_docs import PRAddDocs
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.commands.pr_config import PRConfig
+from pr_agent.commands.pr_description import PRDescription
+from pr_agent.commands.pr_generate_labels import PRGenerateLabels
+from pr_agent.commands.pr_help_message import PRHelpMessage
+from pr_agent.commands.pr_line_questions import PR_LineQuestions
+from pr_agent.commands.pr_questions import PRQuestions
+from pr_agent.commands.pr_reviewer import PRReviewer
+from pr_agent.commands.pr_similar_issue import PRSimilarIssue
+from pr_agent.commands.pr_update_changelog import PRUpdateChangelog
 
 
 @dataclass(frozen=True)

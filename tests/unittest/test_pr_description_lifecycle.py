@@ -6,13 +6,13 @@ import pytest
 
 from pr_agent.algo.comment_identity import PRDescriptionIdentity
 from pr_agent.algo.run_details import command_failed
+from pr_agent.commands import pr_description as pr_description_module
+from pr_agent.commands.pr_description import PRDescription
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import (
     IncompleteBitbucketPullRequestFilesError,
     IncompletePullRequestFilesError,
 )
-from pr_agent.tools import pr_description as pr_description_module
-from pr_agent.tools.pr_description import PRDescription
 from tests.unittest._settings_helpers import (
     restore_settings,
     snapshot_settings,

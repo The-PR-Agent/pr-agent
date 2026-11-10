@@ -11,14 +11,14 @@ from starlette_context import request_cycle_context
 
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
-from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.github_provider import GithubProvider
-from pr_agent.tools.pr_questions import (
+from pr_agent.commands.pr_questions import (
     FILE_QUESTION_BUDGET_NOTE,
     NO_ANALYZABLE_FILE_NOTE,
     NO_ANALYZABLE_FILES_NOTE,
     PRQuestions,
 )
+from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.github_provider import GithubProvider
 from tests.unittest._run_details_command_helpers import (
     BACKUP,
     PRIMARY,
@@ -60,9 +60,9 @@ def _make_ask(monkeypatch, remaining_files):
         # PR), or the files are still there but did not fit the budget.
         return ("", list(remaining_files)) if return_remaining_files else ""
 
-    monkeypatch.setattr("pr_agent.tools.pr_questions.get_pr_diff", fake_get_pr_diff)
+    monkeypatch.setattr("pr_agent.commands.pr_questions.get_pr_diff", fake_get_pr_diff)
     monkeypatch.setattr(
-        "pr_agent.tools.pr_questions.AttemptTokenBudget.for_prompt_attempt",
+        "pr_agent.commands.pr_questions.AttemptTokenBudget.for_prompt_attempt",
         lambda *_args, **_kwargs: MagicMock(),
     )
     init_run_details()
@@ -134,7 +134,7 @@ def file_question(monkeypatch):
         "", "", other_patch, "src/other.py", edit_type=EDIT_TYPE.MODIFIED,
     )]
     handler = SimpleNamespace(chat_completion=AsyncMock(return_value=("The target changed.", "stop")))
-    monkeypatch.setattr("pr_agent.tools.pr_questions.get_git_provider_for_tool", lambda _url: provider)
+    monkeypatch.setattr("pr_agent.commands.pr_questions.get_git_provider_for_tool", lambda _url: provider)
     with request_cycle_context({
         "file_question_path": "src/target.py",
         "file_question_comment_id": 123,
@@ -266,7 +266,7 @@ async def test_file_question_sends_only_the_complete_target_patch(file_question,
 async def test_file_question_reports_unavailable_target_without_a_model_call(file_question, empty_patch, monkeypatch):
     tool = file_question
     sink = AsyncMock()
-    monkeypatch.setattr("pr_agent.tools.pr_questions.push_outputs_async", sink)
+    monkeypatch.setattr("pr_agent.commands.pr_questions.push_outputs_async", sink)
     if empty_patch:
         tool.git_provider.get_diff_files.return_value.append(FilePatchInfo("", "", "", "src/target.py"))
 
@@ -285,7 +285,7 @@ async def test_file_question_reports_an_oversized_target_after_all_models_fail(
 ):
     tool = file_question
     sink = AsyncMock()
-    monkeypatch.setattr("pr_agent.tools.pr_questions.push_outputs_async", sink)
+    monkeypatch.setattr("pr_agent.commands.pr_questions.push_outputs_async", sink)
     get_settings().set("config.fallback_models", ["gpt-4o-mini"])
     get_settings().set("config.publish_output", publish_output)
     patch = "@@ -0,0 +1,4000 @@\n" + "+target = 2\n" * 4000

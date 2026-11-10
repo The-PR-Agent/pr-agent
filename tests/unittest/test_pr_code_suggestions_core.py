@@ -7,7 +7,7 @@ import yaml
 
 import pr_agent.algo.pr_processing as pr_processing
 import pr_agent.algo.token_budget as token_budget_module
-import pr_agent.tools.pr_code_suggestions as pr_code_suggestions_module
+import pr_agent.commands.pr_code_suggestions as pr_code_suggestions_module
 from pr_agent.algo.comment_identity import (
     PRCodeSuggestionsHeader,
     PRCodeSuggestionsIdentity,
@@ -20,10 +20,10 @@ from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import load_large_diff
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
@@ -1133,8 +1133,8 @@ async def test_run_appends_partial_suggestions_coverage_to_the_summary():
     try:
         get_settings().set("config.publish_output", False)
         get_settings().set("pr_code_suggestions.enable_suggestions_coverage_footer", True)
-        with (patch("pr_agent.tools.pr_code_suggestions.init_run_details"),
-              patch("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
+        with (patch("pr_agent.commands.pr_code_suggestions.init_run_details"),
+              patch("pr_agent.commands.pr_code_suggestions.retry_with_fallback_models",
                     AsyncMock(return_value={"code_suggestions": [_valid_suggestion()]}))):
             await tool.run()
 
@@ -2193,8 +2193,8 @@ async def test_run_tracks_non_gfm_progress_comment_when_quiet(publish_output_no_
     tool.prepare_prediction_main = AsyncMock()
 
     try:
-        with (patch("pr_agent.tools.pr_code_suggestions.init_run_details"),
-              patch("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
+        with (patch("pr_agent.commands.pr_code_suggestions.init_run_details"),
+              patch("pr_agent.commands.pr_code_suggestions.retry_with_fallback_models",
                     AsyncMock(return_value={"code_suggestions": []}))):
             await tool.run()
     finally:

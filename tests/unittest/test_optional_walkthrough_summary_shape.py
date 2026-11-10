@@ -1,6 +1,6 @@
 import pytest
 
-from pr_agent.tools.pr_description import PRDescription
+from pr_agent.commands.pr_description import PRDescription
 
 
 @pytest.mark.parametrize("summary", [42, {"unexpected": "mapping"}, ["unexpected list"]])

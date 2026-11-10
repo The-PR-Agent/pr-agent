@@ -3,7 +3,7 @@ import copy
 
 import pytest
 
-import pr_agent.tools.pr_code_suggestions as pcs
+import pr_agent.commands.pr_code_suggestions as pcs
 from pr_agent.config_loader import get_settings
 
 

@@ -5,12 +5,12 @@ import pytest
 
 from pr_agent.algo.review_json_output import review_json_output_path
 from pr_agent.algo.run_details import command_failed, init_run_details
+from pr_agent.commands.pr_generate_labels import PRGenerateLabels
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import (
     IncompleteBitbucketPullRequestFilesError,
     IncompletePullRequestFilesError,
 )
-from pr_agent.tools.pr_generate_labels import PRGenerateLabels
 
 
 def _tool(provider):
@@ -37,8 +37,8 @@ def _provider(supports_labels):
 
 
 @pytest.mark.asyncio
-@patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
-@patch("pr_agent.tools.pr_generate_labels.get_settings")
+@patch("pr_agent.commands.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
+@patch("pr_agent.commands.pr_generate_labels.get_settings")
 async def test_labels_are_published_as_a_comment_when_the_provider_has_no_label_api(
         mock_get_settings, _mock_retry):
     """Regression for #2259: ``get_pr_labels`` was called before the ``get_labels`` capability
@@ -66,8 +66,8 @@ async def test_labels_are_published_as_a_comment_when_the_provider_has_no_label_
     ],
     ids=["user-added-label", "user-removed-label"],
 )
-@patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
-@patch("pr_agent.tools.pr_generate_labels.get_settings")
+@patch("pr_agent.commands.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
+@patch("pr_agent.commands.pr_generate_labels.get_settings")
 async def test_user_label_changes_during_prediction_are_preserved(
         mock_get_settings, mock_retry, initial_labels, updated_labels):
     mock_get_settings.return_value.config.publish_output = True
@@ -82,7 +82,7 @@ async def test_user_label_changes_during_prediction_are_preserved(
     provider.get_pr_labels.side_effect = lambda update=False: current_labels if update else initial_labels
     tool = _tool(provider)
 
-    with patch("pr_agent.tools.pr_generate_labels.get_user_labels", side_effect=lambda labels: labels):
+    with patch("pr_agent.commands.pr_generate_labels.get_user_labels", side_effect=lambda labels: labels):
         await tool.run()
 
     provider.publish_labels.assert_called_once_with(["Bug fix", *updated_labels])
@@ -90,8 +90,8 @@ async def test_user_label_changes_during_prediction_are_preserved(
 
 
 @pytest.mark.asyncio
-@patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
-@patch("pr_agent.tools.pr_generate_labels.get_settings")
+@patch("pr_agent.commands.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
+@patch("pr_agent.commands.pr_generate_labels.get_settings")
 async def test_json_contains_generated_labels_without_existing_user_labels(
         mock_get_settings, _mock_retry, tmp_path):
     mock_get_settings.return_value.config.publish_output = True
@@ -103,7 +103,7 @@ async def test_json_contains_generated_labels_without_existing_user_labels(
     output = tmp_path / "labels.json"
     token = review_json_output_path.set(str(output))
     try:
-        with patch("pr_agent.tools.pr_generate_labels.get_user_labels", return_value=["triaged"]):
+        with patch("pr_agent.commands.pr_generate_labels.get_user_labels", return_value=["triaged"]):
             await tool.run()
     finally:
         review_json_output_path.reset(token)
@@ -113,8 +113,8 @@ async def test_json_contains_generated_labels_without_existing_user_labels(
 
 
 @pytest.mark.asyncio
-@patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
-@patch("pr_agent.tools.pr_generate_labels.get_settings")
+@patch("pr_agent.commands.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
+@patch("pr_agent.commands.pr_generate_labels.get_settings")
 async def test_json_writes_empty_labels_when_generated_values_are_rejected(
         mock_get_settings, _mock_retry, tmp_path):
     mock_get_settings.return_value.config.publish_output = True
@@ -136,8 +136,8 @@ async def test_json_writes_empty_labels_when_generated_values_are_rejected(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["read", "write"])
-@patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
-@patch("pr_agent.tools.pr_generate_labels.get_settings")
+@patch("pr_agent.commands.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
+@patch("pr_agent.commands.pr_generate_labels.get_settings")
 async def test_json_is_available_when_provider_label_publication_fails(
         mock_get_settings, _mock_retry, failure, tmp_path):
     mock_get_settings.return_value.config.publish_output = True
@@ -161,8 +161,8 @@ async def test_json_is_available_when_provider_label_publication_fails(
 
 
 @pytest.mark.asyncio
-@patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
-@patch("pr_agent.tools.pr_generate_labels.get_settings")
+@patch("pr_agent.commands.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
+@patch("pr_agent.commands.pr_generate_labels.get_settings")
 async def test_json_write_failure_does_not_publish_permanent_labels(
         mock_get_settings, _mock_retry, tmp_path):
     mock_get_settings.return_value.config.publish_output = True
@@ -185,8 +185,8 @@ async def test_json_write_failure_does_not_publish_permanent_labels(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["read", "write"])
 @pytest.mark.parametrize("propagate_errors", [False, True])
-@patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
-@patch("pr_agent.tools.pr_generate_labels.get_settings")
+@patch("pr_agent.commands.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
+@patch("pr_agent.commands.pr_generate_labels.get_settings")
 async def test_primary_labels_failure_records_status_and_cleans_up(
         mock_get_settings, _mock_retry, failure, propagate_errors):
     mock_get_settings.return_value.config.publish_output = True
@@ -215,8 +215,8 @@ async def test_primary_labels_failure_records_status_and_cleans_up(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("acknowledgement", [True, None, 0])
-@patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
-@patch("pr_agent.tools.pr_generate_labels.get_settings")
+@patch("pr_agent.commands.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
+@patch("pr_agent.commands.pr_generate_labels.get_settings")
 async def test_only_exact_false_label_acknowledgement_records_failure(
         mock_get_settings, _mock_retry, acknowledgement):
     mock_get_settings.return_value.config.publish_output = True
@@ -251,7 +251,7 @@ async def test_incomplete_provider_diff_is_re_raised_after_temporary_comment_cle
     }
     settings.config.publish_output = True
     settings.set("config.propagate_tool_errors", False)
-    monkeypatch.setattr("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", fail_with_incomplete_diff)
+    monkeypatch.setattr("pr_agent.commands.pr_generate_labels.retry_with_fallback_models", fail_with_incomplete_diff)
     try:
         with pytest.raises(incomplete_error_class):
             await tool.run()
@@ -272,14 +272,14 @@ async def test_run_skips_without_recording_failure_when_all_changed_files_are_fi
     tool.ai_handler = MagicMock()
     tool.vars = {"diff": ""}
     tool._get_prediction = AsyncMock()
-    monkeypatch.setattr("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", prepare_once)
-    monkeypatch.setattr("pr_agent.tools.pr_generate_labels.set_custom_labels", lambda *_args: None)
+    monkeypatch.setattr("pr_agent.commands.pr_generate_labels.retry_with_fallback_models", prepare_once)
+    monkeypatch.setattr("pr_agent.commands.pr_generate_labels.set_custom_labels", lambda *_args: None)
     monkeypatch.setattr(
-        "pr_agent.tools.pr_generate_labels.AttemptTokenBudget.for_prompt_attempt",
+        "pr_agent.commands.pr_generate_labels.AttemptTokenBudget.for_prompt_attempt",
         lambda *_args, **_kwargs: MagicMock(),
     )
     # A lockfile-only or asset-only PR has no diff left after file-type filtering.
-    monkeypatch.setattr("pr_agent.tools.pr_generate_labels.get_pr_diff", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr("pr_agent.commands.pr_generate_labels.get_pr_diff", lambda *_args, **_kwargs: "")
     settings = get_settings()
     previous = {
         "publish_output": settings.config.publish_output,

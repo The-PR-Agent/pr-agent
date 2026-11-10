@@ -18,6 +18,7 @@ from pr_agent.algo.comment_identity import (
     PRReviewIdentity,
 )
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.config_loader import global_settings
 from pr_agent.git_providers import BitbucketServerProvider
 from pr_agent.git_providers.bitbucket_provider import (
@@ -27,7 +28,6 @@ from pr_agent.git_providers.bitbucket_provider import (
 )
 from pr_agent.git_providers.git_provider import FileContentSnapshot, IncompleteBitbucketPullRequestFilesError
 from pr_agent.git_providers.request_timeout import DEFAULT_HTTP_REQUEST_TIMEOUT
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
 
 def _added_file(filename="src/example.py", lines=("a = 1", "b = 2", "c = 3")):

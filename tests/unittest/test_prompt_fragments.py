@@ -7,8 +7,8 @@ from jinja2 import Environment, meta, nodes
 from jinja2.exceptions import SecurityError
 
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format, render_skills_prefix
+from pr_agent.commands import pr_add_docs, pr_code_suggestions, pr_reviewer
 from pr_agent.config_loader import get_settings
-from pr_agent.tools import pr_add_docs, pr_code_suggestions, pr_reviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 

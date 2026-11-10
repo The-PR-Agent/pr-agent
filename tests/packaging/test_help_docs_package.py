@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
 
 from packaging.specifiers import SpecifierSet
 
-from pr_agent.tools.pr_help_message import HELP_DOCS_SUFFIXES, _is_help_doc_included
+from pr_agent.commands.pr_help_message import HELP_DOCS_SUFFIXES, _is_help_doc_included
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 RESOURCE_PREFIX = "pr_agent/_help_docs/"
@@ -43,8 +43,8 @@ if editable_target:
     site.addsitedir(editable_target)
 sys.path.append(os.environ["DEPENDENCY_PATH"])
 
-from pr_agent.tools import pr_help_message
-from pr_agent.tools.pr_help_message import PRHelpMessage
+from pr_agent.commands import pr_help_message
+from pr_agent.commands.pr_help_message import PRHelpMessage
 
 calls = []
 

@@ -11,8 +11,8 @@ import yaml
 
 from pr_agent.algo.pr_processing import FallbackEligibleError
 from pr_agent.algo.types import FilePatchInfo
+from pr_agent.commands.pr_code_suggestions import _REFLECTION_FAILURE_SCORE_WHY, PRCodeSuggestions
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_code_suggestions import _REFLECTION_FAILURE_SCORE_WHY, PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 TRUNCATION_SETTINGS = (

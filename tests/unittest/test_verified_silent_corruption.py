@@ -21,15 +21,15 @@ from github import GithubException
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import load_large_diff
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.commands.pr_description import PRDescription
+from pr_agent.commands.pr_generate_labels import PRGenerateLabels
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
 from pr_agent.log import get_logger
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from pr_agent.tools.pr_description import PRDescription
-from pr_agent.tools.pr_generate_labels import PRGenerateLabels
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 # ---------------------------------------------------------------------------
 # 1. Azure DevOps must not invent a whole file addition or deletion
@@ -280,7 +280,7 @@ async def test_generate_labels_skips_publishing_when_the_read_failed():
                      "enable_custom_labels": False, "custom_labels_class": ""}
         tool._get_prediction = AsyncMock(return_value="labels:\n- bug fix\n")
 
-        with patch("pr_agent.tools.pr_generate_labels.get_pr_diff", return_value="diff"):
+        with patch("pr_agent.commands.pr_generate_labels.get_pr_diff", return_value="diff"):
             await tool.run()
     finally:
         settings.config.publish_output = original
@@ -332,7 +332,7 @@ async def test_describe_survives_an_unreadable_label_set(monkeypatch):
     unknown set raised TypeError and the whole /describe run failed after the model had
     already produced a description.
     """
-    from pr_agent.tools import pr_description as pr_description_module
+    from pr_agent.commands import pr_description as pr_description_module
 
     settings = get_settings(use_context=False)
     tracked = {

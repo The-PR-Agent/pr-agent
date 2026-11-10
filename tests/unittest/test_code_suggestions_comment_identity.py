@@ -9,9 +9,9 @@ from pr_agent.algo.comment_identity import (
     comment_matches_identity,
     format_pr_code_suggestions_header,
 )
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 

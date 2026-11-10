@@ -8,7 +8,7 @@ collector still matched `.md` only.
 
 from pathlib import Path, PurePosixPath
 
-from pr_agent.tools.pr_help_message import (
+from pr_agent.commands.pr_help_message import (
     HELP_DOCS_EXCLUDED_DIRECTORIES,
     HELP_DOCS_EXCLUDED_FILENAMES,
     HELP_DOCS_PRIORITY_PATHS,

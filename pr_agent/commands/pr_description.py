@@ -35,16 +35,16 @@ from pr_agent.algo.utils import (
     load_yaml,
     set_custom_labels,
 )
+from pr_agent.commands.progress_comment import ChunkProgressReporter
+from pr_agent.commands.ticket_pr_compliance_check import (
+    extract_and_cache_pr_tickets,
+    fit_related_tickets_to_prompt_budget,
+)
 from pr_agent.config_loader import get_bot_display_name, get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError, get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
-from pr_agent.tools.progress_comment import ChunkProgressReporter
-from pr_agent.tools.ticket_pr_compliance_check import (
-    extract_and_cache_pr_tickets,
-    fit_related_tickets_to_prompt_budget,
-)
 
 MAX_DESCRIPTION_COVERAGE_FILES = 50
 DESCRIBE_PROGRESS_COMMENT = "Preparing PR description..."

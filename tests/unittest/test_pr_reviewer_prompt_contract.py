@@ -21,13 +21,13 @@ from jinja2 import Environment, StrictUndefined, meta, select_autoescape
 from jinja2.sandbox import SandboxedEnvironment
 
 from pr_agent.algo.artifacts import prompt_boundary_markers
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 
 def _build_reviewer(monkeypatch):
     """Run the real ``PRReviewer.__init__`` so ``self.vars`` is the shipped dict."""
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     provider = MagicMock()
     provider.is_supported.return_value = True
@@ -183,7 +183,7 @@ _PLAN_ARTIFACT = {
     ("true", _PLAN_ARTIFACT, True),
 ])
 def test_artifact_findings_prompt_needs_the_setting_and_an_artifact(monkeypatch, setting, artifact, enabled):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     monkeypatch.setattr(pr_reviewer_module, "get_artifact_context", lambda tool_name: artifact)
     settings = get_settings()
@@ -355,7 +355,7 @@ def _assert_fenced(user, variables, before, after):
 
 
 def _build_suggestions(monkeypatch, commit_messages, decouple_hunks, args=None, supports_incremental=False):
-    from pr_agent.tools import pr_code_suggestions as pr_code_suggestions_module
+    from pr_agent.commands import pr_code_suggestions as pr_code_suggestions_module
 
     provider = MagicMock()
     provider.pr.title = "Title sentinel"
@@ -412,7 +412,7 @@ def test_review_commit_markers_are_unpredictable(monkeypatch):
 
 @pytest.mark.parametrize("args,expected", [(None, "1. Fix the parser"), (["-i"], "")])
 def test_incremental_review_leaves_out_the_full_commit_list(monkeypatch, args, expected):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     provider = MagicMock()
     provider.get_languages.return_value = {}

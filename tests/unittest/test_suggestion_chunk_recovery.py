@@ -9,7 +9,7 @@ import pytest
 import yaml
 from starlette_context import request_cycle_context
 
-import pr_agent.tools.pr_code_suggestions as module
+import pr_agent.commands.pr_code_suggestions as module
 from pr_agent.algo import token_budget as token_budget_module
 from pr_agent.algo.pr_processing import PackedPRDiffs, retry_with_fallback_models
 from pr_agent.algo.run_details import get_run_details, init_run_details

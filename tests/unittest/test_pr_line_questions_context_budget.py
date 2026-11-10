@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from litellm import token_counter
 
-import pr_agent.tools.pr_line_questions as plq
+import pr_agent.commands.pr_line_questions as plq
 from pr_agent.algo.token_budget import MESSAGE_FRAMING_TOKEN_ALLOWANCE, REPLY_FRAMING_TOKEN_ALLOWANCE
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.config_loader import get_settings

@@ -2,9 +2,9 @@
 
 import pytest
 
+from pr_agent.commands import pr_help_message
+from pr_agent.commands.pr_help_message import PRHelpMessage
 from pr_agent.config_loader import get_settings
-from pr_agent.tools import pr_help_message
-from pr_agent.tools.pr_help_message import PRHelpMessage
 from tests.unittest._run_details_command_helpers import (
     BACKUP,
     PRIMARY,

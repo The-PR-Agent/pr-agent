@@ -31,9 +31,9 @@ from jinja2 import Environment, StrictUndefined, select_autoescape
 from pr_agent.algo.comment_identity import PRDescriptionHeader
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import process_description
+from pr_agent.commands.pr_description import PRDescription, sanitize_diagram
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.tools.pr_description import PRDescription, sanitize_diagram
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 KEYS_FIX = ["filename:", "language:", "changes_summary:", "changes_title:", "description:", "title:"]
@@ -104,8 +104,8 @@ class TestPrepareData:
             ),
         ],
     )
-    @patch("pr_agent.tools.pr_description.get_logger")
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_logger")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_invalid_output_warns_once_without_changing_parsed_data(
         self, mock_get_settings, mock_get_logger, prediction, field, value,
     ):
@@ -120,8 +120,8 @@ class TestPrepareData:
             artifact={"field": field, "value": value},
         )
 
-    @patch("pr_agent.tools.pr_description.get_logger")
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_logger")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_valid_output_does_not_warn(self, mock_get_settings, mock_get_logger):
         mock_get_settings.return_value = _settings()
         obj = _make_instance(yaml.dump({
@@ -135,8 +135,8 @@ class TestPrepareData:
         mock_get_logger.return_value.warning.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("pr_agent.tools.pr_description.get_logger")
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_logger")
+    @patch("pr_agent.commands.pr_description.get_settings")
     async def test_extended_description_can_contain_more_than_twenty_files(
         self, mock_get_settings, mock_get_logger,
     ):
@@ -158,8 +158,8 @@ class TestPrepareData:
         assert len(obj.data["pr_files"]) == 21
         mock_get_logger.return_value.warning.assert_not_called()
 
-    @patch("pr_agent.tools.pr_description.get_logger")
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_logger")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_assembled_description_still_checks_files_beyond_twenty(
         self, mock_get_settings, mock_get_logger,
     ):
@@ -179,7 +179,7 @@ class TestPrepareData:
             artifact={"field": "pr_files.20.changes_title", "value": None},
         )
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_keys_are_reordered_in_canonical_sequence(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
         obj = _make_instance(yaml.dump({
@@ -195,7 +195,7 @@ class TestPrepareData:
         # Order matters: title, type, labels, description, pr_files
         assert list(obj.data.keys()) == ["title", "type", "labels", "description", "pr_files"]
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_empty_diagram_key_is_dropped(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
         obj = _make_instance(yaml.dump({
@@ -208,7 +208,7 @@ class TestPrepareData:
 
         assert "changes_diagram" not in obj.data
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_user_description_is_injected_when_enabled(self, mock_get_settings):
         mock_get_settings.return_value = _settings(add_original_user_description=True)
         obj = _make_instance(yaml.dump({"title": "t", "description": "d"}))
@@ -218,7 +218,7 @@ class TestPrepareData:
 
         assert obj.data["User Description"] == "Original body from user"
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_user_description_is_skipped_when_published_as_comment(self, mock_get_settings):
         mock_get_settings.return_value = _settings(
             add_original_user_description=True, publish_description_as_comment=True
@@ -243,7 +243,7 @@ class TestPrepareLabels:
         yield
         restore_settings(snapshot)
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_labels_list_is_returned_stripped(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
         obj = _make_instance()
@@ -252,7 +252,7 @@ class TestPrepareLabels:
 
         assert obj._prepare_labels() == ["bug", "perf"]
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_labels_comma_string_is_split(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
         obj = _make_instance()
@@ -261,7 +261,7 @@ class TestPrepareLabels:
 
         assert obj._prepare_labels() == ["bug", "perf", "docs"]
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_falls_back_to_type_only_when_publish_labels_enabled(self, mock_get_settings):
         mock_get_settings.return_value = _settings(publish_labels=True)
         obj = _make_instance()
@@ -270,7 +270,7 @@ class TestPrepareLabels:
 
         assert obj._prepare_labels() == ["Bug fix", "Refactor"]
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_does_not_fall_back_to_type_when_publish_labels_disabled(self, mock_get_settings):
         mock_get_settings.return_value = _settings(publish_labels=False)
         obj = _make_instance()
@@ -279,7 +279,7 @@ class TestPrepareLabels:
 
         assert obj._prepare_labels() == []
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_labels_minimal_dict_remaps_case(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
         obj = _make_instance()
@@ -302,7 +302,7 @@ class TestPrepareAnswerWithMarkers:
         obj.git_provider.get_pr_head_sha.return_value = "deadbeef"
         return obj
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_html_comment_guard_prevents_type_replacement(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
         body_in = "<!-- pr_agent:type -->\npr_agent:type stays raw"
@@ -314,7 +314,7 @@ class TestPrepareAnswerWithMarkers:
         assert "pr_agent:type stays raw" in body
         assert "Bug fix" not in body
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_plain_summary_marker_is_replaced(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
         obj = self._obj_with_user_description(
@@ -327,7 +327,7 @@ class TestPrepareAnswerWithMarkers:
         assert "Adds caching layer." in body
         assert "pr_agent:summary" not in body
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_summary_marker_is_removed_when_description_disabled(self, mock_get_settings):
         mock_get_settings.return_value = _settings(enable_pr_description=False)
         obj = self._obj_with_user_description(
@@ -340,7 +340,7 @@ class TestPrepareAnswerWithMarkers:
         assert "Adds caching layer." not in body
         assert "pr_agent:summary" not in body
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_html_comment_summary_marker_is_removed_when_description_disabled(self, mock_get_settings):
         mock_get_settings.return_value = _settings(enable_pr_description=False)
         obj = self._obj_with_user_description(
@@ -353,7 +353,7 @@ class TestPrepareAnswerWithMarkers:
         assert "Adds caching layer." not in body
         assert "pr_agent:summary" not in body
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_generated_by_header_prefixes_replacements(self, mock_get_settings):
         mock_get_settings.return_value = _settings(include_generated_by_header=True)
         obj = self._obj_with_user_description(
@@ -367,7 +367,7 @@ class TestPrepareAnswerWithMarkers:
         # Header appears for both replaced markers.
         assert body.count("### 🤖 Generated by PR Agent at deadbeef") == 2
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_generated_header_without_head_sha(self, mock_get_settings):
         mock_get_settings.return_value = _settings(include_generated_by_header=True)
         obj = self._obj_with_user_description(
@@ -380,7 +380,7 @@ class TestPrepareAnswerWithMarkers:
         assert "### 🤖 Generated by PR Agent\n\n" in body
         assert "Generated by PR Agent at" not in body
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_generated_header_uses_configured_bot_display_name(self, mock_get_settings, monkeypatch):
         from pr_agent.config_loader import get_settings as real_get_settings
 
@@ -396,7 +396,7 @@ class TestPrepareAnswerWithMarkers:
         assert "PR Agent" not in body
         assert "PR-Agent" not in body
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_list_type_is_joined_with_comma(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
         obj = self._obj_with_user_description(
@@ -408,7 +408,7 @@ class TestPrepareAnswerWithMarkers:
 
         assert "Bug fix, Refactor" in body
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_diagram_marker_replaces_both_plain_and_html_comment(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
         diagram = "\n```mermaid\ngraph LR\nA --> B\n```"
@@ -426,7 +426,7 @@ class TestPrepareAnswerWithMarkers:
 
     @pytest.mark.parametrize("marker", ["pr_agent:diagram", "<!-- pr_agent:diagram -->"])
     @pytest.mark.parametrize("label", [r"C:\Users\demo", r"\d+", r"literal\ntext"])
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_diagram_marker_preserves_backslashes(self, mock_get_settings, label, marker):
         mock_get_settings.return_value = _settings()
         diagram = sanitize_diagram(f'```mermaid\nflowchart LR\nA["{label}"] --> B\n```')
@@ -439,7 +439,7 @@ class TestPrepareAnswerWithMarkers:
 
         assert body == f"Before\n{diagram}\nAfter"
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_empty_diagram_leaves_marker_unchanged(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
         original_body = "Before\npr_agent:diagram\nAfter"
@@ -452,7 +452,7 @@ class TestPrepareAnswerWithMarkers:
 
         assert body == original_body
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_title_falls_back_when_generate_ai_title_disabled(self, mock_get_settings):
         mock_get_settings.return_value = _settings(generate_ai_title=False)
         obj = self._obj_with_user_description(
@@ -483,7 +483,7 @@ class TestPrepareAnswer:
         obj.git_provider.get_line_link.return_value = ""
         return obj
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_labels_removed_when_provider_supports_get_labels(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
         obj = self._obj({"title": "t", "labels": ["bug"], "description": "d"})
@@ -495,7 +495,7 @@ class TestPrepareAnswer:
         assert "Labels" not in body
         assert "bug" not in body
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_type_section_removed_when_disabled(self, mock_get_settings):
         mock_get_settings.return_value = _settings(enable_pr_type=False)
         obj = self._obj({"title": "t", "type": "Bug fix", "description": "d"})
@@ -505,7 +505,7 @@ class TestPrepareAnswer:
         assert "PR Type" not in body
         assert "Bug fix" not in body
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_description_section_removed_when_disabled(self, mock_get_settings):
         mock_get_settings.return_value = _settings(enable_pr_description=False)
         obj = self._obj({"title": "t", "type": "Bug fix", "description": "AI summary"})
@@ -516,7 +516,7 @@ class TestPrepareAnswer:
         # The other sections are untouched.
         assert "Bug fix" in body
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_diagram_and_walkthrough_survive_a_disabled_description(self, mock_get_settings):
         """#2516: the point of the flag is to keep the diagram and the file walkthrough."""
         mock_get_settings.return_value = _settings(enable_pr_description=False, enable_pr_type=False)
@@ -537,7 +537,7 @@ class TestPrepareAnswer:
         # No section separator is left dangling once the description is gone.
         assert not body.rstrip().endswith("___")
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_description_kept_by_default(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
         obj = self._obj({"title": "t", "description": "AI summary"})
@@ -556,7 +556,7 @@ class TestPrepareAnswer:
         ],
         ids=["missing", "null", "empty", "bullets"],
     )
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_optional_description_preserves_other_sections(
         self, mock_get_settings, description_fields, expected_description,
     ):
@@ -578,7 +578,7 @@ class TestPrepareAnswer:
         else:
             assert body.endswith(f"### **Description**\n{expected_description}\n")
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_description_list_value_is_joined_and_bullets_spaced(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
         obj = self._obj({
@@ -591,7 +591,7 @@ class TestPrepareAnswer:
         # Bullet readability: single newline before "-" becomes double newline.
         assert "Intro\n\n- one\n\n- two" in body
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_diagram_section_uses_header_enum(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
         diagram = "\n```mermaid\ngraph LR\nA --> B\n```"
@@ -602,7 +602,7 @@ class TestPrepareAnswer:
         assert f"### {PRDescriptionHeader.DIAGRAM_WALKTHROUGH.value}" in body
         assert "```mermaid" in body
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_title_uses_vars_title_when_data_has_no_title(self, mock_get_settings):
         mock_get_settings.return_value = _settings(generate_ai_title=False)
         obj = self._obj({"description": "d"})
@@ -626,7 +626,7 @@ class TestProcessPRFilesPrediction:
 
     @pytest.mark.parametrize("description", ["", "Adds a bounded cache."])
     @pytest.mark.parametrize("title", ["Add cache", " ".join(f"word{i}" for i in range(20))])
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_short_title_uses_phrasing_content(self, mock_get_settings, description, title):
         mock_get_settings.return_value = _settings(collapsible_file_list=False)
         obj = self._obj(gfm=True)
@@ -648,7 +648,7 @@ class TestProcessPRFilesPrediction:
     @pytest.mark.parametrize("collapsible", [True, False, "adaptive"])
     @pytest.mark.parametrize("groups", [{}, {"backend": [("app.py", "Update app", "Summary")],
                                           "documentation": [("README.md", "Update docs", "Summary")]}])
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_walkthrough_table_closes_without_extra_row(self, mock_get_settings, collapsible, groups):
         mock_get_settings.return_value = _settings(collapsible_file_list=collapsible)
         obj = self._obj(gfm=True)
@@ -658,7 +658,7 @@ class TestProcessPRFilesPrediction:
         assert body.endswith("</tbody></table>")
         assert body.count("<tr>") == body.count("</tr>")
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_non_gfm_provider_skips_table_rendering(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
         obj = self._obj(gfm=False)
@@ -669,7 +669,7 @@ class TestProcessPRFilesPrediction:
         assert body == "PRE"
         obj.git_provider.get_diff_files.assert_not_called()
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_gfm_provider_reuses_diff_files_across_semantic_groups(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
         obj = self._obj(gfm=True, diff_files=[
@@ -693,7 +693,7 @@ class TestProcessPRFilesPrediction:
         obj.git_provider.get_diff_files.assert_called_once_with()
 
     @pytest.mark.parametrize("value", [{}, {"backend": []}])
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_empty_file_groups_do_not_fetch_diffs(self, mock_get_settings, value):
         mock_get_settings.return_value = _settings()
         obj = self._obj(gfm=True)
@@ -707,7 +707,7 @@ class TestProcessPRFilesPrediction:
     @pytest.mark.parametrize(
         ("plus", "minus", "expected_stats"), [(5, 2, "+5/-2"), (0, 0, "[link]"), (10**12, 0, "[link]")],
     )
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_normalized_first_match_and_missing_file_stats(self, mock_get_settings, plus, minus, expected_stats):
         mock_get_settings.return_value = _settings()
         obj = self._obj(gfm=True, diff_files=[
@@ -724,7 +724,7 @@ class TestProcessPRFilesPrediction:
         assert '<a href=""></a>' in missing_body
         obj.git_provider.get_diff_files.assert_called_once_with()
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_adaptive_collapsible_triggers_above_threshold(self, mock_get_settings):
         mock_get_settings.return_value = _settings(collapsible_file_list="adaptive")
         obj = self._obj(gfm=True)
@@ -836,7 +836,7 @@ class TestRoundTripWithProcessDescription:
             "long_summary": "* Details",
         }]
 
-    @patch("pr_agent.tools.pr_description.get_settings")
+    @patch("pr_agent.commands.pr_description.get_settings")
     def test_walkthrough_table_round_trips_through_process_description(self, mock_get_settings):
         mock_get_settings.return_value = _settings(collapsible_file_list=False)
         obj = _make_instance()
@@ -986,7 +986,7 @@ class TestDescriptionPromptGating:
         "pr_description_prompt",
         "pr_description_only_description_prompts",
     ])
-    @patch("pr_agent.tools.pr_description.get_logger")
+    @patch("pr_agent.commands.pr_description.get_logger")
     def test_duplicate_example_types_match_output_model(self, mock_get_logger, prompt_name):
         template = getattr(get_settings(), prompt_name).user
         environment = Environment(

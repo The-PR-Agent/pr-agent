@@ -1,7 +1,7 @@
 """Contract: no tool may reach a git-provider method its provider has declared unsupported.
 
 `test_git_provider_method_contract.py` pins what providers DO for a given capability;
-this file pins what CALLERS in `pr_agent/tools/` do with the answer. A tool that calls a
+this file pins what CALLERS in `pr_agent/commands/` do with the answer. A tool that calls a
 capability-gated `self.git_provider.<method>(...)` without checking `is_supported()` first
 raises (or silently corrupts output) on any provider that declines that capability: #2932
 was exactly this, for `get_labels` in `pr_reviewer.py`.
@@ -17,7 +17,7 @@ false positives.
 import ast
 from pathlib import Path
 
-TOOLS_DIR = Path(__file__).resolve().parent.parent.parent / "pr_agent" / "tools"
+TOOLS_DIR = Path(__file__).resolve().parent.parent.parent / "pr_agent" / "commands"
 PROVIDERS_DIR = Path(__file__).resolve().parent.parent.parent / "pr_agent" / "git_providers"
 
 # Base GitProvider methods that at least one provider declines (see
@@ -161,6 +161,6 @@ def test_every_is_supported_string_in_tools_is_a_capability_some_provider_declin
     declinable = _provider_declinable_capabilities()
     typos = used - declinable
     assert not typos, (
-        f"is_supported() called in pr_agent/tools/ with a string no provider ever "
+        f"is_supported() called in pr_agent/commands/ with a string no provider ever "
         f"declines, so the check always passes: {typos}"
     )

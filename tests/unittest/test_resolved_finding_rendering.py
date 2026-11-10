@@ -9,7 +9,7 @@ from pr_agent.algo.review_finding_state import (
     normalize_finding,
     reconcile_review_findings,
 )
-from pr_agent.tools.pr_reviewer import PRReviewer
+from pr_agent.commands.pr_reviewer import PRReviewer
 
 ISSUE = {
     "relevant_file": "src/app.py",

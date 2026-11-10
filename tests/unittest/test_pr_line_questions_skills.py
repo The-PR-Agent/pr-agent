@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from jinja2 import Environment, StrictUndefined
 
-import pr_agent.tools.pr_line_questions as pr_line_questions
+import pr_agent.commands.pr_line_questions as pr_line_questions
 from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 

@@ -14,12 +14,12 @@ from unittest.mock import MagicMock
 import pytest
 from github import GithubException, RateLimitExceededException
 
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.commands.pr_description import PRDescription
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.log import get_logger
 from pr_agent.servers.utils import RateLimitExceeded
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from pr_agent.tools.pr_description import PRDescription
 
 RATE_LIMITED = RateLimitExceededException(
     403,
@@ -252,7 +252,7 @@ async def test_one_unreadable_ticket_link_keeps_the_others(monkeypatch):
     """A 404 on one linked issue must not discard every extracted ticket."""
     from types import SimpleNamespace
 
-    from pr_agent.tools.ticket_pr_compliance_check import extract_tickets
+    from pr_agent.commands.ticket_pr_compliance_check import extract_tickets
 
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: MagicMock())
     provider = GithubProvider(pr_url=None)

@@ -4,10 +4,10 @@ import pytest
 from pr_agent.algo.git_patch_processing import count_patch_lines
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.commands.pr_add_docs import PRAddDocs
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
-from pr_agent.tools.pr_add_docs import PRAddDocs
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
@@ -530,7 +530,7 @@ def test_add_jira_tickets_scans_local_branch_name(tmp_path, monkeypatch):
     # string. A non-str branch made the join raise, which was logged as
     # "Error extracting Jira tickets: ... expected str instance, HEAD found" on
     # every local run, even with Jira unconfigured.
-    from pr_agent.tools import ticket_pr_compliance_check as tickets
+    from pr_agent.commands import ticket_pr_compliance_check as tickets
 
     _, _, provider = _make_feature_branch_provider(tmp_path, monkeypatch, "feature/PROJ-123-fix")
     scanned = []

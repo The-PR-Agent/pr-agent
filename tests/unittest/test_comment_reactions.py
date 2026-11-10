@@ -413,7 +413,7 @@ async def test_documentation_and_label_failures_get_failure_outcomes(
 ):
     """Verify that documentation and label command failures get failure reactions."""
     import pr_agent.agent.pr_agent as pr_agent_module
-    from pr_agent.tools import pr_add_docs, pr_generate_labels
+    from pr_agent.commands import pr_add_docs, pr_generate_labels
 
     reactions(success="hooray", failure="confused")
     settings = get_settings()

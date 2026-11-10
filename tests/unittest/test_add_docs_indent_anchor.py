@@ -7,7 +7,7 @@ of the enclosing block and left the file unparseable.
 import pytest
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
-from pr_agent.tools.pr_add_docs import PRAddDocs
+from pr_agent.commands.pr_add_docs import PRAddDocs
 
 SNIPPET = '"""Adds docs."""'
 

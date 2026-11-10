@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pr_agent.tools.pr_similar_issue import PRSimilarIssue
+from pr_agent.commands.pr_similar_issue import PRSimilarIssue
 
 
 class FakeDB:
@@ -72,7 +72,7 @@ def _fake_issue(number=5):
 
 def _make_tool(monkeypatch, fake_db):
     _install_fake_pandas(monkeypatch)
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue._embed_with_fallback", _fake_embed)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue._embed_with_fallback", _fake_embed)
     tool = PRSimilarIssue.__new__(PRSimilarIssue)
     tool.db = fake_db
     tool.index_name = "codium-ai-pr-agent-issues"
@@ -388,7 +388,7 @@ def _fake_issue_with_comments(comments):
 def _tool_with_comments(monkeypatch, fake_db):
     tool = _make_tool(monkeypatch, fake_db)
     del tool._process_issue
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_settings", lambda: SimpleNamespace(
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_settings", lambda: SimpleNamespace(
         pr_similar_issue=SimpleNamespace(skip_comments=False),
     ))
     return tool
@@ -533,14 +533,14 @@ def _install_fake_lancedb(monkeypatch, fake_db):
 
 def _stub_constructor_dependencies(monkeypatch, fake_db):
     _install_fake_lancedb(monkeypatch, fake_db)
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_settings", lambda: _LanceSettings)
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_git_provider", lambda: _FakeProvider)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_settings", lambda: _LanceSettings)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_git_provider", lambda: _FakeProvider)
     monkeypatch.setattr(
-        "pr_agent.tools.pr_similar_issue._provider_supports_issue_indexing",
+        "pr_agent.commands.pr_similar_issue._provider_supports_issue_indexing",
         lambda: True,
     )
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue._embed_with_fallback", _fake_embed)
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue._embed_with_fallback", _fake_embed)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.time.sleep", lambda seconds: None)
 
 
 def test_constructor_second_repo_joins_existing_table(monkeypatch, github_issue_pages):
@@ -576,12 +576,12 @@ def test_constructor_backfills_an_older_index_gap(monkeypatch):
     ])
     _install_fake_pandas(monkeypatch)
     _install_fake_lancedb(monkeypatch, fake_db)
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_settings", lambda: _LanceSettings)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_settings", lambda: _LanceSettings)
     monkeypatch.setattr(
-        "pr_agent.tools.pr_similar_issue._provider_supports_issue_indexing", lambda: True
+        "pr_agent.commands.pr_similar_issue._provider_supports_issue_indexing", lambda: True
     )
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_git_provider", lambda: _FakeProvider)
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue._embed_with_fallback", _fake_embed)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_git_provider", lambda: _FakeProvider)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue._embed_with_fallback", _fake_embed)
 
     PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
 

@@ -10,10 +10,10 @@ import asyncio
 
 import pytest
 
+from pr_agent.commands import ticket_pr_compliance_check as tpc
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.github_provider import GithubProvider
-from pr_agent.tools import ticket_pr_compliance_check as tpc
 from tests.unittest import _settings_helpers
 
 
