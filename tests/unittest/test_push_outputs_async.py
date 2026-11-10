@@ -74,7 +74,7 @@ async def test_the_output_reaches_the_sink_before_the_caller_resumes(monkeypatch
     assert posted == [SINK_URL]
 
 
-def test_the_tools_do_not_import_the_blocking_delivery():
+def test_the_commands_do_not_import_the_blocking_delivery():
     """The tools run in an event loop, so they must not call the blocking entry point."""
     for module in (pr_description, pr_code_suggestions, pr_reviewer):
         assert "push_outputs" not in vars(module), f"{module.__name__} imports the blocking delivery"

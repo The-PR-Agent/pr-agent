@@ -175,7 +175,7 @@ async def handle_comments_on_pr(body: dict[str, Any],
                 api_url, comment_body,
                 notify=lambda: provider.add_eyes_reaction(comment_id, disable_eyes=disable_eyes),
                 # Preserve compatibility mode while exposing failures to outcome reactions.
-                propagate_tool_errors=True)
+                propagate_command_errors=True)
             # Optional, and disabled by default: tell the author how the command ended without
             # adding another comment to the thread.
             if succeeded is RequestOutcome.SKIPPED:

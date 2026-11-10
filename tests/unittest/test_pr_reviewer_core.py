@@ -1206,14 +1206,14 @@ async def test_run_skips_without_recording_failure_when_all_changed_files_are_fi
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+@pytest.mark.parametrize("propagate_command_errors", [False, True])
 @pytest.mark.parametrize(
     ("publish_review_failure_comment", "expect_failure_comment"),
     [(None, True), (False, False), ("false", False)],
     ids=["default", "disabled", "quoted-false"],
 )
 async def test_run_removes_its_progress_comment_when_review_generation_fails(
-        monkeypatch, propagate_tool_errors, publish_review_failure_comment, expect_failure_comment):
+        monkeypatch, propagate_command_errors, publish_review_failure_comment, expect_failure_comment):
     from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
@@ -1243,11 +1243,11 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = propagate_tool_errors
+        settings.config.propagate_tool_errors = propagate_command_errors
         if publish_review_failure_comment is not None:
             settings.pr_reviewer.publish_review_failure_comment = publish_review_failure_comment
 
-        if propagate_tool_errors:
+        if propagate_command_errors:
             with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
                 await reviewer.run()
             assert exc_info.value is review_error
@@ -1380,13 +1380,13 @@ async def test_run_publishes_sanitized_failure_reason_when_enabled(monkeypatch):
     ids=["unparseable", "empty-review", "invalid-review-shape"],
 )
 @pytest.mark.parametrize("persistent_comment", [False, True])
-@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+@pytest.mark.parametrize("propagate_command_errors", [False, True])
 async def test_run_does_not_publish_an_empty_review(
     monkeypatch,
     prediction,
     expected_action_data,
     persistent_comment,
-    propagate_tool_errors,
+    propagate_command_errors,
 ):
     from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
@@ -1420,10 +1420,10 @@ async def test_run_does_not_publish_an_empty_review(
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = propagate_tool_errors
+        settings.config.propagate_tool_errors = propagate_command_errors
         settings.pr_reviewer.persistent_comment = persistent_comment
 
-        if propagate_tool_errors:
+        if propagate_command_errors:
             with pytest.raises(ValueError, match="Failed to prepare review output"):
                 await reviewer.run()
         else:
@@ -1519,7 +1519,7 @@ async def test_run_publishes_failure_result_when_review_fails_before_progress_co
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("publish_output", "is_auto_command", "propagate_tool_errors"),
+    ("publish_output", "is_auto_command", "propagate_command_errors"),
     [
         (False, False, False),
         (False, False, True),
@@ -1528,7 +1528,7 @@ async def test_run_publishes_failure_result_when_review_fails_before_progress_co
     ],
 )
 async def test_run_does_not_publish_failure_result_when_output_disabled_or_auto(
-        monkeypatch, publish_output, is_auto_command, propagate_tool_errors):
+        monkeypatch, publish_output, is_auto_command, propagate_command_errors):
     from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     git_provider = MagicMock()
@@ -1555,9 +1555,9 @@ async def test_run_does_not_publish_failure_result_when_output_disabled_or_auto(
     try:
         settings.config.publish_output = publish_output
         settings.config.is_auto_command = is_auto_command
-        settings.config.propagate_tool_errors = propagate_tool_errors
+        settings.config.propagate_tool_errors = propagate_command_errors
 
-        if propagate_tool_errors:
+        if propagate_command_errors:
             with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
                 await reviewer.run()
             assert exc_info.value is review_error
@@ -1622,9 +1622,9 @@ async def test_run_publishes_failure_result_when_progress_cleanup_fails(monkeypa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+@pytest.mark.parametrize("propagate_command_errors", [False, True])
 async def test_run_failure_result_publication_does_not_mask_review_error(
-        monkeypatch, propagate_tool_errors):
+        monkeypatch, propagate_command_errors):
     from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
@@ -1654,9 +1654,9 @@ async def test_run_failure_result_publication_does_not_mask_review_error(
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = propagate_tool_errors
+        settings.config.propagate_tool_errors = propagate_command_errors
 
-        if propagate_tool_errors:
+        if propagate_command_errors:
             with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
                 await reviewer.run()
             assert exc_info.value is review_error

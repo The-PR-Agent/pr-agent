@@ -16,7 +16,7 @@ from pr_agent.commands import pr_add_docs, pr_generate_labels, pr_line_questions
 from pr_agent.config_loader import get_settings
 
 
-@pytest.mark.parametrize("module,tool_class,response", [
+@pytest.mark.parametrize("module,command_class,response", [
     (pr_questions, pr_questions.PRQuestions, "The value changes from 1 to 2."),
     (pr_line_questions, pr_line_questions.PR_LineQuestions, "The value changes from 1 to 2."),
     (pr_generate_labels, pr_generate_labels.PRGenerateLabels, "labels: [enhancement]"),
@@ -25,7 +25,7 @@ from pr_agent.config_loader import get_settings
 ], ids=["ask", "ask_line", "generate_labels", "update_changelog", "add_docs"])
 @pytest.mark.parametrize("has_files,scoped", [(True, True), (False, True), (True, False)],
                          ids=["one-file", "empty-diff", "contextless"])
-async def test_run_prepares_diff_with_request_settings(monkeypatch, module, tool_class, response, has_files, scoped):
+async def test_run_prepares_diff_with_request_settings(monkeypatch, module, command_class, response, has_files, scoped):
     # Keep the actual prompt, budget, diff packing, fallback, and run paths. Only the
     # tokenizer and external provider/model boundaries are controlled by the test.
     get_settings().get("config.model")
@@ -61,7 +61,7 @@ async def test_run_prepares_diff_with_request_settings(monkeypatch, module, tool
     provider.is_supported.return_value = False
     provider.supports_threaded_pr_questions.return_value = False
     provider.supports_line_question_history.return_value = module is pr_line_questions
-    monkeypatch.setattr(module, "get_git_provider_for_tool", lambda _url: provider)
+    monkeypatch.setattr(module, "get_git_provider_for_command", lambda _url: provider)
     handler = SimpleNamespace(chat_completion=AsyncMock(return_value=(response, "stop")))
     started = threading.Event()
     release = threading.Event()
@@ -91,9 +91,9 @@ async def test_run_prepares_diff_with_request_settings(monkeypatch, module, tool
     settings_scope = request_cycle_context({"settings": settings}) if scoped else nullcontext()
     with settings_scope:
         args = ["Why did this value change?"] if module is pr_line_questions else None
-        tool = tool_class("https://example.com/org/repo/pull/1", args=args, ai_handler=lambda: handler)
+        command = command_class("https://example.com/org/repo/pull/1", args=args, ai_handler=lambda: handler)
         if scoped:
-            run = asyncio.create_task(tool.run())
+            run = asyncio.create_task(command.run())
             try:
                 assert await asyncio.wait_for(asyncio.to_thread(started.wait, 5), 10)
                 assert not run.done()
@@ -101,12 +101,12 @@ async def test_run_prepares_diff_with_request_settings(monkeypatch, module, tool
                 release.set()
                 await asyncio.wait_for(run, 10)
         else:
-            await tool.run()
+            await command.run()
 
     provider.get_diff_files.assert_called_once_with()
     if module is pr_line_questions:
         provider.get_review_thread_comments.assert_called_once_with(123)
-        assert tool.vars["conversation_history"] == "1. reviewer: Earlier context"
+        assert command.vars["conversation_history"] == "1. reviewer: Earlier context"
     if has_files:
         handler.chat_completion.assert_awaited_once()
         assert "+value = 2" in handler.chat_completion.await_args.kwargs["user"]

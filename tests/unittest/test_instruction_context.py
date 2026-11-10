@@ -45,7 +45,7 @@ def test_system_instructions_are_loaded_from_config(system_instructions):
     assert get_protected_system_instructions() == "TRUSTED POLICY"
 
 
-def test_system_instructions_are_appended_after_tool_instructions(system_instructions):
+def test_system_instructions_are_appended_after_command_instructions(system_instructions):
     system_instructions.set("config.system_instructions", "TRUSTED POLICY")
 
     result = append_protected_system_instructions("TOOL INSTRUCTIONS")

@@ -177,21 +177,21 @@ async def test_missing_corpus_fails_before_model_attempt(tmp_path, monkeypatch):
         lambda: SimpleNamespace(config=SimpleNamespace(publish_output=True)),
     )
 
-    tool = PRHelpMessage.__new__(PRHelpMessage)
-    tool.git_provider = SimpleNamespace(
+    command = PRHelpMessage.__new__(PRHelpMessage)
+    command.git_provider = SimpleNamespace(
         pr_url="https://example.com/org/repo/pull/1",
         publish_comment=Mock(),
     )
-    tool.ai_handler = SimpleNamespace(chat_completion=AsyncMock())
-    tool.question_str = "How does review work?"
-    tool.return_as_string = False
-    tool.vars = {"question": tool.question_str, "snippets": ""}
+    command.ai_handler = SimpleNamespace(chat_completion=AsyncMock())
+    command.question_str = "How does review work?"
+    command.return_as_string = False
+    command.vars = {"question": command.question_str, "snippets": ""}
 
     with pytest.raises(FileNotFoundError):
-        await tool.run()
+        await command.run()
     retry.assert_not_awaited()
-    tool.ai_handler.chat_completion.assert_not_awaited()
-    tool.git_provider.publish_comment.assert_called_once_with(HELP_DOCS_UNAVAILABLE_MESSAGE)
+    command.ai_handler.chat_completion.assert_not_awaited()
+    command.git_provider.publish_comment.assert_called_once_with(HELP_DOCS_UNAVAILABLE_MESSAGE)
     logger.exception.assert_called_once()
     assert "Unable to load the PR-Agent help documentation" in logger.exception.call_args.args[0]
 
@@ -235,23 +235,23 @@ async def test_source_fallback_failure_notifies_before_model_attempt(tmp_path, m
         lambda: SimpleNamespace(config=SimpleNamespace(publish_output=True)),
     )
 
-    tool = PRHelpMessage.__new__(PRHelpMessage)
-    tool.git_provider = SimpleNamespace(
+    command = PRHelpMessage.__new__(PRHelpMessage)
+    command.git_provider = SimpleNamespace(
         pr_url="https://example.com/org/repo/pull/1",
         publish_comment=Mock(),
     )
-    tool.ai_handler = SimpleNamespace(chat_completion=AsyncMock())
-    tool.question_str = "How does review work?"
-    tool.return_as_string = False
-    tool.vars = {"question": tool.question_str, "snippets": ""}
+    command.ai_handler = SimpleNamespace(chat_completion=AsyncMock())
+    command.question_str = "How does review work?"
+    command.return_as_string = False
+    command.vars = {"question": command.question_str, "snippets": ""}
 
     with pytest.raises(FileNotFoundError) as raised:
-        await tool.run()
+        await command.run()
 
     assert raised.value.__cause__ is source_error
     retry.assert_not_awaited()
-    tool.ai_handler.chat_completion.assert_not_awaited()
-    tool.git_provider.publish_comment.assert_called_once_with(HELP_DOCS_UNAVAILABLE_MESSAGE)
+    command.ai_handler.chat_completion.assert_not_awaited()
+    command.git_provider.publish_comment.assert_called_once_with(HELP_DOCS_UNAVAILABLE_MESSAGE)
     logger.opt.assert_called_once_with(exception=True)
     logger.opt.return_value.error.assert_called_once_with(
         "Unable to inspect source-tree /help documentation"
@@ -283,21 +283,21 @@ async def test_unreadable_corpus_fails_before_model_attempt(tmp_path, monkeypatc
         lambda: SimpleNamespace(config=SimpleNamespace(publish_output=False)),
     )
 
-    tool = PRHelpMessage.__new__(PRHelpMessage)
-    tool.git_provider = SimpleNamespace(
+    command = PRHelpMessage.__new__(PRHelpMessage)
+    command.git_provider = SimpleNamespace(
         pr_url="https://example.com/org/repo/pull/1",
         publish_comment=Mock(),
     )
-    tool.ai_handler = SimpleNamespace(chat_completion=AsyncMock())
-    tool.question_str = "How does review work?"
-    tool.return_as_string = False
-    tool.vars = {"question": tool.question_str, "snippets": ""}
+    command.ai_handler = SimpleNamespace(chat_completion=AsyncMock())
+    command.question_str = "How does review work?"
+    command.return_as_string = False
+    command.vars = {"question": command.question_str, "snippets": ""}
 
     with pytest.raises(FileNotFoundError):
-        await tool.run()
+        await command.run()
     retry.assert_not_awaited()
-    tool.ai_handler.chat_completion.assert_not_awaited()
-    tool.git_provider.publish_comment.assert_not_called()
+    command.ai_handler.chat_completion.assert_not_awaited()
+    command.git_provider.publish_comment.assert_not_called()
     logger.opt.assert_called_once_with(exception=True)
     logger.opt.return_value.error.assert_called_once_with(
         f"Error while reading the documentation file {unreadable_document}"
@@ -323,21 +323,21 @@ async def test_empty_corpus_fails_before_model_attempt(tmp_path, monkeypatch):
         lambda: SimpleNamespace(config=SimpleNamespace(publish_output=False)),
     )
 
-    tool = PRHelpMessage.__new__(PRHelpMessage)
-    tool.git_provider = SimpleNamespace(
+    command = PRHelpMessage.__new__(PRHelpMessage)
+    command.git_provider = SimpleNamespace(
         pr_url="https://example.com/org/repo/pull/1",
         publish_comment=Mock(),
     )
-    tool.ai_handler = SimpleNamespace(chat_completion=AsyncMock())
-    tool.question_str = "How does review work?"
-    tool.return_as_string = False
-    tool.vars = {"question": tool.question_str, "snippets": ""}
+    command.ai_handler = SimpleNamespace(chat_completion=AsyncMock())
+    command.question_str = "How does review work?"
+    command.return_as_string = False
+    command.vars = {"question": command.question_str, "snippets": ""}
 
     with pytest.raises(FileNotFoundError):
-        await tool.run()
+        await command.run()
     retry.assert_not_awaited()
-    tool.ai_handler.chat_completion.assert_not_awaited()
-    tool.git_provider.publish_comment.assert_not_called()
+    command.ai_handler.chat_completion.assert_not_awaited()
+    command.git_provider.publish_comment.assert_not_called()
     logger.exception.assert_called_once()
     assert "Unable to load the PR-Agent help documentation" in logger.exception.call_args.args[0]
 
@@ -360,23 +360,23 @@ async def test_notification_failure_preserves_original_corpus_error(monkeypatch)
         lambda: SimpleNamespace(config=SimpleNamespace(publish_output=True)),
     )
 
-    tool = PRHelpMessage.__new__(PRHelpMessage)
-    tool.git_provider = SimpleNamespace(
+    command = PRHelpMessage.__new__(PRHelpMessage)
+    command.git_provider = SimpleNamespace(
         pr_url="https://example.com/org/repo/pull/1",
         publish_comment=Mock(side_effect=RuntimeError("provider unavailable")),
     )
-    tool.ai_handler = SimpleNamespace(chat_completion=AsyncMock())
-    tool.question_str = "How does review work?"
-    tool.return_as_string = False
-    tool.vars = {"question": tool.question_str, "snippets": ""}
+    command.ai_handler = SimpleNamespace(chat_completion=AsyncMock())
+    command.question_str = "How does review work?"
+    command.return_as_string = False
+    command.vars = {"question": command.question_str, "snippets": ""}
 
     with pytest.raises(FileNotFoundError) as raised:
-        await tool.run()
+        await command.run()
 
     assert raised.value is original_error
     retry.assert_not_awaited()
-    tool.ai_handler.chat_completion.assert_not_awaited()
-    tool.git_provider.publish_comment.assert_called_once_with(HELP_DOCS_UNAVAILABLE_MESSAGE)
+    command.ai_handler.chat_completion.assert_not_awaited()
+    command.git_provider.publish_comment.assert_called_once_with(HELP_DOCS_UNAVAILABLE_MESSAGE)
     assert logger.exception.call_count == 2
     assert logger.exception.call_args_list[0].args == ("Unable to load the PR-Agent help documentation",)
     assert logger.exception.call_args_list[1].args == (

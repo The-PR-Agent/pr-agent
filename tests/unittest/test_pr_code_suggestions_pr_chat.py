@@ -118,13 +118,13 @@ async def test_pr_chat_link_depends_on_provider_capability(monkeypatch, supports
             )
         ]
 
-        tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-        tool.pr_url = "https://example.invalid/pr/1"
-        tool.progress = "progress"
-        tool.progress_response = None
-        tool.git_provider = provider
-        tool.incremental = SimpleNamespace(is_incremental=False)
-        tool.generate_summarized_suggestions = MagicMock(return_value="## Suggestions")
+        command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+        command.pr_url = "https://example.invalid/pr/1"
+        command.progress = "progress"
+        command.progress_response = None
+        command.git_provider = provider
+        command.incremental = SimpleNamespace(is_incremental=False)
+        command.generate_summarized_suggestions = MagicMock(return_value="## Suggestions")
 
         async def _fake_retry(*_args, **_kwargs):
             return {"code_suggestions": [{"label": "style", "suggestion_content": "clean up",
@@ -144,7 +144,7 @@ async def test_pr_chat_link_depends_on_provider_capability(monkeypatch, supports
         settings.pr_code_suggestions.persistent_comment = False
         settings.pr_code_suggestions.dual_publishing_score_threshold = 0
 
-        await tool.run()
+        await command.run()
 
         published_body = provider.publish_comment.call_args.args[0]
         provider.supports_pr_chat.assert_called_once_with()

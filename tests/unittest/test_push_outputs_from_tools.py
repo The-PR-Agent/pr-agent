@@ -44,18 +44,18 @@ def test_improve_emits_from_its_publish_path():
 
 @pytest.mark.parametrize("no_analyzable_files, show_help", [(False, False), (False, True), (True, False)])
 async def test_ask_emits_before_publishing_the_answer(monkeypatch, no_analyzable_files, show_help):
-    tool = PRQuestions.__new__(PRQuestions)
-    tool.pr_url = "https://github.com/org/repo/pull/1"
-    tool.question_str = "What changed?"
-    tool.prediction = None
-    tool.git_provider = MagicMock()
-    tool.git_provider.is_supported.return_value = show_help
-    tool.git_provider.supports_threaded_pr_questions.return_value = False
+    command = PRQuestions.__new__(PRQuestions)
+    command.pr_url = "https://github.com/org/repo/pull/1"
+    command.question_str = "What changed?"
+    command.prediction = None
+    command.git_provider = MagicMock()
+    command.git_provider.is_supported.return_value = show_help
+    command.git_provider.supports_threaded_pr_questions.return_value = False
     events = []
 
     async def prepare(_model):
-        tool.no_analyzable_files = no_analyzable_files
-        tool.prediction = "The return value changed."
+        command.no_analyzable_files = no_analyzable_files
+        command.prediction = "The return value changed."
 
     async def record(message_type, **kwargs):
         events.append(("sink", message_type, kwargs))
@@ -64,15 +64,15 @@ async def test_ask_emits_before_publishing_the_answer(monkeypatch, no_analyzable
         if not kwargs.get("is_temporary"):
             events.append(("comment", comment))
 
-    tool._prepare_prediction = prepare
-    tool.git_provider.publish_comment.side_effect = publish
+    command._prepare_prediction = prepare
+    command.git_provider.publish_comment.side_effect = publish
     monkeypatch.setattr("pr_agent.commands.pr_questions.retry_with_fallback_models",
                         lambda fn, model_type: fn("fake-model"))
     monkeypatch.setattr("pr_agent.commands.pr_questions.push_outputs_async", record)
     monkeypatch.setitem(get_settings().config, "publish_output", True)
     monkeypatch.setitem(get_settings().pr_questions, "enable_help_text", show_help)
 
-    await tool.run()
+    await command.run()
 
     assert [event[0] for event in events] == ["sink", "comment"]
     _, message_type, sink = events[0]
@@ -86,7 +86,7 @@ async def test_ask_emits_before_publishing_the_answer(monkeypatch, no_analyzable
     assert "<details>" not in sink["markdown"]
     if show_help:
         assert "<details>" in events[1][1]
-    assert sink["git_provider"] is tool.git_provider
+    assert sink["git_provider"] is command.git_provider
 
 
 # --------------------------------------------------------------------------------------
@@ -185,18 +185,18 @@ def emitted(monkeypatch):
 
 
 async def test_improve_sends_readable_markdown(emitted, monkeypatch):
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = MagicMock()
-    tool.git_provider.get_files.return_value = ["src/foo.py"]
-    tool.git_provider.is_supported.return_value = False
-    tool.pr_url = "https://github.com/org/repo/pull/1"
-    tool.progress_response = None
-    tool._output_published = False
-    tool.is_extended = False
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = MagicMock()
+    command.git_provider.get_files.return_value = ["src/foo.py"]
+    command.git_provider.is_supported.return_value = False
+    command.pr_url = "https://github.com/org/repo/pull/1"
+    command.progress_response = None
+    command._output_published = False
+    command.is_extended = False
     monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.retry_with_fallback_models",
                         MagicMock(return_value=_awaitable({"code_suggestions": [SUGGESTION]})))
 
-    await tool.run()
+    await command.run()
 
     assert emitted, "the improve publish path emitted nothing"
     _args, kwargs = emitted[0]
@@ -213,37 +213,37 @@ def _awaitable(value):
 
 async def test_improve_still_publishes_to_the_provider(emitted, monkeypatch):
     """Control: emitting to a sink is additional, not instead of the pull request comment."""
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = MagicMock()
-    tool.git_provider.get_files.return_value = ["src/foo.py"]
-    tool.git_provider.is_supported.return_value = False
-    tool.pr_url = "https://github.com/org/repo/pull/1"
-    tool.progress_response = None
-    tool._output_published = False
-    tool.is_extended = False
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = MagicMock()
+    command.git_provider.get_files.return_value = ["src/foo.py"]
+    command.git_provider.is_supported.return_value = False
+    command.pr_url = "https://github.com/org/repo/pull/1"
+    command.progress_response = None
+    command._output_published = False
+    command.is_extended = False
     monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.retry_with_fallback_models",
                         MagicMock(return_value=_awaitable({"code_suggestions": [SUGGESTION]})))
 
-    await tool.run()
+    await command.run()
 
-    tool.git_provider.remove_initial_comment.assert_called_once()
+    command.git_provider.remove_initial_comment.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_improve_external_output_reports_partial_suggestion_coverage(emitted, monkeypatch):
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = MagicMock()
-    tool.git_provider.get_files.return_value = ["src/foo.py"]
-    tool.git_provider.is_supported.return_value = False
-    tool.pr_url = "https://github.com/org/repo/pull/1"
-    tool.progress_response = None
-    tool.remaining_files_list = ["omitted.py"]
-    tool.failed_chunk_count = 1
-    tool.total_chunk_count = 2
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = MagicMock()
+    command.git_provider.get_files.return_value = ["src/foo.py"]
+    command.git_provider.is_supported.return_value = False
+    command.pr_url = "https://github.com/org/repo/pull/1"
+    command.progress_response = None
+    command.remaining_files_list = ["omitted.py"]
+    command.failed_chunk_count = 1
+    command.total_chunk_count = 2
     monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.retry_with_fallback_models",
                         MagicMock(return_value=_awaitable({"code_suggestions": [SUGGESTION]})))
 
-    await tool.run()
+    await command.run()
 
     assert len(emitted) == 1
     markdown = emitted[0][1]["markdown"]
@@ -254,17 +254,17 @@ async def test_improve_external_output_reports_partial_suggestion_coverage(emitt
 
 @pytest.mark.asyncio
 async def test_improve_external_output_reports_no_suggestions_and_omitted_files(emitted, monkeypatch):
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = MagicMock()
-    tool.git_provider.get_files.return_value = ["src/foo.py"]
-    tool.git_provider.is_supported.return_value = False
-    tool.pr_url = "https://github.com/org/repo/pull/1"
-    tool.progress_response = None
-    tool.remaining_files_list = ["omitted.py"]
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = MagicMock()
+    command.git_provider.get_files.return_value = ["src/foo.py"]
+    command.git_provider.is_supported.return_value = False
+    command.pr_url = "https://github.com/org/repo/pull/1"
+    command.progress_response = None
+    command.remaining_files_list = ["omitted.py"]
     monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.retry_with_fallback_models",
                         MagicMock(return_value=_awaitable({"code_suggestions": []})))
 
-    await tool.run()
+    await command.run()
 
     assert len(emitted) == 1
     markdown = emitted[0][1]["markdown"]
@@ -274,19 +274,19 @@ async def test_improve_external_output_reports_no_suggestions_and_omitted_files(
 
 @pytest.mark.asyncio
 async def test_improve_external_output_does_not_report_filtered_suggestions(emitted, monkeypatch):
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = MagicMock()
-    tool.git_provider.get_files.return_value = ["src/foo.py"]
-    tool.git_provider.is_supported.return_value = True
-    tool._is_suggestion_line_range_valid = MagicMock(return_value=False)
-    tool.pr_url = "https://github.com/org/repo/pull/1"
-    tool.progress = "Preparing suggestions..."
-    tool.progress_response = None
-    tool.remaining_files_list = ["omitted.py"]
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = MagicMock()
+    command.git_provider.get_files.return_value = ["src/foo.py"]
+    command.git_provider.is_supported.return_value = True
+    command._is_suggestion_line_range_valid = MagicMock(return_value=False)
+    command.pr_url = "https://github.com/org/repo/pull/1"
+    command.progress = "Preparing suggestions..."
+    command.progress_response = None
+    command.remaining_files_list = ["omitted.py"]
     monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.retry_with_fallback_models",
                         MagicMock(return_value=_awaitable({"code_suggestions": [SUGGESTION]})))
 
-    await tool.run()
+    await command.run()
 
     assert len(emitted) == 1
     markdown = emitted[0][1]["markdown"]

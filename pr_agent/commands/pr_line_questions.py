@@ -22,14 +22,14 @@ from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import ModelType, decode_user_text_args
 from pr_agent.commands.pr_questions import _sanitize_slash_commands
 from pr_agent.config_loader import get_settings, get_verbosity_level
-from pr_agent.git_providers import get_git_provider_for_tool
+from pr_agent.git_providers import get_git_provider_for_command
 from pr_agent.log import get_logger
 
 
 class PR_LineQuestions:
     def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         self.question_str = self.parse_args(args)
-        self.git_provider = get_git_provider_for_tool(pr_url)
+        self.git_provider = get_git_provider_for_command(pr_url)
         # Only the questioned file's language is needed for model-call logging.
         # Loading the entire PR file inventory here can be expensive or incomplete.
         file_name = get_settings().get("file_name", "") or ""

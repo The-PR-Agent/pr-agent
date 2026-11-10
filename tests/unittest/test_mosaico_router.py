@@ -525,7 +525,7 @@ class TestDefensiveCapture:
         assert result.ok is True
 
     @pytest.mark.asyncio
-    async def test_tool_exception_marks_failed(self, monkeypatch, restore_settings):
+    async def test_command_exception_marks_failed(self, monkeypatch, restore_settings):
         """The contrast to the test above: same empty artifact, but the tool raised. The
         re-raise makes handle_request return False, so the router must report ok=False
         rather than the empty fallback."""
@@ -567,7 +567,7 @@ class TestDefensiveCapture:
         assert ok is True, "flag off must preserve the pre-existing swallow-and-succeed behaviour"
 
     @pytest.mark.asyncio
-    async def test_propagate_tool_errors_passed_to_handle_request(self, monkeypatch, restore_settings):
+    async def test_propagate_command_errors_passed_to_handle_request(self, monkeypatch, restore_settings):
         """Pins the wiring: without this arg the tools swallow and a failure reads as empty."""
         seen = {}
 

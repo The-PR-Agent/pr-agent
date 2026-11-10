@@ -328,9 +328,9 @@ async def test_mixed_suggestions_stay_in_improve_artifact(tmp_path):
         patch="",
         filename="app.py",
     )]
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = provider
-    tool.progress_response = None
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = provider
+    command.progress_response = None
 
     suggestion = {
         "label": "maintainability",
@@ -340,7 +340,7 @@ async def test_mixed_suggestions_stay_in_improve_artifact(tmp_path):
         "improved_code": "new()",
         "score": 8,
     }
-    await tool.push_inline_code_suggestions({"code_suggestions": [
+    await command.push_inline_code_suggestions({"code_suggestions": [
         {**suggestion, "relevant_lines_start": 1, "relevant_lines_end": 1},
         {**suggestion, "suggestion_content": "Keep this advice.",
          "relevant_lines_start": 40, "relevant_lines_end": 40},
@@ -383,9 +383,9 @@ async def test_publish_no_suggestions_routes_local_git_output_to_improve_file(tm
     provider = object.__new__(LocalGitProvider)
     provider.improve_path = improve_path
     provider.review_path = review_path
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = provider
-    tool.progress_response = None
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = provider
+    command.progress_response = None
     try:
         get_settings().set("config.output_run_details", True)
         get_settings().set("config.publish_output", True)
@@ -396,7 +396,7 @@ async def test_publish_no_suggestions_routes_local_git_output_to_improve_file(tm
             lambda gfm_supported: "\n\nRun details" if not gfm_supported else "",
         )
 
-        await tool.publish_no_suggestions()
+        await command.publish_no_suggestions()
     finally:
         restore_settings(snapshot)
 
@@ -441,10 +441,10 @@ def test_publish_description_writes_utf8_regardless_of_locale(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize(
-    "tool, output_attr",
+    "command, output_attr",
     [("improve", "improve_path"), ("describe", "description_path"), ("add_docs", "improve_path")],
 )
-def test_publish_tool_failure_keeps_review_file(tmp_path, tool, output_attr):
+def test_publish_command_failure_keeps_review_file(tmp_path, command, output_attr):
     # A failed /improve, /describe or /add_docs must not overwrite the persisted /review result.
     review_path = tmp_path / "review.md"
     review_path.write_text("previous review")
@@ -453,7 +453,7 @@ def test_publish_tool_failure_keeps_review_file(tmp_path, tool, output_attr):
     provider.improve_path = tmp_path / "improve.md"
     provider.description_path = tmp_path / "description.md"
 
-    provider.publish_tool_failure(tool, "Failed")
+    provider.publish_command_failure(command, "Failed")
 
     assert review_path.read_text() == "previous review"
     assert getattr(provider, output_attr).read_text() == "Failed"
@@ -466,10 +466,10 @@ def test_add_docs_empty_result_keeps_review_file(tmp_path):
     provider.review_path = review_path
     provider.improve_path = tmp_path / "improve.md"
     provider.description_path = tmp_path / "description.md"
-    tool = PRAddDocs.__new__(PRAddDocs)
-    tool.git_provider = provider
+    command = PRAddDocs.__new__(PRAddDocs)
+    command.git_provider = provider
 
-    result = tool.push_inline_docs({"Code Documentation": []})
+    result = command.push_inline_docs({"Code Documentation": []})
 
     assert result is None
     assert review_path.read_text() == "previous review"

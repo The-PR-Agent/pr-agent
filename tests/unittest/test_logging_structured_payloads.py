@@ -227,25 +227,25 @@ async def test_describe_swallows_a_provider_error(publishing):
     """`propagate_tool_errors` is false by default, so `run()` logs and returns."""
     provider = MagicMock()
     provider.publish_comment.side_effect = NOT_ACCESSIBLE
-    tool = PRDescription.__new__(PRDescription)
-    tool.git_provider = provider
-    tool.pr_id = "org/repo/1"
+    command = PRDescription.__new__(PRDescription)
+    command.git_provider = provider
+    command.pr_id = "org/repo/1"
 
-    await tool.run()
+    await command.run()
 
 
 async def test_improve_reports_a_provider_error_to_the_pr(publishing):
     provider = MagicMock()
     provider.supports_code_suggestion_state = lambda: False
     provider.get_files.side_effect = RATE_LIMITED
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = provider
-    tool.pr_url = "https://github.com/org/repo/pull/1"
-    tool.progress_response = None
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = provider
+    command.pr_url = "https://github.com/org/repo/pull/1"
+    command.progress_response = None
 
-    await tool.run()
+    await command.run()
 
-    provider.publish_tool_failure.assert_called_once_with("improve", "Failed to generate code suggestions for PR")
+    provider.publish_command_failure.assert_called_once_with("improve", "Failed to generate code suggestions for PR")
 
 
 async def test_one_unreadable_ticket_link_keeps_the_others(monkeypatch):

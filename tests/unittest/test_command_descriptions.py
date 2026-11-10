@@ -29,7 +29,7 @@ def test_cli_and_bot_help_use_canonical_command_descriptions(description):
         (HelpMessage.get_improve_usage_guide, "improve"),
     ],
 )
-def test_tool_usage_guides_use_canonical_command_descriptions(usage_guide, command):
+def test_command_usage_guides_use_canonical_command_descriptions(usage_guide, command):
     assert COMMAND_DESCRIPTIONS[command] in usage_guide()
 
 
@@ -52,16 +52,16 @@ def test_runtime_help_uses_current_documentation_links():
 
 
 @pytest.mark.parametrize("command", COMMAND_DESCRIPTIONS)
-def test_tool_docs_use_canonical_command_descriptions(command):
+def test_command_docs_use_canonical_command_descriptions(command):
     # Pages needing JSX are stored as '.mdx', so the suffix is not fixed.
-    tools_dir = REPO_ROOT / "docs" / "docs" / "tools"
-    candidates = [tools_dir / f"{command}.md", tools_dir / f"{command}.mdx"]
-    tool_docs = next((path for path in candidates if path.is_file()), None)
-    assert tool_docs is not None, (
+    commands_dir = REPO_ROOT / "docs" / "docs" / "tools"
+    candidates = [commands_dir / f"{command}.md", commands_dir / f"{command}.mdx"]
+    command_docs = next((path for path in candidates if path.is_file()), None)
+    assert command_docs is not None, (
         f"no documentation page for /{command}; looked for "
-        f"{[path.name for path in candidates]} in {tools_dir}"
+        f"{[path.name for path in candidates]} in {commands_dir}"
     )
-    assert COMMAND_DESCRIPTIONS[command] in tool_docs.read_text(encoding="utf-8")
+    assert COMMAND_DESCRIPTIONS[command] in command_docs.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio

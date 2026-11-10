@@ -41,7 +41,7 @@ from pr_agent.commands.pr_update_changelog import PRUpdateChangelog
 class CommandSpec:
     """Facts about one accepted command spelling."""
 
-    tool: type
+    command: type
     check_run: str | None = None
     takes_comment_id: bool = False
     plain_diff_markdown: bool = False

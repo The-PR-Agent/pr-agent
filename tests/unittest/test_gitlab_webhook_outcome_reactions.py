@@ -153,7 +153,7 @@ def test_a_command_that_reported_failure_adds_the_failure_reaction(run_comment):
     assert provider.removed == [(COMMENT_ID, 1)]
 
 
-def test_a_tool_that_failed_internally_is_not_reported_as_success(run_comment):
+def test_a_command_that_failed_internally_is_not_reported_as_success(run_comment):
     """The trap this change exists to avoid: the tool swallowed its error and returned True."""
     provider = run_comment(success="hooray", failure="confused", record_failure=True)
 
@@ -300,7 +300,7 @@ def test_the_dispatcher_acknowledges_every_command_it_runs(monkeypatch, command)
     Removed command names are rejected before this notification path.
     """
 
-    class _Tool:
+    class _Command:
         def __init__(self, pr_url, ai_handler=None, args=None, **kwargs):
             self.pr_url = pr_url
 
@@ -308,12 +308,12 @@ def test_the_dispatcher_acknowledges_every_command_it_runs(monkeypatch, command)
             return True
 
     acknowledged = []
-    monkeypatch.setattr(pr_agent_module, "PRReviewer", _Tool)  # `answer` builds one directly
+    monkeypatch.setattr(pr_agent_module, "PRReviewer", _Command)  # `answer` builds one directly
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context",
                         lambda pr_url: _RecordingProvider())
-    monkeypatch.setitem(pr_agent_module.command2class, command.lstrip("/"), _Tool)
+    monkeypatch.setitem(pr_agent_module.command2class, command.lstrip("/"), _Command)
 
     result = asyncio.run(pr_agent_module.PRAgent(ai_handler="fake-ai").handle_request(
         "https://github.com/org/repo/pull/1", command, notify=lambda: acknowledged.append(command)))

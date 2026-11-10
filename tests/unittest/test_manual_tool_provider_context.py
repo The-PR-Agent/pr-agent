@@ -15,7 +15,7 @@ from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
 
 
 @pytest.mark.parametrize("action", ["ask", "ask_line", "add_docs", "update_changelog", "generate_labels"])
-async def test_manual_tools_reuse_request_provider(monkeypatch, action):
+async def test_manual_commands_reuse_request_provider(monkeypatch, action):
     original_settings = get_settings()
     original_settings.get("config")  # Initialize Dynaconf before copying the request settings.
     settings = deepcopy(original_settings)
@@ -47,15 +47,15 @@ async def test_manual_tools_reuse_request_provider(monkeypatch, action):
         return client
 
     monkeypatch.setattr("pr_agent.git_providers.github_provider.Github", github_client)
-    tool_providers = []
+    command_providers = []
 
-    async def capture_tool(tool):
-        tool_providers.append(tool.git_provider)
+    async def capture_command(command):
+        command_providers.append(command.git_provider)
 
-    monkeypatch.setattr(command2class[action], "run", capture_tool)
+    monkeypatch.setattr(command2class[action], "run", capture_command)
     with request_cycle_context({"settings": settings}):
         assert await PRAgent(ai_handler=SimpleNamespace).handle_request(pr_url, [action, "Explain."])
-        assert tool_providers == [context["git_provider"][pr_url]]
+        assert command_providers == [context["git_provider"][pr_url]]
 
     assert len(clients) == 1
 
@@ -88,8 +88,8 @@ async def test_repository_diff_content_uses_plain_diff_provider(hosted_provider_
     settings, _ = hosted_provider_with_repo_diff
     seen = []
 
-    async def capture(tool):
-        seen.append(tool.git_provider)
+    async def capture(command):
+        seen.append(command.git_provider)
 
     monkeypatch.setattr(command2class["ask"], "run", capture)
     with request_cycle_context({"settings": settings}):
@@ -113,7 +113,7 @@ async def test_extra_host_config_cannot_hide_stale_bootstrap_provider(
     created = []
 
     class HostedProvider:
-        reuse_for_manual_tool = True
+        reuse_for_manual_command = True
 
         def __init__(self, _url):
             self.pr = SimpleNamespace(title="Example")
@@ -135,8 +135,8 @@ async def test_extra_host_config_cannot_hide_stale_bootstrap_provider(
     monkeypatch.setitem(git_providers._GIT_PROVIDERS, "github", HostedProvider)
     used = []
 
-    async def capture(tool):
-        used.append(tool.git_provider)
+    async def capture(command):
+        used.append(command.git_provider)
 
     monkeypatch.setattr(command2class["ask_line"], "run", capture)
     pr_url = "https://github.com/example/repo/pull/1"
@@ -160,8 +160,8 @@ async def test_repository_provider_change_uses_final_provider(hosted_provider_wi
     monkeypatch.setitem(git_providers._GIT_PROVIDERS, "alternate-host", lambda _: selected)
     seen = []
 
-    async def capture(tool):
-        seen.append(tool.git_provider)
+    async def capture(command):
+        seen.append(command.git_provider)
 
     monkeypatch.setattr(command2class["ask"], "run", capture)
     with request_cycle_context({"settings": settings}):
@@ -176,14 +176,14 @@ async def test_hosted_dry_run_is_not_overridden_by_repo_diff_setting(hosted_prov
     settings, _ = hosted_provider_with_repo_diff
     observed = []
 
-    class CaptureTool:
+    class CaptureCommand:
         def __init__(self, *_args, **_kwargs):
             observed.append(get_settings().get("config.publish_output"))
 
         async def run(self):
             pass
 
-    monkeypatch.setitem(command2class, "ask", CaptureTool)
+    monkeypatch.setitem(command2class, "ask", CaptureCommand)
     with request_cycle_context({"settings": settings}):
         assert await PRAgent(ai_handler=SimpleNamespace).handle_request(
             "https://github.com/example/repo/pull/1", ["ask", "Why?", "--config.publish_output=false"]
@@ -192,7 +192,7 @@ async def test_hosted_dry_run_is_not_overridden_by_repo_diff_setting(hosted_prov
     assert observed == [False]
 
 
-async def test_hosted_ignore_policy_still_runs_before_tool_provider_switch(hosted_provider_with_repo_diff):
+async def test_hosted_ignore_policy_still_runs_before_command_provider_switch(hosted_provider_with_repo_diff):
     settings, hosted = hosted_provider_with_repo_diff
     settings.set("config.ignore_repositories", ["^example/repo$"])
     hosted.get_request_policy_metadata.return_value = {"repo_full_name": "example/repo"}
@@ -236,8 +236,8 @@ async def test_github_head_refreshes_after_automatic_command_boundary(monkeypatc
     monkeypatch.setattr("pr_agent.git_providers.github_provider.Github", github_client)
     observed = []
 
-    async def capture(tool):
-        observed.append((tool.git_provider.pr.head.sha, tool.git_provider))
+    async def capture(command):
+        observed.append((command.git_provider.pr.head.sha, command.git_provider))
 
     monkeypatch.setattr(command2class["ask"], "run", capture)
     with request_cycle_context({"settings": settings}):
@@ -276,8 +276,8 @@ async def test_gitea_push_between_commands_rebuilds_head_and_file_list(monkeypat
     monkeypatch.setattr("pr_agent.git_providers.gitea_provider.RepoApi", lambda _client: repo_api)
     observed = []
 
-    async def capture(tool):
-        observed.append((tool.git_provider.get_pr_head_sha(), tool.git_provider.get_files()))
+    async def capture(command):
+        observed.append((command.git_provider.get_pr_head_sha(), command.git_provider.get_files()))
 
     monkeypatch.setattr(command2class["ask"], "run", capture)
     with request_cycle_context({"settings": settings}):

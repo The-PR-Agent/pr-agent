@@ -312,7 +312,7 @@ class _CleanReview:
         self.ran = True
 
 
-async def _run_comment_command(body, tool_class, monkeypatch):
+async def _run_comment_command(body, command_class, monkeypatch):
     """Drive the comment endpoint through the real agent so the settings the tool sees are the
     ones the handler asked for, and return the provider plus the tool instance."""
     provider = MagicMock()
@@ -320,9 +320,9 @@ async def _run_comment_command(body, tool_class, monkeypatch):
     built = []
 
     def build(*args, **kwargs):
-        tool = tool_class(*args, **kwargs)
-        built.append(tool)
-        return tool
+        command = command_class(*args, **kwargs)
+        built.append(command)
+        return command
 
     monkeypatch.setitem(pr_agent_module.command2class, "review", build)
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
@@ -332,26 +332,26 @@ async def _run_comment_command(body, tool_class, monkeypatch):
     return provider, built[0]
 
 
-async def test_swallowed_tool_failure_does_not_resolve_the_thread(monkeypatch):
+async def test_swallowed_command_failure_does_not_resolve_the_thread(monkeypatch):
     """Resolving the discussion on a run that raised inside the tool leaves the author a closed
     thread and no review, so the handler must demand an honest verdict the way the GitHub comment
     path does. The "On it!" reply is posted before the command runs, so it still has to be cleaned
     up on that failed run, like the temporary comments the tools remove in their finally blocks."""
 
-    provider, tool = await _run_comment_command("/review", _SwallowingReview, monkeypatch)
+    provider, command = await _run_comment_command("/review", _SwallowingReview, monkeypatch)
 
     provider.set_thread_status.assert_not_called()
     provider.remove_initial_comment.assert_called_once()
-    assert tool.observed_propagation is True
+    assert command.observed_propagation is True
 
 
 async def test_successful_command_still_resolves_the_thread(monkeypatch):
     """The companion guard: a run that raised nothing must keep closing the thread, so the fix is
     not just "never close"."""
 
-    provider, tool = await _run_comment_command("/review", _CleanReview, monkeypatch)
+    provider, command = await _run_comment_command("/review", _CleanReview, monkeypatch)
 
-    assert tool.ran is True
+    assert command.ran is True
     provider.set_thread_status.assert_called_once_with(7, "closed")
     provider.remove_initial_comment.assert_called_once()
 

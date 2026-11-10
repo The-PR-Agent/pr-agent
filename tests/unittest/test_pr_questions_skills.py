@@ -38,7 +38,7 @@ class _FakeAIHandler:
 
 def _build_pr_questions(monkeypatch):
     provider = _FakeProvider()
-    monkeypatch.setattr(pr_questions, "get_git_provider_for_tool", lambda _url: provider)
+    monkeypatch.setattr(pr_questions, "get_git_provider_for_command", lambda _url: provider)
     monkeypatch.setattr(pr_questions, "get_main_pr_language", lambda _languages, _files: "Python")
     monkeypatch.setattr(pr_questions, "get_skills_context", lambda: "### Skill: security-review", raising=False)
     return pr_questions.PRQuestions(
@@ -53,11 +53,11 @@ def test_top_level_ask_injects_skills_when_enabled(monkeypatch):
     saved = snapshot_settings(("skills.enabled",))
     try:
         settings.set("skills.enabled", True)
-        tool = _build_pr_questions(monkeypatch)
+        command = _build_pr_questions(monkeypatch)
     finally:
         restore_settings(saved)
 
-    assert tool.vars["skills_context"] == "### Skill: security-review"
+    assert command.vars["skills_context"] == "### Skill: security-review"
 
 
 def test_top_level_ask_does_not_load_skills_when_disabled(monkeypatch):
@@ -68,7 +68,7 @@ def test_top_level_ask_does_not_load_skills_when_disabled(monkeypatch):
         settings.set("skills.enabled", False)
         # Construct directly: _build_pr_questions would overwrite the spy with its own stub.
         provider = _FakeProvider()
-        monkeypatch.setattr(pr_questions, "get_git_provider_for_tool", lambda _url: provider)
+        monkeypatch.setattr(pr_questions, "get_git_provider_for_command", lambda _url: provider)
         monkeypatch.setattr(pr_questions, "get_main_pr_language", lambda _languages, _files: "Python")
         monkeypatch.setattr(
             pr_questions,
@@ -76,7 +76,7 @@ def test_top_level_ask_does_not_load_skills_when_disabled(monkeypatch):
             lambda: calls.append("loaded") or "### Skill: should-not-load",
             raising=False,
         )
-        tool = pr_questions.PRQuestions(
+        command = pr_questions.PRQuestions(
             "https://github.com/example/repo/pull/1",
             args=["Does this follow the security policy?"],
             ai_handler=_FakeAIHandler,
@@ -84,7 +84,7 @@ def test_top_level_ask_does_not_load_skills_when_disabled(monkeypatch):
     finally:
         restore_settings(saved)
 
-    assert tool.vars["skills_context"] == ""
+    assert command.vars["skills_context"] == ""
     assert calls == []
 
 

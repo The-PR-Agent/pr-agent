@@ -185,7 +185,7 @@ _PLAN_ARTIFACT = {
 def test_artifact_findings_prompt_needs_the_setting_and_an_artifact(monkeypatch, setting, artifact, enabled):
     from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
-    monkeypatch.setattr(pr_reviewer_module, "get_artifact_context", lambda tool_name: artifact)
+    monkeypatch.setattr(pr_reviewer_module, "get_artifact_context", lambda command_name: artifact)
     settings = get_settings()
     original = settings.pr_reviewer.get("require_artifact_findings", False)
     try:
@@ -462,7 +462,7 @@ def test_improve_commit_context(prompt_name, trim_blocks, date, commit_messages)
 
 
 @pytest.mark.parametrize("decouple_hunks", [True, False])
-def test_improve_tool_renders_commit_messages_into_its_prompt(monkeypatch, decouple_hunks):
+def test_improve_command_renders_commit_messages_into_its_prompt(monkeypatch, decouple_hunks):
     suggestions = _build_suggestions(monkeypatch, _FAKE_END, decouple_hunks)
     environment = SandboxedEnvironment(undefined=StrictUndefined)
 

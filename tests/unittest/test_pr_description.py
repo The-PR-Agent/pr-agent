@@ -98,9 +98,9 @@ description: Summarizes the successfully described files."""
 
 @pytest.mark.asyncio
 async def test_normal_description_rejects_clipped_packed_diff():
-    tool = _make_large_pr_instance()
-    tool._description_prompt_handlers = {}
-    tool.ai_handler.chat_completion = AsyncMock()
+    command = _make_large_pr_instance()
+    command._description_prompt_handlers = {}
+    command.ai_handler.chat_completion = AsyncMock()
 
     class ClippingBudget:
         def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
@@ -116,20 +116,20 @@ async def test_normal_description_rejects_clipped_packed_diff():
         return_value=ClippingBudget(),
     ):
         with pytest.raises(ValueError, match="complete packed description diff"):
-            await tool._get_prediction("fallback-model", "complete-diff")
+            await command._get_prediction("fallback-model", "complete-diff")
 
-    tool.ai_handler.chat_completion.assert_not_awaited()
+    command.ai_handler.chat_completion.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("finish_reason", ["stop", "length"])
 async def test_large_pr_header_allows_clipped_input_but_requires_complete_output(finish_reason):
-    tool = _make_large_pr_instance()
+    command = _make_large_pr_instance()
     header_handler = MagicMock()
-    tool._description_prompt_handlers = {
+    command._description_prompt_handlers = {
         "pr_description_only_description_prompts": header_handler,
     }
-    tool.ai_handler.chat_completion = AsyncMock(return_value=(_header_prediction(), finish_reason))
+    command.ai_handler.chat_completion = AsyncMock(return_value=(_header_prediction(), finish_reason))
 
     fitted = MagicMock(
         optional_text="trimmed walkthrough\n...(truncated)\n",
@@ -145,11 +145,11 @@ async def test_large_pr_header_allows_clipped_input_but_requires_complete_output
     ) as budget_factory:
         if finish_reason == "length":
             with pytest.raises(FallbackEligibleError, match="truncated"):
-                await tool._get_prediction(
+                await command._get_prediction(
                     "fallback-model", "complete walkthrough", prompt="pr_description_only_description_prompts",
                 )
         else:
-            result = await tool._get_prediction(
+            result = await command._get_prediction(
                 "fallback-model", "complete walkthrough", prompt="pr_description_only_description_prompts",
             )
             assert result == _header_prediction()
@@ -157,24 +157,24 @@ async def test_large_pr_header_allows_clipped_input_but_requires_complete_output
     budget_factory.assert_called_once_with(
         "fallback-model",
         header_handler,
-        output_token_reserve=tool.ai_handler.get_output_token_reserve,
+        output_token_reserve=command.ai_handler.get_output_token_reserve,
     )
     budget.fit_prompt_variable.assert_called_once()
     fit_args, fit_kwargs = budget.fit_prompt_variable.call_args
     assert fit_args[1:] == ("diff", "complete walkthrough")
     assert fit_kwargs == {
-        "ai_handler": tool.ai_handler,
+        "ai_handler": command.ai_handler,
         "default_output_tokens": 1000,
         "preserve_minimum": True,
         "require_full_text": False,
     }
-    tool.ai_handler.chat_completion.assert_awaited_once_with(
+    command.ai_handler.chat_completion.assert_awaited_once_with(
         model="fallback-model",
         temperature=get_settings().config.temperature,
         system="fitted system",
         user="fitted user",
     )
-    assert tool.variables["diff"] == fitted.optional_text
+    assert command.variables["diff"] == fitted.optional_text
 
 
 @pytest.mark.asyncio
@@ -205,11 +205,11 @@ async def test_large_pr_header_ending_in_inline_code_keeps_closing_backtick():
 
 @pytest.mark.asyncio
 async def test_large_pr_header_rejects_required_prompt_overflow_before_dispatch():
-    tool = _make_large_pr_instance()
-    tool._description_prompt_handlers = {
+    command = _make_large_pr_instance()
+    command._description_prompt_handlers = {
         "pr_description_only_description_prompts": MagicMock(),
     }
-    tool.ai_handler.chat_completion = AsyncMock()
+    command.ai_handler.chat_completion = AsyncMock()
 
     budget = MagicMock()
     budget.fit_prompt_variable.side_effect = ValueError(
@@ -221,13 +221,13 @@ async def test_large_pr_header_rejects_required_prompt_overflow_before_dispatch(
         return_value=budget,
     ):
         with pytest.raises(ValueError, match="required prompt exceeds"):
-            await tool._get_prediction(
+            await command._get_prediction(
                 "small-model",
                 "walkthrough",
                 prompt="pr_description_only_description_prompts",
             )
 
-    tool.ai_handler.chat_completion.assert_not_awaited()
+    command.ai_handler.chat_completion.assert_not_awaited()
 
 
 @pytest.mark.asyncio

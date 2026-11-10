@@ -64,16 +64,16 @@ class StubTokenHandler:
 
 
 async def run_walkthrough(provider) -> str:
-    tool = PRHelpMessage.__new__(PRHelpMessage)
-    tool.git_provider = provider
-    tool.question_str = ""
-    tool.return_as_string = False
-    await tool.run()
+    command = PRHelpMessage.__new__(PRHelpMessage)
+    command.git_provider = provider
+    command.question_str = ""
+    command.return_as_string = False
+    await command.run()
     assert len(provider.published) == 1
     return provider.published[0]
 
 
-def build_question_tool(tmp_path, monkeypatch, handler):
+def build_question_command(tmp_path, monkeypatch, handler):
     package_root = tmp_path / "package"
     docs_path = package_root / "docs" / "docs"
     review_doc = docs_path / "tools" / "review.md"
@@ -83,14 +83,14 @@ def build_question_tool(tmp_path, monkeypatch, handler):
     source_path = package_root / "pr_agent" / "commands" / "pr_help_message.py"
     monkeypatch.setattr(pr_help_message_module, "Path", lambda _: source_path)
 
-    tool = PRHelpMessage.__new__(PRHelpMessage)
-    tool.git_provider = StubProvider(gfm_markdown=True)
-    tool.ai_handler = handler
-    tool.question_str = "How do I configure automatic reviews?"
-    tool.return_as_string = False
-    tool.vars = {"question": tool.question_str, "snippets": ""}
-    tool.token_handler = StubTokenHandler()
-    return tool
+    command = PRHelpMessage.__new__(PRHelpMessage)
+    command.git_provider = StubProvider(gfm_markdown=True)
+    command.ai_handler = handler
+    command.question_str = "How do I configure automatic reviews?"
+    command.return_as_string = False
+    command.vars = {"question": command.question_str, "snippets": ""}
+    command.token_handler = StubTokenHandler()
+    return command
 
 
 @pytest.fixture
@@ -107,8 +107,8 @@ async def test_static_help_renders_without_initializing_ai_handler(published_out
     monkeypatch.setattr(pr_help_message_module, "get_git_provider_with_context", lambda _: provider)
     handler_factory = MagicMock(side_effect=ValueError("Invalid AI handler settings"))
 
-    tool = PRHelpMessage(provider.pr_url, ai_handler=handler_factory)
-    await tool.run()
+    command = PRHelpMessage(provider.pr_url, ai_handler=handler_factory)
+    await command.run()
 
     handler_factory.assert_not_called()
     assert len(provider.published) == 1
@@ -124,8 +124,8 @@ async def test_static_help_and_help_snippets_use_configured_bot_display_name(pub
     provider = StubProvider(gfm_markdown=True)
     monkeypatch.setattr(pr_help_message_module, "get_git_provider_with_context", lambda _: provider)
 
-    tool = PRHelpMessage(provider.pr_url, ai_handler=MagicMock())
-    await tool.run()
+    command = PRHelpMessage(provider.pr_url, ai_handler=MagicMock())
+    await command.run()
 
     assert len(provider.published) == 1
     assert "## Acme Bot Walkthrough 🤖" in provider.published[0]
@@ -142,11 +142,13 @@ def test_help_question_initializes_provided_ai_handler_once(monkeypatch):
     handler = StubAiHandler()
     handler_factory = MagicMock(return_value=handler)
 
-    tool = PRHelpMessage(provider.pr_url, args=["How", "do", "I", "configure", "reviews?"], ai_handler=handler_factory)
+    command = PRHelpMessage(
+        provider.pr_url, args=["How", "do", "I", "configure", "reviews?"], ai_handler=handler_factory
+    )
 
     handler_factory.assert_called_once_with()
-    assert tool.ai_handler is handler
-    assert tool.vars == {"question": "How do I configure reviews?", "snippets": ""}
+    assert command.ai_handler is handler
+    assert command.vars == {"question": "How do I configure reviews?", "snippets": ""}
 
 
 @pytest.fixture
@@ -181,35 +183,35 @@ async def test_question_reaches_configured_handler_without_openai_key(
             "    relevant_section_header_string: Automatic review\n"
         )
     )
-    tool = build_question_tool(tmp_path, monkeypatch, handler)
+    command = build_question_command(tmp_path, monkeypatch, handler)
 
-    await tool.run()
+    await command.run()
 
     assert [call["model"] for call in handler.calls] == ["anthropic/claude-sonnet-4-6"]
-    assert tool.question_str in handler.calls[0]["user"]
+    assert command.question_str in handler.calls[0]["user"]
     assert "Enable automatic review in the repository settings." in handler.calls[0]["user"]
-    assert "Enable automatic review in the repository settings." in tool.git_provider.published[0]
-    assert "requires an OpenAI API key" not in tool.git_provider.published[0]
+    assert "Enable automatic review in the repository settings." in command.git_provider.published[0]
+    assert "requires an OpenAI API key" not in command.git_provider.published[0]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+@pytest.mark.parametrize("propagate_command_errors", [False, True])
 async def test_question_uses_configured_handler_error_path_without_openai_key(
-    published_output, non_openai_question_settings, tmp_path, monkeypatch, propagate_tool_errors
+    published_output, non_openai_question_settings, tmp_path, monkeypatch, propagate_command_errors
 ):
-    get_settings().set("config.propagate_tool_errors", propagate_tool_errors)
+    get_settings().set("config.propagate_tool_errors", propagate_command_errors)
     handler = StubAiHandler(error=RuntimeError("provider credentials missing"))
-    tool = build_question_tool(tmp_path, monkeypatch, handler)
+    command = build_question_command(tmp_path, monkeypatch, handler)
 
-    if propagate_tool_errors:
+    if propagate_command_errors:
         with pytest.raises(RuntimeError) as exc_info:
-            await tool.run()
+            await command.run()
         assert exc_info.value is handler.error
     else:
-        assert await tool.run() == ""
+        assert await command.run() == ""
 
     assert [call["model"] for call in handler.calls] == ["anthropic/claude-sonnet-4-6"]
-    assert tool.git_provider.published == []
+    assert command.git_provider.published == []
 
 
 @pytest.mark.asyncio
@@ -236,12 +238,12 @@ async def test_question_skips_malformed_sources_without_discarding_answer(
             "    relevant_section_header_string: Automatic review\n"
         )
     )
-    tool = build_question_tool(tmp_path, monkeypatch, handler)
+    command = build_question_command(tmp_path, monkeypatch, handler)
 
-    await tool.run()
+    await command.run()
 
-    assert len(tool.git_provider.published) == 1
-    comment = tool.git_provider.published[0]
+    assert len(command.git_provider.published) == 1
+    comment = command.git_provider.published[0]
     assert "Enable automatic review in the repository settings." in comment
     assert f"> - {CURRENT_DOCS_URL}/tools/review/#automatic-review\n" in comment
     assert f"> - {CURRENT_DOCS_URL}/tools/review/\n" in comment
@@ -269,12 +271,12 @@ async def test_question_preserves_answer_when_no_valid_sources_remain(
             f"{relevant_sections}"
         )
     )
-    tool = build_question_tool(tmp_path, monkeypatch, handler)
+    command = build_question_command(tmp_path, monkeypatch, handler)
 
-    await tool.run()
+    await command.run()
 
-    assert len(tool.git_provider.published) == 1
-    comment = tool.git_provider.published[0]
+    assert len(command.git_provider.published) == 1
+    comment = command.git_provider.published[0]
     assert "Enable automatic review in the repository settings." in comment
     assert "Relevant Sources" not in comment
     assert CURRENT_DOCS_URL not in comment
@@ -293,7 +295,7 @@ async def test_question_does_not_link_to_document_that_failed_to_load(
             "    relevant_section_header_string: FAQ\n"
         )
     )
-    tool = build_question_tool(tmp_path, monkeypatch, handler)
+    command = build_question_command(tmp_path, monkeypatch, handler)
     unreadable_doc.write_text("# FAQ", encoding="utf-8")
     real_read_text = Path.read_text
 
@@ -304,10 +306,10 @@ async def test_question_does_not_link_to_document_that_failed_to_load(
 
     monkeypatch.setattr(Path, "read_text", fail_unreadable_doc)
 
-    await tool.run()
+    await command.run()
 
-    assert len(tool.git_provider.published) == 1
-    comment = tool.git_provider.published[0]
+    assert len(command.git_provider.published) == 1
+    comment = command.git_provider.published[0]
     assert "Enable automatic review in the repository settings." in comment
     assert "Relevant Sources" not in comment
     assert f"{CURRENT_DOCS_URL}/faq/" not in comment
@@ -337,14 +339,14 @@ async def test_unsupported_help_notice_obeys_publish_output(monkeypatch, publish
     try:
         get_settings().set("config.publish_output", publish_output)
         provider = StubProvider(gfm_markdown=False, markdown_tables=False)
-        tool = PRHelpMessage.__new__(PRHelpMessage)
-        tool.git_provider = provider
-        tool.question_str = ""
-        tool.return_as_string = False
+        command = PRHelpMessage.__new__(PRHelpMessage)
+        command.git_provider = provider
+        command.question_str = ""
+        command.return_as_string = False
         logger = MagicMock()
         monkeypatch.setattr(pr_help_message_module, "get_logger", lambda: logger)
 
-        await tool.run()
+        await command.run()
 
         if publish_output:
             assert len(provider.published) == 1
@@ -387,9 +389,9 @@ async def test_walkthrough_uses_current_documentation_site(published_output, che
     ],
 )
 def test_question_source_urls_use_canonical_documentation_paths(file_name, header, expected):
-    tool = PRHelpMessage.__new__(PRHelpMessage)
+    command = PRHelpMessage.__new__(PRHelpMessage)
 
-    assert tool.format_docs_url(file_name, header) == expected
+    assert command.format_docs_url(file_name, header) == expected
 
 
 def test_question_system_prompt_identifies_the_open_source_pr_agent_project():
@@ -408,7 +410,7 @@ def test_question_system_prompt_identifies_the_open_source_pr_agent_project():
         (BitbucketServerProvider, False, True),
     ],
 )
-def test_providers_declare_the_capabilities_the_tool_reads(provider_class, checkbox_commands, markdown_tables):
+def test_providers_declare_the_capabilities_the_command_reads(provider_class, checkbox_commands, markdown_tables):
     provider = provider_class.__new__(provider_class)
     assert provider.supports_checkbox_commands() is checkbox_commands
     assert provider.supports_markdown_tables() is markdown_tables

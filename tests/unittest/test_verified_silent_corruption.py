@@ -266,22 +266,22 @@ async def test_generate_labels_skips_publishing_when_the_read_failed():
         provider.get_pr_labels.return_value = None
         provider.publish_comment.return_value = MagicMock()
 
-        tool = PRGenerateLabels.__new__(PRGenerateLabels)
-        tool.git_provider = provider
-        tool.token_handler = MagicMock()
-        tool.pr_id = "repo#1"
-        tool.patches_diff = None
-        tool.prediction = None
-        tool.data = None
-        tool.variables = {}
-        tool.ai_handler = SimpleNamespace()
-        tool.vars = {"title": "Title", "branch": "f", "description": "d", "language": "Python",
+        command = PRGenerateLabels.__new__(PRGenerateLabels)
+        command.git_provider = provider
+        command.token_handler = MagicMock()
+        command.pr_id = "repo#1"
+        command.patches_diff = None
+        command.prediction = None
+        command.data = None
+        command.variables = {}
+        command.ai_handler = SimpleNamespace()
+        command.vars = {"title": "Title", "branch": "f", "description": "d", "language": "Python",
                      "diff": "", "extra_instructions": "", "commit_messages_str": "",
                      "enable_custom_labels": False, "custom_labels_class": ""}
-        tool._get_prediction = AsyncMock(return_value="labels:\n- bug fix\n")
+        command._get_prediction = AsyncMock(return_value="labels:\n- bug fix\n")
 
         with patch("pr_agent.commands.pr_generate_labels.get_pr_diff", return_value="diff"):
-            await tool.run()
+            await command.run()
     finally:
         settings.config.publish_output = original
 
@@ -383,13 +383,13 @@ async def test_describe_survives_an_unreadable_label_set(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _suggestions_tool():
+def _suggestions_command():
     patch = "@@ -1,3 +1,3 @@\n ctx\n-bad\n+good\n ctx2"
     diff_file = FilePatchInfo("a.py", "b.py", patch=patch, filename="a.py",
                               edit_type=EDIT_TYPE.MODIFIED)
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = SimpleNamespace(diff_files=[diff_file], is_supported=lambda feature: False)
-    return tool
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = SimpleNamespace(diff_files=[diff_file], is_supported=lambda feature: False)
+    return command
 
 
 def _suggestion(**overrides):
@@ -411,7 +411,7 @@ def _suggestion(**overrides):
 
 
 def test_summary_renders_a_table_for_a_well_formed_suggestion():
-    out = _suggestions_tool().generate_summarized_suggestions(_suggestion())
+    out = _suggestions_command().generate_summarized_suggestions(_suggestion())
 
     assert "<table" in out
     assert "one sentence" not in out
@@ -420,7 +420,7 @@ def test_summary_renders_a_table_for_a_well_formed_suggestion():
 def test_non_numeric_score_is_not_swallowed_into_an_empty_review():
     """Regression: this returned "", and the caller overwrote the persistent review with it."""
     with pytest.raises(ValueError, match="summarized code suggestions"):
-        _suggestions_tool().generate_summarized_suggestions(_suggestion(score="high"))
+        _suggestions_command().generate_summarized_suggestions(_suggestion(score="high"))
 
 
 def test_missing_field_is_not_swallowed_into_an_empty_review():
@@ -428,12 +428,12 @@ def test_missing_field_is_not_swallowed_into_an_empty_review():
     del broken["code_suggestions"][0]["suggestion_content"]
 
     with pytest.raises(ValueError, match="summarized code suggestions"):
-        _suggestions_tool().generate_summarized_suggestions(broken)
+        _suggestions_command().generate_summarized_suggestions(broken)
 
 
 def test_empty_suggestion_list_still_reports_no_suggestions():
     """The legitimate no suggestions answer must keep working and is not an error."""
-    out = _suggestions_tool().generate_summarized_suggestions({"code_suggestions": []})
+    out = _suggestions_command().generate_summarized_suggestions({"code_suggestions": []})
 
     assert "No suggestions found" in out
 
@@ -447,7 +447,7 @@ def test_review_render_failure_is_logged_loudly():
     sink_id = get_logger().add(lambda message: messages.append(str(message)), format="{message}")
     try:
         with pytest.raises(ValueError):
-            _suggestions_tool().generate_summarized_suggestions(broken)
+            _suggestions_command().generate_summarized_suggestions(broken)
     finally:
         get_logger().remove(sink_id)
 

@@ -446,7 +446,7 @@ def isolated_settings():
         global_settings.data = data_before
 
 
-async def _run_tool_via_spy(monkeypatch, isolated_settings, verb, canned_yaml, second_yaml=""):
+async def _run_command_via_spy(monkeypatch, isolated_settings, verb, canned_yaml, second_yaml=""):
     """Patch the provider registry to a spy subclass, mock the LLM, run the tool with
     publish_output=False, and return (captured_artifact, incremental_accessed_list)."""
     import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
@@ -484,7 +484,7 @@ async def _run_tool_via_spy(monkeypatch, isolated_settings, verb, canned_yaml, s
 class TestSpikeEndToEnd:
     @pytest.mark.asyncio
     async def test_review_end_to_end(self, monkeypatch, isolated_settings):
-        ok, artifact, incremental = await _run_tool_via_spy(
+        ok, artifact, incremental = await _run_command_via_spy(
             monkeypatch, isolated_settings, "review", CANNED_REVIEW_YAML)
         assert ok is True, "review handle_request returned False (swallowed exception)"
         assert artifact, "review produced empty artifact"
@@ -492,7 +492,7 @@ class TestSpikeEndToEnd:
 
     @pytest.mark.asyncio
     async def test_improve_end_to_end(self, monkeypatch, isolated_settings):
-        ok, artifact, incremental = await _run_tool_via_spy(
+        ok, artifact, incremental = await _run_command_via_spy(
             monkeypatch, isolated_settings, "improve", CANNED_IMPROVE_YAML,
             second_yaml=CANNED_IMPROVE_REFLECTION_YAML)
         assert ok is True, "improve handle_request returned False (swallowed exception)"

@@ -126,13 +126,13 @@ def test_patch_only_suggestion_publishes_at_its_addition_or_context_line(as_revi
     target.patch = "@@ -1,2 +1,2 @@\n-old line1\n+line1\n line2\n\\ No newline at end of file\n"
     p = _gl_provider()
     p.get_diff_files.return_value = [target]
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = p
-    tool.progress_response = None
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = p
+    command.progress_response = None
     suggestion = _suggestion(relevant_lines_start=start, relevant_lines_end=start, existing_code=f'line{start}')
     gs = _settings(as_review=as_review)
     try:
-        asyncio.run(tool.push_inline_code_suggestions({"code_suggestions": [suggestion]},
+        asyncio.run(command.push_inline_code_suggestions({"code_suggestions": [suggestion]},
                                                      include_coverage_footer=False))
     finally:
         gs.stop()
@@ -628,18 +628,18 @@ def test_improve_caller_retries_queued_batch_but_not_live_fallback(publication_p
             return original(*args, **kwargs)
 
         operation.side_effect = fail_once_after_queue
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = p
-    tool.progress_response = None
-    tool._validate_suggestion = lambda *args: (True, "", True)
-    tool.dedent_code = lambda filename, line, code: code
-    tool._validate_python_replacement_syntax = lambda *args: True
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = p
+    command.progress_response = None
+    command._validate_suggestion = lambda *args: (True, "", True)
+    command.dedent_code = lambda filename, line, code: code
+    command._validate_python_replacement_syntax = lambda *args: True
     suggestions = [_suggestion()]
     if count == 2:
         suggestions.append(_suggestion(suggestion_content="second", improved_code="x = 3"))
-    asyncio.run(tool.push_inline_code_suggestions({"code_suggestions": suggestions},
+    asyncio.run(command.push_inline_code_suggestions({"code_suggestions": suggestions},
                                                 include_coverage_footer=False))
-    assert tool._output_published is True
+    assert command._output_published is True
     p.mr.notes.create.assert_not_called()  # no duplicate summary on top of delivered comments
     assert p.get_recent_inline_comment_bodies()
     if failure == "drafts-unsupported":
@@ -677,18 +677,18 @@ def test_improve_caller_retries_unsettled_suggestion(publication_provider, unque
     manager.bulk_publish.side_effect = fail_first_publish
     p.mr.discussions.create.side_effect = GitlabCreateError("cannot create live discussion")
     p.mr.notes.create.side_effect = GitlabCreateError("cannot create live note")
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = p
-    tool.progress_response = None
-    tool._validate_suggestion = lambda *args: (True, "", True)
-    tool.dedent_code = lambda filename, line, code: code
-    tool._validate_python_replacement_syntax = lambda *args: True
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = p
+    command.progress_response = None
+    command._validate_suggestion = lambda *args: (True, "", True)
+    command.dedent_code = lambda filename, line, code: code
+    command._validate_python_replacement_syntax = lambda *args: True
     queued = _suggestion(suggestion_content="queued", improved_code="x = 3")
     unqueued = _suggestion(suggestion_content="unqueued", improved_code="x = 4")
     suggestions = [unqueued, queued] if unqueued_first else [queued, unqueued]
-    asyncio.run(tool.push_inline_code_suggestions({"code_suggestions": suggestions},
+    asyncio.run(command.push_inline_code_suggestions({"code_suggestions": suggestions},
                                                 include_coverage_footer=False))
-    assert tool._output_published is True
+    assert command._output_published is True
     assert manager.list() == []
     bodies = p.get_recent_inline_comment_bodies()
     assert sum("queued" in body and "unqueued" not in body for body in bodies) == 1

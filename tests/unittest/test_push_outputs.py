@@ -24,15 +24,15 @@ class TestOutputSinkPreflight:
         assert isinstance(cfg, dict) and isinstance(cfg.get("channels"), list)
         assert output_sinks._check_output_sinks(cfg)[0] is True
 
-    @pytest.mark.parametrize("tools, valid", [
+    @pytest.mark.parametrize("commands, valid", [
         (["review", "ask"], True),
         ("review, ask", True),
         (["unknown"], False),
         ("not-ask", False),
         ([], False),
     ])
-    def test_tool_selection_uses_supported_exact_names(self, tools, valid):
-        result = output_sinks._check_output_sinks({"enable": True, "channels": ["stdout"], "tools": tools})
+    def test_command_selection_uses_supported_exact_names(self, commands, valid):
+        result = output_sinks._check_output_sinks({"enable": True, "channels": ["stdout"], "tools": commands})
         assert result[0] is valid
 
     @pytest.mark.parametrize("channels, valid", [
@@ -125,7 +125,7 @@ def _reset_push_outputs():
 
 class TestPushOutputs:
     @pytest.mark.parametrize("enable", [True, "enabled"])
-    def test_only_selected_tools_reach_configured_sinks(self, tmp_path, enable):
+    def test_only_selected_commands_reach_configured_sinks(self, tmp_path, enable):
         out = tmp_path / 'outputs.jsonl'
         s = get_settings()
         s.set('PUSH_OUTPUTS.ENABLE', enable)
@@ -140,14 +140,14 @@ class TestPushOutputs:
 
         assert [json.loads(line)['type'] for line in out.read_text().splitlines()] == ['review', 'ask']
 
-    @pytest.mark.parametrize("tools", [[], ["unknown"], "review, unknown", ["review", 42]])
-    def test_invalid_tool_selection_reports_configuration_error(self, monkeypatch, tmp_path, tools):
+    @pytest.mark.parametrize("commands", [[], ["unknown"], "review, unknown", ["review", 42]])
+    def test_invalid_command_selection_reports_configuration_error(self, monkeypatch, tmp_path, commands):
         out = tmp_path / 'invalid.jsonl'
         s = get_settings()
         s.set('PUSH_OUTPUTS.ENABLE', True)
         s.set('PUSH_OUTPUTS.CHANNELS', ['file'])
         s.set('PUSH_OUTPUTS.FILE_PATH', str(out))
-        s.set('PUSH_OUTPUTS.TOOLS', tools)
+        s.set('PUSH_OUTPUTS.TOOLS', commands)
         warnings = []
         monkeypatch.setattr(run_output, 'get_logger',
                             lambda: SimpleNamespace(warning=warnings.append))

@@ -35,7 +35,7 @@ class FakeGitProvider:
 
 
 @pytest.fixture
-def build_tool(monkeypatch):
+def build_command(monkeypatch):
     settings = get_settings(use_context=False)
     original = copy.deepcopy(settings.get("PR_CODE_SUGGESTIONS", None))
     monkeypatch.setattr(pcs, "get_git_provider_with_context", lambda url: FakeGitProvider())
@@ -53,23 +53,23 @@ def build_tool(monkeypatch):
         settings.set("PR_CODE_SUGGESTIONS", original)
 
 
-def test_accept_a_quoted_chunk_size(build_tool):
+def test_accept_a_quoted_chunk_size(build_command):
     """Accept a quoted number, which is what TOML yields for a quoted value."""
-    tool = build_tool("5")
+    command = build_command("5")
 
-    assert tool.vars["num_code_suggestions"] == 5
+    assert command.vars["num_code_suggestions"] == 5
 
 
 @pytest.mark.parametrize("value", ["abc", "", None, [1]])
-def test_fall_back_for_an_unusable_chunk_size(build_tool, value):
+def test_fall_back_for_an_unusable_chunk_size(build_command, value):
     """Fall back to the default instead of raising out of PRCodeSuggestions.__init__."""
-    tool = build_tool(value)
+    command = build_command(value)
 
-    assert tool.vars["num_code_suggestions"] == 3
+    assert command.vars["num_code_suggestions"] == 3
 
 
-def test_keep_a_numeric_chunk_size(build_tool):
+def test_keep_a_numeric_chunk_size(build_command):
     """Keep the existing behaviour for a genuinely numeric setting."""
-    tool = build_tool(4)
+    command = build_command(4)
 
-    assert tool.vars["num_code_suggestions"] == 4
+    assert command.vars["num_code_suggestions"] == 4

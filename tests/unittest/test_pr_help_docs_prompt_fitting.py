@@ -106,47 +106,47 @@ def test_prediction_preparator_raises_when_request_cannot_fit(bounded_model):
 def test_trim_docs_input_uses_verified_input_limit(bounded_model):
     bounded_model.set("config.model", _FIT_MODEL)
     bounded_model.set("config.custom_model_max_tokens", 20_000)
-    tool = PRHelpDocs.__new__(PRHelpDocs)
-    tool.vars = {
+    command = PRHelpDocs.__new__(PRHelpDocs)
+    command.vars = {
         "docs_url": "https://example.com/org/repo",
         "question": "How do I configure this?",
         "snippets": "",
     }
-    tool.ai_handler = SimpleNamespace()
-    tool.token_handler = TokenHandler(
+    command.ai_handler = SimpleNamespace()
+    command.token_handler = TokenHandler(
         None,
-        tool.vars,
+        command.vars,
         get_settings().pr_help_docs_prompts.system,
         get_settings().pr_help_docs_prompts.user,
     )
 
     big_docs = "word " * 40_000
-    assert tool._trim_docs_input(big_docs, math.inf, only_return_if_trim_needed=True) is True
+    assert command._trim_docs_input(big_docs, math.inf, only_return_if_trim_needed=True) is True
 
-    trimmed = tool._trim_docs_input(big_docs, math.inf, only_return_if_trim_needed=False)
+    trimmed = command._trim_docs_input(big_docs, math.inf, only_return_if_trim_needed=False)
     assert isinstance(trimmed, str)
     assert trimmed != big_docs
-    limit = tool._docs_input_token_limit()
-    assert tool.token_handler.count_tokens(trimmed, force_accurate=True) <= limit
+    limit = command._docs_input_token_limit()
+    assert command.token_handler.count_tokens(trimmed, force_accurate=True) <= limit
 
 
 def test_trim_docs_keeps_cleaned_text_when_it_fits(monkeypatch):
-    tool = PRHelpDocs.__new__(PRHelpDocs)
-    tool.token_handler = SimpleNamespace(count_tokens=lambda text, force_accurate=False: len(text))
-    tool._docs_input_token_limit = lambda: 16
+    command = PRHelpDocs.__new__(PRHelpDocs)
+    command.token_handler = SimpleNamespace(count_tokens=lambda text, force_accurate=False: len(text))
+    command._docs_input_token_limit = lambda: 16
     monkeypatch.setattr(
         "pr_agent.commands.pr_help_docs.clip_tokens",
         lambda *args, **kwargs: pytest.fail("cleaned text already fits"),
     )
 
     docs = "<!--" + "irrelevant " * 100 + "-->\nUseful text."
-    assert tool._trim_docs_input(docs, math.inf) == "Useful text."
+    assert command._trim_docs_input(docs, math.inf) == "Useful text."
 
 
 def test_trim_docs_passes_cleaned_token_count_to_clipper(monkeypatch):
-    tool = PRHelpDocs.__new__(PRHelpDocs)
-    tool.token_handler = SimpleNamespace(count_tokens=lambda text, force_accurate=False: len(text))
-    tool._docs_input_token_limit = lambda: 10
+    command = PRHelpDocs.__new__(PRHelpDocs)
+    command.token_handler = SimpleNamespace(count_tokens=lambda text, force_accurate=False: len(text))
+    command._docs_input_token_limit = lambda: 10
     calls = []
 
     def clip(text, limit, *, num_input_tokens):
@@ -157,7 +157,7 @@ def test_trim_docs_passes_cleaned_token_count_to_clipper(monkeypatch):
     docs = "<!--" + "irrelevant " * 100 + "-->\nUseful but longer documentation."
     cleaned = "Useful but longer documentation."
 
-    assert tool._trim_docs_input(docs, math.inf) == "clipped"
+    assert command._trim_docs_input(docs, math.inf) == "clipped"
     assert calls == [(cleaned, 10, len(cleaned))]
 
 
@@ -238,15 +238,15 @@ def test_corpus_cleanup_preserves_blocks_across_surrounding_markup():
     ids=["comments", "fenced-xml", "inline-fence-notation"],
 )
 async def test_run_uses_cleaned_full_docs_without_unnecessary_ranking(monkeypatch, docs, limit, expected_content):
-    tool = PRHelpDocs.__new__(PRHelpDocs)
-    tool.question = "Where is this documented?"
-    tool.return_as_string = True
-    tool.vars = {"docs_url": "https://example.test", "question": tool.question, "snippets": ""}
-    tool.ai_handler = SimpleNamespace()
-    tool.token_handler = SimpleNamespace(count_tokens=lambda text, force_accurate=False: len(text))
-    tool._docs_input_token_limit = lambda: limit
-    tool._gen_filenames_to_contents_map_from_repo = lambda: docs
-    tool._format_model_answer = lambda response, relevant_sections: response
+    command = PRHelpDocs.__new__(PRHelpDocs)
+    command.question = "Where is this documented?"
+    command.return_as_string = True
+    command.vars = {"docs_url": "https://example.test", "question": command.question, "snippets": ""}
+    command.ai_handler = SimpleNamespace()
+    command.token_handler = SimpleNamespace(count_tokens=lambda text, force_accurate=False: len(text))
+    command._docs_input_token_limit = lambda: limit
+    command._gen_filenames_to_contents_map_from_repo = lambda: docs
+    command._format_model_answer = lambda response, relevant_sections: response
     model_snippets = []
     assert len(aggregate_documentation_files_for_prompt_contents(docs)) > limit
 
@@ -257,16 +257,16 @@ async def test_run_uses_cleaned_full_docs_without_unnecessary_ranking(monkeypatc
         model_snippets.append(preparator._vars["snippets"])
         return "unused"
 
-    tool._rank_docs_and_return_them_as_prompt = reject_ranking
+    command._rank_docs_and_return_them_as_prompt = reject_ranking
     monkeypatch.setattr("pr_agent.commands.pr_help_docs.retry_with_fallback_models", predict)
     monkeypatch.setattr("pr_agent.commands.pr_help_docs.load_yaml", lambda response: {"response": "answer"})
 
-    assert await tool.run() == "answer"
-    assert model_snippets == [tool.vars["snippets"]]
-    assert all(path in tool.vars["snippets"] for path in docs)
-    assert expected_content in tool.vars["snippets"]
-    assert "irrelevant" not in tool.vars["snippets"]
-    assert len(tool.vars["snippets"]) <= limit
+    assert await command.run() == "answer"
+    assert model_snippets == [command.vars["snippets"]]
+    assert all(path in command.vars["snippets"] for path in docs)
+    assert expected_content in command.vars["snippets"]
+    assert "irrelevant" not in command.vars["snippets"]
+    assert len(command.vars["snippets"]) <= limit
 
 
 @pytest.mark.asyncio
@@ -288,15 +288,15 @@ async def test_run_keeps_document_boundaries_with_truncated_comments(tmp_path, m
         aggregate_documentation_files_for_prompt_contents(docs)
     )
 
-    tool = PRHelpDocs.__new__(PRHelpDocs)
-    tool.question = "What is max_jobs?"
-    tool.return_as_string = True
-    tool.vars = {"docs_url": "https://example.test", "question": tool.question, "snippets": ""}
-    tool.ai_handler = SimpleNamespace()
-    tool.token_handler = SimpleNamespace(count_tokens=lambda text, force_accurate=False: len(text))
-    tool._docs_input_token_limit = lambda: 150
-    tool._gen_filenames_to_contents_map_from_repo = lambda: docs
-    tool._format_model_answer = lambda response, relevant_sections: response
+    command = PRHelpDocs.__new__(PRHelpDocs)
+    command.question = "What is max_jobs?"
+    command.return_as_string = True
+    command.vars = {"docs_url": "https://example.test", "question": command.question, "snippets": ""}
+    command.ai_handler = SimpleNamespace()
+    command.token_handler = SimpleNamespace(count_tokens=lambda text, force_accurate=False: len(text))
+    command._docs_input_token_limit = lambda: 150
+    command._gen_filenames_to_contents_map_from_repo = lambda: docs
+    command._format_model_answer = lambda response, relevant_sections: response
     rankings = []
 
     async def rank_docs(*args):
@@ -306,14 +306,14 @@ async def test_run_keeps_document_boundaries_with_truncated_comments(tmp_path, m
     async def predict(*args, **kwargs):
         return "unused"
 
-    tool._rank_docs_and_return_them_as_prompt = rank_docs
+    command._rank_docs_and_return_them_as_prompt = rank_docs
     monkeypatch.setattr("pr_agent.commands.pr_help_docs.retry_with_fallback_models", predict)
     monkeypatch.setattr("pr_agent.commands.pr_help_docs.load_yaml", lambda response: {"response": "answer"})
 
-    assert await tool.run() == "answer"
+    assert await command.run() == "answer"
     assert rankings == [True]
-    assert "/020-guide.md" in tool.vars["snippets"]
-    assert "max_jobs = 7" in tool.vars["snippets"]
+    assert "/020-guide.md" in command.vars["snippets"]
+    assert "max_jobs = 7" in command.vars["snippets"]
 
     # Ranked documents must also retain file boundaries when clipping is needed.
     clipping_inputs = []
@@ -327,7 +327,7 @@ async def test_run_keeps_document_boundaries_with_truncated_comments(tmp_path, m
         "pr_agent.commands.pr_help_docs.load_yaml",
         lambda response: {"relevant_files_ranking": [{"idx": 0}, {"idx": 1}, {"idx": 2}]},
     )
-    ranked = await PRHelpDocs._rank_docs_and_return_them_as_prompt(tool, docs, math.inf)
+    ranked = await PRHelpDocs._rank_docs_and_return_them_as_prompt(command, docs, math.inf)
 
     assert clipping_inputs
     assert all(path in ranked for path in docs)
@@ -350,15 +350,15 @@ async def test_ranked_docs_preserve_fitting_xml_example(monkeypatch, comment):
     selected_size = len(aggregate_documentation_files_for_prompt_contents({"/config.md": docs["/config.md"]}))
     assert (selected_size < limit) == (not comment)
 
-    tool = PRHelpDocs.__new__(PRHelpDocs)
-    tool.question = "How do I configure the listener?"
-    tool.return_as_string = True
-    tool.vars = {"docs_url": "https://example.test", "question": tool.question, "snippets": ""}
-    tool.ai_handler = SimpleNamespace()
-    tool.token_handler = SimpleNamespace(count_tokens=lambda text, force_accurate=False: len(text))
-    tool._docs_input_token_limit = lambda: limit
-    tool._gen_filenames_to_contents_map_from_repo = lambda: docs
-    tool._format_model_answer = lambda response, relevant_sections: response
+    command = PRHelpDocs.__new__(PRHelpDocs)
+    command.question = "How do I configure the listener?"
+    command.return_as_string = True
+    command.vars = {"docs_url": "https://example.test", "question": command.question, "snippets": ""}
+    command.ai_handler = SimpleNamespace()
+    command.token_handler = SimpleNamespace(count_tokens=lambda text, force_accurate=False: len(text))
+    command._docs_input_token_limit = lambda: limit
+    command._gen_filenames_to_contents_map_from_repo = lambda: docs
+    command._format_model_answer = lambda response, relevant_sections: response
 
     responses = iter([{"relevant_files_ranking": [{"idx": 1}]}, {"response": "answer"}])
     model_calls = []
@@ -370,7 +370,7 @@ async def test_ranked_docs_preserve_fitting_xml_example(monkeypatch, comment):
     monkeypatch.setattr("pr_agent.commands.pr_help_docs.retry_with_fallback_models", predict)
     monkeypatch.setattr("pr_agent.commands.pr_help_docs.load_yaml", lambda response: next(responses))
 
-    assert await tool.run() == "answer"
+    assert await command.run() == "answer"
     assert len(model_calls) == 2
-    assert "/config.md" in tool.vars["snippets"]
-    assert xml_example in tool.vars["snippets"]
+    assert "/config.md" in command.vars["snippets"]
+    assert xml_example in command.vars["snippets"]

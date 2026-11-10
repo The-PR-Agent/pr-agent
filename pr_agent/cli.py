@@ -111,12 +111,12 @@ def _validate_output_options(parser, args, diff_mode):
             parser.error(f"--output is not supported for plain-diff command '{command}'")
 
     if json_output is not None:
-        pr_tool_commands = _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS
-        if command not in _JSON_REVIEW_COMMANDS | pr_tool_commands:
+        pr_commands = _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS
+        if command not in _JSON_REVIEW_COMMANDS | pr_commands:
             parser.error("--json-output is only supported for review, improve, describe, or generate_labels commands")
         if not diff_mode and (not args.pr_url or args.issue_url):
             parser.error("--json-output requires --pr_url, --stdin, or --diff-file")
-        if diff_mode and output is not None and command in pr_tool_commands | _JSON_REVIEW_COMMANDS:
+        if diff_mode and output is not None and command in pr_commands | _JSON_REVIEW_COMMANDS:
             same_destination = os.path.normcase(os.path.realpath(output)) == os.path.normcase(
                 os.path.realpath(json_output)
             )
@@ -269,10 +269,10 @@ def run(inargs=None, args=None):
         async def inner():
             # Plain-diff reviews write through their provider; describe and improve
             # already use the shared JSON writer, as they do with --pr_url.
-            tool_json_output = getattr(args, "json_output", None) if (
+            command_json_output = getattr(args, "json_output", None) if (
                 not diff_mode or command in _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS
             ) else None
-            output_token = review_json_output_path.set(tool_json_output)
+            output_token = review_json_output_path.set(command_json_output)
             try:
                 return await run_inner()
             finally:
@@ -284,12 +284,12 @@ def run(inargs=None, args=None):
             inject_artifact_context()
             init_run_details()
             # Read the verdict in the same task where the request installs its collector.
-            tool_args = _encode_plain_diff_context_args(args.rest) if diff_mode else args.rest
+            command_args = _encode_plain_diff_context_args(args.rest) if diff_mode else args.rest
             if args.issue_url:
-                result = await PRAgent().handle_request(args.issue_url, [command] + tool_args)
+                result = await PRAgent().handle_request(args.issue_url, [command] + command_args)
             else:
                 target = args.pr_url or "local_diff"
-                result = await PRAgent().handle_request(target, [command] + tool_args)
+                result = await PRAgent().handle_request(target, [command] + command_args)
             if result is RequestOutcome.SKIPPED:
                 # No tool ran, so there are no command callbacks or failures to drain.
                 return RequestOutcome.SKIPPED, False

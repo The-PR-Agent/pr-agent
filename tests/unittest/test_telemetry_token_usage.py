@@ -13,7 +13,7 @@ from pr_agent.config_loader import get_settings
 from tests.unittest._telemetry_helpers import build_in_memory_meter, build_in_memory_tracer
 
 
-class _FakeTool:
+class _FakeCommand:
     def __init__(self, pr_url, ai_handler, args):
         pass
 
@@ -72,7 +72,7 @@ def telemetry(monkeypatch):
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module.CliArgs, "validate_user_args", lambda args: (True, None))
     monkeypatch.setattr(pr_agent_module, "update_settings_from_args", lambda args: args)
-    monkeypatch.setitem(pr_agent_module.command2class, "customcmd", _FakeTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "customcmd", _FakeCommand)
     return reader
 
 
@@ -158,7 +158,7 @@ async def test_fallback_flag_is_recorded_on_a_separate_timeseries(telemetry, mon
     assert _ai_call_values(reader) == {False: 1}
 
 
-class _RecordingTool:
+class _RecordingCommand:
     """A tool that makes an AI call but never installs its own collector (e.g. /ask)."""
 
     prompt_tokens = 0
@@ -179,7 +179,7 @@ class _RecordingTool:
         return None
 
 
-class _FirstUsageTool(_RecordingTool):
+class _FirstUsageCommand(_RecordingCommand):
     """Mimics a tool such as /review that installs its own collector on entry."""
 
     prompt_tokens = 10
@@ -189,7 +189,7 @@ class _FirstUsageTool(_RecordingTool):
         return await super().run()
 
 
-class _SecondUsageTool(_RecordingTool):
+class _SecondUsageCommand(_RecordingCommand):
     completion_tokens = 5
 
 
@@ -210,7 +210,7 @@ def _ai_call_values_by_command(reader):
 @pytest.mark.asyncio
 async def test_command_without_its_own_collector_exports_its_usage(telemetry, monkeypatch):
     reader = telemetry
-    monkeypatch.setitem(pr_agent_module.command2class, "usagecmd", _SecondUsageTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "usagecmd", _SecondUsageCommand)
 
     handled = await pr_agent_module.PRAgent(ai_handler="fake")._handle_request(
         "https://example/pr/1", ["usagecmd"])
@@ -223,8 +223,8 @@ async def test_command_without_its_own_collector_exports_its_usage(telemetry, mo
 @pytest.mark.asyncio
 async def test_each_command_starts_from_a_fresh_collector(telemetry, monkeypatch):
     reader = telemetry
-    monkeypatch.setitem(pr_agent_module.command2class, "firstcmd", _FirstUsageTool)
-    monkeypatch.setitem(pr_agent_module.command2class, "secondcmd", _SecondUsageTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "firstcmd", _FirstUsageCommand)
+    monkeypatch.setitem(pr_agent_module.command2class, "secondcmd", _SecondUsageCommand)
     agent = pr_agent_module.PRAgent(ai_handler="fake")
 
     await agent._handle_request("https://example/pr/1", ["firstcmd"])

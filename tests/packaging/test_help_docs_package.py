@@ -50,18 +50,18 @@ calls = []
 
 async def fake_retry(_prediction, *, model_type):
     calls.append(model_type)
-    assert "==file name==" in tool.vars["snippets"]
-    assert "/tools/review.md" in tool.vars["snippets"]
+    assert "==file name==" in command.vars["snippets"]
+    assert "/tools/review.md" in command.vars["snippets"]
     return "response: ok\nrelevant_sections: []"
 
 pr_help_message.retry_with_fallback_models = fake_retry
-tool = PRHelpMessage.__new__(PRHelpMessage)
-tool.git_provider = SimpleNamespace(pr_url="https://example.com/org/repo/pull/1")
-tool.ai_handler = SimpleNamespace()
-tool.question_str = "How does review work?"
-tool.return_as_string = False
-tool.vars = {"question": tool.question_str, "snippets": ""}
-asyncio.run(tool.run())
+command = PRHelpMessage.__new__(PRHelpMessage)
+command.git_provider = SimpleNamespace(pr_url="https://example.com/org/repo/pull/1")
+command.ai_handler = SimpleNamespace()
+command.question_str = "How does review work?"
+command.return_as_string = False
+command.vars = {"question": command.question_str, "snippets": ""}
+asyncio.run(command.run())
 
 root = pr_help_message._get_help_docs_root()
 documents = [path.as_posix() for path, _resource in pr_help_message._iter_help_docs(root)]
@@ -69,7 +69,7 @@ print(json.dumps({
     "module": pr_help_message.__file__,
     "root": str(root),
     "documents": documents,
-    "snippet_chars": len(tool.vars["snippets"]),
+    "snippet_chars": len(command.vars["snippets"]),
     "model_calls": len(calls),
 }))
 """

@@ -88,10 +88,10 @@ def test_suggestions_identity_is_bounded_and_does_not_match_quoted_marker():
 
 
 def test_summarized_artifact_uses_custom_heading_without_identity(restore_suggestions_heading):
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
     get_settings().set("pr_code_suggestions.suggestions_heading", "Team Suggestions")
 
-    artifact = tool.generate_summarized_suggestions({"code_suggestions": []})
+    artifact = command.generate_summarized_suggestions({"code_suggestions": []})
 
     assert artifact.startswith("## Team Suggestions ✨\n\n")
     assert "<!-- pr-agent:improve" not in artifact
@@ -108,15 +108,15 @@ async def test_no_suggestions_uses_custom_heading_with_separate_result_identity(
     )
     provider = MagicMock()
     provider.supports_code_suggestions_artifact.return_value = False
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = provider
-    tool.progress_response = None
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = provider
+    command.progress_response = None
     try:
         get_settings().set("config.publish_output", True)
         get_settings().set("pr_code_suggestions.publish_output_no_suggestions", True)
         get_settings().set("pr_code_suggestions.suggestions_heading", "Team Suggestions")
 
-        await tool.publish_no_suggestions()
+        await command.publish_no_suggestions()
     finally:
         restore_settings(snapshot)
 

@@ -17,7 +17,7 @@ false positives.
 import ast
 from pathlib import Path
 
-TOOLS_DIR = Path(__file__).resolve().parent.parent.parent / "pr_agent" / "commands"
+COMMANDS_DIR = Path(__file__).resolve().parent.parent.parent / "pr_agent" / "commands"
 PROVIDERS_DIR = Path(__file__).resolve().parent.parent.parent / "pr_agent" / "git_providers"
 
 # Base GitProvider methods that at least one provider declines (see
@@ -35,8 +35,8 @@ GUARDED_METHODS = {
 }
 
 
-def _tool_files():
-    return sorted(TOOLS_DIR.glob("*.py"))
+def _command_files():
+    return sorted(COMMANDS_DIR.glob("*.py"))
 
 
 def _is_supported_capability_strings(node):
@@ -96,7 +96,7 @@ def _unguarded_call_sites():
     against; it will not catch one being present but misplaced.
     """
     hits = []
-    for path in _tool_files():
+    for path in _command_files():
         tree = ast.parse(path.read_text(), filename=str(path))
         for func_node in _function_nodes(tree):
             guarded_caps = _is_supported_capability_strings(func_node)
@@ -139,9 +139,9 @@ def _provider_declinable_capabilities():
     return caps
 
 
-def _is_supported_strings_used_in_tools():
+def _is_supported_strings_used_in_commands():
     caps = set()
-    for path in _tool_files():
+    for path in _command_files():
         tree = ast.parse(path.read_text(), filename=str(path))
         caps |= _is_supported_capability_strings(tree)
     return caps
@@ -156,8 +156,8 @@ def test_every_capability_gated_provider_call_is_locally_guarded():
     )
 
 
-def test_every_is_supported_string_in_tools_is_a_capability_some_provider_declines():
-    used = _is_supported_strings_used_in_tools()
+def test_every_is_supported_string_in_commands_is_a_capability_some_provider_declines():
+    used = _is_supported_strings_used_in_commands()
     declinable = _provider_declinable_capabilities()
     typos = used - declinable
     assert not typos, (

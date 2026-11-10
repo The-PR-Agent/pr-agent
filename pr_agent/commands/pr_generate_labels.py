@@ -18,7 +18,7 @@ from pr_agent.algo.run_details import get_run_details, record_command_failure
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import filter_generated_labels, get_user_labels, load_yaml, set_custom_labels
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import get_git_provider_for_tool
+from pr_agent.git_providers import get_git_provider_for_command
 from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError, get_main_pr_language
 from pr_agent.log import get_logger
 
@@ -48,7 +48,7 @@ class PRGenerateLabels:
             args (list, optional): List of arguments passed to the PRGenerateLabels class. Defaults to None.
         """
         # Initialize the git provider and main PR language
-        self.git_provider = get_git_provider_for_tool(pr_url)
+        self.git_provider = get_git_provider_for_command(pr_url)
         self.main_pr_language = get_main_pr_language(
             self.git_provider.get_languages(), self.git_provider.get_files()
         )

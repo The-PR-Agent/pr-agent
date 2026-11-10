@@ -21,7 +21,7 @@ from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import get_git_provider_for_tool
+from pr_agent.git_providers import get_git_provider_for_command
 from pr_agent.git_providers.git_provider import FileContentSnapshot, get_main_pr_language
 from pr_agent.log import get_logger
 
@@ -45,7 +45,7 @@ class PRUpdateChangelog:
             )
         # Keep the snapshot, write, and follow-up review on the same target throughout the command.
         self.changelog_path = changelog_path
-        self.git_provider = get_git_provider_for_tool(pr_url)
+        self.git_provider = get_git_provider_for_command(pr_url)
 
         # Determine whether pushing the changelog to the repo is both requested and possible.
         # If a push is requested but not possible — the provider has no push support, or

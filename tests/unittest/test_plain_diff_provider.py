@@ -456,15 +456,15 @@ async def test_partial_improve_keeps_suggestions_and_coverage_in_one_output(cfg,
     cfg("plain_diff.output_path", str(output))
     provider = PlainDiffGitProvider(None)
     assert provider.supports_code_suggestions_artifact() is True
-    tool = object.__new__(PRCodeSuggestions)
-    tool.git_provider = provider
-    tool.failed_chunk_count = 1
-    tool.total_chunk_count = 2
-    tool.progress_response = None
-    tool._output_published = False
-    tool._validate_suggestion = lambda *args: (True, "", True)
+    command = object.__new__(PRCodeSuggestions)
+    command.git_provider = provider
+    command.failed_chunk_count = 1
+    command.total_chunk_count = 2
+    command.progress_response = None
+    command._output_published = False
+    command._validate_suggestion = lambda *args: (True, "", True)
 
-    await tool.push_inline_code_suggestions({"code_suggestions": [{
+    await command.push_inline_code_suggestions({"code_suggestions": [{
         "relevant_file": "foo.py",
         "relevant_lines_start": 2,
         "relevant_lines_end": 2,
@@ -490,12 +490,12 @@ async def test_partial_improve_without_suggestions_keeps_coverage_in_artifact(cf
     cfg("plain_diff.content", DIFF)
     cfg("plain_diff.output_path", str(output))
     provider = PlainDiffGitProvider(None)
-    tool = object.__new__(PRCodeSuggestions)
-    tool.git_provider = provider
-    tool.failed_chunk_count = 1
-    tool.total_chunk_count = 2
+    command = object.__new__(PRCodeSuggestions)
+    command.git_provider = provider
+    command.failed_chunk_count = 1
+    command.total_chunk_count = 2
 
-    await tool.publish_no_suggestions()
+    await command.publish_no_suggestions()
 
     content = output.read_text(encoding="utf-8")
     stdout = capsys.readouterr().out

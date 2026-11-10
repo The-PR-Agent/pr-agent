@@ -21,11 +21,11 @@ TRUNCATION_SETTINGS = (
 )
 
 
-def _make_tool(git_provider=None):
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = git_provider or MagicMock()
-    tool.progress_response = None
-    return tool
+def _make_command(git_provider=None):
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = git_provider or MagicMock()
+    command.progress_response = None
+    return command
 
 
 def _valid_suggestion(**overrides):
@@ -110,7 +110,7 @@ async def test_inline_suggestion_preserves_unicode_separator_through_publication
     )
     git_provider.supports_code_suggestions_artifact.return_value = False
     git_provider.publish_code_suggestions.return_value = True
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _valid_suggestion(
         existing_code=original,
         improved_code=improved,
@@ -118,7 +118,7 @@ async def test_inline_suggestion_preserves_unicode_separator_through_publication
         relevant_lines_end=line_number,
     )
 
-    await tool.push_inline_code_suggestions({"code_suggestions": [suggestion]}, include_coverage_footer=False)
+    await command.push_inline_code_suggestions({"code_suggestions": [suggestion]}, include_coverage_footer=False)
 
     published = git_provider.publish_code_suggestions.call_args.args[0]
     assert len(published) == 1
@@ -136,13 +136,13 @@ async def test_inline_suggestion_keeps_separator_only_line_during_reindent(inden
     git_provider.diff_files = _patch_files(original_file, original_file, filename="notes.txt")
     git_provider.supports_code_suggestions_artifact.return_value = False
     git_provider.publish_code_suggestions.return_value = True
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _valid_suggestion(
         relevant_file="notes.txt", relevant_lines_start=1, relevant_lines_end=3,
         existing_code=existing, improved_code=improved,
     )
 
-    await tool.push_inline_code_suggestions({"code_suggestions": [suggestion]}, include_coverage_footer=False)
+    await command.push_inline_code_suggestions({"code_suggestions": [suggestion]}, include_coverage_footer=False)
 
     published = git_provider.publish_code_suggestions.call_args.args[0]
     assert len(published) == 1
@@ -158,12 +158,12 @@ async def test_inline_suggestion_keeps_trailing_unicode_separator():
     git_provider.diff_files = _patch_files(existing + "\n", existing + "\n", filename="notes.txt")
     git_provider.supports_code_suggestions_artifact.return_value = False
     git_provider.publish_code_suggestions.return_value = True
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _valid_suggestion(
         relevant_file="notes.txt", existing_code=existing, improved_code=improved,
     )
 
-    await tool.push_inline_code_suggestions({"code_suggestions": [suggestion]}, include_coverage_footer=False)
+    await command.push_inline_code_suggestions({"code_suggestions": [suggestion]}, include_coverage_footer=False)
 
     published = git_provider.publish_code_suggestions.call_args.args[0]
     assert f"```suggestion\n{improved}\n```" in published[0]["body"]
@@ -175,14 +175,14 @@ def test_validate_one_liner_marks_stale_suggestion_as_score_zero():
     git_provider.get_diff_files.return_value = _patch_files(
         base_file="return old()\n", head_file="return new()\n"
     )
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _valid_suggestion(
         existing_code="return old()",
         improved_code="return new()",
         score=8,
     )
 
-    result = tool.validate_one_liner_suggestion_not_repeating_code(suggestion)
+    result = command.validate_one_liner_suggestion_not_repeating_code(suggestion)
 
     assert result["score"] == 0
 
@@ -192,14 +192,14 @@ def test_validate_one_liner_skips_when_existing_code_uses_ellipsis():
     git_provider.get_diff_files.return_value = _patch_files(
         base_file="return old()\n", head_file="return new()\n"
     )
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _valid_suggestion(
         existing_code="... old() ...",
         improved_code="return new()",
         score=8,
     )
 
-    result = tool.validate_one_liner_suggestion_not_repeating_code(suggestion)
+    result = command.validate_one_liner_suggestion_not_repeating_code(suggestion)
 
     # '...' short-circuits the check; original score is preserved.
     assert result["score"] == 8
@@ -211,14 +211,14 @@ def test_validate_one_liner_preserves_score_when_code_not_yet_applied():
     git_provider.get_diff_files.return_value = _patch_files(
         base_file="return old()\n", head_file="return old()\n"
     )
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _valid_suggestion(
         existing_code="return old()",
         improved_code="return new()",
         score=8,
     )
 
-    result = tool.validate_one_liner_suggestion_not_repeating_code(suggestion)
+    result = command.validate_one_liner_suggestion_not_repeating_code(suggestion)
 
     assert result["score"] == 8
 
@@ -230,14 +230,14 @@ def test_validate_one_liner_preserves_score_when_filename_not_in_diff():
         head_file="return new()\n",
         filename="other.py",
     )
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _valid_suggestion(
         existing_code="return old()",
         improved_code="return new()",
         score=8,
     )
 
-    result = tool.validate_one_liner_suggestion_not_repeating_code(suggestion)
+    result = command.validate_one_liner_suggestion_not_repeating_code(suggestion)
 
     assert result["score"] == 8
 
@@ -247,14 +247,14 @@ def test_validate_one_liner_handles_empty_head_file_gracefully():
     git_provider.get_diff_files.return_value = _patch_files(
         base_file="return old()\n", head_file=""
     )
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _valid_suggestion(
         existing_code="return old()",
         improved_code="return new()",
         score=8,
     )
 
-    result = tool.validate_one_liner_suggestion_not_repeating_code(suggestion)
+    result = command.validate_one_liner_suggestion_not_repeating_code(suggestion)
 
     assert result["score"] == 8
 
@@ -265,16 +265,16 @@ def test_validate_one_liner_handles_empty_head_file_gracefully():
 
 @pytest.mark.parametrize("newline", ["\n", "\r\n"])
 def test_remove_line_numbers_strips_leading_digits_and_separator(newline):
-    tool = _make_tool()
-    tool.patches_diff_list = [
+    command = _make_command()
+    command.patches_diff_list = [
         "## File: app.py\n"
         "1 def f():\n"
         "2     return old()\n"
         "10    return other()\n"
     ]
-    tool.patches_diff_list = [diff.replace("\n", newline) for diff in tool.patches_diff_list]
+    command.patches_diff_list = [diff.replace("\n", newline) for diff in command.patches_diff_list]
 
-    result = tool.remove_line_numbers(tool.patches_diff_list)
+    result = command.remove_line_numbers(command.patches_diff_list)
 
     assert len(result) == 1
     lines = result[0].splitlines()
@@ -287,34 +287,34 @@ def test_remove_line_numbers_strips_leading_digits_and_separator(newline):
 
 
 def test_remove_line_numbers_clears_pure_numeric_lines():
-    tool = _make_tool()
-    tool.patches_diff_list = ["42\nkeep me\n7\ntail"]
+    command = _make_command()
+    command.patches_diff_list = ["42\nkeep me\n7\ntail"]
 
-    result = tool.remove_line_numbers(tool.patches_diff_list)
+    result = command.remove_line_numbers(command.patches_diff_list)
 
     lines = result[0].splitlines()
     assert lines == ["", "keep me", "", "tail"]
 
 
 def test_remove_line_numbers_preserves_blank_lines():
-    tool = _make_tool()
-    tool.patches_diff_list = ["1 alpha\n\n2 beta"]
+    command = _make_command()
+    command.patches_diff_list = ["1 alpha\n\n2 beta"]
 
-    result = tool.remove_line_numbers(tool.patches_diff_list)
+    result = command.remove_line_numbers(command.patches_diff_list)
 
     lines = result[0].splitlines()
     assert lines == ["alpha", "", "beta"]
 
 
 def test_remove_line_numbers_returns_original_on_exception():
-    tool = _make_tool()
+    command = _make_command()
     # Exercise the broad ``except`` fallback by putting invalid data in the
     # instance list itself (``None`` has no ``split``), and assert the
     # parameter object is returned untouched.
-    tool.patches_diff_list = [None]
+    command.patches_diff_list = [None]
     original_input = ["1 alpha"]
 
-    result = tool.remove_line_numbers(original_input)
+    result = command.remove_line_numbers(original_input)
 
     assert result is original_input
 
@@ -327,7 +327,7 @@ def test_remove_line_numbers_returns_original_on_exception():
 async def test_analyze_self_reflection_length_mismatch_applies_fallback_score():
     git_provider = MagicMock()
     git_provider.get_diff_files.return_value = []
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     settings = get_settings()
     original_publish_output = settings.config.publish_output
     settings.config.publish_output = False
@@ -340,7 +340,7 @@ code_suggestions:
     why: only one feedback entry
 """
 
-        await tool.analyze_self_reflection_response(data, response_reflect)
+        await command.analyze_self_reflection_response(data, response_reflect)
 
         for suggestion in data["code_suggestions"]:
             assert suggestion["score"] == 7
@@ -353,7 +353,7 @@ code_suggestions:
 async def test_analyze_self_reflection_non_mapping_applies_fallback_score():
     git_provider = MagicMock()
     git_provider.get_diff_files.return_value = []
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     settings = get_settings()
     original_publish_output = settings.config.publish_output
     settings.config.publish_output = False
@@ -362,7 +362,7 @@ async def test_analyze_self_reflection_non_mapping_applies_fallback_score():
         # A YAML sequence parses to a list, never the expected mapping.
         response_reflect = "- suggestion_score: 9\n- why: top-level list\n"
 
-        await tool.analyze_self_reflection_response(data, response_reflect)
+        await command.analyze_self_reflection_response(data, response_reflect)
 
         suggestion = data["code_suggestions"][0]
         assert suggestion["score"] == 7
@@ -375,7 +375,7 @@ async def test_analyze_self_reflection_non_mapping_applies_fallback_score():
 async def test_analyze_self_reflection_non_list_feedback_applies_fallback_score():
     git_provider = MagicMock()
     git_provider.get_diff_files.return_value = []
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     settings = get_settings()
     original_publish_output = settings.config.publish_output
     settings.config.publish_output = False
@@ -384,7 +384,7 @@ async def test_analyze_self_reflection_non_list_feedback_applies_fallback_score(
         # A mapping where a list is expected cannot be indexed per suggestion.
         response_reflect = "code_suggestions:\n  suggestion_score: 9\n  why: not a list\n"
 
-        await tool.analyze_self_reflection_response(data, response_reflect)
+        await command.analyze_self_reflection_response(data, response_reflect)
 
         suggestion = data["code_suggestions"][0]
         assert suggestion["score"] == 7
@@ -397,7 +397,7 @@ async def test_analyze_self_reflection_non_list_feedback_applies_fallback_score(
 async def test_analyze_self_reflection_invalid_feedback_assigns_default_score_seven():
     git_provider = MagicMock()
     git_provider.get_diff_files.return_value = []
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     settings = get_settings()
     original_publish_output = settings.config.publish_output
     settings.config.publish_output = False
@@ -410,7 +410,7 @@ code_suggestions:
   - irrelevant_key: 1
 """
 
-        await tool.analyze_self_reflection_response(data, response_reflect)
+        await command.analyze_self_reflection_response(data, response_reflect)
 
         assert data["code_suggestions"][0]["score"] == 7
         assert data["code_suggestions"][0]["score_why"] == _REFLECTION_FAILURE_SCORE_WHY
@@ -422,7 +422,7 @@ code_suggestions:
 async def test_analyze_self_reflection_clears_existing_code_when_equal_to_improved():
     git_provider = MagicMock()
     git_provider.get_diff_files.return_value = []
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     settings = get_settings()
     original_publish_output = settings.config.publish_output
     snapshot = snapshot_settings(["pr_code_suggestions.committable_code_suggestions"])
@@ -436,7 +436,7 @@ code_suggestions:
     why: equal codes
 """
 
-        await tool.analyze_self_reflection_response(data, response_reflect)
+        await command.analyze_self_reflection_response(data, response_reflect)
 
         suggestion = data["code_suggestions"][0]
         assert suggestion["score"] == 6
@@ -453,7 +453,7 @@ code_suggestions:
 async def test_analyze_self_reflection_clears_improved_code_in_committable_mode():
     git_provider = MagicMock()
     git_provider.get_diff_files.return_value = []
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     settings = get_settings()
     original_publish_output = settings.config.publish_output
     snapshot = snapshot_settings(["pr_code_suggestions.committable_code_suggestions"])
@@ -467,7 +467,7 @@ code_suggestions:
     why: equal codes
 """
 
-        await tool.analyze_self_reflection_response(data, response_reflect)
+        await command.analyze_self_reflection_response(data, response_reflect)
 
         suggestion = data["code_suggestions"][0]
         # committable mode keeps existing_code (used to locate the line in PR)
@@ -493,7 +493,7 @@ code_suggestions:
     ("Cache the const binding instead of deleting it on every request.", True),
 ])
 def test_prepare_pr_code_suggestions_filters_const_and_let_words(content, keep_suggestion):
-    tool = _make_tool()
+    command = _make_command()
     existing_code = "const client = new Client();" if keep_suggestion else "let x = 1;"
     improved_code = "const client = this.client;" if keep_suggestion else "const x = 1;"
     prediction = f"""
@@ -512,7 +512,7 @@ code_suggestions:
     improved_code: helper()
 """
 
-    data = tool._prepare_pr_code_suggestions(prediction)
+    data = command._prepare_pr_code_suggestions(prediction)
 
     summaries = [s["one_sentence_summary"] for s in data["code_suggestions"]]
     expected = ["First suggestion", "Keep this one"] if keep_suggestion else ["Keep this one"]
@@ -527,7 +527,7 @@ code_suggestions:
     "Do not use const instead of let because the variable is reassigned later.",
 ])
 def test_prepare_pr_code_suggestions_keeps_const_to_let_fixes(content):
-    tool = _make_tool()
+    command = _make_command()
     suggestion = _valid_suggestion(
         one_sentence_summary="Allow reassignment",
         label="possible bug",
@@ -538,13 +538,13 @@ def test_prepare_pr_code_suggestions_keeps_const_to_let_fixes(content):
         improved_code="let count = 0;\ncount += 1;",
     )
 
-    data = tool._prepare_pr_code_suggestions(yaml.safe_dump({"code_suggestions": [suggestion]}))
+    data = command._prepare_pr_code_suggestions(yaml.safe_dump({"code_suggestions": [suggestion]}))
 
     assert data["code_suggestions"] == [suggestion]
 
 
 def test_prepare_pr_code_suggestions_skips_suggestion_missing_improved_code():
-    tool = _make_tool()
+    command = _make_command()
     prediction = """
 code_suggestions:
   - one_sentence_summary: Missing improved_code
@@ -560,7 +560,7 @@ code_suggestions:
     improved_code: b()
 """
 
-    data = tool._prepare_pr_code_suggestions(prediction)
+    data = command._prepare_pr_code_suggestions(prediction)
 
     assert len(data["code_suggestions"]) == 1
     assert data["code_suggestions"][0]["one_sentence_summary"] == "Complete"
@@ -573,27 +573,27 @@ code_suggestions:
     pytest.param(_valid_suggestion(suggestion_content=None), id="processing-error"),
 ])
 def test_prepare_pr_code_suggestions_retries_when_all_entries_are_invalid(suggestion):
-    tool = _make_tool()
+    command = _make_command()
     prediction = yaml.safe_dump({"code_suggestions": [suggestion]})
 
     with pytest.raises(FallbackEligibleError, match="All code suggestions failed processing"):
-        tool._prepare_pr_code_suggestions(prediction)
+        command._prepare_pr_code_suggestions(prediction)
 
 
 @pytest.mark.parametrize("include_invalid", [False, True])
 def test_prepare_pr_code_suggestions_keeps_normally_filtered_empty_results(include_invalid):
-    tool = _make_tool()
+    command = _make_command()
     suggestions = [_valid_suggestion(suggestion_content="Use const instead of let.")]
     if include_invalid:
         suggestions.append({})
 
-    data = tool._prepare_pr_code_suggestions(yaml.safe_dump({"code_suggestions": suggestions}))
+    data = command._prepare_pr_code_suggestions(yaml.safe_dump({"code_suggestions": suggestions}))
 
     assert data == {"code_suggestions": []}
 
 
 def test_prepare_pr_code_suggestions_accepts_list_payload():
-    tool = _make_tool()
+    command = _make_command()
     # Some prompt variants return a bare list rather than a mapping.
     prediction = """
 - one_sentence_summary: Only suggestion
@@ -604,7 +604,7 @@ def test_prepare_pr_code_suggestions_accepts_list_payload():
   improved_code: b()
 """
 
-    data = tool._prepare_pr_code_suggestions(prediction)
+    data = command._prepare_pr_code_suggestions(prediction)
 
     assert isinstance(data, dict)
     assert len(data["code_suggestions"]) == 1
@@ -616,7 +616,7 @@ def test_prepare_pr_code_suggestions_truncates_long_improved_code():
     snapshot = snapshot_settings(TRUNCATION_SETTINGS)
     settings.set("pr_code_suggestions.max_code_suggestion_length", 8)
     settings.set("pr_code_suggestions.suggestion_truncation_message", "[cut]")
-    tool = _make_tool()
+    command = _make_command()
     prediction = """
 code_suggestions:
   - one_sentence_summary: Long
@@ -627,7 +627,7 @@ code_suggestions:
     improved_code: ABCDEFGHIJKLMNOP
 """
     try:
-        data = tool._prepare_pr_code_suggestions(prediction)
+        data = command._prepare_pr_code_suggestions(prediction)
         improved = data["code_suggestions"][0]["improved_code"]
         assert improved.startswith("ABCDEFGH")
         assert "[cut]" in improved

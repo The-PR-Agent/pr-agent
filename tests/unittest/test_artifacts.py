@@ -6,7 +6,7 @@ from jinja2 import Environment
 
 from pr_agent.algo.artifacts import (
     DEFAULT_ARTIFACT_INSTRUCTIONS,
-    SUPPORTED_ARTIFACT_TOOLS,
+    SUPPORTED_ARTIFACT_COMMANDS,
     _artifact_context,
     _read_and_truncate,
     get_artifact_context,
@@ -157,7 +157,7 @@ class TestLoadArtifactContext:
         assert context is not None
         assert [artifact["label"] for artifact in context["artifacts"]] == ["ci.log", "Code graph"]
         assert sum(len(artifact["content"]) for artifact in context["artifacts"]) <= 100
-        assert context["artifacts"][0]["target_tools"] == frozenset(SUPPORTED_ARTIFACT_TOOLS)
+        assert context["artifacts"][0]["target_tools"] == frozenset(SUPPORTED_ARTIFACT_COMMANDS)
         assert context["artifacts"][1]["target_tools"] == frozenset({"pr_questions"})
 
     def test_skips_artifact_with_non_string_path(self, tmp_path):
@@ -339,8 +339,8 @@ class TestInjectArtifactContext:
         s.set("artifacts.artifact_label", "")
         s.set("artifacts.artifact_instructions", "")
         s.set("artifacts.target_tools", ["pr_reviewer", "pr_description", "pr_code_suggestions"])
-        for tool in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
-            s.set(f"{tool}.extra_instructions", "")
+        for command in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
+            s.set(f"{command}.extra_instructions", "")
         token = _artifact_context.set(None)
         try:
             yield s
@@ -373,21 +373,21 @@ class TestInjectArtifactContext:
         assert settings.get("pr_reviewer.extra_instructions") == ""
         assert get_artifact_context("pr_reviewer") is None
 
-    def test_env_path_sets_separate_context_for_every_target_tool(self, settings, report):
+    def test_env_path_sets_separate_context_for_every_target_command(self, settings, report):
         env = {"GITHUB_WORKSPACE": str(report.parent), "ARTIFACT_PATH": str(report),
                "ARTIFACT_INSTRUCTIONS": "Flag any test failures."}
         with patch.dict(os.environ, env):
             inject_artifact_context()
 
         assert settings.get("artifacts.enable") is True
-        for tool in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
-            context = get_artifact_context(tool)
+        for command in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
+            context = get_artifact_context(command)
             assert context["label"] == "report.xml"
             assert context["content"] == "FAILED: test_login"
             assert context["instructions"] == "Flag any test failures."
             assert context["start_marker"].startswith("<<<CI_ARTIFACT_")
             assert context["end_marker"] == context["start_marker"].replace("_BEGIN>>>", "_END>>>")
-            assert settings.get(f"{tool}.extra_instructions") == ""
+            assert settings.get(f"{command}.extra_instructions") == ""
 
     def test_multiline_label_is_flattened_in_prompt_context(self, settings, report):
         settings.set("artifacts.enable", True)
@@ -412,7 +412,7 @@ class TestInjectArtifactContext:
         assert context["content"] == directive
         assert context["label"] == directive
 
-    def test_unsupported_target_tools_are_skipped_with_a_warning(self, settings, report):
+    def test_unsupported_target_commands_are_skipped_with_a_warning(self, settings, report):
         settings.set("artifacts.target_tools", ["pr_reviewer", "pr_custom_labels"])
         env = {"GITHUB_WORKSPACE": str(report.parent), "ARTIFACT_PATH": str(report)}
 
@@ -443,7 +443,7 @@ class TestInjectArtifactContext:
         assert get_artifact_context("pr_reviewer")["content"] == "FAILED: test_login"
         assert settings.get("pr_reviewer.extra_instructions") == ""
 
-    def test_only_target_tools_get_it_and_existing_instructions_are_kept(self, settings, report):
+    def test_only_target_commands_get_it_and_existing_instructions_are_kept(self, settings, report):
         settings.set("artifacts.target_tools", ["pr_reviewer"])
         settings.set("pr_reviewer.extra_instructions", "Be terse.")
         with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(report.parent), "ARTIFACT_PATH": str(report)}):
@@ -454,7 +454,7 @@ class TestInjectArtifactContext:
         assert get_artifact_context("pr_description") is None
         assert settings.get("pr_description.extra_instructions") == ""
 
-    def test_each_artifact_can_target_different_tools(self, settings, report, tmp_path):
+    def test_each_artifact_can_target_different_commands(self, settings, report, tmp_path):
         graph = tmp_path / "graph.txt"
         graph.write_text("GRAPH_CONTEXT")
         settings.set("artifacts.enable", True)

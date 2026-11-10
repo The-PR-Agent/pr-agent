@@ -577,14 +577,14 @@ class PRHelpMessage:
                 pr_comment += f"\n\nHere is a list of tools you can use to interact with the {bot_display_name}:\n"
                 base_path = f"{DOCS_SITE_URL}/tools"
 
-                tool_names = []
-                tool_names.append(f"[DESCRIBE]({base_path}/describe/)")
-                tool_names.append(f"[REVIEW]({base_path}/review/)")
-                tool_names.append(f"[IMPROVE]({base_path}/improve/)")
-                tool_names.append(f"[UPDATE CHANGELOG]({base_path}/update_changelog/)")
-                tool_names.append(f"[ADD DOCS]({base_path}/add_docs/)")
-                tool_names.append(f"[ASK]({base_path}/ask/)")
-                tool_names.append(f"[GENERATE CUSTOM LABELS]({base_path}/generate_labels/)")
+                command_names = []
+                command_names.append(f"[DESCRIBE]({base_path}/describe/)")
+                command_names.append(f"[REVIEW]({base_path}/review/)")
+                command_names.append(f"[IMPROVE]({base_path}/improve/)")
+                command_names.append(f"[UPDATE CHANGELOG]({base_path}/update_changelog/)")
+                command_names.append(f"[ADD DOCS]({base_path}/add_docs/)")
+                command_names.append(f"[ASK]({base_path}/ask/)")
+                command_names.append(f"[GENERATE CUSTOM LABELS]({base_path}/generate_labels/)")
 
                 descriptions = []
                 descriptions.append(COMMAND_DESCRIPTIONS["describe"])
@@ -623,9 +623,9 @@ class PRHelpMessage:
                         "<table><tr align='left'><th align='left'>Tool</th>"
                         "<th align='left'>Description</th><th align='left'>Trigger Interactively :gem:</th></tr>"
                     )
-                    for i in range(len(tool_names)):
+                    for i in range(len(command_names)):
                         pr_comment += (
-                            f"\n<tr><td align='left'>\n\n<strong>{tool_names[i]}</strong></td>\n"
+                            f"\n<tr><td align='left'>\n\n<strong>{command_names[i]}</strong></td>\n"
                             f"<td>{descriptions[i]}</td>\n<td>\n\n{checkbox_list[i]}\n</td></tr>"
                         )
                     pr_comment += "</table>\n\n"
@@ -644,15 +644,15 @@ class PRHelpMessage:
                     )
                 elif not supports_gfm_markdown:
                     # only basic commands, in a plain Markdown table (e.g. BBDC)
-                    pr_comment = generate_bbdc_table(tool_names[:4], descriptions[:4])
+                    pr_comment = generate_bbdc_table(command_names[:4], descriptions[:4])
                 else:
                     pr_comment += (
                         "<table><tr align='left'><th align='left'>Tool</th>"
                         "<th align='left'>Command</th><th align='left'>Description</th></tr>"
                     )
-                    for i in range(len(tool_names)):
+                    for i in range(len(command_names)):
                         pr_comment += (
-                            f"\n<tr><td align='left'>\n\n<strong>{tool_names[i]}</strong></td>"
+                            f"\n<tr><td align='left'>\n\n<strong>{command_names[i]}</strong></td>"
                             f"<td>{commands[i]}</td><td>{descriptions[i]}</td></tr>"
                         )
                     pr_comment += "</table>\n\n"

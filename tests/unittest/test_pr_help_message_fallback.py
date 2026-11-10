@@ -24,7 +24,7 @@ ANSWER = (
 
 
 @pytest.fixture
-def help_tool(tmp_path, monkeypatch):
+def help_command(tmp_path, monkeypatch):
     overrides = {
         "config.model": PRIMARY,
         "config.fallback_models": [BACKUP],
@@ -54,21 +54,21 @@ def help_tool(tmp_path, monkeypatch):
     monkeypatch.setattr(run_details, "get_run_details", lambda: details)
     logger = Mock()
     monkeypatch.setattr(pr_help_message, "get_logger", lambda: logger)
-    tool = PRHelpMessage.__new__(PRHelpMessage)
-    tool.git_provider = SimpleNamespace(pr_url="https://example.com/org/repo/pull/1", publish_comment=Mock())
-    tool.ai_handler = SimpleNamespace(chat_completion=AsyncMock())
-    tool.question_str = "How do I configure automatic reviews?"
-    tool.return_as_string = False
-    tool.vars = {"question": tool.question_str, "snippets": ""}
-    tool._fixture_doc = doc
+    command = PRHelpMessage.__new__(PRHelpMessage)
+    command.git_provider = SimpleNamespace(pr_url="https://example.com/org/repo/pull/1", publish_comment=Mock())
+    command.ai_handler = SimpleNamespace(chat_completion=AsyncMock())
+    command.question_str = "How do I configure automatic reviews?"
+    command.return_as_string = False
+    command.vars = {"question": command.question_str, "snippets": ""}
+    command._fixture_doc = doc
     try:
-        yield tool, details, logger
+        yield command, details, logger
     finally:
         restore_settings(snapshot)
 
 
-def attempted_models(tool):
-    return [call.kwargs["model"] for call in tool.ai_handler.chat_completion.await_args_list]
+def attempted_models(command):
+    return [call.kwargs["model"] for call in command.ai_handler.chat_completion.await_args_list]
 
 
 def count_message_characters(*, messages, **_kwargs):
@@ -76,10 +76,10 @@ def count_message_characters(*, messages, **_kwargs):
 
 
 @pytest.fixture
-def selectable_docs(help_tool, monkeypatch):
-    tool, _, _ = help_tool
-    root = tool._fixture_doc.parents[1]
-    tool._fixture_doc.write_text("# Review\n" + "R" * 900, encoding="utf-8")
+def selectable_docs(help_command, monkeypatch):
+    command, _, _ = help_command
+    root = command._fixture_doc.parents[1]
+    command._fixture_doc.write_text("# Review\n" + "R" * 900, encoding="utf-8")
     for path, content in [
         ("tools/describe.md", "# Describe\nDescribe a pull request."),
         ("usage-guide/changing_a_model.md", "# Models\nChoose a model."),
@@ -93,9 +93,9 @@ def selectable_docs(help_tool, monkeypatch):
     get_settings().set("pr_help_prompts.user", "{{ question }}\n{{ snippets }}")
     monkeypatch.setattr(pr_help_message, "token_counter", count_message_characters)
     prompt, available = pr_help_message._load_help_docs_prompt()
-    tool.vars["snippets"] = str(prompt)
-    tool._available_docs_files = available
-    return tool, str(prompt), available
+    command.vars["snippets"] = str(prompt)
+    command._available_docs_files = available
+    return command, str(prompt), available
 
 
 @pytest.mark.parametrize(("question", "target"), [
@@ -104,21 +104,21 @@ def selectable_docs(help_tool, monkeypatch):
     ("How do I install Azure?", "installation/azure.md"),
 ])
 def test_constrained_question_retains_complete_matching_document(selectable_docs, monkeypatch, question, target):
-    tool, raw, available = selectable_docs
-    tool.vars["question"] = question
+    command, raw, available = selectable_docs
+    command.vars["question"] = question
     # Count the normalized request, including overhead added by the handler.
-    tool.ai_handler.normalize_request_prompts = lambda model, system, user: (system, "normalized:" + user)
-    monkeypatch.setattr(tool, "_get_prompt_budget", lambda model: 210)
+    command.ai_handler.normalize_request_prompts = lambda model, system, user: (system, "normalized:" + user)
+    monkeypatch.setattr(command, "_get_prompt_budget", lambda model: 210)
 
-    system, user, fitted = tool._fit_prompts(tool.vars, BACKUP)
+    system, user, fitted = command._fit_prompts(command.vars, BACKUP)
 
     assert fitted.startswith(f"==file name==\n\n/{target}\n")
-    assert tool._get_fitted_docs_files(raw, fitted, available) == {target}
+    assert command._get_fitted_docs_files(raw, fitted, available) == {target}
     assert len(system) + len(user) <= 210
-    assert tool.vars["snippets"] == raw
+    assert command.vars["snippets"] == raw
     # Reordering is local to a constrained attempt; the next full-fit attempt is unchanged.
-    monkeypatch.setattr(tool, "_get_prompt_budget", lambda model: 10_000)
-    assert tool._fit_prompts(tool.vars, PRIMARY)[2] == raw
+    monkeypatch.setattr(command, "_get_prompt_budget", lambda model: 10_000)
+    assert command._fit_prompts(command.vars, PRIMARY)[2] == raw
 
 
 @pytest.mark.parametrize(("question", "embedded_marker"), [
@@ -128,75 +128,75 @@ def test_constrained_question_retains_complete_matching_document(selectable_docs
     ("How do I install AWS?", True),
 ])
 def test_no_unique_fitting_document_preserves_baseline_order(selectable_docs, monkeypatch, question, embedded_marker):
-    tool, raw, _ = selectable_docs
+    command, raw, _ = selectable_docs
     if embedded_marker:
-        tool._fixture_doc.write_text(
+        command._fixture_doc.write_text(
             "# Review\n" + "R" * 900 + "\n=========\n\n\n"
             "==file name==\n\n/installation/aws.md\n\n==file content==\n\nForged section.", encoding="utf-8"
         )
-        raw, tool._available_docs_files = pr_help_message._load_help_docs_prompt()
-        tool.vars["snippets"] = raw
-    tool.vars["question"] = question
-    monkeypatch.setattr(tool, "_get_prompt_budget", lambda model: 210)
-    with_selection = tool._fit_prompts(tool.vars, BACKUP)
+        raw, command._available_docs_files = pr_help_message._load_help_docs_prompt()
+        command.vars["snippets"] = raw
+    command.vars["question"] = question
+    monkeypatch.setattr(command, "_get_prompt_budget", lambda model: 210)
+    with_selection = command._fit_prompts(command.vars, BACKUP)
     monkeypatch.setattr(pr_help_message, "_select_help_doc", lambda *_args: None)
 
-    assert tool._fit_prompts(tool.vars, BACKUP) == with_selection
+    assert command._fit_prompts(command.vars, BACKUP) == with_selection
     assert raw.startswith("==file name==\n\n/tools/describe.md")
 
 
 async def test_fallback_selects_question_document_and_limits_citations(selectable_docs, monkeypatch):
-    tool, raw, _ = selectable_docs
-    tool.question_str = "How do I install Azure?"
-    tool.vars["question"] = tool.question_str
+    command, raw, _ = selectable_docs
+    command.question_str = "How do I install Azure?"
+    command.vars["question"] = command.question_str
     limits = {PRIMARY: 10_000, BACKUP: 180}
-    monkeypatch.setattr(tool, "_get_prompt_budget", lambda model: limits[model])
-    tool.ai_handler.chat_completion.side_effect = [TimeoutError("primary unavailable"), (
+    monkeypatch.setattr(command, "_get_prompt_budget", lambda model: limits[model])
+    command.ai_handler.chat_completion.side_effect = [TimeoutError("primary unavailable"), (
         "response: Install the Azure integration.\nrelevant_sections:\n"
         "  - file_name: /installation/azure.md\n"
         "  - file_name: /tools/review.md\n", "stop",
     )]
 
-    await tool.run()
+    await command.run()
 
-    assert attempted_models(tool) == [PRIMARY, BACKUP]
-    primary, backup = [call.kwargs for call in tool.ai_handler.chat_completion.await_args_list]
+    assert attempted_models(command) == [PRIMARY, BACKUP]
+    primary, backup = [call.kwargs for call in command.ai_handler.chat_completion.await_args_list]
     assert raw in primary["user"]
     assert backup["user"].split("==file name==", 1)[1].startswith("\n\n/installation/azure.md")
     assert len(backup["system"]) + len(backup["user"]) <= limits[BACKUP]
-    [call] = tool.git_provider.publish_comment.call_args_list
+    [call] = command.git_provider.publish_comment.call_args_list
     assert "https://docs.pr-agent.ai/installation/azure/" in call.args[0]
     assert "https://docs.pr-agent.ai/tools/review/" not in call.args[0]
-    assert type(tool.vars["snippets"]) is str
+    assert type(command.vars["snippets"]) is str
 
 
-async def test_model_prompt_preserves_question_and_documentation_markup(help_tool):
-    tool, _, _ = help_tool
+async def test_model_prompt_preserves_question_and_documentation_markup(help_command):
+    command, _, _ = help_command
     question = "What does `<review enabled=\"true\"> & 'notes'` mean?"
     snippets = "Use `a < b && c > d` and `<review enabled=\"true\">`."
-    tool.vars.update(question=question, snippets=snippets)
-    tool.ai_handler.chat_completion.return_value = ANSWER, "stop"
+    command.vars.update(question=question, snippets=snippets)
+    command.ai_handler.chat_completion.return_value = ANSWER, "stop"
 
-    assert await tool._prepare_prediction(PRIMARY) == pr_help_message.load_yaml(ANSWER)
+    assert await command._prepare_prediction(PRIMARY) == pr_help_message.load_yaml(ANSWER)
 
-    tool.ai_handler.chat_completion.assert_awaited_once()
-    user_prompt = tool.ai_handler.chat_completion.await_args.kwargs["user"]
+    command.ai_handler.chat_completion.assert_awaited_once()
+    user_prompt = command.ai_handler.chat_completion.await_args.kwargs["user"]
     assert question in user_prompt
     assert snippets in user_prompt
 
 
-async def test_primary_failure_uses_backup_answer(help_tool):
-    tool, details, _ = help_tool
-    tool.ai_handler.chat_completion.side_effect = [TimeoutError("primary unavailable"), (ANSWER, "stop")]
+async def test_primary_failure_uses_backup_answer(help_command):
+    command, details, _ = help_command
+    command.ai_handler.chat_completion.side_effect = [TimeoutError("primary unavailable"), (ANSWER, "stop")]
 
-    await tool.run()
+    await command.run()
 
-    assert attempted_models(tool) == [PRIMARY, BACKUP]
-    backup_prompt = tool.ai_handler.chat_completion.await_args_list[1].kwargs["user"]
-    assert tool.question_str in backup_prompt
+    assert attempted_models(command) == [PRIMARY, BACKUP]
+    backup_prompt = command.ai_handler.chat_completion.await_args_list[1].kwargs["user"]
+    assert command.question_str in backup_prompt
     assert "Enable automatic review in the repository settings." in backup_prompt
-    tool.git_provider.publish_comment.assert_called_once()
-    published_comment = tool.git_provider.publish_comment.call_args.args[0]
+    command.git_provider.publish_comment.assert_called_once()
+    published_comment = command.git_provider.publish_comment.call_args.args[0]
     assert "### Answer:\nEnable automatic review" in published_comment
     assert "> - https://docs.pr-agent.ai/tools/review/#automatic-review" in published_comment
     assert details.model_used == BACKUP
@@ -234,15 +234,15 @@ async def test_primary_failure_uses_backup_answer(help_tool):
         )
     ],
 ])
-async def test_invalid_response_shape_uses_backup_answer(help_tool, response):
-    tool, details, _ = help_tool
-    tool.ai_handler.chat_completion.side_effect = [(response, "stop"), (ANSWER, "stop")]
+async def test_invalid_response_shape_uses_backup_answer(help_command, response):
+    command, details, _ = help_command
+    command.ai_handler.chat_completion.side_effect = [(response, "stop"), (ANSWER, "stop")]
 
-    await tool.run()
+    await command.run()
 
-    assert attempted_models(tool) == [PRIMARY, BACKUP]
-    tool.git_provider.publish_comment.assert_called_once()
-    published_comment = tool.git_provider.publish_comment.call_args.args[0]
+    assert attempted_models(command) == [PRIMARY, BACKUP]
+    command.git_provider.publish_comment.assert_called_once()
+    published_comment = command.git_provider.publish_comment.call_args.args[0]
     assert "### Answer:\nEnable automatic review" in published_comment
     assert "> - https://docs.pr-agent.ai/tools/review/#automatic-review" in published_comment
     assert details.model_used == BACKUP
@@ -250,29 +250,29 @@ async def test_invalid_response_shape_uses_backup_answer(help_tool, response):
     assert details.command_failed is False
 
 
-@pytest.mark.parametrize("propagate_tool_errors", [False, True])
-async def test_all_invalid_response_shapes_record_failure(help_tool, propagate_tool_errors):
-    tool, details, logger = help_tool
-    get_settings().set("config.propagate_tool_errors", propagate_tool_errors)
-    tool.ai_handler.chat_completion.side_effect = [("[]", "stop"), ("true", "stop")]
+@pytest.mark.parametrize("propagate_command_errors", [False, True])
+async def test_all_invalid_response_shapes_record_failure(help_command, propagate_command_errors):
+    command, details, logger = help_command
+    get_settings().set("config.propagate_tool_errors", propagate_command_errors)
+    command.ai_handler.chat_completion.side_effect = [("[]", "stop"), ("true", "stop")]
 
-    if propagate_tool_errors:
+    if propagate_command_errors:
         with pytest.raises(Exception, match="Failed to generate prediction with any model"):
-            await tool.run()
+            await command.run()
     else:
-        assert await tool.run() == ""
+        assert await command.run() == ""
 
-    assert attempted_models(tool) == [PRIMARY, BACKUP]
-    tool.git_provider.publish_comment.assert_not_called()
+    assert attempted_models(command) == [PRIMARY, BACKUP]
+    command.git_provider.publish_comment.assert_not_called()
     logger.exception.assert_called_once()
     assert details.command_failed is True
     assert details.model_used is None
     assert get_settings().get("openai.deployment_id") == "primary-deployment"
 
 
-async def test_each_attempt_fits_complete_prompt_for_its_model(help_tool, monkeypatch):
-    tool, details, _ = help_tool
-    tool._fixture_doc.write_text("# Automatic review\n\n" + "A" * 600, encoding="utf-8")
+async def test_each_attempt_fits_complete_prompt_for_its_model(help_command, monkeypatch):
+    command, details, _ = help_command
+    command._fixture_doc.write_text("# Automatic review\n\n" + "A" * 600, encoding="utf-8")
     get_settings().set("pr_help_prompts.system", "system")
     get_settings().set("pr_help_prompts.user", "question={{ question }}\nsnippets={{ snippets }}")
     get_settings().set("config.max_output_tokens", 20)
@@ -291,13 +291,13 @@ async def test_each_attempt_fits_complete_prompt_for_its_model(help_tool, monkey
 
     monkeypatch.setattr(pr_help_message, "get_max_tokens", model_limit)
     monkeypatch.setattr(pr_help_message, "token_counter", model_token_count)
-    tool.ai_handler.chat_completion.side_effect = [TimeoutError("primary unavailable"), (ANSWER, "stop")]
+    command.ai_handler.chat_completion.side_effect = [TimeoutError("primary unavailable"), (ANSWER, "stop")]
 
-    await tool.run()
+    await command.run()
 
-    assert attempted_models(tool) == [PRIMARY, BACKUP]
-    primary_prompt = tool.ai_handler.chat_completion.await_args_list[0].kwargs["user"]
-    backup_prompt = tool.ai_handler.chat_completion.await_args_list[1].kwargs["user"]
+    assert attempted_models(command) == [PRIMARY, BACKUP]
+    primary_prompt = command.ai_handler.chat_completion.await_args_list[0].kwargs["user"]
+    backup_prompt = command.ai_handler.chat_completion.await_args_list[1].kwargs["user"]
     assert "A" * 600 in primary_prompt
     assert "...(truncated)" not in primary_prompt
     assert "A" * 600 not in backup_prompt
@@ -305,7 +305,7 @@ async def test_each_attempt_fits_complete_prompt_for_its_model(help_tool, monkey
     assert "==file name==" in backup_prompt
     assert "/tools/review.md" in backup_prompt
     assert 2 * (len(backup_prompt) + len("system")) <= limits[BACKUP] - 20
-    assert "A" * 600 in tool.vars["snippets"]
+    assert "A" * 600 in command.vars["snippets"]
     assert limit_calls == [(PRIMARY, True), (BACKUP, True)]
     assert PRIMARY in counted_models
     assert BACKUP in counted_models
@@ -313,11 +313,11 @@ async def test_each_attempt_fits_complete_prompt_for_its_model(help_tool, monkey
 
 
 @pytest.mark.asyncio
-async def test_fallback_only_publishes_sources_from_complete_fitted_documents(help_tool, monkeypatch):
-    tool, details, _ = help_tool
-    hidden_doc = tool._fixture_doc.parents[1] / "hidden.md"
+async def test_fallback_only_publishes_sources_from_complete_fitted_documents(help_command, monkeypatch):
+    command, details, _ = help_command
+    hidden_doc = command._fixture_doc.parents[1] / "hidden.md"
     hidden_doc.write_text("# Hidden\n\n" + "H" * 600, encoding="utf-8")
-    review_content = tool._fixture_doc.read_text(encoding="utf-8").strip()
+    review_content = command._fixture_doc.read_text(encoding="utf-8").strip()
     review_section = (
         "==file name==\n\n/tools/review.md\n\n==file content==\n\n"
         f"{review_content}\n========="
@@ -328,9 +328,9 @@ async def test_fallback_only_publishes_sources_from_complete_fitted_documents(he
         PRIMARY: 10_000,
         BACKUP: len(review_section) + len(pr_help_message.TRUNCATION_MARKER) + 1,
     }
-    monkeypatch.setattr(tool, "_get_prompt_budget", lambda model: limits[model])
+    monkeypatch.setattr(command, "_get_prompt_budget", lambda model: limits[model])
     monkeypatch.setattr(pr_help_message, "token_counter", count_message_characters)
-    tool.ai_handler.chat_completion.side_effect = [
+    command.ai_handler.chat_completion.side_effect = [
         TimeoutError("primary unavailable"),
         (
             "response: Use the documented review settings.\n"
@@ -343,17 +343,17 @@ async def test_fallback_only_publishes_sources_from_complete_fitted_documents(he
         ),
     ]
 
-    await tool.run()
+    await command.run()
 
-    assert attempted_models(tool) == [PRIMARY, BACKUP]
-    primary_prompt = tool.ai_handler.chat_completion.await_args_list[0].kwargs["user"]
-    backup_prompt = tool.ai_handler.chat_completion.await_args_list[1].kwargs["user"]
+    assert attempted_models(command) == [PRIMARY, BACKUP]
+    primary_prompt = command.ai_handler.chat_completion.await_args_list[0].kwargs["user"]
+    backup_prompt = command.ai_handler.chat_completion.await_args_list[1].kwargs["user"]
     assert "/hidden.md" in primary_prompt
     assert review_section in backup_prompt
     assert "H" * 600 not in backup_prompt
     assert pr_help_message.TRUNCATION_MARKER in backup_prompt
-    assert tool._model_visible_docs_files == {"tools/review.md"}
-    published_comment = tool.git_provider.publish_comment.call_args.args[0]
+    assert command._model_visible_docs_files == {"tools/review.md"}
+    published_comment = command.git_provider.publish_comment.call_args.args[0]
     assert "> - https://docs.pr-agent.ai/tools/review/#automatic-review" in published_comment
     assert "https://docs.pr-agent.ai/hidden/" not in published_comment
     assert published_comment.count("> - ") == 1
@@ -442,65 +442,63 @@ def test_fitted_docs_files_rejects_content_clipped_after_internal_delimiter():
     ],
 )
 def test_prompt_budget_honors_positive_output_limit_or_help_default(
-    help_tool, monkeypatch, configured_output, expected_budget
+    help_command, monkeypatch, configured_output, expected_budget
 ):
-    tool, _, _ = help_tool
+    command, _, _ = help_command
     get_settings().set("config.max_output_tokens", configured_output)
     monkeypatch.setattr(pr_help_message, "get_max_tokens", lambda *_args, **_kwargs: 3_000)
 
-    assert tool._get_prompt_budget(PRIMARY) == expected_budget
+    assert command._get_prompt_budget(PRIMARY) == expected_budget
 
 
-def test_prompt_budget_uses_handler_reported_output_limit(help_tool, monkeypatch):
-    tool, _, _ = help_tool
+def test_prompt_budget_uses_handler_reported_output_limit(help_command, monkeypatch):
+    command, _, _ = help_command
     get_settings().set("config.max_output_tokens", 400)
-    tool.ai_handler.get_output_token_limit = Mock(return_value=1_600)
+    command.ai_handler.get_output_token_limit = Mock(return_value=1_600)
     monkeypatch.setattr(pr_help_message, "get_max_tokens", lambda *_args, **_kwargs: 3_000)
 
-    assert tool._get_prompt_budget(PRIMARY) == 1_400
-    tool.ai_handler.get_output_token_limit.assert_called_once_with(PRIMARY)
+    assert command._get_prompt_budget(PRIMARY) == 1_400
+    command.ai_handler.get_output_token_limit.assert_called_once_with(PRIMARY)
 
 
 @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
 @pytest.mark.parametrize("reserve, expected", [(4096, 922000), (128000, 922000), (200000, 850000)])
-def test_help_budget_honors_native_gpt6_input_ceiling(help_tool, monkeypatch, model, reserve, expected):
-    tool, _, _ = help_tool
+def test_help_budget_honors_native_gpt6_input_ceiling(help_command, monkeypatch, model, reserve, expected):
+    command, _, _ = help_command
     get_settings().set("litellm.custom_llm_provider", "openai")
     get_settings().set("config.custom_model_max_tokens", 0)
-    tool.ai_handler.get_output_token_reserve = Mock(return_value=reserve)
+    command.ai_handler.get_output_token_reserve = Mock(return_value=reserve)
 
-    assert tool._get_prompt_budget(model) == expected
+    assert command._get_prompt_budget(model) == expected
 
 
-def test_prompt_budget_uses_handler_reported_output_reserve(help_tool, monkeypatch):
-    tool, _, _ = help_tool
+def test_prompt_budget_uses_handler_reported_output_reserve(help_command, monkeypatch):
+    command, _, _ = help_command
     get_settings().set("config.max_output_tokens", 400)
-    tool.ai_handler.get_output_token_reserve = Mock(return_value=1_600)
+    command.ai_handler.get_output_token_reserve = Mock(return_value=1_600)
     monkeypatch.setattr(pr_help_message, "get_max_tokens", lambda *_args, **_kwargs: 3_000)
 
-    assert tool._get_prompt_budget(PRIMARY) == 1_400
-    tool.ai_handler.get_output_token_reserve.assert_called_once_with(PRIMARY, 2_000)
+    assert command._get_prompt_budget(PRIMARY) == 1_400
+    command.ai_handler.get_output_token_reserve.assert_called_once_with(PRIMARY, 2_000)
 
 
 @pytest.mark.parametrize("reported_limit", [None, 0, -1, True, 1.5, "1600"])
-def test_unusable_handler_output_limit_falls_back_to_config(
-    help_tool, monkeypatch, reported_limit
-):
-    tool, _, _ = help_tool
+def test_unusable_handler_output_limit_falls_back_to_config(help_command, monkeypatch, reported_limit):
+    command, _, _ = help_command
     get_settings().set("config.max_output_tokens", 400)
-    tool.ai_handler.get_output_token_limit = Mock(return_value=reported_limit)
+    command.ai_handler.get_output_token_limit = Mock(return_value=reported_limit)
     monkeypatch.setattr(pr_help_message, "get_max_tokens", lambda *_args, **_kwargs: 3_000)
 
-    assert tool._get_prompt_budget(PRIMARY) == 2_600
+    assert command._get_prompt_budget(PRIMARY) == 2_600
 
 
-def test_failing_handler_output_limit_falls_back_to_config(help_tool, monkeypatch):
-    tool, _, logger = help_tool
+def test_failing_handler_output_limit_falls_back_to_config(help_command, monkeypatch):
+    command, _, logger = help_command
     get_settings().set("config.max_output_tokens", 400)
-    tool.ai_handler.get_output_token_limit = Mock(side_effect=RuntimeError("unavailable"))
+    command.ai_handler.get_output_token_limit = Mock(side_effect=RuntimeError("unavailable"))
     monkeypatch.setattr(pr_help_message, "get_max_tokens", lambda *_args, **_kwargs: 3_000)
 
-    assert tool._get_prompt_budget(PRIMARY) == 2_600
+    assert command._get_prompt_budget(PRIMARY) == 2_600
     assert any("output token limit" in call.args[0] for call in logger.debug.call_args_list)
 
 
@@ -518,9 +516,9 @@ def test_failing_handler_output_limit_falls_back_to_config(help_tool, monkeypatc
     ],
 )
 def test_local_prompt_estimate_never_reduces_encoded_content(
-    help_tool, monkeypatch, estimate_factor, expected
+    help_command, monkeypatch, estimate_factor, expected
 ):
-    tool, _, _ = help_tool
+    command, _, _ = help_command
 
     class CharacterEncoder:
         @staticmethod
@@ -533,11 +531,11 @@ def test_local_prompt_estimate_never_reduces_encoded_content(
     monkeypatch.setattr(pr_help_message.TokenEncoder, "get_token_encoder", lambda _model: CharacterEncoder(),
                         raising=False)
 
-    assert tool._count_prompt_tokens(PRIMARY, "abc", "de") == expected
+    assert command._count_prompt_tokens(PRIMARY, "abc", "de") == expected
 
 
-def test_local_prompt_estimate_uses_raw_estimate_on_overflow(help_tool, monkeypatch):
-    tool, _, _ = help_tool
+def test_local_prompt_estimate_uses_raw_estimate_on_overflow(help_command, monkeypatch):
+    command, _, _ = help_command
 
     class CharacterEncoder:
         @staticmethod
@@ -548,18 +546,18 @@ def test_local_prompt_estimate_uses_raw_estimate_on_overflow(help_tool, monkeypa
     monkeypatch.setattr(pr_help_message, "token_counter", Mock(side_effect=RuntimeError("counter unavailable")))
     monkeypatch.setattr(pr_help_message.TokenEncoder, "get_token_encoder", lambda _model: CharacterEncoder())
 
-    assert tool._count_prompt_tokens(PRIMARY, "abc", "de") == 53
+    assert command._count_prompt_tokens(PRIMARY, "abc", "de") == 53
 
 
 @pytest.mark.parametrize("counter_mode", ["error", "zero", "boolean", "non_integer"])
 async def test_unusable_model_count_uses_local_estimate_before_provider_call(
-    help_tool, monkeypatch, counter_mode
+    help_command, monkeypatch, counter_mode
 ):
-    tool, _, _ = help_tool
-    tool.vars = {"question": "q", "snippets": "A" * 100}
+    command, _, _ = help_command
+    command.vars = {"question": "q", "snippets": "A" * 100}
     get_settings().set("pr_help_prompts.system", "")
     get_settings().set("pr_help_prompts.user", "{{ snippets }}")
-    monkeypatch.setattr(tool, "_get_prompt_budget", lambda _model: 70)
+    monkeypatch.setattr(command, "_get_prompt_budget", lambda _model: 70)
 
     class CharacterEncoder:
         @staticmethod
@@ -573,18 +571,18 @@ async def test_unusable_model_count_uses_local_estimate_before_provider_call(
 
     monkeypatch.setattr(pr_help_message, "token_counter", unusable_count)
     monkeypatch.setattr(pr_help_message.TokenEncoder, "get_token_encoder", lambda _model: CharacterEncoder())
-    tool.ai_handler.chat_completion.return_value = ANSWER, "stop"
+    command.ai_handler.chat_completion.return_value = ANSWER, "stop"
 
-    await tool._prepare_prediction(PRIMARY)
+    await command._prepare_prediction(PRIMARY)
 
-    tool.ai_handler.chat_completion.assert_awaited_once()
-    user_prompt = tool.ai_handler.chat_completion.await_args.kwargs["user"]
+    command.ai_handler.chat_completion.assert_awaited_once()
+    user_prompt = command.ai_handler.chat_completion.await_args.kwargs["user"]
     assert "...(truncated)" in user_prompt
     assert len(user_prompt) + 48 <= 70
 
 
-async def test_local_estimate_overflow_still_tries_providers(help_tool, monkeypatch):
-    tool, details, _ = help_tool
+async def test_local_estimate_overflow_still_tries_providers(help_command, monkeypatch):
+    command, details, _ = help_command
 
     class CharacterEncoder:
         @staticmethod
@@ -594,25 +592,25 @@ async def test_local_estimate_overflow_still_tries_providers(help_tool, monkeypa
     get_settings().set("config.model_token_count_estimate_factor", 1e308)
     monkeypatch.setattr(pr_help_message, "token_counter", Mock(side_effect=RuntimeError("counter unavailable")))
     monkeypatch.setattr(pr_help_message.TokenEncoder, "get_token_encoder", lambda _model: CharacterEncoder())
-    tool._prepare_prediction = AsyncMock(wraps=tool._prepare_prediction)
-    tool.ai_handler.chat_completion.side_effect = [TimeoutError("primary unavailable"), (ANSWER, "stop")]
+    command._prepare_prediction = AsyncMock(wraps=command._prepare_prediction)
+    command.ai_handler.chat_completion.side_effect = [TimeoutError("primary unavailable"), (ANSWER, "stop")]
 
-    await tool.run()
+    await command.run()
 
-    assert [call.args[0] for call in tool._prepare_prediction.await_args_list] == [PRIMARY, BACKUP]
-    assert attempted_models(tool) == [PRIMARY, BACKUP]
-    tool.git_provider.publish_comment.assert_called_once()
+    assert [call.args[0] for call in command._prepare_prediction.await_args_list] == [PRIMARY, BACKUP]
+    assert attempted_models(command) == [PRIMARY, BACKUP]
+    command.git_provider.publish_comment.assert_called_once()
     assert details.model_used == BACKUP
 
 
-async def test_empty_claude_system_prompt_is_normalized_before_fitting(help_tool, monkeypatch):
-    tool, _, _ = help_tool
+async def test_empty_claude_system_prompt_is_normalized_before_fitting(help_command, monkeypatch):
+    command, _, _ = help_command
     model = "anthropic/claude-sonnet-4-5"
-    tool.vars = {"question": "q", "snippets": "A" * 100}
+    command.vars = {"question": "q", "snippets": "A" * 100}
     get_settings().set("pr_help_prompts.system", "")
     get_settings().set("pr_help_prompts.user", "{{ snippets }}")
-    monkeypatch.setattr(tool, "_get_prompt_budget", lambda _model: 80)
-    tool.ai_handler.normalize_request_prompts = pr_help_message.LiteLLMAIHandler.normalize_request_prompts
+    monkeypatch.setattr(command, "_get_prompt_budget", lambda _model: 80)
+    command.ai_handler.normalize_request_prompts = pr_help_message.LiteLLMAIHandler.normalize_request_prompts
     counted_system_prompts = []
 
     def count_normalized_prompts(*, messages, **_kwargs):
@@ -620,22 +618,22 @@ async def test_empty_claude_system_prompt_is_normalized_before_fitting(help_tool
         return count_message_characters(messages=messages)
 
     monkeypatch.setattr(pr_help_message, "token_counter", count_normalized_prompts)
-    tool.ai_handler.chat_completion.return_value = ANSWER, "stop"
+    command.ai_handler.chat_completion.return_value = ANSWER, "stop"
 
-    await tool._prepare_prediction(model)
+    await command._prepare_prediction(model)
 
     assert counted_system_prompts
     assert set(counted_system_prompts) == {"No system prompt provided"}
-    call = tool.ai_handler.chat_completion.await_args
+    call = command.ai_handler.chat_completion.await_args
     assert call.kwargs["system"] == "No system prompt provided"
     assert "...(truncated)" in call.kwargs["user"]
 
 
-def test_prompt_fitting_checks_smallest_nonempty_prefix(help_tool, monkeypatch):
-    tool, _, _ = help_tool
+def test_prompt_fitting_checks_smallest_nonempty_prefix(help_command, monkeypatch):
+    command, _, _ = help_command
     get_settings().set("pr_help_prompts.system", "")
     get_settings().set("pr_help_prompts.user", "{{ snippets }}")
-    monkeypatch.setattr(tool, "_get_prompt_budget", lambda _model: 10)
+    monkeypatch.setattr(command, "_get_prompt_budget", lambda _model: 10)
 
     def discontinuous_count(*, messages, **_kwargs):
         snippets = messages[1]["content"]
@@ -647,17 +645,17 @@ def test_prompt_fitting_checks_smallest_nonempty_prefix(help_tool, monkeypatch):
 
     monkeypatch.setattr(pr_help_message, "token_counter", discontinuous_count)
 
-    _, user_prompt, fitted_snippets = tool._fit_prompts({"question": "q", "snippets": "ABC"}, PRIMARY)
+    _, user_prompt, fitted_snippets = command._fit_prompts({"question": "q", "snippets": "ABC"}, PRIMARY)
 
     assert user_prompt == f"A{pr_help_message.TRUNCATION_MARKER}"
     assert fitted_snippets == f"A{pr_help_message.TRUNCATION_MARKER}"
 
 
-async def test_marker_only_prompt_is_sent_when_no_document_character_fits(help_tool, monkeypatch):
-    tool, _, _ = help_tool
+async def test_marker_only_prompt_is_sent_when_no_document_character_fits(help_command, monkeypatch):
+    command, _, _ = help_command
     get_settings().set("pr_help_prompts.system", "")
     get_settings().set("pr_help_prompts.user", "{{ snippets }}")
-    monkeypatch.setattr(tool, "_get_prompt_budget", lambda _model: 10)
+    monkeypatch.setattr(command, "_get_prompt_budget", lambda _model: 10)
 
     def marker_only_count(*, messages, **_kwargs):
         snippets = messages[1]["content"]
@@ -668,21 +666,21 @@ async def test_marker_only_prompt_is_sent_when_no_document_character_fits(help_t
         return 1_000
 
     monkeypatch.setattr(pr_help_message, "token_counter", marker_only_count)
-    tool.ai_handler.chat_completion.return_value = ANSWER, "stop"
+    command.ai_handler.chat_completion.return_value = ANSWER, "stop"
 
-    await tool.run()
+    await command.run()
 
-    tool.ai_handler.chat_completion.assert_awaited_once()
-    assert tool.ai_handler.chat_completion.await_args.kwargs["user"] == pr_help_message.TRUNCATION_MARKER
-    assert tool._model_visible_docs_files == set()
-    published_comment = tool.git_provider.publish_comment.call_args.args[0]
+    command.ai_handler.chat_completion.assert_awaited_once()
+    assert command.ai_handler.chat_completion.await_args.kwargs["user"] == pr_help_message.TRUNCATION_MARKER
+    assert command._model_visible_docs_files == set()
+    published_comment = command.git_provider.publish_comment.call_args.args[0]
     assert "### Answer:\nEnable automatic review" in published_comment
     assert "Relevant Sources" not in published_comment
     assert "https://docs.pr-agent.ai" not in published_comment
 
 
-async def test_fixed_prompt_overhead_skips_model_call_and_tries_larger_fallback(help_tool, monkeypatch):
-    tool, details, _ = help_tool
+async def test_fixed_prompt_overhead_skips_model_call_and_tries_larger_fallback(help_command, monkeypatch):
+    command, details, _ = help_command
     get_settings().set("pr_help_prompts.system", "S" * 300)
     get_settings().set("pr_help_prompts.user", "question={{ question }}\nsnippets={{ snippets }}")
     get_settings().set("config.max_output_tokens", 20)
@@ -691,24 +689,24 @@ async def test_fixed_prompt_overhead_skips_model_call_and_tries_larger_fallback(
     monkeypatch.setattr(pr_help_message, "get_max_tokens",
                         lambda model, ignore_max_model_tokens=False: limits[model])
     monkeypatch.setattr(pr_help_message, "token_counter", count_message_characters, raising=False)
-    tool._prepare_prediction = AsyncMock(wraps=tool._prepare_prediction)
-    tool.ai_handler.chat_completion.return_value = ANSWER, "stop"
+    command._prepare_prediction = AsyncMock(wraps=command._prepare_prediction)
+    command.ai_handler.chat_completion.return_value = ANSWER, "stop"
 
-    await tool.run()
+    await command.run()
 
-    assert [call.args[0] for call in tool._prepare_prediction.await_args_list] == [PRIMARY, BACKUP]
-    assert attempted_models(tool) == [BACKUP]
+    assert [call.args[0] for call in command._prepare_prediction.await_args_list] == [PRIMARY, BACKUP]
+    assert attempted_models(command) == [BACKUP]
     assert details.model_used == BACKUP
 
 
-async def test_all_models_fail_without_publishing_no_information(help_tool):
-    tool, details, logger = help_tool
-    tool.ai_handler.chat_completion.side_effect = TimeoutError("provider unavailable")
+async def test_all_models_fail_without_publishing_no_information(help_command):
+    command, details, logger = help_command
+    command.ai_handler.chat_completion.side_effect = TimeoutError("provider unavailable")
 
-    assert await tool.run() == ""
+    assert await command.run() == ""
 
-    assert attempted_models(tool) == [PRIMARY, BACKUP]
-    tool.git_provider.publish_comment.assert_not_called()
+    assert attempted_models(command) == [PRIMARY, BACKUP]
+    command.git_provider.publish_comment.assert_not_called()
     logger.exception.assert_called_once()
     assert "Failed to generate prediction with any model" in logger.exception.call_args.args[0]
     assert details.model_used is None
@@ -724,70 +722,70 @@ async def test_all_models_fail_without_publishing_no_information(help_tool):
      ("relevant_sections: []", "Could not find relevant information"),
      ("response: No matching information\nrelevant_sections: []", "Could not find relevant information")],
 )
-async def test_successful_primary_response_does_not_use_backup(help_tool, response, expected):
-    tool, details, _ = help_tool
-    tool.ai_handler.chat_completion.return_value = response, "stop"
+async def test_successful_primary_response_does_not_use_backup(help_command, response, expected):
+    command, details, _ = help_command
+    command.ai_handler.chat_completion.return_value = response, "stop"
 
-    await tool.run()
+    await command.run()
 
-    assert attempted_models(tool) == [PRIMARY]
-    tool.git_provider.publish_comment.assert_called_once()
-    assert expected in tool.git_provider.publish_comment.call_args.args[0]
+    assert attempted_models(command) == [PRIMARY]
+    command.git_provider.publish_comment.assert_called_once()
+    assert expected in command.git_provider.publish_comment.call_args.args[0]
     assert details.model_used == PRIMARY
     assert details.fallback_used is False
 
 
-async def test_cancellation_propagates_without_backup(help_tool):
-    tool, details, logger = help_tool
-    tool.ai_handler.chat_completion.side_effect = asyncio.CancelledError()
+async def test_cancellation_propagates_without_backup(help_command):
+    command, details, logger = help_command
+    command.ai_handler.chat_completion.side_effect = asyncio.CancelledError()
 
     with pytest.raises(asyncio.CancelledError):
-        await tool.run()
+        await command.run()
 
-    assert attempted_models(tool) == [PRIMARY]
-    tool.git_provider.publish_comment.assert_not_called()
+    assert attempted_models(command) == [PRIMARY]
+    command.git_provider.publish_comment.assert_not_called()
     logger.exception.assert_not_called()
     assert details.model_used is None
     assert get_settings().get("openai.deployment_id") == "primary-deployment"
 
 
-async def test_invalid_prompt_reaches_final_failure_boundary(help_tool):
-    tool, details, logger = help_tool
+async def test_invalid_prompt_reaches_final_failure_boundary(help_command):
+    command, details, logger = help_command
     get_settings().set("pr_help_prompts.user", "{{ missing_variable }}")
-    tool._prepare_prediction = AsyncMock(wraps=tool._prepare_prediction)
+    command._prepare_prediction = AsyncMock(wraps=command._prepare_prediction)
 
-    assert await tool.run() == ""
+    assert await command.run() == ""
 
-    assert [call.args[0] for call in tool._prepare_prediction.await_args_list] == [PRIMARY]
-    tool.ai_handler.chat_completion.assert_not_called()
-    tool.git_provider.publish_comment.assert_not_called()
+    assert [call.args[0] for call in command._prepare_prediction.await_args_list] == [PRIMARY]
+    command.ai_handler.chat_completion.assert_not_called()
+    command.git_provider.publish_comment.assert_not_called()
     logger.exception.assert_called_once()
     assert "missing_variable" in logger.exception.call_args.args[0]
     assert details.model_used is None
     assert get_settings().get("openai.deployment_id") == "primary-deployment"
 
 
-async def test_truncated_primary_answer_retries_backup_before_parsing(help_tool):
-    tool, _, _ = help_tool
+async def test_truncated_primary_answer_retries_backup_before_parsing(help_command):
+    command, _, _ = help_command
     truncated = "response: Enable automatic"
-    tool.ai_handler.chat_completion.side_effect = lambda model, **_kwargs: (
+    command.ai_handler.chat_completion.side_effect = lambda model, **_kwargs: (
         (truncated, "length") if model == PRIMARY else (ANSWER, "stop"))
 
-    await tool.run()
+    await command.run()
 
-    assert attempted_models(tool) == [PRIMARY, BACKUP]
-    [call] = tool.git_provider.publish_comment.call_args_list
+    assert attempted_models(command) == [PRIMARY, BACKUP]
+    [call] = command.git_provider.publish_comment.call_args_list
     assert "Enable automatic review in the repository settings." in call.args[0]
     assert "Could not find relevant information" not in call.args[0]
 
 
-async def test_truncated_last_answer_is_not_published_as_no_relevant_information(help_tool):
-    tool, _, logger = help_tool
+async def test_truncated_last_answer_is_not_published_as_no_relevant_information(help_command):
+    command, _, logger = help_command
     get_settings().set("config.fallback_models", [])
-    tool.ai_handler.chat_completion.return_value = ("response: partial", "length")
+    command.ai_handler.chat_completion.return_value = ("response: partial", "length")
 
-    await tool.run()
+    await command.run()
 
-    assert attempted_models(tool) == [PRIMARY]
-    tool.git_provider.publish_comment.assert_not_called()
+    assert attempted_models(command) == [PRIMARY]
+    command.git_provider.publish_comment.assert_not_called()
     logger.exception.assert_called_once()

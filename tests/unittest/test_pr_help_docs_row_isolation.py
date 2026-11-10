@@ -81,16 +81,16 @@ def test_modify_answer_section_preserves_answer_without_sources():
 
 
 def test_format_model_answer_preserves_answer_when_no_sources_survive():
-    tool = PRHelpDocs.__new__(PRHelpDocs)
-    tool.question = "Where is the guide?"
-    tool.supported_doc_exts = [".md"]
-    tool.return_as_string = True
-    tool.repo_url = "https://example.com/org/repo"
-    tool.repo_url_given_explicitly = True
-    tool.repo_desired_branch = "main"
-    tool.git_provider = StubProvider()
+    command = PRHelpDocs.__new__(PRHelpDocs)
+    command.question = "Where is the guide?"
+    command.supported_doc_exts = [".md"]
+    command.return_as_string = True
+    command.repo_url = "https://example.com/org/repo"
+    command.repo_url_given_explicitly = True
+    command.repo_desired_branch = "main"
+    command.git_provider = StubProvider()
 
-    assert tool._format_model_answer("The answer is here.", [{"file_name": "/docs/broken.md"}]) == (
+    assert command._format_model_answer("The answer is here.", [{"file_name": "/docs/broken.md"}]) == (
         "### :bulb: Auto-generated documentation-based answer:\nThe answer is here.\n\n"
     )
 
@@ -102,22 +102,22 @@ async def test_run_preserves_answer_when_model_returns_empty_source_list(monkeyp
 
     monkeypatch.setattr("pr_agent.commands.pr_help_docs.retry_with_fallback_models", fake_retry_with_fallback_models)
 
-    tool = PRHelpDocs.__new__(PRHelpDocs)
-    tool.question = "Where is the guide?"
-    tool.return_as_string = True
-    tool.repo_url = "https://example.com/org/repo"
-    tool.repo_url_given_explicitly = True
-    tool.repo_desired_branch = "main"
-    tool.supported_doc_exts = [".md"]
-    tool.git_provider = StubProvider()
-    tool.ai_handler = object()
-    tool.vars = {"question": tool.question, "snippets": ""}
-    tool._gen_filenames_to_contents_map_from_repo = lambda: {"/docs/guide.md": "# Guide\n\nGuide content."}
-    tool._trim_docs_input = lambda docs_input, *args, only_return_if_trim_needed=False, **kwargs: (
+    command = PRHelpDocs.__new__(PRHelpDocs)
+    command.question = "Where is the guide?"
+    command.return_as_string = True
+    command.repo_url = "https://example.com/org/repo"
+    command.repo_url_given_explicitly = True
+    command.repo_desired_branch = "main"
+    command.supported_doc_exts = [".md"]
+    command.git_provider = StubProvider()
+    command.ai_handler = object()
+    command.vars = {"question": command.question, "snippets": ""}
+    command._gen_filenames_to_contents_map_from_repo = lambda: {"/docs/guide.md": "# Guide\n\nGuide content."}
+    command._trim_docs_input = lambda docs_input, *args, only_return_if_trim_needed=False, **kwargs: (
         False if only_return_if_trim_needed else docs_input
     )
 
-    assert await tool.run() == (
+    assert await command.run() == (
         "### :bulb: Auto-generated documentation-based answer:\nThe answer is here.\n\n"
     )
 
@@ -157,17 +157,17 @@ async def test_rank_docs_preserves_valid_rows_when_model_ranking_is_partially_ma
 
     monkeypatch.setattr("pr_agent.commands.pr_help_docs.retry_with_fallback_models", fake_retry_with_fallback_models)
 
-    tool = PRHelpDocs.__new__(PRHelpDocs)
-    tool.ai_handler = object()
-    tool.vars = {"question": "Where is the guide?", "snippets": ""}
-    tool._trim_docs_input = lambda docs_input, *args, **kwargs: docs_input
+    command = PRHelpDocs.__new__(PRHelpDocs)
+    command.ai_handler = object()
+    command.vars = {"question": "Where is the guide?", "snippets": ""}
+    command._trim_docs_input = lambda docs_input, *args, **kwargs: docs_input
     docs = {
         "/docs/first.md": "# First\n\nFirst document.",
         "/docs/second.md": "# Second\n\nSecond document.",
         "/docs/third.md": "# Third\n\nThird document.",
     }
 
-    ranked_prompt = await tool._rank_docs_and_return_them_as_prompt(docs, 10_000)
+    ranked_prompt = await command._rank_docs_and_return_them_as_prompt(docs, 10_000)
 
     assert "/docs/second.md" not in ranked_prompt
     assert ranked_prompt.index("/docs/third.md") < ranked_prompt.index("/docs/first.md")

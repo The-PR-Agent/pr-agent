@@ -55,24 +55,24 @@ def providers(monkeypatch):
     return get_provider
 
 
-@pytest.mark.parametrize(("command", "tool_class", "section"), [
+@pytest.mark.parametrize(("command", "command_class", "section"), [
     ("review", agent.PRReviewer, "PR_REVIEWER"),
     ("describe", agent.PRDescription, "PR_DESCRIPTION"),
     ("improve", agent.PRCodeSuggestions, "PR_CODE_SUGGESTIONS"),
 ])
 async def test_real_initializers_overlap_without_mixing_request_settings(monkeypatch, providers,
-                                                                        command, tool_class, section):
+                                                                        command, command_class, section):
     loop_thread = threading.get_ident()
     barrier = threading.Barrier(2, timeout=5)
     observed = []
 
-    async def run(tool):
+    async def run(command):
         assert threading.get_ident() == loop_thread
-        assert tool.vars["title"] == tool.git_provider.pr_url
-        assert tool.vars["extra_instructions"].startswith(tool.git_provider.pr_url)
-        assert "fr-fr" in tool.vars["extra_instructions"]
+        assert command.vars["title"] == command.git_provider.pr_url
+        assert command.vars["extra_instructions"].startswith(command.git_provider.pr_url)
+        assert "fr-fr" in command.vars["extra_instructions"]
 
-    monkeypatch.setattr(tool_class, "run", run)
+    monkeypatch.setattr(command_class, "run", run)
 
     async def request(url):
         settings = _settings()
@@ -158,7 +158,7 @@ def test_same_pr_waiters_leave_workers_available_for_other_requests(providers, w
                 assert await waiter is True
             assert provider.get_languages.call_count == (1 if waiter_kind == "cancelled" else 2)
             assert factory_calls == ([loop] if waiter_kind == "custom_factory" else [])
-            assert agent._tool_initialization_locks == {}
+            assert agent._command_initialization_locks == {}
         finally:
             release.set()
             await asyncio.gather(first, *([waiter] if waiter is not None else []), return_exceptions=True)
@@ -185,7 +185,7 @@ async def test_cancellation_waits_for_initialization_before_restoring_settings(m
     with request_cycle_context({"settings": _settings()}):
         original_instructions = get_settings().pr_reviewer.extra_instructions
         task = asyncio.create_task(agent.PRAgent().handle_request(
-            URL, "/review --config.response_language=fr-fr", propagate_tool_errors=True
+            URL, "/review --config.response_language=fr-fr", propagate_command_errors=True
         ))
         try:
             assert await asyncio.to_thread(entered.wait, 5)
@@ -221,19 +221,19 @@ async def test_injected_ai_factory_keeps_its_running_loop(providers):
     assert calls == [loop]
 
 
-@pytest.mark.parametrize("context_kind", ["absent", "shared", "other_tool"])
-async def test_shared_settings_and_other_tools_keep_initialization_on_the_loop(monkeypatch, context_kind):
+@pytest.mark.parametrize("context_kind", ["absent", "shared", "other_command"])
+async def test_shared_settings_and_other_commands_keep_initialization_on_the_loop(monkeypatch, context_kind):
     loop = asyncio.get_running_loop()
 
-    class LoopBoundTool:
+    class LoopBoundCommand:
         def __init__(self, *args, **kwargs):
             assert asyncio.get_running_loop() is loop
 
-    if context_kind != "other_tool":
-        monkeypatch.setattr(agent, "PRReviewer", LoopBoundTool)
+    if context_kind != "other_command":
+        monkeypatch.setattr(agent, "PRReviewer", LoopBoundCommand)
     if context_kind != "absent":
         settings = global_settings if context_kind == "shared" else _settings()
         with request_cycle_context({"settings": settings}):
-            assert isinstance(await agent.PRAgent()._create_tool(LoopBoundTool, URL), LoopBoundTool)
+            assert isinstance(await agent.PRAgent()._create_command(LoopBoundCommand, URL), LoopBoundCommand)
     else:
-        assert isinstance(await agent.PRAgent()._create_tool(LoopBoundTool, URL), LoopBoundTool)
+        assert isinstance(await agent.PRAgent()._create_command(LoopBoundCommand, URL), LoopBoundCommand)

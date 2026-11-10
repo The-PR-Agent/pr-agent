@@ -294,13 +294,13 @@ def published_description(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("propagate_tool_errors", [False, True])
-async def test_run_reports_description_publication_failure(published_description, propagate_tool_errors):
+@pytest.mark.parametrize("propagate_command_errors", [False, True])
+async def test_run_reports_description_publication_failure(published_description, propagate_command_errors):
     description, provider, progress_comment = published_description
     provider.publish_description.side_effect = RuntimeError("permission denied")
-    get_settings().config.propagate_tool_errors = propagate_tool_errors
+    get_settings().config.propagate_tool_errors = propagate_command_errors
 
-    if propagate_tool_errors:
+    if propagate_command_errors:
         with pytest.raises(RuntimeError, match="permission denied"):
             await description.run()
     else:
@@ -308,19 +308,19 @@ async def test_run_reports_description_publication_failure(published_description
 
     provider.publish_description.assert_called_once()
     assert command_failed()
-    provider.publish_tool_failure.assert_called_once_with("describe", "Failed to update PR description")
+    provider.publish_command_failure.assert_called_once_with("describe", "Failed to update PR description")
     provider.get_latest_commit_url.assert_not_called()
     provider.remove_comment.assert_called_once_with(progress_comment)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+@pytest.mark.parametrize("propagate_command_errors", [False, True])
 @pytest.mark.parametrize("failed_step", ["get_latest_commit_url", "get_pr_url", "publish_comment"])
 async def test_run_keeps_description_success_when_final_feedback_fails(
-    published_description, propagate_tool_errors, failed_step
+    published_description, propagate_command_errors, failed_step
 ):
     description, provider, progress_comment = published_description
-    get_settings().config.propagate_tool_errors = propagate_tool_errors
+    get_settings().config.propagate_tool_errors = propagate_command_errors
     error = RuntimeError("optional feedback failed")
     if failed_step == "publish_comment":
         # The final comment may have reached the provider before the error; never retry it.
@@ -332,7 +332,7 @@ async def test_run_keeps_description_success_when_final_feedback_fails(
 
     provider.publish_description.assert_called_once()
     assert not command_failed()
-    provider.publish_tool_failure.assert_not_called()
+    provider.publish_command_failure.assert_not_called()
     assert provider.publish_comment.call_count == (2 if failed_step == "publish_comment" else 1)
     provider.edit_comment.assert_called_once_with(progress_comment, "PR description generation finished.")
     provider.remove_comment.assert_called_once_with(progress_comment)

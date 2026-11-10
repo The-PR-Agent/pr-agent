@@ -46,7 +46,7 @@ async def test_add_docs_trigger(monkeypatch, action, draft, state, should_run):
         lambda pr_url: FakeGitProvider(pr_url),
     )
     monkeypatch.setattr(
-        "pr_agent.commands.pr_add_docs.get_git_provider_for_tool",
+        "pr_agent.commands.pr_add_docs.get_git_provider_for_command",
         lambda pr_url: FakeGitProvider(pr_url),
     )
 

@@ -40,8 +40,8 @@ async def test_similar_issue_unsupported_provider_publishes_message(monkeypatch)
         lambda _: fake_provider,
     )
 
-    tool = PRSimilarIssue("https://gitlab.example.com/group/repo/-/merge_requests/1", None)
-    result = await tool.run()
+    command = PRSimilarIssue("https://gitlab.example.com/group/repo/-/merge_requests/1", None)
+    result = await command.run()
 
     assert result == ""
     assert fake_provider.comments == [
@@ -59,8 +59,8 @@ async def test_similar_issue_unsupported_provider_no_publish(monkeypatch):
     monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_settings", lambda: FakeSettings)
     monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_git_provider", lambda: UnsupportedProvider)
 
-    tool = PRSimilarIssue("https://gitlab.example.com/group/repo/-/merge_requests/1", None)
-    result = await tool.run()
+    command = PRSimilarIssue("https://gitlab.example.com/group/repo/-/merge_requests/1", None)
+    result = await command.run()
 
     assert result == ""
 

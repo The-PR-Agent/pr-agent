@@ -27,21 +27,21 @@ _PREDICTION = {
 }
 
 
-def _make_tool():
+def _make_command():
     provider = MagicMock()
     provider.is_supported.return_value = False
-    tool = PRDescription.__new__(PRDescription)
-    tool.git_provider = provider
-    tool.pr_id = "example/repo/1"
-    tool.vars = {"title": "raw", "diff": "", "description": ""}
-    tool.user_description = ""
-    tool.prediction = None
-    tool.progress_response = None
-    tool._prepare_labels = MagicMock(return_value=[])
-    tool.keys_fix = []
-    tool._prepare_pr_answer = MagicMock(return_value=("T", "B", "W"))
-    tool._get_description_coverage_footer = MagicMock(return_value="")
-    return tool
+    command = PRDescription.__new__(PRDescription)
+    command.git_provider = provider
+    command.pr_id = "example/repo/1"
+    command.vars = {"title": "raw", "diff": "", "description": ""}
+    command.user_description = ""
+    command.prediction = None
+    command.progress_response = None
+    command._prepare_labels = MagicMock(return_value=[])
+    command.keys_fix = []
+    command._prepare_pr_answer = MagicMock(return_value=("T", "B", "W"))
+    command._get_description_coverage_footer = MagicMock(return_value="")
+    return command
 
 
 @pytest.fixture
@@ -70,14 +70,14 @@ def json_output(tmp_path):
         review_json_output_path.reset(token)
 
 
-def _stub_model(monkeypatch, tool, usage=None):
+def _stub_model(monkeypatch, command, usage=None):
     """Stand in for retry_with_fallback_models(_prepare_prediction, ...): record the prediction
     like _prepare_prediction would, and optionally account the run's token usage."""
     async def fake_retry(func, *args, **kwargs):
         if usage:
             add_token_usage(usage)
-        tool.prediction = yaml.safe_dump(_PREDICTION)
-        return tool.prediction
+        command.prediction = yaml.safe_dump(_PREDICTION)
+        return command.prediction
 
     monkeypatch.setattr(pr_description_module, "retry_with_fallback_models", fake_retry)
     monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", AsyncMock())
@@ -85,10 +85,10 @@ def _stub_model(monkeypatch, tool, usage=None):
 
 @pytest.mark.asyncio
 async def test_writes_description_and_usage_when_publishing_is_off(monkeypatch, settings, json_output):
-    tool = _make_tool()
-    _stub_model(monkeypatch, tool, {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42})
+    command = _make_command()
+    _stub_model(monkeypatch, command, {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42})
 
-    await tool.run()
+    await command.run()
 
     written = json.loads(json_output.read_text())
     assert written["title"] == "Add a login endpoint"
@@ -98,9 +98,9 @@ async def test_writes_description_and_usage_when_publishing_is_off(monkeypatch, 
 
 @pytest.mark.asyncio
 async def test_no_file_written_without_a_json_output_path(monkeypatch, settings, tmp_path):
-    tool = _make_tool()
-    _stub_model(monkeypatch, tool)
+    command = _make_command()
+    _stub_model(monkeypatch, command)
 
-    await tool.run()
+    await command.run()
 
     assert list(tmp_path.iterdir()) == []

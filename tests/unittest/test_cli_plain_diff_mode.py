@@ -227,7 +227,7 @@ def test_json_output_accepts_pr_review(command, monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("command", ["improve", "improve_code", "describe", "describe_pr"])
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])
-def test_json_output_accepts_plain_diff_tool_aliases(command, input_mode, monkeypatch, tmp_path):
+def test_json_output_accepts_plain_diff_command_aliases(command, input_mode, monkeypatch, tmp_path):
     from pr_agent.algo.review_json_output import review_json_output_path
 
     captured = {}
@@ -582,7 +582,7 @@ def test_plain_diff_describe_fails_when_all_files_are_ignored(monkeypatch, tmp_p
     assert not output.exists()
 
 
-def test_plain_diff_json_tool_failure_returns_nonzero_without_error_propagation(monkeypatch, tmp_path, cfg):
+def test_plain_diff_json_command_failure_returns_nonzero_without_error_propagation(monkeypatch, tmp_path, cfg):
     from pr_agent.algo.run_details import record_command_failure
 
     class FailedAgent:
@@ -861,7 +861,7 @@ def test_output_options_after_command_fail_before_read(
     assert f"{option} must appear before the command" in err
 
 
-def test_near_match_after_command_remains_a_tool_argument(monkeypatch):
+def test_near_match_after_command_remains_a_command_argument(monkeypatch):
     captured = {}
 
     class FakeAgent:

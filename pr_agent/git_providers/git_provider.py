@@ -387,7 +387,7 @@ def _is_line_number(value) -> bool:
 
 class GitProvider(ABC):
     # Keep manual-tool reuse opt-in because providers can retain PR revision state.
-    reuse_for_manual_tool = False
+    reuse_for_manual_command = False
 
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         """Return policy fields; None means unknown, empty values mean not applicable.
@@ -413,7 +413,7 @@ class GitProvider(ABC):
         for GitHub; the semantics live here so every provider inherits them. Drop the
         latest commit URL too, so the next command can see newly pushed commits.
         """
-        self._tool_provider_stale = True
+        self._command_provider_stale = True
         self.diff_files = None
         self._latest_commit_url = None
         if getattr(self, "incremental", None) is not None:
@@ -1090,7 +1090,7 @@ class GitProvider(ABC):
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         pass
 
-    def publish_tool_failure(self, tool: str, message: str):
+    def publish_command_failure(self, command: str, message: str):
         """Report that `tool` ("describe", "improve") failed. Providers with per-tool outputs override this."""
         return self.publish_comment(message)
 

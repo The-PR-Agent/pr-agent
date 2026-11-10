@@ -77,10 +77,10 @@ def test_qdrant_upload_points_uses_batching(monkeypatch):
         fake_qdrant_models,
     )
 
-    tool = psi.PRSimilarIssue.__new__(psi.PRSimilarIssue)
-    tool.qdrant = FakeQdrant()
-    tool.qdrant_collection_name = "test-collection"
-    tool.max_issues_to_scan = 100
+    command = psi.PRSimilarIssue.__new__(psi.PRSimilarIssue)
+    command.qdrant = FakeQdrant()
+    command.qdrant_collection_name = "test-collection"
+    command.max_issues_to_scan = 100
 
     issue = SimpleNamespace(
         pull_request=False,
@@ -101,7 +101,7 @@ def test_qdrant_upload_points_uses_batching(monkeypatch):
         lambda texts: [[0.5, 0.5] for _ in texts],
     )
 
-    tool._update_qdrant_with_issues([issue], "example-repo")
+    command._update_qdrant_with_issues([issue], "example-repo")
 
     assert calls["collection_name"] == "test-collection"
     assert calls["batch_size"] == 100

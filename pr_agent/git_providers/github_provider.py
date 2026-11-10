@@ -136,7 +136,7 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
 
 
 class GithubProvider(GitProvider):
-    reuse_for_manual_tool = True
+    reuse_for_manual_command = True
 
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         pr = self.pr

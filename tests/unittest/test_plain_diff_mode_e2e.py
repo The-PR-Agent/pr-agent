@@ -501,7 +501,7 @@ async def test_ask_keeps_ticket_prefix_when_full_context_exactly_fills_budget(
                   "type: [Enhancement]\npr_files: []\n",
      "### **Description**\nInvoices above the limit need manager approval."),
 ])
-async def test_plain_diff_cli_context_reaches_tool_prompts(tmp_path, monkeypatch, command, response, description):
+async def test_plain_diff_cli_context_reaches_command_prompts(tmp_path, monkeypatch, command, response, description):
     """Command settings must reach prompts even after the provider has been cached."""
     monkeypatch.chdir(tmp_path)
     prompts = []

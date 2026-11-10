@@ -32,7 +32,7 @@ _SUGGESTION = {
 }
 
 
-def _make_tool():
+def _make_command():
     provider = MagicMock()
     provider.should_publish_improve_as_thread.return_value = False
     provider.get_files.return_value = [object()]
@@ -46,14 +46,14 @@ def _make_tool():
             filename="app.py",
         )
     ]
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = provider
-    tool.pr_url = "https://example.invalid/pull/1"
-    tool.progress_response = None
-    tool.progress = "progress body"
-    tool.incremental = SimpleNamespace(is_incremental=False)
-    tool.generate_summarized_suggestions = MagicMock(return_value="summary")
-    return tool
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = provider
+    command.pr_url = "https://example.invalid/pull/1"
+    command.progress_response = None
+    command.progress = "progress body"
+    command.incremental = SimpleNamespace(is_incremental=False)
+    command.generate_summarized_suggestions = MagicMock(return_value="summary")
+    return command
 
 
 @pytest.fixture
@@ -100,7 +100,7 @@ async def test_writes_suggestions_and_usage_when_publishing_is_off(monkeypatch, 
         {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42},
     )
 
-    await _make_tool().run()
+    await _make_command().run()
 
     assert json.loads(json_output.read_text()) == {
         "code_suggestions": [_SUGGESTION],
@@ -113,7 +113,7 @@ async def test_writes_an_empty_list_when_there_are_no_suggestions(monkeypatch, s
     settings.config.publish_output = False
     _answer_with(monkeypatch, {"code_suggestions": []})
 
-    await _make_tool().run()
+    await _make_command().run()
 
     assert json.loads(json_output.read_text()) == {"code_suggestions": [], "usage": {}}
 
@@ -121,17 +121,17 @@ async def test_writes_an_empty_list_when_there_are_no_suggestions(monkeypatch, s
 @pytest.mark.asyncio
 async def test_writes_the_published_suggestions_after_publishing(monkeypatch, settings, json_output):
     settings.config.publish_output = True
-    tool = _make_tool()
+    command = _make_command()
 
     def publish_comment(*args, **kwargs):
         assert not json_output.exists()
 
-    tool.git_provider.publish_comment.side_effect = publish_comment
+    command.git_provider.publish_comment.side_effect = publish_comment
     _answer_with(monkeypatch, {"code_suggestions": [dict(_SUGGESTION)]})
 
-    await tool.run()
+    await command.run()
 
-    tool.git_provider.publish_comment.assert_called()
+    command.git_provider.publish_comment.assert_called()
     assert json.loads(json_output.read_text())["code_suggestions"] == [_SUGGESTION]
 
 
@@ -142,7 +142,7 @@ async def test_writes_nothing_without_a_json_output_path(monkeypatch, settings, 
     monkeypatch.setattr(pr_code_suggestions_module, "write_review_json_output", write)
     _answer_with(monkeypatch, {"code_suggestions": [dict(_SUGGESTION)]})
 
-    await _make_tool().run()
+    await _make_command().run()
 
     write.assert_not_called()
 
@@ -156,6 +156,6 @@ async def test_writes_nothing_when_suggestions_fail(monkeypatch, settings, json_
         AsyncMock(side_effect=RuntimeError("model unavailable")),
     )
 
-    await _make_tool().run()
+    await _make_command().run()
 
     assert not json_output.exists()

@@ -110,7 +110,7 @@ async def _handle_request(url, body, notify=None):
         return RequestOutcome.SKIPPED
     if result is False:
         _mark_action_failed()
-    _fail_on_recorded_tool_error()
+    _fail_on_recorded_command_error()
 
 
 async def _handle_configured_command(url, command):
@@ -152,7 +152,7 @@ def _settings_pr_url(event_payload, event_name):
     return pr_url
 
 
-def _fail_on_recorded_tool_error():
+def _fail_on_recorded_command_error():
     # Fail the Action on a failure the tool recorded but swallowed (propagate_tool_errors=false),
     # so a PR that got no review is not reported green (#3705). The operator opts out with
     # GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS=false; comment arguments cannot change it.
@@ -163,7 +163,7 @@ def _fail_on_recorded_tool_error():
         _mark_action_failed()
 
 
-async def _run_auto_tool(tool_class, pr_url):
+async def _run_auto_command(command_class, pr_url):
     """Run a direct auto tool while preserving GitHub Action failure semantics."""
     # Install a fresh collector so `command_failed()` below cannot read a verdict left
     # behind by a previous tool; the tool replaces it with its own on entry.
@@ -172,13 +172,13 @@ async def _run_auto_tool(tool_class, pr_url):
     _normalize_publish_output_setting()
     try:
         with response_language_instructions():
-            result = await tool_class(pr_url).run()
+            result = await command_class(pr_url).run()
     except IncompletePullRequestFilesError as error:
         await asyncio.to_thread(publish_incomplete_files_comment, pr_url, error)
         raise
     if result is False:
         _mark_action_failed()
-    _fail_on_recorded_tool_error()
+    _fail_on_recorded_command_error()
 
 async def _run_review_commands(event_payload):
     action = event_payload.get("action")
@@ -479,11 +479,11 @@ async def run_action():
 
                 # invoke by default all three tools
                 if auto_describe is None or is_true(auto_describe):
-                    await _run_auto_tool(PRDescription, pr_url)
+                    await _run_auto_command(PRDescription, pr_url)
                 if auto_review is None or is_true(auto_review):
-                    await _run_auto_tool(PRReviewer, pr_url)
+                    await _run_auto_command(PRReviewer, pr_url)
                 if auto_improve is None or is_true(auto_improve):
-                    await _run_auto_tool(PRCodeSuggestions, pr_url)
+                    await _run_auto_command(PRCodeSuggestions, pr_url)
         else:
             get_logger().info(f"Skipping action: {action}")
 
@@ -599,11 +599,11 @@ async def run_action():
         )
 
         if auto_describe is None or is_true(auto_describe):
-            await _run_auto_tool(PRDescription, pr_url)
+            await _run_auto_command(PRDescription, pr_url)
         if auto_review is None or is_true(auto_review):
-            await _run_auto_tool(PRReviewer, pr_url)
+            await _run_auto_command(PRReviewer, pr_url)
         if auto_improve is None or is_true(auto_improve):
-            await _run_auto_tool(PRCodeSuggestions, pr_url)
+            await _run_auto_command(PRCodeSuggestions, pr_url)
 
 
 def _inject_ci_conclusion(conclusion):
@@ -624,17 +624,17 @@ def _inject_ci_conclusion(conclusion):
         "and mention it rather than implying the change is clean."
     )
     separator = "\n======\n\n"
-    default_target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
-    target_tools = get_settings().get("ARTIFACTS.TARGET_TOOLS", default_target_tools)
-    if isinstance(target_tools, str):
-        target_tools = [t.strip() for t in target_tools.split(",") if t.strip()]
-    elif not isinstance(target_tools, (list, set, tuple)):
-        target_tools = default_target_tools
-    target_tools = {str(t).lower() for t in target_tools}
+    default_target_commands = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
+    target_commands = get_settings().get("ARTIFACTS.TARGET_TOOLS", default_target_commands)
+    if isinstance(target_commands, str):
+        target_commands = [t.strip() for t in target_commands.split(",") if t.strip()]
+    elif not isinstance(target_commands, (list, set, tuple)):
+        target_commands = default_target_commands
+    target_commands = {str(t).lower() for t in target_commands}
     for key in get_settings():
         setting = get_settings().get(key)
         if isinstance(setting, dynaconf.DataDict):
-            if key.lower() in target_tools:
+            if key.lower() in target_commands:
                 if hasattr(setting, "extra_instructions"):
                     extra_instructions = str(setting.extra_instructions or "")
                     if text not in extra_instructions:

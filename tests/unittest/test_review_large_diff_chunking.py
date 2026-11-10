@@ -500,9 +500,9 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("propagate_tool_errors", [True, False])
+@pytest.mark.parametrize("propagate_command_errors", [True, False])
 async def test_exhausted_fallbacks_propagate_partial_review_failure_when_configured(
-    chunking_enabled, propagate_tool_errors,
+    chunking_enabled, propagate_command_errors,
 ):
     reviewer = _make_reviewer()
     reviewer.vars = {}
@@ -517,7 +517,7 @@ async def test_exhausted_fallbacks_propagate_partial_review_failure_when_configu
         "config.fallback_models": ["fallback"],
         "config.publish_output": True,
         "config.is_auto_command": False,
-        "config.propagate_tool_errors": propagate_tool_errors,
+        "config.propagate_tool_errors": propagate_command_errors,
         "pr_reviewer.persistent_comment": False,
         "pr_reviewer.publish_error_details": False,
     }
@@ -536,7 +536,7 @@ async def test_exhausted_fallbacks_propagate_partial_review_failure_when_configu
                   return_value=PackedPRDiffs(["chunk-a", "chunk-b", "chunk-c"], [], [])),
             patch.object(reviewer, "_prepare_pr_review", side_effect=lambda: _render_review(reviewer)) as render,
         ):
-            if propagate_tool_errors:
+            if propagate_command_errors:
                 with pytest.raises(Exception, match="Failed to generate prediction with any model"):
                     await reviewer.run()
             else:

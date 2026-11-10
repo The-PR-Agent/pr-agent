@@ -247,19 +247,19 @@ async def test_pinecone_query_branch_runs(monkeypatch):
     )
 
     issue = SimpleNamespace(title="Issue", body="Body", number=1, get_comments=lambda: [])
-    tool = psi.PRSimilarIssue.__new__(psi.PRSimilarIssue)
-    tool.supported = True
-    tool.issue_url = "https://github.com/example/repo/issues/1"
-    tool.index_name = "issues"
-    tool.repo_name_for_index = "example-repo"
-    tool.pinecone_namespace = psi._pinecone_namespace("example/repo")
-    tool.pc = SimpleNamespace(Index=lambda name: FakeIndex())
-    tool.git_provider = SimpleNamespace(
+    command = psi.PRSimilarIssue.__new__(psi.PRSimilarIssue)
+    command.supported = True
+    command.issue_url = "https://github.com/example/repo/issues/1"
+    command.index_name = "issues"
+    command.repo_name_for_index = "example-repo"
+    command.pinecone_namespace = psi._pinecone_namespace("example/repo")
+    command.pc = SimpleNamespace(Index=lambda name: FakeIndex())
+    command.git_provider = SimpleNamespace(
         _parse_issue_url=lambda url: ("example/repo", 1),
         repo_obj=SimpleNamespace(get_issue=lambda number: issue),
     )
 
-    assert await tool.run() is None
+    assert await command.run() is None
     assert queried, "run() never entered the pinecone branch"
     assert queried[0]["vector"] == [0.5]
     assert queried[0]["namespace"] == psi._pinecone_namespace("example/repo")
@@ -272,9 +272,9 @@ def test_process_issue_preserves_configured_comment_indexing(monkeypatch, skip_c
     ))
     comments = [SimpleNamespace(body="Existing comment")]
     issue = SimpleNamespace(title="Issue", body="Body", number=1, get_comments=Mock(return_value=iter(comments)))
-    tool = psi.PRSimilarIssue.__new__(psi.PRSimilarIssue)
+    command = psi.PRSimilarIssue.__new__(psi.PRSimilarIssue)
 
-    issue_str, returned_comments, number = tool._process_issue(issue)
+    issue_str, returned_comments, number = command._process_issue(issue)
 
     assert issue_str == "Issue Header: \"Issue\"\n\nIssue Body:\nBody"
     assert list(returned_comments) == ([] if skip_comments else comments)
@@ -283,7 +283,7 @@ def test_process_issue_preserves_configured_comment_indexing(monkeypatch, skip_c
 
 
 @pytest.fixture(params=["pinecone", "lancedb", "qdrant"])
-def query_tool(monkeypatch, request):
+def query_command(monkeypatch, request):
     """Exercise each query branch with ranked rows and an observable publication sink."""
     backend = request.param
     state = SimpleNamespace(attempts=[], responses=[], published=[], embedded=[], fetched=[],
@@ -352,26 +352,26 @@ def query_tool(monkeypatch, request):
     monkeypatch.setitem(sys.modules, "qdrant_client.models", SimpleNamespace(
         FieldCondition=SimpleNamespace, Filter=SimpleNamespace, MatchValue=SimpleNamespace,
     ))
-    tool = psi.PRSimilarIssue.__new__(psi.PRSimilarIssue)
-    tool.supported = True
-    tool.issue_url = "https://github.com/example/repo/issues/1"
-    tool.index_name = "issues"
-    tool.repo_name_for_index = "example-repo"
-    tool.pinecone_namespace = psi._pinecone_namespace("example/repo")
-    tool.qdrant_collection_name = "issues-v2"
-    tool.pc = SimpleNamespace(Index=lambda name: SimpleNamespace(query=query))
-    tool.qdrant = SimpleNamespace(query_points=query)
-    tool.table = SimpleNamespace(search=lambda vector: Builder())
-    tool.git_provider = SimpleNamespace(
+    command = psi.PRSimilarIssue.__new__(psi.PRSimilarIssue)
+    command.supported = True
+    command.issue_url = "https://github.com/example/repo/issues/1"
+    command.index_name = "issues"
+    command.repo_name_for_index = "example-repo"
+    command.pinecone_namespace = psi._pinecone_namespace("example/repo")
+    command.qdrant_collection_name = "issues-v2"
+    command.pc = SimpleNamespace(Index=lambda name: SimpleNamespace(query=query))
+    command.qdrant = SimpleNamespace(query_points=query)
+    command.table = SimpleNamespace(search=lambda vector: Builder())
+    command.git_provider = SimpleNamespace(
         _parse_issue_url=lambda url: ("example/repo", 1), repo_obj=SimpleNamespace(get_issue=get_issue),
     )
-    state.tool = tool
+    state.command = command
     yield state
     assert len(state.embedded) == 1
     for call in state.attempts:
         if backend == "pinecone":
             assert call == dict(vector=[0.5], top_k=call["top_k"], filter={"repo": "example-repo"},
-                                namespace=tool.pinecone_namespace, include_metadata=False)
+                                namespace=command.pinecone_namespace, include_metadata=False)
         elif backend == "lancedb":
             assert call == dict(vector=[0.5], metric="cosine", limit=call["limit"],
                                 filter=("metadata.repo='example-repo'", True), columns=["id", "_distance"])
@@ -384,13 +384,13 @@ def query_tool(monkeypatch, request):
 
 
 @pytest.mark.asyncio
-async def test_long_query_uses_bounded_embedding_tokens(query_tool):
-    state = query_tool
+async def test_long_query_uses_bounded_embedding_tokens(query_command):
+    state = query_command
     long_text = "🧪" * 4000
-    state.tool._process_issue = lambda issue, include_comments=False: (long_text, [], issue.number)
+    state.command._process_issue = lambda issue, include_comments=False: (long_text, [], issue.number)
     state.responses = [[]]
 
-    await state.tool.run()
+    await state.command.run()
 
     assert isinstance(state.embedded[0][0], list)
     assert len(state.embedded[0][0]) == psi.EMBEDDING_INPUT_TOKEN_LIMIT
@@ -402,10 +402,10 @@ def _limits(state):
 
 
 @pytest.mark.asyncio
-async def test_healthy_query_keeps_five_results_and_one_request(query_tool):
-    state = query_tool
+async def test_healthy_query_keeps_five_results_and_one_request(query_command):
+    state = query_command
     state.responses = [[(f"issue_{n}.issue", 0.9) for n in range(2, 7)]]
-    await state.tool.run()
+    await state.command.run()
     assert _limits(state) == [5]
     assert state.fetched == [1, 2, 3, 4, 5, 6]
     assert state.comment_fetches == []
@@ -415,8 +415,8 @@ async def test_healthy_query_keeps_five_results_and_one_request(query_tool):
 
 
 @pytest.mark.asyncio
-async def test_full_filtered_query_retries_and_uses_only_terminal_order(query_tool):
-    state = query_tool
+async def test_full_filtered_query_retries_and_uses_only_terminal_order(query_command):
+    state = query_command
     state.responses = [
         [("issue_1.issue", 1), ("issue_1.comment_bad", 0.99), ("example_issue_repo", 0.98),
          ("issue_20.issue", 0.97), ("issue_20.comment_0", 0.96)],
@@ -424,7 +424,7 @@ async def test_full_filtered_query_retries_and_uses_only_terminal_order(query_to
          ("issue_3.issue", 0.94), ("issue_4.issue", 0.90), ("bad.issue", 0.89),
          ("issue_5.issue", 0.80), ("issue_6.issue", 0.70), ("issue_7.issue", 0.60), ("issue_8.issue", 0.5)],
     ]
-    await state.tool.run()
+    await state.command.run()
     assert _limits(state) == [5, 10]
     assert state.fetched == [1, 3, 4, 5, 6, 7]
     assert len(state.published) == 1
@@ -436,21 +436,21 @@ async def test_full_filtered_query_retries_and_uses_only_terminal_order(query_to
 
 
 @pytest.mark.asyncio
-async def test_short_response_does_not_retry(query_tool):
-    state = query_tool
+async def test_short_response_does_not_retry(query_command):
+    state = query_command
     state.responses = [[("issue_1.issue", 1), ("issue_2.issue", 0.8)]]
-    await state.tool.run()
+    await state.command.run()
     assert _limits(state) == [5]
     assert state.fetched == [1, 2]
     assert len(state.published) == 1
 
 
 @pytest.mark.asyncio
-async def test_second_full_response_cannot_start_a_third_query(query_tool):
-    state = query_tool
+async def test_second_full_response_cannot_start_a_third_query(query_command):
+    state = query_command
     state.responses = [[("issue_1.issue", 1)] * 5, [("issue_1.issue", 1)] * 10]
     state.publish = False
-    await state.tool.run()
+    await state.command.run()
     assert _limits(state) == [5, 10]
     assert state.published == []
     assert state.fetched == [1]
@@ -458,31 +458,31 @@ async def test_second_full_response_cannot_start_a_third_query(query_tool):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [RuntimeError("query failed"), asyncio.CancelledError(), None])
-async def test_retry_failure_does_not_publish_partial_first_response(query_tool, failure):
-    state = query_tool
+async def test_retry_failure_does_not_publish_partial_first_response(query_command, failure):
+    state = query_command
     state.responses = [[("issue_2.issue", 0.9)] * 5, failure]
     with pytest.raises(type(failure) if failure is not None else KeyError):
-        await state.tool.run()
+        await state.command.run()
     assert _limits(state) == [5, 10]
     assert state.published == []
     assert state.fetched == [1]
 
 
 @pytest.mark.asyncio
-async def test_unresolved_comment_url_prevents_publication(query_tool):
-    state = query_tool
+async def test_unresolved_comment_url_prevents_publication(query_command):
+    state = query_command
     state.responses = [[("issue_2.comment_9", 0.9)]]
     with pytest.raises(IndexError):
-        await state.tool.run()
+        await state.command.run()
     assert state.published == []
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("comment_index", "expected_pages"), [(0, [1]), (101, [1, 2]), (249, [1, 2, 3])])
-async def test_result_comment_fetch_stops_at_selected_page(query_tool, monkeypatch, comment_index, expected_pages):
+async def test_result_comment_fetch_stops_at_selected_page(query_command, monkeypatch, comment_index, expected_pages):
     from urllib.parse import parse_qs, urlsplit
 
-    state = query_tool
+    state = query_command
     state.responses = [[(f"issue_2.comment_{comment_index}", 0.9)]]
     comments_url = "https://api.github.com/repos/example/repo/issues/2/comments"
     issue_url = "https://github.com/example/repo/issues/2"
@@ -504,13 +504,13 @@ async def test_result_comment_fetch_stops_at_selected_page(query_tool, monkeypat
     matched_issue = Issue(requester, {}, {
         "url": comments_url.removesuffix("/comments"), "html_url": issue_url, "title": "Issue 2",
     }, completed=True)
-    get_issue = state.tool.git_provider.repo_obj.get_issue
+    get_issue = state.command.git_provider.repo_obj.get_issue
     monkeypatch.setattr(
-        state.tool.git_provider.repo_obj, "get_issue",
+        state.command.git_provider.repo_obj, "get_issue",
         lambda number: matched_issue if number == 2 else get_issue(number),
     )
 
-    await state.tool.run()
+    await state.command.run()
 
     assert pages == expected_pages
     assert state.published == [
@@ -520,8 +520,8 @@ async def test_result_comment_fetch_stops_at_selected_page(query_tool, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_result_comment_iterable_stops_at_selected_match(query_tool, monkeypatch):
-    state = query_tool
+async def test_result_comment_iterable_stops_at_selected_match(query_command, monkeypatch):
+    state = query_command
     state.responses = [[("issue_2.comment_2", 0.9)]]
     yielded = []
 
@@ -530,13 +530,13 @@ async def test_result_comment_iterable_stops_at_selected_match(query_tool, monke
             yielded.append(index)
             yield SimpleNamespace(html_url=f"https://example.test/2#comment-{index}")
 
-    get_issue = state.tool.git_provider.repo_obj.get_issue
+    get_issue = state.command.git_provider.repo_obj.get_issue
     matched_issue = get_issue(2)
     matched_issue.get_comments = comments
-    monkeypatch.setattr(state.tool.git_provider.repo_obj, "get_issue",
+    monkeypatch.setattr(state.command.git_provider.repo_obj, "get_issue",
                         lambda number: matched_issue if number == 2 else get_issue(number))
 
-    await state.tool.run()
+    await state.command.run()
 
     assert yielded == [0, 1, 2]
     assert state.published == [

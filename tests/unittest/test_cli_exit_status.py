@@ -37,9 +37,9 @@ def restore_cli_settings():
         settings.set(key, value)
 
 
-def _run_with_result(monkeypatch, result, *, propagate_tool_errors, recorded_failure=False):
+def _run_with_result(monkeypatch, result, *, propagate_command_errors, recorded_failure=False):
     fake_settings = SimpleNamespace(
-        config={"propagate_tool_errors": propagate_tool_errors},
+        config={"propagate_tool_errors": propagate_command_errors},
         litellm={},
         set=MagicMock(),
     )
@@ -63,7 +63,7 @@ def _run_with_result(monkeypatch, result, *, propagate_tool_errors, recorded_fai
 
 
 @pytest.mark.parametrize(
-    ("request_result", "propagate_tool_errors", "expected_status", "prints_help"),
+    ("request_result", "propagate_command_errors", "expected_status", "prints_help"),
     [
         (True, False, None, False),
         (True, True, None, False),
@@ -77,14 +77,14 @@ def test_run_maps_request_result_to_status(
     monkeypatch,
     capsys,
     request_result,
-    propagate_tool_errors,
+    propagate_command_errors,
     expected_status,
     prints_help,
 ):
     status = _run_with_result(
         monkeypatch,
         request_result,
-        propagate_tool_errors=propagate_tool_errors,
+        propagate_command_errors=propagate_command_errors,
     )
 
     assert status == expected_status
@@ -92,17 +92,17 @@ def test_run_maps_request_result_to_status(
 
 
 @pytest.mark.parametrize(
-    ("propagate_tool_errors", "expected_status"),
+    ("propagate_command_errors", "expected_status"),
     [
         (False, None),
         (True, 1),
     ],
 )
-def test_run_maps_recorded_tool_failure_to_status(monkeypatch, propagate_tool_errors, expected_status):
+def test_run_maps_recorded_command_failure_to_status(monkeypatch, propagate_command_errors, expected_status):
     status = _run_with_result(
         monkeypatch,
         True,
-        propagate_tool_errors=propagate_tool_errors,
+        propagate_command_errors=propagate_command_errors,
         recorded_failure=True,
     )
 
@@ -113,11 +113,11 @@ def test_run_does_not_inherit_caller_or_previous_command_failure(monkeypatch):
     def run_commands():
         init_run_details()
         record_command_failure()
-        assert _run_with_result(monkeypatch, True, propagate_tool_errors=True) is None
+        assert _run_with_result(monkeypatch, True, propagate_command_errors=True) is None
         assert _run_with_result(
-            monkeypatch, True, propagate_tool_errors=True, recorded_failure=True
+            monkeypatch, True, propagate_command_errors=True, recorded_failure=True
         ) == 1
-        assert _run_with_result(monkeypatch, True, propagate_tool_errors=True) is None
+        assert _run_with_result(monkeypatch, True, propagate_command_errors=True) is None
 
     copy_context().run(run_commands)
 
@@ -516,7 +516,7 @@ PRAgent.handle_request = controlled_handle_request
 
 
 @pytest.mark.parametrize(
-    ("request_result", "propagate_tool_errors", "expected_status"),
+    ("request_result", "propagate_command_errors", "expected_status"),
     [
         ("false", "true", 1),
         ("false", "false", 0),
@@ -526,12 +526,12 @@ def test_process_entrypoints_map_request_status(
     process_entrypoints,
     controlled_process_env,
     request_result,
-    propagate_tool_errors,
+    propagate_command_errors,
     expected_status,
 ):
     env = controlled_process_env.copy()
     env["PR_AGENT_TEST_RESULT"] = request_result
-    env["PR_AGENT_TEST_PROPAGATE"] = propagate_tool_errors
+    env["PR_AGENT_TEST_PROPAGATE"] = propagate_command_errors
 
     for entrypoint in process_entrypoints:
         completed = subprocess.run(

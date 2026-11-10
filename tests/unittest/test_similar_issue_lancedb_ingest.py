@@ -70,20 +70,20 @@ def _fake_issue(number=5):
     )
 
 
-def _make_tool(monkeypatch, fake_db):
+def _make_command(monkeypatch, fake_db):
     _install_fake_pandas(monkeypatch)
     monkeypatch.setattr("pr_agent.commands.pr_similar_issue._embed_with_fallback", _fake_embed)
-    tool = PRSimilarIssue.__new__(PRSimilarIssue)
-    tool.db = fake_db
-    tool.index_name = "codium-ai-pr-agent-issues"
-    tool.max_issues_to_scan = 10
-    tool.table = fake_db.table
-    tool._process_issue = lambda issue: (
+    command = PRSimilarIssue.__new__(PRSimilarIssue)
+    command.db = fake_db
+    command.index_name = "codium-ai-pr-agent-issues"
+    command.max_issues_to_scan = 10
+    command.table = fake_db.table
+    command._process_issue = lambda issue: (
         f"title: {issue.title}\nbody: {issue.body}",
         [],
         issue.number,
     )
-    return tool
+    return command
 
 
 class _FakeSearch:
@@ -209,14 +209,14 @@ def test_initial_creation_overwrites_the_table(monkeypatch):
     )
     fake_db.table = None
 
-    tool = _make_tool(monkeypatch, fake_db)
-    tool.table = fake_db.table
+    command = _make_command(monkeypatch, fake_db)
+    command.table = fake_db.table
 
     monkeypatch.setattr(
         time, "sleep", lambda seconds: pytest.fail(f"unexpected sleep({seconds}) after create")
     )
 
-    tool._update_table_with_issues(
+    command._update_table_with_issues(
         [_fake_issue()],
         "utkarsh-demo",
         ingest=False,
@@ -231,13 +231,13 @@ def test_ingest_appends_rows_when_table_exists(monkeypatch):
     fake_table = _fake_table()
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
     monkeypatch.setattr(
         time, "sleep", lambda seconds: pytest.fail(f"unexpected sleep({seconds}) after add")
     )
 
-    tool._update_table_with_issues(
+    command._update_table_with_issues(
         [_fake_issue()],
         "utkarsh-demo",
         ingest=True,
@@ -253,8 +253,8 @@ def test_ingest_oversized_issues_do_not_burn_the_scan_budget(monkeypatch):
     fake_table = _fake_table()
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
-    tool.max_issues_to_scan = 2
+    command = _make_command(monkeypatch, fake_db)
+    command.max_issues_to_scan = 2
 
     oversized = SimpleNamespace(
         number=1,
@@ -264,7 +264,7 @@ def test_ingest_oversized_issues_do_not_burn_the_scan_budget(monkeypatch):
         user=SimpleNamespace(login="tester"),
         created_at="2026-01-01T00:00:00Z",
     )
-    tool._update_table_with_issues(
+    command._update_table_with_issues(
         [oversized, _fake_issue(2), _fake_issue(3), _fake_issue(4)],
         "utkarsh-demo",
         ingest=True,
@@ -280,17 +280,17 @@ def test_ingest_fetches_table_when_table_handle_unset(monkeypatch):
     fake_table = _fake_table()
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
-    tool.table = None
+    command = _make_command(monkeypatch, fake_db)
+    command.table = None
 
-    tool._update_table_with_issues(
+    command._update_table_with_issues(
         [_fake_issue()],
         "utkarsh-demo",
         ingest=True,
     )
 
     assert fake_table.add_calls == [2]
-    assert tool.table is fake_table
+    assert command.table is fake_table
 
 
 def test_force_refresh_replaces_only_the_current_repo_rows(monkeypatch):
@@ -299,9 +299,9 @@ def test_force_refresh_replaces_only_the_current_repo_rows(monkeypatch):
     fake_table = _fake_table()
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    tool._update_table_with_issues(
+    command._update_table_with_issues(
         [_fake_issue()],
         "org/repo-a",
         ingest=True,
@@ -318,9 +318,9 @@ def test_ingest_warns_when_table_missing(monkeypatch):
     fake_table = _fake_table()
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    tool._update_table_with_issues(
+    command._update_table_with_issues(
         [_fake_issue()],
         "utkarsh-demo",
         ingest=True,
@@ -337,9 +337,9 @@ def test_ingest_finds_a_table_beyond_the_first_pagination_page(monkeypatch):
     fake_table = _fake_table()
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    tool._update_table_with_issues(
+    command._update_table_with_issues(
         [_fake_issue()],
         "utkarsh-demo",
         ingest=True,
@@ -353,16 +353,16 @@ def test_init_does_not_rebuild_when_the_table_sorts_past_the_first_ten(monkeypat
     names = [f"table-{i:02d}" for i in range(13)]
     names[10] = "codium-ai-pr-agent-issues"
 
-    tool = _make_tool(monkeypatch, FakeDB(names))
+    command = _make_command(monkeypatch, FakeDB(names))
 
-    assert tool._table_exists_in_db("codium-ai-pr-agent-issues")
+    assert command._table_exists_in_db("codium-ai-pr-agent-issues")
 
 
 def test_init_rebuilds_when_the_table_is_absent(monkeypatch):
     """A genuinely missing table is still treated as needing a full rebuild."""
-    tool = _make_tool(monkeypatch, FakeDB(["table-00"]))
+    command = _make_command(monkeypatch, FakeDB(["table-00"]))
 
-    assert not tool._table_exists_in_db("codium-ai-pr-agent-issues")
+    assert not command._table_exists_in_db("codium-ai-pr-agent-issues")
 def _capturing_table():
     fake_table = _fake_table()
     fake_table.added_rows = []
@@ -385,19 +385,19 @@ def _fake_issue_with_comments(comments):
     )
 
 
-def _tool_with_comments(monkeypatch, fake_db):
-    tool = _make_tool(monkeypatch, fake_db)
-    del tool._process_issue
+def _command_with_comments(monkeypatch, fake_db):
+    command = _make_command(monkeypatch, fake_db)
+    del command._process_issue
     monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_settings", lambda: SimpleNamespace(
         pr_similar_issue=SimpleNamespace(skip_comments=False),
     ))
-    return tool
+    return command
 
 
 def test_ingest_does_not_read_comments_for_oversized_issue(monkeypatch):
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.table = _capturing_table()
-    tool = _tool_with_comments(monkeypatch, fake_db)
+    command = _command_with_comments(monkeypatch, fake_db)
 
     class UnusedComments:
         def __iter__(self):
@@ -406,7 +406,7 @@ def test_ingest_does_not_read_comments_for_oversized_issue(monkeypatch):
     issue = _fake_issue_with_comments(UnusedComments())
     issue.body = "🧪" * 4000
 
-    tool._update_table_with_issues([issue], "org/repo", ingest=True)
+    command._update_table_with_issues([issue], "org/repo", ingest=True)
 
     assert fake_db.table.added_rows == []
 
@@ -417,13 +417,13 @@ def test_ingest_skips_null_comment_body_without_crashing(monkeypatch):
     fake_table = _capturing_table()
     fake_db.table = fake_table
 
-    tool = _tool_with_comments(monkeypatch, fake_db)
+    command = _command_with_comments(monkeypatch, fake_db)
     issue = _fake_issue_with_comments([
         SimpleNamespace(body=_LONG_COMMENT),
         SimpleNamespace(body=None),
     ])
 
-    tool._update_table_with_issues([issue], "org/repo", ingest=True)
+    command._update_table_with_issues([issue], "org/repo", ingest=True)
 
     texts = [row["text"] for row in fake_table.added_rows]
     assert _LONG_COMMENT in texts
@@ -436,13 +436,13 @@ def test_ingest_skips_short_comments_and_indexes_long_ones(monkeypatch):
     fake_table = _capturing_table()
     fake_db.table = fake_table
 
-    tool = _tool_with_comments(monkeypatch, fake_db)
+    command = _command_with_comments(monkeypatch, fake_db)
     issue = _fake_issue_with_comments(iter([
         SimpleNamespace(body="short"),
         SimpleNamespace(body=_LONG_COMMENT),
     ]))
 
-    tool._update_table_with_issues([issue], "org/repo", ingest=True)
+    command._update_table_with_issues([issue], "org/repo", ingest=True)
 
     texts = [row["text"] for row in fake_table.added_rows]
     assert "short" not in texts
@@ -457,23 +457,23 @@ def test_second_repository_missing_sentinel_joins_instead_of_crashing(monkeypatc
     """Detect a repo never indexed on an existing table and join it without an IndexError."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.table = _FakeSearchableTable([_lancedb_row("example_issue_org-repo-a", "org-repo-a")])
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    assert tool._lancedb_repo_already_indexed("org-repo-a") is True
-    assert tool._lancedb_repo_already_indexed("org-repo-b") is False
+    assert command._lancedb_repo_already_indexed("org-repo-a") is True
+    assert command._lancedb_repo_already_indexed("org-repo-b") is False
 
-    tool._update_table_with_issues([_fake_issue()], "org-repo-b", ingest=True)
+    command._update_table_with_issues([_fake_issue()], "org-repo-b", ingest=True)
 
-    assert tool._lancedb_repo_already_indexed("org-repo-b") is True
+    assert command._lancedb_repo_already_indexed("org-repo-b") is True
 
 
 def test_each_repository_gets_exactly_one_sentinel_row(monkeypatch):
     """Add the second repo's sentinel row without touching the first repo's rows."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.table = _FakeSearchableTable([_lancedb_row("example_issue_org-repo-a", "org-repo-a")])
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    tool._update_table_with_issues([_fake_issue()], "org-repo-b", ingest=True)
+    command._update_table_with_issues([_fake_issue()], "org-repo-b", ingest=True)
 
     sentinels = [
         row["id"] for row in fake_db.table.rows if row["id"].startswith("example_issue_")
@@ -551,9 +551,9 @@ def test_constructor_second_repo_joins_existing_table(monkeypatch, github_issue_
     _stub_constructor_dependencies(monkeypatch, fake_db)
     monkeypatch.setattr(_FakeRepo, "get_issues", lambda self, state: github_issue_pages((5, 6)))
 
-    tool = PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
+    command = PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
 
-    assert tool.repo_name_for_index == "org-repo-b"
+    assert command.repo_name_for_index == "org-repo-b"
     assert fake_db.table.delete_calls == ["metadata.repo='org-repo-b'"]  # no-op first join
     assert fake_db.table.add_calls == [3]  # sentinel plus two issues
 
@@ -650,10 +650,10 @@ def test_concurrent_first_runs_do_not_duplicate_rows(monkeypatch):
     """Overlapping first runs for the same repo leave a single set of rows."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.table = _FakeSearchableTable([_lancedb_row("example_issue_org-repo-a", "org-repo-a")])
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
     for _ in range(2):
-        tool._update_table_with_issues([_fake_issue()], "org-repo-b", ingest=True, force_refresh=True)
+        command._update_table_with_issues([_fake_issue()], "org-repo-b", ingest=True, force_refresh=True)
 
     ids = [row["id"] for row in fake_db.table.rows]
     assert ids.count("example_issue_org-repo-b") == 1
@@ -671,10 +671,10 @@ def test_sentinel_added_once_across_incremental_runs(monkeypatch):
     fake_table = _fake_table()
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    tool._update_table_with_issues([_fake_issue()], "utkarsh-demo", ingest=True)
-    tool._update_table_with_issues([_fake_issue(6)], "utkarsh-demo", ingest=True)
+    command._update_table_with_issues([_fake_issue()], "utkarsh-demo", ingest=True)
+    command._update_table_with_issues([_fake_issue(6)], "utkarsh-demo", ingest=True)
 
     assert fake_table.add_calls == [2, 1]
     sentinels = [row for row in fake_table.rows if row["id"] == "example_issue_utkarsh-demo"]
@@ -691,10 +691,10 @@ def test_initial_creation_with_empty_corpus_still_builds_table(monkeypatch):
     )
     fake_db.table = None
 
-    tool = _make_tool(monkeypatch, fake_db)
-    tool.table = fake_db.table
+    command = _make_command(monkeypatch, fake_db)
+    command.table = fake_db.table
 
-    tool._update_table_with_issues([], "utkarsh-demo", ingest=False)
+    command._update_table_with_issues([], "utkarsh-demo", ingest=False)
 
     name, mode, df = fake_db.created_with
     assert name == "codium-ai-pr-agent-issues"
@@ -711,9 +711,9 @@ def test_ingest_empty_corpus_skips_update(monkeypatch):
     ])
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    tool._update_table_with_issues([], "org/repo-a", ingest=True)
+    command._update_table_with_issues([], "org/repo-a", ingest=True)
 
     assert fake_table.add_calls == []
     assert fake_table.delete_calls == []
@@ -729,9 +729,9 @@ def test_force_refresh_keeps_a_single_sentinel(monkeypatch):
     ])
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    tool._update_table_with_issues(
+    command._update_table_with_issues(
         [_fake_issue()],
         "org/repo-a",
         ingest=True,
@@ -755,9 +755,9 @@ def test_force_refresh_empty_corpus_restores_the_sentinel(monkeypatch):
     ])
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    tool._update_table_with_issues([], "org/repo-a", ingest=True, force_refresh=True)
+    command._update_table_with_issues([], "org/repo-a", ingest=True, force_refresh=True)
 
     assert fake_table.delete_calls == ["metadata.repo='org/repo-a'"]
     assert fake_table.add_calls == [1]

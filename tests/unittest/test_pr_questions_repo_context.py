@@ -107,20 +107,20 @@ def ask_settings(monkeypatch):
 def _make_question(monkeypatch, repo_text=REPO_GUIDANCE, *, fail_first=False):
     provider = _Provider(repo_text)
     handler = _RecordingAIHandler(fail_first)
-    monkeypatch.setattr(questions_module, "get_git_provider_for_tool", lambda _url: provider)
-    tool = questions_module.PRQuestions(
+    monkeypatch.setattr(questions_module, "get_git_provider_for_command", lambda _url: provider)
+    command = questions_module.PRQuestions(
         "https://example.test/org/repo/pull/1", args=["Does this follow our conventions?"],
         ai_handler=lambda: handler,
     )
-    return tool, provider, handler
+    return command, provider, handler
 
 
 @pytest.mark.parametrize("context_files", [["AGENTS.md"], []])
 async def test_ask_uses_shared_repo_context_configuration(monkeypatch, ask_settings, context_files):
     ask_settings.set("config.repo_context_files", context_files)
-    tool, provider, handler = _make_question(monkeypatch)
+    command, provider, handler = _make_question(monkeypatch)
 
-    await tool.run()
+    await command.run()
 
     [request] = handler.requests
     enabled = bool(context_files)
@@ -147,9 +147,9 @@ async def test_ask_preserves_repo_instructions_ahead_of_optional_tickets(monkeyp
         variables["related_tickets"] = tickets
 
     monkeypatch.setattr(questions_module, "extract_and_cache_pr_tickets", load_tickets)
-    tool, provider, handler = _make_question(monkeypatch, repo_guidance)
+    command, provider, handler = _make_question(monkeypatch, repo_guidance)
 
-    await tool.run()
+    await command.run()
 
     [request] = handler.requests
     assert provider.repo_reads == [("AGENTS.md", True)]
@@ -171,9 +171,9 @@ async def test_oversized_repo_context_preserves_diff_and_history_and_reports_omi
     ask_settings.set("config.repo_context_files", ["AGENTS.md"])
     ask_settings.set("config.publish_output", publish_output)
     # A single long line bypasses line-count trimming but must not displace the PR input.
-    tool, provider, handler = _make_question(monkeypatch, "repository guidance " * 10_000)
+    command, provider, handler = _make_question(monkeypatch, "repository guidance " * 10_000)
 
-    await tool.run()
+    await command.run()
 
     [request] = handler.requests
     assert request == baseline_handler.requests[0]
@@ -194,9 +194,9 @@ async def test_fallback_refits_repo_context_without_rereading_or_retaining_omiss
         monkeypatch.setitem(token_budget.MAX_TOKENS, PRIMARY, 12_000)
         monkeypatch.setitem(token_budget.MAX_TOKENS, FALLBACK, 4_000)
     repo_text = "" if empty_context else "repository guidance " * 1_800
-    tool, provider, handler = _make_question(monkeypatch, repo_text, fail_first=True)
+    command, provider, handler = _make_question(monkeypatch, repo_text, fail_first=True)
 
-    await tool.run()
+    await command.run()
 
     assert [request["model"] for request in handler.requests] == [PRIMARY, FALLBACK]
     assert ["<instruction_files>" in request["system"] for request in handler.requests] == [
@@ -225,10 +225,10 @@ async def test_ask_command_uses_repo_context_by_default(monkeypatch, ask_setting
 
 
 async def test_no_analyzable_diff_does_not_read_repo_context(monkeypatch, ask_settings):
-    tool, provider, handler = _make_question(monkeypatch)
+    command, provider, handler = _make_question(monkeypatch)
     monkeypatch.setattr(provider, "get_diff_files", lambda: [])
 
-    await tool.run()
+    await command.run()
 
     assert provider.repo_reads == []
     assert handler.requests == []
