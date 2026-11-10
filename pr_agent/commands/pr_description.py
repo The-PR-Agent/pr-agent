@@ -13,6 +13,7 @@ from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import get_artifact_context
 from pr_agent.algo.code_fence import strip_wrapping_code_fence
 from pr_agent.algo.comment_identity import PRDescriptionHeader, PRDescriptionIdentity
+from pr_agent.algo.language_handler import filter_bad_extensions
 from pr_agent.algo.output_models import PRDescriptionAssembled
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
@@ -162,7 +163,10 @@ class PRDescription:
             )
 
             # ticket extraction if exists
-            await extract_and_cache_pr_tickets(self.git_provider, self.vars)
+            # A provisional GitLab empty diff is not yet cached as an authoritative result.
+            unconfirmed_empty_diff = not diff_files and getattr(self.git_provider, "diff_files", diff_files) is None
+            if unconfirmed_empty_diff or (diff_files and filter_bad_extensions(diff_files)):
+                await extract_and_cache_pr_tickets(self.git_provider, self.vars)
             self._raw_prompt_vars = copy.deepcopy(self.vars)
 
             await retry_with_fallback_models(self._prepare_prediction, ModelType.WEAK)

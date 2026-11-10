@@ -32,6 +32,7 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_location_fingerprint,
     strip_markers,
 )
+from pr_agent.algo.language_handler import filter_bad_extensions
 from pr_agent.algo.output_models import PRReview, parse_artifact_findings, parse_failure_modes
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
@@ -353,10 +354,6 @@ class PRReviewer:
                                     f"No files were changed since the [previous PR Review]({previous_review_url})")
                 return None
 
-            # ticket extraction if exists
-            await extract_and_cache_pr_tickets(self.git_provider, self.vars)
-            self._raw_prompt_vars = copy.deepcopy(self.vars)
-
             if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
                 progress_response = self.git_provider.publish_comment(
                     t("review.progress"), is_temporary=True)
@@ -366,7 +363,14 @@ class PRReviewer:
                 self._progress_response = progress_response
 
             # PyGithub fetches diff files synchronously; keep large fetches off the webhook event loop.
-            await asyncio.to_thread(self.git_provider.get_diff_files)
+            diff_files = await asyncio.to_thread(self.git_provider.get_diff_files)
+            # GitLab leaves its diff cache unset when an empty response is still provisional.
+            unconfirmed_empty_diff = not diff_files and getattr(self.git_provider, "diff_files", diff_files) is None
+            if diff_files is None or unconfirmed_empty_diff or (diff_files and filter_bad_extensions(diff_files)):
+                await extract_and_cache_pr_tickets(self.git_provider, self.vars)
+            # Do not retain uncached providers' prefetched contents during prediction.
+            del diff_files
+            self._raw_prompt_vars = copy.deepcopy(self.vars)
             try:
                 await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR,
                                                  git_provider=self.git_provider)
