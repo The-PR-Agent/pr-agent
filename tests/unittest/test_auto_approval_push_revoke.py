@@ -50,6 +50,14 @@ def test_helper_dismisses_when_the_base_branch_changes(monkeypatch, provider):
     assert "the base branch changed" in provider.revoke_auto_approval.call_args.args[0]
 
 
+def test_helper_dismisses_on_reopen(monkeypatch, provider):
+    monkeypatch.setitem(get_settings().config, "enable_auto_approval", True)
+
+    github_common.revoke_auto_approval_on_push(_payload("reopened"))
+
+    assert "reopened" in provider.revoke_auto_approval.call_args.args[0]
+
+
 @pytest.mark.parametrize("payload", [
     _payload("edited", changes={"title": {"from": "old"}}),
     _payload("opened"),

@@ -1,5 +1,6 @@
 """PRReviewer reconciles the auto-approval once per /review run (issue #4698)."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -41,7 +42,7 @@ def test_clean_run_approves_with_the_verdict_in_the_body(approval_on):
     reviewer = _reviewer()
     reviewer.git_provider.auto_approve.return_value = True
 
-    reviewer.auto_approve_logic()
+    reviewer.auto_approve_logic(review_completed=True)
 
     reviewer.git_provider.auto_approve.assert_called_once()
     assert "no_concerns_found" in reviewer.git_provider.auto_approve.call_args.kwargs["body"]
@@ -60,7 +61,7 @@ def test_clean_run_approves_with_the_verdict_in_the_body(approval_on):
 def test_non_clean_run_dismisses_an_earlier_approval(approval_on, verdict, model_fields, partial_error):
     reviewer = _reviewer(verdict=verdict, model_fields=model_fields)
 
-    reviewer.auto_approve_logic(partial_error)
+    reviewer.auto_approve_logic(partial_error, review_completed=True)
 
     reviewer.git_provider.auto_approve.assert_not_called()
     reviewer.git_provider.revoke_auto_approval.assert_called_once()
@@ -70,7 +71,7 @@ def test_refused_approval_dismisses(approval_on):
     reviewer = _reviewer()
     reviewer.git_provider.auto_approve.return_value = False
 
-    reviewer.auto_approve_logic()
+    reviewer.auto_approve_logic(review_completed=True)
 
     reviewer.git_provider.revoke_auto_approval.assert_called_once()
 
@@ -112,8 +113,28 @@ async def test_run_reconciles_once_on_the_path_that_does_not_publish(monkeypatch
     provider.revoke_auto_approval.assert_not_called()
 
 
+def test_files_left_out_of_the_review_dismiss(approval_on):
+    reviewer = _reviewer()
+    reviewer.remaining_files_list = ["big.py"]
+
+    reviewer.auto_approve_logic(review_completed=True)
+
+    reviewer.git_provider.auto_approve.assert_not_called()
+    reviewer.git_provider.revoke_auto_approval.assert_called_once()
+
+
+def test_dry_run_writes_nothing(monkeypatch, approval_on):
+    monkeypatch.setitem(get_settings().config, "publish_output", False)
+    reviewer = _reviewer(verdict="needs_review")
+
+    reviewer.auto_approve_logic(review_completed=True)
+
+    reviewer.git_provider.auto_approve.assert_not_called()
+    reviewer.git_provider.revoke_auto_approval.assert_not_called()
+
+
 @pytest.mark.asyncio
-async def test_failed_run_does_not_touch_approvals(monkeypatch, approval_on):
+async def test_failed_run_withdraws_an_earlier_approval(monkeypatch, approval_on):
     provider = MagicMock()
     provider.get_files.side_effect = RuntimeError("provider down")
     reviewer = _reviewer(provider=provider)
@@ -123,4 +144,36 @@ async def test_failed_run_does_not_touch_approvals(monkeypatch, approval_on):
     await reviewer.run()
 
     provider.auto_approve.assert_not_called()
-    provider.revoke_auto_approval.assert_not_called()
+    provider.revoke_auto_approval.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_publish_does_not_approve(monkeypatch, approval_on):
+    provider = MagicMock()
+    provider.get_files.return_value = ["app.py"]
+    provider.should_publish_review_as_thread.return_value = False
+    provider.publish_comment.side_effect = asyncio.CancelledError()
+    reviewer = _reviewer(provider=provider)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    def prepare():
+        reviewer._merge_recommendation_status = "no_concerns_found"
+        reviewer._approval_model_fields = ("no_concerns_found", "low")
+        return "A major issue was detected"
+
+    reviewer._prepare_pr_review = prepare
+    reviewer._should_publish_review_no_suggestions = lambda _: True
+
+    async def fake_retry(prepare_fn, model_type=None, git_provider=None):
+        reviewer.prediction = "prediction"
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", fake_retry)
+    monkeypatch.setitem(get_settings().pr_reviewer, "persistent_comment", False)
+
+    with pytest.raises(asyncio.CancelledError):
+        await reviewer.run()
+
+    provider.auto_approve.assert_not_called()
+    provider.revoke_auto_approval.assert_called_once()

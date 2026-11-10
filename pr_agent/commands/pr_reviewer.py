@@ -311,6 +311,7 @@ class PRReviewer:
         partial_review_error = None
         review_error = None
         review_failed = False
+        review_completed = False
         persistent_write_failed = False
         self._progress_response = None
         self._chunk_progress = None
@@ -405,6 +406,7 @@ class PRReviewer:
                     reason += ": no major issues detected."
                 get_logger().info(reason)
                 get_settings().data = {"artifact": pr_review}
+                review_completed = True
                 return
 
             # publish the review
@@ -504,6 +506,7 @@ class PRReviewer:
                     )
                     pr_review = add_pr_review_identity(pr_review, identity_marker, self.git_provider)
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
+            review_completed = True
         except Exception as e:
             review_error = e
             review_failed = True
@@ -540,8 +543,8 @@ class PRReviewer:
                     self.git_provider.publish_comment(_review_failure_comment(review_error))
                 except Exception as e:
                     get_logger().exception(f"Failed to publish review failure result, error: {e}")
-            if not review_failed:
-                self.auto_approve_logic(partial_review_error)
+            # Runs on failed and cancelled reviews too, so an earlier approval is withdrawn.
+            self.auto_approve_logic(partial_review_error, review_completed=review_completed and not review_failed)
             if (partial_review_error is not None and not review_failed
                     and get_settings().config.get("propagate_command_errors", False)):
                 raise partial_review_error
@@ -1829,21 +1832,27 @@ class PRReviewer:
             except Exception as e:
                 get_logger().error(f"Failed to set review labels, error: {e}")
 
-    def auto_approve_logic(self, partial_review_error=None) -> None:
+    def auto_approve_logic(self, partial_review_error=None, review_completed=False) -> None:
         """Approve the reviewed commit when every gated-approval check passes, otherwise
         dismiss any approval PR-Agent holds, since an earlier run's approval no longer stands."""
         settings = get_settings()
-        enabled = settings.config.get("enable_auto_approval", False)
-        if not _as_bool_setting(enabled, setting_name="config.enable_auto_approval"):
+        if not _as_bool_setting(settings.config.get("enable_auto_approval", False),
+                                setting_name="config.enable_auto_approval"):
             return
+        # A dry run writes nothing, approvals included.
+        if not _as_bool_setting(settings.config.get("publish_output", True), default=True):
+            return
+        if not _as_bool_setting(settings.pr_reviewer.get("require_merge_recommendation", False)):
+            get_logger().warning("enable_auto_approval needs pr_reviewer.require_merge_recommendation; not approving")
         model_recommendation, model_risk_level = getattr(self, "_approval_model_fields", (None, None))
         allowed, reason = approval_allowed(
-            enable_auto_approval=enabled,
-            publish_output=settings.config.get("publish_output", True),
+            review_completed=review_completed,
             verdict=getattr(self, "_merge_recommendation_status", None),
             model_merge_recommendation=model_recommendation,
             model_risk_level=model_risk_level,
             is_incremental=self.incremental.is_incremental,
+            unreviewed_file_count=len(getattr(self, "remaining_files_list", []) or [])
+            + len(getattr(self, "partial_files_list", []) or []),
             failed_chunk_count=getattr(self, "review_failed_chunk_count", 0),
             partial_review_error=partial_review_error,
             state_blocked=getattr(self, "_review_state_blocked", False),
@@ -1858,6 +1867,7 @@ class PRReviewer:
                     return
                 reason = "the provider did not approve the reviewed commit"
             get_logger().info(f"Not auto-approving: {reason}")
-            self.git_provider.revoke_auto_approval(f"{bot_display_name} withdrew its approval: {reason}.")
+            if not self.git_provider.revoke_auto_approval(f"{bot_display_name} withdrew its approval: {reason}."):
+                get_logger().error("Could not confirm that PR-Agent's earlier approvals were dismissed")
         except Exception as e:
             get_logger().exception(f"Auto-approval reconcile failed, error: {e}")

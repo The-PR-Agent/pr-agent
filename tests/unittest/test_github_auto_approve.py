@@ -189,3 +189,18 @@ def test_real_create_review_accepts_a_body():
 
     review = pull_request.create_review(event="APPROVE", commit=commit, body="approved")
     assert review.state == "APPROVED"
+
+
+def test_revoke_continues_past_a_review_it_cannot_attribute():
+    unverifiable = Mock(state="APPROVED", body=MARKER)
+    own = Mock(state="APPROVED", body=MARKER)
+
+    def authored(review):
+        if review is unverifiable:
+            raise RuntimeError("cannot verify")
+        return True
+
+    provider = _provider_with_reviews([unverifiable, own], authored)
+
+    assert provider.revoke_auto_approval("stale") is False
+    own.dismiss.assert_called_once_with("stale")

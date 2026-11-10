@@ -2592,7 +2592,10 @@ class GithubProvider(GitProvider):
                 get_logger().warning(f"Cannot attribute the approval to PR-Agent: {e}")
                 authored = False
             if not authored:
-                res.dismiss("PR-Agent could not confirm this approval was its own")
+                try:
+                    res.dismiss("PR-Agent could not confirm this approval was its own")
+                except (GithubException, RequestException) as e:
+                    get_logger().error(f"An approval PR-Agent cannot attribute is still in place, error: {e}")
                 return False
             return True
         except (GithubException, RequestException, AttributeError) as e:
@@ -2606,15 +2609,21 @@ class GithubProvider(GitProvider):
         shared Actions identity, the same login also holds approvals PR-Agent did not create.
         """
         try:
-            for review in self.pr.get_reviews():
+            reviews = list(self.pr.get_reviews())
+        except (GithubException, RequestException, AttributeError) as e:
+            get_logger().exception(f"Failed to list reviews to dismiss PR-Agent approvals, error: {e}")
+            return False
+        all_dismissed = True
+        for review in reviews:
+            try:
                 if (review.state == "APPROVED"
                         and comment_matches_identity(review.body, PRApprovalIdentity.AUTO.value)
                         and self.is_comment_authored_by_pr_agent(review)):
                     review.dismiss(reason)
-            return True
-        except (GithubException, RequestException, AttributeError, RuntimeError) as e:
-            get_logger().exception(f"Failed to dismiss PR-Agent approvals, error: {e}")
-            return False
+            except (GithubException, RequestException, AttributeError, RuntimeError) as e:
+                get_logger().exception(f"Failed to dismiss a PR-Agent approval, error: {e}")
+                all_dismissed = False
+        return all_dismissed
 
     def _get_pr_agent_check_names(self) -> set[str]:
         names = {

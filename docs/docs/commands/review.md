@@ -597,12 +597,14 @@ GitHub approves the exact commit it reviewed when all of these hold:
 - the computed merge recommendation is `no_concerns_found`;
 - the model returned both a merge recommendation and a risk level, so `require_merge_recommendation` and
   `require_risk_assessment` must be on;
-- the review covered the whole pull request: not an incremental review, and no part of the diff failed;
-- the review's finding state could be updated, and `publish_output` is on.
+- the review covered the whole pull request: not an incremental review, no file left out or cut short to fit the
+  model's context, and no part of the diff failed;
+- the review completed and its finding state could be updated.
 
-Any other `/review` run withdraws the approval PR-Agent gave, because the evidence behind it no longer holds. On a
-push or a change of base branch, the GitHub App and the GitHub Action dismiss it before any other event filter runs. PR-Agent only dismisses
-approvals it gave automatically; manual approvals from the same account are left alone.
+Any other `/review` run, including one that fails, withdraws the approval PR-Agent gave, because the evidence behind
+it no longer holds. On a push, a change of base branch or a reopen, the GitHub App and the GitHub Action dismiss it
+before any other event filter runs. PR-Agent only dismisses approvals it gave automatically; manual approvals from
+the same account are left alone. With `publish_output` off, nothing is approved or dismissed.
 
 `enable_auto_approval` is host-only: a repository `.pr_agent.toml` or a comment argument cannot turn it on.
 
@@ -613,5 +615,7 @@ approvals it gave automatically; manual approvals from the same account are left
   listen to `synchronize`), and GitHub only removes a stale approval itself when this is on.
 - For the GitHub Action, allow "GitHub Actions to create and approve pull requests" in the repository's Actions
   settings. Pull requests from forks get a read-only token, so they cannot be approved.
+- If the rule restricts who can dismiss reviews, include PR-Agent's account; otherwise it cannot withdraw its own
+  approval, and only logs an error.
 
 GitHub does not let an account approve a pull request it opened. Other git providers are not supported yet.

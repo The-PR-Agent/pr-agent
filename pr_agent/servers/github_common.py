@@ -31,6 +31,8 @@ def revoke_auto_approval_on_push(payload: dict) -> None:
         why = "new commits were pushed"
     elif action == "edited" and "base" in (payload.get("changes") or {}):
         why = "the base branch changed"
+    elif action == "reopened":
+        why = "the pull request was reopened"
     else:
         return
     pr_url = (payload.get("pull_request") or {}).get("url")
@@ -38,9 +40,10 @@ def revoke_auto_approval_on_push(payload: dict) -> None:
             get_settings().config.get("enable_auto_approval", False), setting_name="config.enable_auto_approval"):
         return
     try:
-        get_git_provider_with_context(pr_url).revoke_auto_approval(
+        if not get_git_provider_with_context(pr_url).revoke_auto_approval(
             f"{get_bot_display_name()} withdrew its approval: {why}."
-        )
+        ):
+            get_logger().error(f"Could not confirm that PR-Agent's approvals were dismissed after: {why}")
     except Exception as e:
         get_logger().exception(f"Failed to dismiss PR-Agent approvals after a push, error: {e}")
 
