@@ -32,7 +32,8 @@ def test_auto_approve_pins_the_reviewed_head_sha():
     assert provider.auto_approve() is True
     provider._get_repo.return_value.get_commit.assert_called_once_with("aaa111")
     provider.pr.create_review.assert_called_once_with(
-        event="APPROVE", commit=provider._get_repo.return_value.get_commit.return_value, body=""
+        event="APPROVE", commit=provider._get_repo.return_value.get_commit.return_value,
+        body="<!-- pr-agent:review:auto-approval -->",
     )
 
 
@@ -111,7 +112,9 @@ def test_auto_approve_passes_the_body():
     provider = make_provider(reviewed_sha="aaa111", current_sha="aaa111")
 
     assert provider.auto_approve(body="verdict: no_concerns_found") is True
-    assert provider.pr.create_review.call_args.kwargs["body"] == "verdict: no_concerns_found"
+    assert provider.pr.create_review.call_args.kwargs["body"] == (
+        "<!-- pr-agent:review:auto-approval -->\nverdict: no_concerns_found"
+    )
 
 
 def test_auto_approve_dismisses_an_approval_it_cannot_attribute():
@@ -140,10 +143,13 @@ def _provider_with_reviews(reviews, authored):
     return provider
 
 
-def test_revoke_dismisses_only_pr_agent_approvals():
-    own = Mock(state="APPROVED")
-    other_bot = Mock(state="APPROVED")
-    own_comment = Mock(state="COMMENTED")
+MARKER = "<!-- pr-agent:review:auto-approval -->"
+
+
+def test_revoke_dismisses_only_pr_agent_auto_approvals():
+    own = Mock(state="APPROVED", body=f"{MARKER}\nApproved")
+    other_bot = Mock(state="APPROVED", body=f"{MARKER}\nApproved")
+    own_comment = Mock(state="COMMENTED", body=MARKER)
     authored = {id(own): True, id(other_bot): False, id(own_comment): True}
     provider = _provider_with_reviews([own, other_bot, own_comment], lambda review: authored[id(review)])
 
@@ -153,10 +159,19 @@ def test_revoke_dismisses_only_pr_agent_approvals():
     own_comment.dismiss.assert_not_called()
 
 
+def test_revoke_keeps_a_manual_approval_from_the_same_login():
+    # With a personal token or the shared Actions identity, the token's login also approves by hand.
+    manual = Mock(state="APPROVED", body="LGTM")
+    provider = _provider_with_reviews([manual], lambda review: True)
+
+    assert provider.revoke_auto_approval("stale") is True
+    manual.dismiss.assert_not_called()
+
+
 def test_revoke_logs_and_reports_a_forbidden_dismissal():
     import github
 
-    own = Mock(state="APPROVED")
+    own = Mock(state="APPROVED", body=MARKER)
     own.dismiss.side_effect = github.GithubException(403, {"message": "Forbidden"}, None)
     provider = _provider_with_reviews([own], lambda review: True)
 
@@ -164,7 +179,7 @@ def test_revoke_logs_and_reports_a_forbidden_dismissal():
 
 
 def test_revoke_reports_failure_when_identity_cannot_be_verified():
-    provider = _provider_with_reviews([Mock(state="APPROVED")], RuntimeError("cannot verify"))
+    provider = _provider_with_reviews([Mock(state="APPROVED", body=MARKER)], RuntimeError("cannot verify"))
 
     assert provider.revoke_auto_approval("stale") is False
 

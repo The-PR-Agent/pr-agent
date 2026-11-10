@@ -26,6 +26,7 @@ from pr_agent.servers import lambda_handoff
 from pr_agent.servers.github_common import (
     _normalise_setting_list,
     _reformat_quote_ask_command,
+    revoke_auto_approval_on_push,
 )
 from pr_agent.servers.github_common import handle_line_comments as handle_line_comments
 from pr_agent.servers.github_common import matches_review_state as matches_review_state
@@ -407,6 +408,8 @@ async def _dispatch_request(body: dict[str, Any], event: str, action: str):
     """Return False when a command fails, preserving ignored events as completed work."""
     agent = PRAgent()
     log_context, sender, sender_id, sender_type = get_log_context(body, event, action, build_number)
+    if event == 'pull_request' and action == 'synchronize':
+        revoke_auto_approval_on_push(body.get("pull_request", {}).get("url"))
 
     # logic to ignore PRs opened by bot, PRs with specific titles, labels, source branches, or target branches
     if is_bot_user(sender, sender_type) and 'check_run' not in body:

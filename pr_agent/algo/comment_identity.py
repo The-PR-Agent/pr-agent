@@ -41,6 +41,10 @@ class PRDescriptionIdentity(StrEnum):
     PERSISTENT = "<!-- pr-agent:describe:persistent -->"
 
 
+class PRApprovalIdentity(StrEnum):
+    AUTO = "<!-- pr-agent:review:auto-approval -->"
+
+
 _ALL_COMMENT_IDENTITIES = (
     PRReviewIdentity.REGULAR.value,
     PRReviewIdentity.INCREMENTAL.value,
@@ -49,6 +53,7 @@ _ALL_COMMENT_IDENTITIES = (
     PRCodeSuggestionsIdentity.UNANCHORED.value,
     PRCommandNoticeIdentity.INCOMPLETE_BITBUCKET_FILES.value,
     PRDescriptionIdentity.PERSISTENT.value,
+    PRApprovalIdentity.AUTO.value,
 )
 _REVIEW_IDENTITY_HEADER_LINES = 5
 _MARKDOWN_PUNCTUATION_ESCAPE_TABLE = str.maketrans(

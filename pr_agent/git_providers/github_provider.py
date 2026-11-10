@@ -25,8 +25,11 @@ from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, stop
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 
 from ..algo.comment_identity import (
+    PRApprovalIdentity,
     comment_matches_any_identity,
+    comment_matches_identity,
     get_pr_review_comment_identifiers,
+    render_hidden_marker,
 )
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import count_patch_lines, extract_hunk_headers
@@ -2575,8 +2578,11 @@ class GithubProvider(GitProvider):
                 return False
             if not reviewed_head_sha:
                 return False
+            marker = render_hidden_marker(PRApprovalIdentity.AUTO.value, self)
             res = self.pr.create_review(
-                event="APPROVE", commit=self._get_repo().get_commit(reviewed_head_sha), body=body
+                event="APPROVE",
+                commit=self._get_repo().get_commit(reviewed_head_sha),
+                body=f"{marker}\n{body}" if body else marker,
             )
             if res.state != "APPROVED":
                 return False
@@ -2594,10 +2600,16 @@ class GithubProvider(GitProvider):
             return False
 
     def revoke_auto_approval(self, reason: str) -> bool:
-        """Dismiss every approval PR-Agent holds on this PR; True when none remains."""
+        """Dismiss the approvals PR-Agent gave automatically; True when none remains.
+
+        Only reviews carrying the auto-approval marker count: with a personal token or the
+        shared Actions identity, the same login also holds approvals PR-Agent did not create.
+        """
         try:
             for review in self.pr.get_reviews():
-                if review.state == "APPROVED" and self.is_comment_authored_by_pr_agent(review):
+                if (review.state == "APPROVED"
+                        and comment_matches_identity(review.body, PRApprovalIdentity.AUTO.value)
+                        and self.is_comment_authored_by_pr_agent(review)):
                     review.dismiss(reason)
             return True
         except (GithubException, RequestException, AttributeError, RuntimeError) as e:

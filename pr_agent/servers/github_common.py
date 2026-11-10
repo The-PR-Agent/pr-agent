@@ -8,13 +8,32 @@ JSON and overrides GITHUB.DEPLOYMENT_TYPE to "app".
 
 from typing import Any
 
-from pr_agent.algo.setting_utils import normalize_setting_list
-from pr_agent.config_loader import get_settings
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
+from pr_agent.config_loader import get_bot_display_name, get_settings
+from pr_agent.git_providers import get_git_provider_with_context
+from pr_agent.log import get_logger
 from pr_agent.servers.utils import is_ask_command_comment
 
 
 def _normalise_setting_list(value):
     return normalize_setting_list(value)
+
+
+def revoke_auto_approval_on_push(pr_url: str | None) -> None:
+    """Dismiss PR-Agent's approval when new commits arrive.
+
+    Call this before any filter that may skip the event: an approval must not outlive the
+    commit it was given for just because the push came from a bot or the PR is ignored.
+    """
+    if not pr_url or not _as_bool_setting(
+            get_settings().config.get("enable_auto_approval", False), setting_name="config.enable_auto_approval"):
+        return
+    try:
+        get_git_provider_with_context(pr_url).revoke_auto_approval(
+            f"{get_bot_display_name()} withdrew its approval: new commits were pushed."
+        )
+    except Exception as e:
+        get_logger().exception(f"Failed to dismiss PR-Agent approvals after a push, error: {e}")
 
 
 def matches_review_state(review_state: Any, configured_states: Any) -> bool:
