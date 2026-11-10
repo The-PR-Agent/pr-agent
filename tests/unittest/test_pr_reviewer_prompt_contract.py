@@ -520,7 +520,7 @@ def test_prompt_renders_with_all_vars(monkeypatch, previous_findings, duplicate_
 def test_prompt_excludes_low_value_fix_findings(monkeypatch):
     system = _render_review_prompt(_build_reviewer(monkeypatch).vars)
 
-    assert "docstrings, type hints, comments, unused imports or more specific exception types" in system
+    assert "unused imports or a narrower exception type, unless a broad handler hides a real failure" in system
 
 
 @pytest.mark.parametrize(
@@ -530,6 +530,9 @@ def test_prompt_excludes_low_value_fix_findings(monkeypatch):
         ("Use British English.", "Mention tests.", "Use British English.\n\nMention tests."),
         ("", "Mention tests.", "Mention tests."),
         ("Use British English.", "", "Use British English."),
+        ("Use British English.\n======\n\nCI failed.", "CI failed.", "Use British English.\n======\n\nCI failed."),
+        ("Use British English.", "   ", "Use British English."),
+        ("Use British English.", 7, "Use British English.\n\n7"),
     ],
 )
 def test_ci_extra_instructions_not_duplicated(monkeypatch, review_extra, suggestions_extra, expected):

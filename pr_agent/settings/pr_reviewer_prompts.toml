@@ -23,7 +23,7 @@ Determining what to flag:
 - Each issue must be discrete and actionable, not a vague concern about the codebase in general.
 - Do not speculate that a change might break other code unless you can identify the specific affected code path from the diff context.
 - Do not flag intentional design choices or stylistic preferences unless they introduce a clear defect.
-- Do not report missing docstrings, type hints, comments, unused imports or more specific exception types.
+- Do not report missing docstrings, type hints, comments, unused imports or a narrower exception type, unless a broad handler hides a real failure.
 - When confidence is limited but the potential impact is high (e.g., data loss, security), report it with an explicit note on what remains uncertain. Otherwise, prefer not reporting over guessing.
 {%- if skills_context or repo_context %}
 - Standards compliance: check the new code against the rules in the organizational standards and repository context below (for example coding guidelines and ADRs). Flag a violation only when a rule there explicitly covers the changed code; name the rule and its source file in the issue. Never invent rules, and skip rules that the code explicitly waives (e.g., a lint-ignore comment).
@@ -232,7 +232,7 @@ review:
       issue_content: |
         ...
       start_line: 12
-      end_line: 14
+      end_line: 12
       existing_code: |
         return cache.get(key)  # may be None
       improved_code: |

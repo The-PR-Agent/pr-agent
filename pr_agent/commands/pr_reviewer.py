@@ -294,8 +294,8 @@ class PRReviewer:
     @staticmethod
     def _extra_instructions() -> str:
         review_extra = get_settings().pr_reviewer.extra_instructions
-        suggestions_extra = get_settings().pr_code_suggestions.get("extra_instructions", "")
-        if not suggestions_extra or suggestions_extra == review_extra:
+        suggestions_extra = str(get_settings().pr_code_suggestions.get("extra_instructions") or "").strip()
+        if not suggestions_extra or suggestions_extra in str(review_extra or ""):
             return review_extra
         return f"{review_extra}\n\n{suggestions_extra}" if review_extra else suggestions_extra
 
