@@ -186,12 +186,12 @@ require_ticket_analysis_review=true
 require_risk_assessment=false # ask the model for an overall risk level (low/medium/high)
 require_merge_recommendation=false # ask the model for a merge recommendation: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge)
 require_failure_modes=false # ask for up to three concrete failure scenarios and their detection/coverage
-require_artifact_findings=false # with a CI artifact, list up to five neutral facts from it, each with a quote checked against the artifact. See docs/docs/tools/review.md
+require_artifact_findings=false # with a CI artifact, list up to five neutral facts from it, each with a quote checked against the artifact. See docs/docs/commands/review.md
 require_priority_files=false # ask the model which files a human should inspect first
-structural_reach_input_file="" # JSON reach facts from a build-graph tool; when the file exists, adds a deterministic change-risk row. See docs/docs/tools/review.md
-enable_risk_checks = true # Flag sensitive paths and risky change shapes; adds nothing when clean. See docs/docs/tools/review.md
-sensitive_paths = [".github/workflows/**", ".gitlab-ci.yml", "Jenkinsfile*", ".circleci/**", "azure-pipelines*.yml", ".travis.yml", "bitbucket-pipelines.yml", "*CODEOWNERS", ".pr_agent.toml", "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "requirements*.txt", "Pipfile", "Pipfile.lock", "pyproject.toml", "poetry.lock", "uv.lock", "Cargo.toml", "Cargo.lock", "go.mod", "go.sum", "pom.xml", "build.gradle*", "Gemfile", "Gemfile.lock", "composer.json", "composer.lock", "*Dockerfile*", "docker-compose*.yml", "docker-compose*.yaml", "*.dockerfile", "*.tf", "*.tfvars", "*.hcl", "*migrations*/**", "*migration*", "db/migrate/**", "alembic/**"] # Glob patterns of sensitive paths flagging deterministic review risk findings. See docs/docs/tools/review.md
-extra_risky_shapes = [] # Custom regex patterns flagging risky changes in diff hunks. See docs/docs/tools/review.md
+structural_reach_input_file="" # JSON reach facts from a build-graph tool; when the file exists, adds a deterministic change-risk row. See docs/docs/commands/review.md
+enable_risk_checks = true # Flag sensitive paths and risky change shapes; adds nothing when clean. See docs/docs/commands/review.md
+sensitive_paths = [".github/workflows/**", ".gitlab-ci.yml", "Jenkinsfile*", ".circleci/**", "azure-pipelines*.yml", ".travis.yml", "bitbucket-pipelines.yml", "*CODEOWNERS", ".pr_agent.toml", "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "requirements*.txt", "Pipfile", "Pipfile.lock", "pyproject.toml", "poetry.lock", "uv.lock", "Cargo.toml", "Cargo.lock", "go.mod", "go.sum", "pom.xml", "build.gradle*", "Gemfile", "Gemfile.lock", "composer.json", "composer.lock", "*Dockerfile*", "docker-compose*.yml", "docker-compose*.yaml", "*.dockerfile", "*.tf", "*.tfvars", "*.hcl", "*migrations*/**", "*migration*", "db/migrate/**", "alembic/**"] # Glob patterns of sensitive paths flagging deterministic review risk findings. See docs/docs/commands/review.md
+extra_risky_shapes = [] # Custom regex patterns flagging risky changes in diff hunks. See docs/docs/commands/review.md
 # general options
 publish_output_no_suggestions=true # Set to "false" if you only need the reviewer's remarks (not labels, not "security audit", etc.) and want to avoid noisy "No major issues detected" comments.
 publish_review_failure_comment=true # Set to false to suppress review failure comments without changing the command's failure status.
@@ -260,7 +260,7 @@ async_ai_calls=true
 [pr_questions] # /ask #
 enable_help_text=false
 use_conversation_history=true
-use_ticket_context=false # Include linked ticket context in top-level /ask when true; default false. See tools/ask.md#linked-ticket-context.
+use_ticket_context=false # Include linked ticket context in top-level /ask when true; default false. See commands/ask.md#linked-ticket-context.
 # Set the plain-text heading for top-level /ask answers; provider-specific presentation is added automatically.
 ask_heading = "Ask"
 # Enable to let /ask_line resolve the review thread when the LLM judges the
@@ -284,7 +284,7 @@ enable_chat_text=false
 persistent_comment=true
 # Set to false to suppress /improve failure comments without changing the command's failure status.
 publish_failure_comment=true
-max_history_len=4 # Previous sets to retain; <=0 keeps latest only (same comment if editable). See https://docs.pr-agent.ai/tools/improve#configuration-options
+max_history_len=4 # Previous sets to retain; <=0 keeps latest only (same comment if editable). See https://docs.pr-agent.ai/commands/improve#configuration-options
 publish_output_no_suggestions=true
 enable_suggestions_coverage_footer=true # show failed chunks and files omitted by the token or AI-call budget
 # suggestions scoring
@@ -313,7 +313,7 @@ extra_instructions = ""
 docs_style = "Sphinx" # "Google Style with Args, Returns, Attributes...etc", "Numpy Style", "Sphinx Style", "PEP257", "reStructuredText"
 
 [pr_update_changelog] # /update_changelog #
-changelog_path="CHANGELOG.md" # Repository-relative Markdown changelog path. Root .pr_agent.toml or host settings only; see tools/update_changelog.md.
+changelog_path="CHANGELOG.md" # Repository-relative Markdown changelog path. Root .pr_agent.toml or host settings only; see commands/update_changelog.md.
 push_changelog_changes=false
 extra_instructions = ""
 add_pr_link=true

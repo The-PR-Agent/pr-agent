@@ -28,14 +28,14 @@ def _run_settings():
 HELP_YAML = (
     "response: Enable automatic review in the repository settings.\n"
     "relevant_sections:\n"
-    "  - file_name: /tools/review.md\n"
+    "  - file_name: /commands/review.md\n"
     "    relevant_section_header_string: Automatic review\n"
 )
 
 
 def _make_help(monkeypatch, response=HELP_YAML, question="How do I enable automatic review?",
                fail_primary=False, provider=None):
-    monkeypatch.setattr(pr_help_message, "_load_help_docs_prompt", lambda: ("docs", {"tools/review.md"}))
+    monkeypatch.setattr(pr_help_message, "_load_help_docs_prompt", lambda: ("docs", {"commands/review.md"}))
     command = PRHelpMessage.__new__(PRHelpMessage)
     command.git_provider = provider or _provider()
     command.git_provider.pr_url = "https://example.com/org/repo/pull/1"

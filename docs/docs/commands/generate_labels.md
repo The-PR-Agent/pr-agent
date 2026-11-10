@@ -5,7 +5,7 @@ sidebar_position: 7
 
 ## Overview
 
-The `generate_labels` tool scans the PR code changes and generates custom labels for the PR based on the content and context of the changes.
+The `generate_labels` command scans the PR code changes and generates custom labels for the PR based on the content and context of the changes.
 
 It can be invoked manually by commenting on any PR:
 
@@ -15,9 +15,9 @@ It can be invoked manually by commenting on any PR:
 
 ## Example usage
 
-Invoke the tool manually by commenting `/generate_labels` on any PR.
+Invoke the command manually by commenting `/generate_labels` on any PR.
 
-The tool will analyze the PR and add appropriate labels.
+The command will analyze the PR and add appropriate labels.
 
 For local or CI workflows that need label suggestions without a hosting-provider token,
 pass a unified diff and write the filtered labels to a JSON artifact:
@@ -34,7 +34,7 @@ Check the command's exit status before consuming the artifact: a failed run does
 
 ## Configuration options
 
-The `generate_labels` tool uses configurations from the `[pr_description]` section for custom labels.
+The `generate_labels` command uses configurations from the `[pr_description]` section for custom labels.
 
 ### Enabling custom labels
 
@@ -73,7 +73,7 @@ description = "Code refactoring without functional changes"
 
 ### How labels are applied
 
-1. The tool analyzes the PR diff and commit messages
+1. The command analyzes the PR diff and commit messages
 2. It uses AI to determine which labels best match the PR content
 3. Labels are automatically applied to the PR (if the git provider supports it)
 4. If labels cannot be applied directly, they are published as a comment
@@ -105,7 +105,7 @@ to their primary output.
 
 ## Comparison with `/describe` labels
 
-The `/describe` tool also generates labels as part of its output. The key differences are:
+The `/describe` command also generates labels as part of its output. The key differences are:
 
 | Feature | `/generate_labels` | `/describe` |
 |---------|-------------------|-------------|

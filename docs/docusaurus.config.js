@@ -144,8 +144,8 @@ const config = {
           },
           {
             type: 'docSidebar',
-            sidebarId: 'tools',
-            label: 'Tools',
+            sidebarId: 'commands',
+            label: 'Commands',
             position: 'left',
           },
           {

@@ -5,9 +5,9 @@ sidebar_position: 8
 
 ## Overview
 
-> **Note**: `/similar_issue` is an **experimental** feature. It works only on GitHub, carries a disproportionately large share of the project's dependency and configuration surface for a single-provider tool, and is therefore excluded from the v1 stability guarantees. No backend is tested against its real driver.
+> **Note**: `/similar_issue` is an **experimental** feature. It works only on GitHub, carries a disproportionately large share of the project's dependency and configuration surface for a single-provider command, and is therefore excluded from the v1 stability guarantees. No backend is tested against its real driver.
 
-The similar issue tool retrieves the most similar issues to the current issue.
+The similar issue command retrieves the most similar issues to the current issue.
 It is an issue-scoped command: comment `/similar_issue` on the issue (served by the GitHub Action; the GitHub App webhook only dispatches comments on pull requests), or run it from the CLI with `--issue_url`:
 
 ```
@@ -24,7 +24,7 @@ It is an issue-scoped command: comment `/similar_issue` on the issue (served by 
 
 ### Indexing and re-runs
 
-To perform retrieval, the `similar_issue` tool indexes the repository's issues in the configured vector database. On every backend:
+To perform retrieval, the `similar_issue` command indexes the repository's issues in the configured vector database. On every backend:
 
 - The **first run** indexes up to `max_issues_to_scan` issues (default `500`).
 - **Later runs** check the newest `max_issues_to_scan` issues and index any that are missing, so previously-indexed issues are not re-embedded.
@@ -40,7 +40,7 @@ the results.
 These keys live under the `[pr_similar_issue]` section. Each backend section below describes its own configuration and re-run behaviour.
 
 If the embedding service rejects the credentials (HTTP 401) or denies access (HTTP 403), indexing stops immediately on every vector database backend.
-Correct the embedding API key or access permissions before running the tool again; other embedding errors retain the existing batch and per-item fallback behavior.
+Correct the embedding API key or access permissions before running the command again; other embedding errors retain the existing batch and per-item fallback behavior.
 
 ### Selecting a Vector Database
 
@@ -67,7 +67,7 @@ As described in [Indexing and re-runs](#indexing-and-re-runs), the first run cre
 
 #### Pinecone Configuration
 
-To use Pinecone with the `similar issue` tool, add these credentials to `.secrets.toml` (or set as environment variables):
+To use Pinecone with the `similar issue` command, add these credentials to `.secrets.toml` (or set as environment variables):
 
 ```
 [pinecone]
@@ -79,7 +79,7 @@ region = "us-east-1"
 The `cloud` value must be one of `aws`, `gcp` or `azure`, and `region` must be an
 availability region offered by that cloud. These parameters can be obtained by
 registering to [Pinecone](https://app.pinecone.io/?sessionType=signup/). Note that the
-tool uses Pinecone's serverless index API; the former `environment` setting from the
+command uses Pinecone's serverless index API; the former `environment` setting from the
 gcp-starter pod tier is no longer supported.
 
 `cloud` and `region` are only used when the index does not exist yet and needs to be
@@ -104,7 +104,7 @@ qdrant or pinecone, set `vectordb = "qdrant"` or `vectordb = "pinecone"` under
 
 #### Qdrant Configuration
 
-To use Qdrant with the `similar issue` tool, add these credentials to `.secrets.toml` (or set as environment variables):
+To use Qdrant with the `similar issue` command, add these credentials to `.secrets.toml` (or set as environment variables):
 
 ```
 [qdrant]
@@ -121,7 +121,7 @@ vectordb = "qdrant"
 
 You can get a free managed Qdrant instance from [Qdrant Cloud](https://cloud.qdrant.io/).
 
-`api_key` must be present even when the server does not enforce authentication (an empty string is accepted): the tool reads both `url` and `api_key` and raises when either is absent. A re-index uploads the records from up to `max_issues_to_scan` issues.
+`api_key` must be present even when the server does not enforce authentication (an empty string is accepted): the command reads both `url` and `api_key` and raises when either is absent. A re-index uploads the records from up to `max_issues_to_scan` issues.
 
 Qdrant points are stored in a collection named `codium-ai-pr-agent-issues-v2`, derived by appending a `-v2` suffix to the shared index name (`codium-ai-pr-agent-issues`). The suffix is an implementation detail of the Qdrant backend only; pinecone and lancedb use the unsuffixed name.
 
@@ -143,13 +143,13 @@ the new collection. Once you are satisfied with the results, you can delete the 
 
 ## How to use
 
-- Install the tool's extra dependencies (vector databases and datasets), which a bare `uv sync` does not include:
+- Install the command's extra dependencies (vector databases and datasets), which a bare `uv sync` does not include:
 `uv sync --group similar-issue`
 
-- To invoke the 'similar issue' tool from **CLI**, run:
+- To invoke the 'similar issue' command from **CLI**, run:
 `uv run pr-agent --issue_url=... similar_issue`
 
-- To invoke the 'similar' issue tool via online usage, [comment](https://github.com/the-pr-agent/pr-agent/issues/178#issuecomment-1716934893) on an issue:
+- To invoke the 'similar' issue command via online usage, [comment](https://github.com/the-pr-agent/pr-agent/issues/178#issuecomment-1716934893) on an issue:
 `/similar_issue`
 
 - To run automatically when an issue is opened, create a GitHub Actions workflow for the `issues: opened` event that invokes the CLI with that issue's URL. Adding `/similar_issue` to `github_app.pr_commands` does not handle issue-opened events.

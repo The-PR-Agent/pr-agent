@@ -1,11 +1,11 @@
 ---
-title: "Tools"
+title: "Commands"
 sidebar_position: 1
 ---
 
-Each PR-Agent tool has a dedicated page that explains its behavior and usage:
+Each PR-Agent command has a dedicated page that explains its behavior and usage:
 
-| Tool | Description |
+| Command | Description |
 |------|-------------|
 | **[PR Description (`/describe`)](./describe.md)** | Generate a PR title, type, summary, code walkthrough and labels. |
 | **[PR Review (`/review`)](./review.md)** | Generate a PR review with feedback on possible issues, security concerns, tests and review effort. |
@@ -14,20 +14,20 @@ Each PR-Agent tool has a dedicated page that explains its behavior and usage:
 | **[Add Documentation (`/add_docs`)](./add_docs.md)** | Generate documentation for code components that are missing it |
 | **[Generate Labels (`/generate_labels`)](./generate_labels.md)** | Generate custom labels for the PR based on the code changes |
 | **[Similar Issues (`/similar_issue`)](./similar_issues.md)** | Find similar issues in the repository based on the current issue |
-| **[Help (`/help`)](./help.md)** | Provides a list of all the available tools |
+| **[Help (`/help`)](./help.md)** | Provides a list of all the available commands |
 | **[Help Docs (`/help_docs`)](./help_docs.md)** | Answer a free-text question based on a git documentation folder |
 | **[Update Changelog (`/update_changelog`)](./update_changelog.md)** | Automatically updating the CHANGELOG.md file with the PR changes |
 
 ## Usage examples
 
-Each tool can be triggered in two ways:
+Each command can be triggered in two ways:
 
-- **As a comment** — write the command (e.g. `/review`) as a comment, and PR-Agent replies. Most tools are commented on a PR; issue-scoped tools such as `similar_issue` are commented on an issue.
-- **From the [CLI](../usage-guide/automations_and_usage.md#local-repo-cli)** — run `python -m pr_agent.cli --pr_url=<PR_URL> <tool>`. Issue-scoped tools take `--issue_url=<ISSUE_URL>` instead of `--pr_url`. The module form works only from an environment where the `pr_agent` package is importable (for example, the venv created by `uv sync`). If `pr-agent` is on your `PATH`, run it directly.
+- **As a comment** — write the command (e.g. `/review`) as a comment, and PR-Agent replies. Most commands are commented on a PR; issue-scoped commands such as `similar_issue` are commented on an issue.
+- **From the [CLI](../usage-guide/automations_and_usage.md#local-repo-cli)** — run `python -m pr_agent.cli --pr_url=<PR_URL> <command>`. Issue-scoped commands take `--issue_url=<ISSUE_URL>` instead of `--pr_url`. The module form works only from an environment where the `pr_agent` package is importable (for example, the venv created by `uv sync`). If `pr-agent` is on your `PATH`, run it directly.
 
-Both accept the same tool arguments and [configuration overrides](../usage-guide/configuration_options.md).
+Both accept the same command arguments and [configuration overrides](../usage-guide/configuration_options.md).
 
-| Tool                                     | Comment                          | CLI                                                             |
+| Command                                     | Comment                          | CLI                                                             |
 |------------------------------------------|----------------------------------|----------------------------------------------------------------|
 | [Describe](./describe.md)                | `/describe`                      | `python -m pr_agent.cli --pr_url=<PR_URL> describe`             |
 | [Review](./review.md)                    | `/review`                        | `python -m pr_agent.cli --pr_url=<PR_URL> review`              |
@@ -41,4 +41,4 @@ Both accept the same tool arguments and [configuration overrides](../usage-guide
 
 `/help_docs` is temporarily disabled (see [#2445](https://github.com/The-PR-Agent/pr-agent/issues/2445)) and is therefore omitted from the table above.
 
-For screenshots, arguments, and a walkthrough of a typical use case, see the **Example usage** section on each tool's page linked above.
+For screenshots, arguments, and a walkthrough of a typical use case, see the **Example usage** section on each command's page linked above.

@@ -100,10 +100,10 @@ function Ask() {
 }
 
 const COMMANDS = [
-  {id: 'describe', typed: '/describe', Reply: Describe, to: '/tools/describe/'},
-  {id: 'review', typed: '/review', Reply: Review, to: '/tools/review/'},
-  {id: 'improve', typed: '/improve', Reply: Improve, to: '/tools/improve/'},
-  {id: 'ask', typed: '/ask "What happens if the endpoint is down for an hour?"', Reply: Ask, to: '/tools/ask/'},
+  {id: 'describe', typed: '/describe', Reply: Describe, to: '/commands/describe/'},
+  {id: 'review', typed: '/review', Reply: Review, to: '/commands/review/'},
+  {id: 'improve', typed: '/improve', Reply: Improve, to: '/commands/improve/'},
+  {id: 'ask', typed: '/ask "What happens if the endpoint is down for an hour?"', Reply: Ask, to: '/commands/ask/'},
 ];
 
 const PROVIDERS = [

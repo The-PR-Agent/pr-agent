@@ -3,19 +3,19 @@ title: "Push outputs to external sinks"
 sidebar_position: 7
 ---
 
-The `[push_outputs]` feature routes finished tool output to external sinks — stdout, a JSONL file, a
+The `[push_outputs]` feature routes finished command output to external sinks — stdout, a JSONL file, a
 generic webhook, Slack, Telegram, or Microsoft Teams — without calling git-provider APIs. It is disabled by default, and is
-additive to normal publishing: when a tool finishes, its structured result and rendered Markdown
+additive to normal publishing: when a command finishes, its structured result and rendered Markdown
 are also emitted to the configured sinks. An effective `config.publish_output = false` disables both normal publishing
 and these sinks. Plain-diff mode forces publishing on to preserve stdout/file output; set
 `push_outputs.enable = false` in the host configuration to disable its extra sinks.
 
 ## What gets pushed
 
-Each finished tool run that produces output emits one record when publishing and the sinks are enabled.
-The tools that currently emit are:
+Each finished command run that produces output emits one record when publishing and the sinks are enabled.
+The commands that currently emit are:
 
-| Tool | `type` in the record |
+| Command | `type` in the record |
 |---|---|
 | `/review` | `review` |
 | `/describe` | `describe` |
@@ -40,16 +40,16 @@ A record is a JSON object:
 }
 ```
 
-- `type` — which tool produced the output
+- `type` — which command produced the output
 - `timestamp` — the run completion time, UTC, ISO-8601
-- `payload` — the structured tool result
-- `pr` — the tool's pull request identity, present when the calling tool supplies it
+- `payload` — the structured command result
+- `pr` — the command's pull request identity, present when the calling command supplies it
 - `pr.url` — the pull request page URL
 - `pr.provider` — the git provider, such as `github`, `gitlab`, or `bitbucket`
 - `pr.repo` — the repository name or path
 - `pr.number` — the pull request number
 - `pr.head_sha` — the head commit SHA
-- `markdown` — the rendered comment text; present when the tool produces one
+- `markdown` — the rendered comment text; present when the command produces one
 
 For `/describe`, `payload.title` is the selected title, including the original PR title read when the
 command starts if `pr_description.generate_ai_title` is disabled. When the model output contains a
@@ -69,7 +69,7 @@ The defaults are defined at the end of the
 [push_outputs]
 enable = false
 channels = []                          # any of: "stdout", "file", "webhook", "slack", "telegram", "teams"
-commands = ["review", "describe", "improve"] # tool types to deliver; opt in to "ask" explicitly
+commands = ["review", "describe", "improve"] # command types to deliver; opt in to "ask" explicitly
 file_path = "pr-agent-outputs/reviews.jsonl"
 webhook_url = ""                       # must be an absolute https:// URL
 slack_webhook_url = ""                 # Slack Incoming Webhook; must be an absolute https:// URL
@@ -80,7 +80,7 @@ teams_webhook_url = ""                 # Teams Workflows webhook URL; must be an
 
 - `enable` — master switch (default `false`). When `false`, nothing is emitted.
 - `channels` — which sinks to use. Use exact registered names as a list/tuple or a comma-separated string; surrounding whitespace is ignored. Nothing is emitted until at least one channel is listed here.
-- `commands` — which tool results to send to those sinks. Defaults to `review`, `describe`, and `improve`, preserving existing delivery. Use a list/tuple or comma-separated string of exact names. Add `ask` to receive answers, or select only the tools of interest. This does not change which commands PR-Agent runs.
+- `commands` — which command results to send to those sinks. Defaults to `review`, `describe`, and `improve`, preserving existing delivery. Use a list/tuple or comma-separated string of exact names. Add `ask` to receive answers, or select only the commands of interest. This does not change which commands PR-Agent runs.
 - `file_path` — the file the `file` channel appends to.
 - `webhook_url` — the endpoint the `webhook` channel POSTs the generic record to.
 - `slack_webhook_url` — a Slack Incoming Webhook URL that the `slack` channel posts a `{"text": ...}` payload to.
@@ -119,9 +119,9 @@ credential.
 | `stdout` | Prints one JSON line (the record) to stdout. |
 | `file` | Appends one JSON line per run (JSONL) to `file_path`, creating parent directories as needed. |
 | `webhook` | POSTs the generic record as JSON to `webhook_url` (5-second timeout, redirects not followed). |
-| `slack` | POSTs `{"text": ...}` to a Slack Incoming Webhook; the text is the markdown, or the payload JSON when the tool produces no markdown, with `&`, `<` and `>` escaped so Slack shows mentions and `<url\|label>` links as plain text, followed by the PR URL when one is present. |
+| `slack` | POSTs `{"text": ...}` to a Slack Incoming Webhook; the text is the markdown, or the payload JSON when the command produces no markdown, with `&`, `<` and `>` escaped so Slack shows mentions and `<url\|label>` links as plain text, followed by the PR URL when one is present. |
 | `telegram` | Sends the markdown, or the payload JSON when no markdown is present, as plain text to `telegram_chat_id`, followed by the PR URL when one is present. Text is truncated to at most 4096 UTF-16 code units without splitting surrogate pairs; room is reserved for the URL so truncation does not drop it. |
-| `teams` | POSTs an Adaptive Card to `teams_webhook_url` with the tool type, markdown output, and a button to the PR when its URL is present. The card is trimmed to Teams' 28 KB message size limit. |
+| `teams` | POSTs an Adaptive Card to `teams_webhook_url` with the command type, markdown output, and a button to the PR when its URL is present. The card is trimmed to Teams' 28 KB message size limit. |
 
 Local channels (`stdout`, `file`) run before network channels (`webhook`, `slack`, `telegram`, `teams`), and network
 posts never follow redirects. Each configured destination is attempted independently, so one failure
@@ -156,7 +156,7 @@ type or status code, since request error messages can embed the (secret-bearing)
 ## Extending delivery
 
 `push_outputs()` in `pr_agent/algo/run_output.py` builds the record once and isolates failures
-for each selected destination. The tools deliver from an event loop, so they call
+for each selected destination. The commands deliver from an event loop, so they call
 `push_outputs_async()`, which runs the delivery in a worker thread and awaits it: a slow
 destination does not stall the other pull requests the server is handling, and the output
 still reaches the sink before the command returns. Delivery strategies live in

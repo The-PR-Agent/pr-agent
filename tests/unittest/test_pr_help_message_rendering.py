@@ -76,7 +76,7 @@ async def run_walkthrough(provider) -> str:
 def build_question_command(tmp_path, monkeypatch, handler):
     package_root = tmp_path / "package"
     docs_path = package_root / "docs" / "docs"
-    review_doc = docs_path / "tools" / "review.md"
+    review_doc = docs_path / "commands" / "review.md"
     review_doc.parent.mkdir(parents=True)
     review_doc.write_text("# Automatic review\n\nEnable automatic review in the repository settings.", encoding="utf-8")
 
@@ -113,7 +113,7 @@ async def test_static_help_renders_without_initializing_ai_handler(published_out
     handler_factory.assert_not_called()
     assert len(provider.published) == 1
     assert "## PR Agent Walkthrough" in provider.published[0]
-    assert f"{CURRENT_DOCS_URL}/tools/review/" in provider.published[0]
+    assert f"{CURRENT_DOCS_URL}/commands/review/" in provider.published[0]
 
 
 @pytest.mark.asyncio
@@ -179,7 +179,7 @@ async def test_question_reaches_configured_handler_without_openai_key(
         response=(
             "response: Enable automatic review in the repository settings.\n"
             "relevant_sections:\n"
-            "  - file_name: /tools/review.md\n"
+            "  - file_name: /commands/review.md\n"
             "    relevant_section_header_string: Automatic review\n"
         )
     )
@@ -222,9 +222,9 @@ async def test_question_skips_malformed_sources_without_discarding_answer(
         response=(
             "response: Enable automatic review in the repository settings.\n"
             "relevant_sections:\n"
-            "  - file_name: /tools/review.md\n"
+            "  - file_name: /commands/review.md\n"
             "    relevant_section_header_string: Automatic review\n"
-            "  - file_name: tools/review.md\n"
+            "  - file_name: commands/review.md\n"
             "    relevant_section_header_string:\n"
             "  - relevant_section_header_string: Missing file name\n"
             "  - not a mapping\n"
@@ -232,9 +232,9 @@ async def test_question_skips_malformed_sources_without_discarding_answer(
             "    relevant_section_header_string: Automatic review\n"
             "  - file_name: https://example.com/review.md\n"
             "    relevant_section_header_string: Automatic review\n"
-            "  - file_name: /tools/review.md?draft=true\n"
+            "  - file_name: /commands/review.md?draft=true\n"
             "    relevant_section_header_string: Automatic review\n"
-            "  - file_name: ' /tools/review.md '\n"
+            "  - file_name: ' /commands/review.md '\n"
             "    relevant_section_header_string: Automatic review\n"
         )
     )
@@ -245,8 +245,8 @@ async def test_question_skips_malformed_sources_without_discarding_answer(
     assert len(command.git_provider.published) == 1
     comment = command.git_provider.published[0]
     assert "Enable automatic review in the repository settings." in comment
-    assert f"> - {CURRENT_DOCS_URL}/tools/review/#automatic-review\n" in comment
-    assert f"> - {CURRENT_DOCS_URL}/tools/review/\n" in comment
+    assert f"> - {CURRENT_DOCS_URL}/commands/review/#automatic-review\n" in comment
+    assert f"> - {CURRENT_DOCS_URL}/commands/review/\n" in comment
     assert comment.count("> - ") == 2
     assert "example.com" not in comment
     assert "draft=true" not in comment
@@ -256,7 +256,7 @@ async def test_question_skips_malformed_sources_without_discarding_answer(
     "relevant_sections",
     [
         "  - relevant_section_header_string: Missing file name\n",
-        "  file_name: /tools/review.md\n  relevant_section_header_string: Automatic review\n",
+        "  file_name: /commands/review.md\n  relevant_section_header_string: Automatic review\n",
     ],
     ids=["all-invalid-rows", "non-list-value"],
 )
@@ -370,7 +370,7 @@ async def test_walkthrough_uses_current_documentation_site(published_output, che
     comment = await run_walkthrough(StubProvider(gfm_markdown=True, checkbox_commands=checkbox_commands))
 
     assert (INTERACTIVE_MARKER in comment) is checkbox_commands
-    assert f"{CURRENT_DOCS_URL}/tools/review/" in comment
+    assert f"{CURRENT_DOCS_URL}/commands/review/" in comment
     assert f"{CURRENT_DOCS_URL}/usage-guide/automations_and_usage/" in comment
     assert not any(host in comment for host in RETIRED_DOCS_HOSTS)
 
@@ -379,11 +379,11 @@ async def test_walkthrough_uses_current_documentation_site(published_output, che
     ("file_name", "header", "expected"),
     [
         ("/index.md", "", f"{CURRENT_DOCS_URL}/"),
-        ("/tools/review.md", "Automatic review", f"{CURRENT_DOCS_URL}/tools/review/#automatic-review"),
+        ("/commands/review.md", "Automatic review", f"{CURRENT_DOCS_URL}/commands/review/#automatic-review"),
         ("/faq/index.md", "Frequently asked questions", f"{CURRENT_DOCS_URL}/faq/#frequently-asked-questions"),
         # Pages needing JSX are stored as '.mdx'. The suffix must not leak into the
         # URL, and '/index.mdx' must still collapse to the site root.
-        ("/tools/improve.mdx", "Overview", f"{CURRENT_DOCS_URL}/tools/improve/#overview"),
+        ("/commands/improve.mdx", "Overview", f"{CURRENT_DOCS_URL}/commands/improve/#overview"),
         ("/index.mdx", "", f"{CURRENT_DOCS_URL}/"),
         ("/faq/index.mdx", "", f"{CURRENT_DOCS_URL}/faq/"),
     ],

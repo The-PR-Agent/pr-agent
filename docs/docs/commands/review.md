@@ -7,13 +7,13 @@ sidebar_position: 3
 
 Generate a PR review with feedback on possible issues, security concerns, tests and review effort.
 <br>
-The tool can be triggered automatically every time a new PR is [opened](../usage-guide/automations_and_usage.md#github-app-automatic-tools-when-a-new-pr-is-opened), or can be invoked manually by commenting on any PR:
+The command can be triggered automatically every time a new PR is [opened](../usage-guide/automations_and_usage.md#github-app-automatic-commands-when-a-new-pr-is-opened), or can be invoked manually by commenting on any PR:
 
 ```
 /review
 ```
 
-Note that the main purpose of the `review` tool is to provide the **PR reviewer** with useful feedback and insights. The PR author, in contrast, may prefer to save time and focus on the output of the [improve](./improve.mdx) tool, which provides actionable code suggestions.
+Note that the main purpose of the `review` command is to provide the **PR reviewer** with useful feedback and insights. The PR author, in contrast, may prefer to save time and focus on the output of the [improve](./improve.mdx) command, which provides actionable code suggestions.
 
 (Read more about the different personas in the PR process and how PR-Agent aims to assist them in our [blog](https://www.qodo.ai/blog/understanding-the-challenges-and-pain-points-of-the-pull-request-cycle/))
 
@@ -26,11 +26,11 @@ Note that the main purpose of the `review` tool is to provide the **PR reviewer*
 
 ### Manual triggering
 
-Invoke the tool manually by commenting `/review` on any PR:
+Invoke the command manually by commenting `/review` on any PR:
 
 <img src="/img/review_comment.png" alt="review comment" width="512" />
 
-After ~30 seconds, the tool will generate a review for the PR:
+After ~30 seconds, the command will generate a review for the PR:
 
 <img src="/img/review3.png" alt="review" width="512" />
 
@@ -67,7 +67,7 @@ extra_instructions = "..."
 ```
 
 - The `pr_commands` lists commands that will be executed automatically when a PR is opened.
-- The `[pr_reviewer]` section contains the configurations for the `review` tool you want to edit (if any).
+- The `[pr_reviewer]` section contains the configurations for the `review` command you want to edit (if any).
 
 ## Configuration options
 
@@ -131,15 +131,15 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>extra_instructions</b></td>
-    <td>Optional extra instructions to the tool. For example: "focus on the changes in the file X. Ignore change in ...".</td>
+    <td>Optional extra instructions to the command. For example: "focus on the changes in the file X. Ignore change in ...".</td>
   </tr>
   <tr>
     <td><b>enable_help_text</b></td>
-    <td>If set to true, the tool will display a help text in the comment.</td>
+    <td>If set to true, the command will display a help text in the comment.</td>
   </tr>
   <tr>
     <td><b>enable_review_coverage_footer</b></td>
-    <td>If set to true, the tool will display a review coverage footer when the token budget leaves files out of the review.</td>
+    <td>If set to true, the command will display a review coverage footer when the token budget leaves files out of the review.</td>
   </tr>
   <tr>
     <td><b>enable_large_pr_chunking</b></td>
@@ -167,48 +167,48 @@ for the authoritative default values.
 <table>
   <tr>
     <td><b>require_score_review</b></td>
-    <td>If set to true, the tool will add a section that scores the PR.</td>
+    <td>If set to true, the command will add a section that scores the PR.</td>
   </tr>
   <tr>
     <td><b>require_tests_review</b></td>
-    <td>If set to true, the tool will add a section that checks if the PR contains tests.</td>
+    <td>If set to true, the command will add a section that checks if the PR contains tests.</td>
   </tr>
   <tr>
     <td><b>require_estimate_effort_to_review</b></td>
-    <td>If set to true, the tool will add a section that estimates the effort needed to review the PR.</td>
+    <td>If set to true, the command will add a section that estimates the effort needed to review the PR.</td>
   </tr>
   <tr>
     <td><b>require_estimate_contribution_time_cost</b></td>
-    <td>If set to true, the tool will add a section that estimates the time required for a senior developer to create and submit such changes.</td>
+    <td>If set to true, the command will add a section that estimates the time required for a senior developer to create and submit such changes.</td>
   </tr>
   <tr>
     <td><b>require_can_be_split_review</b></td>
-    <td>If set to true, the tool will add a section that checks if the PR contains several themes, and can be split into smaller PRs.</td>
+    <td>If set to true, the command will add a section that checks if the PR contains several themes, and can be split into smaller PRs.</td>
   </tr>
   <tr>
     <td><b>require_security_review</b></td>
-    <td>If set to true, the tool will add a section that checks if the PR contains a possible security or vulnerability issue.</td>
+    <td>If set to true, the command will add a section that checks if the PR contains a possible security or vulnerability issue.</td>
   </tr>
     <tr>
     <td><b>require_todo_scan</b></td>
-    <td>If set to true, the tool will add a section that lists TODO comments found in the PR code changes.
+    <td>If set to true, the command will add a section that lists TODO comments found in the PR code changes.
     </td>
   </tr>
   <tr>
     <td><b>require_ticket_analysis_review</b></td>
     <td>
-      If set to true and ticket context is available, the tool adds a ticket-compliance section to the review comment
+      If set to true and ticket context is available, the command adds a ticket-compliance section to the review comment
       that checks whether the PR fulfills the ticket requirements. Supported sources include GitHub and GitLab issues,
       linked Azure DevOps work items, Jira Cloud tickets, and Asana tasks.
     </td>
   </tr>
   <tr>
     <td><b>require_risk_assessment</b></td>
-    <td>If set to true, the tool will add a section that rates the overall risk of the PR as low, medium or high.</td>
+    <td>If set to true, the command will add a section that rates the overall risk of the PR as low, medium or high.</td>
   </tr>
   <tr>
     <td><b>require_merge_recommendation</b></td>
-    <td>If set to true, the tool will add a section describing what the review found: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge). The value reports the model's findings, not a guarantee about the code.</td>
+    <td>If set to true, the command will add a section describing what the review found: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge). The value reports the model's findings, not a guarantee about the code.</td>
   </tr>
   <tr>
     <td><b>require_failure_modes</b></td>
@@ -227,7 +227,7 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>require_priority_files</b></td>
-    <td>If set to true, the tool will add a section listing the files a human reviewer should inspect first.</td>
+    <td>If set to true, the command will add a section listing the files a human reviewer should inspect first.</td>
   </tr>
   <tr>
     <td><b>structural_reach_input_file</b></td>
@@ -269,16 +269,16 @@ for the authoritative default values.
 <details open>
 <summary>Adding PR labels</summary>
 
-You can enable\disable the `review` tool to add specific labels to the PR:
+You can enable\disable the `review` command to add specific labels to the PR:
 
 <table>
   <tr>
     <td><b>enable_review_labels_security</b></td>
-    <td>If set to true, the tool will publish a 'Possible security concern' label if it detects a security issue.</td>
+    <td>If set to true, the command will publish a 'Possible security concern' label if it detects a security issue.</td>
   </tr>
   <tr>
     <td><b>enable_review_labels_effort</b></td>
-    <td>If set to true, the tool will publish a 'Review effort x/5' label (1–5 scale). Existing effort labels are kept when this option or effort estimation is disabled, or when the review has no valid replacement estimate. Security labels follow their own settings.</td>
+    <td>If set to true, the command will publish a 'Review effort x/5' label (1–5 scale). Existing effort labels are kept when this option or effort estimation is disabled, or when the review has no valid replacement estimate. Security labels follow their own settings.</td>
   </tr>
 </table>
 
@@ -290,7 +290,7 @@ You can enable\disable the `review` tool to add specific labels to the PR:
 
 :::tip
 
-The `review` tool provides a collection of configurable feedbacks about a PR.
+The `review` command provides a collection of configurable feedbacks about a PR.
 It is recommended to review the [Configuration options](#configuration-options) section, and choose the relevant options for your use case.
 
 Some of the features that are disabled by default are quite useful, and should be considered for enabling. For example:
@@ -302,25 +302,25 @@ On the other hand, if you find one of the enabled features to be irrelevant for 
 ### Automation
 
 :::tip
-When you first install PR-Agent app, the [default mode](../usage-guide/automations_and_usage.md#github-app-automatic-tools-when-a-new-pr-is-opened) for the `review` tool is:
+When you first install PR-Agent app, the [default mode](../usage-guide/automations_and_usage.md#github-app-automatic-commands-when-a-new-pr-is-opened) for the `review` command is:
 ```
 pr_commands = ["/review", ...]
 ```
-Meaning the `review` tool will run automatically on every PR, without any additional configurations.
-Edit this field to enable/disable the tool, or to change the configurations used.
+Meaning the `review` command will run automatically on every PR, without any additional configurations.
+Edit this field to enable/disable the command, or to change the configurations used.
 :::
 
-### Auto-generated PR labels by the Review Tool
+### Auto-generated PR labels by the Review Command
 
 :::tip
 
-The `review` tool can automatically add labels to your Pull Requests:
+The `review` command can automatically add labels to your Pull Requests:
 
-- **`Possible security concern`**: This label is applied if the tool detects a potential [security vulnerability](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L147) in the PR's code. This feedback is controlled by the 'enable_review_labels_security' flag (default is true).
+- **`Possible security concern`**: This label is applied if the command detects a potential [security vulnerability](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L147) in the PR's code. This feedback is controlled by the 'enable_review_labels_security' flag (default is true).
 - **`review effort [x/5]`**: This label estimates the [effort](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L119) required to review the PR on a relative scale of 1 to 5, where 'x' represents the assessed effort. This feedback is controlled by the 'enable_review_labels_effort' flag (default is true).
 
 Ticket compliance is reported in the review comment, not as a PR label. It is controlled by
-`pr_reviewer.require_ticket_analysis_review` and requires available ticket context. The tool does not add
+`pr_reviewer.require_ticket_analysis_review` and requires available ticket context. The command does not add
 ticket-compliance labels or a "No ticket found" label. See
 [Fetching ticket context](../core-abilities/fetching_ticket_context.md) for linking and authentication details.
 
@@ -343,9 +343,9 @@ Since AI may make mistakes or lack complete context, use this feature judiciousl
 :::tip
 
 Extra instructions are important.
-The `review` tool can be configured with extra instructions, which can be used to guide the model to a feedback tailored to the needs of your project.
+The `review` command can be configured with extra instructions, which can be used to guide the model to a feedback tailored to the needs of your project.
 
-Be specific, clear, and concise in the instructions. With extra instructions, you are the prompter. Specify the relevant sub-tool, and the relevant aspects of the PR that you want to emphasize.
+Be specific, clear, and concise in the instructions. With extra instructions, you are the prompter. Specify the relevant sub-command, and the relevant aspects of the PR that you want to emphasize.
 
 Examples of extra instructions:
 ```
@@ -365,7 +365,7 @@ Use triple quotes to write multi-line instructions. Use bullet points to make th
 
 :::tip
 
-When a PR diff is larger than the model's token budget, the `review` tool drops whole files
+When a PR diff is larger than the model's token budget, the `review` command drops whole files
 until the diff fits, and lists the dropped files in the review coverage footer.
 
 Setting `enable_large_pr_chunking = true` changes what happens next: the diff is split into up

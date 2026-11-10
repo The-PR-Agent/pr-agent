@@ -9,7 +9,7 @@ import TabItem from '@theme/TabItem';
 ## Overview
 
 Generate actionable code suggestions for improving the PR.
-The tool can be triggered automatically every time a new PR is [opened](../usage-guide/automations_and_usage.md#github-app-automatic-tools-when-a-new-pr-is-opened), or it can be invoked manually by commenting on any PR:
+The command can be triggered automatically every time a new PR is [opened](../usage-guide/automations_and_usage.md#github-app-automatic-commands-when-a-new-pr-is-opened), or it can be invoked manually by commenting on any PR:
 
 ```toml
 /improve
@@ -46,9 +46,9 @@ ___
 
 ### Manual triggering
 
-Invoke the tool manually by commenting `/improve` on any PR. The code suggestions by default are presented as a single comment:
+Invoke the command manually by commenting `/improve` on any PR. The code suggestions by default are presented as a single comment:
 
-To edit [configurations](#configuration-options) related to the `improve` tool, use the following template:
+To edit [configurations](#configuration-options) related to the `improve` command, use the following template:
 
 ```toml
 /improve --pr_code_suggestions.some_config1=... --pr_code_suggestions.some_config2=...
@@ -109,7 +109,7 @@ publish_failure_comment = true
 ```
 
 - The `pr_commands` lists commands that will be executed automatically when a PR is opened.
-- The `[pr_code_suggestions]` section contains the configurations for the `improve` tool you want to edit (if any)
+- The `[pr_code_suggestions]` section contains the configurations for the `improve` command you want to edit (if any)
 - Set `publish_failure_comment = false` to suppress failure comments while preserving the command failure status.
 
 ### Incremental suggestions
@@ -149,11 +149,11 @@ Teams with specific preferences can enable committable code comments mode in the
 
 ## `Extra instructions` and `best practices`
 
-The `improve` tool can be further customized by providing additional instructions and best practices to the AI model.
+The `improve` command can be further customized by providing additional instructions and best practices to the AI model.
 
 ### Extra instructions
 
-You can use the `extra_instructions` configuration option to give the AI model additional instructions for the `improve` tool.
+You can use the `extra_instructions` configuration option to give the AI model additional instructions for the `improve` command.
 Be specific, clear, and concise in the instructions. With extra instructions, you are the prompter.
 
 Examples for possible instructions:
@@ -252,7 +252,7 @@ def get_pr_code(pr_data):
 
 ### Combining 'extra instructions' and 'best practices'
 
-The `extra instructions` configuration is more related to the `improve` tool prompt. It can be used, for example, to avoid specific suggestions ("Don't suggest to add try-except block", "Ignore changes in toml files", ...) or to emphasize specific aspects or formats ("Answer in Japanese", "Give only short suggestions", ...)
+The `extra instructions` configuration is more related to the `improve` command prompt. It can be used, for example, to avoid specific suggestions ("Don't suggest to add try-except block", "Ignore changes in toml files", ...) or to emphasize specific aspects or formats ("Answer in Japanese", "Give only short suggestions", ...)
 
 In contrast, a `best_practices.md` file is a general guideline for the way code should be written in the repo.
 
@@ -344,7 +344,7 @@ If you set in a configuration file:
 demand_code_suggestions_self_review = true
 ```
 
-The `improve` tool will add a checkbox below the suggestions, prompting user to acknowledge that they have reviewed the suggestions.
+The `improve` command will add a checkbox below the suggestions, prompting user to acknowledge that they have reviewed the suggestions.
 You can set the content of the checkbox text via:
 
 ```toml
@@ -407,7 +407,7 @@ for the authoritative default values.
 <table>
   <tr>
     <td><b>extra_instructions</b></td>
-    <td>Optional extra instructions to the tool. For example: "focus on the changes in the file X. Ignore change in ...".</td>
+    <td>Optional extra instructions to the command. For example: "focus on the changes in the file X. Ignore change in ...".</td>
   </tr>
   <tr>
     <td><b>suggestions_heading</b></td>
@@ -422,7 +422,7 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>committable_code_suggestions</b></td>
-    <td>If set to true, the tool will display the suggestions as committable code comments. The
+    <td>If set to true, the command will display the suggestions as committable code comments. The
     deprecated spelling <code>commitable_code_suggestions</code> is still accepted and logs a
     warning; it will be removed in 1.0, so rename it.</td>
   </tr>
@@ -451,20 +451,20 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>enable_help_text</b></td>
-    <td>If set to true, the tool will display a help text in the comment.</td>
+    <td>If set to true, the command will display a help text in the comment.</td>
   </tr>
   <tr>
     <td><b>enable_chat_text</b></td>
-    <td>If set to true, the tool will display a reference to the PR chat in the comment.</td>
+    <td>If set to true, the command will display a reference to the PR chat in the comment.</td>
   </tr>
   <tr>
     <td><b>publish_output_no_suggestions</b></td>
-    <td>If set to true, the tool will publish a comment even if no suggestions were found.</td>
+    <td>If set to true, the command will publish a comment even if no suggestions were found.</td>
   </tr>
   <tr>
     <td><b>enable_suggestions_coverage_footer</b></td>
     <td>
-      If set to true, the tool will display a coverage notice when analysis chunks fail or files
+      If set to true, the command will display a coverage notice when analysis chunks fail or files
       are omitted by the token budget or maximum number of AI calls.
     </td>
   </tr>
@@ -478,7 +478,7 @@ for the authoritative default values.
 <table>
   <tr>
     <td><b>num_code_suggestions_per_chunk</b></td>
-    <td>Number of code suggestions provided by the 'improve' tool, per chunk.</td>
+    <td>Number of code suggestions provided by the 'improve' command, per chunk.</td>
   </tr>
   <tr>
     <td><b>max_suggestions_per_file</b></td>
@@ -518,7 +518,7 @@ A fallback model that recovers at least one chunk is marked as a fallback in the
 details, so the published run line still reports the primary model while the sticky fallback flag
 stays set.
 
-Each remaining model is tried at most once per still-failed chunk at the tool level; the model
+Each remaining model is tried at most once per still-failed chunk at the command level; the model
 handler's existing retries and self-reflection calls can add provider requests. A chunk whose complete
 generation prompt does not fit a fallback model's token budget is skipped for that model, without
 truncating its context; the reserved headroom follows the output allowance the AI handler will

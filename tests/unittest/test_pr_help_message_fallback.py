@@ -18,7 +18,7 @@ BACKUP = "gpt-4o-mini"
 ANSWER = (
     "response: Enable automatic review in the repository settings.\n"
     "relevant_sections:\n"
-    "  - file_name: /tools/review.md\n"
+    "  - file_name: /commands/review.md\n"
     "    relevant_section_header_string: Automatic review\n"
 )
 
@@ -45,7 +45,7 @@ def help_command(tmp_path, monkeypatch):
     for key, value in overrides.items():
         get_settings().set(key, value)
 
-    doc = tmp_path / "docs" / "docs" / "tools" / "review.md"
+    doc = tmp_path / "docs" / "docs" / "commands" / "review.md"
     doc.parent.mkdir(parents=True)
     doc.write_text("# Automatic review\n\nEnable automatic review in the repository settings.", encoding="utf-8")
     monkeypatch.setattr(pr_help_message, "__file__", str(tmp_path / "pr_agent" / "commands" / "pr_help_message.py"))
@@ -81,7 +81,7 @@ def selectable_docs(help_command, monkeypatch):
     root = command._fixture_doc.parents[1]
     command._fixture_doc.write_text("# Review\n" + "R" * 900, encoding="utf-8")
     for path, content in [
-        ("tools/describe.md", "# Describe\nDescribe a pull request."),
+        ("commands/describe.md", "# Describe\nDescribe a pull request."),
         ("usage-guide/changing_a_model.md", "# Models\nChoose a model."),
         ("installation/azure.md", "# Azure\nInstall the Azure integration."),
     ]:
@@ -99,7 +99,7 @@ def selectable_docs(help_command, monkeypatch):
 
 
 @pytest.mark.parametrize(("question", "target"), [
-    ("How do I describe a PR?", "tools/describe.md"),
+    ("How do I describe a PR?", "commands/describe.md"),
     ("How do I change a model?", "usage-guide/changing_a_model.md"),
     ("How do I install Azure?", "installation/azure.md"),
 ])
@@ -123,7 +123,7 @@ def test_constrained_question_retains_complete_matching_document(selectable_docs
 
 @pytest.mark.parametrize(("question", "embedded_marker"), [
     ("Please help me", False),
-    ("How do I use tools?", False),
+    ("How do I use commands?", False),
     ("How do I review?", False),
     ("How do I install AWS?", True),
 ])
@@ -142,7 +142,7 @@ def test_no_unique_fitting_document_preserves_baseline_order(selectable_docs, mo
     monkeypatch.setattr(pr_help_message, "_select_help_doc", lambda *_args: None)
 
     assert command._fit_prompts(command.vars, BACKUP) == with_selection
-    assert raw.startswith("==file name==\n\n/tools/describe.md")
+    assert raw.startswith("==file name==\n\n/commands/describe.md")
 
 
 async def test_fallback_selects_question_document_and_limits_citations(selectable_docs, monkeypatch):
@@ -154,7 +154,7 @@ async def test_fallback_selects_question_document_and_limits_citations(selectabl
     command.ai_handler.chat_completion.side_effect = [TimeoutError("primary unavailable"), (
         "response: Install the Azure integration.\nrelevant_sections:\n"
         "  - file_name: /installation/azure.md\n"
-        "  - file_name: /tools/review.md\n", "stop",
+        "  - file_name: /commands/review.md\n", "stop",
     )]
 
     await command.run()
@@ -166,7 +166,7 @@ async def test_fallback_selects_question_document_and_limits_citations(selectabl
     assert len(backup["system"]) + len(backup["user"]) <= limits[BACKUP]
     [call] = command.git_provider.publish_comment.call_args_list
     assert "https://docs.pr-agent.ai/installation/azure/" in call.args[0]
-    assert "https://docs.pr-agent.ai/tools/review/" not in call.args[0]
+    assert "https://docs.pr-agent.ai/commands/review/" not in call.args[0]
     assert type(command.vars["snippets"]) is str
 
 
@@ -198,7 +198,7 @@ async def test_primary_failure_uses_backup_answer(help_command):
     command.git_provider.publish_comment.assert_called_once()
     published_comment = command.git_provider.publish_comment.call_args.args[0]
     assert "### Answer:\nEnable automatic review" in published_comment
-    assert "> - https://docs.pr-agent.ai/tools/review/#automatic-review" in published_comment
+    assert "> - https://docs.pr-agent.ai/commands/review/#automatic-review" in published_comment
     assert details.model_used == BACKUP
     assert details.fallback_used is True
     assert get_settings().get("openai.deployment_id") == "primary-deployment"
@@ -216,7 +216,7 @@ async def test_primary_failure_uses_backup_answer(help_command):
     pytest.param('"   "', id="whitespace-text"),
     pytest.param("answer: Enable automatic review", id="wrong-answer-key"),
     pytest.param("user_question: How do I configure automatic reviews?", id="question-only"),
-    pytest.param("relevant_sections: [{file_name: /tools/review.md}]", id="missing-answer"),
+    pytest.param("relevant_sections: [{file_name: /commands/review.md}]", id="missing-answer"),
     pytest.param('response: ""', id="blank-answer-no-sources"),
     pytest.param('response: ""\nrelevant_sections: []', id="blank-answer-empty-sources"),
     pytest.param('response: "   "\nrelevant_sections: []', id="whitespace-answer-empty-sources"),
@@ -225,7 +225,7 @@ async def test_primary_failure_uses_backup_answer(help_command):
     pytest.param("response: false", id="non-text-answer-no-sources"),
     *[
         pytest.param(
-            f"response: {answer}\nrelevant_sections: [{{file_name: /tools/review.md}}]",
+            f"response: {answer}\nrelevant_sections: [{{file_name: /commands/review.md}}]",
             id=f"answer-{name}",
         )
         for name, answer in (
@@ -244,7 +244,7 @@ async def test_invalid_response_shape_uses_backup_answer(help_command, response)
     command.git_provider.publish_comment.assert_called_once()
     published_comment = command.git_provider.publish_comment.call_args.args[0]
     assert "### Answer:\nEnable automatic review" in published_comment
-    assert "> - https://docs.pr-agent.ai/tools/review/#automatic-review" in published_comment
+    assert "> - https://docs.pr-agent.ai/commands/review/#automatic-review" in published_comment
     assert details.model_used == BACKUP
     assert details.fallback_used is True
     assert details.command_failed is False
@@ -303,7 +303,7 @@ async def test_each_attempt_fits_complete_prompt_for_its_model(help_command, mon
     assert "A" * 600 not in backup_prompt
     assert "...(truncated)" in backup_prompt
     assert "==file name==" in backup_prompt
-    assert "/tools/review.md" in backup_prompt
+    assert "/commands/review.md" in backup_prompt
     assert 2 * (len(backup_prompt) + len("system")) <= limits[BACKUP] - 20
     assert "A" * 600 in command.vars["snippets"]
     assert limit_calls == [(PRIMARY, True), (BACKUP, True)]
@@ -319,7 +319,7 @@ async def test_fallback_only_publishes_sources_from_complete_fitted_documents(he
     hidden_doc.write_text("# Hidden\n\n" + "H" * 600, encoding="utf-8")
     review_content = command._fixture_doc.read_text(encoding="utf-8").strip()
     review_section = (
-        "==file name==\n\n/tools/review.md\n\n==file content==\n\n"
+        "==file name==\n\n/commands/review.md\n\n==file content==\n\n"
         f"{review_content}\n========="
     )
     get_settings().set("pr_help_prompts.system", "")
@@ -335,7 +335,7 @@ async def test_fallback_only_publishes_sources_from_complete_fitted_documents(he
         (
             "response: Use the documented review settings.\n"
             "relevant_sections:\n"
-            "  - file_name: /tools/review.md\n"
+            "  - file_name: /commands/review.md\n"
             "    relevant_section_header_string: Automatic review\n"
             "  - file_name: /hidden.md\n"
             "    relevant_section_header_string: Hidden\n",
@@ -352,9 +352,9 @@ async def test_fallback_only_publishes_sources_from_complete_fitted_documents(he
     assert review_section in backup_prompt
     assert "H" * 600 not in backup_prompt
     assert pr_help_message.TRUNCATION_MARKER in backup_prompt
-    assert command._model_visible_docs_files == {"tools/review.md"}
+    assert command._model_visible_docs_files == {"commands/review.md"}
     published_comment = command.git_provider.publish_comment.call_args.args[0]
-    assert "> - https://docs.pr-agent.ai/tools/review/#automatic-review" in published_comment
+    assert "> - https://docs.pr-agent.ai/commands/review/#automatic-review" in published_comment
     assert "https://docs.pr-agent.ai/hidden/" not in published_comment
     assert published_comment.count("> - ") == 1
     assert details.model_used == BACKUP

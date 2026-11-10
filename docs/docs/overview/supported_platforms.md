@@ -3,21 +3,21 @@ title: "Supported platforms"
 sidebar_position: 3
 ---
 
-Which tools, triggers and core abilities work on each git provider.
+Which commands, triggers and core abilities work on each git provider.
 
 |       |    | <span class="pra-provider"><span class="pra-logo pra-logo--github" aria-hidden="true"></span>GitHub</span> | <span class="pra-provider"><span class="pra-logo pra-logo--gitlab" aria-hidden="true"></span>GitLab</span> | <span class="pra-provider"><span class="pra-logo pra-logo--bitbucket" aria-hidden="true"></span>Bitbucket Cloud</span> | <span class="pra-provider"><span class="pra-logo pra-logo--bitbucket" aria-hidden="true"></span>Bitbucket Server</span> | <span class="pra-provider"><span class="pra-logo pra-logo--azuredevops" aria-hidden="true"></span>Azure DevOps</span> | <span class="pra-provider"><span class="pra-logo pra-logo--gitea" aria-hidden="true"></span>Gitea</span> |
 | ----- |---------------------------------------------------------------------------------------|:------:|:------:|:---------------:|:---------------:|:------------:|:-----:|
-| [TOOLS](../tools/index.md) | [Describe](../tools/describe.md)                                     |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
-|       | [Review](../tools/review.md)                                                           |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
-|       | [Improve](../tools/improve.mdx)                                                         |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
-|       | [Ask](../tools/ask.md)                                                                 |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
-|       | [Ask on code lines](../tools/ask.md#ask-lines)                                         |   ✅   |   ✅   |                 |                 |      ✅       |       |
-|       | [Add Docs](../tools/add_docs.md)                                                       |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
-|       | [Generate Labels](../tools/generate_labels.md)                                         |   ✅   |   ✅   |       💬        |       💬        |      ✅       |  ✅   |
-|       | [Similar Issues](../tools/similar_issues.md)                                           |   ✅   |        |                 |                 |              |       |
-|       | [Help](../tools/help.md)                                                               |   ✅   |   ✅   |   ✅[^help]    |       ✅        |      ✅       |  ✅   |
-|       | [Help Docs](../tools/help_docs.md) ⚠️                                                   |        |        |                 |                 |              |       |
-|       | [Update CHANGELOG](../tools/update_changelog.md)                                       |   ✅   |   ✅   |       ✅        |       💬        |      💬       |  💬  |
+| [COMMANDS](../commands/index.md) | [Describe](../commands/describe.md)                                     |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
+|       | [Review](../commands/review.md)                                                           |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
+|       | [Improve](../commands/improve.mdx)                                                         |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
+|       | [Ask](../commands/ask.md)                                                                 |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
+|       | [Ask on code lines](../commands/ask.md#ask-lines)                                         |   ✅   |   ✅   |                 |                 |      ✅       |       |
+|       | [Add Docs](../commands/add_docs.md)                                                       |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
+|       | [Generate Labels](../commands/generate_labels.md)                                         |   ✅   |   ✅   |       💬        |       💬        |      ✅       |  ✅   |
+|       | [Similar Issues](../commands/similar_issues.md)                                           |   ✅   |        |                 |                 |              |       |
+|       | [Help](../commands/help.md)                                                               |   ✅   |   ✅   |   ✅[^help]    |       ✅        |      ✅       |  ✅   |
+|       | [Help Docs](../commands/help_docs.md) ⚠️                                                   |        |        |                 |                 |              |       |
+|       | [Update CHANGELOG](../commands/update_changelog.md)                                       |   ✅   |   ✅   |       ✅        |       💬        |      💬       |  💬  |
 |       |                                                                                       |        |        |                 |                 |              |       |
 | [USAGE](../usage-guide/index.md) | [CLI](../usage-guide/automations_and_usage.md#local-repo-cli)      |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
 |       | [App / webhook](../usage-guide/automations_and_usage.md#github-app)                    |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
@@ -34,15 +34,15 @@ Which tools, triggers and core abilities work on each git provider.
 |       | [Multiple models support](../usage-guide/changing_a_model.md)                          |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
 |       | [Self reflection](../core-abilities/self_reflection.md)                                |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
 
-⚠️ `/help_docs` is temporarily disabled since v0.36.1 pending a fix for a credential-exposure issue ([#2445](https://github.com/The-PR-Agent/pr-agent/issues/2445)); see [Help Docs](../tools/help_docs.md).
+⚠️ `/help_docs` is temporarily disabled since v0.36.1 pending a fix for a credential-exposure issue ([#2445](https://github.com/The-PR-Agent/pr-agent/issues/2445)); see [Help Docs](../commands/help_docs.md).
 
-Legend: ✅ = supported. 💬 = the tool runs, but its output is posted as a PR comment instead of being applied (Update CHANGELOG where the provider cannot push files, Generate Labels where it cannot set labels). Blank = not supported.
+Legend: ✅ = supported. 💬 = the command runs, but its output is posted as a PR comment instead of being applied (Update CHANGELOG where the provider cannot push files, Generate Labels where it cannot set labels). Blank = not supported.
 
 [^tickets]: On Bitbucket Cloud, Bitbucket Server, and Gitea, fetching ticket context means the Jira, Asana, and Linear integrations. Native issue links are used on GitHub and GitLab, and work items on Azure DevOps.
 
-[^help]: `/help <question>` is supported, but `/help` without a question displays an unsupported-format notice instead of the tool list on Bitbucket Cloud, Gerrit and CodeCommit.
+[^help]: `/help <question>` is supported, but `/help` without a question displays an unsupported-format notice instead of the command list on Bitbucket Cloud, Gerrit and CodeCommit.
 
-[^help-list]: Plain-diff mode supports the `/help` tool list only. `/help <question>` is currently unavailable in both local and plain-diff modes; local mode displays an unsupported-format notice for `/help` without a question.
+[^help-list]: Plain-diff mode supports the `/help` command list only. `/help <question>` is currently unavailable in both local and plain-diff modes; local mode displays an unsupported-format notice for `/help` without a question.
 
 ## Diff-only providers
 
@@ -50,12 +50,12 @@ The `local`, `plain-diff`, and MOSAICO modes do not use a hosting platform. The 
 
 |       |    | <span class="pra-provider"><span class="pra-logo pra-logo--terminal" aria-hidden="true"></span>Local</span> | <span class="pra-provider"><span class="pra-logo pra-logo--terminal" aria-hidden="true"></span>Plain diff</span> | MOSAICO |
 | ----- |---------------------------------------------------------------------------------------|:-----:|:-----:|:-----:|
-| [TOOLS](../tools/index.md) | [Describe](../tools/describe.md), [Review](../tools/review.md), [Improve](../tools/improve.mdx), [Ask](../tools/ask.md) |   ✅   |   ✅   |   ✅   |
-|       | [Add Docs](../tools/add_docs.md)                                                       |   ✅   |   ✅   |       |
-|       | [Generate Labels](../tools/generate_labels.md)                                         |   💬   |   💬   |       |
-|       | [Similar Issues](../tools/similar_issues.md)                                           |        |        |       |
-|       | [Help](../tools/help.md)                                                               |        | ✅[^help-list] |       |
-|       | [Update CHANGELOG](../tools/update_changelog.md)                                       |   💬   |   💬   |       |
+| [COMMANDS](../commands/index.md) | [Describe](../commands/describe.md), [Review](../commands/review.md), [Improve](../commands/improve.mdx), [Ask](../commands/ask.md) |   ✅   |   ✅   |   ✅   |
+|       | [Add Docs](../commands/add_docs.md)                                                       |   ✅   |   ✅   |       |
+|       | [Generate Labels](../commands/generate_labels.md)                                         |   💬   |   💬   |       |
+|       | [Similar Issues](../commands/similar_issues.md)                                           |        |        |       |
+|       | [Help](../commands/help.md)                                                               |        | ✅[^help-list] |       |
+|       | [Update CHANGELOG](../commands/update_changelog.md)                                       |   💬   |   💬   |       |
 | [USAGE](../usage-guide/index.md) | [CLI](../usage-guide/automations_and_usage.md#local-repo-cli)                  |   ✅   |   ✅   |       |
 |       | A2A server                                                                             |        |        |   ✅   |
 
@@ -67,12 +67,12 @@ Gerrit and CodeCommit are registered providers but are kept out of the main tabl
 
 |       |    | <span class="pra-provider"><span class="pra-logo pra-logo--gerrit" aria-hidden="true"></span>Gerrit</span> | <span class="pra-provider"><span class="pra-logo pra-logo--codecommit" aria-hidden="true"></span>CodeCommit</span> |
 | ----- |---------------------------------------------------------------------------------------|:------:|:----------:|
-| [TOOLS](../tools/index.md) | [Describe](../tools/describe.md), [Review](../tools/review.md), [Improve](../tools/improve.mdx), [Ask](../tools/ask.md), [Add Docs](../tools/add_docs.md) |   ✅   |     ✅     |
-|       | [Help](../tools/help.md)                                                               | ✅[^help] | ✅[^help] |
-|       | [Ask on code lines](../tools/ask.md#ask-lines)                                         |        |            |
-|       | [Generate Labels](../tools/generate_labels.md)                                         |   💬   |     💬     |
-|       | [Update CHANGELOG](../tools/update_changelog.md)                                       |   💬   |     💬     |
-|       | [Similar Issues](../tools/similar_issues.md)                                           |        |            |
+| [COMMANDS](../commands/index.md) | [Describe](../commands/describe.md), [Review](../commands/review.md), [Improve](../commands/improve.mdx), [Ask](../commands/ask.md), [Add Docs](../commands/add_docs.md) |   ✅   |     ✅     |
+|       | [Help](../commands/help.md)                                                               | ✅[^help] | ✅[^help] |
+|       | [Ask on code lines](../commands/ask.md#ask-lines)                                         |        |            |
+|       | [Generate Labels](../commands/generate_labels.md)                                         |   💬   |     💬     |
+|       | [Update CHANGELOG](../commands/update_changelog.md)                                       |   💬   |     💬     |
+|       | [Similar Issues](../commands/similar_issues.md)                                           |        |            |
 | [USAGE](../usage-guide/index.md) | [CLI](../usage-guide/automations_and_usage.md#local-repo-cli)                  |   ✅   |     ✅     |
 |       | [App / webhook](../usage-guide/automations_and_usage.md#github-app)                    |   ✅   |            |
 |       | Tagging bot / Actions and pipelines                                                   |        |            |

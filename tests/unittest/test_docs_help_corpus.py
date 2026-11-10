@@ -2,7 +2,7 @@
 
 `PRHelpMessage` reads the docs tree at runtime, so a page the collector misses is
 silently absent from the answer -- no error, just a worse reply. That is exactly
-what happened when `tools/improve.md` became `tools/improve.mdx` while the
+what happened when `commands/improve.md` became `commands/improve.mdx` while the
 collector still matched `.md` only.
 """
 

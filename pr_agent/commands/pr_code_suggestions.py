@@ -88,7 +88,7 @@ from pr_agent.servers.help import HelpMessage
 # TODO: in 1.0, remove the deprecated "commitable_code_suggestions" fallback in
 # get_committable_code_suggestions() below, its entry in
 # config_security.PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION, and the deprecation note in
-# docs/docs/tools/improve.mdx. The flag guards the one-off warning it emits.
+# docs/docs/commands/improve.mdx. The flag guards the one-off warning it emits.
 _deprecated_spellings_warned = False
 
 

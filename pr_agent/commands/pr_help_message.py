@@ -40,9 +40,9 @@ HELP_DOCS_SUFFIXES = (".md", ".mdx")
 # Suffix-free, so a page keeps its priority whichever suffix it uses.
 HELP_DOCS_PRIORITY_PATHS = (
     "/usage-guide/",
-    "/tools/describe.",
-    "/tools/review.",
-    "/tools/improve.",
+    "/commands/describe.",
+    "/commands/review.",
+    "/commands/improve.",
     "/faq/",
 )
 HELP_DOCS_INDEX_NAMES = tuple(f"/index{suffix}" for suffix in HELP_DOCS_SUFFIXES)
@@ -453,7 +453,7 @@ class PRHelpMessage:
 
     def format_docs_url(self, file_name: str, header: str) -> str:
         # '.mdx' must be stripped before '.md', or the longer suffix survives and
-        # the emitted URL keeps it (e.g. '/tools/improve.mdx/').
+        # the emitted URL keeps it (e.g. '/commands/improve.mdx/').
         relative_path = file_name.strip().lstrip('/').removesuffix('.mdx').removesuffix('.md')
         if relative_path == 'index':
             relative_path = ''
@@ -575,7 +575,7 @@ class PRHelpMessage:
                     "feedback, suggestions and more."
                 )
                 pr_comment += f"\n\nHere is a list of commands you can use to interact with the {bot_display_name}:\n"
-                base_path = f"{DOCS_SITE_URL}/tools"
+                base_path = f"{DOCS_SITE_URL}/commands"
 
                 command_names = []
                 command_names.append(f"[DESCRIBE]({base_path}/describe/)")
@@ -632,7 +632,7 @@ class PRHelpMessage:
                     pr_comment += (
                         "\n\n(1) Note that each command can be "
                         "[triggered automatically]("
-                        "https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened"
+                        "https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-commands-when-a-new-pr-is-opened"
                         ") when a new PR is opened, or called manually by "
                         "[commenting on a PR]("
                         "https://docs.pr-agent.ai/usage-guide/automations_and_usage/#online-usage)."

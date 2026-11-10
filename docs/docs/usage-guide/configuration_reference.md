@@ -153,7 +153,7 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 
 ## `[pr_reviewer]` — /review {#pr_reviewer-review}
 
-See [Review](../tools/review.md#configuration-options).
+See [Review](../commands/review.md#configuration-options).
 
 **enable/disable features**
 
@@ -170,12 +170,12 @@ See [Review](../tools/review.md#configuration-options).
 | `require_risk_assessment` | false | ask the model for an overall risk level (low/medium/high) |
 | `require_merge_recommendation` | false | ask the model for a merge recommendation: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge) |
 | `require_failure_modes` | false | ask for up to three concrete failure scenarios and their detection/coverage |
-| `require_artifact_findings` | false | with a CI artifact, list up to five neutral facts from it, each with a quote checked against the artifact. See docs/docs/tools/review.md |
+| `require_artifact_findings` | false | with a CI artifact, list up to five neutral facts from it, each with a quote checked against the artifact. See docs/docs/commands/review.md |
 | `require_priority_files` | false | ask the model which files a human should inspect first |
-| `structural_reach_input_file` | "" | JSON reach facts from a build-graph tool; when the file exists, adds a deterministic change-risk row. See docs/docs/tools/review.md |
-| `enable_risk_checks` | true | Flag sensitive paths and risky change shapes; adds nothing when clean. See docs/docs/tools/review.md |
-| `sensitive_paths` | [".github/workflows/**", ".gitlab-ci.yml", "Jenkinsfile*", ".circleci/**", "azure-pipelines*.yml", ".travis.yml", "bitbucket-pipelines.yml", "*CODEOWNERS", ".pr_agent.toml", "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "requirements*.txt", "Pipfile", "Pipfile.lock", "pyproject.toml", "poetry.lock", "uv.lock", "Cargo.toml", "Cargo.lock", "go.mod", "go.sum", "pom.xml", "build.gradle*", "Gemfile", "Gemfile.lock", "composer.json", "composer.lock", "*Dockerfile*", "docker-compose*.yml", "docker-compose*.yaml", "*.dockerfile", "*.tf", "*.tfvars", "*.hcl", "*migrations*/**", "*migration*", "db/migrate/**", "alembic/**"] | Glob patterns of sensitive paths flagging deterministic review risk findings. See docs/docs/tools/review.md |
-| `extra_risky_shapes` | [] | Custom regex patterns flagging risky changes in diff hunks. See docs/docs/tools/review.md |
+| `structural_reach_input_file` | "" | JSON reach facts from a build-graph tool; when the file exists, adds a deterministic change-risk row. See docs/docs/commands/review.md |
+| `enable_risk_checks` | true | Flag sensitive paths and risky change shapes; adds nothing when clean. See docs/docs/commands/review.md |
+| `sensitive_paths` | [".github/workflows/**", ".gitlab-ci.yml", "Jenkinsfile*", ".circleci/**", "azure-pipelines*.yml", ".travis.yml", "bitbucket-pipelines.yml", "*CODEOWNERS", ".pr_agent.toml", "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "requirements*.txt", "Pipfile", "Pipfile.lock", "pyproject.toml", "poetry.lock", "uv.lock", "Cargo.toml", "Cargo.lock", "go.mod", "go.sum", "pom.xml", "build.gradle*", "Gemfile", "Gemfile.lock", "composer.json", "composer.lock", "*Dockerfile*", "docker-compose*.yml", "docker-compose*.yaml", "*.dockerfile", "*.tf", "*.tfvars", "*.hcl", "*migrations*/**", "*migration*", "db/migrate/**", "alembic/**"] | Glob patterns of sensitive paths flagging deterministic review risk findings. See docs/docs/commands/review.md |
+| `extra_risky_shapes` | [] | Custom regex patterns flagging risky changes in diff hunks. See docs/docs/commands/review.md |
 **general options**
 
 | Key | Default | Description |
@@ -222,7 +222,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 ## `[pr_description]` — /describe {#pr_description-describe}
 
-See [Describe](../tools/describe.md#configuration-options).
+See [Describe](../commands/describe.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -265,13 +265,13 @@ See [Describe](../tools/describe.md#configuration-options).
 
 ## `[pr_questions]` — /ask {#pr_questions-ask}
 
-See [Ask](../tools/ask.md#configuration-options).
+See [Ask](../commands/ask.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `enable_help_text` | false |  |
 | `use_conversation_history` | true |  |
-| `use_ticket_context` | false | Include linked ticket context in top-level /ask when true; default false. See tools/ask.md#linked-ticket-context. |
+| `use_ticket_context` | false | Include linked ticket context in top-level /ask when true; default false. See commands/ask.md#linked-ticket-context. |
 | `ask_heading` | "Ask" | Set the plain-text heading for top-level /ask answers; provider-specific presentation is added automatically. |
 | `resolve_threads` | false | Enable to let /ask_line resolve the review thread when the LLM judges the issue addressed. Note: also resolves threads started by human reviewers. |
 | `extra_instructions` | "" |  |
@@ -279,7 +279,7 @@ See [Ask](../tools/ask.md#configuration-options).
 
 ## `[pr_code_suggestions]` — /improve {#pr_code_suggestions-improve}
 
-See [Improve](../tools/improve.mdx#configuration-options).
+See [Improve](../commands/improve.mdx#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -292,7 +292,7 @@ See [Improve](../tools/improve.mdx#configuration-options).
 | `enable_chat_text` | false |  |
 | `persistent_comment` | true |  |
 | `publish_failure_comment` | true | Set to false to suppress /improve failure comments without changing the command's failure status. |
-| `max_history_len` | 4 | Previous sets to retain; <=0 keeps latest only (same comment if editable). See https://docs.pr-agent.ai/tools/improve#configuration-options |
+| `max_history_len` | 4 | Previous sets to retain; <=0 keeps latest only (same comment if editable). See https://docs.pr-agent.ai/commands/improve#configuration-options |
 | `publish_output_no_suggestions` | true |  |
 | `enable_suggestions_coverage_footer` | true | show failed chunks and files omitted by the token or AI-call budget |
 **suggestions scoring**
@@ -324,7 +324,7 @@ See [Improve](../tools/improve.mdx#configuration-options).
 
 ## `[pr_add_docs]` — /add_docs {#pr_add_docs-add_docs}
 
-See [Add Docs](../tools/add_docs.md#configuration-options).
+See [Add Docs](../commands/add_docs.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -334,11 +334,11 @@ See [Add Docs](../tools/add_docs.md#configuration-options).
 
 ## `[pr_update_changelog]` — /update_changelog {#pr_update_changelog-update_changelog}
 
-See [Update Changelog](../tools/update_changelog.md#configuration-options).
+See [Update Changelog](../commands/update_changelog.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `changelog_path` | "CHANGELOG.md" | Repository-relative Markdown changelog path. Root .pr_agent.toml or host settings only; see tools/update_changelog.md. |
+| `changelog_path` | "CHANGELOG.md" | Repository-relative Markdown changelog path. Root .pr_agent.toml or host settings only; see commands/update_changelog.md. |
 | `push_changelog_changes` | false |  |
 | `extra_instructions` | "" |  |
 | `add_pr_link` | true |  |
@@ -353,7 +353,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[pr_help_docs]` {#pr_help_docs}
 
-See [Help Docs](../tools/help_docs.md#configuration-options).
+See [Help Docs](../commands/help_docs.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -583,7 +583,7 @@ See [Additional configurations](../usage-guide/additional_configurations.md#buil
 
 ## `[pr_similar_issue]` {#pr_similar_issue}
 
-See [Similar Issues](../tools/similar_issues.md#selecting-a-vector-database).
+See [Similar Issues](../commands/similar_issues.md#selecting-a-vector-database).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -595,7 +595,7 @@ See [Similar Issues](../tools/similar_issues.md#selecting-a-vector-database).
 
 ## `[pinecone]` {#pinecone}
 
-See [Pinecone](../tools/similar_issues.md#pinecone-configuration).
+See [Pinecone](../commands/similar_issues.md#pinecone-configuration).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -605,7 +605,7 @@ See [Pinecone](../tools/similar_issues.md#pinecone-configuration).
 
 ## `[lancedb]` {#lancedb}
 
-See [LanceDB](../tools/similar_issues.md#lancedb-configuration).
+See [LanceDB](../commands/similar_issues.md#lancedb-configuration).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -614,7 +614,7 @@ See [LanceDB](../tools/similar_issues.md#lancedb-configuration).
 
 ## `[qdrant]` {#qdrant}
 
-See [Qdrant](../tools/similar_issues.md#qdrant-configuration).
+See [Qdrant](../commands/similar_issues.md#qdrant-configuration).
 
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 

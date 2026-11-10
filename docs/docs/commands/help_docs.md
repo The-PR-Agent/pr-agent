@@ -11,12 +11,12 @@ host validation only checked substring containment, so a host that merely *conta
 allowed host could receive the git provider token.
 
 The command is not registered in `PRAgent`, so invoking it has no effect on any provider. The
-page below documents the tool as it behaves once it is re-enabled.
+page below documents the command as it behaves once it is re-enabled.
 :::
 
 ## Overview
 
-The `help_docs` tool can answer a free-text question based on a git documentation folder.
+The `help_docs` command can answer a free-text question based on a git documentation folder.
 
 It can be invoked manually by commenting on any PR or Issue:
 
@@ -26,7 +26,7 @@ It can be invoked manually by commenting on any PR or Issue:
 
 Or configured to be triggered automatically when a [new issue is opened](../installation/github.md#run-as-a-github-action).
 
-The tool assumes by default that the documentation is located in the root of the repository, at `/docs` folder.
+The command assumes by default that the documentation is located in the root of the repository, at `/docs` folder.
 However, this can be customized by setting the `docs_path` configuration option:
 
 ```toml
@@ -116,7 +116,7 @@ Here's how:
 
 ## Configuration options
 
-Under the section `pr_help_docs`, the [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) contains options to customize the 'help docs' tool:
+Under the section `pr_help_docs`, the [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) contains options to customize the 'help docs' command:
 
 - `repo_url`: If not overwritten, will use the repo from where the context came from (issue or PR), otherwise - use the given repo as context.
 - `repo_default_branch`: The branch to use in case repo_url overwritten, otherwise - has no effect.

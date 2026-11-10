@@ -492,7 +492,7 @@ async def test_swallowed_command_failures_are_recorded(
         command.pr_id = "org/repo#1"
         command.git_provider = MagicMock()
     else:
-        monkeypatch.setattr(module, "_load_help_docs_prompt", lambda: ("docs", {"tools/review.md"}))
+        monkeypatch.setattr(module, "_load_help_docs_prompt", lambda: ("docs", {"commands/review.md"}))
         command = module.PRHelpMessage.__new__(module.PRHelpMessage)
         command.question_str = "How does review work?"
         command.vars = {"question": command.question_str, "snippets": ""}

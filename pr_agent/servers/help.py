@@ -12,7 +12,7 @@ class HelpMessage:
                 "> - **/update_changelog**: Update the changelog based on the PR's contents.   \n" \
                 "> - **/add_docs**: Generate docstring for new components introduced in the PR.   \n" \
                 "> - **/generate_labels**: Generate labels for the PR based on the PR's contents.   \n\n" \
-                ">See the [commands guide](https://docs.pr-agent.ai/tools/) for more details.\n" \
+                ">See the [commands guide](https://docs.pr-agent.ai/commands/) for more details.\n" \
                 ">To list the possible configuration parameters, add a **/config** comment.   \n"
        return commands_text
 
@@ -26,8 +26,8 @@ class HelpMessage:
     def get_review_usage_guide():
         output ="**Overview:**\n"
         output += (f"{COMMAND_DESCRIPTIONS['review']} "
-                  "More feedback can be [added](https://docs.pr-agent.ai/tools/review/#configuration-options) by configuring the command.\n\n"
-                  "The command can be triggered [automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on any PR.\n")
+                  "More feedback can be [added](https://docs.pr-agent.ai/commands/review/#configuration-options) by configuring the command.\n\n"
+                  "The command can be triggered [automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-commands-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on any PR.\n")
         output +="""\
 - When commenting, to edit [configurations](https://docs.pr-agent.ai/usage-guide/configuration_reference/#pr_reviewer-review) related to the review command (`pr_reviewer` section), use the following template:
 ```
@@ -41,7 +41,7 @@ some_config2=...
 ```
     """
 
-        output += "\n\nSee the review [usage page](https://docs.pr-agent.ai/tools/review/) for a comprehensive guide on using this command.\n\n"
+        output += "\n\nSee the review [usage page](https://docs.pr-agent.ai/commands/review/) for a comprehensive guide on using this command.\n\n"
 
         return output
 
@@ -51,7 +51,7 @@ some_config2=...
     def get_describe_usage_guide():
         output = "**Overview:**\n"
         output += f"{COMMAND_DESCRIPTIONS['describe']} "
-        output += "The command can be triggered [automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on a PR.\n"
+        output += "The command can be triggered [automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-commands-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on a PR.\n"
         output += """\
 
 When commenting, to edit [configurations](https://docs.pr-agent.ai/usage-guide/configuration_reference/#pr_description-describe) related to the describe command (`pr_description` section), use the following template:
@@ -70,7 +70,7 @@ some_config2=...
         # automation
         output += "<tr><td><details> <summary><strong> Enabling\\disabling automation </strong></summary><hr>\n\n"
         output += """\
-- When you first install the app, the [default mode](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) for the describe command is:
+- When you first install the app, the [default mode](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-commands-when-a-new-pr-is-opened) for the describe command is:
 ```
 pr_commands = ["/describe", ...]
 ```
@@ -96,7 +96,7 @@ Note that when markers are enabled, if the original PR description does not cont
         output += """\
 The default labels of the `describe` command are quite generic: [`Bug fix`, `Tests`, `Enhancement`, `Documentation`, `Other`].
 
-If you specify [custom labels](https://docs.pr-agent.ai/tools/describe/#handle-custom-labels-from-the-repos-labels-page) in the repo's labels page or via configuration file, you can get tailored labels for your use cases.
+If you specify [custom labels](https://docs.pr-agent.ai/commands/describe/#handle-custom-labels-from-the-repos-labels-page) in the repo's labels page or via configuration file, you can get tailored labels for your use cases.
 Examples for custom labels:
 - `Main topic:performance` - pr_agent:The main topic of this PR is performance
 - `New endpoint` - pr_agent:A new endpoint was added in this PR
@@ -138,7 +138,7 @@ Use triple quotes to write multi-line instructions. Use bullet points to make th
 
         output += "</table>"
 
-        output += "\n\nSee the [describe usage](https://docs.pr-agent.ai/tools/describe/) page for a comprehensive guide on using this command.\n\n"
+        output += "\n\nSee the [describe usage](https://docs.pr-agent.ai/commands/describe/) page for a comprehensive guide on using this command.\n\n"
 
         return output
 
@@ -164,7 +164,7 @@ You can ask questions about the entire PR, about specific code lines, or about a
         #
         # output += "</table>"
 
-        output += "\n\nSee the [ask usage](https://docs.pr-agent.ai/tools/ask/) page for a comprehensive guide on using this command.\n\n"
+        output += "\n\nSee the [ask usage](https://docs.pr-agent.ai/commands/ask/) page for a comprehensive guide on using this command.\n\n"
 
         return output
 
@@ -173,7 +173,7 @@ You can ask questions about the entire PR, about specific code lines, or about a
     def get_improve_usage_guide():
         output = "**Overview:**\n"
         output += f"{COMMAND_DESCRIPTIONS['improve']} "
-        output += "The command can be triggered [automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on a PR.\n"
+        output += "The command can be triggered [automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-commands-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on a PR.\n"
         output += """\
 - When commenting, to edit [configurations](https://docs.pr-agent.ai/usage-guide/configuration_reference/#pr_code_suggestions-improve) related to the improve command (`pr_code_suggestions` section), use the following template:
 
@@ -191,7 +191,7 @@ some_config2=...
 
 """
 
-        output += "\n\nSee the improve [usage page](https://docs.pr-agent.ai/tools/improve/) for a comprehensive guide on using this command.\n\n"
+        output += "\n\nSee the improve [usage page](https://docs.pr-agent.ai/commands/improve/) for a comprehensive guide on using this command.\n\n"
 
         return output
 
@@ -206,5 +206,5 @@ It can be invoked manually by commenting on any PR:
 /help_docs "..."
 ```
 """
-        output += "\n\nSee the [help_docs usage](https://docs.pr-agent.ai/tools/help_docs/) page for a comprehensive guide on using this command.\n\n"
+        output += "\n\nSee the [help_docs usage](https://docs.pr-agent.ai/commands/help_docs/) page for a comprehensive guide on using this command.\n\n"
         return output

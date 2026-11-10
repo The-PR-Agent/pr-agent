@@ -20,8 +20,8 @@ def _write_document(root: Path, relative_path: str, content: str) -> Path:
 @pytest.mark.parametrize(
     ("relative_path", "expected"),
     [
-        ("tools/review.md", True),
-        ("tools/review.txt", False),
+        ("commands/review.md", True),
+        ("commands/review.txt", False),
         ("core-abilities/compression_strategy.md", False),
         ("finetuning_benchmark/sample.md", False),
         ("nested/finetuning_benchmark/sample.md", False),
@@ -35,7 +35,7 @@ def test_packaged_help_docs_are_filtered_and_priority_sorted(tmp_path, monkeypat
     package_root = tmp_path / "pr_agent"
     docs_root = package_root / "_help_docs"
     _write_document(docs_root, "index.md", "root")
-    _write_document(docs_root, "tools/review.md", "review")
+    _write_document(docs_root, "commands/review.md", "review")
     _write_document(docs_root, "reference/other.md", "other")
     _write_document(docs_root, "core-abilities/compression_strategy.md", "excluded")
     _write_document(docs_root, "finetuning_benchmark/sample.md", "excluded")
@@ -43,10 +43,10 @@ def test_packaged_help_docs_are_filtered_and_priority_sorted(tmp_path, monkeypat
 
     prompt, available_docs_files = pr_help_message._load_help_docs_prompt()
 
-    assert prompt.index("/index.md") < prompt.index("/tools/review.md") < prompt.index("/reference/other.md")
+    assert prompt.index("/index.md") < prompt.index("/commands/review.md") < prompt.index("/reference/other.md")
     assert "compression_strategy" not in prompt
     assert "finetuning_benchmark" not in prompt
-    assert available_docs_files == {"index.md", "tools/review.md", "reference/other.md"}
+    assert available_docs_files == {"index.md", "commands/review.md", "reference/other.md"}
     assert isinstance(prompt, str)
 
 
@@ -54,21 +54,21 @@ def test_source_checkout_is_used_when_packaged_docs_are_absent(tmp_path, monkeyp
     package_root = tmp_path / "installed" / "pr_agent"
     package_root.mkdir(parents=True)
     source_module = tmp_path / "checkout" / "pr_agent" / "commands" / "pr_help_message.py"
-    _write_document(tmp_path / "checkout" / "docs" / "docs", "tools/review.md", "source checkout")
+    _write_document(tmp_path / "checkout" / "docs" / "docs", "commands/review.md", "source checkout")
     monkeypatch.setattr(pr_help_message, "package_files", lambda _package: package_root)
     monkeypatch.setattr(pr_help_message, "__file__", str(source_module))
 
     prompt, available_docs_files = pr_help_message._load_help_docs_prompt()
 
-    assert "/tools/review.md" in prompt
+    assert "/commands/review.md" in prompt
     assert "source checkout" in prompt
-    assert available_docs_files == {"tools/review.md"}
+    assert available_docs_files == {"commands/review.md"}
 
 
 def test_source_fallback_preserves_packaged_resource_traceback(tmp_path, monkeypatch):
     source_module = tmp_path / "checkout" / "pr_agent" / "commands" / "pr_help_message.py"
     source_docs = tmp_path / "checkout" / "docs" / "docs"
-    _write_document(source_docs, "tools/review.md", "source checkout")
+    _write_document(source_docs, "commands/review.md", "source checkout")
     logger = Mock()
 
     def fail_package_lookup(_package):
@@ -263,7 +263,7 @@ async def test_source_fallback_failure_notifies_before_model_attempt(tmp_path, m
 async def test_unreadable_corpus_fails_before_model_attempt(tmp_path, monkeypatch):
     package_root = tmp_path / "pr_agent"
     docs_root = package_root / "_help_docs"
-    unreadable_document = _write_document(docs_root, "tools/review.md", "unreadable")
+    unreadable_document = _write_document(docs_root, "commands/review.md", "unreadable")
     retry = AsyncMock()
     logger = Mock()
     original_read_text = Path.read_text

@@ -46,15 +46,15 @@ def test_runtime_help_uses_current_documentation_links():
         ]
     )
 
-    assert f"{CURRENT_DOCS_URL}/tools/review/#configuration-options" in help_text
-    assert f"{CURRENT_DOCS_URL}/tools/ask/" in help_text
+    assert f"{CURRENT_DOCS_URL}/commands/review/#configuration-options" in help_text
+    assert f"{CURRENT_DOCS_URL}/commands/ask/" in help_text
     assert not any(host in help_text for host in RETIRED_DOCS_HOSTS)
 
 
 @pytest.mark.parametrize("command", COMMAND_DESCRIPTIONS)
 def test_command_docs_use_canonical_command_descriptions(command):
     # Pages needing JSX are stored as '.mdx', so the suffix is not fixed.
-    commands_dir = REPO_ROOT / "docs" / "docs" / "tools"
+    commands_dir = REPO_ROOT / "docs" / "docs" / "commands"
     candidates = [commands_dir / f"{command}.md", commands_dir / f"{command}.mdx"]
     command_docs = next((path for path in candidates if path.is_file()), None)
     assert command_docs is not None, (

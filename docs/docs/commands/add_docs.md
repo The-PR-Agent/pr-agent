@@ -5,7 +5,7 @@ sidebar_position: 6
 
 ## Overview
 
-The `add_docs` tool scans the PR code changes and suggests documentation for any code components that are missing documentation, such as functions, classes, and methods.
+The `add_docs` command scans the PR code changes and suggests documentation for any code components that are missing documentation, such as functions, classes, and methods.
 
 It can be invoked manually by commenting on any PR:
 
@@ -15,15 +15,15 @@ It can be invoked manually by commenting on any PR:
 
 ## Example usage
 
-Invoke the tool manually by commenting `/add_docs` on any PR:
+Invoke the command manually by commenting `/add_docs` on any PR:
 
 <img src="/img/add_docs_comment.png" alt="Add Docs" width="512" />
 
-The tool will generate documentation suggestions as inline code suggestions.
+The command will generate documentation suggestions as inline code suggestions.
 
 ### Language-specific documentation styles
 
-The tool automatically detects the programming language and generates documentation in the appropriate format:
+The command automatically detects the programming language and generates documentation in the appropriate format:
 
 | Language | Documentation Format |
 |----------|---------------------|
@@ -62,7 +62,7 @@ You can pass configuration options directly in the command:
 
 ## How it works
 
-1. The tool analyzes the PR diff to identify code components (functions, classes, methods) that lack documentation
+1. The command analyzes the PR diff to identify code components (functions, classes, methods) that lack documentation
 2. It uses AI to generate appropriate documentation based on the code context and language
 3. Documentation suggestions are published as inline code suggestions that can be applied with a single click
 

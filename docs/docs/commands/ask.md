@@ -5,7 +5,7 @@ sidebar_position: 5
 
 ## Overview
 
-The `ask` tool answers questions about the PR, based on the PR code changes. Make sure to be specific and clear in your questions.
+The `ask` command answers questions about the PR, based on the PR code changes. Make sure to be specific and clear in your questions.
 It can be invoked manually by commenting on any PR:
 
 ```
@@ -33,7 +33,7 @@ repo_context_files = ["AGENTS.md", "docs/adr/database-migrations.md"]
 ```
 
 Like `/review`, `/describe`, and `/improve`, top-level `/ask` reads `AGENTS.md` from the repository root by default.
-Set `config.repo_context_files = []` in the root repository settings to disable repository instructions for all tools.
+Set `config.repo_context_files = []` in the root repository settings to disable repository instructions for all commands.
 Comment arguments cannot change the configured file list.
 
 The existing [repository context settings](../usage-guide/additional_configurations.md#bringing-per-repo-context-files-to-pr-agent)
@@ -49,7 +49,7 @@ Including repository instructions can add repository API reads and input tokens,
 
 ## Ask lines
 
-You can run `/ask` on specific lines of code in the PR from the PR's diff view. The tool will answer questions based on the code changes in the selected lines.
+You can run `/ask` on specific lines of code in the PR from the PR's diff view. The command will answer questions based on the code changes in the selected lines.
 
 - Click on the '+' sign next to the line number to select the line.
 - To select multiple lines, click on the '+' sign of the first line and then hold and drag to select the rest of the lines.
@@ -57,11 +57,11 @@ You can run `/ask` on specific lines of code in the PR from the PR's diff view. 
 
 <img src="/img/Ask_line.png" alt="Ask Line" width="512" />
 
-If no matching diff hunk is found for the selected lines, the tool explains this without calling a model.
+If no matching diff hunk is found for the selected lines, the command explains this without calling a model.
 
 In GitHub Actions, `/ask` comments attached to an entire file use that file's complete diff as context.
 The existing file filters and input budgets still apply. If the file has no analyzable diff, or the question cannot
-be prepared within the configured input budget, the tool explains this without calling a model.
+be prepared within the configured input budget, the command explains this without calling a model.
 The answer is posted in the original file-comment thread with a link to the question.
 Earlier replies are included when `pr_questions.use_conversation_history` is enabled and the input budget allows.
 Text resembling command options is treated as part of the question.
@@ -151,15 +151,15 @@ tickets when there is no room. The usual diff-based answer remains available in 
   </tr>
   <tr>
     <td><b>extra_instructions</b></td>
-    <td>Optional extra instructions to the tool. For example: "Do not answer questions that ask to rate PR quality on a scale of 1 to 10. Instead, tell the user this type of question is not allowed."</td>
+    <td>Optional extra instructions to the command. For example: "Do not answer questions that ask to rate PR quality on a scale of 1 to 10. Instead, tell the user this type of question is not allowed."</td>
   </tr>
   <tr>
     <td><b>enable_help_text</b></td>
-    <td>If set to true, the tool will display a help text in the comment. Default is false.</td>
+    <td>If set to true, the command will display a help text in the comment. Default is false.</td>
   </tr>
   <tr>
     <td><b>use_conversation_history</b></td>
-    <td>If set to true, the tool will use the conversation history from the same thread when answering questions on specific code lines (GitHub and Azure DevOps) or threaded top-level questions (Azure DevOps only). Default is true.</td>
+    <td>If set to true, the command will use the conversation history from the same thread when answering questions on specific code lines (GitHub and Azure DevOps) or threaded top-level questions (Azure DevOps only). Default is true.</td>
   </tr>
   <tr>
     <td><b>use_ticket_context</b></td>

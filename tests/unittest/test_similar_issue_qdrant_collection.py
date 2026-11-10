@@ -147,7 +147,7 @@ def test_docs_carry_the_upgrade_note():
         Path(psi.__file__).resolve().parents[2]
         / "docs"
         / "docs"
-        / "tools"
+        / "commands"
         / "similar_issues.md"
     )
     content = doc.read_text(encoding="utf-8")

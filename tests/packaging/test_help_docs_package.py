@@ -51,7 +51,7 @@ calls = []
 async def fake_retry(_prediction, *, model_type):
     calls.append(model_type)
     assert "==file name==" in command.vars["snippets"]
-    assert "/tools/review.md" in command.vars["snippets"]
+    assert "/commands/review.md" in command.vars["snippets"]
     return "response: ok\nrelevant_sections: []"
 
 pr_help_message.retry_with_fallback_models = fake_retry
@@ -287,7 +287,7 @@ def test_help_docs_distribution_contract(tmp_path):
     first_direct_wheel = _build_wheel(uv, source_copy, tmp_path / "first-direct-wheel", build_env)
     assert _wheel_documents(first_direct_wheel) == expected_documents
 
-    removed_name = "tools/improve.mdx"
+    removed_name = "commands/improve.mdx"
     removed_document = source_copy / "docs" / "docs" / removed_name
     assert removed_document.exists()
     removed_document.unlink()
