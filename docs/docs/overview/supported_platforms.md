@@ -32,7 +32,6 @@ Which commands, triggers and core abilities work on each git provider.
 |       | [Fetching ticket context](../core-abilities/fetching_ticket_context.md)                |   ✅   |  ✅   |    ✅[^tickets]  |    ✅[^tickets]  |      ✅       | ✅[^tickets] |
 |       | [Local and global metadata](../core-abilities/metadata.md)                             |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
 |       | [Multiple models support](../usage-guide/changing_a_model.md)                          |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
-|       | [Self reflection](../core-abilities/self_reflection.md)                                |   ✅   |   ✅   |       ✅        |       ✅        |      ✅       |  ✅   |
 
 ⚠️ `/help_docs` is temporarily disabled since v0.36.1 pending a fix for a credential-exposure issue ([#2445](https://github.com/The-PR-Agent/pr-agent/issues/2445)); see [Help Docs](../commands/help_docs.md).
 

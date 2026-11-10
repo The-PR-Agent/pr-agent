@@ -127,7 +127,7 @@ To easily disable all automatic feedback from PR-Agent (GitHub App, GitLab Webho
 disable_auto_feedback = true
 ```
 
-When this parameter is set to `true`, PR-Agent will not run any automatic commands (like `describe`, `review`, `improve`) when a new PR is opened, or when new code is pushed to an open PR.
+When this parameter is set to `true`, PR-Agent will not run any automatic commands (like `describe` and `review`) when a new PR is opened, or when new code is pushed to an open PR.
 
 ### GitHub App
 
@@ -149,7 +149,7 @@ pr_commands = [
 ]
 ```
 
-This means that when a new PR is opened/reopened or marked as ready for review, PR-Agent will run the `describe`, `review` and `improve` commands.
+This means that when a new PR is opened/reopened or marked as ready for review, PR-Agent will run the `describe` and `review` commands (`improve` runs `review`, so a list naming both runs one review).
 
 **Draft PRs:**
 
@@ -233,7 +233,7 @@ Specifically, start by setting the following environment variables:
 ```
 
 `github_action_config.auto_review`, `github_action_config.auto_describe` and `github_action_config.auto_improve` are used to enable/disable automatic commands that run when a new PR is opened.
-If not set, the default configuration is for all three commands to run automatically when a new PR is opened.
+`/improve` runs `/review`, so the review runs when either `auto_review` or `auto_improve` is enabled, and only once. If not set, `describe` and `review` run automatically when a new PR is opened.
 
 `github_action_config.pr_actions` is used to configure which `pull_requests` events will trigger the enabled auto flags
 If not set, the default configuration is `["opened", "reopened", "ready_for_review", "review_requested"]`
@@ -283,7 +283,7 @@ env:
 Review result is output as JSON to `steps.{step-id}.outputs.review` property.
 The JSON structure is equivalent to the yaml data structure defined in [pr_reviewer_prompts.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml).
 
-`github.publish_as_check_run` controls whether command output (review, describe, improve) is published as a GitHub Check Run instead of a PR comment (default is `false`). When enabled, results appear in the "Checks" tab of the PR. Requires `checks: write` permission in the workflow YAML. On the GitHub App, each automatic command opens its check run as in progress before the command runs, so the author sees that PR-Agent picked the pull request up before any output exists; while a chunked command runs, that in-progress run also shows the analyzed chunk count, for example `PR-Agent is running /review analyzed 2 of 3 chunks`. The run is completed with the command's output, or marked failed if the command did not finish.
+`github.publish_as_check_run` controls whether command output (review, describe) is published as a GitHub Check Run instead of a PR comment (default is `false`). When enabled, results appear in the "Checks" tab of the PR. Requires `checks: write` permission in the workflow YAML. On the GitHub App, each automatic command opens its check run as in progress before the command runs, so the author sees that PR-Agent picked the pull request up before any output exists; while a chunked command runs, that in-progress run also shows the analyzed chunk count, for example `PR-Agent is running /review analyzed 2 of 3 chunks`. The run is completed with the command's output, or marked failed if the command did not finish.
 
 Note that you can give additional config parameters by adding environment variables to `.github/workflows/pr_agent.yml`, or by using a `.pr_agent.toml` [configuration file](./configuration_options.md#global-configuration-file) in the root of your repo
 
@@ -415,8 +415,7 @@ pr_commands = [
 ]
 ```
 
-For Bitbucket, we recommend using: `--pr_code_suggestions.suggestions_score_threshold=7`. The shipped default value is `1`; Bitbucket does not override it automatically.
-Since this platform only supports inline code suggestions, we want to limit the number of suggestions, and only present a limited number.
+Since this platform only supports inline code suggestions, `/review` posts each finding inline and limits their number with `pr_reviewer.num_max_findings` (3 by default).
 
 To enable BitBucket app to respond to each **push** to the PR, set (for example):
 

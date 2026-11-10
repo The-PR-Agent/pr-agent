@@ -113,8 +113,8 @@ ___
 
 The default configuration of PR-Agent is designed to balance helpful feedback with noise reduction. It reduces noise through several approaches:
 
-- Auto-feedback uses three highly structured commands (`/describe`, `/review`, and `/improve`), designed to be accessible at a glance without creating large visual overload
-- Suggestions are presented in a table format rather than as committable comments, which are far noisier
+- Auto-feedback uses two highly structured commands (`/describe` and `/review`; `/improve` runs `/review`), designed to be accessible at a glance without creating large visual overload
+- Review findings are capped by `pr_reviewer.num_max_findings` (3 by default), and fixes are posted as committable suggestions only if `pr_code_suggestions.committable_code_suggestions` is enabled
 - The 'File Walkthrough' section is folded by default, as it tends to be verbose
 - Intermediate comments are avoided when creating new PRs (like "PR-Agent is now reviewing your PR..."), which would generate email noise
 

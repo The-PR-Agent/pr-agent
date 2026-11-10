@@ -1075,14 +1075,14 @@ same endpoint while retaining the configured primary in this collision case. Wit
 
 The first successful attempt returns immediately; later entries are attempted only after fallback-eligible
 failures. An empty fallback list adds no backup, and a noncolliding route still replaces the primary without
-adding it back. The same model with distinct deployment IDs is treated as distinct endpoints. `/improve`
+adding it back. The same model with distinct deployment IDs is treated as distinct endpoints. `/review`
 uses this effective chain to recover failed chunks without rerunning successful chunks. Its defensive
 uniqueness checks remain: repeated complete pairs in unchanged, noncolliding or unrouted chains can still
 disable chunk recovery; those chains are not deduplicated by this routing-specific repair.
 
-Routing applies only to calls that ask for the regular model: `/review`, `/improve`, `/generate_labels` and
+Routing applies only to calls that ask for the regular model: `/review` (which `/improve` runs), `/generate_labels` and
 `/add_docs`. Commands that already use `config.model_weak` (`/describe`, `/ask`, `/update_changelog`) are left
-alone, and a dedicated `config.model_reasoning` is still used for self-reflection. With `config.output_run_details`
+alone, and `config.model_reasoning` is no longer used by any command, since `/improve` and its self-reflection call were folded into `/review`. With `config.output_run_details`
 enabled, the run details show which model a routed pull request ended up on.
 
 :::note[Azure deployments]
