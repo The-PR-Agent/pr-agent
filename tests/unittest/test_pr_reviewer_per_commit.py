@@ -17,6 +17,7 @@ from pr_agent.algo.comment_identity import (
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import (
     GitProvider,
@@ -27,7 +28,6 @@ from pr_agent.git_providers.git_provider import (
 )
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.commands.pr_reviewer import PRReviewer
 
 COMMITS = [PRCommit("a" * 40, "first\n\nwhy"), PRCommit("b" * 40, "empty"), PRCommit("c" * 40, "third")]
 ALL_MESSAGES = "1. first\n2. empty\n3. third"
