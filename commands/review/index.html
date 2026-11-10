@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-commands/review" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Review | PR-Agent</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" property="og:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.pr-agent.ai/commands/review/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Review | PR-Agent"><meta data-rh="true" name="description" content="Overview"><meta data-rh="true" property="og:description" content="Overview"><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.pr-agent.ai/commands/review/"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/commands/review/" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/commands/review/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Review","item":"https://docs.pr-agent.ai/commands/review"}]}</script><script src="https://widget.kapa.ai/kapa-widget.bundle.js" data-website-id="5c89c0b1-b2ee-43c9-8c6f-43ed762b3c1e" data-project-name="PR-Agent" data-project-color="#2459db" data-project-logo="/img/favicon.svg" data-launcher-button-image="/img/favicon-white.svg" data-color-scheme-selector="[data-theme=&#39;dark&#39;]" async></script><link rel="stylesheet" href="/assets/css/styles.928a3cd8.css">
+<script src="/assets/js/runtime~main.88127ad0.js" defer="defer"></script>
+<script src="/assets/js/main.9670db7a.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><link rel="preload" as="image" href="/img/favicon.svg"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/favicon.svg" alt="PR-Agent Logo" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/favicon.svg" alt="PR-Agent Logo" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">PR-Agent</b></a><a class="navbar__item navbar__link" href="/usage-guide/introduction/">Get Started</a><a class="navbar__item navbar__link" href="/usage-guide/">Guides</a><a aria-current="page" class="navbar__item navbar__link navbar__link--active" href="/commands/">Commands</a><a class="navbar__item navbar__link" href="/core-abilities/">Core Abilities</a><a class="navbar__item navbar__link" href="/maintainers/">Maintainers</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/the-pr-agent/pr-agent" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"><div class="navbar__search searchBarContainer_NW3z" dir="ltr"><svg aria-hidden="true" class="searchIcon_T3tP" focusable="false" viewBox="0 0 16 16"><path fill="currentColor" d="M6.02945 10.20327a4.17382 4.17382 0 1 1 4.17382-4.17382 4.15609 4.15609 0 0 1-4.17382 4.17382Zm9.69195 4.2199-4.8225-4.82338A5.88021 5.88021 0 0 0 12.058 6.02856 6.00467 6.00467 0 1 0 9.59979 10.8989l4.82338 4.82338a.89729.89729 0 0 0 1.29912 0 .89749.89749 0 0 0-.00087-1.29909Z"></path></svg><input placeholder="Search" aria-label="Search" class="navbar__search-input searchInput_YFbd" value=""><div class="loadingRing_RJI3 searchBarLoadingRing_YnHq"><div></div><div></div><div></div><div></div></div></div></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/commands/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--active"><span class="categoryLinkLabel_W154">Main commands</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/commands/describe/"><span class="linkLabel_WmDU">Describe</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/commands/review/"><span class="linkLabel_WmDU">Review</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/commands/improve/"><span class="linkLabel_WmDU">Improve</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/commands/ask/"><span class="linkLabel_WmDU">Ask</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link"><span class="categoryLinkLabel_W154">More commands</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/commands/add_docs/"><span class="linkLabel_WmDU">Add docs</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/commands/generate_labels/"><span class="linkLabel_WmDU">Generate labels</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/commands/update_changelog/"><span class="linkLabel_WmDU">Update changelog</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/commands/similar_issues/"><span class="linkLabel_WmDU">Similar issues</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link"><span class="categoryLinkLabel_W154">Help</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/commands/help/"><span class="linkLabel_WmDU">Help</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/commands/help_docs/"><span class="linkLabel_WmDU">Help docs</span></a></li></ul></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">Main commands</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Review</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><header><h1>Review</h1></header><h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="overview">Overview<a href="#overview" class="hash-link" aria-label="Direct link to Overview" title="Direct link to Overview" translate="no">​</a></h2>
+<p>Generate a PR review with feedback on possible issues, security concerns, tests and review effort.
+<br>
+The command can be triggered automatically every time a new PR is <a class="" href="/usage-guide/automations_and_usage/#github-app-automatic-commands-when-a-new-pr-is-opened">opened</a>, or can be invoked manually by commenting on any PR:</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token plain">/review</span><br></div></code></pre></div></div>
+<p>Note that the main purpose of the <code>review</code> command is to provide the <strong>PR reviewer</strong> with useful feedback and insights. The PR author, in contrast, may prefer to save time and focus on the output of the <a class="" href="/commands/improve/">improve</a> command, which provides actionable code suggestions.</p>
+<p>(Read more about the different personas in the PR process and how PR-Agent aims to assist them in our <a href="https://www.qodo.ai/blog/understanding-the-challenges-and-pain-points-of-the-pull-request-cycle/" target="_blank" rel="noopener noreferrer" class="">blog</a>)</p>
+<div class="theme-admonition theme-admonition-note admonition_xJq3 alert alert--secondary"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 14 16"><path fill-rule="evenodd" d="M6.3 5.69a.942.942 0 0 1-.28-.7c0-.28.09-.52.28-.7.19-.18.42-.28.7-.28.28 0 .52.09.7.28.18.19.28.42.28.7 0 .28-.09.52-.28.7a1 1 0 0 1-.7.3c-.28 0-.52-.11-.7-.3zM8 7.99c-.02-.25-.11-.48-.31-.69-.2-.19-.42-.3-.69-.31H6c-.27.02-.48.13-.69.31-.2.2-.3.44-.31.69h1v3c.02.27.11.5.31.69.2.2.42.31.69.31h1c.27 0 .48-.11.69-.31.2-.19.3-.42.31-.69H8V7.98v.01zM7 2.3c-3.14 0-5.7 2.54-5.7 5.68 0 3.14 2.56 5.7 5.7 5.7s5.7-2.55 5.7-5.7c0-3.15-2.56-5.69-5.7-5.69v.01zM7 .98c3.86 0 7 3.14 7 7s-3.14 7-7 7-7-3.12-7-7 3.14-7 7-7z"></path></svg></span>Note</div><div class="admonitionContent_BuS1"><p><code>/improve</code> will be merged into <code>/review</code> in the next release. <code>/improve</code> will keep working and run
+<code>/review</code>, with a warning.</p></div></div>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="example-usage">Example usage<a href="#example-usage" class="hash-link" aria-label="Direct link to Example usage" title="Direct link to Example usage" translate="no">​</a></h2>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="manual-triggering">Manual triggering<a href="#manual-triggering" class="hash-link" aria-label="Direct link to Manual triggering" title="Direct link to Manual triggering" translate="no">​</a></h3>
+<p>Invoke the command manually by commenting <code>/review</code> on any PR:</p>
+<img decoding="async" loading="lazy" src="/img/review_comment.png" alt="review comment" width="512" class="img_ev3q">
+<p>After ~30 seconds, the command will generate a review for the PR:</p>
+<img decoding="async" loading="lazy" src="/img/review3.png" alt="review" width="512" class="img_ev3q">
+<p>If you want to edit <a href="#configuration-options" class="">configurations</a>, add the relevant ones to the command:</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token plain">/review --pr_reviewer.some_config1=... --pr_reviewer.some_config2=...</span><br></div></code></pre></div></div>
+<p>From the CLI, save the parsed review and token usage as JSON for a later CI step:</p>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token plain">pr-agent </span><span class="token parameter variable" style="color:hsl(207, 82%, 66%)">--pr_url</span><span class="token plain"> https://github.com/org/repo/pull/123 --json-output review.json review</span><br></div></code></pre></div></div>
+<p>The JSON file is written after the review completes. Place <code>--json-output</code> before <code>review</code> or <code>review_pr</code>.
+Its <code>coverage</code> object lists the files the token budget kept out of the review (<code>files_not_reviewed</code>) and those whose
+patches were clipped to fit it (<code>files_partially_reviewed</code>), the same files the review coverage footer names.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="automatic-triggering">Automatic triggering<a href="#automatic-triggering" class="hash-link" aria-label="Direct link to Automatic triggering" title="Direct link to Automatic triggering" translate="no">​</a></h3>
+<p>To run the <code>review</code> automatically when a PR is opened, define in a <a class="" href="/usage-guide/configuration_options/#local-configuration-file">configuration file</a>:</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token plain">[github_app]</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">pr_commands = [</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">    &quot;/review&quot;,</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">    ...</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">]</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">[pr_reviewer]</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">extra_instructions = &quot;...&quot;</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">...</span><br></div></code></pre></div></div>
+<ul>
+<li class="">The <code>pr_commands</code> lists commands that will be executed automatically when a PR is opened.</li>
+<li class="">The <code>[pr_reviewer]</code> section contains the configurations for the <code>review</code> command you want to edit (if any).</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="configuration-options">Configuration options<a href="#configuration-options" class="hash-link" aria-label="Direct link to Configuration options" title="Direct link to Configuration options" translate="no">​</a></h2>
+<p>The descriptions below explain each option&#x27;s behavior. See the relevant sections in
+<a href="https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml" target="_blank" rel="noopener noreferrer" class=""><code>configuration.toml</code></a>
+for the authoritative default values.</p>
+<details open="" class="details_lb9f alert alert--info details_b_Ee" data-collapsed="false"><summary>General options</summary><div><div class="collapsibleContent_i85q">
+<!-- -->
+
+  <table>
+  <tbody><tr>
+    <td><b>persistent_comment</b></td>
+    <td>If set to true, the review comment will be persistent, meaning that every new review request will edit the previous one.</td>
+  </tr>
+  <tr>
+    <td><b>publish_review_failure_comment</b></td>
+    <td>
+      Set to false to suppress the &quot;Failed to review PR&quot; comment, including when a persistent review comment
+      cannot be updated. Successful review output and the command&#x27;s failure status are unchanged. Default is true.
+    </td>
+  </tr>
+  <tr>
+    <td><b>publish_error_details</b></td>
+    <td>
+      If set to true, a failed manual review comment includes a deterministic, sanitized failure reason for known
+      provider and runtime errors. The failure formatter does not call an AI model, never publishes raw exception
+      text, and falls back to a generic internal-error message. Default is false.
+    </td>
+  </tr>
+  <tr>
+    <td><b>review_heading</b></td>
+    <td>
+      Visible base heading for review comments, without the Markdown prefix or incremental label.
+      For example, <code>review_heading = &quot;Guideline Compliance Check&quot;</code> renders
+      <code>## Guideline Compliance Check 🔍</code> for a full review and
+      <code>## Incremental Guideline Compliance Check 🔍</code> for an incremental review.
+      On GitHub, GitLab, Azure DevOps, and Bitbucket Cloud, changing this value updates the same
+      persistent review comment; it does not create a separate review channel.
+    </td>
+  </tr>
+  <tr>
+    <td><b>persistent_finding_state</b></td>
+    <td>If set to true, PR-Agent persists structured review finding state across complete review runs, so findings can be resolved and reopened. Resolved findings retain the original Markdown formatting of their description. Incremental and partial reviews do not resolve absent findings. Default is true.</td></tr>
+  <tr>
+    <td><b>max_previous_findings_chars</b></td>
+        <td>Character budget for the findings stored by earlier reviews (requires <code>persistent_finding_state</code>). They are given to the model so it repeats a still-valid finding with its earlier wording instead of re-raising it reworded, and does not re-raise a resolved one unless the code reintroduces it. On GitHub and GitLab, an inline key-issue thread that someone other than PR-Agent resolved is given as dismissed, with its last reply, so the model does not re-raise it unless the code makes it worse. Set to 0 to disable. Default is 8000.
+      On Azure DevOps, verified PR-Agent inline key issues with <code>wontFix</code> or <code>byDesign</code>
+      are also passed as dismissed when the status differs from <code>azure_devops.default_comment_status</code>.
+      A matching default stays an ordinary prior finding. This infers a human decision; Azure does not identify
+      the status-changing actor here, and the current default may differ from the default used at creation.
+      PR-Agent resolves its posting identity through Azure DevOps. Set
+      <code>azure_devops_server.agent_identity</code> to override it or when automatic lookup is unavailable.
+    </td>
+  </tr>
+  <tr>
+  <td><b>final_update_message</b></td>
+  <td>When set to true, updating a persistent review comment during online commenting will automatically add a short comment with a link to the updated review in the pull request.</td>
+  </tr>
+  <tr>
+    <td><b>extra_instructions</b></td>
+    <td>Optional extra instructions to the command. For example: &quot;focus on the changes in the file X. Ignore change in ...&quot;.</td>
+  </tr>
+  <tr>
+    <td><b>enable_help_text</b></td>
+    <td>If set to true, the command will display a help text in the comment.</td>
+  </tr>
+  <tr>
+    <td><b>enable_review_coverage_footer</b></td>
+    <td>If set to true, the command will display a review coverage footer when the token budget leaves files out of the review.</td>
+  </tr>
+  <tr>
+    <td><b>enable_large_pr_chunking</b></td>
+    <td>If set to true, and the token budget leaves files out of the review, the diff is split into chunks, each chunk is reviewed separately, and the per-chunk results are merged into one review. See <a href="#reviewing-a-pr-that-does-not-fit-in-one-call" class="">Reviewing a PR that does not fit in one call</a>. Default is false.</td>
+  </tr>
+  <tr>
+    <td><b>max_number_of_calls</b></td>
+    <td>Maximum number of chunk review calls, used only when <code>enable_large_pr_chunking</code> is true. Default is 3.</td>
+  </tr>
+  <tr>
+    <td><b>num_max_findings</b></td>
+    <td>Maximum number of returned findings.</td>
+  </tr>
+  <tr>
+    <td><b>inline_key_issues</b></td>
+    <td>If set to true, each key issue is published as an inline comment where the provider supports verified inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab, Gitea). A finding leaves the review summary when a matching comment exists or the provider accepts the new comment. Findings that cannot be anchored or published stay in the summary.</td>
+  </tr></tbody></table>
+</div></div></details>
+<details open="" class="details_lb9f alert alert--info details_b_Ee" data-collapsed="false"><summary>Enable\disable specific sub-sections</summary><div><div class="collapsibleContent_i85q">
+<!-- -->
+<table>
+  <tbody><tr>
+    <td><b>require_score_review</b></td>
+    <td>If set to true, the command will add a section that scores the PR.</td>
+  </tr>
+  <tr>
+    <td><b>require_tests_review</b></td>
+    <td>If set to true, the command will add a section that checks if the PR contains tests.</td>
+  </tr>
+  <tr>
+    <td><b>require_estimate_effort_to_review</b></td>
+    <td>If set to true, the command will add a section that estimates the effort needed to review the PR.</td>
+  </tr>
+  <tr>
+    <td><b>require_estimate_contribution_time_cost</b></td>
+    <td>If set to true, the command will add a section that estimates the time required for a senior developer to create and submit such changes.</td>
+  </tr>
+  <tr>
+    <td><b>require_can_be_split_review</b></td>
+    <td>If set to true, the command will add a section that checks if the PR contains several themes, and can be split into smaller PRs.</td>
+  </tr>
+  <tr>
+    <td><b>require_security_review</b></td>
+    <td>If set to true, the command will add a section that checks if the PR contains a possible security or vulnerability issue.</td>
+  </tr>
+    <tr>
+    <td><b>require_todo_scan</b></td>
+    <td>If set to true, the command will add a section that lists TODO comments found in the PR code changes.
+    </td>
+  </tr>
+  <tr>
+    <td><b>require_ticket_analysis_review</b></td>
+    <td>
+      If set to true and ticket context is available, the command adds a ticket-compliance section to the review comment
+      that checks whether the PR fulfills the ticket requirements. Supported sources include GitHub and GitLab issues,
+      linked Azure DevOps work items, Jira Cloud tickets, and Asana tasks.
+    </td>
+  </tr>
+  <tr>
+    <td><b>require_risk_assessment</b></td>
+    <td>If set to true, the command will add a section that rates the overall risk of the PR as low, medium or high.</td>
+  </tr>
+  <tr>
+    <td><b>require_merge_recommendation</b></td>
+    <td>If set to true, the command will add a section describing what the review found: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge). The value reports the model&#x27;s findings, not a guarantee about the code.</td>
+  </tr>
+  <tr>
+    <td><b>require_failure_modes</b></td>
+    <td>Off by default. If enabled, adds up to three concrete failure scenarios, each with what could break,
+    where, its trigger, how it could be detected, and whether a test or check in this PR covers it.
+    These scenarios guide human review; they do not gate merging or prove that the PR is safe.</td>
+  </tr>
+  <tr>
+    <td><b>require_artifact_findings</b></td>
+    <td>Off by default, and only active when a <a class="" href="/installation/github/#ci-artifact-context">CI artifact</a> reaches /review.
+    If enabled, adds a &quot;CI artifact findings&quot; section with up to five neutral facts from the artifact: destroyed or replaced
+    resources, failed jobs (including allowed-to-fail ones), failed tests, vulnerabilities and notable warnings. Each fact
+    carries a short quote from the artifact; a quote that cannot be found in the artifact is marked, and credentials in
+    facts and quotes are redacted. The section reports what the artifact shows and leaves the decision to the reviewer.
+    Host configuration only: a repository settings file or comment cannot set it.</td>
+  </tr>
+  <tr>
+    <td><b>require_priority_files</b></td>
+    <td>If set to true, the command will add a section listing the files a human reviewer should inspect first.</td>
+  </tr>
+  <tr>
+    <td><b>structural_reach_input_file</b></td>
+    <td>Path to a JSON file with structural reach facts, written by a build-graph tool earlier in CI. When the file
+    exists, adds a deterministic change-risk row (Low, Moderate, High or Critical) with no model call. Relative to
+    <code>GITHUB_WORKSPACE</code> when that is set, otherwise to the working directory. Host configuration only: a
+    repository settings file or a comment cannot set it, because the file is read from the host. See
+    <a href="#structural-reach" class="">Structural reach</a>.</td>
+  </tr>
+  <tr>
+    <td><b>enable_risk_checks</b></td>
+    <td>
+      If set to true, deterministically scans diff files and unfiltered PR files for sensitive paths, destructive SQL,
+      cache flushes, and authentication/secrets patterns without making model calls. Findings are rendered as a risk-checks
+      row in the review summary table. When no findings are detected, nothing is added. Default is true. See
+      <a href="#deterministic-risk-checks" class="">Deterministic risk checks</a>.
+    </td>
+  </tr>
+  <tr>
+    <td><b>sensitive_paths</b></td>
+    <td>
+      List of glob patterns identifying files considered sensitive (such as CI workflows, package manifests, lockfiles,
+      migrations, and infrastructure configurations). Changes to matching files flag a deterministic review risk finding.
+      Default includes common CI/CD, package manager, container, infrastructure, and migration paths.
+    </td>
+  </tr>
+  <tr>
+    <td><b>extra_risky_shapes</b></td>
+    <td>
+      List of custom regular expression patterns to scan within added or modified lines in diff hunks. Patterns matching a
+      line flag a deterministic risk finding. Host configuration only: a repository settings file or comment cannot set it.
+      Default is empty.
+    </td>
+  </tr></tbody></table>
+</div></div></details>
+<details open="" class="details_lb9f alert alert--info details_b_Ee" data-collapsed="false"><summary>Adding PR labels</summary><div><div class="collapsibleContent_i85q">
+<!-- -->
+<p>You can enable\disable the <code>review</code> command to add specific labels to the PR:</p>
+<table>
+  <tbody><tr>
+    <td><b>enable_review_labels_security</b></td>
+    <td>If set to true, the command will publish a &#x27;Possible security concern&#x27; label if it detects a security issue.</td>
+  </tr>
+  <tr>
+    <td><b>enable_review_labels_effort</b></td>
+    <td>If set to true, the command will publish a &#x27;Review effort x/5&#x27; label (1–5 scale). Existing effort labels are kept when this option or effort estimation is disabled, or when the review has no valid replacement estimate. Security labels follow their own settings.</td>
+  </tr></tbody></table>
+</div></div></details>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="usage-tips">Usage Tips<a href="#usage-tips" class="hash-link" aria-label="Direct link to Usage Tips" title="Direct link to Usage Tips" translate="no">​</a></h2>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="general-guidelines">General guidelines<a href="#general-guidelines" class="hash-link" aria-label="Direct link to General guidelines" title="Direct link to General guidelines" translate="no">​</a></h3>
+<div class="theme-admonition theme-admonition-tip admonition_xJq3 alert alert--success"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 12 16"><path fill-rule="evenodd" d="M6.5 0C3.48 0 1 2.19 1 5c0 .92.55 2.25 1 3 1.34 2.25 1.78 2.78 2 4v1h5v-1c.22-1.22.66-1.75 2-4 .45-.75 1-2.08 1-3 0-2.81-2.48-5-5.5-5zm3.64 7.48c-.25.44-.47.8-.67 1.11-.86 1.41-1.25 2.06-1.45 3.23-.02.05-.02.11-.02.17H5c0-.06 0-.13-.02-.17-.2-1.17-.59-1.83-1.45-3.23-.2-.31-.42-.67-.67-1.11C2.44 6.78 2 5.65 2 5c0-2.2 2.02-4 4.5-4 1.22 0 2.36.42 3.22 1.19C10.55 2.94 11 3.94 11 5c0 .66-.44 1.78-.86 2.48zM4 14h5c-.23 1.14-1.3 2-2.5 2s-2.27-.86-2.5-2z"></path></svg></span>Tip</div><div class="admonitionContent_BuS1"><p>The <code>review</code> command provides a collection of configurable feedbacks about a PR.
+It is recommended to review the <a href="#configuration-options" class="">Configuration options</a> section, and choose the relevant options for your use case.</p><p>Some of the features that are disabled by default are quite useful, and should be considered for enabling. For example:
+<code>require_score_review</code>, and more.</p><p>On the other hand, if you find one of the enabled features to be irrelevant for your use case, disable it. No default configuration can fit all use cases.</p></div></div>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="automation">Automation<a href="#automation" class="hash-link" aria-label="Direct link to Automation" title="Direct link to Automation" translate="no">​</a></h3>
+<div class="theme-admonition theme-admonition-tip admonition_xJq3 alert alert--success"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 12 16"><path fill-rule="evenodd" d="M6.5 0C3.48 0 1 2.19 1 5c0 .92.55 2.25 1 3 1.34 2.25 1.78 2.78 2 4v1h5v-1c.22-1.22.66-1.75 2-4 .45-.75 1-2.08 1-3 0-2.81-2.48-5-5.5-5zm3.64 7.48c-.25.44-.47.8-.67 1.11-.86 1.41-1.25 2.06-1.45 3.23-.02.05-.02.11-.02.17H5c0-.06 0-.13-.02-.17-.2-1.17-.59-1.83-1.45-3.23-.2-.31-.42-.67-.67-1.11C2.44 6.78 2 5.65 2 5c0-2.2 2.02-4 4.5-4 1.22 0 2.36.42 3.22 1.19C10.55 2.94 11 3.94 11 5c0 .66-.44 1.78-.86 2.48zM4 14h5c-.23 1.14-1.3 2-2.5 2s-2.27-.86-2.5-2z"></path></svg></span>Tip</div><div class="admonitionContent_BuS1"><p>When you first install PR-Agent app, the <a class="" href="/usage-guide/automations_and_usage/#github-app-automatic-commands-when-a-new-pr-is-opened">default mode</a> for the <code>review</code> command is:</p><div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token plain">pr_commands = [&quot;/review&quot;, ...]</span><br></div></code></pre></div></div><p>Meaning the <code>review</code> command will run automatically on every PR, without any additional configurations.
+Edit this field to enable/disable the command, or to change the configurations used.</p></div></div>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="auto-generated-pr-labels-by-the-review-command">Auto-generated PR labels by the Review Command<a href="#auto-generated-pr-labels-by-the-review-command" class="hash-link" aria-label="Direct link to Auto-generated PR labels by the Review Command" title="Direct link to Auto-generated PR labels by the Review Command" translate="no">​</a></h3>
+<div class="theme-admonition theme-admonition-tip admonition_xJq3 alert alert--success"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 12 16"><path fill-rule="evenodd" d="M6.5 0C3.48 0 1 2.19 1 5c0 .92.55 2.25 1 3 1.34 2.25 1.78 2.78 2 4v1h5v-1c.22-1.22.66-1.75 2-4 .45-.75 1-2.08 1-3 0-2.81-2.48-5-5.5-5zm3.64 7.48c-.25.44-.47.8-.67 1.11-.86 1.41-1.25 2.06-1.45 3.23-.02.05-.02.11-.02.17H5c0-.06 0-.13-.02-.17-.2-1.17-.59-1.83-1.45-3.23-.2-.31-.42-.67-.67-1.11C2.44 6.78 2 5.65 2 5c0-2.2 2.02-4 4.5-4 1.22 0 2.36.42 3.22 1.19C10.55 2.94 11 3.94 11 5c0 .66-.44 1.78-.86 2.48zM4 14h5c-.23 1.14-1.3 2-2.5 2s-2.27-.86-2.5-2z"></path></svg></span>Tip</div><div class="admonitionContent_BuS1"><p>The <code>review</code> command can automatically add labels to your Pull Requests:</p><ul>
+<li class=""><strong><code>Possible security concern</code></strong>: This label is applied if the command detects a potential <a href="https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L147" target="_blank" rel="noopener noreferrer" class="">security vulnerability</a> in the PR&#x27;s code. This feedback is controlled by the &#x27;enable_review_labels_security&#x27; flag (default is true).</li>
+<li class=""><strong><code>review effort [x/5]</code></strong>: This label estimates the <a href="https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L119" target="_blank" rel="noopener noreferrer" class="">effort</a> required to review the PR on a relative scale of 1 to 5, where &#x27;x&#x27; represents the assessed effort. This feedback is controlled by the &#x27;enable_review_labels_effort&#x27; flag (default is true).</li>
+</ul><p>Ticket compliance is reported in the review comment, not as a PR label. It is controlled by
+<code>pr_reviewer.require_ticket_analysis_review</code> and requires available ticket context. The command does not add
+ticket-compliance labels or a &quot;No ticket found&quot; label. See
+<a class="" href="/core-abilities/fetching_ticket_context/">Fetching ticket context</a> for linking and authentication details.</p></div></div>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="auto-blocking-prs-from-being-merged-based-on-the-generated-labels">Auto-blocking PRs from being merged based on the generated labels<a href="#auto-blocking-prs-from-being-merged-based-on-the-generated-labels" class="hash-link" aria-label="Direct link to Auto-blocking PRs from being merged based on the generated labels" title="Direct link to Auto-blocking PRs from being merged based on the generated labels" translate="no">​</a></h3>
+<div class="theme-admonition theme-admonition-tip admonition_xJq3 alert alert--success"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 12 16"><path fill-rule="evenodd" d="M6.5 0C3.48 0 1 2.19 1 5c0 .92.55 2.25 1 3 1.34 2.25 1.78 2.78 2 4v1h5v-1c.22-1.22.66-1.75 2-4 .45-.75 1-2.08 1-3 0-2.81-2.48-5-5.5-5zm3.64 7.48c-.25.44-.47.8-.67 1.11-.86 1.41-1.25 2.06-1.45 3.23-.02.05-.02.11-.02.17H5c0-.06 0-.13-.02-.17-.2-1.17-.59-1.83-1.45-3.23-.2-.31-.42-.67-.67-1.11C2.44 6.78 2 5.65 2 5c0-2.2 2.02-4 4.5-4 1.22 0 2.36.42 3.22 1.19C10.55 2.94 11 3.94 11 5c0 .66-.44 1.78-.86 2.48zM4 14h5c-.23 1.14-1.3 2-2.5 2s-2.27-.86-2.5-2z"></path></svg></span>Tip</div><div class="admonitionContent_BuS1"><p>You can configure a CI/CD Action to prevent merging PRs with specific labels. For example, implement a dedicated <a href="https://medium.com/sequra-tech/quick-tip-block-pull-request-merge-using-labels-6cc326936221" target="_blank" rel="noopener noreferrer" class="">GitHub Action</a>.</p><p>This approach helps ensure PRs with potential security issues will not be merged without further review.</p><p>Since AI may make mistakes or lack complete context, use this feature judiciously. For flexibility, users with appropriate permissions can remove generated labels when necessary. When a label is removed, this action will be automatically documented in the PR discussion, clearly indicating it was a deliberate override by an authorized user to allow the merge.</p></div></div>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="extra-instructions">Extra instructions<a href="#extra-instructions" class="hash-link" aria-label="Direct link to Extra instructions" title="Direct link to Extra instructions" translate="no">​</a></h3>
+<div class="theme-admonition theme-admonition-tip admonition_xJq3 alert alert--success"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 12 16"><path fill-rule="evenodd" d="M6.5 0C3.48 0 1 2.19 1 5c0 .92.55 2.25 1 3 1.34 2.25 1.78 2.78 2 4v1h5v-1c.22-1.22.66-1.75 2-4 .45-.75 1-2.08 1-3 0-2.81-2.48-5-5.5-5zm3.64 7.48c-.25.44-.47.8-.67 1.11-.86 1.41-1.25 2.06-1.45 3.23-.02.05-.02.11-.02.17H5c0-.06 0-.13-.02-.17-.2-1.17-.59-1.83-1.45-3.23-.2-.31-.42-.67-.67-1.11C2.44 6.78 2 5.65 2 5c0-2.2 2.02-4 4.5-4 1.22 0 2.36.42 3.22 1.19C10.55 2.94 11 3.94 11 5c0 .66-.44 1.78-.86 2.48zM4 14h5c-.23 1.14-1.3 2-2.5 2s-2.27-.86-2.5-2z"></path></svg></span>Tip</div><div class="admonitionContent_BuS1"><p>Extra instructions are important.
+The <code>review</code> command can be configured with extra instructions, which can be used to guide the model to a feedback tailored to the needs of your project.</p><p>Be specific, clear, and concise in the instructions. With extra instructions, you are the prompter. Specify the relevant sub-command, and the relevant aspects of the PR that you want to emphasize.</p><p>Examples of extra instructions:</p><div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token plain">[pr_reviewer]</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">extra_instructions=&quot;&quot;&quot;\</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">In the code feedback section, emphasize the following:</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">- Does the code logic cover relevant edge cases?</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">- Is the code logic clear and easy to understand?</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">- Is the code logic efficient?</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">...</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">&quot;&quot;&quot;</span><br></div></code></pre></div></div><p>Use triple quotes to write multi-line instructions. Use bullet points to make the instructions more readable.</p></div></div>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="reviewing-a-pr-that-does-not-fit-in-one-call">Reviewing a PR that does not fit in one call<a href="#reviewing-a-pr-that-does-not-fit-in-one-call" class="hash-link" aria-label="Direct link to Reviewing a PR that does not fit in one call" title="Direct link to Reviewing a PR that does not fit in one call" translate="no">​</a></h3>
+<div class="theme-admonition theme-admonition-tip admonition_xJq3 alert alert--success"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 12 16"><path fill-rule="evenodd" d="M6.5 0C3.48 0 1 2.19 1 5c0 .92.55 2.25 1 3 1.34 2.25 1.78 2.78 2 4v1h5v-1c.22-1.22.66-1.75 2-4 .45-.75 1-2.08 1-3 0-2.81-2.48-5-5.5-5zm3.64 7.48c-.25.44-.47.8-.67 1.11-.86 1.41-1.25 2.06-1.45 3.23-.02.05-.02.11-.02.17H5c0-.06 0-.13-.02-.17-.2-1.17-.59-1.83-1.45-3.23-.2-.31-.42-.67-.67-1.11C2.44 6.78 2 5.65 2 5c0-2.2 2.02-4 4.5-4 1.22 0 2.36.42 3.22 1.19C10.55 2.94 11 3.94 11 5c0 .66-.44 1.78-.86 2.48zM4 14h5c-.23 1.14-1.3 2-2.5 2s-2.27-.86-2.5-2z"></path></svg></span>Tip</div><div class="admonitionContent_BuS1"><p>When a PR diff is larger than the model&#x27;s token budget, the <code>review</code> command drops whole files
+until the diff fits, and lists the dropped files in the review coverage footer.</p><p>Setting <code>enable_large_pr_chunking = true</code> changes what happens next: the diff is split into up
+to <code>max_number_of_calls</code> chunks, each chunk is reviewed on its own, and the answers are merged
+into a single review that says how many chunks it was built from. Files that do not fit even
+after chunking are still listed in the coverage footer. Every chunk is a separate model call,
+so a chunked review costs roughly <code>max_number_of_calls</code> times a normal one.</p><p>While the chunks run, the temporary <code>Preparing review...</code> comment is rewritten in place with the
+number of chunks already analyzed, for example <code>Preparing review... analyzed 2 of 3 chunks</code>, plus
+<code>... 1 chunk failed</code> when a chunk gives up. The updates require
+<code>config.publish_output_progress</code> and a provider that supports both editing and removing a
+comment, so plain-diff runs keep the frozen placeholder. Automatic commands publish no progress
+comment, but while <code>github.publish_as_check_run</code> is enabled their in-progress check run shows the
+same chunk count. The comment stays
+temporary and is still removed before the merged review is published. A fallback model restores
+the placeholder before it starts, so the visible count never moves backward.</p><p>If a chunk fails or returns malformed output, successful chunks are retained and fallback
+models retry only the pending work. Pending chunks can be split for a smaller model, within
+the call limit; a larger model can also include previously omitted files. Chunks that still
+exceed the model&#x27;s budget are not sent to it.</p><p>If every fallback is exhausted, successful chunks are published as a partial review with a
+failed-chunk coverage warning, even when <code>publish_output_no_suggestions = false</code>. Incomplete
+reviews cannot resolve absent persistent findings. If no chunk succeeds, the review fails.
+With <code>config.propagate_command_errors = true</code>, an exhausted fallback chain still signals failure
+to the caller after publishing the partial review and removing the progress comment.
+Optional run details list all models that contributed to the merged review.</p><p>Each chunk answers the same questions about a different part of the PR, so the answers are
+merged field by field:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Merge rule</th></tr></thead><tbody><tr><td><code>key_issues_to_review</code></td><td>Union over the chunks, dropping findings that repeat the same file, header and text</td></tr><tr><td><code>security_concerns</code></td><td>Every chunk that reported a concern is kept; &quot;No&quot; only when every chunk said no</td></tr><tr><td><code>todo_sections</code>, <code>review_priority_files</code>, <code>can_be_split</code></td><td>Union, de-duplicated, in chunk order (<code>can_be_split</code> keeps at most 3 sub-PRs)</td></tr><tr><td><code>relevant_tests</code></td><td>Yes if any chunk found tests</td></tr><tr><td><code>score</code></td><td>The lowest score any chunk gave</td></tr><tr><td><code>risk_level</code>, <code>merge_recommendation</code></td><td>The most conservative value any chunk gave</td></tr><tr><td><code>failure_modes</code></td><td>Concatenate valid cases in chunk order, keeping at most three</td></tr><tr><td><code>estimated_effort_to_review_[1-5]</code></td><td>The highest value any chunk gave</td></tr><tr><td><code>contribution_time_cost_estimate</code></td><td>The sum over the chunks, per case</td></tr><tr><td><code>ticket_compliance_check</code></td><td>One entry per ticket, with its bullet lists unioned across chunks</td></tr></tbody></table><p>When <code>require_todo_scan</code> is enabled, the TODO union includes both located findings and prose
+summaries. Prose without a file location is shown as text without a source link.</p><p>The merged verdict is deliberately never less alarming than the worst chunk: a clean chunk
+cannot raise a score, clear a security concern, or soften a risk level set by another chunk.</p></div></div>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="structural-reach">Structural reach<a href="#structural-reach" class="hash-link" aria-label="Direct link to Structural reach" title="Direct link to Structural reach" translate="no">​</a></h3>
+<div class="theme-admonition theme-admonition-tip admonition_xJq3 alert alert--success"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 12 16"><path fill-rule="evenodd" d="M6.5 0C3.48 0 1 2.19 1 5c0 .92.55 2.25 1 3 1.34 2.25 1.78 2.78 2 4v1h5v-1c.22-1.22.66-1.75 2-4 .45-.75 1-2.08 1-3 0-2.81-2.48-5-5.5-5zm3.64 7.48c-.25.44-.47.8-.67 1.11-.86 1.41-1.25 2.06-1.45 3.23-.02.05-.02.11-.02.17H5c0-.06 0-.13-.02-.17-.2-1.17-.59-1.83-1.45-3.23-.2-.31-.42-.67-.67-1.11C2.44 6.78 2 5.65 2 5c0-2.2 2.02-4 4.5-4 1.22 0 2.36.42 3.22 1.19C10.55 2.94 11 3.94 11 5c0 .66-.44 1.78-.86 2.48zM4 14h5c-.23 1.14-1.3 2-2.5 2s-2.27-.86-2.5-2z"></path></svg></span>Tip</div><div class="admonitionContent_BuS1"><p>When <code>structural_reach_input_file</code> points at a file that exists, the review gets one row at the top that rates how
+far a defect in the change could spread. The row is computed from that file, not by the model, so the same input
+always gets the same rating.</p><div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token plain">🔗 Structural reach: Critical</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">Reach: 40 projects, cross-domain</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">Dependents: billing-api, payments-worker, web-app, admin-app, reports (+35 more)</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">Sensitivity: payments</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">Rating driven by sensitive domain (escalates regardless of size)</span><br></div></code></pre></div></div><p><strong>Rating.</strong> Two facts from the input file set the band:</p><ul>
+<li class=""><strong>Reach</strong> is the number of downstream projects a defect in the change can break. Only a build-graph tool knows
+it.</li>
+<li class=""><strong>Sensitivity</strong> flags changes to areas the repository marks as high-criticality, such as authentication,
+payments or secrets. A one-line auth change outranks a wide styling sweep.</li>
+</ul><p>Reach is narrow up to 3 projects, moderate up to 25 and wide above that. The band then follows these rules:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Condition</th><th>Band</th></tr></thead><tbody><tr><td>Wide reach</td><td>At least Moderate</td></tr><tr><td>Cross-domain change</td><td>At least Moderate</td></tr><tr><td>Any sensitive domain</td><td>At least High</td></tr><tr><td>Sensitive domain with wide reach</td><td>Critical</td></tr><tr><td>Anything else</td><td>Low</td></tr></tbody></table><p>The row lists each factor and names the one that set the band. It also lists the first five names in
+<code>dependents</code>, in the order the producer wrote them.</p><p>The reach bands are defined for projects only. When <code>reach_unit</code> is <code>modules</code> or <code>files</code>, the row shows the count
+and the dependents without a band, because no threshold separates a change to a shared utility from a real spread.
+A cross-domain or sensitive change still gets a band from the rules above. The Reach line still shows the
+number, but it does not affect the band.</p><p>Change size is not part of the rating, because
+<code>estimated_effort_to_review_[1-5]</code> already reflects it. That row and <code>require_risk_assessment</code> are the model&#x27;s
+judgement; this row adds the structural and sensitivity facts the model cannot see in the diff.</p><p><strong>Input file.</strong> Any build-graph tool (Nx, Bazel, Gradle, Turborepo, and so on) can write the reach facts in an
+earlier CI step, so pr-agent needs no adapter per tool. Point <code>structural_reach_input_file</code> at the file in host
+configuration, for example the <code>PR_REVIEWER__STRUCTURAL_REACH_INPUT_FILE</code> environment variable. Every field is
+optional:</p><div class="language-json codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-json codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token punctuation" style="color:hsl(220, 14%, 71%)">{</span><span class="token plain"></span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">  </span><span class="token property" style="color:hsl(355, 65%, 65%)">&quot;version&quot;</span><span class="token operator" style="color:hsl(207, 82%, 66%)">:</span><span class="token plain"> </span><span class="token number" style="color:hsl(29, 54%, 61%)">1</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">  </span><span class="token property" style="color:hsl(355, 65%, 65%)">&quot;reach&quot;</span><span class="token operator" style="color:hsl(207, 82%, 66%)">:</span><span class="token plain"> </span><span class="token number" style="color:hsl(29, 54%, 61%)">12</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">  </span><span class="token property" style="color:hsl(355, 65%, 65%)">&quot;reach_unit&quot;</span><span class="token operator" style="color:hsl(207, 82%, 66%)">:</span><span class="token plain"> </span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;projects&quot;</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">  </span><span class="token property" style="color:hsl(355, 65%, 65%)">&quot;dependents&quot;</span><span class="token operator" style="color:hsl(207, 82%, 66%)">:</span><span class="token plain"> </span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">[</span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;billing-api&quot;</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">,</span><span class="token plain"> </span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;web-app&quot;</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">]</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">  </span><span class="token property" style="color:hsl(355, 65%, 65%)">&quot;domains&quot;</span><span class="token operator" style="color:hsl(207, 82%, 66%)">:</span><span class="token plain"> </span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">[</span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;billing&quot;</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">,</span><span class="token plain"> </span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;web&quot;</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">]</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">  </span><span class="token property" style="color:hsl(355, 65%, 65%)">&quot;cross_domain&quot;</span><span class="token operator" style="color:hsl(207, 82%, 66%)">:</span><span class="token plain"> </span><span class="token boolean" style="color:hsl(29, 54%, 61%)">true</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">  </span><span class="token property" style="color:hsl(355, 65%, 65%)">&quot;sensitive_domains&quot;</span><span class="token operator" style="color:hsl(207, 82%, 66%)">:</span><span class="token plain"> </span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">[</span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;billing&quot;</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain"></span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">}</span><br></div></code></pre></div></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Type</th><th>Meaning</th></tr></thead><tbody><tr><td><code>version</code></td><td>integer</td><td>Schema version. Only <code>1</code> is accepted.</td></tr><tr><td><code>reach</code></td><td>integer, 0 or more</td><td>Number of units affected by the change, including transitive dependents. Defaults to the length of <code>dependents</code>.</td></tr><tr><td><code>reach_unit</code></td><td>string</td><td>What <code>reach</code> counts: <code>projects</code> (the default), <code>modules</code> or <code>files</code>. Only <code>projects</code> gets a reach band.</td></tr><tr><td><code>dependents</code></td><td>list of strings</td><td>Names of the affected units, most relevant first.</td></tr><tr><td><code>domains</code></td><td>list of strings</td><td>Distinct domains or areas the affected projects belong to.</td></tr><tr><td><code>cross_domain</code></td><td>boolean</td><td>Whether the change spans more than one domain.</td></tr><tr><td><code>sensitive_domains</code></td><td>list of strings</td><td>Affected domains the repository treats as sensitive.</td></tr></tbody></table><p>Unknown fields are ignored. Strings are limited to 200 characters and the file to 1 MB.</p><p><strong>Trust.</strong> The file is read from inside <code>GITHUB_WORKSPACE</code> (or the working directory), so in the GitHub Action a
+checkout of the pull request could already contain a file at that path, written by the pull request&#x27;s author.
+Generate the file in the same job, right before the review step, and delete any existing copy first. Take the
+project tags and graph configuration the producer reads from the base commit, not from the pull request. Treat the
+band as advisory context for reviewers, never as a merge gate.</p><p><strong>Example producer: Nx.</strong> <code>nx show projects --affected</code> lists every project the change affects, including
+transitive dependents. This step writes them as <code>dependents</code>, and lists affected projects tagged <code>sensitive</code> as
+<code>sensitive_domains</code>:</p><div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token function-name function" style="color:hsl(207, 82%, 66%)">affected</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">(</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">)</span><span class="token plain"> </span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">{</span><span class="token plain"> npx nx show projects </span><span class="token parameter variable" style="color:hsl(207, 82%, 66%)">--affected</span><span class="token plain"> </span><span class="token parameter variable" style="color:hsl(207, 82%, 66%)">--base</span><span class="token operator" style="color:hsl(207, 82%, 66%)">=</span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;</span><span class="token string variable" style="color:hsl(207, 82%, 66%)">$BASE_SHA</span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;</span><span class="token plain"> </span><span class="token parameter variable" style="color:hsl(207, 82%, 66%)">--head</span><span class="token operator" style="color:hsl(207, 82%, 66%)">=</span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;</span><span class="token string variable" style="color:hsl(207, 82%, 66%)">$HEAD_SHA</span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;</span><span class="token plain"> </span><span class="token parameter variable" style="color:hsl(207, 82%, 66%)">--json</span><span class="token plain"> </span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;</span><span class="token string variable" style="color:hsl(207, 82%, 66%)">$@</span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;</span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">;</span><span class="token plain"> </span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">}</span><span class="token plain"></span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">affected </span><span class="token operator" style="color:hsl(207, 82%, 66%)">|</span><span class="token plain"> jq </span><span class="token parameter variable" style="color:hsl(207, 82%, 66%)">--argjson</span><span class="token plain"> sensitive </span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;</span><span class="token string variable" style="color:hsl(207, 82%, 66%)">$(</span><span class="token string variable" style="color:hsl(207, 82%, 66%)">affected </span><span class="token string variable parameter variable" style="color:hsl(207, 82%, 66%)">-p</span><span class="token string variable" style="color:hsl(207, 82%, 66%)"> </span><span class="token string variable string" style="color:hsl(95, 38%, 62%)">&#x27;tag:sensitive&#x27;</span><span class="token string variable" style="color:hsl(207, 82%, 66%)">)</span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;</span><span class="token plain"> </span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">\</span><span class="token plain"></span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">  </span><span class="token string" style="color:hsl(95, 38%, 62%)">&#x27;{version: 1, reach_unit: &quot;projects&quot;, dependents: ., sensitive_domains: $sensitive}&#x27;</span><span class="token plain"> </span><span class="token operator" style="color:hsl(207, 82%, 66%)">&gt;</span><span class="token plain"> structural-reach.json</span><br></div></code></pre></div></div><p>Then set <code>PR_REVIEWER__STRUCTURAL_REACH_INPUT_FILE=structural-reach.json</code> for the review step. Another tool
+needs only a query that lists the affected projects or packages.</p><p><strong>Example producer: tree-sitter.</strong> For a repository without a build-graph tool,
+<code>scripts/structural_reach_producer.py</code> builds a reverse-import graph of the Python, TypeScript and JavaScript
+files at the base commit and follows importers from the changed files. Test files are left out of reach and
+domains, because counting them makes most changes to a shared module read wide. It writes <code>reach_unit</code> as
+<code>modules</code> (directories) by default, so the row shows the count and the first dependents without a band. Run it as
+a CI step before the review; it is not a pr-agent dependency:</p><div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token plain">pip </span><span class="token function" style="color:hsl(207, 82%, 66%)">install</span><span class="token plain"> </span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;tree-sitter-language-pack==1.22.1&quot;</span><span class="token plain"></span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">python scripts/structural_reach_producer.py </span><span class="token parameter variable" style="color:hsl(207, 82%, 66%)">--repo</span><span class="token plain"> </span><span class="token builtin class-name" style="color:hsl(29, 54%, 61%)">.</span><span class="token plain"> </span><span class="token parameter variable" style="color:hsl(207, 82%, 66%)">--base</span><span class="token plain"> </span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;</span><span class="token string variable" style="color:hsl(207, 82%, 66%)">$BASE_SHA</span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;</span><span class="token plain"> </span><span class="token parameter variable" style="color:hsl(207, 82%, 66%)">--head</span><span class="token plain"> </span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;</span><span class="token string variable" style="color:hsl(207, 82%, 66%)">$HEAD_SHA</span><span class="token string" style="color:hsl(95, 38%, 62%)">&quot;</span><span class="token plain"> </span><span class="token punctuation" style="color:hsl(220, 14%, 71%)">\</span><span class="token plain"></span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">  </span><span class="token parameter variable" style="color:hsl(207, 82%, 66%)">--unit</span><span class="token plain"> module </span><span class="token parameter variable" style="color:hsl(207, 82%, 66%)">--out</span><span class="token plain"> structural-reach.json</span><br></div></code></pre></div></div><p>On this repository, the change merged in pull request 4420 gives:</p><div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token plain">🔗 Structural reach</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">Reach: 9 modules</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">Dependents: pr_agent/git_providers, pr_agent/commands, pr_agent/servers, pr_agent/algo, pr_agent/mosaico (+4 more)</span><br></div></code></pre></div></div><p><code>dependents</code> is ordered by the number of affected files in each unit. The graph does not see imports built at
+run time, files loaded by name such as settings, or dependencies declared only in a manifest, such as a shared
+<code>tsconfig</code> package used through <code>extends</code>. In a monorepo with Nx, Turborepo or Bazel, use that tool instead.</p><p><strong>Failure handling.</strong> The row never blocks a review. If the setting is empty, the input file is missing or does
+not match the schema, or anything fails while computing the row, the review is published without it.</p><p><strong>Sources.</strong></p><ul>
+<li class="">Beyer, B. et al. <em>Site Reliability Engineering</em> (Google, 2016), and the AWS Well-Architected Framework: blast
+radius as the scope of impact of a change or failure.</li>
+<li class="">OWASP guidance on sensitive functionality: authentication, session management, cryptography and payments.</li>
+</ul></div></div>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="deterministic-risk-checks">Deterministic risk checks<a href="#deterministic-risk-checks" class="hash-link" aria-label="Direct link to Deterministic risk checks" title="Direct link to Deterministic risk checks" translate="no">​</a></h3>
+<div class="theme-admonition theme-admonition-tip admonition_xJq3 alert alert--success"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 12 16"><path fill-rule="evenodd" d="M6.5 0C3.48 0 1 2.19 1 5c0 .92.55 2.25 1 3 1.34 2.25 1.78 2.78 2 4v1h5v-1c.22-1.22.66-1.75 2-4 .45-.75 1-2.08 1-3 0-2.81-2.48-5-5.5-5zm3.64 7.48c-.25.44-.47.8-.67 1.11-.86 1.41-1.25 2.06-1.45 3.23-.02.05-.02.11-.02.17H5c0-.06 0-.13-.02-.17-.2-1.17-.59-1.83-1.45-3.23-.2-.31-.42-.67-.67-1.11C2.44 6.78 2 5.65 2 5c0-2.2 2.02-4 4.5-4 1.22 0 2.36.42 3.22 1.19C10.55 2.94 11 3.94 11 5c0 .66-.44 1.78-.86 2.48zM4 14h5c-.23 1.14-1.3 2-2.5 2s-2.27-.86-2.5-2z"></path></svg></span>Tip</div><div class="admonitionContent_BuS1"><p>When <code>enable_risk_checks</code> is enabled (the default), PR-Agent scans changed files and diff hunks for known risk patterns
+without making model calls. Findings are rendered as a dedicated row in the review table:</p><div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token plain">⚠️ Risk checks: 3 finding(s) detected</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">Sensitive paths (1): .github/workflows/deploy.yml</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">Risky shapes (1): `Privilege revocation` in db/migrations/002_revoke.sql</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">Deleted files (1): old_auth.py</span><br></div></code></pre></div></div><p>When no findings are detected, the row is omitted completely so clean reviews stay uncluttered.</p><p><strong>Checks performed.</strong></p><ul>
+<li class=""><strong>Sensitive paths</strong>: Flags changes to files matching glob patterns in <code>sensitive_paths</code>. By default, this covers
+CI/CD pipelines, package manager manifests and lockfiles, Dockerfiles, Terraform and infrastructure configs, and
+database migrations.</li>
+<li class=""><strong>Risky change shapes</strong>: Scans added or modified lines in diff hunks for destructive SQL (<code>DROP TABLE</code>, <code>ALTER ... RENAME</code>,
+<code>REVOKE ... ON/FROM</code>, <code>TRUNCATE</code>), authentication and secrets keywords, cache invalidations, and any custom patterns
+configured in <code>extra_risky_shapes</code>.</li>
+<li class=""><strong>Deleted files</strong>: Flags removed files.</li>
+</ul><p><strong>Custom patterns.</strong> Additional regular expressions can be configured via <code>extra_risky_shapes</code>. Because regex execution
+has security implications, <code>extra_risky_shapes</code> must be configured through host configuration (such as environment
+variables or host settings) and cannot be overridden by repository <code>.pr_agent.toml</code> files. Each search with a custom
+pattern has a 50 ms limit, and each custom pattern has 1 s in total per review. If a pattern exceeds either one,
+PR-Agent logs a warning and skips that pattern for the rest of the review.</p></div></div></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/the-pr-agent/pr-agent/tree/main/docs/docs/commands/review.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/commands/describe/"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Describe</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/commands/improve/"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Improve</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#overview" class="table-of-contents__link toc-highlight">Overview</a></li><li><a href="#example-usage" class="table-of-contents__link toc-highlight">Example usage</a><ul><li><a href="#manual-triggering" class="table-of-contents__link toc-highlight">Manual triggering</a></li><li><a href="#automatic-triggering" class="table-of-contents__link toc-highlight">Automatic triggering</a></li></ul></li><li><a href="#configuration-options" class="table-of-contents__link toc-highlight">Configuration options</a></li><li><a href="#usage-tips" class="table-of-contents__link toc-highlight">Usage Tips</a><ul><li><a href="#general-guidelines" class="table-of-contents__link toc-highlight">General guidelines</a></li><li><a href="#automation" class="table-of-contents__link toc-highlight">Automation</a></li><li><a href="#auto-generated-pr-labels-by-the-review-command" class="table-of-contents__link toc-highlight">Auto-generated PR labels by the Review Command</a></li><li><a href="#auto-blocking-prs-from-being-merged-based-on-the-generated-labels" class="table-of-contents__link toc-highlight">Auto-blocking PRs from being merged based on the generated labels</a></li><li><a href="#extra-instructions" class="table-of-contents__link toc-highlight">Extra instructions</a></li><li><a href="#reviewing-a-pr-that-does-not-fit-in-one-call" class="table-of-contents__link toc-highlight">Reviewing a PR that does not fit in one call</a></li><li><a href="#structural-reach" class="table-of-contents__link toc-highlight">Structural reach</a></li><li><a href="#deterministic-risk-checks" class="table-of-contents__link toc-highlight">Deterministic risk checks</a></li></ul></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Links</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/the-pr-agent/pr-agent" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Copyright © 2026 PR-Agent. Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>
