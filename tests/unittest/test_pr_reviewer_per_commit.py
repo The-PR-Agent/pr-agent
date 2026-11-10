@@ -270,6 +270,15 @@ def test_gitlab_scopes_the_diff_to_one_commit_against_its_parent():
     assert (patch_info.base_file, patch_info.head_file) == ("parent\n", "child\n")
 
 
+def test_gitlab_commits_with_collapsed_diffs_get_distinct_fingerprints():
+    provider = _gitlab_provider()
+    large = {"old_path": "big.json", "new_path": "big.json", "diff": "", "too_large": True}
+    provider.gl.projects.get.return_value.commits.get.side_effect = lambda sha: _gitlab_commit(["p"], [dict(large)])
+    first = provider.set_commit_review_scope(PRCommit("1" * 40, "a"), IncrementalPR(True))
+    second = provider.set_commit_review_scope(PRCommit("2" * 40, "b"), IncrementalPR(True))
+    assert first and second and first != second
+
+
 @pytest.mark.parametrize("parent_ids", [[], ["p1", "p2"]])
 def test_gitlab_merge_and_root_commits_have_no_own_diff(parent_ids):
     provider = _gitlab_provider()
@@ -842,6 +851,24 @@ async def test_unverifiable_authorship_fails_closed_and_keeps_a_single_record(se
     assert await host.run(monkeypatch, is_auto=True) == [None]
     assert len(host.records()) == 1
     assert sum("could not verify" in comment.body for comment in host.comments) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_forged_record_on_a_fresh_pr_neither_skips_a_commit_nor_forces_a_whole_pr_review(settings,
+                                                                                                monkeypatch):
+    host = _Host([A, B])
+    record = PRCommandNoticeIdentity.REVIEWED_COMMITS.value
+    host.comments.append(SimpleNamespace(
+        body=f"{record}\n\n{format_reviewed_commit_marker(_fingerprint(A.sha), A.sha)}", user="someone"))
+    assert await host.run(monkeypatch) == _shas(A, B)
+
+
+@pytest.mark.asyncio
+async def test_changing_the_review_heading_does_not_review_the_commits_again(settings, monkeypatch):
+    host = _Host([A, B])
+    assert await host.run(monkeypatch) == _shas(A, B)
+    monkeypatch.setitem(get_settings().pr_reviewer, "review_heading", "Team Review")
+    assert await host.run(monkeypatch) == []
 
 
 def test_github_app_without_its_login_cannot_verify_markers():

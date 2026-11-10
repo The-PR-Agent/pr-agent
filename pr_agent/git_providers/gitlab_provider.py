@@ -1301,8 +1301,11 @@ class GitLabProvider(GitProvider):
                 self.unreviewed_files_map[diff["new_path"]] = diff
         if not self.unreviewed_files_map:
             return None
-        return commit_patch_fingerprint(
-            (f"{diff.get('old_path') or ''}\0{diff.get('new_path') or ''}", diff.get("diff") or "") for diff in diffs)
+        files = [(f"{diff.get('old_path') or ''}\0{diff.get('new_path') or ''}", diff.get("diff") or "")
+                 for diff in diffs]
+        if any(not patch for _, patch in files):
+            files.append(("", commit.sha))
+        return commit_patch_fingerprint(files)
 
     def get_previous_review(self, *, full: bool, incremental: bool):
         if not (full or incremental):

@@ -191,7 +191,8 @@ def parse_commit_review_records(body) -> tuple[dict[str, str], dict[str, int], b
             elif match := _FAILED_COMMIT_MARKER_RE.fullmatch(line):
                 failed[match[1]] = int(match[2])
         return reviewed, failed, True
-    if len(lines) > 2 and lines[0] == format_pr_review_header(incremental=True):
+    headers = (format_pr_review_header(incremental=True), f"{PRReviewHeader.INCREMENTAL.value} 🔍")
+    if len(lines) > 2 and lines[0] in headers:
         if match := _REVIEWED_COMMIT_MARKER_RE.fullmatch(lines[2]):
             return {match[2]: match[1]}, {}, False
     return {}, {}, False

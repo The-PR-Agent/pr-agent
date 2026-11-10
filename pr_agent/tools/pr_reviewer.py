@@ -506,16 +506,16 @@ class PRReviewer:
         reviewed, recorded, failures = {}, {}, {}
         if not self.git_provider.is_supported("get_issue_comments"):
             return reviewed, recorded, failures
-        marked = verified = False
+        unverifiable = verified = False
         for comment in self.git_provider.get_issue_comments():
             found, failed, is_record = parse_commit_review_records(GitProvider._get_comment_body(comment))
             if not (found or failed):
                 continue
-            marked = True
             try:
                 if not self.git_provider.is_comment_authored_by_pr_agent(comment):
                     continue
             except RuntimeError:
+                unverifiable = True
                 continue
             verified = True
             reviewed.update(found)
@@ -523,7 +523,7 @@ class PRReviewer:
                 recorded.update(found)
                 for fingerprint, attempts in failed.items():
                     failures[fingerprint] = max(failures.get(fingerprint, 0), attempts)
-        return (None if marked and not verified else reviewed), recorded, failures
+        return (None if unverifiable and not verified else reviewed), recorded, failures
 
     def _record_commit_reviews(self, commits: list[PRCommit], fingerprints: dict[str, str],
                                new_records: dict[str, str], new_failures: dict[str, int]) -> None:
