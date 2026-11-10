@@ -137,7 +137,7 @@ def get_git_provider():
         provider_id = get_settings().config.git_provider
     except AttributeError as e:
         raise ValueError("git_provider is a required attribute in the configuration file") from e
-    # Same plain-diff keying as get_git_provider_with_context(): tools that build
+    # Same plain-diff keying as get_git_provider_with_context(): commands that build
     # their provider through this function (e.g. PRQuestions for `ask`) must also
     # honor loaded diff content, so an extra/repo config that overwrote
     # config.git_provider can't route a supported command to a hosted provider.

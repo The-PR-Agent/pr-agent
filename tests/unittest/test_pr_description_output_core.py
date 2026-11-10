@@ -953,7 +953,7 @@ class TestPrepareFileLabelsEdgeCases:
 # prompt gating for enable_pr_description
 # ---------------------------------------------------------------------------
 class TestDescriptionPromptGating:
-    """The model should not be asked for a summary the tool is going to drop."""
+    """The model should not be asked for a summary the command is going to drop."""
 
     PROMPT_VARS = {
         "title": "t",

@@ -436,8 +436,8 @@ def test_publish_description_writes_utf8_regardless_of_locale(tmp_path, monkeypa
     provider = object.__new__(LocalGitProvider)
     provider.description_path = description_path
 
-    provider.publish_description("my-branch", "✨ Describe tool usage guide")
-    assert description_path.read_text(encoding="utf-8") == "my-branch\n✨ Describe tool usage guide"
+    provider.publish_description("my-branch", "✨ Describe command usage guide")
+    assert description_path.read_text(encoding="utf-8") == "my-branch\n✨ Describe command usage guide"
 
 
 @pytest.mark.parametrize(

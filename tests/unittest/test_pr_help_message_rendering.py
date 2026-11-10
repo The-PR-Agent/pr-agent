@@ -15,14 +15,14 @@ from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 INTERACTIVE_MARKER = "Trigger Interactively"
-PLAIN_TABLE_MARKER = "| Tool  | Description |"
+PLAIN_TABLE_MARKER = "| Command  | Description |"
 UNSUPPORTED_MARKER = "requires gfm markdown"
 CURRENT_DOCS_URL = "https://docs.pr-agent.ai"
 RETIRED_DOCS_HOSTS = ("qodo-merge-docs.qodo.ai", "pr-agent-docs.codium.ai")
 
 
 class StubProvider:
-    """A provider that is none of the concrete classes the tool used to branch on."""
+    """A provider that is none of the concrete classes the command used to branch on."""
 
     def __init__(self, gfm_markdown: bool, markdown_tables: bool = False, checkbox_commands: bool = False):
         self.pr_url = "https://example.com/org/repo/pull/1"

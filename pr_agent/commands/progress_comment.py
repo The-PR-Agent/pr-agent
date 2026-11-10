@@ -82,7 +82,7 @@ class ChunkProgressReporter:
     the result is unaffected.
 
     Every counter change takes a lock that is held until the writes land, so a sink cannot
-    end up showing an older count than the one the tool already recorded. The provider calls
+    end up showing an older count than the one the command already recorded. The provider calls
     block, so they run in a worker thread rather than on the event loop that the sibling
     chunk coroutines still need.
     """

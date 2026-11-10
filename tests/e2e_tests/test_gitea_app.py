@@ -17,7 +17,7 @@ setup_logger(log_level)
 logger = get_logger()
 
 def _missing_gitea_command_results(repo_api_url, pr_number, headers):
-    """Check the description and the comments for the default tools' final output."""
+    """Check the description and the comments for the default commands' final output."""
     response = requests.get(
         f"{repo_api_url}/pulls/{pr_number}",
         headers=headers,
@@ -143,7 +143,7 @@ def test_e2e_run_gitea_app():
 
         missing_commands = ["/describe", "/review", "/improve"]
         for i in range(NUM_MINUTES):
-            logger.info("Waiting for the PR to get all the tool results...")
+            logger.info("Waiting for the PR to get all the command results...")
             time.sleep(60)
 
             missing_commands = _missing_gitea_command_results(
@@ -153,7 +153,7 @@ def test_e2e_run_gitea_app():
                 break
             logger.info(f"Still waiting for {', '.join(missing_commands)} after {i + 1} minute(s)")
         else:
-            raise AssertionError(f"After {NUM_MINUTES} minutes, missing tool results: {', '.join(missing_commands)}")
+            raise AssertionError(f"After {NUM_MINUTES} minutes, missing command results: {', '.join(missing_commands)}")
 
         logger.info(f"Cleaning up: closing PR and deleting branch {new_branch}")
 

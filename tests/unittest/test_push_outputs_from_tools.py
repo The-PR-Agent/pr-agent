@@ -2,7 +2,7 @@
 
 `push_outputs` was wired into `PRReviewer` only, so an operator running the three default
 automatic commands received one of the three results. The two questions worth pinning down are
-whether each tool emits at all, and what it sends: a sink is not a git provider, so the GFM
+whether each command emits at all, and what it sends: a sink is not a git provider, so the GFM
 table `/improve` publishes to GitHub is not what should arrive in Slack.
 """
 from unittest.mock import MagicMock
@@ -27,10 +27,10 @@ SUGGESTION = {
 
 
 # --------------------------------------------------------------------------------------
-# Which tools emit
+# Which commands emit
 # --------------------------------------------------------------------------------------
 def test_review_still_emits():
-    """Control: the tool that already emitted keeps doing so."""
+    """Control: the command that already emitted keeps doing so."""
     assert "push_outputs_async" in PRReviewer._deliver_sink_output.__code__.co_names
 
 

@@ -857,7 +857,7 @@ def test_action_exits_nonzero_when_command_fails_and_continues(
     ]
 
 
-# --- Recorded tool failures must fail the Action (issue #3705) ---
+# --- Recorded command failures must fail the Action (issue #3705) ---
 
 
 def _write_pull_request_opened_event(tmp_path):
@@ -889,7 +889,7 @@ def _install_action_env(monkeypatch, tmp_path, event_path, event_name="pull_requ
 async def test_auto_actions_apply_policy_after_repo_settings_without_rebuilding_provider(
     monkeypatch, tmp_path, event_name, missing_model_key, title, repo_settings, allowed,
 ):
-    # Keep the Action's real settings/provider path; mock only SDK I/O and tools.
+    # Keep the Action's real settings/provider path; mock only SDK I/O and commands.
     get_settings().get("config")  # Initialize Dynaconf before copying its loaded sections.
     settings = copy.deepcopy(get_settings())
     monkeypatch.setenv("AUTO_CAST_FOR_DYNACONF", "false")
@@ -936,7 +936,7 @@ async def test_auto_actions_apply_policy_after_repo_settings_without_rebuilding_
         expected_calls = int(allowed and not missing_model_key)
         assert command.call_count == expected_calls
         assert command.return_value.run.await_count == expected_calls
-    # The policy reuses the instance that already loaded .pr_agent.toml; each tool that runs re-reads the PR once.
+    # The policy reuses the instance that already loaded .pr_agent.toml; each command that runs re-reads the PR once.
     client.get_repo.assert_called_once_with("org/repo")
     assert repo.get_pull.call_count == 1 + sum(command.call_count for command in commands)
     pr.get_commits.assert_called_once()
@@ -1165,7 +1165,7 @@ def test_comment_argument_cannot_disable_recorded_failure_check(monkeypatch, tmp
         github_action_runner.main()
 
     assert exc_info.value.code == 1
-    # Reject the override before the tool runs.
+    # Reject the override before the command runs.
     assert ran == []
 
 
@@ -2038,7 +2038,7 @@ def _use_scope_probe_provider(monkeypatch):
 
 
 def _stub_auto_commands(monkeypatch, tmp_path):
-    """Set up an opened-PR run whose three tools record what the shared probe provider showed them."""
+    """Set up an opened-PR run whose three commands record what the shared probe provider showed them."""
     monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
     _install_action_env(monkeypatch, tmp_path, _write_pull_request_opened_event(tmp_path))
     _patch_env_settings(monkeypatch, {
@@ -2091,7 +2091,7 @@ def test_auto_commands_share_one_provider_and_refresh_it_before_each_command(
 
     github_action_runner.main()
 
-    # The repo-settings step builds the provider every tool then reuses; each tool resets its diff and re-reads
+    # The repo-settings step builds the provider every command then reuses; each command resets its diff and re-reads
     # the PR first.
     assert len(created) == 1
     assert runs == [("describe", 1, 1), ("review", 2, 2), ("improve", 3, 3)]
@@ -2106,7 +2106,7 @@ def test_auto_commands_end_the_run_when_the_pull_request_cannot_be_read_before_a
     with pytest.raises(GithubException):
         github_action_runner.main()
 
-    # As on main, where a tool whose provider cannot read the PR does not run, the tools after it do not either.
+    # As on main, where a command whose provider cannot read the PR does not run, the commands after it do not either.
     assert runs == [("describe", 1, 1)]
 
 

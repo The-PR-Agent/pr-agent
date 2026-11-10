@@ -45,7 +45,7 @@ async def test_similar_issue_unsupported_provider_publishes_message(monkeypatch)
 
     assert result == ""
     assert fake_provider.comments == [
-        "The /similar_issue tool is not supported by the configured git provider."
+        "The /similar_issue command is not supported by the configured git provider."
     ]
 
 

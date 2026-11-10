@@ -2462,7 +2462,7 @@ def test_suggestion_prompt_omits_discussion_section_when_context_empty(prompt_ke
 
 
 def test_supports_incremental_kind_defaults_to_false_on_base_provider():
-    # The base-class default must be "no support" so tools fall back to a full run
+    # The base-class default must be "no support" so commands fall back to a full run
     # on providers that never implemented kind-aware incremental anchoring.
     assert GitProvider.supports_incremental_kind(MagicMock(), "suggestions") is False
 

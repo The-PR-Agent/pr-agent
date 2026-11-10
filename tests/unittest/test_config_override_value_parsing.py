@@ -1,4 +1,4 @@
-"""A `--key=value` override must reach the tool whatever the value looks like.
+"""A `--key=value` override must reach the command whatever the value looks like.
 
 `update_settings_from_args` tries to read the value as YAML and falls back to the raw string.
 The fallback logs at DEBUG, so it is useful when troubleshooting values YAML rejects without

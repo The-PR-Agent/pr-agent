@@ -32,7 +32,7 @@ PLAIN_BREAK_MARKER = "PR-Agent usage.<br>- Check out the"
 
 
 class StubProvider:
-    """A provider that is none of the concrete classes the tool used to branch on."""
+    """A provider that is none of the concrete classes the command used to branch on."""
 
     def __init__(self, html_lists: bool):
         self._html_lists = html_lists

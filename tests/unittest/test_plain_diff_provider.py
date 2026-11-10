@@ -321,7 +321,7 @@ def test_publish_comment_strips_terminal_controls_from_stdout_and_file(cfg, caps
 
 
 def test_publish_comment_survives_stdout_that_cannot_encode(cfg, tmp_path, monkeypatch):
-    # Simulate a redirected Windows stdout (cp1252) and check that emoji in tool
+    # Simulate a redirected Windows stdout (cp1252) and check that emoji in command
     # output neither abort publishing nor skip the --output file.
     raw = io.BytesIO()
     monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="cp1252"))
@@ -430,7 +430,7 @@ def test_publish_code_suggestions_renders_to_stdout(cfg, capsys):
         {"body": "**Suggestion:** use a constant", "relevant_file": "foo.py",
          "relevant_lines_start": 2, "relevant_lines_end": 2},
     ]
-    # The 'improve' tool calls this unconditionally; it must not crash and must
+    # The 'improve' command calls this unconditionally; it must not crash and must
     # render the suggestions to stdout.
     assert provider.publish_code_suggestions(suggestions) is True
     out = capsys.readouterr().out

@@ -69,7 +69,7 @@ async def handle_request_comment(url: str, body: str, thread_id: int, comment_id
             is_question = body.startswith("/ask")
             handled = await agent.handle_request(
                 url, body, notify=lambda: provider.reply_to_thread(thread_id, "On it! ⏳", True),
-                # A tool that fails internally returns normally while `propagate_command_errors` is
+                # A command that fails internally returns normally while `propagate_command_errors` is
                 # false, and then a resolved discussion thread plus a deleted progress comment would
                 # read as "review done" for a review that was never published.
                 propagate_command_errors=True)

@@ -63,7 +63,7 @@ async def test_ignored_request_returns_skip_before_command_notify_and_followup(e
 
 @pytest.mark.parametrize("failure", [False, True])
 async def test_allowed_commands_preserve_success_failure_and_notifications(environment, monkeypatch, failure):
-    command = SimpleNamespace(run=AsyncMock(side_effect=RuntimeError("tool failed") if failure else None))
+    command = SimpleNamespace(run=AsyncMock(side_effect=RuntimeError("command failed") if failure else None))
     factory, notify = Mock(return_value=command), Mock()
     monkeypatch.setitem(agent.command2class, "review", factory)
     result = await agent.PRAgent().handle_request(URL, ["review"], notify=notify)

@@ -1,4 +1,4 @@
-"""Delivery strategies for host-configured tool output destinations."""
+"""Delivery strategies for host-configured command output destinations."""
 
 from __future__ import annotations
 
@@ -226,7 +226,7 @@ def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
         return None
 
     if _selected_output_commands(cfg) is None:
-        return False, "push_outputs.commands must select supported tool names"
+        return False, "push_outputs.commands must select supported command names"
 
     channels = cfg.get("channels", [])
     if isinstance(channels, str):

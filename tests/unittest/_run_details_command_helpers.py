@@ -1,6 +1,6 @@
 """Shared scaffolding for the run-details command coverage tests.
 
-Tests built on these helpers drive the tool's real run() through the real
+Tests built on these helpers drive the command's real run() through the real
 retry_with_fallback_models, stubbing only the per-model prediction call, so the recorded
 model (and fallback flag) comes from the production recording path. Each test module wraps
 its tests in ``command_run_settings()`` through a module-level autouse fixture.
@@ -79,7 +79,7 @@ def _seed_stale_fallback_run():
 
 
 def _published_bodies(provider):
-    """Every non-temporary comment and thread reply the tool published, in order."""
+    """Every non-temporary comment and thread reply the command published, in order."""
     bodies = [c.args[0] for c in provider.publish_comment.call_args_list if not c.kwargs.get("is_temporary")]
     bodies += [c.args[1] for c in provider.reply_to_comment_from_comment_id.call_args_list]
     return bodies

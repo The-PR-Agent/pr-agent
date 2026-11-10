@@ -34,7 +34,7 @@ _artifact_context: ContextVar[dict[str, list[ArtifactPromptContext]] | None] = C
 
 
 def get_artifact_context(command_name: str) -> ArtifactPromptContext | None:
-    """Return the separate CI artifact prompt context for a targeted tool."""
+    """Return the separate CI artifact prompt context for a targeted command."""
     payload = _artifact_context.get()
     if payload is None:
         return None
@@ -263,7 +263,7 @@ def load_artifact_context() -> ArtifactPromptContext | None:
 
 
 def inject_artifact_context() -> None:
-    """Load a CI artifact for targeted tools as a separate prompt context.
+    """Load a CI artifact for targeted commands as a separate prompt context.
 
     ARTIFACT_PATH in the environment turns the feature on by itself. Called once before a
     command runs, by the GitHub Action runner and by the CLI.
@@ -309,7 +309,7 @@ def inject_artifact_context() -> None:
             unsupported_commands = sorted(requested_commands - SUPPORTED_ARTIFACT_COMMANDS)
             if unsupported_commands:
                 get_logger().warning(
-                    f"Unsupported artifact target tools will be ignored: {unsupported_commands}"
+                    f"Unsupported artifact target commands will be ignored: {unsupported_commands}"
                 )
             for command in supported_commands:
                 by_command[command].append(context)
@@ -317,6 +317,6 @@ def inject_artifact_context() -> None:
         if not by_command:
             return
         _artifact_context.set(by_command)
-        get_logger().info(f"Injected artifact context into tools: {sorted(by_command)}")
+        get_logger().info(f"Injected artifact context into commands: {sorted(by_command)}")
     except (OSError, ValueError, TypeError) as e:
         get_logger().warning(f"Failed to process artifacts: {e}", exc_info=True)

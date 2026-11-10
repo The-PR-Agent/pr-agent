@@ -167,7 +167,7 @@ class LocalGitProvider(GitProvider):
             file.write(pr_comment)
 
     def publish_command_failure(self, command: str, message: str):
-        # Write the failure to the tool's own file so it does not clobber review.md.
+        # Write the failure to the command's own file so it does not clobber review.md.
         path = {
             "describe": self.description_path,
             "improve": self.improve_path,
@@ -196,7 +196,7 @@ class LocalGitProvider(GitProvider):
         Write /improve output to a file (improve.md by default).
 
         There is no hosted PR to attach inline suggestions to, so the suggestions the
-        tool built for inline publishing are rendered as a single markdown document,
+        command built for inline publishing are rendered as a single markdown document,
         mirroring how /review and /describe persist their output locally. Each entry
         carries a rendered 'body' plus its file and line range; format them into a
         readable section per suggestion. Returns True so the caller does not fall back

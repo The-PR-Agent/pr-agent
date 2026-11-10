@@ -1,7 +1,7 @@
 """Focused tests for /improve filtering and quality-guard helpers.
 
 These tests exercise pure-Python helpers on PRCodeSuggestions without
-invoking any LLM or git provider network calls. The tool is constructed
+invoking any LLM or git provider network calls. The command is constructed
 via ``__new__`` and only the attributes touched by each helper are set.
 """
 from unittest.mock import MagicMock

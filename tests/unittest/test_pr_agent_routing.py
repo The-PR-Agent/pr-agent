@@ -421,7 +421,7 @@ def test_prepare_command_keeps_unquoted_value_type_when_key_is_quoted():
 async def test_handle_request_rejects_forbidden_cli_args(monkeypatch):
     class FakeCommand:
         async def run(self):
-            raise AssertionError("tool should not run")
+            raise AssertionError("command should not run")
 
     _patch_request_dependencies(monkeypatch, validate_result=(False, "secret"))
     monkeypatch.setitem(pr_agent_module.command2class, "custom", FakeCommand)
@@ -964,11 +964,11 @@ async def test_handle_request_restores_language_instructions_after_failure(monke
         def __init__(self, *_args, **_kwargs):
             observed.append(get_settings().pr_reviewer.extra_instructions)
             if failure_stage == "constructor":
-                raise RuntimeError("Tool setup failed")
+                raise RuntimeError("Command setup failed")
 
         async def run(self):
             observed.append(get_settings().pr_reviewer.extra_instructions)
-            raise RuntimeError("Tool execution failed")
+            raise RuntimeError("Command execution failed")
 
     _patch_request_dependencies(monkeypatch, update_settings_fn=pr_agent_module.update_settings_from_args)
     monkeypatch.setitem(pr_agent_module.command2class, "review", BrokenReviewer)

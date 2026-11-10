@@ -299,7 +299,7 @@ async def test_oversized_fallback_is_skipped_without_truncating_context(configur
 
 async def test_marker_text_in_diff_is_counted_literally_for_recovery(configured, monkeypatch):
     command, calls = make_command(monkeypatch, {("gpt-4o", "<|endoftext|>"): RuntimeError("failure")})
-    # Patch after make_tool so the fixture's default chunk list does not win.
+    # Patch after make_command so the fixture's default chunk list does not win.
     monkeypatch.setattr(
         module, "get_pr_multi_diffs", lambda *a, **k: PackedPRDiffs(["a", "<|endoftext|>", "c"], [], []))
     result = await retry_with_fallback_models(command.prepare_prediction_main)

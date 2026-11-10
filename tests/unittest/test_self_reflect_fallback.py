@@ -375,7 +375,7 @@ code_suggestions:
 
 
 def _prediction_command():
-    """Build a /improve tool whose self-reflection always fails, with the token budget stubbed out."""
+    """Build a /improve command whose self-reflection always fails, with the token budget stubbed out."""
     command = PRCodeSuggestions.__new__(PRCodeSuggestions)
     command.git_provider = MagicMock()
     command.ai_handler = MagicMock()

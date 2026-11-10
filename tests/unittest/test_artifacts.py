@@ -422,7 +422,7 @@ class TestInjectArtifactContext:
         assert get_artifact_context("pr_reviewer")["content"] == "FAILED: test_login"
         assert get_artifact_context("pr_questions") is None
         logger.return_value.warning.assert_called_once_with(
-            "Unsupported artifact target tools will be ignored: ['pr_custom_labels']"
+            "Unsupported artifact target commands will be ignored: ['pr_custom_labels']"
         )
 
     def test_pr_questions_is_a_supported_target(self, settings, report):

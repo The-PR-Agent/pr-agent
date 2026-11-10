@@ -677,10 +677,10 @@ def test_request_messages_append_protected_system_instructions(monkeypatch):
     )
     handler = litellm_handler.LiteLLMAIHandler()
 
-    messages = handler.build_request_messages("gpt-4o", "tool instructions", "usr")
+    messages = handler.build_request_messages("gpt-4o", "command instructions", "usr")
 
     assert messages == [
-        {"role": "system", "content": "tool instructions\n\nTRUSTED POLICY"},
+        {"role": "system", "content": "command instructions\n\nTRUSTED POLICY"},
         {"role": "user", "content": "usr"},
     ]
 

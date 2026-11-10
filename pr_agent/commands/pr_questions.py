@@ -160,7 +160,7 @@ class PRQuestions:
             get_logger().debug("PR output", artifact=pr_comment)
 
             if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_questions.enable_help_text:
-                pr_comment += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
+                pr_comment += "<hr>\n\n<details> <summary><strong>💡 Command usage guide:</strong></summary><hr> \n\n"
                 pr_comment += HelpMessage.get_ask_usage_guide()
                 pr_comment += "\n</details>\n"
 

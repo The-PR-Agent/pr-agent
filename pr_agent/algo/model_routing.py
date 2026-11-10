@@ -47,7 +47,7 @@ def _limit(rule, key: str) -> int | None:
 def route_primary_model(model_type: ModelType, git_provider) -> tuple[str, str | None] | None:
     """Return the (model, deployment_id) a routing rule picks for this pull request.
 
-    None keeps the configured primary. Only a call for the regular model is routed: a tool that
+    None keeps the configured primary. Only a call for the regular model is routed: a command that
     asked for the weak or the reasoning tier made that choice deliberately. Rules are checked in
     order and the first one whose limits the pull request fits wins.
     """

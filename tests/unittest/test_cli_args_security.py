@@ -133,7 +133,7 @@ FORBIDDEN_ARGS = [
     "--azure_devops_server.agent_identity=attacker",
     "--azure_devops_server__agent_identity=attacker",
     '--azure_devops_server={"agent_identity": "attacker"}',
-    # fail_on_command_errors decides whether a recorded tool failure fails the GitHub Action, so a
+    # fail_on_command_errors decides whether a recorded command failure fails the GitHub Action, so a
     # commenter must not be able to turn it off for their own command.
     "--github_action_config.fail_on_command_errors=false",
     "--GITHUB_ACTION_CONFIG.FAIL_ON_COMMAND_ERRORS=false",
@@ -275,8 +275,8 @@ def test_validate_user_args_all_allowed_together():
 )
 async def test_handle_request_uses_real_validator_to_block_forbidden(monkeypatch, forbidden):
     """Integration test: forbidden CLI arg should be rejected by the real
-    CliArgs.validate_user_args, before any settings update, tool
-    instantiation, tool run, or notify call happens."""
+    CliArgs.validate_user_args, before any settings update, command
+    instantiation, command run, or notify call happens."""
 
     notify = Mock()
     update_settings = Mock()

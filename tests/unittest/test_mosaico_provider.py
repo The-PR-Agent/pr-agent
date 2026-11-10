@@ -447,7 +447,7 @@ def isolated_settings():
 
 
 async def _run_command_via_spy(monkeypatch, isolated_settings, verb, canned_yaml, second_yaml=""):
-    """Patch the provider registry to a spy subclass, mock the LLM, run the tool with
+    """Patch the provider registry to a spy subclass, mock the LLM, run the command with
     publish_output=False, and return (captured_artifact, incremental_accessed_list)."""
     import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
     from pr_agent.git_providers import _GIT_PROVIDERS
@@ -460,9 +460,9 @@ async def _run_command_via_spy(monkeypatch, isolated_settings, verb, canned_yaml
     _SpyProvider.incremental_access = incremental_access
     monkeypatch.setitem(_GIT_PROVIDERS, "mosaico_diff", _SpyProvider)
 
-    # The first LLM call is the tool's main prediction (return the canned YAML).
+    # The first LLM call is the command's main prediction (return the canned YAML).
     # Subsequent calls (e.g. /improve's self-reflection scoring) get an empty string,
-    # which makes the tool fall back to its default suggestion score (passes threshold).
+    # which makes the command fall back to its default suggestion score (passes threshold).
     call_count = {"n": 0}
 
     async def fake_chat_completion(self, model, system, user, temperature=0.2, **kwargs):

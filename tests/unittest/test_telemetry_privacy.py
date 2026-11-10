@@ -206,7 +206,7 @@ async def test_recorded_review_failure_marks_span_and_next_review_starts_clean(
             assert "value = 2" in call.kwargs["user"]
         span = exporter.get_finished_spans()[-1]
         assert span.status.status_code is (StatusCode.ERROR if failed else StatusCode.OK)
-        assert span.attributes.get("error.type") == ("tool_execution_failed" if failed else None)
+        assert span.attributes.get("error.type") == ("command_execution_failed" if failed else None)
         assert span.status.description is None
         assert "error.message" not in span.attributes
         assert SENTINEL_URL not in str((span.attributes, span.status.description, span.events))
@@ -273,7 +273,7 @@ class _ExplodingCommand:
 async def test_command_exception_not_auto_recorded_by_default(telemetry, monkeypatch):
     """The OTel SDK auto-records exceptions (message, stacktrace, status
     description) on every span they propagate through — start_as_current_span
-    defaults to record_exception=True. A failing tool must not smuggle its
+    defaults to record_exception=True. A failing command must not smuggle its
     message onto the span that way, bypassing the error.message opt-in."""
     exporter, _ = telemetry
     monkeypatch.setitem(pr_agent_module.command2class, "customcmd", _ExplodingCommand)

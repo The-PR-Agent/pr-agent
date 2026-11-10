@@ -1329,7 +1329,7 @@ class AzureDevopsProvider(GitProvider):
     def publish_description(self, pr_title: str, pr_body: str) -> None:
         if len(pr_body) > MAX_PR_DESCRIPTION_AZURE_LENGTH:
 
-            usage_guide_text='<details> <summary><strong>✨ Describe tool usage guide:</strong></summary><hr>'
+            usage_guide_text='<details> <summary><strong>✨ Describe command usage guide:</strong></summary><hr>'
             ind = pr_body.find(usage_guide_text)
             if ind != -1:
                 pr_body = pr_body[:ind]

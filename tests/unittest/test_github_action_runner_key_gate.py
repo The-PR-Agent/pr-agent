@@ -106,7 +106,7 @@ async def test_other_pr_commands_still_require_model_key(monkeypatch, pr_comment
     )
     pr_comment_env(body, event_name)
 
-    with pytest.raises(SystemExit, match="Stopping before any tool runs.*OPENAI_API_KEY"):
+    with pytest.raises(SystemExit, match="Stopping before any command runs.*OPENAI_API_KEY"):
         await github_action_runner.run_action()
 
 
@@ -127,7 +127,7 @@ async def test_missing_key_stops_before_commands_naming_the_env_variable(
         lambda: ("openai", ("OPENAI_API_KEY",)),
     )
 
-    with pytest.raises(SystemExit, match="Stopping before any tool runs.*OPENAI_API_KEY"):
+    with pytest.raises(SystemExit, match="Stopping before any command runs.*OPENAI_API_KEY"):
         await github_action_runner.run_action()
 
 

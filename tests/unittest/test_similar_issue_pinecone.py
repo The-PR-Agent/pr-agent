@@ -1,4 +1,4 @@
-"""Focused unit tests for the pinecone backend of the similar issue tool."""
+"""Focused unit tests for the pinecone backend of the similar issue command."""
 import sys
 from pathlib import Path
 from types import SimpleNamespace

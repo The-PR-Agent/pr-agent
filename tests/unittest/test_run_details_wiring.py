@@ -97,7 +97,7 @@ review:
         reviewer.git_provider.is_supported.side_effect = lambda cap: cap == "gfm_markdown"
         reviewer.git_provider.get_diff_files.return_value = []
 
-        # Seeding through the tool's own init hook is what makes this a wiring test:
+        # Seeding through the command's own init hook is what makes this a wiring test:
         # drop init_run_details() from run() and the seed never lands, so the
         # section cannot render and this test fails.
         monkeypatch.setattr("pr_agent.commands.pr_reviewer.init_run_details", _seeded_init_run_details)

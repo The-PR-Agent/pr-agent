@@ -213,7 +213,7 @@ def _jira_project_keys():
             return None
         if not isinstance(key, str) or not JIRA_PROJECT_KEY_PATTERN.match(key):
             # The entry is named by position and type, never quoted back. Its content is
-            # configuration this tool does not control: it can be long, hold a secret
+            # configuration this command does not control: it can be long, hold a secret
             # pasted into the wrong setting, or carry newlines that would forge log
             # lines. The position is what an operator needs to find and fix it.
             get_logger().warning(

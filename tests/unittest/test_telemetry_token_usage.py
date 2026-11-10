@@ -159,7 +159,7 @@ async def test_fallback_flag_is_recorded_on_a_separate_timeseries(telemetry, mon
 
 
 class _RecordingCommand:
-    """A tool that makes an AI call but never installs its own collector (e.g. /ask)."""
+    """A command that makes an AI call but never installs its own collector (e.g. /ask)."""
 
     prompt_tokens = 0
     completion_tokens = 0
@@ -180,7 +180,7 @@ class _RecordingCommand:
 
 
 class _FirstUsageCommand(_RecordingCommand):
-    """Mimics a tool such as /review that installs its own collector on entry."""
+    """Mimics a command such as /review that installs its own collector on entry."""
 
     prompt_tokens = 10
 

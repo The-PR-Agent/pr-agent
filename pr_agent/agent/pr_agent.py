@@ -43,7 +43,7 @@ IncompleteBitbucketPullRequestFilesError = _IncompleteBitbucketPullRequestFilesE
 IncompletePullRequestFilesError = _IncompletePullRequestFilesError
 
 # The single source of truth for commands and aliases is
-# pr_agent/agent/command_registry.py; dispatch reads the tool mapping from it.
+# pr_agent/agent/command_registry.py; dispatch reads the command mapping from it.
 command2class = {name: spec.command for name, spec in COMMAND_SPECS.items()}
 
 commands = list(command2class.keys())
@@ -387,12 +387,12 @@ async def _serialize_command_initialization(pr_url):
 
 class PRAgent:
     def __init__(self, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
-        self.ai_handler = ai_handler  # handler factory passed to each tool when it is instantiated
+        self.ai_handler = ai_handler  # handler factory passed to each command when it is instantiated
 
     async def _create_command(self, command_class, pr_url, **kwargs):
-        """Offload isolated core-tool setup while preserving its cancellation boundary."""
+        """Offload isolated core-command setup while preserving its cancellation boundary."""
         if get_settings() is global_settings or command_class not in (PRReviewer, PRDescription, PRCodeSuggestions):
-            # Preserve shared settings and other tools' existing initialization
+            # Preserve shared settings and other commands' existing initialization
             # (some constructors also update external indexes).
             return command_class(pr_url, ai_handler=self.ai_handler, **kwargs)
 
@@ -465,7 +465,7 @@ class PRAgent:
     async def _run_command(
         self, pr_url, request, notify, span, propagate_command_errors: bool | None = None
     ) -> bool | RequestOutcome:
-        # Evaluate repository policy before command overrides, notifications or tools.
+        # Evaluate repository policy before command overrides, notifications or commands.
         apply_repo_settings(pr_url)
         if enforce_request_policy(pr_url) is False:
             span.set_attribute("pr_agent.request.ignored", True)
@@ -534,7 +534,7 @@ class PRAgent:
 
             # Install a fresh collector at the per-command boundary so the finally block
             # exports this command's usage and never repeats or inherits a prior command's
-            # counts. Tools that run their own collector (e.g. /review) replace it on entry.
+            # counts. Commands that run their own collector (e.g. /review) replace it on entry.
             init_run_details()
             if propagate_command_errors is not None:
                 # Apply this after repository and command settings so callers that require an honest
@@ -561,7 +561,7 @@ class PRAgent:
 
                 if command_failed():
                     span.set_status(StatusCode.ERROR)
-                    span.set_attribute("error.type", "tool_execution_failed")
+                    span.set_attribute("error.type", "command_execution_failed")
                 else:
                     span.set_status(StatusCode.OK)
                 return True

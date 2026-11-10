@@ -1308,7 +1308,7 @@ class TestPRUpdateChangelog:
         mock_git_provider.create_or_update_pr_file.assert_not_called()
 
     def test_gitlab_provider_method_detection(self, changelog_command, mock_git_provider):
-        """Test that the tool correctly detects GitLab provider method availability."""
+        """Test that the command correctly detects GitLab provider method availability."""
         # Arrange
         mock_git_provider.create_or_update_pr_file = MagicMock()
 

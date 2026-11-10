@@ -407,7 +407,7 @@ class PRReviewer:
 
             # publish the review
             # Providers that support it (GitLab) can post the review's final comment as a resolvable thread.
-            # This intent applies to the review only - never to status comments or the output of other tools.
+            # This intent applies to the review only - never to status comments or the output of other commands.
             review_thread_kwargs = {"as_thread": True} if self.git_provider.should_publish_review_as_thread() else {}
             state_block_reason = getattr(self, "_review_state_block_reason", None)
             if state_blocked and (
@@ -1465,7 +1465,7 @@ class PRReviewer:
 
         # Add help text if gfm_markdown is supported
         if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_reviewer.enable_help_text:
-            markdown_text += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
+            markdown_text += "<hr>\n\n<details> <summary><strong>💡 Command usage guide:</strong></summary><hr> \n\n"
             markdown_text += HelpMessage.get_review_usage_guide()
             markdown_text += "\n</details>\n"
 

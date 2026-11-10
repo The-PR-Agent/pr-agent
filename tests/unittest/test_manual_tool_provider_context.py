@@ -1,4 +1,4 @@
-"""Manual tools reuse the provider prepared by the request dispatcher."""
+"""Manual commands reuse the provider prepared by the request dispatcher."""
 
 from copy import deepcopy
 from types import SimpleNamespace

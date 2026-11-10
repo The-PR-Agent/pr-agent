@@ -31,7 +31,7 @@ class RunDetails:
     # took over. Stays None when no prediction succeeded, which the renderer reads as
     # "nothing worth showing".
     model_used: str | None = None
-    # Retain every model contributing to a merged review; keep scalar output for other tools.
+    # Retain every model contributing to a merged review; keep scalar output for other commands.
     models_used: list[str] = field(default_factory=list)
     # Sticky: once a fallback has won, a later success on the primary model must not
     # clear this, or the comment would hide that a fallback ran at all.
@@ -61,9 +61,9 @@ class RunDetails:
     known_cost_call_count: int = 0
     model_costs_usd: dict[str, Decimal] = field(default_factory=dict)
     # Monotonic reference taken when the collector is installed, i.e. at the top of the
-    # tool's run(). Monotonic so that wall-clock adjustments cannot yield a negative duration.
+    # command's run(). Monotonic so that wall-clock adjustments cannot yield a negative duration.
     start_time: float = field(default_factory=time.monotonic)
-    # Set when a tool caught its own error and, because `propagate_command_errors` is false by
+    # Set when a command caught its own error and, because `propagate_command_errors` is false by
     # default, returned normally anyway. Without this a caller cannot tell a run that published
     # nothing because it failed from one that had nothing to say.
     command_failed: bool = False
@@ -107,7 +107,7 @@ def get_run_details() -> RunDetails | None:
 
 
 def record_command_failure() -> None:
-    """Mark the current run as failed, for a tool that is about to swallow its own error."""
+    """Mark the current run as failed, for a command that is about to swallow its own error."""
     details = get_run_details()
     if details is None:
         return

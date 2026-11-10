@@ -544,7 +544,7 @@ def _stub_constructor_dependencies(monkeypatch, fake_db):
 
 
 def test_constructor_second_repo_joins_existing_table(monkeypatch, github_issue_pages):
-    """Construct the tool for a second repo on an existing table and construct it again."""
+    """Construct the command for a second repo on an existing table and construct it again."""
     _install_fake_pandas(monkeypatch)
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.table = _FakeSearchableTable([_lancedb_row("example_issue_org-repo-a", "org-repo-a")])

@@ -17,8 +17,8 @@ class PRConfig:
 
         Args:
             pr_url (str): The URL of the pull request to be reviewed.
-            args (list, optional): Unused compatibility parameter for the common tool interface. Defaults to None.
-            ai_handler: Unused compatibility parameter for the common tool interface. Defaults to None.
+            args (list, optional): Unused compatibility parameter for the common command interface. Defaults to None.
+            ai_handler: Unused compatibility parameter for the common command interface. Defaults to None.
         """
         provider_class = get_git_provider()
         self.git_provider = get_git_provider_with_context(pr_url)

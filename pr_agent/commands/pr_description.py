@@ -207,7 +207,7 @@ class PRDescription:
             # Add help text if gfm_markdown is supported
             if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_description.enable_help_text:
                 pr_body += (
-                    "<hr>\n\n<details> <summary><strong>✨ Describe tool usage guide:</strong>"
+                    "<hr>\n\n<details> <summary><strong>✨ Describe command usage guide:</strong>"
                     "</summary><hr> \n\n"
                 )
                 pr_body += HelpMessage.get_describe_usage_guide()

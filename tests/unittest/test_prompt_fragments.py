@@ -305,7 +305,7 @@ def _skills_prelude(prompt_name):
 
 def test_review_commands_share_an_identical_skills_prefix():
     """/review, /describe and /improve open the system prompt with the same
-    skills_context block, so prefix-based caches can reuse it across tools (#4007)."""
+    skills_context block, so prefix-based caches can reuse it across commands (#4007)."""
     rendered = [
         Environment(autoescape=True).from_string(_skills_prelude(name)).render({"skills_context": "sample skill"})
         for name in _SKILLS_PREFIX_TEMPLATES

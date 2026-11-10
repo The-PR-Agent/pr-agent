@@ -326,7 +326,7 @@ async def test_the_default_configuration_adds_only_the_start_reaction(reactions,
 async def test_a_swallowed_command_failure_gets_a_failure_outcome(
     reactions, comment_handler, monkeypatch
 ):
-    """Keep compatibility-swallowed tool failures from becoming success reactions."""
+    """Keep compatibility-swallowed command failures from becoming success reactions."""
     import pr_agent.agent.pr_agent as pr_agent_module
 
     reactions(success="hooray", failure="confused")

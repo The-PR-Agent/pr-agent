@@ -413,7 +413,7 @@ class TestExtractJiraTickets:
     def test_a_rejected_entry_is_never_echoed_into_the_log(self):
         """The warning names the entry's position and type, never its content.
 
-        project_keys is operator configuration this tool does not control. A value pasted
+        project_keys is operator configuration this command does not control. A value pasted
         into the wrong setting can be a credential, and one carrying newlines could forge
         whole log lines, so the rejected text is not quoted back.
         """

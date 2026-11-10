@@ -53,7 +53,7 @@ def push_outputs(
     markdown: str | None = None,
     git_provider=None,
 ) -> None:
-    """Emit a tool's output to external sinks, including its PR identity when available.
+    """Emit a command's output to external sinks, including its PR identity when available.
 
     Controlled by the [push_outputs] config section (disabled by default). Supported channels:
     "stdout" (one JSON line), "file" (append JSONL), "webhook" (POST the generic record),
@@ -107,7 +107,7 @@ async def push_outputs_async(
     markdown: str | None = None,
     git_provider=None,
 ) -> None:
-    """Emit a tool's output to external sinks without blocking the event loop.
+    """Emit a command's output to external sinks without blocking the event loop.
 
     The sinks do blocking HTTP and file I/O, so the delivery runs in a worker thread.
     Awaiting it keeps the event loop free for other work and still delivers the output
@@ -150,7 +150,7 @@ def show_relevant_configurations(relevant_section: str) -> str:
     markdown_text += (
         "<br>These are the relevant [configurations]"
         "(https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml)"
-        " for this tool:\n\n"
+        " for this command:\n\n"
     )
     markdown_text += "**[config**]\n```yaml\n\n"
     for key, value in get_settings().config.items():

@@ -9,7 +9,7 @@ review, it is ``/review`` failing outright on every PR.
 
 These tests derive the requirement from the templates (via
 ``jinja2.meta.find_undeclared_variables``) instead of restating it, and check it
-against the dict the tool actually builds by driving the real
+against the dict the command actually builds by driving the real
 ``PRReviewer.__init__``.
 """
 

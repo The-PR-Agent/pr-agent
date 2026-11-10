@@ -3,7 +3,7 @@
 The registry is the one place where command spellings, aliases, and the
 per-command facts the entry points need live. These tests pin the refactor:
 the registry must cover exactly the dispatched commands, aliases must share
-their canonical command's tool and check run, and an automatic ``/review_pr``
+their canonical command's command and check run, and an automatic ``/review_pr``
 must open and complete the ``review`` check run like ``/review`` does.
 """
 

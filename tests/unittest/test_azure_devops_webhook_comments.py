@@ -292,7 +292,7 @@ def test_empty_slash_ask_is_preserved():
 
 class _SwallowingReview:
     """Stand-in for a command that hits its own error and returns normally anyway, which is what
-    the real tools do while `propagate_command_errors` is false (see pr_reviewer.py:458-464)."""
+    the real commands do while `propagate_command_errors` is false (see pr_reviewer.py:458-464)."""
 
     def __init__(self, pr_url, ai_handler=None, args=None):
         self.observed_propagation = None
@@ -313,8 +313,8 @@ class _CleanReview:
 
 
 async def _run_comment_command(body, command_class, monkeypatch):
-    """Drive the comment endpoint through the real agent so the settings the tool sees are the
-    ones the handler asked for, and return the provider plus the tool instance."""
+    """Drive the comment endpoint through the real agent so the settings the command sees are the
+    ones the handler asked for, and return the provider plus the command instance."""
     provider = MagicMock()
     provider.get_thread_context.return_value = None
     built = []
@@ -333,10 +333,10 @@ async def _run_comment_command(body, command_class, monkeypatch):
 
 
 async def test_swallowed_command_failure_does_not_resolve_the_thread(monkeypatch):
-    """Resolving the discussion on a run that raised inside the tool leaves the author a closed
+    """Resolving the discussion on a run that raised inside the command leaves the author a closed
     thread and no review, so the handler must demand an honest verdict the way the GitHub comment
     path does. The "On it!" reply is posted before the command runs, so it still has to be cleaned
-    up on that failed run, like the temporary comments the tools remove in their finally blocks."""
+    up on that failed run, like the temporary comments the commands remove in their finally blocks."""
 
     provider, command = await _run_comment_command("/review", _SwallowingReview, monkeypatch)
 

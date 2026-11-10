@@ -21,7 +21,7 @@ from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 
 
-#Common code that can be called from similar tools:
+#Common code that can be called from similar commands:
 def modify_answer_section(ai_response: str) -> str | None:
     # Gets the model's answer and relevant sources section, replacing the heading of the answer section with:
     # :bulb: Auto-generated documentation-based answer:
@@ -800,7 +800,7 @@ class PRHelpDocs:
                 get_logger().info("No answer found")
                 return ""
             if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_help_docs.enable_help_text:
-                answer_str += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
+                answer_str += "<hr>\n\n<details> <summary><strong>💡 Command usage guide:</strong></summary><hr> \n\n"
                 answer_str += HelpMessage.get_help_docs_usage_guide()
                 answer_str += "\n</details>\n"
             return answer_str

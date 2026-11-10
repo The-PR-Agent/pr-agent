@@ -1,7 +1,7 @@
-"""Contract: no tool may reach a git-provider method its provider has declared unsupported.
+"""Contract: no command may reach a git-provider method its provider has declared unsupported.
 
 `test_git_provider_method_contract.py` pins what providers DO for a given capability;
-this file pins what CALLERS in `pr_agent/commands/` do with the answer. A tool that calls a
+this file pins what CALLERS in `pr_agent/commands/` do with the answer. A command that calls a
 capability-gated `self.git_provider.<method>(...)` without checking `is_supported()` first
 raises (or silently corrupts output) on any provider that declines that capability: #2932
 was exactly this, for `get_labels` in `pr_reviewer.py`.

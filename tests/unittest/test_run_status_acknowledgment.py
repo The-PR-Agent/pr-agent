@@ -2,8 +2,8 @@
 
 Automatic commands suppress the "Preparing review..." progress comment, so between opening a
 pull request and the model answering there is no sign PR-Agent picked it up. When
-`github.publish_as_check_run` is on, the tool's check run is opened as in_progress before the
-command runs and completed in place by the tool, so there is one signal on the commit.
+`github.publish_as_check_run` is on, the command's check run is opened as in_progress before the
+command runs and completed in place by the command, so there is one signal on the commit.
 """
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -173,7 +173,7 @@ def test_the_command_completes_the_run_the_runner_opened():
     assert completed["status"] == "completed"
     assert completed["conclusion"] == "neutral"
     assert completed["output"]["text"] == "## Review\n\nlooks fine"
-    # The tool owns the run now: the runner's completion must not overwrite its output.
+    # The command owns the run now: the runner's completion must not overwrite its output.
     assert provider.finish_check_run("review", "failure", "could not finish") is False
     assert len(_requests(provider)) == 2
 
@@ -402,7 +402,7 @@ async def test_a_provider_without_check_runs_is_left_alone(check_runs_enabled, a
 
 
 # --------------------------------------------------------------------------------------
-# A tool that swallows its own error must not be reported as a success.
+# A command that swallows its own error must not be reported as a success.
 #
 # `propagate_command_errors` is false by default, so `PRReviewer.run()` logs the failure and
 # returns normally. `handle_request` therefore answers True, and without the run-details
@@ -431,7 +431,7 @@ async def test_a_verdict_does_not_leak_into_the_next_command(check_runs_enabled,
         if command == "/describe":
             init_run_details()
             record_command_failure()
-        # A tool that never installs a collector of its own must read no verdict.
+        # A command that never installs a collector of its own must read no verdict.
         return True
 
     agent, events = _agent(outcome)
@@ -449,7 +449,7 @@ async def test_a_verdict_does_not_leak_into_the_next_command(check_runs_enabled,
 
 
 async def test_a_clean_run_still_reports_success(check_runs_enabled, auto_commands):
-    """Control: a tool that installs a collector and records nothing is a success."""
+    """Control: a command that installs a collector and records nothing is a success."""
     def clean(command):
         init_run_details()
         return True
@@ -480,7 +480,7 @@ async def test_swallowed_command_failures_are_recorded(
     restored_config("propagate_command_errors", propagate_command_errors)
 
     async def fail(*args, **kwargs):
-        raise RuntimeError("injected tool failure")
+        raise RuntimeError("injected command failure")
 
     monkeypatch.setattr(module, "retry_with_fallback_models", fail)
 
@@ -500,7 +500,7 @@ async def test_swallowed_command_failures_are_recorded(
 
     init_run_details()
     if propagate_command_errors:
-        with pytest.raises(RuntimeError, match="injected tool failure"):
+        with pytest.raises(RuntimeError, match="injected command failure"):
             await command.run()
     else:
         await command.run()

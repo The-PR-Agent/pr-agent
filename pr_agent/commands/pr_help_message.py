@@ -557,7 +557,7 @@ class PRHelpMessage:
             else:
                 supports_gfm_markdown = self.git_provider.is_supported("gfm_markdown")
                 if not supports_gfm_markdown and not self.git_provider.supports_markdown_tables():
-                    notice = "The `Help` tool requires gfm markdown, which is not supported by your code platform."
+                    notice = "The `Help` command requires gfm markdown, which is not supported by your code platform."
                     if get_settings().config.publish_output:
                         self.git_provider.publish_comment(notice)
                     else:
@@ -574,7 +574,7 @@ class PRHelpMessage:
                     f"Welcome to the {bot_display_name}, an AI-powered tool for automated pull request analysis, "
                     "feedback, suggestions and more."
                 )
-                pr_comment += f"\n\nHere is a list of tools you can use to interact with the {bot_display_name}:\n"
+                pr_comment += f"\n\nHere is a list of commands you can use to interact with the {bot_display_name}:\n"
                 base_path = f"{DOCS_SITE_URL}/tools"
 
                 command_names = []
@@ -620,7 +620,7 @@ class PRHelpMessage:
                 if (supports_gfm_markdown and self.git_provider.supports_checkbox_commands()
                         and not get_settings().config.get('disable_checkboxes', False)):
                     pr_comment += (
-                        "<table><tr align='left'><th align='left'>Tool</th>"
+                        "<table><tr align='left'><th align='left'>Command</th>"
                         "<th align='left'>Description</th><th align='left'>Trigger Interactively :gem:</th></tr>"
                     )
                     for i in range(len(command_names)):
@@ -630,7 +630,7 @@ class PRHelpMessage:
                         )
                     pr_comment += "</table>\n\n"
                     pr_comment += (
-                        "\n\n(1) Note that each tool can be "
+                        "\n\n(1) Note that each command can be "
                         "[triggered automatically]("
                         "https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened"
                         ") when a new PR is opened, or called manually by "
@@ -638,16 +638,17 @@ class PRHelpMessage:
                         "https://docs.pr-agent.ai/usage-guide/automations_and_usage/#online-usage)."
                     )
                     pr_comment += (
-                        "\n\n(2) Tools marked with [*] require additional parameters to be passed. "
-                        "For example, to invoke the `/ask` tool, you need to comment on a PR: "
-                        "`/ask \"<question content>\"`. See the relevant documentation for each tool for more details."
+                        "\n\n(2) Commands marked with [*] require additional parameters to be passed. "
+                        "For example, to invoke the `/ask` command, you need to comment on a PR: "
+                        "`/ask \"<question content>\"`. See the relevant documentation "
+                        "for each command for more details."
                     )
                 elif not supports_gfm_markdown:
                     # only basic commands, in a plain Markdown table (e.g. BBDC)
                     pr_comment = generate_bbdc_table(command_names[:4], descriptions[:4])
                 else:
                     pr_comment += (
-                        "<table><tr align='left'><th align='left'>Tool</th>"
+                        "<table><tr align='left'><th align='left'>Name</th>"
                         "<th align='left'>Command</th><th align='left'>Description</th></tr>"
                     )
                     for i in range(len(command_names)):
@@ -657,7 +658,7 @@ class PRHelpMessage:
                         )
                     pr_comment += "</table>\n\n"
                     pr_comment += (
-                        "\n\nNote that each tool can be "
+                        "\n\nNote that each command can be "
                         "[invoked automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/) "
                         "when a new PR is opened, or called manually by "
                         "[commenting on a PR](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#online-usage)."
@@ -675,7 +676,7 @@ class PRHelpMessage:
 
 def generate_bbdc_table(column_arr_1, column_arr_2):
     # Generating header row
-    header_row = "| Tool  | Description | \n"
+    header_row = "| Command  | Description | \n"
 
     # Generating separator row
     separator_row = "|--|--|\n"

@@ -96,7 +96,7 @@ def _refresh_shared_provider(pr_url):
 
 async def _handle_request(url, body, notify=None):
     # Install a fresh collector so `command_failed()` below cannot read a verdict left
-    # behind by a previous command; the tool replaces it with its own on entry.
+    # behind by a previous command; the command replaces it with its own on entry.
     init_run_details()
     try:
         _refresh_shared_provider(url)
@@ -136,8 +136,8 @@ def _settings_pr_url(event_payload, event_name):
 
     PR events carry it top-level; comment events under "issue"; workflow_run only
     resolves it for pull-request-originated runs, like its own branch below. It is the
-    API url the tools and commands use, so one provider serves the settings, the policy
-    check and the tools.
+    API url the commands use, so one provider serves the settings, the policy
+    check and the commands.
     """
     pull_request = (
         event_payload.get("pull_request")
@@ -153,20 +153,20 @@ def _settings_pr_url(event_payload, event_name):
 
 
 def _fail_on_recorded_command_error():
-    # Fail the Action on a failure the tool recorded but swallowed (propagate_command_errors=false),
+    # Fail the Action on a failure the command recorded but swallowed (propagate_command_errors=false),
     # so a PR that got no review is not reported green (#3705). The operator opts out with
     # GITHUB_ACTION_CONFIG.FAIL_ON_COMMAND_ERRORS=false; comment arguments cannot change it.
     if not is_true(get_setting_or_env("GITHUB_ACTION_CONFIG.FAIL_ON_COMMAND_ERRORS", True)):
         return
     if command_failed():
-        get_logger().warning("Tool reported success but recorded a failure; failing the action")
+        get_logger().warning("Command reported success but recorded a failure; failing the action")
         _mark_action_failed()
 
 
 async def _run_auto_command(command_class, pr_url):
-    """Run a direct auto tool while preserving GitHub Action failure semantics."""
+    """Run a direct auto command while preserving GitHub Action failure semantics."""
     # Install a fresh collector so `command_failed()` below cannot read a verdict left
-    # behind by a previous tool; the tool replaces it with its own on entry.
+    # behind by a previous command; the command replaces it with its own on entry.
     init_run_details()
     _refresh_shared_provider(pr_url)
     _normalize_publish_output_setting()
@@ -342,7 +342,7 @@ async def run_action():
         settings_provider = None
 
     # Gate on the active provider's key after repo settings are applied (a repo-level
-    # .pr_agent.toml can select a different provider) but before model-backed tools run: carrying
+    # .pr_agent.toml can select a different provider) but before model-backed commands run: carrying
     # on with the placeholder only fails every call a full run later (#4195, #4324).
     # Keyless providers defer to the run, as in `pr-agent doctor`; so do events with no
     # PR, which have no repo settings to judge from. Bare static commands need no model key.
@@ -364,7 +364,7 @@ async def run_action():
         correction = PROVIDER_AUTH_CORRECTIONS.get(env_var_names)
         if correction is not None:
             raise SystemExit(
-                f"Stopping before any tool runs: {correction} "
+                f"Stopping before any command runs: {correction} "
                 "'pr-agent doctor' preflights the same check by hand."
             )
         key_hint = (
@@ -372,7 +372,7 @@ async def run_action():
             if env_var_names else "Replace the placeholder key in provider settings or workflow env."
         )
         raise SystemExit(
-            "Stopping before any tool runs: no usable API key for the active model's provider. "
+            "Stopping before any command runs: no usable API key for the active model's provider. "
             f"{key_hint} "
             "'pr-agent doctor' preflights the same check by hand."
         )
@@ -449,7 +449,7 @@ async def run_action():
             created_at = pull_request.get("created_at")
             if (action == "review_requested" and "opened" in pr_actions
                     and created_at and created_at == pull_request.get("updated_at")):
-                # The configured opened event already runs the initial automatic tool batch.
+                # The configured opened event already runs the initial automatic command batch.
                 get_logger().info("Skipping initial review_requested event")
                 return
             pr_url = pull_request.get("url")
@@ -477,7 +477,7 @@ async def run_action():
                     f"Running auto actions: "
                     f"auto_describe={auto_describe}, auto_review={auto_review}, auto_improve={auto_improve}")
 
-                # invoke by default all three tools
+                # invoke by default all three commands
                 if auto_describe is None or is_true(auto_describe):
                     await _run_auto_command(PRDescription, pr_url)
                 if auto_review is None or is_true(auto_review):
@@ -676,7 +676,7 @@ async def _run_action_and_drain():
 
     try:
         # One request scope per run, as in the webhook servers and CLI, lets the run's commands share the
-        # GitHub provider and its PR, commit and file-content caches instead of rebuilding them per tool.
+        # GitHub provider and its PR, commit and file-content caches instead of rebuilding them per command.
         with _action_settings_scope():
             try:
                 await run_action()

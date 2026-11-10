@@ -386,7 +386,7 @@ def _is_line_number(value) -> bool:
 
 
 class GitProvider(ABC):
-    # Keep manual-tool reuse opt-in because providers can retain PR revision state.
+    # Keep manual-command reuse opt-in because providers can retain PR revision state.
     reuse_for_manual_command = False
 
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
@@ -424,7 +424,7 @@ class GitProvider(ABC):
     def supports_incremental_kind(self, kind: str) -> bool:
         """Whether `get_incremental_commits()` can scope an incremental run to `kind`
         (e.g. "suggestions" for `/improve -i`). Providers implementing kind-aware
-        incremental anchoring override this; the default is no support, so tools
+        incremental anchoring override this; the default is no support, so commands
         fall back to a full run."""
         return False
 
@@ -516,7 +516,7 @@ class GitProvider(ABC):
         """Whether a published comment renders command checkboxes as checkboxes.
 
         Providers that render `- [ ]` as a tickable box override this; the default is no
-        support, so tools render commands as text instead."""
+        support, so commands render commands as text instead."""
         return False
 
     def supports_pr_chat(self) -> bool:
@@ -527,10 +527,10 @@ class GitProvider(ABC):
     def supports_issue_indexing(cls) -> bool:
         """Whether `/similar_issue` can read and index this provider's issues.
 
-        Declared on the class rather than on an instance because the tool consults it before
+        Declared on the class rather than on an instance because the command consults it before
         constructing a provider: `PRSimilarIssue` needs to know whether to build one at all.
         The indexing path relies on issue listing, issue bodies and issue comments, so a
-        provider that exposes those overrides this; the default is no support, so the tool
+        provider that exposes those overrides this; the default is no support, so the command
         reports the command as unsupported instead of failing part-way through.
         """
         return False
@@ -556,7 +556,7 @@ class GitProvider(ABC):
     def supports_markdown_tables(self) -> bool:
         """Whether comments render pipe-table markdown.
 
-        Only consulted for providers without `gfm_markdown`, so that tools can degrade to
+        Only consulted for providers without `gfm_markdown`, so that commands can degrade to
         a plain table instead of refusing to render. Providers that render Markdown tables
         but not GitHub-flavored markdown override this."""
         return False
@@ -1091,7 +1091,7 @@ class GitProvider(ABC):
         pass
 
     def publish_command_failure(self, command: str, message: str):
-        """Report that `tool` ("describe", "improve") failed. Providers with per-tool outputs override this."""
+        """Report that `command` ("describe", "improve") failed. Providers with per-command outputs override this."""
         return self.publish_comment(message)
 
     def should_publish_review_as_thread(self) -> bool:

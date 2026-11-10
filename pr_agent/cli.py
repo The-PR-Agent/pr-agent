@@ -291,7 +291,7 @@ def run(inargs=None, args=None):
                 target = args.pr_url or "local_diff"
                 result = await PRAgent().handle_request(target, [command] + command_args)
             if result is RequestOutcome.SKIPPED:
-                # No tool ran, so there are no command callbacks or failures to drain.
+                # No command ran, so there are no command callbacks or failures to drain.
                 return RequestOutcome.SKIPPED, False
 
             # litellm defers its success/failure callbacks onto the event loop, which
@@ -320,7 +320,7 @@ def run(inargs=None, args=None):
             or (label_json_required and result is RequestOutcome.SKIPPED)
         ):
             if result is not False and recorded_failure:
-                get_logger().warning("Tool reported success but recorded a failure; exiting with an error")
+                get_logger().warning("Command reported success but recorded a failure; exiting with an error")
             return 1
 
 

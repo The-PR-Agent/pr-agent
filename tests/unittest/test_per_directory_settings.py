@@ -810,7 +810,7 @@ per_directory_settings_max_tree_pages = 999999
 
         git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
 
-        # Context-fetch knobs are root-/host-controlled; a nested file cannot make tools
+        # Context-fetch knobs are root-/host-controlled; a nested file cannot make commands
         # fetch arbitrary repo files in full when they build context for its directory.
         assert get_settings().get("config.repo_context_files", []) != [
             "huge.bin",

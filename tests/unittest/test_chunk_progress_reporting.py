@@ -1,6 +1,6 @@
 """In-place chunk progress reporting for the `/review` and `/improve` chunked flows.
 
-The placeholder both tools publish is frozen today: `/review` writes `"Preparing review..."`
+The placeholder both commands publish is frozen today: `/review` writes `"Preparing review..."`
 once and `/improve` writes the animated work-in-progress body, then neither is touched until
 the final output replaces it. A chunked run makes several parallel model calls plus retries
 that can take minutes, so both now rewrite the placeholder as chunks settle. These tests cover

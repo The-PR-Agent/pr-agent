@@ -51,7 +51,7 @@ class PRUpdateChangelog:
         # If a push is requested but not possible — the provider has no push support, or
         # restricted_mode disables the "push_code" capability — degrade gracefully: still
         # generate the changelog and publish it as a comment (which only needs
-        # pull-requests: write) instead of skipping the tool and dropping the output entirely.
+        # pull-requests: write) instead of skipping the command and dropping the output entirely.
         push_changelog_changes = get_settings().pr_update_changelog.push_changelog_changes
         self.push_changelog_changes = _as_bool_setting(push_changelog_changes, default=bool(push_changelog_changes))
         self.push_skipped_reason = None

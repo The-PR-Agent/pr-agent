@@ -1,6 +1,6 @@
 """One registry for every PR-Agent command and its aliases.
 
-Each entry maps one accepted command spelling to the tool
+Each entry maps one accepted command spelling to the command
 that runs it, and the per-command facts the entry points need, so no entry
 point keeps its own copy of the alias lists (see issue #4723). Before this
 module, the same names were repeated in ``command2class``
@@ -8,12 +8,12 @@ module, the same names were repeated in ``command2class``
 (``pr_agent/servers/github_app.py``), the plain-diff and JSON-output sets
 (``pr_agent/cli.py``), and the GitLab ``--comment_id`` rule
 (``pr_agent/servers/gitlab_webhook.py``) — and they had already drifted:
-``/review_pr``, ``/describe_pr`` and ``/improve_code`` dispatch a tool but
+``/review_pr``, ``/describe_pr`` and ``/improve_code`` dispatch a command but
 got no check run from the GitHub app. The Gerrit ``Action`` enum
 (``pr_agent/servers/gerrit_server.py``) remains a separate provider-specific API.
 
 Facts, per spelling:
-- ``check_run`` is the name the tool passes to ``_publish_check_run`` when
+- ``check_run`` is the name the command passes to ``_publish_check_run`` when
   ``github.publish_as_check_run`` is on. ``None`` preserves the previous
   behaviour for commands that never published one.
 - ``takes_comment_id`` marks the commands the GitLab webhook appends

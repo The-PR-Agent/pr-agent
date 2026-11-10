@@ -202,7 +202,7 @@ def test_real_request_failure_uses_effective_propagation_setting(
             pass
 
         async def run(self):
-            events.append("tool")
+            events.append("command")
             assert (
                 get_settings().config.get("propagate_command_errors")
                 is expected_effective_value
@@ -210,7 +210,7 @@ def test_real_request_failure_uses_effective_propagation_setting(
             if recorded_failure:
                 record_command_failure()
                 return
-            raise RuntimeError("controlled tool failure")
+            raise RuntimeError("controlled command failure")
 
     async def fake_drain(*_args, **_kwargs):
         events.append("callbacks")
@@ -237,7 +237,7 @@ def test_real_request_failure_uses_effective_propagation_setting(
 
     events.append(f"status:{status}")
     assert events == [
-        "tool",
+        "command",
         "telemetry",
         "callbacks",
         f"status:{expected_status}",
@@ -281,7 +281,7 @@ def test_run_restores_propagation_setting_between_invocations(
             observed_values.append(get_settings().config.get("propagate_command_errors"))
             if next(request_results):
                 return
-            raise RuntimeError("controlled tool failure")
+            raise RuntimeError("controlled command failure")
 
     def fake_apply_repo_settings(*_args, **_kwargs):
         nonlocal apply_calls
