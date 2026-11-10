@@ -1,6 +1,6 @@
 """config.disable_auto_feedback stops every automatic command, not only pr_commands.
 
-The docs say that with the flag set PR-Agent runs no automatic tools "when a new PR is opened, or when
+The docs say that with the flag set PR-Agent runs no automatic commands "when a new PR is opened, or when
 new code is pushed to an open PR". Each server's auto-command runner must honour it for every command
 list it can be asked to run (pr_commands, push_commands, review_commands, reviewer_commands).
 """

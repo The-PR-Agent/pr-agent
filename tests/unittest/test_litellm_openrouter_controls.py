@@ -23,6 +23,7 @@ from pr_agent.algo import (
     GPT6_MODELS_WITHOUT_NONE_EFFORT,
     token_budget,
 )
+from pr_agent.algo.ai_handlers.cloud_auth import PROVIDER_API_BASE_ENV_VARS
 
 # Environment variables that LiteLLMAIHandler.__init__ reads or mutates: the AWS
 # credential path (entered when AWS_USE_IMDS is set) writes the AWS_* variables,
@@ -155,6 +156,12 @@ class TestOpenRouterAttribution:
         }
 
     def test_other_providers_and_global_header_guard(self, monkeypatch):
+        # The routing guard reads the provider's api_base variables from the live
+        # environment and refuses the request when one is set and no api_base was
+        # resolved, so a developer shell that exports ANTHROPIC_BASE_URL (or
+        # ANTHROPIC_API_BASE) would fail this test. Clear them first.
+        for variable in PROVIDER_API_BASE_ENV_VARS["anthropic"]:
+            monkeypatch.delenv(variable, raising=False)
         assert self._headers({"X-Trace": "keep"}, provider="anthropic") == {"X-Trace": "keep"}
         monkeypatch.setattr(litellm, "headers", {"X-Global": "blocked"})
         with pytest.raises(ValueError, match="process-wide LiteLLM headers fallback"):

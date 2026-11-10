@@ -21,6 +21,9 @@ from pr_agent.algo.comment_identity import (
 from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.utils import _fix_key_value, update_settings_from_args
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.commands.pr_description import PRDescription
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import (
@@ -33,9 +36,6 @@ from pr_agent.log import get_logger
 from pr_agent.telemetry.meter import get_ai_calls_counter, get_commands_counter, get_tokens_counter
 from pr_agent.telemetry.shutdown import flush_telemetry
 from pr_agent.telemetry.tracer import get_tracer
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from pr_agent.tools.pr_description import PRDescription
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 # Keep the established import path available to integrations and tests while the
 # shared handler works against the provider-neutral base exception.
@@ -43,8 +43,8 @@ IncompleteBitbucketPullRequestFilesError = _IncompleteBitbucketPullRequestFilesE
 IncompletePullRequestFilesError = _IncompletePullRequestFilesError
 
 # The single source of truth for commands and aliases is
-# pr_agent/agent/command_registry.py; dispatch reads the tool mapping from it.
-command2class = {name: spec.tool for name, spec in COMMAND_SPECS.items()}
+# pr_agent/agent/command_registry.py; dispatch reads the command mapping from it.
+command2class = {name: spec.command for name, spec in COMMAND_SPECS.items()}
 
 commands = list(command2class.keys())
 
@@ -365,47 +365,47 @@ def response_language_instructions():
             section.extra_instructions = original
 
 
-_tool_initialization_locks = {}
+_command_initialization_locks = {}
 
 
 @asynccontextmanager
-async def _serialize_tool_initialization(pr_url):
+async def _serialize_command_initialization(pr_url):
     """Keep same-PR initialization sequential without occupying waiting worker threads."""
     key = (asyncio.get_running_loop(), pr_url)
-    lock, users = _tool_initialization_locks.get(key, (asyncio.Lock(), 0))
-    _tool_initialization_locks[key] = (lock, users + 1)
+    lock, users = _command_initialization_locks.get(key, (asyncio.Lock(), 0))
+    _command_initialization_locks[key] = (lock, users + 1)
     try:
         async with lock:
             yield
     finally:
-        _, users = _tool_initialization_locks[key]
+        _, users = _command_initialization_locks[key]
         if users == 1:
-            del _tool_initialization_locks[key]
+            del _command_initialization_locks[key]
         else:
-            _tool_initialization_locks[key] = (lock, users - 1)
+            _command_initialization_locks[key] = (lock, users - 1)
 
 
 class PRAgent:
     def __init__(self, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
-        self.ai_handler = ai_handler  # handler factory passed to each tool when it is instantiated
+        self.ai_handler = ai_handler  # handler factory passed to each command when it is instantiated
 
-    async def _create_tool(self, tool_class, pr_url, **kwargs):
-        """Offload isolated core-tool setup while preserving its cancellation boundary."""
-        if get_settings() is global_settings or tool_class not in (PRReviewer, PRDescription, PRCodeSuggestions):
-            # Preserve shared settings and other tools' existing initialization
+    async def _create_command(self, command_class, pr_url, **kwargs):
+        """Offload isolated core-command setup while preserving its cancellation boundary."""
+        if get_settings() is global_settings or command_class not in (PRReviewer, PRDescription, PRCodeSuggestions):
+            # Preserve shared settings and other commands' existing initialization
             # (some constructors also update external indexes).
-            return tool_class(pr_url, ai_handler=self.ai_handler, **kwargs)
+            return command_class(pr_url, ai_handler=self.ai_handler, **kwargs)
 
-        async with _serialize_tool_initialization(pr_url):
+        async with _serialize_command_initialization(pr_url):
             if self.ai_handler is not LiteLLMAIHandler:
                 # Injected factories may require the calling event loop.
-                return tool_class(pr_url, ai_handler=self.ai_handler, **kwargs)
+                return command_class(pr_url, ai_handler=self.ai_handler, **kwargs)
 
-            task = asyncio.create_task(asyncio.to_thread(tool_class, pr_url, ai_handler=self.ai_handler, **kwargs))
+            task = asyncio.create_task(asyncio.to_thread(command_class, pr_url, ai_handler=self.ai_handler, **kwargs))
             cancelled = None
             while True:
                 try:
-                    tool = await asyncio.shield(task)
+                    command = await asyncio.shield(task)
                     break
                 except asyncio.CancelledError as error:
                     if task.cancelled():
@@ -419,10 +419,10 @@ class PRAgent:
                     raise
             if cancelled is not None:
                 raise cancelled
-            return tool
+            return command
 
     async def _handle_request(
-        self, pr_url, request, notify=None, propagate_tool_errors: bool | None = None
+        self, pr_url, request, notify=None, propagate_command_errors: bool | None = None
     ) -> bool | RequestOutcome:
         # Exceptions raised inside are caught below, but a BaseException (e.g. the
         # CancelledError a webhook timeout raises) still escapes the span, and the SDK
@@ -436,7 +436,7 @@ class PRAgent:
             if get_settings().get("OTEL.INCLUDE_PR_URL", False):
                 span.set_attribute("pr_agent.pr_url", pr_url)
             try:
-                if propagate_tool_errors is None:
+                if propagate_command_errors is None:
                     return await self._run_command(pr_url, request, notify, span)
                 try:
                     context["settings"]
@@ -444,10 +444,10 @@ class PRAgent:
                     # Create request-local settings before awaiting commands outside middleware.
                     with request_cycle_context({"settings": copy.deepcopy(global_settings)}):
                         return await self._run_command(
-                            pr_url, request, notify, span, propagate_tool_errors=propagate_tool_errors
+                            pr_url, request, notify, span, propagate_command_errors=propagate_command_errors
                         )
                 return await self._run_command(
-                    pr_url, request, notify, span, propagate_tool_errors=propagate_tool_errors
+                    pr_url, request, notify, span, propagate_command_errors=propagate_command_errors
                 )
             except Exception as e:
                 get_logger().exception("Failed to process the command.")
@@ -463,9 +463,9 @@ class PRAgent:
                 return False
 
     async def _run_command(
-        self, pr_url, request, notify, span, propagate_tool_errors: bool | None = None
+        self, pr_url, request, notify, span, propagate_command_errors: bool | None = None
     ) -> bool | RequestOutcome:
-        # Evaluate repository policy before command overrides, notifications or tools.
+        # Evaluate repository policy before command overrides, notifications or commands.
         apply_repo_settings(pr_url)
         if enforce_request_policy(pr_url) is False:
             span.set_attribute("pr_agent.request.ignored", True)
@@ -534,13 +534,13 @@ class PRAgent:
 
             # Install a fresh collector at the per-command boundary so the finally block
             # exports this command's usage and never repeats or inherits a prior command's
-            # counts. Tools that run their own collector (e.g. /review) replace it on entry.
+            # counts. Commands that run their own collector (e.g. /review) replace it on entry.
             init_run_details()
-            if propagate_tool_errors is not None:
+            if propagate_command_errors is not None:
                 # Apply this after repository and command settings so callers that require an honest
                 # result cannot be overridden by either source. Restore it below for request isolation.
-                previous_propagation = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
-                settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_tool_errors)
+                previous_propagation = settings.get("CONFIG.PROPAGATE_COMMAND_ERRORS", False)
+                settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", propagate_command_errors)
         except Exception:
             if language_overridden:
                 settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)
@@ -552,8 +552,8 @@ class PRAgent:
                 if notify:
                     notify()
 
-                tool = await self._create_tool(command2class[action], pr_url, args=args)
-                result = await tool.run()
+                command = await self._create_command(command2class[action], pr_url, args=args)
+                result = await command.run()
                 if action == "add_docs" and result is False:
                     span.set_status(StatusCode.ERROR)
                     span.set_attribute("error.type", "documentation_publication_failed")
@@ -561,7 +561,7 @@ class PRAgent:
 
                 if command_failed():
                     span.set_status(StatusCode.ERROR)
-                    span.set_attribute("error.type", "tool_execution_failed")
+                    span.set_attribute("error.type", "command_execution_failed")
                 else:
                     span.set_status(StatusCode.OK)
                 return True
@@ -569,21 +569,21 @@ class PRAgent:
             if language_overridden:
                 settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)
             _record_token_metrics(action, _git_provider)
-            if propagate_tool_errors is not None:
-                settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", previous_propagation)
+            if propagate_command_errors is not None:
+                settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", previous_propagation)
 
     async def handle_request(
-        self, pr_url, request, notify=None, propagate_tool_errors: bool | None = None
+        self, pr_url, request, notify=None, propagate_command_errors: bool | None = None
     ) -> bool | RequestOutcome:
         """Return True, False, or RequestOutcome.SKIPPED without raising command errors.
 
         Callers must check for SKIPPED before reactions or other command follow-up.
         """
         try:
-            if propagate_tool_errors is None:
+            if propagate_command_errors is None:
                 return await self._handle_request(pr_url, request, notify)
             return await self._handle_request(
-                pr_url, request, notify, propagate_tool_errors=propagate_tool_errors
+                pr_url, request, notify, propagate_command_errors=propagate_command_errors
             )
         except Exception:
             # _handle_request already catches command failures and annotates the span;

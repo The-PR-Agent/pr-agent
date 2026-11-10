@@ -5,8 +5,8 @@ from dynaconf import Dynaconf
 from starlette_context import request_cycle_context
 
 from pr_agent import config_loader, git_providers
-from pr_agent.tools import pr_config
-from pr_agent.tools.pr_config import PRConfig
+from pr_agent.commands import pr_config
+from pr_agent.commands.pr_config import PRConfig
 
 PR_URL = "https://github.com/example/repo/pull/1"
 

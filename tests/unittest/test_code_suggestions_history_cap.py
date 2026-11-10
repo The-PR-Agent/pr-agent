@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from pr_agent.algo.comment_identity import PRCodeSuggestionsIdentity
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 
 NAME = "suggestions"
 CAP = 2

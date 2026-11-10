@@ -1,4 +1,4 @@
-"""Delivery strategies for host-configured tool output destinations."""
+"""Delivery strategies for host-configured command output destinations."""
 
 from __future__ import annotations
 
@@ -205,16 +205,16 @@ OUTPUT_SINK_TYPES: dict[str, type[OutputSink]] = {
 }
 
 
-def _selected_output_tools(cfg: dict) -> list[str] | None:
+def _selected_output_commands(cfg: dict) -> list[str] | None:
     """Return selected output types, or None for an invalid configuration."""
-    tools = cfg.get("tools", ["review", "describe", "improve"])
-    if isinstance(tools, str):
-        tools = normalize_setting_list(tools, split_commas=True)
-    if (not isinstance(tools, (list, tuple)) or not tools
+    commands = cfg.get("commands", ["review", "describe", "improve"])
+    if isinstance(commands, str):
+        commands = normalize_setting_list(commands, split_commas=True)
+    if (not isinstance(commands, (list, tuple)) or not commands
             or any(not isinstance(name, str) or name not in ("review", "describe", "improve", "ask")
-                   for name in tools)):
+                   for name in commands)):
         return None
-    return list(tools)
+    return list(commands)
 
 
 def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
@@ -225,8 +225,8 @@ def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
     if not _as_bool_setting(enable, default=bool(enable)):
         return None
 
-    if _selected_output_tools(cfg) is None:
-        return False, "push_outputs.tools must select supported tool names"
+    if _selected_output_commands(cfg) is None:
+        return False, "push_outputs.commands must select supported command names"
 
     channels = cfg.get("channels", [])
     if isinstance(channels, str):

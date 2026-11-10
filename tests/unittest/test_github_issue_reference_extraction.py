@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from pr_agent.tools.ticket_pr_compliance_check import (
+from pr_agent.commands.ticket_pr_compliance_check import (
     BRANCH_ISSUE_PATTERN,
     MAX_SHORTHAND_ISSUE_DIGITS,
     extract_ticket_links_from_pr_description,
@@ -227,7 +227,7 @@ def test_invalid_provider_web_origin_does_not_admit_full_url(base):
 
 def test_unparseable_web_origin_warns_without_changing_shorthand_fallback(monkeypatch):
     logger = Mock()
-    monkeypatch.setattr("pr_agent.tools.ticket_pr_compliance_check.get_logger", lambda: logger)
+    monkeypatch.setattr("pr_agent.commands.ticket_pr_compliance_check.get_logger", lambda: logger)
     base = "https://ghe.example.test:bad"
 
     assert extract_ticket_links_from_pr_description(
@@ -289,7 +289,7 @@ def test_regression_mid_token_does_not_match_cross_repo():
 def description_regex(monkeypatch):
     def configure(pattern):
         monkeypatch.setattr(
-            "pr_agent.tools.ticket_pr_compliance_check.get_settings",
+            "pr_agent.commands.ticket_pr_compliance_check.get_settings",
             lambda: {"config.description_issue_regex": pattern},
         )
     return configure
@@ -312,7 +312,7 @@ def test_invalid_custom_pattern_falls_back(description_regex, pattern, monkeypat
     from unittest.mock import Mock
 
     logger = Mock()
-    monkeypatch.setattr("pr_agent.tools.ticket_pr_compliance_check.get_logger", lambda: logger)
+    monkeypatch.setattr("pr_agent.commands.ticket_pr_compliance_check.get_logger", lambda: logger)
     description_regex(pattern)
     assert _links("PR #56") == [f"{BASE}/{REPO}/issues/56"]
     logger.warning.assert_called_once()

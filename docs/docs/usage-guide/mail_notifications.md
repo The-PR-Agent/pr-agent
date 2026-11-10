@@ -13,9 +13,9 @@ As an alternative, you can filter in your mail provider the notifications specif
 
 <img src="/img/filter_mail_notifications.png" alt="filter_mail_notifications" width="512" />
 
-Another option to reduce the mail overload, yet still receive notifications on PR-Agent tools, is to disable the help collapsible section in PR-Agent bot comments.
-This can done by setting `enable_help_text=false` for the relevant tool in the configuration file.
-For example, to disable the help text for the `pr_reviewer` tool, set:
+Another option to reduce the mail overload, yet still receive notifications on PR-Agent commands, is to disable the help collapsible section in PR-Agent bot comments.
+This can done by setting `enable_help_text=false` for the relevant command in the configuration file.
+For example, to disable the help text for the `pr_reviewer` command, set:
 
 ```
 [pr_reviewer]

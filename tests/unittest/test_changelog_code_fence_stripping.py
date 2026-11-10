@@ -8,20 +8,20 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from pr_agent.commands.pr_update_changelog import PRUpdateChangelog, strip_wrapping_code_fence
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import FileContentSnapshot
-from pr_agent.tools.pr_update_changelog import PRUpdateChangelog, strip_wrapping_code_fence
 
 EXISTING = "# Changelog\n\n## 2026-01-01\n- Initial release\n"
 
 
 def _prepared(prediction, commit=True):
-    tool = PRUpdateChangelog.__new__(PRUpdateChangelog)
-    tool.changelog_path = "CHANGELOG.md"
-    tool.prediction = prediction
-    tool.changelog_file = EXISTING
-    tool.commit_changelog = commit
-    return tool._prepare_changelog_update()
+    command = PRUpdateChangelog.__new__(PRUpdateChangelog)
+    command.changelog_path = "CHANGELOG.md"
+    command.prediction = prediction
+    command.changelog_file = EXISTING
+    command.commit_changelog = commit
+    return command._prepare_changelog_update()
 
 
 @pytest.mark.parametrize("entry", [
@@ -141,31 +141,31 @@ def test_the_commit_hint_is_appended_when_not_committing():
 # End to end: what actually reaches CHANGELOG.md on the branch
 # --------------------------------------------------------------------------------------
 @pytest.fixture
-def committing_tool(monkeypatch):
+def committing_command(monkeypatch):
     """The real push path, with only the provider and the 5s settle sleep replaced."""
     async def no_sleep(seconds):
         assert seconds == 5
 
-    monkeypatch.setattr("pr_agent.tools.pr_update_changelog.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("pr_agent.commands.pr_update_changelog.asyncio.sleep", no_sleep)
     monkeypatch.setitem(get_settings().config, "git_provider", "local")
     provider = MagicMock()
     provider.get_pr_branch.return_value = "feature/retry"
-    tool = PRUpdateChangelog.__new__(PRUpdateChangelog)
-    tool.changelog_path = "CHANGELOG.md"
-    tool.git_provider = provider
-    tool.changelog_file = EXISTING
-    tool.changelog_snapshot = FileContentSnapshot(EXISTING, True, "fixture-revision")
-    tool.commit_changelog = True
-    return tool, provider
+    command = PRUpdateChangelog.__new__(PRUpdateChangelog)
+    command.changelog_path = "CHANGELOG.md"
+    command.git_provider = provider
+    command.changelog_file = EXISTING
+    command.changelog_snapshot = FileContentSnapshot(EXISTING, True, "fixture-revision")
+    command.commit_changelog = True
+    return command, provider
 
 
 @pytest.mark.asyncio
-async def test_the_committed_file_keeps_the_inline_code_span(committing_tool):
-    tool, provider = committing_tool
-    tool.prediction = "## 2026-09-06\n\n### Fixed\n- Handle `None` in `parse()`"
+async def test_the_committed_file_keeps_the_inline_code_span(committing_command):
+    command, provider = committing_command
+    command.prediction = "## 2026-09-06\n\n### Fixed\n- Handle `None` in `parse()`"
 
-    new_file_content, answer = tool._prepare_changelog_update()
-    await tool._push_changelog_update(new_file_content, answer)
+    new_file_content, answer = command._prepare_changelog_update()
+    await command._push_changelog_update(new_file_content, answer)
 
     committed = provider.create_or_update_pr_file.call_args.kwargs["contents"]
     assert committed.startswith("## 2026-09-06\n\n### Fixed\n- Handle `None` in `parse()`")
@@ -174,12 +174,12 @@ async def test_the_committed_file_keeps_the_inline_code_span(committing_tool):
 
 
 @pytest.mark.asyncio
-async def test_the_committed_file_is_written_to_the_pr_branch(committing_tool):
-    tool, provider = committing_tool
-    tool.prediction = "## 2026-09-06\n- Handle `None`"
+async def test_the_committed_file_is_written_to_the_pr_branch(committing_command):
+    command, provider = committing_command
+    command.prediction = "## 2026-09-06\n- Handle `None`"
 
-    new_file_content, answer = tool._prepare_changelog_update()
-    await tool._push_changelog_update(new_file_content, answer)
+    new_file_content, answer = command._prepare_changelog_update()
+    await command._push_changelog_update(new_file_content, answer)
 
     kwargs = provider.create_or_update_pr_file.call_args.kwargs
     assert kwargs["file_path"] == "CHANGELOG.md"
@@ -239,13 +239,13 @@ def test_a_long_backtick_run_is_stripped_in_linear_time():
 
 
 @pytest.mark.asyncio
-async def test_a_fenced_answer_is_committed_without_its_fence(committing_tool):
+async def test_a_fenced_answer_is_committed_without_its_fence(committing_command):
     """The model often wraps the whole entry; the fence must not reach the file."""
-    tool, provider = committing_tool
-    tool.prediction = "```markdown\n## 2026-09-06\n- Handle `None`\n```"
+    command, provider = committing_command
+    command.prediction = "```markdown\n## 2026-09-06\n- Handle `None`\n```"
 
-    new_file_content, answer = tool._prepare_changelog_update()
-    await tool._push_changelog_update(new_file_content, answer)
+    new_file_content, answer = command._prepare_changelog_update()
+    await command._push_changelog_update(new_file_content, answer)
 
     committed = provider.create_or_update_pr_file.call_args.kwargs["contents"]
     assert committed.startswith("## 2026-09-06\n- Handle `None`")

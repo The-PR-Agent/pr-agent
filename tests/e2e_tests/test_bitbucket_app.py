@@ -63,9 +63,9 @@ def test_e2e_run_bitbucket_app():
             destination_branch=base_branch
         )
 
-        # check every 1 minute, for 5 minutes if the PR has all the tool results
+        # check every 1 minute, for 5 minutes if the PR has all the command results
         for i in range(NUM_MINUTES):
-            logger.info("Waiting for the PR to get all the tool results...")
+            logger.info("Waiting for the PR to get all the command results...")
             time.sleep(60)
             comments = list(pr.comments())
             comments_raw = [c.raw for c in comments]
@@ -81,9 +81,9 @@ def test_e2e_run_bitbucket_app():
                     logger.error("REVIEW feedback is invalid")
                     raise Exception("REVIEW feedback is invalid")
             else:
-                logger.info(f"Waiting for the PR to get all the tool results. {i + 1} minute(s) passed")
+                logger.info(f"Waiting for the PR to get all the command results. {i + 1} minute(s) passed")
         else:
-            raise AssertionError(f"After {NUM_MINUTES} minutes, the PR did not get all the tool results")
+            raise AssertionError(f"After {NUM_MINUTES} minutes, the PR did not get all the command results")
 
         # cleanup - delete the branch
         pr.decline()

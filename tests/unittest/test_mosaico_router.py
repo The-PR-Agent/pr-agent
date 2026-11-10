@@ -1,7 +1,7 @@
 """Tests for the MOSAICO dispatch router (capture/fallback behavior).
 
 Pins: each path returns a string and NEVER raises; no-files/no-suggestions/empty-ask
--> empty-fallback string; a tool that raises (monkeypatched) -> error-fallback string
+-> empty-fallback string; a command that raises (monkeypatched) -> error-fallback string
 with no exception escaping.
 
 asyncio_mode=auto."""
@@ -128,7 +128,7 @@ def restore_settings():
     """Snapshot/restore the settings keys the router mutates, leaving global_settings
     exactly as found."""
     keys = ["CONFIG.GIT_PROVIDER", "CONFIG.PUBLISH_OUTPUT", "CONFIG.PUBLISH_OUTPUT_PROGRESS",
-            "CONFIG.PROPAGATE_TOOL_ERRORS"]
+            "CONFIG.PROPAGATE_COMMAND_ERRORS"]
     before = {k: global_settings.get(k, _SENTINEL) for k in keys}
     mosaico_existed = "MOSAICO" in global_settings
     mosaico_input = global_settings.get("MOSAICO.INPUT", _SENTINEL)
@@ -153,7 +153,7 @@ def restore_settings():
 
 
 def _set_artifact(value):
-    # Mirror how the real tools stash output: attribute assignment replaces cleanly
+    # Mirror how the real commands stash output: attribute assignment replaces cleanly
     # (Dynaconf .set merges dicts, which would not overwrite a prior artifact).
     global_settings.data = {"artifact": value}
 
@@ -362,7 +362,7 @@ index 1111111..2222222 100644
 
         from pr_agent.agent.pr_agent import PRAgent
         monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
-        monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions", _explode_prquestions)
+        monkeypatch.setattr("pr_agent.commands.pr_questions.PRQuestions", _explode_prquestions)
 
         diff_with_q = (
             "```diff\n"
@@ -525,8 +525,8 @@ class TestDefensiveCapture:
         assert result.ok is True
 
     @pytest.mark.asyncio
-    async def test_tool_exception_marks_failed(self, monkeypatch, restore_settings):
-        """The contrast to the test above: same empty artifact, but the tool raised. The
+    async def test_command_exception_marks_failed(self, monkeypatch, restore_settings):
+        """The contrast to the test above: same empty artifact, but the command raised. The
         re-raise makes handle_request return False, so the router must report ok=False
         rather than the empty fallback."""
         async def fake_fetch_public_diff(pr_url):
@@ -547,8 +547,8 @@ class TestDefensiveCapture:
 
     @pytest.mark.asyncio
     async def test_legacy_callers_unaffected_when_flag_off(self, monkeypatch, restore_settings):
-        """Blast-radius guard for CLI/webhook callers, which pass no propagate_tool_errors
-        arg: a tool failing internally must still swallow and still return True, unchanged."""
+        """Blast-radius guard for CLI/webhook callers, which pass no propagate_command_errors
+        arg: a command failing internally must still swallow and still return True, unchanged."""
         import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
         import pr_agent.mosaico.provider_registration  # noqa: F401
         from pr_agent.agent.pr_agent import PRAgent
@@ -567,8 +567,8 @@ class TestDefensiveCapture:
         assert ok is True, "flag off must preserve the pre-existing swallow-and-succeed behaviour"
 
     @pytest.mark.asyncio
-    async def test_propagate_tool_errors_passed_to_handle_request(self, monkeypatch, restore_settings):
-        """Pins the wiring: without this arg the tools swallow and a failure reads as empty."""
+    async def test_propagate_command_errors_passed_to_handle_request(self, monkeypatch, restore_settings):
+        """Pins the wiring: without this arg the commands swallow and a failure reads as empty."""
         seen = {}
 
         async def fake_fetch_public_diff(pr_url):
@@ -584,11 +584,11 @@ class TestDefensiveCapture:
         monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
 
         await route_and_run_result(f"review {PR_URL}")
-        assert "--config.propagate_tool_errors=true" in seen["args"]
+        assert "--config.propagate_command_errors=true" in seen["args"]
 
     @pytest.mark.asyncio
     async def test_propagate_flag_does_not_outlive_a_contextless_run(self, monkeypatch, restore_settings):
-        """Runs the real arg-parsing path: the flag must be live at the tool run, and gone after.
+        """Runs the real arg-parsing path: the flag must be live at the command run, and gone after.
         Contextless, get_settings() is global_settings, so without the restore one dispatch call
         would leave re-raising on for every later caller."""
         import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
@@ -598,20 +598,20 @@ class TestDefensiveCapture:
         seen = {}
 
         async def failing_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
-            seen["during"] = get_settings().config.get("propagate_tool_errors")
+            seen["during"] = get_settings().config.get("propagate_command_errors")
             raise RuntimeError("provider unavailable")
 
         monkeypatch.setattr(litellm_mod.LiteLLMAIHandler, "chat_completion", failing_chat_completion)
         global_settings.set("MOSAICO.INPUT", {"files": parse_unified_diff(SAMPLE_RAW_DIFF),
                                               "languages": {"py": 1}, "title": "Supplied diff"})
         global_settings.set("CONFIG.GIT_PROVIDER", "mosaico_diff")
-        global_settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+        global_settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", False)
 
         result = await dispatch._run_pr_agent("mosaico://supplied-diff", "review")
 
-        assert seen["during"] is True, "the arg never reached the tool run"
+        assert seen["during"] is True, "the arg never reached the command run"
         assert result.ok is False, "the re-raise must surface as ok=False"
-        assert global_settings.config.get("propagate_tool_errors") is False, "flag leaked past the run"
+        assert global_settings.config.get("propagate_command_errors") is False, "flag leaked past the run"
 
     @pytest.mark.asyncio
     async def test_ask_that_raises_returns_error_fallback(self, monkeypatch, restore_settings):
@@ -910,7 +910,7 @@ class TestPublishOutputForced:
     async def test_run_pr_agent_injects_no_publish_flags(self, monkeypatch, restore_settings):
         """_run_pr_agent must pass --config.publish_output=false and
         --config.publish_output_progress=false in the handle_request args list so that
-        the tool writes into data['artifact'] rather than publishing to the real PR."""
+        the command writes into data['artifact'] rather than publishing to the real PR."""
         captured_args = {}
 
         async def fake_handle_request(self, pr_url, request, notify=None):
@@ -930,7 +930,7 @@ class TestPublishOutputForced:
         assert out.text == "REVIEW OUTPUT"
         assert "--config.publish_output=false" in captured_args["request"], (
             "Production path must inject --config.publish_output=false; "
-            "without it the tool publishes to the real PR and returns nothing to MOSAICO."
+            "without it the command publishes to the real PR and returns nothing to MOSAICO."
         )
         assert "--config.publish_output_progress=false" in captured_args["request"], (
             "Production path must inject --config.publish_output_progress=false."

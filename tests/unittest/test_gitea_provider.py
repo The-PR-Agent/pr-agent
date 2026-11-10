@@ -2262,7 +2262,7 @@ class TestGiteaRepoIgnoreRules:
 class TestGiteaCommitMessages:
     """Commit messages must stay separable.
 
-    ``get_commit_messages`` feeds seven tools. Gitea previously joined the list with
+    ``get_commit_messages`` feeds seven commands. Gitea previously joined the list with
     ``""``, so two commits reached the prompt as one fused run of text. GitHub
     (``github_provider.py:1879``) and GitLab (``gitlab_provider.py:2286``) both
     number each message and join with newlines, and that is the format Gitea

@@ -77,7 +77,7 @@ async def test_gitea_review_rejects_incomplete_real_provider_inventory(monkeypat
     """Verify a failed SDK files page aborts the real /review route before model use."""
     from giteapy.rest import ApiException
 
-    import pr_agent.tools.pr_reviewer as reviewer_module
+    import pr_agent.commands.pr_reviewer as reviewer_module
 
     settings = Mock()
     settings.get.side_effect = lambda key, default=None: {
@@ -177,7 +177,7 @@ async def test_handle_request_routes_known_command_and_notifies(monkeypatch):
     runs = []
     notify = Mock()
 
-    class FakeTool:
+    class FakeCommand:
         def __init__(self, pr_url, ai_handler, args):
             self.pr_url = pr_url
             self.ai_handler = ai_handler
@@ -187,7 +187,7 @@ async def test_handle_request_routes_known_command_and_notifies(monkeypatch):
             runs.append((self.pr_url, self.ai_handler, self.args))
 
     _patch_request_dependencies(monkeypatch, update_settings_fn=lambda args: ["--kept"])
-    monkeypatch.setitem(pr_agent_module.command2class, "custom", FakeTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "custom", FakeCommand)
 
     handled = await pr_agent_module.PRAgent(ai_handler="fake-ai")._handle_request(
         "https://example/pr/1", "/custom --flag", notify
@@ -202,7 +202,7 @@ async def test_handle_request_routes_known_command_and_notifies(monkeypatch):
 async def test_handle_request_routes_list_request_without_string_parsing(monkeypatch):
     runs = []
 
-    class FakeTool:
+    class FakeCommand:
         def __init__(self, pr_url, ai_handler, args):
             self.pr_url = pr_url
             self.ai_handler = ai_handler
@@ -212,7 +212,7 @@ async def test_handle_request_routes_list_request_without_string_parsing(monkeyp
             runs.append((self.pr_url, self.ai_handler, self.args))
 
     _patch_request_dependencies(monkeypatch)
-    monkeypatch.setitem(pr_agent_module.command2class, "custom", FakeTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "custom", FakeCommand)
 
     handled = await pr_agent_module.PRAgent(ai_handler="fake-ai")._handle_request(
         "https://example/pr/1",
@@ -224,17 +224,17 @@ async def test_handle_request_routes_list_request_without_string_parsing(monkeyp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action, tool_result", [("custom", False), ("add_docs", None), ("add_docs", 0)])
-async def test_legacy_tool_results_keep_success_acknowledgement(monkeypatch, action, tool_result):
-    class FakeTool:
+@pytest.mark.parametrize("action, command_result", [("custom", False), ("add_docs", None), ("add_docs", 0)])
+async def test_legacy_command_results_keep_success_acknowledgement(monkeypatch, action, command_result):
+    class FakeCommand:
         def __init__(self, *_args, **_kwargs):
             pass
 
         async def run(self):
-            return tool_result
+            return command_result
 
     _patch_request_dependencies(monkeypatch)
-    monkeypatch.setitem(pr_agent_module.command2class, action, FakeTool)
+    monkeypatch.setitem(pr_agent_module.command2class, action, FakeCommand)
 
     assert await pr_agent_module.PRAgent(ai_handler="fake-ai").handle_request(
         "https://example/pr/1", f"/{action}"
@@ -419,12 +419,12 @@ def test_prepare_command_keeps_unquoted_value_type_when_key_is_quoted():
 
 @pytest.mark.asyncio
 async def test_handle_request_rejects_forbidden_cli_args(monkeypatch):
-    class FakeTool:
+    class FakeCommand:
         async def run(self):
-            raise AssertionError("tool should not run")
+            raise AssertionError("command should not run")
 
     _patch_request_dependencies(monkeypatch, validate_result=(False, "secret"))
-    monkeypatch.setitem(pr_agent_module.command2class, "custom", FakeTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "custom", FakeCommand)
 
     handled = await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", "/custom --secret=value")
 
@@ -436,14 +436,14 @@ async def test_incomplete_github_files_constructor_error_publishes_sanitized_not
     secret = "private/repo mismatch: expected 5001 files but fetched 3000"
     provider = _incomplete_files_provider()
 
-    class IncompleteTool:
+    class IncompleteCommand:
         def __init__(self, pr_url, ai_handler, args):
             raise pr_agent_module.IncompletePullRequestFilesError(secret)
 
     _patch_request_dependencies(monkeypatch)
     monkeypatch.setitem(get_settings().config, "publish_output", True)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
-    monkeypatch.setitem(pr_agent_module.command2class, "custom", IncompleteTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "custom", IncompleteCommand)
 
     handled = await pr_agent_module.PRAgent()._handle_request(
         "https://example/pr/1", "/custom"
@@ -465,14 +465,14 @@ async def test_incomplete_gitlab_diff_constructor_error_publishes_sanitized_noti
     secret = "private/repository diff mismatch with request details"
     provider = _incomplete_files_provider()
 
-    class IncompleteTool:
+    class IncompleteCommand:
         def __init__(self, pr_url, ai_handler, args):
             raise gitlab_module.IncompleteGitLabDiffError(secret)
 
     _patch_request_dependencies(monkeypatch)
     monkeypatch.setitem(get_settings().config, "publish_output", True)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
-    monkeypatch.setitem(pr_agent_module.command2class, "custom", IncompleteTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "custom", IncompleteCommand)
 
     handled = await pr_agent_module.PRAgent()._handle_request(
         "https://example/pr/1", "/custom"
@@ -514,14 +514,14 @@ async def test_incomplete_bitbucket_constructor_error_keeps_provider_specific_fa
     elif outcome == "publication_failure":
         provider.publish_comment.side_effect = RuntimeError("secondary publication failure")
 
-    class IncompleteTool:
+    class IncompleteCommand:
         def __init__(self, pr_url, ai_handler, args):
             raise pr_agent_module.IncompleteBitbucketPullRequestFilesError(secret)
 
     _patch_request_dependencies(monkeypatch)
     monkeypatch.setitem(get_settings().config, "publish_output", outcome != "disabled")
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", provider_factory)
-    monkeypatch.setitem(pr_agent_module.command2class, "describe", IncompleteTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "describe", IncompleteCommand)
 
     handled = await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", "/describe")
 
@@ -555,11 +555,11 @@ async def test_incomplete_bitbucket_constructor_error_keeps_provider_specific_fa
 @pytest.mark.parametrize(
     "action", ["add_docs", "generate_labels", "describe", "review", "improve"]
 )
-async def test_incomplete_bitbucket_tool_error_returns_failure_and_publishes_notice(monkeypatch, action):
+async def test_incomplete_bitbucket_command_error_returns_failure_and_publishes_notice(monkeypatch, action):
     provider = _incomplete_files_provider()
     provider.supports_html_comment_markers.return_value = False
 
-    class IncompleteTool:
+    class IncompleteCommand:
         def __init__(self, *_args, **_kwargs):
             pass
 
@@ -569,7 +569,7 @@ async def test_incomplete_bitbucket_tool_error_returns_failure_and_publishes_not
     _patch_request_dependencies(monkeypatch)
     monkeypatch.setitem(get_settings().config, "publish_output", True)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
-    monkeypatch.setitem(pr_agent_module.command2class, action, IncompleteTool)
+    monkeypatch.setitem(pr_agent_module.command2class, action, IncompleteCommand)
 
     handled = await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", f"/{action}")
 
@@ -629,13 +629,13 @@ def test_unverifiable_incomplete_bitbucket_files_marker_does_not_suppress_notice
 async def test_unexpected_constructor_error_does_not_publish_incomplete_files_notice(monkeypatch):
     provider_factory = Mock()
 
-    class BrokenTool:
+    class BrokenCommand:
         def __init__(self, pr_url, ai_handler, args):
             raise RuntimeError("unrelated")
 
     _patch_request_dependencies(monkeypatch)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", provider_factory)
-    monkeypatch.setitem(pr_agent_module.command2class, "custom", BrokenTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "custom", BrokenCommand)
 
     handled = await pr_agent_module.PRAgent()._handle_request(
         "https://example/pr/1", "/custom"
@@ -750,14 +750,14 @@ async def test_incomplete_files_notice_publication_failure_keeps_command_failed(
     provider = _incomplete_files_provider()
     provider.publish_comment.side_effect = RuntimeError("publication unavailable")
 
-    class IncompleteTool:
+    class IncompleteCommand:
         def __init__(self, pr_url, ai_handler, args):
             raise pr_agent_module.IncompletePullRequestFilesError("internal details")
 
     _patch_request_dependencies(monkeypatch)
     monkeypatch.setitem(get_settings().config, "publish_output", True)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
-    monkeypatch.setitem(pr_agent_module.command2class, "custom", IncompleteTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "custom", IncompleteCommand)
 
     handled = await pr_agent_module.PRAgent()._handle_request(
         "https://example/pr/1", "/custom"
@@ -795,7 +795,7 @@ async def test_handle_request_wrapper_returns_false_on_exception(monkeypatch):
 async def test_handle_request_propagates_cancellation(monkeypatch):
     started = asyncio.Event()
 
-    class BlockingTool:
+    class BlockingCommand:
         def __init__(self, pr_url, ai_handler, args):
             pass
 
@@ -805,7 +805,7 @@ async def test_handle_request_propagates_cancellation(monkeypatch):
 
     _patch_request_dependencies(monkeypatch, update_settings_fn=pr_agent_module.update_settings_from_args)
     monkeypatch.setitem(
-        pr_agent_module.command2class, "blocking", BlockingTool
+        pr_agent_module.command2class, "blocking", BlockingCommand
     )
 
     with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
@@ -833,7 +833,7 @@ async def test_unscoped_dispatcher_does_not_load_artifact_or_change_instructions
     original_instructions = settings.pr_reviewer.extra_instructions
     observed = []
 
-    class FakeTool:
+    class FakeCommand:
         def __init__(self, _pr_url, ai_handler=None, args=None):
             observed.append(str(settings.pr_reviewer.extra_instructions))
 
@@ -849,7 +849,7 @@ async def test_unscoped_dispatcher_does_not_load_artifact_or_change_instructions
         _patch_request_dependencies(monkeypatch)
         monkeypatch.setattr(artifacts, "load_artifact_context", fail_if_loaded)
         monkeypatch.setattr(artifacts, "_read_and_truncate", fail_if_loaded)
-        monkeypatch.setitem(pr_agent_module.command2class, "review", FakeTool)
+        monkeypatch.setitem(pr_agent_module.command2class, "review", FakeCommand)
 
         handled = await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", "/review")
 
@@ -885,18 +885,18 @@ async def test_handle_request_restores_language_after_invalid_arguments(monkeypa
     with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
         settings = get_settings()
         settings.set("CONFIG.RESPONSE_LANGUAGE", "de-DE")
-        settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+        settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", False)
         command = "/review --config.response_language=fr-FR"
         if error_stage == "arguments":
             command += " --config=123"
         else:
             monkeypatch.setattr(pr_agent_module, "init_run_details", Mock(side_effect=RuntimeError("setup failed")))
         handled = await pr_agent_module.PRAgent()._handle_request(
-            "https://example/pr/1", command, propagate_tool_errors=True
+            "https://example/pr/1", command, propagate_command_errors=True
         )
         assert handled is False
         assert settings.config.response_language == "de-DE"
-        assert settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False) is False
+        assert settings.get("CONFIG.PROPAGATE_COMMAND_ERRORS", False) is False
 
 
 @pytest.mark.asyncio
@@ -964,11 +964,11 @@ async def test_handle_request_restores_language_instructions_after_failure(monke
         def __init__(self, *_args, **_kwargs):
             observed.append(get_settings().pr_reviewer.extra_instructions)
             if failure_stage == "constructor":
-                raise RuntimeError("Tool setup failed")
+                raise RuntimeError("Command setup failed")
 
         async def run(self):
             observed.append(get_settings().pr_reviewer.extra_instructions)
-            raise RuntimeError("Tool execution failed")
+            raise RuntimeError("Command execution failed")
 
     _patch_request_dependencies(monkeypatch, update_settings_fn=pr_agent_module.update_settings_from_args)
     monkeypatch.setitem(pr_agent_module.command2class, "review", BrokenReviewer)

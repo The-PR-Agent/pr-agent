@@ -18,7 +18,7 @@ directions:
 Same shape as #3319/#3325 in `pr_add_docs.toml`, and the same test shape:
 parse the example the model is shown and hold it to the declared type. This
 covers ONE file; #3354's full ask is a real pydantic model per top-level class
-with a fixture per tool, which is a larger piece of work.
+with a fixture per command, which is a larger piece of work.
 
 Both example blocks are checked, not just the first: they drifted identically,
 so a test that read one would go green while the other still taught the wrong

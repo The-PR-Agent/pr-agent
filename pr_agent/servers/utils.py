@@ -72,7 +72,7 @@ def is_command_comment(body) -> bool:
     A command comment must start with '/' after leading whitespace, matching the
     check the GitHub app and action already apply. Plain sentences that merely
     begin with a command word ("review looks good to me") must not dispatch a
-    tool, because the dispatcher strips an optional leading slash.
+    command, because the dispatcher strips an optional leading slash.
     """
     return isinstance(body, str) and body.lstrip().startswith("/")
 

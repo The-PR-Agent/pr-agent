@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools==84.0.0", "wheel==0.48.0"]
+requires = ["setuptools==84.2.1", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -57,7 +57,7 @@ dependencies = [
   "tenacity==8.2.3",
   "langfuse==4.18.0",
   "gunicorn==26.2.0",
-  "pydantic==2.14.2",
+  "pydantic==2.14.3",
   # LiteLLM declares pydantic-settings as a base dependency and imports it unconditionally from
   # litellm/integrations/otel/model/config.py. Keep the exact pin to lock the resolved transitive version.
   # Recheck LiteLLM's declared constraint on upgrade; the observability guard covers callback imports.
@@ -73,7 +73,7 @@ dependencies = [
   "prometheus-client==0.26.0",
   # pr_agent/algo/deterministic_risk.py matches host-supplied extra_risky_shapes with a per-search
   # timeout, which re lacks; already resolved transitively via tiktoken, pinned to the tested version.
-  "regex==2026.6.28",
+  "regex==2026.11.7",
 ]
 
 [project.urls]
@@ -104,7 +104,7 @@ azure = [
   "azure-identity==1.27.0",
   "msrest==0.7.1",
 ]
-codecommit = ["boto3==1.43.123"]
+codecommit = ["boto3==1.43.126"]
 gitea = ["giteapy==1.0.8"]
 google = [
   "google-cloud-aiplatform==2.7.0",
@@ -141,12 +141,12 @@ pr-agent = "pr_agent.cli:run"
 [dependency-groups]
 # Keep the full optional integration matrix available to the unit suite without publishing it as a base dependency.
 integration-dev = ["pr-agent[all]"]
-# 'similar issue' tool. Install with: uv sync --group similar-issue.
+# 'similar issue' command. Install with: uv sync --group similar-issue.
 # Keep this a dependency group rather than a published extra so the vector
 # database drivers stay out of the base install.
 similar-issue = [
   "pandas",  # imported directly by the qdrant indexing path
-  "pinecone==10.2.0",
+  "pinecone==10.3.0",
   "lancedb==0.41.0",
   "qdrant-client==1.20.0",
 ]

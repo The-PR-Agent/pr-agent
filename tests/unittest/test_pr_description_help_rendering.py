@@ -4,17 +4,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from pr_agent.commands import pr_description as pr_description_module
+from pr_agent.commands.pr_description import PRDescription
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.tools import pr_description as pr_description_module
-from pr_agent.tools.pr_description import PRDescription
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _TRACKED_SETTINGS = (
     "config.bot_display_name",
     "config.is_auto_command",
-    "config.propagate_tool_errors",
+    "config.propagate_command_errors",
     "config.publish_output",
     "pr_description.enable_help_comment",
     "pr_description.enable_help_text",
@@ -32,7 +32,7 @@ PLAIN_BREAK_MARKER = "PR-Agent usage.<br>- Check out the"
 
 
 class StubProvider:
-    """A provider that is none of the concrete classes the tool used to branch on."""
+    """A provider that is none of the concrete classes the command used to branch on."""
 
     def __init__(self, html_lists: bool):
         self._html_lists = html_lists
@@ -59,7 +59,7 @@ def configured_settings():
     settings = get_settings()
     settings.config.bot_display_name = "PR-Agent"
     settings.config.is_auto_command = True
-    settings.config.propagate_tool_errors = True
+    settings.config.propagate_command_errors = True
     settings.config.publish_output = True
     settings.pr_description.enable_help_comment = True
     settings.pr_description.enable_help_text = False

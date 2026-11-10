@@ -16,7 +16,7 @@
 # reach internal endpoints (SSRF), or append to arbitrary host files. The whole section is
 # therefore host-only (empty allowlist -> every key dropped).
 #
-# prompt_fragments: contains Jinja source rendered by the host before it is inserted into tool
+# prompt_fragments: contains Jinja source rendered by the host before it is inserted into command
 # prompts. Keep the whole section host-only so repository settings and comment arguments cannot
 # supply executable template expressions.
 #
@@ -88,6 +88,10 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # repo_context_max_sibling_files bounds sibling-repository fetches per repo-context build.
     # Letting a repo's .pr_agent.toml or a comment command raise it would defeat the safety
     # bound and let a commenter force unbounded cross-repository API calls; it stays host-only.
+    # repo_context_sibling_namespaces names the namespaces besides its own that a reviewed
+    # repository's approved siblings may resolve into. A repo that could set it would hand
+    # itself the second half of the bound the allowlist above enforces, so the operator who
+    # approves the repositories also approves the namespaces they may live in.
     # description_issue_regex is compiled and run with finditer over the whole
     # pull-request description, which is attacker-supplied and not length-capped. A pattern
     # whose matching is ambiguous backtracks exponentially, so a caller who can choose it can
@@ -123,6 +127,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
         "use_group_settings_file",
         "http_request_timeout",
         "repo_context_max_sibling_files",
+        "repo_context_sibling_namespaces",
         "repo_context_sibling_repos",
         "num_retries",
         "system_instructions",
@@ -165,9 +170,9 @@ def should_skip_config_key(section: str, key: str, skip_keys=()) -> bool:
 # not drift. repo_context_max_glob_matches bounds how many files those entries fetch, so it
 # follows the same rule. repo_context_expand_imports adds repository-controlled provider
 # fetches, so a comment argument cannot enable it either.
-# github_action_config.fail_on_tool_errors decides whether a tool's recorded failure fails the
+# github_action_config.fail_on_command_errors decides whether a command's recorded failure fails the
 # GitHub Action. The runner reads it after the command has applied its arguments, so a comment
-# such as `/review --github_action_config.fail_on_tool_errors=false` could turn a failed review
+# such as `/review --github_action_config.fail_on_command_errors=false` could turn a failed review
 # into a green workflow; the workflow's operator sets it instead.
 CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "config": frozenset({
@@ -183,7 +188,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
         "repo_context_expand_imports",
         "system_instructions",
     }),
-    "github_action_config": frozenset({"fail_on_tool_errors"}),
+    "github_action_config": frozenset({"fail_on_command_errors"}),
     "ignore": frozenset({"regex"}),
     "pr_code_suggestions": frozenset({"parallel_calls", "max_number_of_calls"}),
     # PR comments must not enable ticket reads performed with the operator's credentials.
@@ -256,14 +261,14 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
 
 # Sections a *per-directory* `.pr_agent.toml` may override at all. Nested config
 # files live in the working repository where any contributor can edit them, so this
-# layer is deliberately narrower than the root/global repo settings: tool
+# layer is deliberately narrower than the root/global repo settings: command
 # instructions, suggestion limits, ignore lists and model routing only. A frozenset
 # value restricts the section to those keys; None allows every key in the section.
 # Secrets, identity and deployment-critical settings (provider tokens, git_provider,
 # push_outputs, skills, prompt_fragments, ...) can only be influenced from the root
 # config or host environment, never from a nested file.
 #
-# Tool sections that can trigger bot-side writes (commits, changelog pushes) or
+# Command sections that can trigger bot-side writes (commits, changelog pushes) or
 # read/connect from arbitrary URLs or paths are likewise restricted to drop-only keys:
 # `pr_update_changelog` cannot be given `push_changelog_changes` (a nested config
 # must not cause the bot to commit), and `pr_help_docs` cannot be given `repo_url`,
@@ -285,7 +290,7 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
 # excludes the repo-context builders: `repo_context_files` fetches every listed
 # file in full and `repo_context_max_lines` sizes the trimmed output, so without
 # a host-trusted upper bound a nested file could balloon repository calls and
-# token budget whenever a tool builds context for a directory it crosses. Those
+# token budget whenever a command builds context for a directory it crosses. Those
 # knobs stay root-/host-controlled. `fallback_models` is excluded too: the retry
 # helper treats each entry as one routing attempt per failing model, so an
 # arbitrarily long nested list could multiply AI calls; fallback routing stays

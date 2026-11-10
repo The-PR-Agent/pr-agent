@@ -16,7 +16,7 @@ DEFAULT_ARTIFACT_INSTRUCTIONS = (
     "It was produced by a prior CI step."
 )
 
-SUPPORTED_ARTIFACT_TOOLS = frozenset({"pr_reviewer", "pr_description", "pr_code_suggestions", "pr_questions"})
+SUPPORTED_ARTIFACT_COMMANDS = frozenset({"pr_reviewer", "pr_description", "pr_code_suggestions", "pr_questions"})
 
 
 class ArtifactPromptContext(TypedDict):
@@ -25,7 +25,7 @@ class ArtifactPromptContext(TypedDict):
     instructions: str
     start_marker: str
     end_marker: str
-    target_tools: frozenset[str]
+    target_commands: frozenset[str]
 
 
 _artifact_context: ContextVar[dict[str, list[ArtifactPromptContext]] | None] = ContextVar(
@@ -33,12 +33,12 @@ _artifact_context: ContextVar[dict[str, list[ArtifactPromptContext]] | None] = C
 )
 
 
-def get_artifact_context(tool_name: str) -> ArtifactPromptContext | None:
-    """Return the separate CI artifact prompt context for a targeted tool."""
+def get_artifact_context(command_name: str) -> ArtifactPromptContext | None:
+    """Return the separate CI artifact prompt context for a targeted command."""
     payload = _artifact_context.get()
     if payload is None:
         return None
-    contexts = payload.get(tool_name.lower(), [])
+    contexts = payload.get(command_name.lower(), [])
     if not contexts:
         return None
     if len(contexts) == 1:
@@ -155,14 +155,14 @@ def _read_and_truncate(path: Path, max_size: int, truncate_from: str = "start") 
     return content
 
 
-def _artifact_target_tools(value, default: frozenset[str]) -> frozenset[str]:
+def _artifact_target_commands(value, default: frozenset[str]) -> frozenset[str]:
     if value is None:
         return default
     if isinstance(value, str):
-        value = [tool.strip() for tool in value.split(",") if tool.strip()]
+        value = [command.strip() for command in value.split(",") if command.strip()]
     if not isinstance(value, (list, set, tuple)):
         return default
-    return frozenset(str(tool).lower() for tool in value)
+    return frozenset(str(command).lower() for command in value)
 
 
 def _artifact_entries(artifacts_settings: dict) -> list[dict]:
@@ -198,8 +198,8 @@ def load_artifact_context() -> ArtifactPromptContext | None:
         max_size = 50000
     if max_size <= 0:
         max_size = 50000
-    default_target_tools = _artifact_target_tools(
-        artifacts_settings.get("target_tools"), frozenset(SUPPORTED_ARTIFACT_TOOLS)
+    default_target_commands = _artifact_target_commands(
+        artifacts_settings.get("target_commands"), frozenset(SUPPORTED_ARTIFACT_COMMANDS)
     )
     contexts = []
     remaining_size = max_size
@@ -249,7 +249,7 @@ def load_artifact_context() -> ArtifactPromptContext | None:
             "instructions": instructions or DEFAULT_ARTIFACT_INSTRUCTIONS,
             "start_marker": start_marker,
             "end_marker": end_marker,
-            "target_tools": _artifact_target_tools(entry.get("target_tools"), default_target_tools),
+            "target_commands": _artifact_target_commands(entry.get("target_commands"), default_target_commands),
         })
         remaining_size -= len(content)
     if not contexts:
@@ -263,7 +263,7 @@ def load_artifact_context() -> ArtifactPromptContext | None:
 
 
 def inject_artifact_context() -> None:
-    """Load a CI artifact for targeted tools as a separate prompt context.
+    """Load a CI artifact for targeted commands as a separate prompt context.
 
     ARTIFACT_PATH in the environment turns the feature on by itself. Called once before a
     command runs, by the GitHub Action runner and by the CLI.
@@ -294,29 +294,29 @@ def inject_artifact_context() -> None:
         artifact_context = load_artifact_context()
         if not artifact_context:
             return
-        target_tools = get_settings().get(
-            "ARTIFACTS.TARGET_TOOLS",
+        target_commands = get_settings().get(
+            "ARTIFACTS.TARGET_COMMANDS",
             ["pr_reviewer", "pr_description", "pr_code_suggestions", "pr_questions"]
         )
-        default_target_tools = _artifact_target_tools(
-            target_tools, frozenset(SUPPORTED_ARTIFACT_TOOLS)
+        default_target_commands = _artifact_target_commands(
+            target_commands, frozenset(SUPPORTED_ARTIFACT_COMMANDS)
         )
         contexts = artifact_context.get("artifacts", [artifact_context])
-        by_tool = {tool: [] for tool in SUPPORTED_ARTIFACT_TOOLS}
+        by_command = {command: [] for command in SUPPORTED_ARTIFACT_COMMANDS}
         for context in contexts:
-            requested_tools = context.get("target_tools", default_target_tools)
-            supported_tools = requested_tools & SUPPORTED_ARTIFACT_TOOLS
-            unsupported_tools = sorted(requested_tools - SUPPORTED_ARTIFACT_TOOLS)
-            if unsupported_tools:
+            requested_commands = context.get("target_commands", default_target_commands)
+            supported_commands = requested_commands & SUPPORTED_ARTIFACT_COMMANDS
+            unsupported_commands = sorted(requested_commands - SUPPORTED_ARTIFACT_COMMANDS)
+            if unsupported_commands:
                 get_logger().warning(
-                    f"Unsupported artifact target tools will be ignored: {unsupported_tools}"
+                    f"Unsupported artifact target commands will be ignored: {unsupported_commands}"
                 )
-            for tool in supported_tools:
-                by_tool[tool].append(context)
-        by_tool = {tool: contexts for tool, contexts in by_tool.items() if contexts}
-        if not by_tool:
+            for command in supported_commands:
+                by_command[command].append(context)
+        by_command = {command: contexts for command, contexts in by_command.items() if contexts}
+        if not by_command:
             return
-        _artifact_context.set(by_tool)
-        get_logger().info(f"Injected artifact context into tools: {sorted(by_tool)}")
+        _artifact_context.set(by_command)
+        get_logger().info(f"Injected artifact context into commands: {sorted(by_command)}")
     except (OSError, ValueError, TypeError) as e:
         get_logger().warning(f"Failed to process artifacts: {e}", exc_info=True)

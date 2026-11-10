@@ -1,5 +1,5 @@
 
-from pr_agent.tools import ticket_pr_compliance_check as tpc
+from pr_agent.commands import ticket_pr_compliance_check as tpc
 
 # The PR-description extractor caps results at 3 (hardcoded in the function).
 MAX_TICKETS = 3

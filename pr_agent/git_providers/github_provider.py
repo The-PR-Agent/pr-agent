@@ -138,7 +138,7 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
 
 
 class GithubProvider(GitProvider):
-    reuse_for_manual_tool = True
+    reuse_for_manual_command = True
 
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         pr = self.pr
@@ -403,6 +403,19 @@ class GithubProvider(GitProvider):
     def _get_incremental_commits(self):
         if not self.pr_commits:
             self.pr_commits = list(self.pr.get_commits())
+
+        if (
+            not self.pr_commits
+            or len(self.pr_commits) != self.pr.commits
+            or self.pr_commits[-1].sha != self.pr.head.sha
+        ):
+            get_logger().info(
+                f"PR commit list inconsistent ({len(self.pr_commits)}/{self.pr.commits} commits, "
+                f"last={self.pr_commits[-1].sha if self.pr_commits else 'none'}, head={self.pr.head.sha}); "
+                "falling back to a full review"
+            )
+            self.incremental.is_incremental = False
+            return
 
         self.previous_review = self.get_previous_review(full=True, incremental=True)
         if self.previous_review:
@@ -1104,7 +1117,7 @@ class GithubProvider(GitProvider):
         return False
 
     def start_check_run(self, name: str, summary: str) -> bool:
-        """Open the tool's check run as in_progress before it has any output to publish.
+        """Open the command's check run as in_progress before it has any output to publish.
 
         Automatic commands publish no progress comment, so this is the first sign that the
         pull request was picked up. `_publish_check_run` completes the same run in place.
@@ -1150,9 +1163,9 @@ class GithubProvider(GitProvider):
         return updated
 
     def finish_check_run(self, name: str, conclusion: str, summary: str) -> bool:
-        """Complete a check run opened by `start_check_run` that no tool completed.
+        """Complete a check run opened by `start_check_run` that no command completed.
 
-        A no-op when the tool already published its output to the run, so its conclusion
+        A no-op when the command already published its output to the run, so its conclusion
         and text are kept. Otherwise the run would stay in_progress on the commit forever.
         """
         if name not in self._check_runs_in_progress:
@@ -2081,7 +2094,8 @@ class GithubProvider(GitProvider):
         current_owner = self.get_owning_namespace(resolved=True)
         # Reject redirects/transfers unless the canonical same-owner repository was selected.
         if (not isinstance(resolved_name, str) or resolved_name.casefold() != repo_id.casefold()
-                or not current_owner or resolved_name.split("/")[0].casefold() != current_owner.casefold()):
+                or not self.is_sibling_namespace_allowed(resolved_name.split("/")[0], current_owner,
+                                                         case_sensitive=False)):
             get_logger().warning(f"Ignoring out-of-owner sibling repo in repo context: {repo_id}")
             return None
         if not self._requester_can_read_sibling_repo(sibling_repo):
