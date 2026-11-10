@@ -486,6 +486,31 @@ def test_load_review_yaml_preserves_failure_modes_during_scalar_repair():
     assert review["failure_modes"][0]["covered_in_this_pr"] is False
 
 
+def test_review_yaml_with_fix_block_scalars_loads():
+    prediction = """review:
+  key_issues_to_review:
+    - relevant_file: |
+        src/app.py
+      issue_header: |
+        Possible Bug
+      issue_content: |
+        The lock is never released.
+      start_line: 4
+      end_line: 5
+      existing_code: |
+        lock.acquire()  # take it
+      improved_code: |
+        with lock:  # release on exit
+            data = {"key": 1}
+  security_concerns: |
+    No
+"""
+    issue = PRReviewer._load_review_yaml(prediction)["review"]["key_issues_to_review"][0]
+
+    assert issue["existing_code"] == "lock.acquire()  # take it\n"
+    assert issue["improved_code"] == 'with lock:  # release on exit\n    data = {"key": 1}\n'
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_review_schema_requires_failure_modes_only_when_enabled(enabled):
     reviewer = _make_reviewer()

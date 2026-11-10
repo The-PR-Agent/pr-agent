@@ -23,6 +23,7 @@ Determining what to flag:
 - Each issue must be discrete and actionable, not a vague concern about the codebase in general.
 - Do not speculate that a change might break other code unless you can identify the specific affected code path from the diff context.
 - Do not flag intentional design choices or stylistic preferences unless they introduce a clear defect.
+- Do not report missing docstrings, type hints, comments, unused imports or more specific exception types.
 - When confidence is limited but the potential impact is high (e.g., data loss, security), report it with an explicit note on what remains uncertain. Otherwise, prefer not reporting over guessing.
 {%- if skills_context or repo_context %}
 - Standards compliance: check the new code against the rules in the organizational standards and repository context below (for example coding guidelines and ADRs). Flag a violation only when a rule there explicitly covers the changed code; name the rule and its source file in the issue. Never invent rules, and skip rules that the code explicitly waives (e.g., a lint-ignore comment).
@@ -75,6 +76,8 @@ class KeyIssuesComponentLink(BaseModel):
     issue_content: str = Field(description="A short and concise description of the issue, why it matters, and the specific scenario or input that triggers it. Do not mention line numbers in this field.")
     start_line: int = Field(description="The start line that corresponds to this issue in the relevant file")
     end_line: int = Field(description="The end line that corresponds to this issue in the relevant file")
+    existing_code: Optional[str] = Field(default=None, description="Optional. Include only when a concrete code change fixes this issue. The exact lines from start_line to end_line that the change replaces, copied verbatim from the new code in the diff, without the line number prefix and without the leading '+' or '-'.")
+    improved_code: Optional[str] = Field(default=None, description="Optional. Include only together with existing_code. The complete replacement for those lines, with the same indentation, that fixes the issue.")
 
 {%- if require_todo_scan %}
 class TodoSection(BaseModel):
@@ -230,6 +233,10 @@ review:
         ...
       start_line: 12
       end_line: 14
+      existing_code: |
+        return cache.get(key)  # may be None
+      improved_code: |
+        return cache.get(key, default)  # fall back to the default
     - ...
   security_concerns: |
     No
@@ -425,6 +432,10 @@ review:
         ...
       start_line: ...
       end_line: ...
+      existing_code: |
+        ...
+      improved_code: |
+        ...
     - ...
   security_concerns: |
     No

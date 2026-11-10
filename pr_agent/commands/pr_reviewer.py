@@ -270,7 +270,7 @@ class PRReviewer:
             'require_can_be_split_review': get_settings().pr_reviewer.require_can_be_split_review,
             'require_security_review': get_settings().pr_reviewer.require_security_review,
             'require_todo_scan': get_settings().pr_reviewer.get("require_todo_scan", False),
-            "extra_instructions": get_settings().pr_reviewer.extra_instructions,
+            "extra_instructions": self._extra_instructions(),
             "artifact_context": get_artifact_context("pr_reviewer"),
             "skills_context": get_skills_context(),
             "repo_context": build_repo_context(self.git_provider),
@@ -290,6 +290,14 @@ class PRReviewer:
             'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
             "date": datetime.datetime.now().strftime('%Y-%m-%d'),
         }
+
+    @staticmethod
+    def _extra_instructions() -> str:
+        review_extra = get_settings().pr_reviewer.extra_instructions
+        suggestions_extra = get_settings().pr_code_suggestions.get("extra_instructions", "")
+        if not suggestions_extra or suggestions_extra == review_extra:
+            return review_extra
+        return f"{review_extra}\n\n{suggestions_extra}" if review_extra else suggestions_extra
 
     def parse_incremental(self, args: list[str]):
         is_incremental = False
@@ -1262,7 +1270,8 @@ class PRReviewer:
         return load_yaml(prediction.strip(),
                          keys_fix_yaml=["ticket_compliance_check", "estimated_effort_to_review_[1-5]:", "risk_level:",
                                         "merge_recommendation:", "security_concerns:", "key_issues_to_review:",
-                                        "relevant_file:", "relevant_line:", "suggestion:"],
+                                        "relevant_file:", "relevant_line:", "suggestion:", "existing_code:",
+                                        "improved_code:"],
                         first_key='review', last_key='security_concerns')
 
     def _validate_review_schema(self, data: object) -> bool:

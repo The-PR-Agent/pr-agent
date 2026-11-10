@@ -479,3 +479,63 @@ def test_incremental_improve_leaves_out_the_full_commit_list(monkeypatch, args, 
     suggestions = _build_suggestions(monkeypatch, _FAKE_END, True, args, supports_incremental)
 
     assert suggestions.vars["commit_messages_str"] == expected
+
+
+def _render_review_prompt(variables, half="system"):
+    environment = Environment(autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
+    return environment.from_string(getattr(get_settings().pr_review_prompt, half)).render(variables)
+
+
+def test_prompt_schema_lists_fix_fields(monkeypatch):
+    system = _render_review_prompt(_build_reviewer(monkeypatch).vars)
+
+    assert "    existing_code: Optional[str] = Field(" in system
+    assert "    improved_code: Optional[str] = Field(" in system
+    assert "      existing_code: |" in system
+    assert "      improved_code: |" in system
+
+
+def test_prompt_keeps_word_for_word_rule(monkeypatch):
+    reviewer = _build_reviewer(monkeypatch)
+    reviewer.vars["previous_findings"] = '[{"finding_id": "a1"}]'
+
+    user = _render_review_prompt(reviewer.vars, "user")
+
+    assert "report it again with the same issue_header and issue_content, word for word" in user
+    assert "then with the same issue_header and issue_content, word for word, like an active finding" in user
+    assert "Do not report it again unless the current code makes it worse, and then with the same issue_header" in user
+
+
+@pytest.mark.parametrize("previous_findings", ["", '[{"finding_id": "a1"}]'])
+@pytest.mark.parametrize("duplicate_prompt_examples", [False, True])
+def test_prompt_renders_with_all_vars(monkeypatch, previous_findings, duplicate_prompt_examples):
+    reviewer = _build_reviewer(monkeypatch)
+    reviewer.vars["previous_findings"] = previous_findings
+    reviewer.vars["duplicate_prompt_examples"] = duplicate_prompt_examples
+
+    for half in ("system", "user"):
+        assert _render_review_prompt(reviewer.vars, half).strip()
+
+
+def test_prompt_excludes_low_value_fix_findings(monkeypatch):
+    system = _render_review_prompt(_build_reviewer(monkeypatch).vars)
+
+    assert "docstrings, type hints, comments, unused imports or more specific exception types" in system
+
+
+@pytest.mark.parametrize(
+    ("review_extra", "suggestions_extra", "expected"),
+    [
+        ("Use British English.", "Use British English.", "Use British English."),
+        ("Use British English.", "Mention tests.", "Use British English.\n\nMention tests."),
+        ("", "Mention tests.", "Mention tests."),
+        ("Use British English.", "", "Use British English."),
+    ],
+)
+def test_ci_extra_instructions_not_duplicated(monkeypatch, review_extra, suggestions_extra, expected):
+    monkeypatch.setitem(get_settings().pr_reviewer, "extra_instructions", review_extra)
+    monkeypatch.setitem(get_settings().pr_code_suggestions, "extra_instructions", suggestions_extra)
+
+    reviewer = _build_reviewer(monkeypatch)
+
+    assert reviewer.vars["extra_instructions"] == expected

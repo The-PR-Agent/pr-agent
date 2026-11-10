@@ -117,3 +117,16 @@ def test_every_field_the_examples_teach_is_one_the_schema_declares():
     for example in _review_examples():
         unknown = sorted(_taught_fields(example) - declared)
         assert not unknown, f"examples teach fields the schema does not declare: {unknown}"
+
+
+def test_example_fix_is_valid_yaml():
+    """The fix fields are block scalars, so code with `:` and `#` must stay one string."""
+    for example in _review_examples():
+        fixes = [
+            issue for issue in example["key_issues_to_review"]
+            if isinstance(issue, dict) and "improved_code" in issue
+        ]
+        assert fixes, "an example shows a finding with a fix"
+        for issue in fixes:
+            assert isinstance(issue["existing_code"], str) and issue["existing_code"].strip()
+            assert isinstance(issue["improved_code"], str) and issue["improved_code"].strip()
