@@ -28,17 +28,33 @@ import signal
 import subprocess
 import sys
 
-from tree_sitter import Query, QueryCursor
+from tree_sitter import Parser, Query, QueryCursor
 from tree_sitter_language_pack import (
-    PackConfig,
-    configure,
+    LanguageRegistry,
     detect_language_from_extension,
-    get_language,
-    get_parser,
     get_tags_query,
 )
 
 sys.setrecursionlimit(20000)
+
+GRAMMARS = None
+
+
+def get_language(name):
+    """Load only local grammars; the pack's global get_language auto-downloads on a cache miss."""
+    global GRAMMARS
+    if GRAMMARS is None:
+        GRAMMARS = LanguageRegistry.new()
+    return GRAMMARS.get_language(name)
+
+
+def md_code(value):
+    """Keep untrusted paths on one line and inside a Markdown code span, including embedded backticks."""
+    value = "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in value)
+    delimiter = "`" * (1 + max((len(m[0]) for m in re.finditer(r"`+", value)), default=0))
+    pad = " " if value.startswith(("`", " ")) or value.endswith(("`", " ")) else ""
+    return f"{delimiter}{pad}{value}{pad}{delimiter}"
+
 
 TOKEN_CAP = 12000
 CHAR_CAP = min(TOKEN_CAP * 4, 50000 - 500)
@@ -258,7 +274,7 @@ class Lang:
     @property
     def parser(self):
         if self._parser is None:
-            self._parser = get_parser(self.name)
+            self._parser = Parser(get_language(self.name))
         return self._parser
 
     def parse(self, text):
@@ -511,9 +527,14 @@ class Python(Lang):
             if n.type == "import_statement":
                 for nm in n.field_children("name"):
                     if nm.type == "aliased_import":
-                        f = repo.module_file(self, nm.field_child("name").text)
-                        if f:
-                            out[nm.field_child("alias").text] = ("module", f)
+                        module = nm.field_child("name").text
+                        local = nm.field_child("alias").text
+                    else:
+                        module = nm.text.split(".")[0]
+                        local = module
+                    f = repo.module_file(self, module)
+                    if f:
+                        out[local] = ("module", f)
             elif n.type == "import_from_statement":
                 mod = self._from_module(rel, n)
                 for nm in n.field_children("name"):
@@ -937,13 +958,10 @@ class JavaScript(Lang):
         return out
 
     def import_lines(self, root):
-        out = []
-        for n in root.named_children:
-            if n.type == "import_statement" or (n.type in ("lexical_declaration", "variable_declaration") and any(
+        return [(n.sl, n.el) for n in root.named_children
+                if n.type == "import_statement" or (n.type in ("lexical_declaration", "variable_declaration") and any(
                     d.type == "variable_declarator" and self._is_require(d.field_child("value"))
-                    for d in n.named_children)):
-                out.append((n.sl, n.el))
-        return out
+                    for d in n.named_children))]
 
     def params(self, d):
         fn = self._fn(d)
@@ -1239,11 +1257,8 @@ class Tags(Lang):
         return list(root.named_children)
 
     def _decl_names(self, n):
-        out = []
-        for c in walk(n):
-            if c.field in ("left", "name", "pattern") and c.type in self.ident and c.tag != "name":
-                out.append(c)
-        return out
+        return [c for c in walk(n)
+                if c.field in ("left", "name", "pattern") and c.type in self.ident and c.tag != "name"]
 
     def module_bindings(self, root):
         consts, names, imports = {}, set(), self._imports(root)
@@ -1376,9 +1391,7 @@ class Tags(Lang):
             if c.field in ("superclasses", "superclass", "bases", "interfaces") or any(
                     w in c.type for w in ("superclass", "heritage", "base_list", "extends", "implements",
                                           "delegation_specifier", "base_class")):
-                for x in walk(c):
-                    if x.type in self.ident and not x.named_children:
-                        out.append(x.text)
+                out.extend(x.text for x in walk(c) if x.type in self.ident and not x.named_children)
         return out
 
     def local_bindings(self, d):
@@ -2171,7 +2184,7 @@ def imports_header(repo, path, seen):
     seen.add(path)
     imps = repo.imports(path)
     fence_lang = repo.langs[path].fence
-    return f"### Imports of `{path}`\n```{fence_lang}\n" + "\n".join(imps) + "\n```\n" if imps else ""
+    return f"### Imports of {md_code(path)}\n```{fence_lang}\n" + "\n".join(imps) + "\n```\n" if imps else ""
 
 
 HUNK_FULL = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@")
@@ -2619,7 +2632,7 @@ def _build(args):
     other = sorted((p, v["status"]) for p, v in files.items() if p not in code_changed)
     scope = [s if s.endswith("/") or not s else s + "/" for s in args.scope] if args.scope \
         else default_scope(code_changed)
-    scope_desc = ", ".join(f"{s}" for s in scope if s) or "the repository"
+    scope_desc = ", ".join(md_code(s) for s in scope if s) or "the repository"
     changed, module_level, unparsable, rows = map_changes(repo, code_changed)
     changed_keys = set(changed)
     changed_order = sorted(changed.values(), key=lambda v: (is_test_path(v[0].path), v[0].path, v[0].start))
@@ -2637,7 +2650,7 @@ def _build(args):
         whole_new = nonblank <= set(cl)
         body_start = max(d.body_line, d.start + 1)
         indent = re.match(r"\s*", repo.sources[d.path][min(body_start, d.end) - 1]).group(0)
-        title = (f"### {d.kind} `{d.path}::{d.qualname}` (L{d.start}-{d.end}; changed lines {compress(cl)}"
+        title = (f"### {d.kind} {md_code(d.key)} (L{d.start}-{d.end}; changed lines {compress(cl)}"
                  f"{'; wholly added' if whole_new else ''})\n")
         num = numbered_lines(repo, d)
         texts = {}
@@ -2654,7 +2667,7 @@ def _build(args):
         hdr = imports_header(repo, path, seen_imp)
         ls = sorted(lines)
         stmts = [n for n in repo.trees[path].named_children if any(n.sl <= x <= n.el for x in ls)]
-        title = f"### module-level changes in `{path}` (lines {compress(ls)})\n"
+        title = f"### module-level changes in {md_code(path)} (lines {compress(ls)})\n"
         texts = {}
         for w in CHANGED_WINDOWS:
             body = []
@@ -2677,7 +2690,7 @@ def _build(args):
             start, end = node.sl, node.el
             lines = repo.lines(path, start, end)
             in_pr = bool(set(range(start, end + 1)) & added_by_path.get(path, set()))
-            title = (f"#### constant `{key}` (L{start}-{end}; read by `{d.qualname}`"
+            title = (f"#### constant {md_code(key)} (L{start}-{end}; read by `{d.qualname}`"
                      f"{'; changed in this PR' if in_pr else ''})\n")
             fl = repo.langs[path].fence
             sections.append(dict(
@@ -2694,7 +2707,7 @@ def _build(args):
                     continue
                 callee_seen.add(t.key)
                 near = via in ("local", "import", "self") or t.path == d.path
-                title = (f"#### `{t.path}::{t.qualname}` (called as `{(recv + '.') if recv else ''}{name}` "
+                title = (f"#### {md_code(t.key)} (called as `{(recv + '.') if recv else ''}{name}` "
                          f"from `{d.qualname}`)\n")
                 fl = t.lang.fence
                 stub = title + code_block(signature_and_doc(repo, t), t.start, note=" (signature and docstring)",
@@ -2729,7 +2742,7 @@ def _build(args):
             for c in callers:
                 per_file[c.path] = per_file.get(c.path, 0) + 1
             files_sorted = sorted(per_file.items(), key=lambda x: (-x[1], x[0]))
-            listed = ", ".join(f"`{p}` ({n})" for p, n in files_sorted[:HUB_FILES_LISTED])
+            listed = ", ".join(f"{md_code(p)} ({n})" for p, n in files_sorted[:HUB_FILES_LISTED])
             extra = len(files_sorted) - HUB_FILES_LISTED
             more = f", +{extra} more files" if extra > 0 else ""
             n_rel, n_arg = sum(rel.values()), sum(argrel.values())
@@ -2752,7 +2765,7 @@ def _build(args):
                 tags.append("passes a changed parameter")
             if rel.get(c.key):
                 tags.append("uses returned value")
-            title = f"#### `{c.path}::{c.qualname}` references `{name}` (distance {dist}; {', '.join(tags)})\n"
+            title = f"#### {md_code(c.key)} references `{name}` (distance {dist}; {', '.join(tags)})\n"
             fl = c.lang.fence
             if c.kind == "class":
                 src, start, note = class_skeleton(repo, c), c.start, " (class; method bodies elided)"
@@ -2825,7 +2838,7 @@ def _build(args):
             body = snippet(src, anchors, 4, SIBLING_MAX_LINES, lo=body0, hi=m.end, marks=marks)
             if sig and body and not body[0].startswith(f"{body0:>5}|"):
                 sig.append("  ...")
-            title = (f"#### `{m.path}::{m.qualname}` ({relation}; same {'method' if m.kind == 'method' else 'function'}"
+            title = (f"#### {md_code(m.key)} ({relation}; same {'method' if m.kind == 'method' else 'function'}"
                      f" as changed `{f.qualname}`; {n_old} lines with a shape this PR removed, {n_new} with a shape "
                      f"it added, {len(tok_hits)} sharing identifiers)\n")
             fl = m.lang.fence
@@ -2843,9 +2856,10 @@ def _build(args):
         for i, sib in enumerate(noncode_siblings(args.repo, path, files[path], base)):
             c = sib["counts"]
             secs = ", ".join(f"`{s}`" for s in sib["sections"]) or "whole file"
-            title = (f"#### `{sib['path']}` (sibling of changed `{path}`; sections {secs}; {c['removed']} lines "
-                     f"identical to lines the PR removed, {c['added']} identical to lines it added, "
-                     f"{c['context']} identical to unchanged context next to the change, {c['similar']} similar)\n")
+            title = (f"#### {md_code(sib['path'])} (sibling of changed {md_code(path)}; sections {secs}; "
+                     f"{c['removed']} lines identical to lines the PR removed, "
+                     f"{c['added']} identical to lines it added, {c['context']} identical to unchanged context "
+                     f"next to the change, {c['similar']} similar)\n")
             lang = {".md": "markdown", ".toml": "toml"}.get(os.path.splitext(path)[1], "yaml")
             sections.append(dict(kind="noncode", label=f"{path}~{sib['path']}", text=title + fence(sib["body"], lang),
                                  stub=title + fence(sib["body"][:8], lang) if len(sib["body"]) > 8 else None,
@@ -2869,10 +2883,10 @@ def _build(args):
         bdef = enclosing(base.defs.get(path, []), n.sl)
         old_line = base.src[path][n.sl - 1].strip()[:160]
         title = (f"#### shape `{pindex.display('@base/' + path, n, base.lang[path])}` removed from "
-                 f"`{path}::{bdef.qualname if bdef else '<module>'}` (base L{n.sl}; {len(sites)} sites in "
-                 f"{scope_desc} still use it; {len(shown)} shown)\nRemoved line: `{old_line}`\n")
+                 f"{md_code(path + '::' + (bdef.qualname if bdef else '<module>'))} (base L{n.sl}; "
+                 f"{len(sites)} sites in {scope_desc} still use it; {len(shown)} shown)\nRemoved line: `{old_line}`\n")
         body = "".join(site_block(repo, by_path, p, ln) for p, ln in shown)
-        stub = title + "".join(f"- `{p}:{ln}` in `{site_owner(by_path, p, ln)}`\n" for p, ln in shown)
+        stub = title + "".join(f"- {md_code(f"{p}:{ln}")} in `{site_owner(by_path, p, ln)}`\n" for p, ln in shown)
         sections.append(dict(kind="removed", label=f"{path}@L{n.sl}", text=title + body, stub=stub,
                              rank=(False, 0, 0, path, n.sl)))
 
@@ -2884,7 +2898,7 @@ def _build(args):
             if c.key in sim_seen:
                 continue
             sim_seen.add(c.key)
-            title = (f"#### `{c.path}::{c.qualname}` similar to `{f.qualname}` "
+            title = (f"#### {md_code(c.key)} similar to `{f.qualname}` "
                      f"(body ratio {ratio:.2f}, name Jaccard {jac:.2f})\n")
             fl = c.lang.fence
             stub = title + code_block(signature_and_doc(repo, c), c.start, note=" (signature only)", lang=fl)
@@ -2903,10 +2917,10 @@ def _build(args):
         shown = sites[:PATTERN_SITES]
         pattern_sites += len(shown)
         line = repo.sources[f.path][n.sl - 1].strip()[:160]
-        title = (f"#### `{f.path}::{f.qualname}` L{n.sl} shape `{pindex.display(f.path, n, f.lang)}` "
+        title = (f"#### {md_code(f.key)} L{n.sl} shape `{pindex.display(f.path, n, f.lang)}` "
                  f"({len(sites)} other sites; {len(shown)} shown)\nChanged line: `{line}`\n")
         body = "".join(site_block(repo, by_path, p, ln) for p, ln in shown)
-        stub = title + "".join(f"- `{p}:{ln}` in `{site_owner(by_path, p, ln)}`\n" for p, ln in shown)
+        stub = title + "".join(f"- {md_code(f"{p}:{ln}")} in `{site_owner(by_path, p, ln)}`\n" for p, ln in shown)
         sections.append(dict(kind="pattern", label=f"{f.key}@L{n.sl}", text=title + body, stub=stub,
                              rank=(False, 1, 4, f.key, i)))
 
@@ -2931,12 +2945,12 @@ def _build(args):
         importers_of[path] = set(importers) | set(loaders)
         tests_n = sum(1 for r in importers + loaders if is_test_path(r))
         code = [r for r in importers if not is_test_path(r)]
-        listed = ", ".join(f"`{r}`" for r in code[:IMPORTERS_LISTED])
+        listed = ", ".join(md_code(r) for r in code[:IMPORTERS_LISTED])
         more = f", +{len(code) - IMPORTERS_LISTED} more" if len(code) > IMPORTERS_LISTED else ""
         by_str = [r for r in loaders if not is_test_path(r)]
-        strs = f"; loaded by module-path string in {', '.join(f'`{r}`' for r in by_str)}" if by_str else ""
-        text = (f"- `{path}` (`{mod}`): imported by {len(code)} non-test files{': ' + listed if listed else ''}{more}"
-                f"{strs}; {tests_n} test files\n")
+        strs = f"; loaded by module-path string in {', '.join(md_code(r) for r in by_str)}" if by_str else ""
+        text = (f"- {md_code(path)} ({md_code(mod)}): imported by {len(code)} non-test files"
+                f"{': ' + listed if listed else ''}{more}{strs}; {tests_n} test files\n")
         sections.append(dict(kind="importers", label=path, text=text, stub=None, rank=(1, i)))
 
     test_defs = [t for t in repo.defs if is_test_path(t.path) and t.kind in ("function", "method")]
@@ -2955,17 +2969,19 @@ def _build(args):
         strong = sorted((o for o in owners.values() if o.path in near), key=lambda o: (o.path, o.start))
         weak = len(owners) - len(strong)
         shown = strong or sorted(owners.values(), key=lambda o: (o.path, o.start))
-        listed = ", ".join(f"`{o.path}::{o.qualname}` L{o.start}" for o in shown[:TESTS_PER_SYMBOL])
+        listed = ", ".join(f"{md_code(o.key)} L{o.start}" for o in shown[:TESTS_PER_SYMBOL])
         more = f", +{len(shown) - TESTS_PER_SYMBOL} more" if len(shown) > TESTS_PER_SYMBOL else ""
         if strong:
-            text = (f"{len(strong)} test functions in files importing `{d.path}` reference `{name}`: {listed}{more}"
+            text = (f"{len(strong)} test functions in files importing {md_code(d.path)} "
+                    f"reference `{name}`: {listed}{more}"
                     + (f"; {weak} more elsewhere reference the same name" if weak else ""))
         elif owners:
-            text = (f"no test file importing `{d.path}` references `{name}`; {len(owners)} test functions elsewhere "
-                    f"use the same name (possibly other implementations): {listed}{more}")
+            text = (f"no test file importing {md_code(d.path)} references `{name}`; "
+                    f"{len(owners)} test functions elsewhere use the same name (possibly other implementations): "
+                    f"{listed}{more}")
         else:
             text = f"no test function references `{name}`"
-        sections.append(dict(kind="tests", label=d.key, text=f"- `{d.path}::{d.qualname}`: {text}\n", stub=None,
+        sections.append(dict(kind="tests", label=d.key, text=f"- {md_code(d.key)}: {text}\n", stub=None,
                              rank=(0, i)))
 
     graph = {}
@@ -2981,8 +2997,8 @@ def _build(args):
             checked += 1
             cyc = find_cycle(graph, t, path)
             if cyc:
-                cycle_lines.append(f"- `{path}` L{a} adds an import of `{t}`, closing the cycle "
-                                   + " -> ".join(f"`{x}`" for x in [path] + cyc) + "\n")
+                cycle_lines.append(f"- {md_code(path)} L{a} adds an import of {md_code(t)}, closing the cycle "
+                                   + " -> ".join(f"{md_code(x)}" for x in [path] + cyc) + "\n")
     cycles_text = "".join(cycle_lines) or f"none ({checked} added module-level imports within {scope_desc} checked)\n"
 
     header = (f"# Code-graph context for PR #{args.pr}\n\n"
@@ -2993,8 +3009,8 @@ def _build(args):
               "tests that reference the changed symbols, importers and circular imports.\n\n")
     nonpy = ""
     if other or unparsable:
-        nonpy = ("## Changed files outside the parsed code\n" + "".join(f"- `{p}` ({s})\n" for p, s in other)
-                 + "".join(f"- `{p}` (unparsable at head)\n" for p in unparsable) + "\n")
+        nonpy = ("## Changed files outside the parsed code\n" + "".join(f"- {md_code(p)} ({s})\n" for p, s in other)
+                 + "".join(f"- {md_code(p)} (unparsable at head)\n" for p in unparsable) + "\n")
     if skipped_names:
         header += f"Caller search skipped for generic names: {', '.join(sorted(skipped_names))}.\n\n"
 
@@ -3024,7 +3040,7 @@ def site_owner(by_path, path, ln):
 
 
 def site_block(repo, by_path, path, ln):
-    return (f"- `{path}:{ln}` in `{site_owner(by_path, path, ln)}`\n"
+    return (f"- {md_code(f"{path}:{ln}")} in `{site_owner(by_path, path, ln)}`\n"
             + fence(snippet(repo.sources[path], [ln], 1, 3), repo.langs[path].fence))
 
 
@@ -3171,9 +3187,8 @@ if __name__ == "__main__":
     ap.add_argument("--pr", required=True, type=int)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--name", default=None, help="output basename suffix (default: the PR number)")
-    ap.add_argument("--grammar-cache", default=None,
-                    help="directory holding pre-downloaded grammars (tree-sitter-language-pack otherwise fetches "
-                         "them from GitHub on first use)")
+    ap.add_argument("--grammar-cache", required=True,
+                    help="directory holding hash-verified grammar libraries; missing grammars are never downloaded")
     ap.add_argument("--scope", nargs="*", default=None,
                     help="directories for similar code, same-pattern sites and cycles (default: top-level dirs of "
                          "the changed non-test code files)")
@@ -3182,11 +3197,9 @@ if __name__ == "__main__":
     ap.add_argument("--generic", action="store_true",
                     help="use the generic tags-query class for every language, Python and JavaScript included")
     ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_S,
-                    help="wall-clock limit for the build in seconds, after the grammars are loaded")
+                    help="wall-clock limit for grammar loading and the build in seconds")
     a = ap.parse_args()
-    if a.grammar_cache:
-        configure(PackConfig(cache_dir=a.grammar_cache))
-    LANGS[:] = tags_langs([]) if a.generic else LANGS + tags_langs(LANGS)
+    os.environ["TREE_SITTER_LANGUAGE_PACK_LIBS_DIR"] = os.path.abspath(a.grammar_cache)
 
     def _timeout(_signum, _frame):
         raise TimeoutError(f"build exceeded {a.timeout} s")
@@ -3194,6 +3207,7 @@ if __name__ == "__main__":
     signal.signal(signal.SIGALRM, _timeout)
     signal.alarm(a.timeout)
     try:
+        LANGS[:] = tags_langs([]) if a.generic else LANGS + tags_langs(LANGS)
         build(a)
     except Exception as e:  # one line and exit 2, no bundle: the caller runs a diff-only review instead
         print(f"review-context build failed: {type(e).__name__}: {str(e)[:300]}", file=sys.stderr)

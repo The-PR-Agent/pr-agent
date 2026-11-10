@@ -10,13 +10,26 @@ With `--generic` every language is handled by one class driven by tree-sitter ta
 
 ## Run
 
+The pinned builder environment targets CPython 3.12 on Linux x86_64. Install its two wheels with hash checking and verify the versioned grammar archive before extracting it (GNU tar and zstd are required):
+
 ```bash
-uv run --no-project --with tree-sitter-language-pack==1.22.1 python scripts/review_context/graph_bundle_ts.py \
+uv venv --python 3.12 /tmp/review-context-venv
+uv pip install --python /tmp/review-context-venv/bin/python --require-hashes --only-binary :all: \
+  -r scripts/review_context/requirements.txt
+mkdir -p /tmp/review-context-grammars
+curl --fail --location --max-time 60 \
+  https://github.com/xberg-io/tree-sitter-language-pack/releases/download/v1.22.1/parsers-linux-x86_64.tar.zst \
+  --output /tmp/review-context-grammars/parsers-linux-x86_64.tar.zst
+(cd /tmp/review-context-grammars && sha256sum --check "$OLDPWD/scripts/review_context/grammars.sha256" && \
+  tar --zstd --extract --file parsers-linux-x86_64.tar.zst --no-same-owner)
+/tmp/review-context-venv/bin/python -I scripts/review_context/graph_bundle_ts.py \
   --repo "$PWD" --base "$BASE_SHA" --head "$HEAD_SHA" --pr "$PR_NUMBER" \
-  --out-dir /tmp/review-context --generic --grammar-cache /tmp/grammars
+  --out-dir /tmp/review-context --generic --grammar-cache /tmp/review-context-grammars
 ```
 
-`--repo` is any clone that holds both commits; the head does not need to be checked out, because every file is read from git. The bundle is written to `<out-dir>/pr<N>.G6.md` and a summary JSON goes to stdout. On pr-agent's own PRs a build takes 5 to 30 seconds. tree-sitter-language-pack downloads grammars from GitHub on first use, so prefetch them into `--grammar-cache` for offline or sandboxed runs. The build phase has a `--timeout` (120 s by default, after grammar initialization); caught build errors print a diagnostic to stderr and exit 2. Bundle writes are atomic. Callers must remove stale output before each run, bound dependency and grammar initialization separately, and use the bundle only after a successful exit, as the workflow below does.
+`requirements.txt` pins `tree-sitter-language-pack==1.22.1` and `tree-sitter==0.26.0`, including their wheel hashes. `grammars.sha256` pins the Linux x86_64 grammar bundle from the same language-pack release. Updating a dependency or grammar bundle requires updating the checked-in hashes. No native libraries are restored from an Actions cache.
+
+`--repo` is any clone that holds both commits; the head does not need to be checked out, because every file is read from git. The bundle is written to `<out-dir>/pr<N>.G6.md` and a summary JSON goes to stdout. `--grammar-cache` must point directly to the verified libraries. The builder uses a local `LanguageRegistry`, which never downloads missing grammars; it does not use the package's global auto-downloading loaders. Its `--timeout` covers grammar initialization and building (120 s by default); caught errors print a diagnostic to stderr and exit 2. Bundle writes are atomic. Callers must remove stale output before each run and use the bundle only after a successful exit.
 
 Hand the bundle to pr-agent, here for `/review` only:
 
@@ -41,45 +54,24 @@ The builder treats the PR as hostile input:
 `test_hardening.py` checks these against a hostile repository (symlink out of the tree, untracked file, `.env`, `secrets.toml`, a `.pem`, an oversized file, 30,000-deep nesting, and a local config with a textconv driver, an fsmonitor and a hooks path):
 
 ```bash
-uv run --no-project --with pytest --with tree-sitter-language-pack==1.22.1 pytest scripts/review_context -q
+uv sync
+uv pip install --python .venv/bin/python --require-hashes --only-binary :all: \
+  -r scripts/review_context/requirements.txt
+GRAMMAR_CACHE=/tmp/review-context-grammars PYTHONPATH=. uv run pytest scripts/review_context -q
 ```
 
-The workflow that calls it has to do its part. Under `pull_request_target` the job holds a write token and secrets, so take the builder from the base branch and never run anything from the PR head. Since the builder reads git objects, the head does not need a checkout: fetch it into the base clone and check the SHA. A sketch:
-
-```yaml
-      - uses: actions/checkout@<pinned SHA>
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-          path: base
-      - uses: astral-sh/setup-uv@<pinned SHA>
-      - name: Build review context
-        id: context
-        continue-on-error: true
-        env:  # no secrets in this step
-          PR: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          out="$GITHUB_WORKSPACE/review-context"
-          rm -rf "$out"
-          git -C base fetch --no-tags --quiet origin "+refs/pull/$PR/head:refs/remotes/pr/head"
-          test "$(git -C base rev-parse refs/remotes/pr/head)" = "$HEAD_SHA"
-          uv run --no-project --with tree-sitter-language-pack==1.22.1 python base/scripts/review_context/graph_bundle_ts.py \
-            --repo base --base "$BASE_SHA" --head "$HEAD_SHA" --pr "$PR" --out-dir "$out" --generic \
-            --grammar-cache "$RUNNER_TEMP/grammars"
-          if [ -f "$out/pr$PR.G6.md" ] && [ ! -L "$out/pr$PR.G6.md" ]; then
-            echo "path=/github/workspace/review-context/pr$PR.G6.md" >> "$GITHUB_OUTPUT"
-          fi
-```
-
-Then give the pr-agent step `ARTIFACT_PATH: ${{ steps.context.outputs.path }}`, which stays empty, and so leaves the review diff-only, when the build fails. The `/github/workspace` path is how a Docker action such as `pragent/pr-agent:github_action` sees `GITHUB_WORKSPACE`. Comment-triggered runs carry no head SHA in their payload, so read the head and base SHAs from the pulls API there. Pin tree-sitter-language-pack as above, and never save an `actions/cache` of the grammar directory from a PR event, because a later run would load native grammar libraries a PR could have planted.
+Paths in headings and file lists use Markdown code spans with delimiters longer than any embedded backtick run. Control characters are rendered visibly so a path cannot introduce another heading or line.
 
 ## Self-review workflow
 
-`.github/workflows/pr-agent-review.yaml` builds this context for its ready PR-open events, authorized `/review` comments, and both manual replay forms. It resolves the PR's base and head revisions before checking out the base into `base/`, leaving replay event files in the workspace root. `/describe`, `/improve` and other comment commands do not build a bundle; the artifact is restricted to `pr_reviewer` when an opened event runs all three tools.
+`.github/workflows/pr-agent-review.yaml` builds context for ready PR-open events, authorized `/review` comments, and both manual replay forms. `/describe`, `/improve` and other comment commands do not build a bundle; the artifact is restricted to `pr_reviewer` when an opened event runs all three tools.
 
-The build step has no token or sponsored key in its environment. It deletes `review-context/` before fetching the public PR ref, verifies the head SHA, and runs only the base builder and reading instructions. The builder retains its 120-second limit; a 150-second outer timeout also bounds dependency installation and grammar loading. Grammar downloads use the runner's temporary directory without an Actions cache. Failed preparation, fetching, building, or regular-file validation leaves the action's artifact path empty and preserves diff-only review. The first deployment also falls back if a PR's base revision predates the builder.
+The workflow separates three jobs:
 
-Run the workflow shell tests with `PYTHONPATH=. uv run pytest tests/unittest/test_review_context_workflow.py -q`. They require Bash, Git, jq and GNU timeout (available on the native CI runners); shell cases skip with a reason when a tool is missing, including jq in the minimal Docker test image. The workflow structure check still runs there. They simulate opened/comment events and manual replays with a local Git remote, stub the GitHub API and Python installer, and exercise authorization, stale output removal, SHA mismatch, builder failure and non-regular output rejection. The builder's tests above use real grammars and hostile repositories. These local checks do not validate live GitHub event delivery or the sponsored Docker action, and do not replace the independent security review required before merging.
+- `prepare_review` authorizes the event and resolves the PR base/head SHAs. It checks out the repository's **default branch** to record the tooling commit and reading instructions. Manual replay event data is uploaded separately here.
+- `review_context` has only `contents: read` permission and no secrets. It checks out that recorded default-branch commit, installs the hash-pinned wheels, verifies/extracts the pinned grammar archive, then fetches the PR objects and verifies the head SHA without checking out either the PR head or its target branch. The builder runs only here. A successful build uploads only `review-context/bundle.md`; this job exports no outputs or reading instructions.
+- `pr_agent_job` runs on a fresh runner with the sponsored key and posting token. It downloads the bundle as data, verifies the fixed path is a non-empty regular file within the size bound, and sets the Docker-visible `ARTIFACT_PATH` to `/github/workspace/review-context/bundle.md`. Reading instructions come from `prepare_review`, outside the parser job. Parser writes to `GITHUB_ENV` or `GITHUB_OUTPUT` cannot affect this runner.
+
+Failed context preparation, dependency verification, fetching, parsing, upload/download, or artifact validation preserves diff-only review. The first deployment also falls back while the default branch lacks the tooling. The parse step has a 150-second outer limit; dependency setup has its own two-minute limit. The keyed job still requires successful authorization even when the context job fails or is skipped.
+
+Run the workflow shell tests with `PYTHONPATH=. uv run pytest tests/unittest/test_review_context_workflow.py -q`. They require Bash, Git, jq and GNU timeout; shell cases skip with a reason when a tool is missing, including jq in the minimal Docker test image. The workflow structure check still runs there. The tests execute real workflow scripts against a local Git remote with a modified target-branch builder, stub the API/installer, and exercise authorization, replay, SHA mismatch, stale output, checksum failure, invalid artifacts and untrusted artifact contents. Builder tests use verified native grammars and hostile repositories, including path escaping and Python module imports. Local tests do not validate live GitHub event delivery or the sponsored Docker action.

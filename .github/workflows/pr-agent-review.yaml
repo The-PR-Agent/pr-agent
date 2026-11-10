@@ -18,11 +18,9 @@ on:
 
 permissions:
   contents: read
-  issues: write
-  pull-requests: write
 
 jobs:
-  pr_agent_job:
+  prepare_review:
     # A cheap pre-filter only: the "Authorize comment command" step is the real gate.
     if: >-
       github.event.sender.type != 'Bot' &&
@@ -36,13 +34,18 @@ jobs:
           startsWith(github.event.comment.body, '/')
         )
       )
-    # Job-level so comments that skip the job never join the group and cancel a queued command.
-    concurrency:
-      group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || inputs.comment_id }}
-      cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    name: Run PR-Agent
+    timeout-minutes: 5
+    name: Prepare PR-Agent event
+    outputs:
+      allowed: ${{ steps.authorize.outputs.allowed }}
+      event_name: ${{ steps.replay.outputs.event_name || github.event_name }}
+      event_artifact_id: ${{ steps.replay-upload.outputs.artifact-id }}
+      pr: ${{ steps.context-revision.outputs.pr }}
+      base_sha: ${{ steps.context-revision.outputs.base_sha }}
+      head_sha: ${{ steps.context-revision.outputs.head_sha }}
+      tooling_sha: ${{ steps.context-tooling.outputs.sha }}
+      instructions: ${{ steps.context-tooling.outputs.instructions }}
     steps:
       - name: Load PR event for manual replay
         if: github.event_name == 'workflow_dispatch'
@@ -167,66 +170,179 @@ jobs:
             echo "enabled=true"
           } >> "$GITHUB_OUTPUT"
 
-      # Only trusted base code is checked out. Keep replay event files outside the checkout.
-      - name: Check out review context builder from base
-        id: context-checkout
+      - name: Save manual replay event
+        id: replay-upload
+        if: github.event_name == 'workflow_dispatch' && steps.authorize.outputs.allowed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: review-event
+          path: pr-agent-event.json
+          if-no-files-found: error
+          retention-days: 1
+
+      # Resolve tooling and reading instructions on the default branch, independently of the PR target.
+      - name: Check out default-branch review tooling
+        id: tooling-checkout
         if: steps.context-revision.outputs.enabled == 'true'
         continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          ref: ${{ steps.context-revision.outputs.base_sha }}
-          path: base
+          ref: ${{ github.event.repository.default_branch }}
+          path: tooling
+          persist-credentials: false
+
+      - name: Record trusted tooling revision and instructions
+        id: context-tooling
+        if: steps.tooling-checkout.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          tooling="$GITHUB_WORKSPACE/tooling"
+          sha=$(git -C "$tooling" rev-parse HEAD)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          instructions=$(cat "$tooling/scripts/review_context/instructions.txt")
+          delimiter=$(cat /proc/sys/kernel/random/uuid)
+          {
+            printf 'instructions<<%s\n%s\n%s\n' "$delimiter" "$instructions" "$delimiter"
+            echo "sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+
+  review_context:
+    needs: prepare_review
+    if: needs.prepare_review.outputs.allowed == 'true' && needs.prepare_review.outputs.tooling_sha != ''
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    name: Build review context without secrets
+    steps:
+      - name: Check out verified default-branch tooling
+        id: context-checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.prepare_review.outputs.tooling_sha }}
+          path: tooling
           fetch-depth: 0
           persist-credentials: false
 
       - name: Set up review context Python runner
         id: context-uv
-        if: steps.context-checkout.outcome == 'success'
-        continue-on-error: true
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           version: '0.13.7'
           enable-cache: false
 
-      - name: Build review context
-        id: context
-        if: steps.context-uv.outcome == 'success'
-        continue-on-error: true
-        timeout-minutes: 3
-        env:
-          PR: ${{ steps.context-revision.outputs.pr }}
-          BASE_SHA: ${{ steps.context-revision.outputs.base_sha }}
-          HEAD_SHA: ${{ steps.context-revision.outputs.head_sha }}
+      - name: Install hash-pinned context dependencies and grammars
+        id: context-dependencies
+        timeout-minutes: 2
         shell: bash
         run: |
           set -euo pipefail
-          base="$GITHUB_WORKSPACE/base"
+          tooling="$GITHUB_WORKSPACE/tooling/scripts/review_context"
+          uv venv --python 3.12 "$RUNNER_TEMP/review-context-venv"
+          uv pip install --python "$RUNNER_TEMP/review-context-venv/bin/python" \
+            --require-hashes --only-binary :all: -r "$tooling/requirements.txt"
+          grammars="$RUNNER_TEMP/review-context-grammars"
+          mkdir -p "$grammars"
+          cd "$grammars"
+          curl --fail --silent --show-error --location --max-time 60 \
+            https://github.com/xberg-io/tree-sitter-language-pack/releases/download/v1.22.1/parsers-linux-x86_64.tar.zst \
+            --output parsers-linux-x86_64.tar.zst
+          sha256sum --check "$tooling/grammars.sha256"
+          tar --zstd --extract --file parsers-linux-x86_64.tar.zst --no-same-owner
+
+      - name: Build review context
+        id: context
+        timeout-minutes: 3
+        env:
+          PR: ${{ needs.prepare_review.outputs.pr }}
+          BASE_SHA: ${{ needs.prepare_review.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.prepare_review.outputs.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tooling="$GITHUB_WORKSPACE/tooling"
           out="$GITHUB_WORKSPACE/review-context"
           rm -rf -- "$out"
-          # Public ref fetch needs no token; never check out or execute the PR head.
-          timeout 30s git -C "$base" fetch --no-tags --quiet origin "+refs/pull/$PR/head:refs/remotes/pr/head"
-          test "$(git -C "$base" rev-parse refs/remotes/pr/head)" = "$HEAD_SHA"
-          # Native grammars stay in this runner's temp directory, never in actions/cache.
-          timeout 150s uv run --no-project --with tree-sitter-language-pack==1.22.1 --python 3.12 \
-            python -I "$base/scripts/review_context/graph_bundle_ts.py" \
-            --repo "$base" --base "$BASE_SHA" --head "$HEAD_SHA" --pr "$PR" --out-dir "$out" \
+          # Fetch objects only; neither the PR head nor its target branch supplies executable tooling.
+          timeout 30s git -C "$tooling" fetch --no-tags --quiet origin "+refs/pull/$PR/head:refs/remotes/pr/head" "$BASE_SHA"
+          test "$(git -C "$tooling" rev-parse refs/remotes/pr/head)" = "$HEAD_SHA"
+          timeout 150s "$RUNNER_TEMP/review-context-venv/bin/python" -I \
+            "$tooling/scripts/review_context/graph_bundle_ts.py" \
+            --repo "$tooling" --base "$BASE_SHA" --head "$HEAD_SHA" --pr "$PR" --out-dir "$out" \
             --generic --grammar-cache "$RUNNER_TEMP/review-context-grammars"
           test -d "$out"
           test ! -L "$out"
           test -f "$out/pr$PR.G6.md"
           test ! -L "$out/pr$PR.G6.md"
-          instructions=$(cat "$base/scripts/review_context/instructions.txt")
-          delimiter=$(cat /proc/sys/kernel/random/uuid)
-          {
-            printf 'instructions<<%s\n%s\n%s\n' "$delimiter" "$instructions" "$delimiter"
-            echo "path=/github/workspace/review-context/pr$PR.G6.md"
-          } >> "$GITHUB_OUTPUT"
+          cp -- "$out/pr$PR.G6.md" "$out/bundle.md"
+
+      # Only bundle bytes cross this job boundary, never parser-controlled step/job outputs or instructions.
+      - name: Upload review context
+        id: context-upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: review-context
+          path: review-context/bundle.md
+          if-no-files-found: error
+          retention-days: 1
+
+  pr_agent_job:
+    needs: [prepare_review, review_context]
+    if: >-
+      always() && !cancelled() && needs.prepare_review.result == 'success' &&
+      needs.prepare_review.outputs.allowed == 'true'
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    # Job-level so comments that skip the job never join the group and cancel a queued command.
+    concurrency:
+      group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || inputs.comment_id }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    name: Run PR-Agent
+    steps:
+      - name: Load manual replay event
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          artifact-ids: ${{ needs.prepare_review.outputs.event_artifact_id }}
+          merge-multiple: true
+          path: .
+
+      - name: Download review context
+        id: context-download
+        if: needs.review_context.result == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: review-context
+          path: review-context
+
+      - name: Validate review context artifact
+        id: context-artifact
+        if: steps.context-download.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/review-context"
+          test -d "$out"
+          test ! -L "$out"
+          test -f "$out/bundle.md"
+          test ! -L "$out/bundle.md"
+          test -s "$out/bundle.md"
+          test "$(wc -c < "$out/bundle.md")" -le 200000
+          echo "path=/github/workspace/review-context/bundle.md" >> "$GITHUB_OUTPUT"
 
       # Post as the "PR Agent" GitHub App instead of github-actions[bot] once its client ID
       # variable and private key secret are configured; until then the workflow token is used.
       - name: Create PR Agent app token
         id: app-token
-        if: steps.authorize.outputs.allowed == 'true' && vars.PR_AGENT_APP_CLIENT_ID != ''
+        if: vars.PR_AGENT_APP_CLIENT_ID != ''
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
         with:
           client-id: ${{ vars.PR_AGENT_APP_CLIENT_ID }}
@@ -237,7 +353,6 @@ jobs:
           permission-pull-requests: write
 
       - name: Run sponsored PR-Agent
-        if: steps.authorize.outputs.allowed == 'true'
         uses: docker://pragent/pr-agent:github_action
         with:
           entrypoint: /bin/sh
@@ -247,14 +362,14 @@ jobs:
             exec /entrypoint.sh"
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
-          ARTIFACT_PATH: ${{ steps.context.outcome == 'success' && steps.context.outputs.path || '' }}
-          ARTIFACT_INSTRUCTIONS: ${{ steps.context.outcome == 'success' && steps.context.outputs.instructions || '' }}
+          ARTIFACT_PATH: ${{ steps.context-artifact.outcome == 'success' && steps.context-artifact.outputs.path || '' }}
+          ARTIFACT_INSTRUCTIONS: ${{ steps.context-artifact.outcome == 'success' && needs.prepare_review.outputs.instructions || '' }}
           ARTIFACTS__TARGET_TOOLS: '["pr_reviewer"]'
           # The app token posts as `<app-slug>[bot]` and cannot call `GET /user`, so name that login
           # for the comment-authorship checks; empty keeps the `github-actions[bot]` fallback.
           GITHUB__AGENT_LOGIN: ${{ steps.app-token.outputs.app-slug && format('{0}[bot]', steps.app-token.outputs.app-slug) || '' }}
-          PR_AGENT_EVENT_NAME: ${{ steps.replay.outputs.event_name || github.event_name }}
-          PR_AGENT_EVENT_PATH: ${{ steps.replay.outputs.event_path || '/github/workflow/event.json' }}
+          PR_AGENT_EVENT_NAME: ${{ needs.prepare_review.outputs.event_name }}
+          PR_AGENT_EVENT_PATH: ${{ github.event_name == 'workflow_dispatch' && '/github/workspace/pr-agent-event.json' || '/github/workflow/event.json' }}
           OPENAI_KEY: ${{ secrets.QODO_SPONSORSHIP_LLM_KEY }}
           CONFIG__MODEL: openai/gpt-6.1-sol
           CONFIG__MODEL_WEAK: openai/gpt-6.1-sol

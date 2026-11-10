@@ -12,8 +12,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/pr-agent-review.yaml"
-STEPS = {step["id"]: step for step in yaml.safe_load(WORKFLOW.read_text())["jobs"]["pr_agent_job"]["steps"]
-         if "id" in step}
+JOBS = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+STEPS = {step["id"]: step for job in JOBS.values() for step in job["steps"] if "id" in step}
 
 
 def git(repo, *args):
@@ -79,12 +79,9 @@ else:
     print((Path(os.environ["API_FIXTURES"]) / (endpoint.replace("/", "_") + ".json")).read_text())
 ''')
     gh.chmod(0o755)
-    uv = bin_dir / "uv"
-    uv.write_text(f"#!{sys.executable}\n" + '''import os, sys
-args = sys.argv[sys.argv.index("python") + 1:]
-os.execv(sys.executable, [sys.executable, *args])
-''')
-    uv.chmod(0o755)
+    python = runner_temp / "review-context-venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(sys.executable)
     origin = tmp_path / "origin"
     origin.mkdir()
     git(origin, "init", "-q")
@@ -101,6 +98,9 @@ out = Path(args.out_dir)
 out.mkdir()
 artifact = out / f"pr{args.pr}.G6.md"
 mode = os.environ.get("TEST_BUILD", "success")
+if mode == "inject":
+    Path(os.environ["GITHUB_ENV"]).write_text("OPENAI_KEY=attacker\\n")
+    Path(os.environ["GITHUB_OUTPUT"]).write_text("path=evil\\ninstructions=evil\\nallowed=true\\n")
 if mode == "failure":
     artifact.write_text("partial bundle")
     raise SystemExit(2)
@@ -111,13 +111,15 @@ elif mode == "directory":
 else:
     artifact.write_text("review bundle")
 ''')
-    base = commit(origin)
+    default = commit(origin)
     (builder / "graph_bundle_ts.py").write_text("raise RuntimeError('PR head must never execute')\n")
     (builder / "instructions.txt").write_text("Untrusted instructions\n")
+    base = commit(origin)
+    (builder / "instructions.txt").write_text("PR head instructions\n")
     head = commit(origin)
     git(origin, "update-ref", "refs/pull/17/head", head)
-    git(workspace, "clone", "-q", str(origin), "base")
-    git(workspace / "base", "checkout", "-q", "--detach", base)
+    git(workspace, "clone", "-q", str(origin), "tooling")
+    git(workspace / "tooling", "checkout", "-q", "--detach", default)
     api = tmp_path / "api"
     api.mkdir()
     pr = {"number": 17, "state": "open", "draft": False,
@@ -136,7 +138,7 @@ else:
         "GITHUB_WORKSPACE": str(workspace), "RUNNER_TEMP": str(runner_temp),
         "GITHUB_EVENT_PATH": str(event), "EVENT_NAME": "pull_request_target", "REPLAY_EVENT_FILE": "",
         "GH_REPO": "owner/repo", "API_FIXTURES": str(api), "API_CALLS": str(tmp_path / "api-calls"),
-        "PR": "17", "BASE_SHA": base, "HEAD_SHA": head, "OUTSIDE_FILE": str(outside),
+        "DEFAULT_SHA": default, "PR": "17", "BASE_SHA": base, "HEAD_SHA": head, "OUTSIDE_FILE": str(outside),
     }
     return env
 
@@ -157,11 +159,15 @@ def test_event_and_replay_attach_trusted_context(replay, event):
     assert result.returncode == 0, result.stderr
     assert revision == {"enabled": "true", "pr": "17", "base_sha": replay["BASE_SHA"],
                         "head_sha": replay["HEAD_SHA"]}
-    result, context = run_step("context", replay)
+    result, tooling = run_step("context-tooling", replay)
     assert result.returncode == 0, result.stderr
-    assert context == {"path": "/github/workspace/review-context/pr17.G6.md",
-                       "instructions": "Trusted reading instructions.\nSecond line."}
-    assert git(Path(replay["GITHUB_WORKSPACE"]) / "base", "rev-parse", "HEAD") == replay["BASE_SHA"]
+    assert tooling == {"sha": replay["DEFAULT_SHA"], "instructions": "Trusted reading instructions.\nSecond line."}
+    result, context = run_step("context", replay)
+    assert result.returncode == 0 and context == {}, result.stderr
+    result, artifact = run_step("context-artifact", replay)
+    assert result.returncode == 0, result.stderr
+    assert artifact == {"path": "/github/workspace/review-context/bundle.md"}
+    assert git(Path(replay["GITHUB_WORKSPACE"]) / "tooling", "rev-parse", "HEAD") == replay["DEFAULT_SHA"]
     assert Path(replay["REPLAY_EVENT_FILE"] or replay["GITHUB_EVENT_PATH"]).is_file()
 
 
@@ -208,7 +214,8 @@ def test_stale_or_hostile_output_is_removed_before_build(replay, plant):
         else:
             (out / "stale.md").write_text("stale")
     result, context = run_step("context", replay)
-    assert result.returncode == 0 and context["path"].endswith("/pr17.G6.md"), result.stderr
+    assert result.returncode == 0 and context == {}, result.stderr
+    assert (out / "bundle.md").read_text() == "review bundle"
     assert (out / "pr17.G6.md").read_text() == "review bundle"
     assert not out.is_symlink() and not (out / "pr17.G6.md").is_symlink()
     assert outside.read_text() == "must remain untouched"
@@ -220,34 +227,135 @@ def test_build_failure_leaves_artifact_path_empty(replay, failure):
     if failure == "sha-mismatch":
         replay["HEAD_SHA"] = "0" * 40
     elif failure == "missing-builder":
-        shutil.rmtree(Path(replay["GITHUB_WORKSPACE"]) / "base/scripts/review_context")
+        shutil.rmtree(Path(replay["GITHUB_WORKSPACE"]) / "tooling/scripts/review_context")
     result, context = run_step("context", replay, TEST_BUILD=failure)
     assert result.returncode != 0
     assert context.get("path", "") == ""
 
 
+@pytest.mark.parametrize("plant", ["missing", "empty", "directory", "symlink", "parent-symlink", "oversized"])
+def test_downloaded_artifact_is_validated_before_use(replay, plant):
+    out = Path(replay["GITHUB_WORKSPACE"]) / "review-context"
+    out.mkdir()
+    bundle = out / "bundle.md"
+    if plant == "empty":
+        bundle.touch()
+    elif plant == "directory":
+        bundle.mkdir()
+    elif plant == "symlink":
+        bundle.symlink_to(replay["OUTSIDE_FILE"])
+    elif plant == "parent-symlink":
+        out.rmdir()
+        out.symlink_to(Path(replay["OUTSIDE_FILE"]).parent, target_is_directory=True)
+    elif plant == "oversized":
+        bundle.write_bytes(b"x" * 200001)
+    result, artifact = run_step("context-artifact", replay)
+    assert result.returncode != 0 and artifact == {}
+
+
+def test_artifact_content_cannot_set_keyed_environment_or_outputs(replay):
+    out = Path(replay["GITHUB_WORKSPACE"]) / "review-context"
+    out.mkdir()
+    env_file = Path(replay["RUNNER_TEMP"]) / "keyed-env"
+    env_file.touch()
+    (out / "bundle.md").write_text("GITHUB_TOKEN=attacker\npath=evil\n::set-env name=OPENAI_KEY::evil\n")
+    result, artifact = run_step("context-artifact", replay, GITHUB_ENV=str(env_file))
+    assert result.returncode == 0
+    assert artifact == {"path": "/github/workspace/review-context/bundle.md"}
+    assert env_file.read_text() == ""
+
+
+def test_parser_command_files_do_not_cross_job_boundary(replay, tmp_path):
+    parser_env = tmp_path / "parser-env"
+    result, injected = run_step("context", replay, TEST_BUILD="inject", GITHUB_ENV=str(parser_env))
+    assert result.returncode == 0, result.stderr
+    assert injected == {"path": "evil", "instructions": "evil", "allowed": "true"}
+    assert parser_env.read_text() == "OPENAI_KEY=attacker\n"
+    # Transfer only the uploaded file to the fresh keyed runner, as the workflow does.
+    workspace = tmp_path / "keyed-workspace"
+    out = workspace / "review-context"
+    out.mkdir(parents=True)
+    shutil.copyfile(Path(replay["GITHUB_WORKSPACE"]) / "review-context/bundle.md", out / "bundle.md")
+    keyed_env = tmp_path / "keyed-env"
+    keyed_env.touch()
+    result, artifact = run_step("context-artifact", {**replay, "GITHUB_WORKSPACE": str(workspace)},
+                                GITHUB_ENV=str(keyed_env))
+    assert result.returncode == 0
+    assert artifact == {"path": "/github/workspace/review-context/bundle.md"}
+    assert keyed_env.read_text() == ""
+
+
+def test_grammar_checksum_failure_prevents_extraction(replay):
+    bin_dir = Path(replay["PATH"].split(os.pathsep)[0])
+    for name, script in {
+        "uv": "exit 0",
+        "curl": 'printf tampered > parsers-linux-x86_64.tar.zst',
+        "tar": 'touch "$RUNNER_TEMP/extracted"',
+    }.items():
+        tool = bin_dir / name
+        tool.write_text("#!/bin/sh\n" + script + "\n")
+        tool.chmod(0o755)
+    tooling = Path(replay["GITHUB_WORKSPACE"]) / "tooling/scripts/review_context"
+    (tooling / "grammars.sha256").write_text((ROOT / "scripts/review_context/grammars.sha256").read_text())
+    result, _ = run_step("context-dependencies", replay)
+    assert result.returncode != 0
+    assert "FAILED" in result.stdout
+    assert not (Path(replay["RUNNER_TEMP"]) / "extracted").exists()
+
+
 def test_workflow_preserves_trust_and_fallback_boundaries():
     workflow = yaml.safe_load(WORKFLOW.read_text())
-    steps = workflow["jobs"]["pr_agent_job"]["steps"]
-    checkout = STEPS["context-checkout"]
-    assert checkout["with"]["ref"] == "${{ steps.context-revision.outputs.base_sha }}"
-    assert checkout["with"]["persist-credentials"] is False
-    assert checkout["with"]["path"] == "base"
-    assert checkout["with"]["fetch-depth"] == 0
+    assert workflow["permissions"] == {"contents": "read"}
+    prepare, build, keyed = (JOBS[name] for name in ("prepare_review", "review_context", "pr_agent_job"))
+    assert build["permissions"] == {"contents": "read"}
+    assert "outputs" not in build
+    assert "secrets." not in json.dumps(prepare)
+    assert "secrets." not in json.dumps(build)
+    assert "app-token" not in {step.get("id") for step in build["steps"]}
+    assert build["needs"] == "prepare_review"
+    assert build["if"] == ("needs.prepare_review.outputs.allowed == 'true' && "
+                           "needs.prepare_review.outputs.tooling_sha != ''")
+    assert keyed["needs"] == ["prepare_review", "review_context"]
+    assert "always()" in keyed["if"] and "!cancelled()" in keyed["if"]
+    assert "needs.prepare_review.result == 'success'" in keyed["if"]
+    assert "needs.prepare_review.outputs.allowed == 'true'" in keyed["if"]
+    assert "needs.review_context.result" not in keyed["if"]  # a build failure still runs diff-only review
+    replay_download = next(step for step in keyed["steps"] if step["name"] == "Load manual replay event")
+    assert replay_download["with"]["artifact-ids"] == "${{ needs.prepare_review.outputs.event_artifact_id }}"
+    assert prepare["outputs"]["event_artifact_id"] == "${{ steps.replay-upload.outputs.artifact-id }}"
+    assert STEPS["tooling-checkout"]["with"]["ref"] == "${{ github.event.repository.default_branch }}"
+    assert STEPS["context-checkout"]["with"]["ref"] == "${{ needs.prepare_review.outputs.tooling_sha }}"
+    assert prepare["outputs"]["tooling_sha"] == "${{ steps.context-tooling.outputs.sha }}"
+    for step in (STEPS["tooling-checkout"], STEPS["context-checkout"]):
+        assert step["with"]["persist-credentials"] is False
+        assert step["with"]["path"] == "tooling"
+    assert STEPS["context-checkout"]["with"]["fetch-depth"] == 0
     assert STEPS["context-uv"]["with"]["enable-cache"] is False
-    for name in ("context-revision", "context-checkout", "context-uv", "context"):
-        assert STEPS[name]["continue-on-error"] is True
-    assert STEPS["context-checkout"]["if"] == "steps.context-revision.outputs.enabled == 'true'"
-    assert STEPS["context-uv"]["if"] == "steps.context-checkout.outcome == 'success'"
-    assert STEPS["context"]["if"] == "steps.context-uv.outcome == 'success'"
     assert set(STEPS["context"]["env"]) == {"PR", "BASE_SHA", "HEAD_SHA"}
-    assert "tree-sitter-language-pack==1.22.1" in STEPS["context"]["run"]
-    assert not any(step.get("uses", "").startswith("actions/cache@") for step in steps)
-    assert steps.index(STEPS["context"]) < steps.index(STEPS["app-token"])
-    action = next(step for step in steps if step["name"] == "Run sponsored PR-Agent")
-    assert action["if"] == "steps.authorize.outputs.allowed == 'true'"
+    assert "GITHUB_OUTPUT" not in STEPS["context"]["run"]
+    assert "GITHUB_ENV" not in STEPS["context"]["run"]
+    deps = STEPS["context-dependencies"]["run"]
+    assert "--require-hashes --only-binary :all:" in deps
+    assert "/v1.22.1/parsers-linux-x86_64.tar.zst" in deps
+    assert deps.index("sha256sum --check") < deps.index("tar --zstd")
+    upload = STEPS["context-upload"]
+    assert upload["with"]["name"] == "review-context"
+    assert upload["with"]["path"] == "review-context/bundle.md"
+    assert "if" not in upload  # upload only after all build steps succeed
+    assert STEPS["context-download"]["with"]["name"] == "review-context"
+    assert STEPS["context-download"]["if"] == "needs.review_context.result == 'success'"
+    assert STEPS["context-artifact"]["if"] == "steps.context-download.outcome == 'success'"
+    for name in ("context-revision", "tooling-checkout", "context-tooling", "context-download", "context-artifact"):
+        assert STEPS[name]["continue-on-error"] is True
+    for job in JOBS.values():
+        assert not any(step.get("uses", "").startswith("actions/cache@") for step in job["steps"])
+    assert not any("graph_bundle_ts.py" in step.get("run", "") for step in keyed["steps"])
+    action = next(step for step in keyed["steps"] if step["name"] == "Run sponsored PR-Agent")
     assert action["env"]["ARTIFACT_PATH"] == (
-        "${{ steps.context.outcome == 'success' && steps.context.outputs.path || '' }}"
+        "${{ steps.context-artifact.outcome == 'success' && steps.context-artifact.outputs.path || '' }}"
+    )
+    assert action["env"]["ARTIFACT_INSTRUCTIONS"] == (
+        "${{ steps.context-artifact.outcome == 'success' && needs.prepare_review.outputs.instructions || '' }}"
     )
     assert action["env"]["ARTIFACTS__TARGET_TOOLS"] == '["pr_reviewer"]'
     for tool in ("DESCRIBE", "REVIEW", "IMPROVE"):

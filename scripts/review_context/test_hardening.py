@@ -1,7 +1,7 @@
 """Hostile-repository checks for graph_bundle_ts.py.
 
-Run: uv run --no-project --with pytest --with tree-sitter-language-pack==1.22.1 pytest scripts/review_context -q
-Set GRAMMAR_CACHE to a prefetched grammar directory to run offline.
+Install requirements.txt with --require-hashes, verify/extract grammars.sha256, then run:
+GRAMMAR_CACHE=/path/to/grammars PYTHONPATH=. uv run pytest scripts/review_context -q
 """
 import importlib.util
 import os
@@ -20,6 +20,7 @@ MARKERS = ("OUTSIDE_TREE_MARKER", "UNTRACKED_MARKER", "SECRETS_TOML_MARKER", "DO
 
 @pytest.fixture(scope="module")
 def builder_module():
+    os.environ["TREE_SITTER_LANGUAGE_PACK_LIBS_DIR"] = os.environ["GRAMMAR_CACHE"]
     spec = importlib.util.spec_from_file_location("graph_bundle_ts", BUILDER)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -140,3 +141,73 @@ def test_failure_exits_cleanly_without_a_bundle(hostile):
     assert r.stderr.strip().startswith("review-context build failed:")
     assert len(r.stderr.strip().splitlines()) == 1
     assert not (tmp / "out" / "pr1.G6.md").exists()
+
+
+@pytest.mark.parametrize("path,expected", [
+    ("pkg/core.py", "`pkg/core.py`"),
+    ("pkg/`quoted`.py", "``pkg/`quoted`.py``"),
+    ("```<img src=x>```", "```` ```<img src=x>``` ````"),
+    (" leading.py ", "`  leading.py  `"),
+    ("pkg/line\n## forged\r\t.py", r"`pkg/line\n## forged\r\t.py`"),
+    ("pkg/\u2028line.py", r"`pkg/\u2028line.py`"),
+])
+def test_path_code_spans_cannot_break_headings(builder_module, path, expected):
+    assert builder_module.md_code(path) == expected
+
+
+def test_bundle_escapes_paths_in_headings(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sh(repo, "git", "init", "-q")
+    path = repo / "`[link](https:evil)`.py"
+    path.write_text("import os\n\ndef helper(x):\n    return x + 1\n")
+    base = commit(repo, "base")
+    path.write_text("import os\n\ndef helper(x):\n    return x + 2\n")
+    head = commit(repo, "head")
+    result = run_builder(repo, base, head, tmp_path / "out")
+    assert result.returncode == 0, result.stderr
+    bundle = (tmp_path / "out/pr1.G6.md").read_text()
+    assert "### Imports of `` `[link](https:evil)`.py ``" in bundle
+    assert "### function `` `[link](https:evil)`.py::helper ``" in bundle
+
+
+def test_missing_grammars_fail_without_download(hostile, monkeypatch):
+    repo, base, head, tmp = hostile
+    empty = tmp / "empty-grammars"
+    empty.mkdir()
+    monkeypatch.setenv("GRAMMAR_CACHE", str(empty))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp / "cache"))
+    result = run_builder(repo, base, head, tmp / "out")
+    assert result.returncode == 2
+    assert "LanguageNotFound" in result.stderr
+    assert not (tmp / "out/pr1.G6.md").exists()
+    assert not list(empty.iterdir())
+    assert not (tmp / "cache").exists()
+
+
+@pytest.mark.parametrize("source,local,target", [
+    ("import helpers", "helpers", "helpers.py"),
+    ("import helpers as h", "h", "helpers.py"),
+    ("import pkg.helpers", "pkg", "pkg/__init__.py"),
+    ("import pkg.helpers as h", "h", "pkg/helpers.py"),
+    ("import helpers, pkg.helpers as h", "helpers", "helpers.py"),
+])
+def test_python_import_map_resolves_module_calls(builder_module, tmp_path, source, local, target, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    sh(repo, "git", "init", "-q")
+    for name in ("helpers.py", "pkg/__init__.py", "pkg/helpers.py"):
+        (repo / name).write_text("def helper():\n    return 1\n")
+    (repo / "consumer.py").write_text(f"{source}\n\ndef use():\n    return {local}.helper()\n")
+    head = commit(repo, "imports")
+    tree = builder_module.HeadTree(str(repo), head)
+    monkeypatch.setattr(builder_module, "HEAD", tree)
+    try:
+        index = builder_module.Repo(str(repo), [builder_module.LANGS[0]])
+        assert index.importmap["consumer.py"][local] == ("module", target)
+        caller = index.top["consumer.py", "use"]
+        hits, via = index.resolve_call(caller, local, "helper")
+        assert via == "import"
+        assert [hit.key for hit in hits] == [f"{target}::helper"]
+    finally:
+        tree.close()
