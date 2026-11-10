@@ -43,7 +43,7 @@ ___
     - Only if the `Category` header is relevant, the user should move to the summarized suggestion description.
     - Only if the summarized suggestion description is relevant, the user should click on the collapsible, to read the full suggestion description with a code preview example.
 
-- In addition, we recommend to use the [`extra_instructions`](../tools/improve.mdx#extra-instructions-and-best-practices) field to guide the model to suggestions that are more relevant to the specific needs of the project.
+- In addition, we recommend to use the [`extra_instructions`](../commands/improve.mdx#extra-instructions-and-best-practices) field to guide the model to suggestions that are more relevant to the specific needs of the project.
 
 </details>
 
@@ -54,7 +54,7 @@ ___
 
 #### Answer:<span style="display:none;">3</span>
 
-See [here](../tools/improve.mdx#extra-instructions-and-best-practices) for more information on how to use the `extra_instructions` and `best_practices` configuration options, to guide the model to more tailored suggestions.
+See [here](../commands/improve.mdx#extra-instructions-and-best-practices) for more information on how to use the `extra_instructions` and `best_practices` configuration options, to guide the model to more tailored suggestions.
 
 </details>
 
@@ -91,7 +91,7 @@ ___
 
 #### Answer:<span style="display:none;">7</span>
 
-Yes, you can customize review effort estimates using the `extra_instructions` configuration option (see [documentation](../tools/review.md#configuration-options)).
+Yes, you can customize review effort estimates using the `extra_instructions` configuration option (see [documentation](../commands/review.md#configuration-options)).
 
 Example mapping:
 
@@ -113,7 +113,7 @@ ___
 
 The default configuration of PR-Agent is designed to balance helpful feedback with noise reduction. It reduces noise through several approaches:
 
-- Auto-feedback uses three highly structured tools (`/describe`, `/review`, and `/improve`), designed to be accessible at a glance without creating large visual overload
+- Auto-feedback uses three highly structured commands (`/describe`, `/review`, and `/improve`), designed to be accessible at a glance without creating large visual overload
 - Suggestions are presented in a table format rather than as committable comments, which are far noisier
 - The 'File Walkthrough' section is folded by default, as it tends to be verbose
 - Intermediate comments are avoided when creating new PRs (like "PR-Agent is now reviewing your PR..."), which would generate email noise
@@ -121,21 +121,21 @@ The default configuration of PR-Agent is designed to balance helpful feedback wi
 From our experience, especially in large teams or organizations, complaints about "noise" sometimes stem from the following issues:
 
 - **Feedback from multiple bots**: When multiple bots provide feedback on the same PR, it creates confusion and noise. We recommend using PR-Agent as the primary feedback tool to streamline the process and reduce redundancy.
-- **Getting familiar with the tool**: Unlike many tools that provide feedback only on demand, PR-Agent automatically analyzes and suggests improvements for every code change. While this proactive approach can feel intimidating at first, it's designed to continuously enhance code quality and catch bugs and problems when they occur. We recommend reviewing [this guide](../tools/improve.mdx#understanding-ai-code-suggestions) to help align expectations and maximize the value of PR-Agent's auto-feedback.
+- **Getting familiar with the tool**: Unlike many tools that provide feedback only on demand, PR-Agent automatically analyzes and suggests improvements for every code change. While this proactive approach can feel intimidating at first, it's designed to continuously enhance code quality and catch bugs and problems when they occur. We recommend reviewing [this guide](../commands/improve.mdx#understanding-ai-code-suggestions) to help align expectations and maximize the value of PR-Agent's auto-feedback.
 
 Therefore, at a global configuration level, we recommend using the default configuration, which is designed to reduce noise while providing valuable feedback.
 
 However, if you still find the feedback too noisy, you can adjust the configuration. Since each user and team has different needs, it's definitely possible - and even recommended - to adjust configurations for specific repos as needed.
 Ways to adjust the configuration for noise reduction include for example:
 
-- [Score thresholds for code suggestions](../tools/improve.mdx#configuration-options)
-- [Utilizing the `extra_instructions` field for more tailored feedback](../tools/improve.mdx#extra-instructions)
-- [Controlling which tools run automatically](../usage-guide/automations_and_usage.md#github-app-automatic-tools-when-a-new-pr-is-opened)
+- [Score thresholds for code suggestions](../commands/improve.mdx#configuration-options)
+- [Utilizing the `extra_instructions` field for more tailored feedback](../commands/improve.mdx#extra-instructions)
+- [Controlling which commands run automatically](../usage-guide/automations_and_usage.md#github-app-automatic-commands-when-a-new-pr-is-opened)
 
 Note that some users may prefer the opposite - more thorough and detailed feedback. PR-Agent is designed to be flexible and customizable, allowing you to tailor the feedback to your team's specific needs and preferences.
 Examples of ways to increase feedback include:
 
-- [Dual-publishing mode](../tools/improve.mdx#dual-publishing-mode)
+- [Dual-publishing mode](../commands/improve.mdx#dual-publishing-mode)
 
 </details>
 

@@ -13,13 +13,13 @@ from pr_agent.algo.pr_processing import (
     generate_full_patch,
 )
 from pr_agent.algo.types import EDIT_TYPE
+from pr_agent.commands import pr_description as pr_description_module
+from pr_agent.commands import pr_reviewer as pr_reviewer_module
+from pr_agent.commands import ticket_pr_compliance_check as tickets_module
+from pr_agent.commands.pr_description import PRDescription
+from pr_agent.commands.pr_reviewer import PRReviewer
+from pr_agent.commands.ticket_pr_compliance_check import fit_related_tickets_to_prompt_budget
 from pr_agent.config_loader import get_settings
-from pr_agent.tools import pr_description as pr_description_module
-from pr_agent.tools import pr_reviewer as pr_reviewer_module
-from pr_agent.tools import ticket_pr_compliance_check as tickets_module
-from pr_agent.tools.pr_description import PRDescription
-from pr_agent.tools.pr_reviewer import PRReviewer
-from pr_agent.tools.ticket_pr_compliance_check import fit_related_tickets_to_prompt_budget
 
 
 class _PromptCountingTokenHandler:
@@ -389,33 +389,33 @@ def test_fixed_prompt_capacity_is_rechecked_for_each_model_attempt(prompt_budget
     assert handler.model == "fallback"
 
 
-def _make_tool(tool_name):
+def _make_command(command_name):
     provider = MagicMock()
-    if tool_name == "review":
-        tool = PRReviewer.__new__(PRReviewer)
-        tool.pr_url = "https://example.test/pull/1"
-        tool.incremental = SimpleNamespace(is_incremental=False)
-        tool.remaining_files_list = []
+    if command_name == "review":
+        command = PRReviewer.__new__(PRReviewer)
+        command.pr_url = "https://example.test/pull/1"
+        command.incremental = SimpleNamespace(is_incremental=False)
+        command.remaining_files_list = []
         module = pr_reviewer_module
     else:
-        tool = PRDescription.__new__(PRDescription)
-        tool.pr_id = "1"
-        tool.user_description = ""
-        tool.keys_fix = []
+        command = PRDescription.__new__(PRDescription)
+        command.pr_id = "1"
+        command.user_description = ""
+        command.keys_fix = []
         module = pr_description_module
-    tool.git_provider = provider
-    tool.vars = {"related_tickets": _tickets(33)}
-    tool._raw_prompt_vars = copy.deepcopy(tool.vars)
-    tool.token_handler = SimpleNamespace(prompt_tokens=0)
-    tool.prediction = None
-    return tool, module
+    command.git_provider = provider
+    command.vars = {"related_tickets": _tickets(33)}
+    command._raw_prompt_vars = copy.deepcopy(command.vars)
+    command.token_handler = SimpleNamespace(prompt_tokens=0)
+    command.prediction = None
+    return command, module
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["review", "description"])
-async def test_tools_use_the_same_bounded_ticket_vars_for_packing_and_rendering(monkeypatch, tool_name):
-    tool, module = _make_tool(tool_name)
-    raw_snapshot = copy.deepcopy(tool._raw_prompt_vars)
+@pytest.mark.parametrize("command_name", ["review", "description"])
+async def test_commands_use_the_same_bounded_ticket_vars_for_packing_and_rendering(monkeypatch, command_name):
+    command, module = _make_command(command_name)
+    raw_snapshot = copy.deepcopy(command._raw_prompt_vars)
     prompt_vars = {"related_tickets": _tickets(2)}
     handler = SimpleNamespace(prompt_tokens=500)
     helper_calls = []
@@ -431,37 +431,37 @@ async def test_tools_use_the_same_bounded_ticket_vars_for_packing_and_rendering(
         return "@@ -1 +1 @@\n-old\n+new"
 
     async def get_prediction(_model, *_args, **_kwargs):
-        rendered_vars.append(tool.vars)
-        if tool_name == "review":
+        rendered_vars.append(command.vars)
+        if command_name == "review":
             return "review:\n  summary: prediction"
         return "description: prediction"
 
     monkeypatch.setattr(module, "fit_related_tickets_to_prompt_budget", fit_payload)
     monkeypatch.setattr(module, "get_pr_diff", get_diff)
-    monkeypatch.setattr(tool, "_get_prediction", get_prediction)
-    if tool_name == "description":
+    monkeypatch.setattr(command, "_get_prediction", get_prediction)
+    if command_name == "description":
         monkeypatch.setattr(module, "build_repo_context", lambda _provider: "")
 
     settings = get_settings()
     original_semantic_files_types = settings.pr_description.enable_semantic_files_types
     settings.pr_description.enable_semantic_files_types = False
     try:
-        await tool._prepare_prediction("fallback-model")
+        await command._prepare_prediction("fallback-model")
     finally:
         settings.pr_description.enable_semantic_files_types = original_semantic_files_types
 
-    assert helper_calls == [(tool.git_provider.pr, tool._raw_prompt_vars, "fallback-model")]
+    assert helper_calls == [(command.git_provider.pr, command._raw_prompt_vars, "fallback-model")]
     assert diff_handlers == [handler]
     assert rendered_vars == [prompt_vars]
-    assert tool.vars is prompt_vars
-    assert tool.token_handler is handler
-    assert tool._raw_prompt_vars == raw_snapshot
+    assert command.vars is prompt_vars
+    assert command.token_handler is handler
+    assert command._raw_prompt_vars == raw_snapshot
 
 
 @pytest.mark.asyncio
 async def test_description_large_pr_fits_each_prompt_from_raw_tickets(monkeypatch):
-    tool, module = _make_tool("description")
-    raw_snapshot = copy.deepcopy(tool._raw_prompt_vars)
+    command, module = _make_command("description")
+    raw_snapshot = copy.deepcopy(command._raw_prompt_vars)
     prompt_vars = [
         {"related_tickets": _tickets(33)},
         {"related_tickets": _tickets(2)},
@@ -486,7 +486,7 @@ async def test_description_large_pr_fits_each_prompt_from_raw_tickets(monkeypatc
         return ([["@@ -1 +1 @@\n-old\n+new"]], [10], [], [], {}, [["src/app.py"]])
 
     async def get_prediction(_model, patches_diff=None, prompt=None):
-        prediction_calls.append((prompt, patches_diff, tool.vars))
+        prediction_calls.append((prompt, patches_diff, command.vars))
         if prompt == "pr_description_only_files_prompts":
             return ("pr_files:\n- filename: src/app.py\n  changes_title: Update app\n"
                     "  changes_summary: Updates app behavior.\n  label: enhancement")
@@ -495,23 +495,23 @@ async def test_description_large_pr_fits_each_prompt_from_raw_tickets(monkeypatc
     monkeypatch.setattr(module, "fit_related_tickets_to_prompt_budget", fit_payload)
     monkeypatch.setattr(module, "get_pr_diff", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(module, "get_pr_diff_multiple_patchs", get_multiple_patches)
-    monkeypatch.setattr(tool, "_get_prediction", get_prediction)
-    monkeypatch.setattr(tool, "extend_uncovered_files", lambda _prediction: _empty_string())
+    monkeypatch.setattr(command, "_get_prediction", get_prediction)
+    monkeypatch.setattr(command, "extend_uncovered_files", lambda _prediction: _empty_string())
 
     settings = get_settings()
     original_large_pr_handling = settings.pr_description.enable_large_pr_handling
     settings.pr_description.enable_large_pr_handling = True
     try:
-        await tool._prepare_prediction("fallback-model")
+        await command._prepare_prediction("fallback-model")
     finally:
         settings.pr_description.enable_large_pr_handling = original_large_pr_handling
 
     assert fit_calls == [
-        (tool._raw_prompt_vars, "fallback-model"),
-        (tool._raw_prompt_vars, "fallback-model"),
-        (tool._raw_prompt_vars, "fallback-model"),
+        (command._raw_prompt_vars, "fallback-model"),
+        (command._raw_prompt_vars, "fallback-model"),
+        (command._raw_prompt_vars, "fallback-model"),
     ]
-    assert tool._raw_prompt_vars == raw_snapshot
+    assert command._raw_prompt_vars == raw_snapshot
     assert packed_handlers == [handlers[1]]
     assert prediction_calls[0] == (
         "pr_description_only_files_prompts",

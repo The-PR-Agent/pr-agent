@@ -136,7 +136,7 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
 
 
 class GithubProvider(GitProvider):
-    reuse_for_manual_tool = True
+    reuse_for_manual_command = True
 
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         pr = self.pr
@@ -1065,7 +1065,7 @@ class GithubProvider(GitProvider):
         return False
 
     def start_check_run(self, name: str, summary: str) -> bool:
-        """Open the tool's check run as in_progress before it has any output to publish.
+        """Open the command's check run as in_progress before it has any output to publish.
 
         Automatic commands publish no progress comment, so this is the first sign that the
         pull request was picked up. `_publish_check_run` completes the same run in place.
@@ -1111,9 +1111,9 @@ class GithubProvider(GitProvider):
         return updated
 
     def finish_check_run(self, name: str, conclusion: str, summary: str) -> bool:
-        """Complete a check run opened by `start_check_run` that no tool completed.
+        """Complete a check run opened by `start_check_run` that no command completed.
 
-        A no-op when the tool already published its output to the run, so its conclusion
+        A no-op when the command already published its output to the run, so its conclusion
         and text are kept. Otherwise the run would stay in_progress on the commit forever.
         """
         if name not in self._check_runs_in_progress:

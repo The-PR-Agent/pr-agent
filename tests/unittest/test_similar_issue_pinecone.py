@@ -1,11 +1,11 @@
-"""Focused unit tests for the pinecone backend of the similar issue tool."""
+"""Focused unit tests for the pinecone backend of the similar issue command."""
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-import pr_agent.tools.pr_similar_issue as psi
+import pr_agent.commands.pr_similar_issue as psi
 
 
 class SettingsStub:
@@ -66,14 +66,14 @@ def _make_issue(number):
     )
 
 
-def _make_tool(pc):
-    tool = psi.PRSimilarIssue.__new__(psi.PRSimilarIssue)
-    tool.pc = pc
-    tool.pc_spec = None
-    tool.index_name = "codium-ai-pr-agent-issues"
-    tool.max_issues_to_scan = 100
-    tool.pinecone_index = None
-    return tool
+def _make_command(pc):
+    command = psi.PRSimilarIssue.__new__(psi.PRSimilarIssue)
+    command.pc = pc
+    command.pc_spec = None
+    command.index_name = "codium-ai-pr-agent-issues"
+    command.max_issues_to_scan = 100
+    command.pinecone_index = None
+    return command
 
 
 def _stub_embeddings(monkeypatch):
@@ -96,12 +96,12 @@ def test_pinecone_indexes_exactly_max_issues(monkeypatch):
         def delete(self, **kwargs):
             pass
 
-    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
-    tool.max_issues_to_scan = 3
+    command = _make_command(SimpleNamespace(Index=lambda name: FakeIndex()))
+    command.max_issues_to_scan = 3
     _stub_embeddings(monkeypatch)
 
     issues = [_make_issue(number) for number in range(1, 6)]
-    tool._update_index_with_issues(issues, "example-repo", pinecone_namespace="ns", upsert=True)
+    command._update_index_with_issues(issues, "example-repo", pinecone_namespace="ns", upsert=True)
 
     issue_ids = [
         vector[0] for vector in saved_vectors
@@ -121,8 +121,8 @@ def test_pinecone_oversized_issues_do_not_burn_the_scan_budget(monkeypatch):
         def delete(self, **kwargs):
             pass
 
-    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
-    tool.max_issues_to_scan = 2
+    command = _make_command(SimpleNamespace(Index=lambda name: FakeIndex()))
+    command.max_issues_to_scan = 2
     _stub_embeddings(monkeypatch)
 
     oversized = SimpleNamespace(
@@ -135,7 +135,7 @@ def test_pinecone_oversized_issues_do_not_burn_the_scan_budget(monkeypatch):
         get_comments=lambda: [],
     )
     issues = [oversized, _make_issue(2), _make_issue(3), _make_issue(4)]
-    tool._update_index_with_issues(issues, "example-repo", pinecone_namespace="ns", upsert=True)
+    command._update_index_with_issues(issues, "example-repo", pinecone_namespace="ns", upsert=True)
 
     issue_ids = [
         vector[0] for vector in saved_vectors
@@ -159,10 +159,10 @@ def test_pinecone_upsert_passes_batch_size_and_max_concurrency(monkeypatch):
         def delete(self, **kwargs):
             pass
 
-    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    command = _make_command(SimpleNamespace(Index=lambda name: FakeIndex()))
     _stub_embeddings(monkeypatch)
 
-    tool._update_index_with_issues(
+    command._update_index_with_issues(
         [_make_issue(7)],
         "example-repo",
         pinecone_namespace=pinecone_namespace,
@@ -247,11 +247,11 @@ def test_pinecone_existing_index_fetches_in_bounded_repo_batches(monkeypatch, sc
         assert len(fetches) == 2
         return
 
-    tool = psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
+    command = psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
     pinecone_namespace = psi._pinecone_namespace("Example/Repo")
 
-    assert tool.repo_name_for_index == "example-repo"
-    assert tool.pinecone_namespace == pinecone_namespace
+    assert command.repo_name_for_index == "example-repo"
+    assert command.pinecone_namespace == pinecone_namespace
     assert fetches[0] == {"ids": ["example_issue_example-repo"], "namespace": pinecone_namespace}
     assert len(fetches) - 1 == (scan_limit + 99) // 100
     assert all(0 < len(call["ids"]) <= 100 for call in fetches[1:])
@@ -276,10 +276,10 @@ def test_pinecone_upsert_path_skips_index_creation(monkeypatch):
         Index=lambda name: FakeIndex(),
         create_index=lambda **kwargs: created.append(kwargs),
     )
-    tool = _make_tool(pc)
+    command = _make_command(pc)
     _stub_embeddings(monkeypatch)
 
-    tool._update_index_with_issues(
+    command._update_index_with_issues(
         [_make_issue(7)],
         "example-repo",
         pinecone_namespace=psi._pinecone_namespace("Example/Repo"),
@@ -299,7 +299,7 @@ def test_pinecone_upsert_response_errors_raise_before_sleep(monkeypatch):
         def delete(self, **kwargs):
             pass
 
-    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    command = _make_command(SimpleNamespace(Index=lambda name: FakeIndex()))
     _stub_embeddings(monkeypatch)
     monkeypatch.setattr(psi.time, "sleep", lambda seconds: pytest.fail("should not sleep after upsert errors"))
     monkeypatch.setattr(
@@ -312,7 +312,7 @@ def test_pinecone_upsert_response_errors_raise_before_sleep(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="100"):
-        tool._update_index_with_issues(
+        command._update_index_with_issues(
             [_make_issue(7)],
             "example-repo",
             pinecone_namespace="ns",
@@ -330,11 +330,11 @@ def test_pinecone_upsert_response_dict_errors_raise(monkeypatch):
         def delete(self, **kwargs):
             pass
 
-    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    command = _make_command(SimpleNamespace(Index=lambda name: FakeIndex()))
     _stub_embeddings(monkeypatch)
 
     with pytest.raises(RuntimeError, match="5"):
-        tool._update_index_with_issues(
+        command._update_index_with_issues(
             [_make_issue(7)],
             "example-repo",
             pinecone_namespace="ns",
@@ -350,11 +350,11 @@ def test_pinecone_upsert_failed_item_count_raises_without_has_errors(monkeypatch
         def delete(self, **kwargs):
             pass
 
-    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    command = _make_command(SimpleNamespace(Index=lambda name: FakeIndex()))
     _stub_embeddings(monkeypatch)
 
     with pytest.raises(RuntimeError, match="3"):
-        tool._update_index_with_issues(
+        command._update_index_with_issues(
             [_make_issue(7)],
             "example-repo",
             pinecone_namespace="ns",
@@ -379,7 +379,7 @@ def test_pinecone_upsert_logs_batch_error_messages(monkeypatch):
         def delete(self, **kwargs):
             pass
 
-    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    command = _make_command(SimpleNamespace(Index=lambda name: FakeIndex()))
     _stub_embeddings(monkeypatch)
     monkeypatch.setattr(
         psi,
@@ -391,7 +391,7 @@ def test_pinecone_upsert_logs_batch_error_messages(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="2"):
-        tool._update_index_with_issues(
+        command._update_index_with_issues(
             [_make_issue(7)],
             "example-repo",
             pinecone_namespace="ns",
@@ -427,11 +427,11 @@ def test_pinecone_upsert_waits_until_lsn_is_reconciled(monkeypatch):
                 is_reconciled=lambda target: lsn_reconciled >= target
             ))
 
-    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    command = _make_command(SimpleNamespace(Index=lambda name: FakeIndex()))
     _stub_embeddings(monkeypatch)
     monkeypatch.setattr(psi.time, "sleep", lambda seconds: sleeps.append(seconds))
 
-    tool._update_index_with_issues(
+    command._update_index_with_issues(
         [_make_issue(7)],
         "example-repo",
         pinecone_namespace="ns",
@@ -510,10 +510,10 @@ def test_pinecone_create_index_path_builds_new_index_then_upserts(monkeypatch):
         Index=lambda name: FakeIndex(),
         create_index=lambda **kwargs: created.append(kwargs),
     )
-    tool = _make_tool(pc)
+    command = _make_command(pc)
     _stub_embeddings(monkeypatch)
 
-    tool._update_index_with_issues(
+    command._update_index_with_issues(
         [_make_issue(7)],
         "example-repo",
         pinecone_namespace=psi._pinecone_namespace("Example/Repo"),
@@ -522,7 +522,7 @@ def test_pinecone_create_index_path_builds_new_index_then_upserts(monkeypatch):
 
     assert len(created) == 1
     kwargs = created[0]
-    assert kwargs["name"] == tool.index_name
+    assert kwargs["name"] == command.index_name
     assert kwargs["dimension"] == 2
     assert kwargs["metric"] == "cosine"
     assert kwargs["timeout"] == 120
@@ -617,11 +617,11 @@ def test_pinecone_failed_issue_batch_skips_sentinel_upsert(monkeypatch):
         def delete(self, **kwargs):
             deletes.append(kwargs["ids"])
 
-    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    command = _make_command(SimpleNamespace(Index=lambda name: FakeIndex()))
     _stub_embeddings(monkeypatch)
 
     with pytest.raises(RuntimeError):
-        tool._update_index_with_issues(
+        command._update_index_with_issues(
             [_make_issue(7)],
             "example-repo",
             pinecone_namespace="ns",

@@ -11,12 +11,12 @@ from pr_agent.algo.review_json_output import review_json_output_path
 from pr_agent.algo.run_details import command_failed
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
+from pr_agent.commands import ticket_pr_compliance_check as tickets_module
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.commands.pr_questions import NO_ANALYZABLE_FILES_NOTE, PRQuestions
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
-from pr_agent.tools import ticket_pr_compliance_check as tickets_module
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from pr_agent.tools.pr_questions import NO_ANALYZABLE_FILES_NOTE, PRQuestions
 
 # Diff-mode settings keys these tests mutate on the process-wide singleton.
 _SETTINGS_KEYS = ["plain_diff.content", "plain_diff.output_path", "plain_diff.json_output_path",
@@ -501,7 +501,7 @@ async def test_ask_keeps_ticket_prefix_when_full_context_exactly_fills_budget(
                   "type: [Enhancement]\npr_files: []\n",
      "### **Description**\nInvoices above the limit need manager approval."),
 ])
-async def test_plain_diff_cli_context_reaches_tool_prompts(tmp_path, monkeypatch, command, response, description):
+async def test_plain_diff_cli_context_reaches_command_prompts(tmp_path, monkeypatch, command, response, description):
     """Command settings must reach prompts even after the provider has been cached."""
     monkeypatch.chdir(tmp_path)
     prompts = []
@@ -617,7 +617,7 @@ async def test_publishing_commands_reject_truncated_responses(
             "config.repo_context_files": [],
             "config.publish_output": True,
             "config.publish_output_progress": False,
-            "config.propagate_tool_errors": False,
+            "config.propagate_command_errors": False,
             "config.extra_config_url": "",
             "config.enable_custom_labels": False,
             "plain_diff.content": diff,
@@ -689,7 +689,7 @@ async def test_improve_rejects_truncated_responses_through_diff_provider(
             "config.repo_context_files": [],
             "config.publish_output": True,
             "config.publish_output_progress": False,
-            "config.propagate_tool_errors": False,
+            "config.propagate_command_errors": False,
             "config.extra_config_url": "",
             "plain_diff.content": DIFF,
             "plain_diff.output_path": None,

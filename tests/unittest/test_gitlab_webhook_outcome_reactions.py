@@ -2,9 +2,9 @@
 
 The GitHub App handler already does this; the GitLab webhook only added the start reaction, so
 `reaction_on_success` and `reaction_on_failure` did nothing there. The interesting part is not the
-extra call but the verdict: `propagate_tool_errors` is off, so a tool that fails internally still
+extra call but the verdict: `propagate_command_errors` is off, so a command that fails internally still
 returns normally, and reacting as if it had succeeded would tick a comment whose command never
-ran. `command_failed()` is the signal that does not change how the tool handles its own error.
+ran. `command_failed()` is the signal that does not change how the command handles its own error.
 
 Both outcome reactions default to empty, so this path is inert until an operator configures one;
 `test_the_shipped_defaults_ask_for_no_outcome_reaction` below pins that.
@@ -82,7 +82,7 @@ def run_comment(monkeypatch):
     """Post a comment through the real webhook endpoint, faking only what talks to GitLab.
 
     ``success`` and ``failure`` are the operator's `reaction_on_success` / `reaction_on_failure`.
-    ``outcome`` is what the agent reports, ``record_failure`` is a tool that failed internally and
+    ``outcome`` is what the agent reports, ``record_failure`` is a command that failed internally and
     therefore returned normally.
     """
     import pr_agent.servers.gitlab_webhook as gitlab_webhook
@@ -113,7 +113,7 @@ def run_comment(monkeypatch):
             dispatched.append(request)
             if notify and _acknowledges(request):
                 notify()
-            if record_failure:  # what a tool does just before swallowing its own error
+            if record_failure:  # what a command does just before swallowing its own error
                 record_command_failure()
             return outcome
 
@@ -153,8 +153,8 @@ def test_a_command_that_reported_failure_adds_the_failure_reaction(run_comment):
     assert provider.removed == [(COMMENT_ID, 1)]
 
 
-def test_a_tool_that_failed_internally_is_not_reported_as_success(run_comment):
-    """The trap this change exists to avoid: the tool swallowed its error and returned True."""
+def test_a_command_that_failed_internally_is_not_reported_as_success(run_comment):
+    """The trap this change exists to avoid: the command swallowed its error and returned True."""
     provider = run_comment(success="hooray", failure="confused", record_failure=True)
 
     assert provider.reactions == [(COMMENT_ID, "eyes"), (COMMENT_ID, "confused")]
@@ -300,7 +300,7 @@ def test_the_dispatcher_acknowledges_every_command_it_runs(monkeypatch, command)
     Removed command names are rejected before this notification path.
     """
 
-    class _Tool:
+    class _Command:
         def __init__(self, pr_url, ai_handler=None, args=None, **kwargs):
             self.pr_url = pr_url
 
@@ -308,12 +308,12 @@ def test_the_dispatcher_acknowledges_every_command_it_runs(monkeypatch, command)
             return True
 
     acknowledged = []
-    monkeypatch.setattr(pr_agent_module, "PRReviewer", _Tool)  # `answer` builds one directly
+    monkeypatch.setattr(pr_agent_module, "PRReviewer", _Command)  # `answer` builds one directly
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context",
                         lambda pr_url: _RecordingProvider())
-    monkeypatch.setitem(pr_agent_module.command2class, command.lstrip("/"), _Tool)
+    monkeypatch.setitem(pr_agent_module.command2class, command.lstrip("/"), _Command)
 
     result = asyncio.run(pr_agent_module.PRAgent(ai_handler="fake-ai").handle_request(
         "https://github.com/org/repo/pull/1", command, notify=lambda: acknowledged.append(command)))

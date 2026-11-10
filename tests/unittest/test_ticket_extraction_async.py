@@ -1,6 +1,6 @@
 """
 Unit tests for async ticket extraction & caching in
-``pr_agent.tools.ticket_pr_compliance_check``.
+``pr_agent.commands.ticket_pr_compliance_check``.
 
 These tests are deterministic and fake-provider based — no live API or
 network access is performed.
@@ -17,14 +17,14 @@ import pytest
 from github.Repository import Repository
 from starlette_context import context, request_cycle_context
 
-from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import AzureDevopsProvider, GithubProvider, GitLabProvider
-from pr_agent.tools import ticket_pr_compliance_check as tpc
-from pr_agent.tools.ticket_pr_compliance_check import (
+from pr_agent.commands import ticket_pr_compliance_check as tpc
+from pr_agent.commands.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
     extract_gitlab_ticket_references,
     extract_tickets,
 )
+from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import AzureDevopsProvider, GithubProvider, GitLabProvider
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
@@ -205,7 +205,7 @@ def scoped_ticket_settings():
     settings.set("pr_reviewer.max_previous_findings_chars", 0)
     settings.set("config.repo_context_files", [])
     settings.set("config.publish_output", False)
-    settings.set("config.propagate_tool_errors", True)
+    settings.set("config.propagate_command_errors", True)
     settings.set("jira", {})
     with request_cycle_context({"settings": settings}):
         yield settings
@@ -300,7 +300,7 @@ async def test_ticket_reads_keep_shared_settings_on_the_event_loop(monkeypatch, 
 
 @pytest.mark.parametrize("cancel", [False, True], ids=["complete", "cancel"])
 async def test_review_ticket_wait_keeps_loop_responsive(monkeypatch, scoped_ticket_settings, cancel):
-    from pr_agent.tools import pr_reviewer as reviewer_module
+    from pr_agent.commands import pr_reviewer as reviewer_module
 
     loop = asyncio.get_running_loop()
     started, finished = asyncio.Event(), asyncio.Event()

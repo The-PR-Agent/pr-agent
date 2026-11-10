@@ -118,7 +118,7 @@ class LangChainOpenAIHandler(BaseAiHandler):
             # own (input_tokens/output_tokens) rather than the ones the collector reads, so
             # forwarding it unmapped would render zeros. Mapping them is not worth it while this
             # path stays cold: langchain is an optional extra (not installed by default) and no setting
-            # selects this handler, so it is reachable only by injecting it into a tool
+            # selects this handler, so it is reachable only by injecting it into a command
             # programmatically.
             record_ai_call()
             return resp.content, finish_reason

@@ -133,7 +133,7 @@ Full notes for every release are on the [Releases page](https://github.com/the-p
 
 ### 🎯 Built for Real Development Teams
 
-**Fast & Affordable**: Each tool (`/review`, `/improve`, `/ask`) uses a single LLM call (~30 seconds, low cost)
+**Fast & Affordable**: Each command (`/review`, `/improve`, `/ask`) uses a single LLM call (~30 seconds, low cost)
 
 **Handles Any PR Size**: Our [PR Compression strategy](https://docs.pr-agent.ai/core-abilities/compression_strategy/) effectively processes both small and large PRs
 
@@ -195,7 +195,7 @@ ___
 
 ### Usage Examples
 
-PR-Agent tools run as a comment on a PR or from the CLI. A few common ones:
+PR-Agent commands run as a comment on a PR or from the CLI. A few common ones:
 
 ```bash
 # Comment on a PR (GitHub/GitLab/Bitbucket/…):
@@ -212,15 +212,15 @@ pr-agent --pr_url <PR_URL> review
 pr-agent --issue_url <ISSUE_URL> similar_issue
 ```
 
-See the [Tools docs](https://docs.pr-agent.ai/tools/#usage-examples) for the full list of tools with example commands, and each tool's page for screenshots and options.
+See the [Commands docs](https://docs.pr-agent.ai/commands/#usage-examples) for the full list of commands with example commands, and each command's page for screenshots and options.
 
 <hr>
 
 ## How It Works
 
-The following diagram illustrates PR-Agent tools and their flow:
+The following diagram illustrates PR-Agent commands and their flow:
 
-![PR-Agent Tools](https://raw.githubusercontent.com/The-PR-Agent/pr-agent/main/docs/static/img/diagram-v0.9.png)
+![PR-Agent Commands](https://raw.githubusercontent.com/The-PR-Agent/pr-agent/main/docs/static/img/diagram-v0.9.png)
 
 ## Data Privacy
 

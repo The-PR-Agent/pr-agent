@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
 
 from packaging.specifiers import SpecifierSet
 
-from pr_agent.tools.pr_help_message import HELP_DOCS_SUFFIXES, _is_help_doc_included
+from pr_agent.commands.pr_help_message import HELP_DOCS_SUFFIXES, _is_help_doc_included
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 RESOURCE_PREFIX = "pr_agent/_help_docs/"
@@ -43,25 +43,25 @@ if editable_target:
     site.addsitedir(editable_target)
 sys.path.append(os.environ["DEPENDENCY_PATH"])
 
-from pr_agent.tools import pr_help_message
-from pr_agent.tools.pr_help_message import PRHelpMessage
+from pr_agent.commands import pr_help_message
+from pr_agent.commands.pr_help_message import PRHelpMessage
 
 calls = []
 
 async def fake_retry(_prediction, *, model_type):
     calls.append(model_type)
-    assert "==file name==" in tool.vars["snippets"]
-    assert "/tools/review.md" in tool.vars["snippets"]
+    assert "==file name==" in command.vars["snippets"]
+    assert "/commands/review.md" in command.vars["snippets"]
     return "response: ok\nrelevant_sections: []"
 
 pr_help_message.retry_with_fallback_models = fake_retry
-tool = PRHelpMessage.__new__(PRHelpMessage)
-tool.git_provider = SimpleNamespace(pr_url="https://example.com/org/repo/pull/1")
-tool.ai_handler = SimpleNamespace()
-tool.question_str = "How does review work?"
-tool.return_as_string = False
-tool.vars = {"question": tool.question_str, "snippets": ""}
-asyncio.run(tool.run())
+command = PRHelpMessage.__new__(PRHelpMessage)
+command.git_provider = SimpleNamespace(pr_url="https://example.com/org/repo/pull/1")
+command.ai_handler = SimpleNamespace()
+command.question_str = "How does review work?"
+command.return_as_string = False
+command.vars = {"question": command.question_str, "snippets": ""}
+asyncio.run(command.run())
 
 root = pr_help_message._get_help_docs_root()
 documents = [path.as_posix() for path, _resource in pr_help_message._iter_help_docs(root)]
@@ -69,7 +69,7 @@ print(json.dumps({
     "module": pr_help_message.__file__,
     "root": str(root),
     "documents": documents,
-    "snippet_chars": len(tool.vars["snippets"]),
+    "snippet_chars": len(command.vars["snippets"]),
     "model_calls": len(calls),
 }))
 """
@@ -287,7 +287,7 @@ def test_help_docs_distribution_contract(tmp_path):
     first_direct_wheel = _build_wheel(uv, source_copy, tmp_path / "first-direct-wheel", build_env)
     assert _wheel_documents(first_direct_wheel) == expected_documents
 
-    removed_name = "tools/improve.mdx"
+    removed_name = "commands/improve.mdx"
     removed_document = source_copy / "docs" / "docs" / removed_name
     assert removed_document.exists()
     removed_document.unlink()

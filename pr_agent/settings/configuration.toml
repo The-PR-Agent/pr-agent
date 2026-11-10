@@ -39,7 +39,7 @@ retry_same_model_on_length = false # when true, an empty response truncated by t
 num_retries = 4 # same-model retries of a request the provider rejects (429, 5xx, connection error) before fallback_models, waiting for its Retry-After (up to 30 s) or with exponential backoff; 0 falls back at once. Timeouts and empty responses use retry_same_model_on_timeout / retry_same_model_on_length instead
 skip_keys = []
 custom_reasoning_model = false # when true, disables system messages and temperature controls for models that don't support chat-style inputs
-system_instructions="" # Host-only instructions appended to every tool's system prompt; repository settings and comment arguments cannot set it.
+system_instructions="" # Host-only instructions appended to every command's system prompt; repository settings and comment arguments cannot set it.
 response_language="en-US" # PR response locale (e.g., "en-US", "it-IT"), also used for fixed comment text; applies only during each command. See additional_configurations.md.
 repo_context_files = ["AGENTS.md"] # Prompt context files: paths, alternatives, globs, sibling entries; [] disables. See [docs](additional_configurations.md).
 # The repo-context cache is keyed on the revision read: the PR target commit for target-branch
@@ -53,7 +53,7 @@ repo_context_sibling_repos = [] # Host-only list of approved sibling repository 
 repo_context_max_sibling_files = 5 # Maximum number of sibling-repository files fetched per repo-context build. The fetch count is bounded separately from repo_context_max_lines so selected sibling files cannot trigger an unbounded number of cross-repository calls; sibling files still compete for the repo_context_max_lines budget. Host-only (cannot be raised by a repository's .pr_agent.toml or a comment command) and clamped to a hard ceiling of 20 fetches per build.
 # token limits
 max_description_tokens = 500
-max_commits_tokens = 500 # Token cap on the commit messages sent to the model by /describe, /review, /improve and other tools. 0 means no limit; -1 sends none.
+max_commits_tokens = 500 # Token cap on the commit messages sent to the model by /describe, /review, /improve and other commands. 0 means no limit; -1 sends none.
 max_model_tokens = 32000 # Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities.
 custom_model_max_tokens=-1 # Override unknown models or Sol-tier GPT-6 on non-native custom providers.
 # Send max_completion_tokens for recognized Astra IDs, including bare IDs on custom providers,
@@ -112,7 +112,7 @@ bot_user_indicators = ["codium", "bot_", "bot-", "_bot", "-bot"]
 #
 restricted_mode = false # when true, skip operations that require elevated permissions (e.g. pushing code to the repository)
 is_auto_command = false # will be auto-set to true if the command is triggered by an automation
-propagate_tool_errors = false # when true, a tool re-raises instead of swallowing an internal error, so a caller can tell a failed run from an empty one
+propagate_command_errors = false # when true, a command re-raises instead of swallowing an internal error, so a caller can tell a failed run from an empty one
 enable_ai_metadata = false # will enable adding ai metadata
 add_user_to_requests = false # send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user")
 reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh", "max"
@@ -186,12 +186,12 @@ require_ticket_analysis_review=true
 require_risk_assessment=false # ask the model for an overall risk level (low/medium/high)
 require_merge_recommendation=false # ask the model for a merge recommendation: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge)
 require_failure_modes=false # ask for up to three concrete failure scenarios and their detection/coverage
-require_artifact_findings=false # with a CI artifact, list up to five neutral facts from it, each with a quote checked against the artifact. See docs/docs/tools/review.md
+require_artifact_findings=false # with a CI artifact, list up to five neutral facts from it, each with a quote checked against the artifact. See docs/docs/commands/review.md
 require_priority_files=false # ask the model which files a human should inspect first
-structural_reach_input_file="" # JSON reach facts from a build-graph tool; when the file exists, adds a deterministic change-risk row. See docs/docs/tools/review.md
-enable_risk_checks = true # Flag sensitive paths and risky change shapes; adds nothing when clean. See docs/docs/tools/review.md
-sensitive_paths = [".github/workflows/**", ".gitlab-ci.yml", "Jenkinsfile*", ".circleci/**", "azure-pipelines*.yml", ".travis.yml", "bitbucket-pipelines.yml", "*CODEOWNERS", ".pr_agent.toml", "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "requirements*.txt", "Pipfile", "Pipfile.lock", "pyproject.toml", "poetry.lock", "uv.lock", "Cargo.toml", "Cargo.lock", "go.mod", "go.sum", "pom.xml", "build.gradle*", "Gemfile", "Gemfile.lock", "composer.json", "composer.lock", "*Dockerfile*", "docker-compose*.yml", "docker-compose*.yaml", "*.dockerfile", "*.tf", "*.tfvars", "*.hcl", "*migrations*/**", "*migration*", "db/migrate/**", "alembic/**"] # Glob patterns of sensitive paths flagging deterministic review risk findings. See docs/docs/tools/review.md
-extra_risky_shapes = [] # Custom regex patterns flagging risky changes in diff hunks. See docs/docs/tools/review.md
+structural_reach_input_file="" # JSON reach facts from a build-graph tool; when the file exists, adds a deterministic change-risk row. See docs/docs/commands/review.md
+enable_risk_checks = true # Flag sensitive paths and risky change shapes; adds nothing when clean. See docs/docs/commands/review.md
+sensitive_paths = [".github/workflows/**", ".gitlab-ci.yml", "Jenkinsfile*", ".circleci/**", "azure-pipelines*.yml", ".travis.yml", "bitbucket-pipelines.yml", "*CODEOWNERS", ".pr_agent.toml", "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "requirements*.txt", "Pipfile", "Pipfile.lock", "pyproject.toml", "poetry.lock", "uv.lock", "Cargo.toml", "Cargo.lock", "go.mod", "go.sum", "pom.xml", "build.gradle*", "Gemfile", "Gemfile.lock", "composer.json", "composer.lock", "*Dockerfile*", "docker-compose*.yml", "docker-compose*.yaml", "*.dockerfile", "*.tf", "*.tfvars", "*.hcl", "*migrations*/**", "*migration*", "db/migrate/**", "alembic/**"] # Glob patterns of sensitive paths flagging deterministic review risk findings. See docs/docs/commands/review.md
+extra_risky_shapes = [] # Custom regex patterns flagging risky changes in diff hunks. See docs/docs/commands/review.md
 # general options
 publish_output_no_suggestions=true # Set to "false" if you only need the reviewer's remarks (not labels, not "security audit", etc.) and want to avoid noisy "No major issues detected" comments.
 publish_review_failure_comment=true # Set to false to suppress review failure comments without changing the command's failure status.
@@ -260,7 +260,7 @@ async_ai_calls=true
 [pr_questions] # /ask #
 enable_help_text=false
 use_conversation_history=true
-use_ticket_context=false # Include linked ticket context in top-level /ask when true; default false. See tools/ask.md#linked-ticket-context.
+use_ticket_context=false # Include linked ticket context in top-level /ask when true; default false. See commands/ask.md#linked-ticket-context.
 # Set the plain-text heading for top-level /ask answers; provider-specific presentation is added automatically.
 ask_heading = "Ask"
 # Enable to let /ask_line resolve the review thread when the LLM judges the
@@ -284,7 +284,7 @@ enable_chat_text=false
 persistent_comment=true
 # Set to false to suppress /improve failure comments without changing the command's failure status.
 publish_failure_comment=true
-max_history_len=4 # Previous sets to retain; <=0 keeps latest only (same comment if editable). See https://docs.pr-agent.ai/tools/improve#configuration-options
+max_history_len=4 # Previous sets to retain; <=0 keeps latest only (same comment if editable). See https://docs.pr-agent.ai/commands/improve#configuration-options
 publish_output_no_suggestions=true
 enable_suggestions_coverage_footer=true # show failed chunks and files omitted by the token or AI-call budget
 # suggestions scoring
@@ -313,7 +313,7 @@ extra_instructions = ""
 docs_style = "Sphinx" # "Google Style with Args, Returns, Attributes...etc", "Numpy Style", "Sphinx Style", "PEP257", "reStructuredText"
 
 [pr_update_changelog] # /update_changelog #
-changelog_path="CHANGELOG.md" # Repository-relative Markdown changelog path. Root .pr_agent.toml or host settings only; see tools/update_changelog.md.
+changelog_path="CHANGELOG.md" # Repository-relative Markdown changelog path. Root .pr_agent.toml or host settings only; see commands/update_changelog.md.
 push_changelog_changes=false
 extra_instructions = ""
 add_pr_link=true
@@ -364,7 +364,7 @@ publish_as_check_run = false # when true, publish review/description/improve out
 # review_states = ['changes_requested']  # states that trigger review_commands after a submitted GitHub review
 # review_author_types = ['User']  # review.user.type values allowed to trigger review_commands
 # review_commands = []  # empty by default; falls back to github_app.review_commands when unset
-# fail_on_tool_errors = true  # a recorded tool failure (propagate_tool_errors=false) fails the Action; set false to keep the old green behavior
+# fail_on_command_errors = true  # a recorded command failure (propagate_command_errors=false) fails the Action; set false to keep the old green behavior
 
 [github_app]
 # these toggles allows running the github app from custom deployments
@@ -632,7 +632,7 @@ paths = [] # directories to scan recursively for "*/SKILL.md"; supports ~ and $V
 max_skills_tokens = 8000 # token budget for the combined skills_context block
 
 [artifacts]
-# Enable artifact injection into tool prompts (off by default; auto-enabled when artifact_path input is set)
+# Enable artifact injection into command prompts (off by default; auto-enabled when artifact_path input is set)
 enable = false
 # File path or list of paths to artifacts (relative to GITHUB_WORKSPACE, or absolute)
 artifact_path = ""
@@ -640,8 +640,8 @@ artifact_path = ""
 artifact_instructions = ""
 # Label shown to the AI — defaults to the filename when empty.
 artifact_label = ""
-# Which supported tools receive artifact context; unsupported names are skipped with a warning.
-target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions", "pr_questions"]
+# Which supported commands receive artifact context; unsupported names are skipped with a warning.
+target_commands = ["pr_reviewer", "pr_description", "pr_code_suggestions", "pr_questions"]
 # Max artifact size in characters (content is truncated if exceeded)
 max_artifact_size = 50000
 # Which end of the file to keep when truncating: "start" (default, keeps the beginning) or
@@ -668,10 +668,10 @@ default_comment_status = "closed"
 [azure_devops_server]
 agent_identity = "" # Host-only GUID, unique name, descriptor, or list; empty resolves review authorship automatically. See installation/azure.md
 
-[push_outputs] # push tool outputs to external sinks without calling git-provider APIs (disabled by default)
+[push_outputs] # push command outputs to external sinks without calling git-provider APIs (disabled by default)
 enable = false
 channels = [] # exact names as a list/tuple or comma-separated string: "stdout", "file", "webhook", "slack", "telegram", "teams"; empty emits nothing
-tools = ["review", "describe", "improve"] # output types to deliver; add "ask" to include Q&A, or select fewer tools; supports comma-separated strings
+commands = ["review", "describe", "improve"] # output types to deliver; add "ask" to include Q&A, or select fewer commands; supports comma-separated strings
 file_path = "pr-agent-outputs/reviews.jsonl" # used by the "file" channel
 webhook_url = "" # used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL
 slack_webhook_url = "" # used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL

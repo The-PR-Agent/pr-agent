@@ -106,7 +106,7 @@ pr_agent_job:
     - python -m pr_agent.cli --pr_url="$MR_URL" review
 ```
 
-Setting `ARTIFACT_PATH` turns the feature on by itself. The remaining knobs — which tools receive the context, the label, the size limit — are the `[artifacts]` settings described under [CI artifact context](./github.md#ci-artifact-context) for the GitHub Action, and they apply to the CLI in the same way.
+Setting `ARTIFACT_PATH` turns the feature on by itself. The remaining knobs — which commands receive the context, the label, the size limit — are the `[artifacts]` settings described under [CI artifact context](./github.md#ci-artifact-context) for the GitHub Action, and they apply to the CLI in the same way.
 
 #### Ignore bot-created merge requests
 

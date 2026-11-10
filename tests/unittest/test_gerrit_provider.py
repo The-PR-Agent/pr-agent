@@ -11,10 +11,10 @@ import urllib3.util
 
 from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.algo.types import EDIT_TYPE
+from pr_agent.commands.ticket_pr_compliance_check import add_jira_tickets
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import gerrit_provider
 from pr_agent.git_providers.gerrit_provider import GerritProvider
-from pr_agent.tools.ticket_pr_compliance_check import add_jira_tickets
 from tests.unittest import _settings_helpers as settings_helpers
 
 
@@ -257,8 +257,8 @@ def test_gerrit_consumers_keep_host_timeout_after_repo_overlay(
 
     from pr_agent import git_providers as providers
     from pr_agent.algo.cli_args import CliArgs
+    from pr_agent.commands import pr_questions
     from pr_agent.git_providers.utils import apply_repo_settings
-    from pr_agent.tools import pr_questions
 
     key = "project:refs/changes/01/1/1"
     snapshot = settings_helpers.snapshot_settings([
@@ -378,7 +378,7 @@ def test_detached_gerrit_branch_keeps_commit_message_in_jira_context(tmp_path, m
         contexts.append(context)
         return [{"ticket_url": "https://example.atlassian.net/browse/ABC-123"}]
 
-    monkeypatch.setattr("pr_agent.tools.ticket_pr_compliance_check.extract_jira_tickets", extract)
+    monkeypatch.setattr("pr_agent.commands.ticket_pr_compliance_check.extract_jira_tickets", extract)
     try:
         assert repo.head.is_detached
         assert provider.get_user_description() == "Implement ABC-123 from Gerrit change"

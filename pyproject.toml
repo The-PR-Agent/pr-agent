@@ -141,7 +141,7 @@ pr-agent = "pr_agent.cli:run"
 [dependency-groups]
 # Keep the full optional integration matrix available to the unit suite without publishing it as a base dependency.
 integration-dev = ["pr-agent[all]"]
-# 'similar issue' tool. Install with: uv sync --group similar-issue.
+# 'similar issue' command. Install with: uv sync --group similar-issue.
 # Keep this a dependency group rather than a published extra so the vector
 # database drivers stay out of the base install.
 similar-issue = [

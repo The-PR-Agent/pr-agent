@@ -6,7 +6,7 @@ import pytest
 
 from pr_agent.algo.comment_identity import PRReviewHeader
 from pr_agent.algo.utils import _expand_minute_suffix, convert_to_markdown_v2
-from pr_agent.tools.pr_description import insert_br_after_x_chars
+from pr_agent.commands.pr_description import insert_br_after_x_chars
 
 """
 Code Analysis

@@ -1,10 +1,10 @@
 """Regression tests for slash command tokenization in ``PRAgent._run_command``.
 
 ``pr_agent/agent/pr_agent.py`` splits a string request with ``shlex`` before
-dispatching to a tool. ``shlex`` defaults ``commenters`` to ``"#"``, so it treated
+dispatching to a command. ``shlex`` defaults ``commenters`` to ``"#"``, so it treated
 the hash as a shell comment and discarded the rest of the line. On a code review
 bot, ``#123`` style references are among the most common things to type in a
-question, and the tool silently received a truncated one with no error raised.
+question, and the command silently received a truncated one with no error raised.
 
 ``_run_command`` is the single parser behind every entry point that passes a
 string: the webhook servers, the Gerrit plugin and the CLI.
@@ -31,7 +31,7 @@ def _isolate_settings():
 
 
 def _tokenize(request):
-    """Run the real ``_run_command`` and return the ``args`` the tool received."""
+    """Run the real ``_run_command`` and return the ``args`` the command received."""
     captured = {}
 
     class _FakeAsk:
@@ -59,7 +59,7 @@ def _tokenize(request):
 
 class TestHashIsNotAComment:
     def test_issue_reference_survives_tokenization(self):
-        # "123 do?" used to be dropped, leaving the tool with "what does".
+        # "123 do?" used to be dropped, leaving the command with "what does".
         assert _tokenize("/ask what does #123 do?") == ["what", "does", "#123", "do?"]
 
     def test_trailing_hash_keeps_the_rest_of_the_question(self):

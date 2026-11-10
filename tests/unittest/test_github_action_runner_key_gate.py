@@ -106,7 +106,7 @@ async def test_other_pr_commands_still_require_model_key(monkeypatch, pr_comment
     )
     pr_comment_env(body, event_name)
 
-    with pytest.raises(SystemExit, match="Stopping before any tool runs.*OPENAI_API_KEY"):
+    with pytest.raises(SystemExit, match="Stopping before any command runs.*OPENAI_API_KEY"):
         await github_action_runner.run_action()
 
 
@@ -119,7 +119,7 @@ async def test_static_pr_comments_still_require_github_token(monkeypatch, pr_com
         await github_action_runner.run_action()
 
 
-async def test_missing_key_stops_before_tools_naming_the_env_variable(
+async def test_missing_key_stops_before_commands_naming_the_env_variable(
     monkeypatch, action_env
 ):
     monkeypatch.setattr(
@@ -127,7 +127,7 @@ async def test_missing_key_stops_before_tools_naming_the_env_variable(
         lambda: ("openai", ("OPENAI_API_KEY",)),
     )
 
-    with pytest.raises(SystemExit, match="Stopping before any tool runs.*OPENAI_API_KEY"):
+    with pytest.raises(SystemExit, match="Stopping before any command runs.*OPENAI_API_KEY"):
         await github_action_runner.run_action()
 
 
@@ -365,7 +365,7 @@ async def test_watsonx_gate_names_the_override_that_must_be_corrected(
     secret = "synthetic-native-key-not-for-diagnostics"
     dispatches = []
 
-    async def run_tool(*args):
+    async def run_command(*args):
         dispatches.append(args)
 
     try:
@@ -387,7 +387,7 @@ async def test_watsonx_gate_names_the_override_that_must_be_corrected(
             monkeypatch.setenv(source, value)
         monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda url: None)
         monkeypatch.setattr(github_action_runner, "enforce_request_policy", lambda *args, **kwargs: True)
-        monkeypatch.setattr(github_action_runner, "_run_auto_tool", run_tool)
+        monkeypatch.setattr(github_action_runner, "_run_auto_command", run_command)
 
         # Use the real handler and shared gate; a valid native key cannot fix an overriding credential.
         assert doctor.missing_provider_key_env_vars() == (provider, (source,))
