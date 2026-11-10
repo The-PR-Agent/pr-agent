@@ -375,7 +375,7 @@ class TestFindAsanaTickets:
             get_settings().set("jira.jira_api_token", "test-token")
 
             class _FakeJira:
-                def issue(self, key):
+                def issue(self, key, fields):
                     return {"fields": {"summary": f"Ticket {key}", "description": "body",
                                        "labels": []}}
 
