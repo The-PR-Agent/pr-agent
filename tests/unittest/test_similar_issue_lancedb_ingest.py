@@ -3,8 +3,11 @@ import sys
 import time
 import types
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
+from github.GithubException import GithubException
+from github.Repository import Repository
 
 from pr_agent.commands.pr_similar_issue import PRSimilarIssue
 
@@ -601,6 +604,59 @@ def test_constructor_backfills_an_older_index_gap(monkeypatch):
     assert len(own_issue_rows) == 1
     assert fake_db.table.add_calls == [1]  # gap filled, nothing new to add
     assert fake_db.table.search_calls == 5
+
+
+@pytest.mark.parametrize("scan_limit, fail_extra_page, expected_pages, expected_new_issues", [
+    (-1, False, 0, []),
+    (0, False, 0, []),
+    (2, False, 1, [7]),
+    (2, True, 1, [7]),
+    (4, False, 3, [7, 6]),
+])
+def test_constructor_stops_github_pagination_at_scan_limit(
+    monkeypatch, scan_limit, fail_extra_page, expected_pages, expected_new_issues
+):
+    """Stop before unused pages, including PR-only pages, while retaining the scan window."""
+    repo_url = "https://api.github.com/repos/org/repo-b"
+    list_url = f"{repo_url}/issues"
+    payloads = [{
+        "url": f"{list_url}/{number}", "number": number,
+        "title": f"Issue {number}", "body": "Body",
+        "user": {"login": "tester"}, "created_at": "2020-01-01T00:00:00Z",
+    } for number in (8, 7, 100, 101, 6)]
+    for payload in payloads[2:4]:
+        payload["pull_request"] = {"url": f"{repo_url}/pulls/{payload['number']}"}
+    requester = Mock(per_page=2, base_url="https://api.github.com", is_not_lazy=False)
+
+    def request(method, url, **kwargs):
+        page = requester.requestJsonAndCheck.call_count - 1
+        assert method == "GET"
+        assert url == list_url + (f"?page={page + 1}" if page else "")
+        if fail_extra_page and page == 1:
+            raise GithubException(403, {"message": "API rate limit exceeded"})
+        end = (page + 1) * 2
+        headers = {"link": f'<{list_url}?page={page + 2}>; rel="next"'} if end < len(payloads) else {}
+        return headers, payloads[page * 2:end]
+
+    requester.requestJsonAndCheck.side_effect = request
+    repo = Repository(requester, {}, {"url": repo_url, "full_name": "org/repo-b"})
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_db.table = _FakeSearchableTable([
+        _lancedb_row("example_issue_org-repo-b", "org-repo-b"),
+        _lancedb_row("issue_8.issue", "org-repo-b"),
+    ])
+    _install_fake_pandas(monkeypatch)
+    _stub_constructor_dependencies(monkeypatch, fake_db)
+    monkeypatch.setattr(_FakeGithubClient, "get_repo", lambda self, name: repo)
+    monkeypatch.setattr(_LanceSettings.pr_similar_issue, "max_issues_to_scan", scan_limit)
+
+    PRSimilarIssue("https://github.com/org/repo-b/issues/7", None)
+
+    assert requester.requestJsonAndCheck.call_count == expected_pages
+    assert [row["id"] for row in fake_db.table.rows] == [
+        "example_issue_org-repo-b", "issue_8.issue",
+        *(f"issue_{number}.issue" for number in expected_new_issues),
+    ]
 
 
 def test_constructor_checks_many_indexed_issues_with_one_query(monkeypatch):
