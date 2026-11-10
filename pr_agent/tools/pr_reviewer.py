@@ -375,7 +375,7 @@ class PRReviewer:
                 f"This PR has {total_commits} commits, more than the {len(commits)} the git provider API "
                 f"returns, so per commit review was skipped and the whole PR was reviewed instead.")
             return
-        if reviewed is None:
+        if reviewed is None or not self._review_comment_authorship_available():
             await self._review_as_one(
                 "The author of the earlier per commit review comments cannot be verified",
                 "Per commit review could not verify which earlier comments it wrote, so the whole PR was reviewed "
@@ -527,8 +527,6 @@ class PRReviewer:
 
     def _record_commit_reviews(self, commits: list[PRCommit], fingerprints: dict[str, str],
                                new_records: dict[str, str], new_failures: dict[str, int]) -> None:
-        if not self._review_comment_authorship_available():
-            return
         identity = PRCommandNoticeIdentity.REVIEWED_COMMITS.value
         try:
             reviewed, recorded, failures = self._commit_review_records()
@@ -754,6 +752,9 @@ class PRReviewer:
                     )
 
             else:
+                if self._review_commit is not None:
+                    pr_review = add_comment_identity(pr_review, format_reviewed_commit_marker(
+                        self._review_fingerprint, self._review_commit.sha), self.git_provider)
                 if self.git_provider.supports_review_comment_identity() is True:
                     identity_marker = (
                         PRReviewIdentity.INCREMENTAL.value
@@ -761,9 +762,6 @@ class PRReviewer:
                         else PRReviewIdentity.REGULAR.value
                     )
                     pr_review = add_pr_review_identity(pr_review, identity_marker, self.git_provider)
-                if self._review_commit is not None:
-                    pr_review = add_comment_identity(pr_review, format_reviewed_commit_marker(
-                        self._review_fingerprint, self._review_commit.sha), self.git_provider)
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
                 self._review_published = True
             self._review_done = not review_failed

@@ -58,6 +58,8 @@ def _provider(changed_paths):
     provider = MagicMock()
     provider.get_pr_commits.return_value = list(COMMITS)
     provider.set_commit_review_scope.side_effect = _scope(changed_paths)
+    provider.supports_review_finding_state.return_value = True
+    provider.is_supported.return_value = True
     return provider
 
 
@@ -626,6 +628,7 @@ class _Host:
         self.authorship = lambda comment: comment.user == "bot"
         self.max_comment_chars = 65000
         self.loads = []
+        self.authorship_available = True
 
     def push(self, *commits):
         for commit in commits:
@@ -654,6 +657,8 @@ class _Host:
         provider.get_pr_commits.return_value = list(self.commits)
         provider.pr.commits = len(self.commits)
         provider.max_comment_chars = self.max_comment_chars
+        provider.supports_review_finding_state.return_value = self.authorship_available
+        monkeypatch.setattr(pr_reviewer_module, "add_pr_review_identity", add_pr_review_identity)
         def scope(commit, incremental):
             self.loads.append(commit.sha)
             patch = self.patches.get(commit.sha, commit.sha)
@@ -823,16 +828,14 @@ async def test_commits_above_the_cap_are_reviewed_as_one_and_count_as_reviewed(s
 @pytest.mark.asyncio
 async def test_markers_count_only_in_pr_agent_comments_at_their_fixed_lines(settings, monkeypatch):
     host = _Host([A, B, C, D])
-    header = format_pr_review_header(incremental=True)
+    identity = PRReviewIdentity.INCREMENTAL.value
     record = PRCommandNoticeIdentity.REVIEWED_COMMITS.value
     host.comments += [
         SimpleNamespace(body=_marked(D), user="bot"),
-        SimpleNamespace(body=f"{header}\n\n{format_reviewed_commit_marker(_fingerprint(A.sha), A.sha)}",
-                        user="someone"),
+        SimpleNamespace(body=_marked(A), user="someone"),
         SimpleNamespace(body=f"### Ask\n\n{record}\n{format_reviewed_commit_marker(_fingerprint(B.sha), B.sha)}",
                         user="bot"),
-        SimpleNamespace(body=f"{header}\n\nquoted\n{format_reviewed_commit_marker(_fingerprint(C.sha), C.sha)}",
-                        user="bot"),
+        SimpleNamespace(body=f"## R\n\n{identity}\n\nquoted\n{_marked(C).splitlines()[-1]}", user="bot"),
     ]
     assert await host.run(monkeypatch) == _shas(A, B, C)
 
@@ -865,10 +868,26 @@ async def test_a_forged_record_on_a_fresh_pr_neither_skips_a_commit_nor_forces_a
 
 @pytest.mark.asyncio
 async def test_changing_the_review_heading_does_not_review_the_commits_again(settings, monkeypatch):
+    monkeypatch.setitem(get_settings().pr_reviewer, "review_heading", "Team Review")
     host = _Host([A, B])
     assert await host.run(monkeypatch) == _shas(A, B)
-    monkeypatch.setitem(get_settings().pr_reviewer, "review_heading", "Team Review")
+    assert host.comments[-1].body.startswith("## Incremental Team Review")
+    monkeypatch.setitem(get_settings().pr_reviewer, "review_heading", "Platform Review")
+    host.push(C)
+    assert await host.run(monkeypatch) == _shas(C)
+    monkeypatch.setitem(get_settings().pr_reviewer, "review_heading", "PR Reviewer Guide")
     assert await host.run(monkeypatch) == []
+
+
+@pytest.mark.asyncio
+async def test_without_comment_authorship_the_whole_pr_is_reviewed_once_per_run(settings, monkeypatch):
+    monkeypatch.setitem(get_settings().pr_reviewer, "publish_output_no_suggestions", False)
+    host = _Host([A, B])
+    host.authorship_available = False
+    assert await host.run(monkeypatch) == [None]
+    host.push(C)
+    assert await host.run(monkeypatch, is_auto=True) == [None]
+    assert host.records() == []
 
 
 def test_github_app_without_its_login_cannot_verify_markers():
@@ -935,9 +954,9 @@ async def test_reviewed_commit_lookup_error_takes_the_review_failure_path(settin
     assert provider.publish_comment.call_args.args[0].startswith("Failed to review PR")
 
 
-def _marked(commit):
+def _marked(commit, heading="## Incremental PR Reviewer Guide 🔍"):
     marker = format_reviewed_commit_marker(_fingerprint(commit.sha), commit.sha)
-    return f"{format_pr_review_header(incremental=True)}\n\n{marker}"
+    return f"{heading}\n\n{PRReviewIdentity.INCREMENTAL.value}\n\n{marker}"
 
 
 def test_gitlab_reads_reviewed_commits_from_its_own_notes_only():

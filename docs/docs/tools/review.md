@@ -396,6 +396,8 @@ history: a commit that was rebased without changing its own patch is not reviewe
 had fixups folded into it (for example with `git rebase --autosquash`) is reviewed again, and fixup commits that no
 longer exist are not reviewed. Markers count only in comments PR-Agent wrote; when the git provider cannot confirm
 that, the whole PR is reviewed in one review with a notice instead.
+On GitLab, a commit with a collapsed, too large or rename only file is reviewed again after a rebase, since its
+fingerprint includes its SHA.
 
 Set `publish_output_no_suggestions = false` in the `[pr_reviewer]` section
 (`--pr_reviewer.publish_output_no_suggestions=false` on the command line) to skip the comment of a commit where
