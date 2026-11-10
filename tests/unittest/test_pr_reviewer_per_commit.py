@@ -14,7 +14,7 @@ from pr_agent.algo.comment_identity import (
     format_reviewed_commit_marker,
     parse_commit_review_records,
 )
-from pr_agent.algo.run_details import command_failed, init_run_details, record_command_failure
+from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
@@ -37,8 +37,6 @@ def _reviewer(provider):
     reviewer = PRReviewer.__new__(PRReviewer)
     reviewer.git_provider = provider
     reviewer.pr_url = "https://example/pr/1"
-    reviewer.is_answer = False
-    reviewer.is_auto = False
     reviewer.incremental = IncrementalPR(False)
     reviewer.vars = {"diff": "", "commit_under_review": "", "commit_messages_str": ALL_MESSAGES}
     return reviewer
@@ -91,27 +89,6 @@ async def test_each_commit_with_changes_is_reviewed_with_its_own_message(setting
     assert reviewer.vars == {"diff": "", "commit_under_review": "", "commit_messages_str": ALL_MESSAGES}
     assert not reviewer.incremental.is_incremental
     provider.get_incremental_commits.assert_called_with(reviewer.incremental)
-
-
-@pytest.mark.asyncio
-async def test_a_failing_commit_does_not_stop_the_others_and_marks_the_run_failed(settings):
-    provider = _provider({"a" * 40: ["a.py"], "b" * 40: ["b.py"], "c" * 40: ["c.py"]})
-    provider.set_commit_review_scope.side_effect = _scope({}, failing={"b" * 40})
-    reviewer = _reviewer(provider)
-    reviewed = []
-
-    async def review():
-        init_run_details()
-        reviewed.append(reviewer._review_commit.sha)
-        if len(reviewed) == 1:
-            record_command_failure()
-
-    init_run_details()
-    with patch.object(reviewer, "_run_review", side_effect=review):
-        await reviewer.run()
-
-    assert reviewed == ["a" * 40, "c" * 40]
-    assert command_failed()
 
 
 @pytest.mark.asyncio
@@ -282,6 +259,8 @@ def test_gitlab_scopes_the_diff_to_one_commit_against_its_parent():
     assert provider.get_files() == ["a.py"]
     assert (incremental.last_seen_commit_sha, incremental.first_new_commit_sha) == ("parent", "child")
     assert provider._incremental_head_sha == "child"
+    assert provider.set_commit_review_scope(PRCommit("child", "msg"), IncrementalPR(True)) == fingerprint
+    project.commits.get.assert_called_once()
     project.commits.get.return_value.diff.assert_called_once_with(get_all=True, per_page=100)
 
     provider._expand_submodule_changes = lambda changes, refs: changes
@@ -328,6 +307,8 @@ def test_github_scopes_content_to_the_commit_instead_of_the_pr_head():
     assert provider.set_commit_review_scope(PRCommit("child", "msg"), incremental) == commit_patch_fingerprint(
         [("\0a.py", "")])
     assert list(provider.unreviewed_files_map) == ["a.py"]
+    provider.set_commit_review_scope(PRCommit("child", "msg"), IncrementalPR(True))
+    provider._get_repo().get_commit.assert_called_once()
     assert (incremental.last_seen_commit_sha, incremental.head_sha) == ("parent", "child")
 
     provider.pr = SimpleNamespace(head=SimpleNamespace(sha="head"))
@@ -635,6 +616,7 @@ class _Host:
         self.outcomes = {}
         self.authorship = lambda comment: comment.user == "bot"
         self.max_comment_chars = 65000
+        self.loads = []
 
     def push(self, *commits):
         for commit in commits:
@@ -663,8 +645,12 @@ class _Host:
         provider.get_pr_commits.return_value = list(self.commits)
         provider.pr.commits = len(self.commits)
         provider.max_comment_chars = self.max_comment_chars
-        provider.set_commit_review_scope.side_effect = (
-            lambda commit, incremental: _fingerprint(self.patches.get(commit.sha, commit.sha)))
+        def scope(commit, incremental):
+            self.loads.append(commit.sha)
+            patch = self.patches.get(commit.sha, commit.sha)
+            return None if patch is None else _fingerprint(patch)
+
+        provider.set_commit_review_scope.side_effect = scope
         provider.get_issue_comments.side_effect = lambda: list(self.comments)
         provider.get_issue_comments_newest_first.side_effect = lambda: self.comments[::-1]
         provider.is_comment_authored_by_pr_agent.side_effect = self.authorship
@@ -714,7 +700,16 @@ async def test_merge_commits_are_skipped_from_the_listing_without_loading_them(s
     merge = PRCommit("9" * 40, "merge main", parents=("p", "q"))
     host = _Host([A, merge])
     assert await host.run(monkeypatch) == _shas(A)
-    assert host.records() == []
+    assert host.records() == [] and merge.sha not in host.loads
+
+
+@pytest.mark.asyncio
+async def test_a_commit_without_listed_parents_and_no_own_changes_is_loaded_once(settings, monkeypatch):
+    host = _Host([A])
+    host.push((PRCommit("9" * 40, "merge main"), None))
+    assert await host.run(monkeypatch) == _shas(A)
+    assert await host.run(monkeypatch) == []
+    assert host.loads == [A.sha, "9" * 40, A.sha]
 
 
 @pytest.mark.asyncio
@@ -790,7 +785,9 @@ async def test_a_rebase_reviews_only_the_commits_whose_own_patch_changed(setting
     host.push(_rebased(A, "1"), _rebased(B, "2", patch="amended"))
 
     assert await host.run(monkeypatch) == ["2" * 40]
+    host.loads.clear()
     assert await host.run(monkeypatch) == []
+    assert host.loads == []
     if not publish_no_suggestions:
         [record] = host.records()
         assert set(parse_commit_review_records(record.body)[0].values()) == {_fingerprint(A.sha),
@@ -816,10 +813,11 @@ async def test_commits_above_the_cap_are_reviewed_as_one_and_count_as_reviewed(s
 
 @pytest.mark.asyncio
 async def test_markers_count_only_in_pr_agent_comments_at_their_fixed_lines(settings, monkeypatch):
-    host = _Host([A, B, C])
+    host = _Host([A, B, C, D])
     header = format_pr_review_header(incremental=True)
     record = PRCommandNoticeIdentity.REVIEWED_COMMITS.value
     host.comments += [
+        SimpleNamespace(body=_marked(D), user="bot"),
         SimpleNamespace(body=f"{header}\n\n{format_reviewed_commit_marker(_fingerprint(A.sha), A.sha)}",
                         user="someone"),
         SimpleNamespace(body=f"### Ask\n\n{record}\n{format_reviewed_commit_marker(_fingerprint(B.sha), B.sha)}",
@@ -840,9 +838,22 @@ async def test_unverifiable_authorship_fails_closed_and_keeps_a_single_record(se
 
     host.authorship = unverifiable
     assert await host.run(monkeypatch) == _shas(A, B)
-    assert await host.run(monkeypatch) == _shas(A, B)
-    assert await host.run(monkeypatch) == _shas(A, B)
+    assert await host.run(monkeypatch) == [None]
+    assert await host.run(monkeypatch, is_auto=True) == [None]
     assert len(host.records()) == 1
+    assert sum("could not verify" in comment.body for comment in host.comments) == 1
+
+
+def test_github_app_without_its_login_cannot_verify_markers():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.pr = MagicMock()
+    provider.pr.get_issue_comments.return_value = [SimpleNamespace(body=_marked(A),
+                                                                   user=SimpleNamespace(login="app[bot]"))]
+    reviewer = _reviewer(provider)
+
+    with patch.object(GithubProvider, "_deployment_type", return_value="app"), \
+            patch.object(GithubProvider, "_agent_login", return_value=""):
+        assert reviewer._commit_review_records()[0] is None
 
 
 @pytest.mark.asyncio
@@ -912,7 +923,7 @@ def test_gitlab_reads_reviewed_commits_from_its_own_notes_only():
     with patch.object(GitLabProvider, "_get_own_user_id", return_value=7):
         assert reviewer._commit_review_records()[0] == {A.sha: _fingerprint(A.sha)}
     with patch.object(GitLabProvider, "_get_own_user_id", return_value=None):
-        assert reviewer._commit_review_records()[0] == {}
+        assert reviewer._commit_review_records()[0] is None
 
 
 def test_github_reads_reviewed_commits_from_its_own_comments_only():

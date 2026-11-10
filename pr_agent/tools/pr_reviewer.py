@@ -78,7 +78,7 @@ from pr_agent.algo.run_output import (
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.structural_reach import build_structural_reach
-from pr_agent.algo.token_budget import AttemptTokenBudget, _as_int, clip_tokens
+from pr_agent.algo.token_budget import AttemptTokenBudget, clip_tokens
 from pr_agent.algo.utils import (
     ModelType,
     convert_to_markdown_v2,
@@ -93,6 +93,7 @@ from pr_agent.git_providers.git_provider import (
     IncompleteProviderPullRequestFilesError,
     IncrementalPR,
     PRCommit,
+    commit_patch_fingerprint,
     format_persistent_update_header,
     get_main_pr_language,
 )
@@ -181,6 +182,7 @@ def _review_failure_comment(error: Exception) -> str:
 
 
 PER_COMMIT_MAX_AUTO_ATTEMPTS = 3
+NO_OWN_CHANGES_FINGERPRINT = commit_patch_fingerprint([])
 _STATE_BLOCK_INVALID_MARKER = "invalid_marker"
 _STATE_BLOCK_READ_ERROR = "read_error"
 _STATE_BLOCK_REVIEW_DATA = "review_data"
@@ -323,7 +325,7 @@ class PRReviewer:
         return incremental
 
     async def run(self) -> None:
-        if _as_bool_setting(get_settings().pr_reviewer.get("per_commit_review", False)) and not self.is_answer:
+        if _as_bool_setting(get_settings().pr_reviewer.get("per_commit_review", False)):
             await self._run_per_commit()
         else:
             await self._run_review()
@@ -373,13 +375,23 @@ class PRReviewer:
                 f"This PR has {total_commits} commits, more than the {len(commits)} the git provider API "
                 f"returns, so per commit review was skipped and the whole PR was reviewed instead.")
             return
+        if reviewed is None:
+            await self._review_as_one(
+                "The author of the earlier per commit review comments cannot be verified",
+                "Per commit review could not verify which earlier comments it wrote, so the whole PR was reviewed "
+                "instead of each commit.")
+            return
 
         reviewed_fingerprints = set(reviewed.values())
         fingerprints = dict(reviewed)
         incremental_args = self.incremental.is_incremental
         base_vars = copy.deepcopy(self.vars)
         max_message_tokens = get_settings().config.get("max_commits_tokens", None)
-        max_commits = _as_int(get_settings().pr_reviewer.get("max_commits_per_review", 0), 0)
+        try:
+            max_commits = int(get_settings().pr_reviewer.get("max_commits_per_review", 0))
+        except (TypeError, ValueError):
+            get_logger().warning("max_commits_per_review is not a number, reviewing without a limit")
+            max_commits = 0
         new_records = {}
         new_failures = {}
         cleared_failures = False
@@ -392,17 +404,25 @@ class PRReviewer:
             for commit in commits:
                 if commit.sha in reviewed or (commit.parents is not None and len(commit.parents) != 1):
                     continue
-                fingerprint = self._scope_commit(commit, unloaded)
-                if fingerprint is None:
+                try:
+                    fingerprint = self.git_provider.set_commit_review_scope(commit, IncrementalPR(True))
+                except IncompleteProviderPullRequestFilesError:
+                    raise
+                except Exception as e:
+                    get_logger().error(f"Failed to load the changes of commit {commit.sha}: {e}")
+                    unloaded.append((commit.sha[:7], e))
                     continue
+                if fingerprint is None:
+                    fingerprint = NO_OWN_CHANGES_FINGERPRINT
+                    new_records[commit.sha] = fingerprint
                 fingerprints[commit.sha] = fingerprint
                 if fingerprint in reviewed_fingerprints:
-                    continue
-                if is_auto and failures.get(fingerprint, 0) >= PER_COMMIT_MAX_AUTO_ATTEMPTS:
+                    new_records[commit.sha] = fingerprint
+                elif is_auto and failures.get(fingerprint, 0) >= PER_COMMIT_MAX_AUTO_ATTEMPTS:
                     get_logger().warning(f"Commit {commit.sha} failed to review {failures[fingerprint]} times, "
                                          f"leaving it to a manual /review")
-                    continue
-                pending.append((commit, fingerprint))
+                elif fingerprint != NO_OWN_CHANGES_FINGERPRINT:
+                    pending.append((commit, fingerprint))
 
             if 0 < max_commits < len(pending):
                 self._restore_full_scope()
@@ -414,16 +434,16 @@ class PRReviewer:
                     f"There are {len(pending)} commits to review, more than the limit of {max_commits} for per "
                     f"commit review, so the whole PR was reviewed in one review instead.")
                 if self._review_done and not command_failed():
-                    new_records = {commit.sha: fingerprint for commit, fingerprint in pending}
+                    new_records.update((commit.sha, fingerprint) for commit, fingerprint in pending)
                 else:
                     new_failures = {fingerprint: failures.get(fingerprint, 0) + 1 for _, fingerprint in pending}
                 return
 
             for commit, fingerprint in pending:
-                if self._scope_commit(commit, unloaded) is None:
-                    continue
+                self.incremental = IncrementalPR(True)
                 done = False
                 try:
+                    self.git_provider.set_commit_review_scope(commit, self.incremental)
                     message = clip_tokens(commit.message, max_message_tokens) if max_message_tokens \
                         else commit.message
                     self.vars = dict(copy.deepcopy(base_vars), commit_under_review=message, commit_messages_str="",
@@ -475,17 +495,6 @@ class PRReviewer:
         if first_error is not None and get_settings().config.get("propagate_tool_errors", False):
             raise first_error
 
-    def _scope_commit(self, commit: PRCommit, unloaded: list) -> str | None:
-        self.incremental = IncrementalPR(True)
-        try:
-            return self.git_provider.set_commit_review_scope(commit, self.incremental)
-        except IncompleteProviderPullRequestFilesError:
-            raise
-        except Exception as e:
-            get_logger().error(f"Failed to load the changes of commit {commit.sha}: {e}")
-            unloaded.append((commit.sha[:7], e))
-            return None
-
     def _restore_full_scope(self) -> None:
         self.incremental = IncrementalPR(False)
         try:
@@ -493,25 +502,28 @@ class PRReviewer:
         except Exception as e:
             get_logger().exception(f"Failed to restore the full PR scope after per commit review, error: {e}")
 
-    def _commit_review_records(self) -> tuple[dict[str, str], dict[str, str], dict[str, int]]:
+    def _commit_review_records(self) -> tuple[dict[str, str] | None, dict[str, str], dict[str, int]]:
         reviewed, recorded, failures = {}, {}, {}
         if not self.git_provider.is_supported("get_issue_comments"):
             return reviewed, recorded, failures
+        marked = verified = False
         for comment in self.git_provider.get_issue_comments():
             found, failed, is_record = parse_commit_review_records(GitProvider._get_comment_body(comment))
             if not (found or failed):
                 continue
+            marked = True
             try:
                 if not self.git_provider.is_comment_authored_by_pr_agent(comment):
                     continue
             except RuntimeError:
                 continue
+            verified = True
             reviewed.update(found)
             if is_record:
                 recorded.update(found)
                 for fingerprint, attempts in failed.items():
                     failures[fingerprint] = max(failures.get(fingerprint, 0), attempts)
-        return reviewed, recorded, failures
+        return (None if marked and not verified else reviewed), recorded, failures
 
     def _record_commit_reviews(self, commits: list[PRCommit], fingerprints: dict[str, str],
                                new_records: dict[str, str], new_failures: dict[str, int]) -> None:
@@ -520,28 +532,25 @@ class PRReviewer:
         identity = PRCommandNoticeIdentity.REVIEWED_COMMITS.value
         try:
             reviewed, recorded, failures = self._commit_review_records()
+            if reviewed is None:
+                return
             recorded.update(new_records)
             for fingerprint, attempts in new_failures.items():
                 failures[fingerprint] = max(failures.get(fingerprint, 0), attempts)
             age = {fingerprints[commit.sha]: index
                    for index, commit in enumerate(commits) if commit.sha in fingerprints}
             done = set(reviewed.values()) | set(recorded.values())
-            entries = sorted(
-                [(age[fp], True, format_reviewed_commit_marker(fp, sha)) for sha, fp in recorded.items() if fp in age]
-                + [(age[fp], False, format_failed_commit_marker(fp, attempts))
-                   for fp, attempts in failures.items() if fp in age and fp not in done],
-                reverse=True)
-            budget = _as_int(getattr(self.git_provider, "max_comment_chars", None), 65000) - 200
-            kept = []
-            for _, is_reviewed, line in entries:
-                budget -= len(line) + 1
-                if budget < 0:
-                    get_logger().warning("Per commit review record is full, the oldest commits may be reviewed again")
-                    break
-                kept.append((is_reviewed, line))
-            header = (f"Commits reviewed by per commit review without a comment of their own: "
-                      f"{sum(is_reviewed for is_reviewed, _ in kept)}")
-            body = "\n".join([identity, "", header, "", *(line for _, line in kept)])
+            lines = [line for _, line in sorted(
+                [(age[fp], format_reviewed_commit_marker(fp, sha)) for sha, fp in recorded.items() if fp in age]
+                + [(age[fp], format_failed_commit_marker(fp, attempts))
+                   for fp, attempts in failures.items() if fp in age and fp not in done])]
+            max_chars = getattr(self.git_provider, "max_comment_chars", None)
+            max_chars = max_chars if isinstance(max_chars, int) else 65000
+            header = f"{identity}\n\nCommits reviewed by per commit review without a comment of their own.\n"
+            while lines and len(header) + sum(len(line) + 1 for line in lines) > max_chars:
+                get_logger().warning("Per commit review record is full, the oldest commits may be reviewed again")
+                lines.pop(0)
+            body = "\n".join([header, *lines])
             self.git_provider.publish_persistent_comment_full(
                 body, initial_header=identity, update_header=False, final_update_message=False,
                 identity_marker=identity, require_agent_authorship=True, fallback_on_error=False)

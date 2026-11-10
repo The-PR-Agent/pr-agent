@@ -395,7 +395,7 @@ The commit list is read from the git provider on every run, so after a force pus
 history: a commit that was rebased without changing its own patch is not reviewed again, a commit that was amended or
 had fixups folded into it (for example with `git rebase --autosquash`) is reviewed again, and fixup commits that no
 longer exist are not reviewed. Markers count only in comments PR-Agent wrote; when the git provider cannot confirm
-that, every commit is reviewed on each run.
+that, the whole PR is reviewed in one review with a notice instead.
 
 Set `publish_output_no_suggestions = false` in the `[pr_reviewer]` section
 (`--pr_reviewer.publish_output_no_suggestions=false` on the command line) to skip the comment of a commit where
@@ -403,8 +403,8 @@ nothing was found. The setting of the same name in
 `[pr_code_suggestions]` applies to `/improve` only.
 With `inline_key_issues = true`, each finding is published as an inline comment on the commit it was found in,
 anchored to that commit's own diff, so GitHub and GitLab show it as outdated once a later commit changes those lines.
-A finding that cannot be anchored there, for example because the provider rejects its line, stays in that commit's
-review comment.
+A finding that cannot be anchored there, for example because its line is outside that commit's diff or the provider
+rejects it, stays in that commit's review comment instead of being moved to a nearby line.
 
 Merge commits, empty commits and the root commit of a history have no diff of their own and are skipped. A commit that
 fails to review is reported like a failed review and does not stop the remaining commits. Every reviewed commit is a

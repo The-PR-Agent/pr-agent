@@ -468,7 +468,12 @@ class GithubProvider(GitProvider):
         if context.exists():
             context.pop("diff_files", None)
         self.unreviewed_files_map = {}
-        gh_commit = self._get_repo().get_commit(commit.sha)
+        loaded = vars(self).setdefault("_loaded_commits", {})
+        if commit.sha not in loaded:
+            gh_commit = self._get_repo().get_commit(commit.sha)
+            loaded[commit.sha] = gh_commit, (list(gh_commit.get_files(commit_files_per_page=300))
+                                             if len(gh_commit.parents) == 1 else [])
+        gh_commit, files = loaded[commit.sha]
         parents = gh_commit.parents
         if len(parents) != 1:
             get_logger().info(f"Skipping commit {commit.sha} with {len(parents)} parents in per commit review")
@@ -479,7 +484,6 @@ class GithubProvider(GitProvider):
         incremental.head_sha = commit.sha
         self._pr_head_commit = getattr(self, "_pr_head_commit", None) or getattr(self, "last_commit_id", None)
         self.last_commit_id = gh_commit
-        files = list(gh_commit.get_files(commit_files_per_page=300))
         self.unreviewed_files_map = {file.filename: file for file in files}
         if not files:
             return None
@@ -1699,6 +1703,8 @@ class GithubProvider(GitProvider):
         for suggestion in code_suggestions_with_fingerprints:
             suggestion["_dedup_code_fp"] = code_fingerprint(
                 suggestion.get("relevant_file", ""), None, suggestion.get("body", ""))
+        if getattr(getattr(self, "incremental", None), "head_sha", None):
+            return code_suggestions_with_fingerprints
         return self.validate_comments_inside_hunks(code_suggestions_with_fingerprints)
 
     def _build_code_suggestion_payload(self, suggestion: dict) -> dict:

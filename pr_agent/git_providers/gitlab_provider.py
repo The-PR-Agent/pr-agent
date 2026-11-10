@@ -1280,9 +1280,13 @@ class GitLabProvider(GitProvider):
         self.diff_files = None
         self.unreviewed_files_map = {}
         self._commit_diff_refs = None
-        project = self.gl.projects.get(self.id_project, lazy=True)
-        gl_commit = project.commits.get(commit.sha)
-        parent_ids = list(getattr(gl_commit, "parent_ids", None) or [])
+        loaded = vars(self).setdefault("_loaded_commits", {})
+        if commit.sha not in loaded:
+            gl_commit = self.gl.projects.get(self.id_project, lazy=True).commits.get(commit.sha)
+            parent_ids = list(getattr(gl_commit, "parent_ids", None) or [])
+            loaded[commit.sha] = parent_ids, (list(gl_commit.diff(get_all=True, per_page=100))
+                                              if len(parent_ids) == 1 else [])
+        parent_ids, diffs = loaded[commit.sha]
         if len(parent_ids) != 1:
             get_logger().info(f"Skipping commit {commit.sha} with {len(parent_ids)} parents in per commit review")
             return None
@@ -1292,7 +1296,6 @@ class GitLabProvider(GitProvider):
         self._incremental_head_sha = commit.sha
         self._commit_diff_refs = SimpleNamespace(
             base_commit_sha=parent_ids[0], start_commit_sha=parent_ids[0], head_commit_sha=commit.sha)
-        diffs = list(gl_commit.diff(get_all=True, per_page=100))
         for diff in diffs:
             if diff.get("new_path"):
                 self.unreviewed_files_map[diff["new_path"]] = diff
