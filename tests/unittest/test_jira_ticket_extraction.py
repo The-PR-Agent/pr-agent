@@ -161,7 +161,7 @@ class TestExtractJiraTickets:
         client = self._fake_client()
         with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets("bugfix/abc-123-description-of-branch")
-        client.issue.assert_called_once_with("ABC-123")
+        client.issue.assert_called_once_with("ABC-123", fields="summary,description,labels")
         assert len(result) == 1
         assert result[0]["ticket_id"] == "ABC-123"
         assert result[0]["ticket_url"] == "https://acme.atlassian.net/browse/ABC-123"
@@ -179,6 +179,7 @@ class TestExtractJiraTickets:
         }}
         with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets("ABC-1")
+        client.issue.assert_called_once_with("ABC-1", fields="summary,description,labels,customfield_10127")
         assert result[0]["requirements"] == "Acceptance criteria text"
 
     def test_requirements_truncated_like_body(self):
@@ -195,14 +196,40 @@ class TestExtractJiraTickets:
             result = extract_jira_tickets("ABC-1", max_characters=10)
         assert result[0]["requirements"] == "x" * 10 + "..."
 
-    def test_requirements_empty_when_field_not_configured(self):
-        """With no requirements field configured, requirements stays empty."""
+    @pytest.mark.parametrize("requirements_field, requested_fields", [
+        ("", "summary,description,labels"),
+        ("customfield_10127", "summary,description,labels,customfield_10127"),
+    ])
+    def test_requirements_empty_when_field_not_available(self, requirements_field, requested_fields):
+        """Missing requirements leave the rest of the ticket intact."""
         self._configure_jira()
-        get_settings().set("JIRA.JIRA_REQUIREMENTS_FIELD", "")
+        get_settings().set("JIRA.JIRA_REQUIREMENTS_FIELD", requirements_field)
         client = self._fake_client()
         with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets("ABC-1")
+        client.issue.assert_called_once_with("ABC-1", fields=requested_fields)
         assert result[0]["requirements"] == ""
+        assert result[0]["title"] == "Title"
+        assert result[0]["body"] == "Body"
+        assert result[0]["labels"] == "a"
+
+    @pytest.mark.parametrize("requirements_field, requirements", [
+        ("environment", "Runtime details"),
+        ("-description", ""),
+        (123, ""),
+    ])
+    def test_other_requirements_fields_preserve_full_lookup(self, requirements_field, requirements):
+        """Existing field keys must not become Jira selectors or fail during concatenation."""
+        self._configure_jira()
+        get_settings().set("JIRA.JIRA_REQUIREMENTS_FIELD", requirements_field)
+        client = self._fake_client({
+            "summary": "Title", "description": "Body", "labels": ["a"], "environment": "Runtime details",
+        })
+        with patch("atlassian.Jira", return_value=client):
+            result = extract_jira_tickets("ABC-1")
+        client.issue.assert_called_once_with("ABC-1", fields="*all")
+        assert result[0]["requirements"] == requirements
+        assert result[0]["body"] == "Body"
 
     def test_checks_all_tickets_when_multiple(self):
         """When several distinct keys are present, each is fetched."""
@@ -230,7 +257,7 @@ class TestExtractJiraTickets:
         before the fetch spends the budget on them and drops the ticket the PR names."""
         self._configure_jira()
 
-        def fake_issue(key):
+        def fake_issue(key, fields):
             if key == "PROJ-4242":
                 return {"fields": {"summary": "Real", "description": "Body", "labels": []}}
             raise Exception("404 not found")
@@ -248,7 +275,7 @@ class TestExtractJiraTickets:
         the cap is set to."""
         self._configure_jira()
 
-        def fake_issue(key):
+        def fake_issue(key, fields):
             if key == "PROJ-4242":
                 return {"fields": {"summary": "Real", "description": "Body", "labels": []}}
             raise Exception("404 not found")
@@ -289,7 +316,7 @@ class TestExtractJiraTickets:
         leaving only the real ticket."""
         self._configure_jira()
 
-        def fake_issue(key):
+        def fake_issue(key, fields):
             if key == "ABC-123":
                 return {"fields": {"summary": "Real", "description": "Body", "labels": []}}
             raise Exception("404 not found")
@@ -308,7 +335,7 @@ class TestExtractJiraTickets:
         client = self._fake_client()
         with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets("Switch SHA-256 digest per PROJ-4242")
-        client.issue.assert_called_once_with("PROJ-4242")
+        client.issue.assert_called_once_with("PROJ-4242", fields="summary,description,labels")
         assert [t["ticket_id"] for t in result] == ["PROJ-4242"]
 
     def test_project_keys_allowlist_drops_unlisted_prefixes_before_lookup(self):
@@ -598,6 +625,7 @@ class TestGetJiraClient:
         client.issue.return_value = {"fields": {"summary": "Title", "description": "Body", "labels": []}}
         with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets("ABC-123")
+        client.issue.assert_called_once_with("ABC-123", fields="summary,description,labels")
         assert result[0]["ticket_url"] == "https://acme.atlassian.net/browse/ABC-123"
 
     def test_numeric_site_keeps_ticket_url(self):

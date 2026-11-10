@@ -216,12 +216,12 @@ async def test_ticket_reads_use_workers_and_request_settings(monkeypatch, scoped
     calls = []
 
     def record(name, function):
-        def call(*args):
+        def call(*args, **kwargs):
             calls.append((name, threading.get_ident(), get_settings()))
-            return function(*args)
+            return function(*args, **kwargs)
         return call
 
-    jira = SimpleNamespace(issue=record("jira", lambda key: {"fields": {"summary": "Jira ticket"}}))
+    jira = SimpleNamespace(issue=record("jira", lambda key, fields: {"fields": {"summary": "Jira ticket"}}))
     monkeypatch.setattr(tpc, "_get_jira_client", lambda: jira)
     expected = []
     native_ids = [7]
