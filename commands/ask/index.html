@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">Ask | PR-Agent</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" property="og:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.pr-agent.ai/commands/ask/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Ask | PR-Agent"><meta data-rh="true" name="description" content="Overview"><meta data-rh="true" property="og:description" content="Overview"><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.pr-agent.ai/commands/ask/"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/commands/ask/" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/commands/ask/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Ask","item":"https://docs.pr-agent.ai/commands/ask"}]}</script><script src="https://widget.kapa.ai/kapa-widget.bundle.js" data-website-id="5c89c0b1-b2ee-43c9-8c6f-43ed762b3c1e" data-project-name="PR-Agent" data-project-color="#2459db" data-project-logo="/img/favicon.svg" data-launcher-button-image="/img/favicon-white.svg" data-color-scheme-selector="[data-theme=&#39;dark&#39;]" async></script><link rel="stylesheet" href="/assets/css/styles.928a3cd8.css">
-<script src="/assets/js/runtime~main.9dcc5640.js" defer="defer"></script>
+<script src="/assets/js/runtime~main.6132404f.js" defer="defer"></script>
 <script src="/assets/js/main.9670db7a.js" defer="defer"></script>
 </head>
 <body>
@@ -37,6 +37,11 @@ just to fit instructions. Normal model retries reconsider the original instructi
 Including repository instructions can add repository API reads and input tokens, but does not add a separate model request.</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="ask-lines">Ask lines<a href="#ask-lines" class="hash-link" aria-label="Direct link to Ask lines" title="Direct link to Ask lines" translate="no">​</a></h2>
 <p>You can run <code>/ask</code> on specific lines of code in the PR from the PR&#x27;s diff view. The command will answer questions based on the code changes in the selected lines.</p>
+<p>For line comments handled by the GitHub App, GitHub Actions, or GitLab webhook, <code>/ask_question</code> is an alias of <code>/ask</code>.
+Start the comment with <code>/ask</code>, <code>/ask_question</code>, or <code>/ask_line</code> after any leading whitespace;
+these command names are case-insensitive. Other tokens such as <code>/asking</code> are not Ask commands.
+Azure DevOps accepts lowercase <code>/ask_question</code> for the same thread and line handling as <code>/ask</code>;
+its webhook command names remain case-sensitive.</p>
 <ul>
 <li class="">Click on the &#x27;+&#x27; sign next to the line number to select the line.</li>
 <li class="">To select multiple lines, click on the &#x27;+&#x27; sign of the first line and then hold and drag to select the rest of the lines.</li>
@@ -44,7 +49,8 @@ Including repository instructions can add repository API reads and input tokens,
 </ul>
 <img decoding="async" loading="lazy" src="/img/Ask_line.png" alt="Ask Line" width="512" class="img_ev3q">
 <p>If no matching diff hunk is found for the selected lines, the command explains this without calling a model.</p>
-<p>In GitHub Actions, <code>/ask</code> comments attached to an entire file use that file&#x27;s complete diff as context.
+<p>In GitHub Actions, a file comment whose first non-whitespace token is <code>/ask</code> or <code>/ask_question</code> uses that file&#x27;s
+complete diff as context. These two command names are case-insensitive.
 The existing file filters and input budgets still apply. If the file has no analyzable diff, or the question cannot
 be prepared within the configured input budget, the command explains this without calling a model.
 The answer is posted in the original file-comment thread with a link to the question.
