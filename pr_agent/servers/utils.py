@@ -495,5 +495,20 @@ def should_process_pr_logic(
     return True
 
 
+def should_process_pr_before_repo_settings(data: dict, *, provider: str) -> bool:
+    """Defer overridable PR rules to the caller's existing post-settings check.
+
+    An external configuration can also enable repository settings. Without either
+    source, retain the early ignore-rule check and the existing deferred label gate.
+    """
+    settings = get_settings()
+    extra_config_url = settings.get("CONFIG.EXTRA_CONFIG_URL")
+    if settings.config.use_repo_settings_file or (
+        isinstance(extra_config_url, str) and extra_config_url.strip()
+    ):
+        return True
+    return should_process_pr_logic(data, provider=provider, check_include_labels=False)
+
+
 # Re-export should_process_pr_logic for direct server imports
 shared_should_process_pr_logic = should_process_pr_logic
