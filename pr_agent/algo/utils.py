@@ -518,6 +518,18 @@ def convert_to_markdown_v2(output_data: dict,
                                 issue_str = f"[**{issue_header}**]({reference_link})\n\n{issue_content}\n\n"
                             else:
                                 issue_str = f"**{issue_header}**\n\n{issue_content}\n\n"
+                        improved_code = issue.get('improved_code')
+                        if isinstance(improved_code, str) and improved_code.strip():
+                            fix = improved_code.rstrip()
+                            fence = get_suggestion_fence(fix)
+                            fix_block = f"{fence}text\n{fix}\n{fence}"
+                            if gfm_supported:
+                                issue_str += (
+                                    f"\n\n<details><summary>{t('review.suggested_fix')}</summary>\n\n"
+                                    f"{fix_block}\n\n</details>"
+                                )
+                            else:
+                                issue_str += f"**{t('review.suggested_fix')}**\n\n{fix_block}\n\n"
                         markdown_text += f"{issue_str}\n\n"
                     except Exception as e:
                         get_logger().exception(f"Failed to process 'Recommended focus areas for review': {e}")
