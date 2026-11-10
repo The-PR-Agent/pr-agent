@@ -10,6 +10,7 @@ class _FakeBuilder:
         self.distance_type_value = None
         self.limit_value = None
         self.where_called_with = None
+        self.select_value = None
 
     def distance_type(self, value):
         self.distance_type_value = value
@@ -21,6 +22,10 @@ class _FakeBuilder:
 
     def where(self, expr, prefilter=False):
         self.where_called_with = (expr, prefilter)
+        return self
+
+    def select(self, columns):
+        self.select_value = columns
         return self
 
     def to_list(self):
@@ -44,4 +49,5 @@ def test_lancedb_query_requests_cosine_distance_and_five_hits():
     assert builder.distance_type_value == "cosine"
     assert builder.limit_value == 5
     assert builder.where_called_with == ("metadata.repo='org/repo-a'", True)
+    assert builder.select_value == ["id", "_distance"]
     assert result == rows

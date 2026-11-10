@@ -697,16 +697,16 @@ class TestTrailingDeletionOnlyHunk:
         return FilePatchInfo(base_file="a\nb\nc\n", head_file="", patch="",
                              filename="emptied.py", edit_type=EDIT_TYPE.MODIFIED)
 
-    def test_deletion_only_hunk_is_rendered_when_it_is_the_last_hunk(self):
+    @pytest.mark.parametrize("line", ["-a", "-b", "-c"])
+    def test_deletion_only_hunk_is_rendered_when_it_is_the_last_hunk(self, line):
         out = decouple_and_convert_to_hunks_with_lines_numbers(
             "@@ -1,3 +0,0 @@\n-a\n-b\n-c", self._file())
         assert "__old hunk__" in out
-        for line in ("-a", "-b", "-c"):
-            assert line in out
+        assert line in out
 
-    def test_deletion_only_hunk_is_rendered_when_another_hunk_follows(self):
+    @pytest.mark.parametrize("line", ["-a", "-b", "-c", "+added"])
+    def test_deletion_only_hunk_is_rendered_when_another_hunk_follows(self, line):
         out = decouple_and_convert_to_hunks_with_lines_numbers(
             "@@ -1,3 +0,0 @@\n-a\n-b\n-c\n@@ -10,2 +7,3 @@\n ctx\n+added", self._file())
         assert "__old hunk__" in out
-        for line in ("-a", "-b", "-c", "+added"):
-            assert line in out
+        assert line in out

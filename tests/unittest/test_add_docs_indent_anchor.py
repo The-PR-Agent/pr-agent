@@ -94,11 +94,38 @@ def test_a_leading_blank_line_in_the_snippet_does_not_skew_indentation():
     assert '\n    """Adds docs."""' in result
 
 
-def test_a_file_of_only_blank_lines_leaves_the_snippet_unchanged():
-    """With no code line to anchor on, return the snippet rather than guess."""
-    result = _tool("\n\n\n").dedent_code("a.py", 2, SNIPPET, doc_placement="after", add_original_line=True)
+@pytest.mark.parametrize("add_original_line", [False, True])
+def test_a_file_of_only_blank_lines_cannot_supply_a_replacement_anchor(add_original_line):
+    result = _tool("\n\n\n").dedent_code("a.py", 2, SNIPPET, add_original_line=add_original_line)
 
-    assert result == SNIPPET
+    assert result == (None if add_original_line else SNIPPET)
+
+
+@pytest.mark.parametrize("head, filename, line", [
+    ("", "a.py", 1),
+    ("def f():\n    return 1", "missing.py", 1),
+    ("def f():\n    return 1", "a.py", 0),
+    ("def f():\n    return 1", "a.py", 3),
+])
+def test_unavailable_original_line_does_not_become_a_documentation_only_replacement(head, filename, line):
+    assert _tool(head).dedent_code(filename, line, SNIPPET, add_original_line=True) is None
+
+
+def test_partial_head_content_cannot_supply_an_original_line():
+    # Model a hunk starting at line 2, where source line 2 is at index 0.
+    tool = _tool("def f():\n    return 1")
+    tool.git_provider.diff_files[0].head_file_is_complete = False
+
+    assert tool.dedent_code("a.py", 2, SNIPPET) == "    " + SNIPPET
+    assert tool.dedent_code("a.py", 2, SNIPPET, add_original_line=True) is None
+
+
+def test_source_read_error_does_not_become_a_documentation_only_replacement():
+    class UnreadableSource(str):
+        def split(self, *args, **kwargs):
+            raise ValueError("source unavailable")
+
+    assert _tool(UnreadableSource("def f():")).dedent_code("a.py", 1, SNIPPET, add_original_line=True) is None
 
 
 def test_blank_lines_are_skipped_when_anchoring_on_a_comment_line():
@@ -119,8 +146,9 @@ def test_blank_lines_are_skipped_when_anchoring_on_a_comment_line():
     ("    ", "        ", "before"),
     ("    ", "        ", "after"),
 ])
-def test_documentation_uses_the_literal_anchor_prefix(prefix, model_prefix, placement):
-    head = f"def f():\n{prefix}return 1"
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_documentation_uses_the_literal_anchor_prefix(prefix, model_prefix, placement, newline):
+    head = f"def f():{newline}{prefix}return 1"
     compile(head, "a.py", "exec")
     line = 1 if placement == "after" else 2
     target = head.splitlines()[line - 1]

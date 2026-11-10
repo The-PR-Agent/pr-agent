@@ -1,7 +1,7 @@
 """End-to-end A2A 1.0 round-trip through the real MOSAICO server stack.
 
 Drives an HTTP POST through the whole server (Starlette + DefaultRequestHandler +
-executor + RawContextMiddleware + route_and_run + real PRReviewer with publish_output
+executor + RawContextMiddleware + route_and_run_result + real PRReviewer with publish_output
 forced False -> A2A 1.0 response). Tier 0b: load-bearing interop proof.
 
 Only the LLM is stubbed (LiteLLMAIHandler.chat_completion -> canned review YAML);
@@ -334,7 +334,7 @@ class TestA2ARoundTripStubbedLLM:
                 return await super().list(params, context)
 
         store = RecordingTaskStore()
-        monkeypatch.setattr(server, "InMemoryTaskStore", lambda: store)
+        monkeypatch.setattr(server, "MosaicoTaskStore", lambda **kwargs: store)
         original_get_settings = executor_mod.get_settings
 
         def single_history_task_settings():

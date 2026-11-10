@@ -81,7 +81,6 @@ def test_qdrant_upload_points_uses_batching(monkeypatch):
     tool.qdrant = FakeQdrant()
     tool.qdrant_collection_name = "test-collection"
     tool.max_issues_to_scan = 100
-    tool.token_handler = SimpleNamespace(count_tokens=lambda text: 1)
 
     issue = SimpleNamespace(
         pull_request=False,

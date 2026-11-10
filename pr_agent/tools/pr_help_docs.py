@@ -4,6 +4,7 @@ import os
 import re
 from functools import partial
 from tempfile import TemporaryDirectory
+from uuid import uuid4
 
 from jinja2 import StrictUndefined
 from jinja2.sandbox import SandboxedEnvironment
@@ -90,7 +91,7 @@ def return_document_headings(text: str, ext: str) -> str:
         lines = text.split('\n')
         headings = set()
 
-        if not text or not re.search(r'[a-zA-Z]', text):
+        if not text or not any(char.isalpha() for char in text):
             get_logger().error(f"Empty or non text content found in text: {text}.")
             return ""
 
@@ -132,13 +133,30 @@ def map_documentation_files_to_contents(base_path: str, doc_files: list[str],
         for file in doc_files:
             try:
                 with open(file, encoding='utf-8') as f:
-                    content = f.read()
+                    if max_allowed_file_len < 0:
+                        content = f.read()
+                        content_length = len(content)
+                        has_text = any(map(str.isalpha, content))
+                    else:
+                        content_parts = []
+                        remaining = max_allowed_file_len
+                        content_length = 0
+                        has_text = False
+                        while chunk := f.read(64 * 1024):
+                            content_length += len(chunk)
+                            if remaining > 0:
+                                prefix = chunk[:remaining]
+                                content_parts.append(prefix)
+                                remaining -= len(prefix)
+                            if not has_text:
+                                has_text = any(map(str.isalpha, chunk))
+                        content = ''.join(content_parts)
                     # Skip files with no text content
-                    if not re.search(r'[a-zA-Z]', content):
+                    if not has_text:
                         continue
-                    if len(content) > max_allowed_file_len:
+                    if content_length > max_allowed_file_len:
                         get_logger().warning(
-                            f"File {file} length: {len(content)} exceeds limit: "
+                            f"File {file} length: {content_length} exceeds limit: "
                             f"{max_allowed_file_len}, so it will be trimmed."
                         )
                         content = content[:max_allowed_file_len]
@@ -313,6 +331,45 @@ def clean_markdown_content(content: str) -> str:
         get_logger().exception("Unexpected exception thrown. Returning empty result.")
         return ""
 
+
+def _clean_markdown_content_preserving_fences(content: str) -> str:
+    """Clean one document without rewriting fenced examples."""
+    if "```" not in content and "~~~" not in content:
+        return clean_markdown_content(content)
+
+    marker = f"\x00{uuid4().hex}:"
+    masked_lines = []
+    blocks = []
+    fence = ""
+    for line_match in re.finditer(r"[^\r\n]*(?:\r\n?|\n|$)", content):
+        line = line_match[0]
+        fence_line = line.removeprefix("\ufeff") if line_match.start() == 0 else line
+        match = re.match(r" {0,3}(`{3,}|~{3,})([^\r\n]*)", fence_line)
+        if fence:
+            blocks[-1].append(line)
+            if (match and match[1][0] == fence[0] and len(match[1]) >= len(fence)
+                    and not match[2].strip(" \t")):
+                fence = ""
+        elif match and (match[1][0] == "~" or "`" not in match[2]):
+            fence = match[1]
+            masked_lines.append(f"{marker}{len(blocks)}\x00")
+            blocks.append([line])
+        elif re.match(r"[ \t]*(?:(?:>|[-+*]|[0-9]+[.)])[ \t]*)*(?:`{3,}|~{3,})", line):
+            # Keep ambiguous/container fences intact rather than parse nested Markdown here.
+            return content
+        else:
+            masked_lines.append(line)
+
+    # Preserve unclosed fences through this file's end, including truncated examples.
+    # Mask the whole block so comments, tags, images and whitespace inside it stay literal.
+    cleaned = clean_markdown_content("".join(masked_lines))
+    placeholder = re.compile(re.escape(marker) + r"([0-9]+)\x00")
+    if placeholder.findall(cleaned) != [str(index) for index in range(len(blocks))]:
+        # Keep the original document if cleanup removes a protected example.
+        return content
+    return placeholder.sub(lambda match: "".join(blocks[int(match[1])]), cleaned)
+
+
 class PredictionPreparator:
     def __init__(self, ai_handler, vars, system_prompt, user_prompt):
         self.ai_handler = ai_handler
@@ -449,7 +506,7 @@ class PRHelpDocs:
             if invoke_llm_just_with_headings:
                 # Avoid ranking a subset when cleaning alone makes all documentation fit.
                 cleaned_docs_prompt = aggregate_documentation_files_for_prompt_contents({
-                    path: clean_markdown_content(content)
+                    path: _clean_markdown_content_preserving_fences(content)
                     for path, content in docs_filepath_to_contents.items()
                 })
                 if cleaned_docs_prompt and not self._trim_docs_input(
@@ -568,6 +625,7 @@ class PRHelpDocs:
                             for file in files:
                                 if file.lower().startswith("readme."):
                                     doc_files.append(os.path.join(root, file))
+                        break
                 # Resolve docs_path against the clone root and refuse paths that escape it:
                 # an absolute or traversing docs_path (e.g. an attacker-controlled per-directory
                 # setting) must never read host files into the prompt.
@@ -698,9 +756,13 @@ class PRHelpDocs:
                                                       len(docs_filepath_to_contents))
             doc_file_paths = list(docs_filepath_to_contents)
             valid_file_paths = [doc_file_paths[idx] for idx in valid_indices]
+            selected_docs_dict = {path: docs_filepath_to_contents[path] for path in valid_file_paths}
+            docs_prompt = aggregate_documentation_files_for_prompt_contents(selected_docs_dict)
+            if not self._trim_docs_input(docs_prompt, max_allowed_txt_input, only_return_if_trim_needed=True):
+                return docs_prompt
+
             selected_docs_dict = {
-                path: clean_markdown_content(docs_filepath_to_contents[path])
-                for path in valid_file_paths
+                path: _clean_markdown_content_preserving_fences(content) for path, content in selected_docs_dict.items()
             }
             docs_prompt = aggregate_documentation_files_for_prompt_contents(selected_docs_dict)
             docs_prompt_to_send_to_model = docs_prompt

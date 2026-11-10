@@ -189,6 +189,31 @@ def test_when_ready_freezes_gc(monkeypatch):
     assert calls == [True]
 
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_prepare_prometheus_provisions_state_or_propagates_error(monkeypatch, tmp_path, fail):
+    from pr_agent.telemetry import prometheus_multiproc
+
+    state_dir = tmp_path / "master-state"
+    settings = {
+        "OTEL.IS_ENABLED": True,
+        "OTEL.EXPORTER_TYPE": "prometheus",
+        "OTEL.PROMETHEUS_MULTIPROC_DIR": str(state_dir),
+    }
+    monkeypatch.setattr("pr_agent.config_loader.get_settings", lambda: SimpleNamespace(get=settings.get))
+    monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", "")
+    monkeypatch.delenv("PROMETHEUS_MULTIPROC_DIR")
+    if fail:
+        ensure = Mock(side_effect=RuntimeError("unsafe state directory"))
+        monkeypatch.setattr(prometheus_multiproc, "ensure_prometheus_multiproc_dir", ensure)
+        with pytest.raises(RuntimeError, match="unsafe state directory"):
+            gunicorn_config._prepare_prometheus()
+        ensure.assert_called_once_with(str(state_dir))
+    else:
+        gunicorn_config._prepare_prometheus()
+        assert state_dir.is_dir()
+        assert gunicorn_config.os.environ["PROMETHEUS_MULTIPROC_DIR"] == str(state_dir)
+
+
 def _fake_prometheus_client(monkeypatch):
     """Stub prometheus_client so the gate tests never import the real module.
 

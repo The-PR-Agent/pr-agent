@@ -25,25 +25,38 @@ class RequestOutcome(Enum):
         return False
 
 
-def enforce_request_policy(pr_url) -> bool:
+def enforce_request_policy(pr_url, provider=None) -> bool:
     # Keep the existing matching semantics as the single policy implementation.
-    from pr_agent.servers.utils import should_process_pr_logic
+    from pr_agent.servers.utils import get_include_pr_labels, should_process_pr_logic
 
+    include_pr_labels = get_include_pr_labels()
     required = {field for field, rule in RULE_FIELDS.items() if get_settings().get(f"config.{rule}", [])}
+    if include_pr_labels:
+        required.add("labels")
     if not required:
         return True
-    from pr_agent.git_providers import get_git_provider_with_context
+    from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 
     try:
-        provider = get_git_provider_with_context(pr_url)
+        # Reuse the provider only when it is exactly the selected class after repository settings.
+        if provider is None:
+            provider = get_git_provider_with_context(pr_url)
+        else:
+            provider_class = get_git_provider()
+            if type(provider) is not provider_class:
+                provider = provider_class(pr_url)
         metadata = provider.get_request_policy_metadata(required)
-        # Missing/None fields leave only their own rules unevaluated. The shared
-        # matcher keeps checking the other fields and retains its error fallback.
-        if not should_process_pr_logic(**metadata):
+        # Exclusion-only rules tolerate missing metadata. The opt-in label gate
+        # requires readable labels and re-raises matcher errors.
+        if not should_process_pr_logic(**metadata, raise_on_error=bool(include_pr_labels)):
             get_logger().info("Request ignored by policy")
             return False
     except Exception as error:
-        # Preserve webhook behavior: a provider hiccup must not suppress a review.
+        # A positive label gate cannot safely allow a request without label metadata.
+        if include_pr_labels:
+            get_logger().warning(f"Unable to verify required PR labels ({type(error).__name__}); skipping request")
+            return False
+        # Preserve the existing fail-open behavior for exclusion-only rules.
         get_logger().warning(f"Unable to evaluate request policy ({type(error).__name__}); continuing request")
     return True
 

@@ -46,6 +46,18 @@ class PRAgentExecutor(AgentExecutor):
         self.task_store = task_store
         self._recent_task_ids: dict[tuple[str, str], deque[str]] = {}
 
+    def forget_task(self, owner: str, task_id: str, context_id: str) -> None:
+        """Remove an evicted task from the owner-scoped follow-up index."""
+        key = (owner, context_id)
+        task_ids = self._recent_task_ids.get(key)
+        if task_ids is None:
+            return
+        retained = deque((item for item in task_ids if item != task_id), maxlen=task_ids.maxlen)
+        if retained:
+            self._recent_task_ids[key] = retained
+        else:
+            self._recent_task_ids.pop(key, None)
+
     async def _history_for_context(self, context: RequestContext) -> list[str]:
         current = context.get_user_input() or ""
         if self.task_store is None or _find_pr_url(current) or _looks_like_diff(current):

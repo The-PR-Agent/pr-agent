@@ -6,54 +6,45 @@ from functools import partial
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.code_fence import strip_wrapping_code_fence
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
     FallbackEligibleError,
     get_pr_diff,
     retry_with_fallback_models,
+    run_diff_preparation,
 )
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.run_output import append_run_details, show_relevant_configurations
 from pr_agent.algo.token_budget import AttemptTokenBudget
-from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import get_git_provider
+from pr_agent.git_providers import get_git_provider_for_tool
 from pr_agent.git_providers.git_provider import FileContentSnapshot, get_main_pr_language
 from pr_agent.log import get_logger
 
 CHANGELOG_LINES = 50
-# A whole answer wrapped in one fenced block, e.g. "```markdown\n...\n```". The opening fence
-# is optional: the prompt ends with a dangling open "```markdown", which primes the model to
-# answer with a closing fence and no opening one.
-_WRAPPING_CODE_FENCE_RE = re.compile(r"\A(?:\s*(?P<open>```[^\n]*\n))?(?P<body>.*?)\n?```\s*\Z", re.DOTALL)
-_FENCE_LINE_RE = re.compile(r"(?m)^[^\S\n]*```")
-
-
-def strip_wrapping_code_fence(text: str) -> str:
-    """Remove a fence that wraps the whole answer, leaving the content untouched.
-
-    `str.strip("`")` would remove characters rather than the fence, so an entry ending in an
-    inline code span (`` - Handle `None` in `parse()` ``) loses its closing backtick and the
-    corrupted line is committed to CHANGELOG.md.
-
-    The function is idempotent, because the answer is stripped once when the model replies and
-    again before the changelog is built. Whether a trailing fence is a wrapper or the closer of a
-    code block the entry ends with comes down to whether the rest of the text is balanced: a
-    leftover fence either unterminates the block, or leaves a wrapper behind that then swallows
-    the rest of CHANGELOG.md when the file is committed.
-    """
-    match = _WRAPPING_CODE_FENCE_RE.match(text)
-    if match and (match.group("open") or len(_FENCE_LINE_RE.findall(match.group("body"))) % 2 == 0):
-        return match.group("body")
-    return text
 
 
 class PRUpdateChangelog:
     def __init__(self, pr_url: str, cli_mode=False, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
-
-        self.git_provider = get_git_provider()(pr_url)
+        changelog_path = get_settings().pr_update_changelog.changelog_path
+        if (
+            not isinstance(changelog_path, str)
+            or not changelog_path.strip()
+            or "\\" in changelog_path
+            or re.match(r"^[A-Za-z]:", changelog_path)
+            or any(part in ("", ".", "..") for part in changelog_path.split("/"))
+            or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in changelog_path)
+        ):
+            raise ValueError(
+                "pr_update_changelog.changelog_path must be a non-empty repository-relative file path "
+                "with / separators and no . or .. components or control characters"
+            )
+        # Keep the snapshot, write, and follow-up review on the same target throughout the command.
+        self.changelog_path = changelog_path
+        self.git_provider = get_git_provider_for_tool(pr_url)
 
         # Determine whether pushing the changelog to the repo is both requested and possible.
         # If a push is requested but not possible — the provider has no push support, or
@@ -96,15 +87,12 @@ class PRUpdateChangelog:
                 "language": self.main_language,
                 "diff": "",  # empty diff for initial calculation
                 "pr_link": "",
+                "changelog_path": self.changelog_path,
                 "changelog_file_str": self.changelog_file_str,
                 "today": date.today(),
                 "extra_instructions": get_settings().pr_update_changelog.extra_instructions,
                 "commit_messages_str": self.git_provider.get_commit_messages(),
             }
-            self.token_handler = TokenHandler(self.git_provider.pr,
-                                              self.vars,
-                                              get_settings().pr_update_changelog_prompt.system,
-                                              get_settings().pr_update_changelog_prompt.user)
         except Exception as setup_error:
             changelog_read_error = self.changelog_read_error
             if changelog_read_error is None:
@@ -154,6 +142,12 @@ class PRUpdateChangelog:
                 self._publish_changelog_read_error_fallback()
                 raise changelog_read_error  # noqa: B904
 
+            if self.prediction is None:
+                if changelog_read_error is not None:
+                    self._publish_changelog_read_error_fallback()
+                    raise changelog_read_error
+                return
+
             new_file_content, answer = self._prepare_changelog_update()
 
             if changelog_read_error is not None:
@@ -193,7 +187,7 @@ class PRUpdateChangelog:
             changelog_comment = "**Changelog update could not be generated.**"
         changelog_comment += (
             "\n\n> ⚠️ These changes were not pushed because the existing "
-            "CHANGELOG.md could not be read safely."
+            f"{self.changelog_path} could not be read safely."
         )
         if answer:
             # Without an answer no model call succeeded, and this can run from __init__,
@@ -238,12 +232,20 @@ class PRUpdateChangelog:
             OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
             preserve_minimum=True,
         )
-        patches_diff = get_pr_diff(
+        output = await run_diff_preparation(
+            get_pr_diff,
             self.git_provider,
             budget.token_handler,
             model,
+            return_remaining_files=True,
             output_token_reserve=output_token_reserve,
         )
+        patches_diff, remaining_files_list = output if isinstance(output, tuple) else (output, [])
+        if not patches_diff and not remaining_files_list:
+            # Every changed file was filtered out (lockfile, asset, ignore rule), so there is
+            # nothing to add to the changelog. Skip the model chain instead of failing the command.
+            get_logger().info("PR has no analyzable files, skipping update_changelog")
+            return
         if not patches_diff:
             raise FallbackEligibleError(f"No PR diff fits the /update_changelog request for {model}")
 
@@ -254,6 +256,7 @@ class PRUpdateChangelog:
             ai_handler=self.ai_handler,
             default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
             preserve_minimum=True,
+            require_full_text=True,
         )
         if fitted.optional_text != patches_diff:
             raise FallbackEligibleError(
@@ -270,12 +273,20 @@ class PRUpdateChangelog:
         user_prompt = self._attempt_user_prompt
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, system=system_prompt, user=user_prompt, temperature=get_settings().config.temperature)
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"Changelog response was truncated by {model}")
 
         # post-process the response
         response = response.strip()
-        if not response:
-            return ""
-        return strip_wrapping_code_fence(response)
+        # Check before stripping, which can turn four backticks into a stray single backtick.
+        fence_pattern = r"(?m)^[^\S\n]*(?:`{3,}[^`\n]*|~{3,}[^~\n]*)$"
+        content = re.sub(fence_pattern, "", response)
+        if content.strip():
+            response = strip_wrapping_code_fence(response)
+            content = re.sub(fence_pattern, "", response)
+        if not content.strip():
+            raise FallbackEligibleError(f"Empty changelog response from {model}")
+        return response
 
     def _prepare_changelog_update(self) -> tuple[str, str]:
         answer = strip_wrapping_code_fence(self.prediction.strip()).strip()
@@ -291,7 +302,7 @@ class PRUpdateChangelog:
 
         if not self.commit_changelog:
             answer += (
-                "\n\n\n>to commit the new content to the CHANGELOG.md file, enable "
+                f"\n\n\n>to commit the new content to the {self.changelog_path} file, enable "
                 "`pr_update_changelog.push_changelog_changes=true` in `.pr_agent.toml`.\n"
             )
 
@@ -304,14 +315,14 @@ class PRUpdateChangelog:
             # if a future caller reaches this method some other way.
             return
         if get_settings().pr_update_changelog.get("skip_ci_on_push", True):
-            commit_message = "[skip ci] Update CHANGELOG.md"
+            commit_message = f"[skip ci] Update {self.changelog_path}"
         else:
-            commit_message = "Update CHANGELOG.md"
+            commit_message = f"Update {self.changelog_path}"
         try:
             if self.changelog_snapshot is None:
                 raise ValueError("Changelog write requires the command-start file snapshot")
             written_commit = self.git_provider.create_or_update_pr_file(
-                file_path="CHANGELOG.md",
+                file_path=self.changelog_path,
                 branch=self.git_provider.get_pr_branch(),
                 contents=new_file_content,
                 message=commit_message,
@@ -344,8 +355,8 @@ class PRUpdateChangelog:
                 if written_commit is None:
                     raise ValueError("The changelog write did not return a commit for review")
                 d = dict(
-                    body="CHANGELOG.md update",
-                    path="CHANGELOG.md",
+                    body=f"{self.changelog_path} update",
+                    path=self.changelog_path,
                     line=max(2, len(answer.splitlines())),
                     start_line=1,
                 )
@@ -362,7 +373,8 @@ class PRUpdateChangelog:
                 if written_commit is None:
                     raise ValueError("The changelog write did not return a commit for review") from feedback_error
                 get_logger().opt(exception=feedback_error).warning(
-                    f"CHANGELOG.md was updated, but its automatic feedback could not be confirmed: {feedback_error}"
+                    f"{self.changelog_path} was updated, but its automatic feedback could not be confirmed: "
+                    f"{feedback_error}"
                 )
 
     def _get_default_changelog(self):
@@ -386,7 +398,7 @@ Example:
         try:
             if strict_read:
                 snapshot = self.git_provider.get_pr_file_content_snapshot(
-                    "CHANGELOG.md", self.git_provider.get_pr_branch()
+                    self.changelog_path, self.git_provider.get_pr_branch()
                 )
                 if not isinstance(snapshot, FileContentSnapshot) or not isinstance(snapshot.contents, str):
                     raise TypeError("Changelog snapshot must contain text")
@@ -394,7 +406,7 @@ Example:
                 self.changelog_file = snapshot.contents
             else:
                 self.changelog_file = self.git_provider.get_pr_file_content(
-                    "CHANGELOG.md", self.git_provider.get_pr_branch()
+                    self.changelog_path, self.git_provider.get_pr_branch()
                 )
 
             if not strict_read and isinstance(self.changelog_file, bytes):

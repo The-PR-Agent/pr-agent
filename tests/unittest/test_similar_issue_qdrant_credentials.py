@@ -61,9 +61,6 @@ def _install_fakes(monkeypatch, settings, repo):
 
     monkeypatch.setattr(psi, "get_git_provider", lambda: _FakeProvider)
     monkeypatch.setattr(psi, "get_settings", lambda: settings)
-    monkeypatch.setattr(
-        psi, "TokenHandler", lambda *a, **k: SimpleNamespace(count_tokens=lambda _: 0)
-    )
 
 
 def _build_tool(monkeypatch, settings, repo=None):

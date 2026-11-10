@@ -60,57 +60,57 @@ This can be useful, for example, for providing immediate feedback to users who o
 
 Here's how:
 
-1) Follow the steps depicted under [Run as a GitHub Action](../installation/github.md#run-as-a-github-action) to create a new workflow, such as:`.github/workflows/help_docs.yml`:
+1. Follow the steps depicted under [Run as a GitHub Action](../installation/github.md#run-as-a-github-action) to create a new workflow, such as:`.github/workflows/help_docs.yml`:
 
-2) Edit your yaml file to the following:
+2. Edit your yaml file to the following:
 
-```yaml
-name: Run pr agent on every opened issue, respond to user comments on an issue
+   ```yaml
+   name: Run pr agent on every opened issue, respond to user comments on an issue
 
-#When the action is triggered
-on:
-  issues:
-    types: [opened] #New issue
+   #When the action is triggered
+   on:
+     issues:
+       types: [opened] #New issue
 
-# Read env. variables
-env:
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  GITHUB_API_URL: ${{ github.api_url }}
-  GIT_REPO_URL: ${{ github.event.repository.clone_url }}
-  ISSUE_URL: ${{ github.event.issue.html_url || github.event.comment.html_url }}
-  ISSUE_BODY: ${{ github.event.issue.body || github.event.comment.body }}
-  OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
+   # Read env. variables
+   env:
+     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+     GITHUB_API_URL: ${{ github.api_url }}
+     GIT_REPO_URL: ${{ github.event.repository.clone_url }}
+     ISSUE_URL: ${{ github.event.issue.html_url || github.event.comment.html_url }}
+     ISSUE_BODY: ${{ github.event.issue.body || github.event.comment.body }}
+     OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
 
-# The actual set of actions
-jobs:
-  issue_agent:
-    runs-on: ubuntu-latest
-    if: ${{ github.event.sender.type != 'Bot' }} #Do not respond to bots
+   # The actual set of actions
+   jobs:
+     issue_agent:
+       runs-on: ubuntu-latest
+       if: ${{ github.event.sender.type != 'Bot' }} #Do not respond to bots
 
-    # Set required permissions
-    permissions:
-      contents: read    # For reading repository contents
-      issues: write     # For commenting on issues
+       # Set required permissions
+       permissions:
+         contents: read    # For reading repository contents
+         issues: write     # For commenting on issues
 
-    steps:
-      - name: Run PR Agent on Issues
-        if: ${{ env.ISSUE_URL != '' }}
-        uses: docker://pragent/pr-agent:latest
-        with:
-          entrypoint: /bin/bash #Replace invoking cli.py directly with a shell
-          args: |
-            -c "cd /app && \
-            echo 'Running Issue Agent action step on ISSUE_URL=$ISSUE_URL' && \
-            export config__git_provider='github' && \
-                        export github__user_token=$GITHUB_TOKEN && \
-            export github__base_url=$GITHUB_API_URL && \
-            export openai__key=$OPENAI_KEY && \
-            python -m pr_agent.cli --issue_url=$ISSUE_URL --pr_help_docs.repo_url="..." --pr_help_docs.docs_path="..." --pr_help_docs.openai_key=$OPENAI_KEY && \
-            help_docs "$ISSUE_BODY"
-```
+       steps:
+         - name: Run PR Agent on Issues
+           if: ${{ env.ISSUE_URL != '' }}
+           uses: docker://pragent/pr-agent:latest
+           with:
+             entrypoint: /bin/bash #Replace invoking cli.py directly with a shell
+             args: |
+               -c "cd /app && \
+               echo 'Running Issue Agent action step on ISSUE_URL=$ISSUE_URL' && \
+               export config__git_provider='github' && \
+                           export github__user_token=$GITHUB_TOKEN && \
+               export github__base_url=$GITHUB_API_URL && \
+               export openai__key=$OPENAI_KEY && \
+               python -m pr_agent.cli --issue_url=$ISSUE_URL --pr_help_docs.repo_url="..." --pr_help_docs.docs_path="..." --pr_help_docs.openai_key=$OPENAI_KEY && \
+               help_docs "$ISSUE_BODY"
+   ```
 
-3) Following completion of the remaining steps (such as adding secrets and relevant configurations, such as `repo_url` and `docs_path`) merge this change to your main branch.
-When a new issue is opened, you should see a comment from `github-actions` bot with an auto response, assuming the question is related to the documentation of the repository.
+3. Following completion of the remaining steps (such as adding secrets and relevant configurations, such as `repo_url` and `docs_path`) merge this change to your main branch.
+   When a new issue is opened, you should see a comment from `github-actions` bot with an auto response, assuming the question is related to the documentation of the repository.
 
 ---
 

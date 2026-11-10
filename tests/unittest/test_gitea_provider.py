@@ -9,8 +9,10 @@ import giteapy
 import pytest
 from giteapy.rest import ApiException
 from starlette_context import context, request_cycle_context
+from urllib3 import HTTPHeaderDict
 from urllib3.response import HTTPResponse
 
+from pr_agent.algo.git_patch_processing import extend_patch
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import global_settings
 from pr_agent.git_providers.git_provider import GitProvider
@@ -298,6 +300,190 @@ def test_gitea_publish_description_raises_when_update_returns_no_response():
 
     with pytest.raises(RuntimeError, match="Failed to publish PR description"):
         provider.publish_description("AI title", "Updated description")
+
+
+class _IssueLabelServer:
+    """Answers the giteapy HTTP layer like Gitea's label endpoints for issue 1 of owner/repo.
+
+    `labels` maps label ids to names, and `org_labels` holds the ids of organization labels.
+    Integer ids resolve to any label. Names match exactly, in the repository only before Gitea
+    1.23 and in the organization too since 1.23 (`org_names`). A `rejected` method gets a 422.
+    """
+
+    def __init__(self, request, labels, applied, *, org_labels=(), org_names=True, rejected=None):
+        self.labels = labels
+        self.applied = list(applied)
+        self.resolvable_by_name = [i for i in labels if org_names or i not in org_labels]
+        self.rejected = rejected
+        self.requests = []
+        request.side_effect = self.respond
+
+    @property
+    def names(self):
+        return sorted(self.labels[i] for i in self.applied)
+
+    def respond(self, method, url, body=None, **kwargs):
+        assert urlsplit(url).path == "/api/v1/repos/owner/repo/issues/1/labels"
+        payload = json.loads(body) if body else None
+        self.requests.append((method, payload))
+        if method == self.rejected:
+            return _guidance_response(b'{"message": "rejected"}', status=422, reason="Unprocessable Entity")
+        if method == "DELETE":
+            self.applied = []
+            return _guidance_response(status=204)
+        if method in ("PUT", "POST"):
+            wanted = payload["labels"]
+            if all(isinstance(item, int) for item in wanted):
+                resolved = [i for i in wanted if i in self.labels]
+            else:
+                resolved = [i for i in self.resolvable_by_name if self.labels[i] in wanted]
+            if method == "PUT":
+                self.applied = resolved
+            else:
+                self.applied += [i for i in resolved if i not in self.applied]
+        return _guidance_response(json.dumps([{"id": i, "name": self.labels[i]} for i in self.applied]).encode())
+
+
+class TestGiteaProviderLabels:
+    LABELS = {3: "team-backend", 5: "enhancement", 7: "triaged", 11: "Review effort 2/5",
+              12: "Possible security concern", 13: "Bug fix", 14: "Review effort 4/5"}
+
+    @pytest.fixture
+    def provider(self):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.repo_api = MagicMock()
+        provider.repo_api.get_issue_labels.return_value = []
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.pr_number = 1
+        provider.issue_number = 2
+        provider.enabled_pr = True
+        provider.pr = SimpleNamespace(labels=[])
+        provider.logger = MagicMock()
+        return provider
+
+    @pytest.mark.parametrize("org_names", [False, True], ids=["gitea-1.22-names", "gitea-1.23-names"])
+    def test_publish_labels_replaces_by_id_then_adds_only_the_missing_names(self, provider, guidance_raw_api,
+                                                                          org_names):
+        provider.repo_api, request = guidance_raw_api
+        # team-backend and "Possible security concern" are organization labels.
+        server = _IssueLabelServer(request, self.LABELS, applied=[3, 7, 11, 12], org_labels={3, 12},
+                                   org_names=org_names)
+
+        assert provider.publish_labels(["Review effort 4/5", "team-backend", "triaged"]) is True
+
+        assert server.requests == [
+            ("GET", None),
+            ("PUT", {"labels": [3, 7]}),
+            ("POST", {"labels": ["Review effort 4/5"]}),
+        ]
+        assert server.names == ["Review effort 4/5", "team-backend", "triaged"]
+
+    def test_publish_labels_with_an_empty_set_removes_every_label(self, provider, guidance_raw_api):
+        provider.repo_api, request = guidance_raw_api
+        server = _IssueLabelServer(request, self.LABELS, applied=[11, 12], org_labels={12})
+
+        assert provider.publish_labels([]) is True
+
+        assert server.requests == [("GET", None), ("DELETE", None)]
+        assert server.names == []
+
+    @pytest.mark.parametrize("applied,labels", [
+        ([7, 11], ["Review effort 2/5", "triaged"]),
+        # get_user_labels drops a human "enhancement" as the bot's "Enhancement". Removing it to add
+        # "Enhancement", a name this repository does not have, would leave the PR without either.
+        ([5], ["Enhancement"]),
+    ], ids=["same-names", "names-differ-only-in-case"])
+    def test_publish_labels_writes_nothing_when_the_labels_already_match(self, provider, guidance_raw_api,
+                                                                       applied, labels):
+        provider.repo_api, request = guidance_raw_api
+        server = _IssueLabelServer(request, self.LABELS, applied=applied)
+
+        assert provider.publish_labels(labels) is True
+
+        assert server.requests == [("GET", None)]
+
+    @pytest.mark.parametrize("status,body", [
+        (503, b'{"message": "unavailable"}'),
+        (200, b"null"),
+        (200, b'[{"name": "triaged"}]'),
+    ], ids=["rejected-read", "null-read", "label-without-id"])
+    def test_publish_labels_writes_nothing_when_the_labels_cannot_be_read(self, provider, guidance_raw_api,
+                                                                        status, body):
+        provider.repo_api, request = guidance_raw_api
+        request.return_value = _guidance_response(body, status=status)
+
+        assert provider.publish_labels(["Enhancement"]) is False
+
+        assert [c.args[0] for c in request.call_args_list] == ["GET"]
+
+    @pytest.mark.parametrize("applied,labels,rejected", [
+        ([7, 11], ["Bug fix", "triaged"], "PUT"),
+        ([11], [], "DELETE"),
+        ([], ["Bug fix"], "POST"),
+    ], ids=["replace", "clear", "add"])
+    def test_publish_labels_reports_a_rejected_write(self, provider, guidance_raw_api, applied, labels, rejected):
+        provider.repo_api, request = guidance_raw_api
+        server = _IssueLabelServer(request, self.LABELS, applied=applied, rejected=rejected)
+
+        assert provider.publish_labels(labels) is False
+
+        assert [method for method, _ in server.requests] == ["GET", rejected]
+
+    @pytest.mark.parametrize("response", [[SimpleNamespace(name="Bug fix")], [], None])
+    def test_publish_labels_acknowledges_nonraising_sdk_completion(self, provider, response):
+        provider.repo_api.add_labels.return_value = response
+
+        assert provider.publish_labels(["Bug fix"]) is True
+
+        provider.repo_api.add_labels.assert_called_once_with(
+            owner="owner", repo="repo", issue_number=1, labels=["Bug fix"],
+        )
+
+    def test_publish_labels_reports_only_known_sdk_failure(self, provider):
+        provider.repo_api.add_labels.side_effect = ApiException(status=403, reason="rejected")
+
+        assert provider.publish_labels(["Bug fix"]) is False
+        provider.repo_api.add_labels.assert_called_once()
+
+    def test_publish_labels_preserves_unrelated_errors(self, provider):
+        provider.repo_api.add_labels.side_effect = RuntimeError("unexpected failure")
+
+        with pytest.raises(RuntimeError, match="unexpected failure"):
+            provider.publish_labels(["Bug fix"])
+
+    @pytest.mark.parametrize("update,payload,expected", [
+        (False, [], []),
+        (True, [SimpleNamespace(name="triaged")], ["triaged"]),
+        (True, [], []),
+        (False, None, None),
+        (True, None, None),
+        (True, "not a list", None),
+        (True, [SimpleNamespace()], None),
+        (False, [SimpleNamespace(name=None)], None),
+        (True, [SimpleNamespace(name="")], None),
+        (True, [SimpleNamespace(name=7)], None),
+    ])
+    def test_get_pr_labels_validates_returned_and_cached_payloads(self, provider, update, payload, expected):
+        provider.pr.labels = payload
+        provider.repo_api.get_issue_labels.return_value = payload
+
+        assert provider.get_pr_labels(update=update) == expected
+        if update:
+            provider.repo_api.get_issue_labels.assert_called_once_with(owner="owner", repo="repo", issue_number=1)
+        else:
+            provider.repo_api.get_issue_labels.assert_not_called()
+
+    def test_get_pr_labels_reports_known_sdk_failure(self, provider):
+        provider.repo_api.get_issue_labels.side_effect = ApiException(status=503, reason="unavailable")
+
+        assert provider.get_pr_labels(update=True) is None
+
+    def test_get_pr_labels_preserves_unrelated_errors(self, provider):
+        provider.repo_api.get_issue_labels.side_effect = RuntimeError("unexpected failure")
+
+        with pytest.raises(RuntimeError, match="unexpected failure"):
+            provider.get_pr_labels(update=True)
 
 
 def test_gitea_get_issue_comments_returns_empty_list_when_no_comments():
@@ -912,7 +1098,6 @@ class TestGiteaProviderPRCommits:
             repo="repo",
             pr_number=123
         )
-        provider.repo_api.list_all_commits.assert_not_called()
 
     def test_last_commit_is_the_pr_head_although_gitea_returns_newest_first(self):
         # Gitea returns PR commits newest-first, so the head commit comes first.
@@ -1301,6 +1486,40 @@ class TestGiteaProviderUserFacingLinks:
         assert provider.get_line_link("app/storage.py", 24, "not-a-number") == f"{prefix}#L24"
         assert provider.get_line_link("app/storage.py", -1) == prefix
 
+    @staticmethod
+    def _agit_provider(head_sha=None):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.pr_number = 4
+        provider.base_url_html = "http://forgejo:3000"
+        provider.base_url = "http://forgejo:3000"
+        provider.pr_url = "http://forgejo:3000/owner/repo/pulls/4"
+        provider.pr = None
+        if head_sha is not None:
+            provider.pr = MagicMock(head=SimpleNamespace(ref="refs/pull/4/head", sha=head_sha))
+        return provider
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_for_agit_pr_uses_head_sha(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings()
+        provider = self._agit_provider(head_sha="0123456789abcdef")
+        provider.get_pr_branch = MagicMock(return_value="refs/pull/4/head")
+
+        prefix = "http://forgejo:3000/owner/repo/src/commit/0123456789abcdef/app/storage.py"
+        assert provider.get_line_link("app/storage.py", 24) == f"{prefix}#L24"
+        assert provider.get_line_link("app/storage.py", 24, 30) == f"{prefix}#L24-L30"
+        assert provider.get_line_link("app/storage.py", -1) == prefix
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_get_line_link_for_agit_pr_without_head_sha_returns_empty(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings()
+        provider = self._agit_provider(head_sha=None)
+        provider.get_pr_branch = MagicMock(return_value="refs/pull/4/head")
+
+        assert provider.get_line_link("app/storage.py", 24) == ""
+
     @patch("pr_agent.git_providers.gitea_provider.get_settings")
     def test_get_pr_url_uses_user_facing_base_url(self, mock_get_settings):
         # html_url here comes from a stale ROOT_URL; the configured WEB_URL must win.
@@ -1364,6 +1583,28 @@ class TestGiteaProviderUrlParsing:
             # Strip the install path only as a whole leading segment.
             with pytest.raises(ValueError):
                 provider._parse_pr_url("https://host/gitea/owner/repo/pulls/1")
+
+    @staticmethod
+    def _construct(url):
+        settings = {"GITEA.URL": "https://gitea.example.com", "GITEA.PERSONAL_ACCESS_TOKEN": "token"}
+        with patch("pr_agent.git_providers.gitea_provider.get_settings") as mock_get_settings, \
+                patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient"), \
+                patch("pr_agent.git_providers.gitea_provider.RepoApi") as mock_repo_api_cls:
+            mock_get_settings.return_value.get.side_effect = lambda key, default=None: settings.get(key, default)
+            return GiteaProvider(url), mock_repo_api_cls.return_value
+
+    def test_issue_in_a_repository_named_like_pulls_is_an_issue(self):
+        provider, repo_api = self._construct("https://gitea.example.com/owner/pulls-helper/issues/7")
+
+        assert (provider.enabled_issue, provider.enabled_pr) == (True, False)
+        assert (provider.owner, provider.repo, provider.issue_number) == ("owner", "pulls-helper", 7)
+        repo_api.get_pull_request.assert_not_called()
+
+    def test_pull_request_in_a_repository_named_like_issues_is_a_pull_request(self):
+        provider, repo_api = self._construct("https://gitea.example.com/owner/issues-tracker/pulls/3")
+
+        assert (provider.enabled_pr, provider.enabled_issue) == (True, False)
+        repo_api.get_pull_request.assert_called_once_with(owner="owner", repo="issues-tracker", pr_number=3)
 
 
 class TestGiteaProviderInlineCommentStatus:
@@ -1468,6 +1709,22 @@ class TestGiteaProviderInlineCommentStatus:
 
         assert result is True
         assert provider.repo_api.create_inline_comment.call_count == 3
+
+    def test_publish_code_suggestions_skips_invalid_line_ranges(self):
+        provider = self._provider(create_inline_comment_result=True)
+        suggestions = [
+            {"body": "**Suggestion:** inverted", "relevant_file": "a.py",
+             "relevant_lines_start": 5, "relevant_lines_end": 3},
+            {"body": "**Suggestion:** no line", "relevant_file": "a.py", "relevant_lines_start": 0},
+            {"body": "**Suggestion:** valid", "relevant_file": "a.py",
+             "relevant_lines_start": 3, "relevant_lines_end": 5},
+        ]
+
+        assert provider.publish_code_suggestions(suggestions) is True
+
+        sent = [call.kwargs["comments"][0]["body"]
+                for call in provider.repo_api.create_inline_comment.call_args_list]
+        assert sent == ["**Suggestion:** valid"]
 
     def test_publish_code_suggestions_anchor_to_the_new_file(self):
         # Gitea ignores new_position while old_position is non-zero and anchors the comment
@@ -1692,6 +1949,65 @@ class TestGiteaRepoApiPagination:
         with pytest.raises((ValueError, AttributeError, TypeError)):
             repo_api.get_change_file_pull_request("owner", "repo", 7)
         assert self._requested_pages(repo_api) == ([1, 2] if after_prefix else [1])
+
+    @staticmethod
+    def _headed_page(payload, headers):
+        """The (data, status, headers) tuple giteapy returns for a non-preloaded call."""
+        return BytesIO(json.dumps(payload).encode("utf-8")), 200, headers
+
+    @pytest.mark.parametrize("headers", [
+        {"X-Total-Count": "15", "X-Pagecount": "1", "X-Hasmore": "false"},
+        {"x-total-count": "15"},
+        HTTPHeaderDict({"X-Total-Count": "15"}),
+    ])
+    def test_pr_files_stop_at_the_advertised_total(self, headers):
+        repo_api = self._repo_api([])
+        files = [{"filename": f"file-{i}.py"} for i in range(15)]
+        # Forgejo answers a page past the end with HTTP 200 and a literal `null`.
+        repo_api.api_client.call_api.side_effect = [
+            self._headed_page(files, headers), self._headed_page(None, headers),
+        ]
+
+        assert repo_api.get_change_file_pull_request("owner", "repo", 7) == files
+        assert self._requested_pages(repo_api) == [1]
+
+    @pytest.mark.parametrize("received, total, next_page, requested", [
+        pytest.param(10, "15", None, [1, 2], id="invalid-next-page"),
+        pytest.param(10, "15", [], [1, 2], id="empty-next-page"),
+        pytest.param(3, "2", [], [1], id="more-than-advertised"),
+    ])
+    def test_pr_files_count_must_match_the_advertised_total(self, received, total, next_page, requested):
+        repo_api = self._repo_api([])
+        files = [{"filename": f"file-{i}.py"} for i in range(received)]
+        headers = {"X-Total-Count": total}
+        repo_api.api_client.call_api.side_effect = [
+            self._headed_page(files, headers), self._headed_page(next_page, headers),
+        ]
+
+        with pytest.raises(ValueError):
+            repo_api.get_change_file_pull_request("owner", "repo", 7)
+        assert self._requested_pages(repo_api) == requested
+
+    @pytest.mark.parametrize("bad_entry", [{}, {"filename": 42}])
+    def test_malformed_entry_is_rejected_even_when_the_total_matches(self, bad_entry):
+        repo_api = self._repo_api([])
+        repo_api.api_client.call_api.side_effect = [
+            self._headed_page([{"filename": "a.py"}, bad_entry], {"X-Total-Count": "2"}),
+        ]
+
+        with pytest.raises(ValueError, match="changed-file entry"):
+            repo_api.get_change_file_pull_request("owner", "repo", 7)
+        assert self._requested_pages(repo_api) == [1]
+
+    @pytest.mark.parametrize("headers", [{}, {"X-Total-Count": "many"}, {"X-Total-Count": "-1"}])
+    def test_unusable_total_header_falls_back_to_the_empty_page(self, headers):
+        repo_api = self._repo_api([])
+        repo_api.api_client.call_api.side_effect = [
+            self._headed_page([{"filename": "a.py"}], headers), self._headed_page([], headers),
+        ]
+
+        assert repo_api.get_change_file_pull_request("owner", "repo", 7) == [{"filename": "a.py"}]
+        assert self._requested_pages(repo_api) == [1, 2]
 
 
 class TestGiteaChangedFileInventory:
@@ -2133,7 +2449,7 @@ class TestGiteaAddedFileBaseFetch:
         "GITEA.SSL_CA_CERT": None,
     }
 
-    def _provider(self, files, mock_get_settings, mock_repo_api_cls):
+    def _provider(self, files, mock_get_settings, mock_repo_api_cls, **pr_fields):
         settings = MagicMock()
         settings.get.side_effect = lambda k, d=None: self.GITEA_SETTINGS.get(k, d)
         mock_get_settings.return_value = settings
@@ -2142,6 +2458,7 @@ class TestGiteaAddedFileBaseFetch:
         repo_api.get_pull_request.return_value = SimpleNamespace(
             head=SimpleNamespace(sha="head-sha"),
             base=SimpleNamespace(sha="base-sha", ref="main"),
+            **pr_fields,
         )
         repo_api.get_change_file_pull_request.return_value = files
         repo_api.get_file_content.return_value = "file content"
@@ -2164,17 +2481,28 @@ class TestGiteaAddedFileBaseFetch:
     def test_raw_diff_is_fetched_only_when_diff_files_are_needed(
         self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
     ):
-        files = [{"filename": "src/app.py", "additions": 1, "deletions": 1, "status": "modified"}]
+        files = [
+            {"filename": "uv.lock", "additions": 1, "deletions": 1, "status": "modified"},
+            {"filename": "assets/app.min.js", "additions": 1, "deletions": 1, "status": "modified"},
+            {"filename": "src/app.py", "additions": 1, "deletions": 1, "status": "modified"},
+        ]
         provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
 
         repo_api.get_pull_request_diff.assert_not_called()
         repo_api.get_pr_commits.assert_not_called()
-        assert provider.get_files() == ["src/app.py"]
+        assert provider.get_files() == [file["filename"] for file in files]
         repo_api.get_pull_request_diff.assert_not_called()
         repo_api.get_pr_commits.assert_not_called()
 
-        assert [file.filename for file in provider.get_diff_files()] == ["src/app.py"]
-        provider.get_diff_files()
+        diff_files = provider.get_diff_files()
+        assert [file.filename for file in diff_files] == ["src/app.py"]
+        assert provider.filtered_diff_file_names == ["uv.lock", "assets/app.min.js"]
+        assert diff_files[0].patch.splitlines() == ["@@ -1 +1 @@", "-old", "+new"]
+        assert diff_files[0].head_file == diff_files[0].base_file == "file content"
+        assert diff_files[0].num_plus_lines == diff_files[0].num_minus_lines == 1
+        assert diff_files[0].edit_type == EDIT_TYPE.MODIFIED
+        assert provider.get_diff_files() is diff_files
+        repo_api.get_change_file_pull_request.assert_called_once()
         repo_api.get_pull_request_diff.assert_called_once_with(owner="owner", repo="repo", pr_number=1)
         repo_api.get_pr_commits.assert_not_called()
 
@@ -2214,6 +2542,54 @@ class TestGiteaAddedFileBaseFetch:
     @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
     @patch("pr_agent.git_providers.gitea_provider.RepoApi")
     @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_all_nonreviewable_files_skip_raw_diff_and_cache_empty_result(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        files = [
+            {"filename": "uv.lock", "additions": 1, "deletions": 1, "status": "modified"},
+            {"filename": "assets/app.min.js", "additions": 1, "deletions": 1, "status": "modified"},
+        ]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+
+        diff_files = provider.get_diff_files()
+
+        assert diff_files == []
+        assert provider.filtered_diff_file_names == ["uv.lock", "assets/app.min.js"]
+        repo_api.get_pull_request_diff.assert_not_called()
+        repo_api.get_file_content.assert_not_called()
+        assert provider.get_diff_files() is diff_files
+        repo_api.get_change_file_pull_request.assert_called_once()
+        repo_api.get_pull_request_diff.assert_not_called()
+        repo_api.get_file_content.assert_not_called()
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_raw_diff_failure_is_attempted_once_for_multiple_valid_files(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        files = [
+            {"filename": name, "additions": 1, "deletions": 1, "status": "modified"}
+            for name in ["src/first.py", "src/second.py"]
+        ]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+        provider.file_diffs = None
+        repo_api.get_pull_request_diff.side_effect = RuntimeError("diff unavailable")
+
+        diff_files = provider.get_diff_files()
+
+        assert [file.filename for file in diff_files] == [file["filename"] for file in files]
+        assert all(file.patch == "" and file.head_file == file.base_file == "file content"
+                   and file.num_plus_lines == file.num_minus_lines == 1
+                   and file.edit_type == EDIT_TYPE.MODIFIED for file in diff_files)
+        assert provider.filtered_diff_file_names == []
+        assert provider.get_diff_files() is diff_files
+        repo_api.get_change_file_pull_request.assert_called_once()
+        repo_api.get_pull_request_diff.assert_called_once_with(owner="owner", repo="repo", pr_number=1)
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
     def test_added_file_edit_type_is_unchanged(
         self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
     ):
@@ -2223,6 +2599,114 @@ class TestGiteaAddedFileBaseFetch:
         diff_files = provider.get_diff_files()
 
         assert diff_files[0].edit_type == EDIT_TYPE.ADDED
+
+    @pytest.mark.parametrize("status", ["removed", "deleted"])
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_cold_deleted_files_skip_head_content(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls, status
+    ):
+        files = [{"filename": "gone.py", "additions": 0, "deletions": 2, "status": status}]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+        patch_text = "@@ -1,2 +0,0 @@\n-old\n-content\n"
+        repo_api.get_pull_request_diff.return_value = "diff --git a/gone.py b/gone.py\n" + patch_text
+        repo_api.get_file_content.side_effect = lambda **kwargs: (
+            "old\ncontent\n" if kwargs["commit_sha"] == "base-sha" else ""
+        )
+
+        diff_files = provider.get_diff_files()
+
+        assert [(call.kwargs["filepath"], call.kwargs["commit_sha"])
+                for call in repo_api.get_file_content.call_args_list] == [("gone.py", "base-sha")]
+        assert len(diff_files) == 1
+        file = diff_files[0]
+        assert file.filename == "gone.py"
+        assert file.old_filename is None
+        assert file.base_file == "old\ncontent\n"
+        assert file.head_file == ""
+        assert file.patch == patch_text
+        assert file.num_plus_lines == 0
+        assert file.num_minus_lines == 2
+        assert file.edit_type == EDIT_TYPE.DELETED
+        assert provider.file_contents == {"gone.py": ""}
+        assert provider.get_diff_files() is diff_files
+        assert repo_api.get_file_content.call_count == 1
+
+    @pytest.mark.parametrize("cached_content", ["", "cached head content"])
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_deleted_files_preserve_warm_head_content(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls, cached_content
+    ):
+        files = [{"filename": "gone.py", "additions": 0, "deletions": 1, "status": "deleted"}]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+        patch_text = "@@ -1 +0,0 @@\n-old\n"
+        repo_api.get_pull_request_diff.return_value = "diff --git a/gone.py b/gone.py\n" + patch_text
+        provider.file_contents["gone.py"] = cached_content
+        repo_api.get_file_content.return_value = "old\n"
+
+        file = provider.get_diff_files()[0]
+
+        repo_api.get_file_content.assert_called_once_with(
+            owner="owner", repo="repo", commit_sha="base-sha", filepath="gone.py"
+        )
+        assert file.head_file == cached_content
+        assert provider.file_contents == {"gone.py": cached_content}
+        assert file.base_file == "old\n"
+        assert file.patch == patch_text
+        assert file.num_plus_lines == 0
+        assert file.num_minus_lines == 1
+        assert file.edit_type == EDIT_TYPE.DELETED
+
+    @pytest.mark.parametrize("active_incremental", [False, True])
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_deleted_head_reads_follow_effective_incremental_scope(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls, active_incremental
+    ):
+        files = [{"filename": "gone.py", "additions": 0, "deletions": 1, "status": "removed"}]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+        provider.incremental.is_incremental = True
+        provider.unreviewed_files_map = {"gone.py": "previous patch"} if active_incremental else {}
+        provider.last_commit = SimpleNamespace(sha="latest-sha")
+        patch_text = "@@ -1 +0,0 @@\n-old\n"
+        repo_api.get_pull_request_diff.return_value = "diff --git a/gone.py b/gone.py\n" + patch_text
+        repo_api.get_file_content.side_effect = lambda **kwargs: kwargs["commit_sha"]
+
+        file = provider.get_diff_files()[0]
+
+        expected_refs = ["head-sha", "latest-sha"] if active_incremental else ["base-sha"]
+        assert [(call.kwargs["filepath"], call.kwargs["commit_sha"])
+                for call in repo_api.get_file_content.call_args_list] == [
+                    ("gone.py", ref) for ref in expected_refs
+                ]
+        expected_head = "head-sha" if active_incremental else ""
+        assert file.head_file == expected_head
+        assert provider.file_contents == {"gone.py": expected_head}
+        assert file.base_file == ("latest-sha" if active_incremental else "base-sha")
+        assert file.patch == patch_text
+        assert provider.unreviewed_files_map == ({"gone.py": patch_text} if active_incremental else {})
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_deleted_file_without_head_sha_leaves_cache_empty(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        files = [{"filename": "gone.py", "additions": 0, "deletions": 1, "status": "deleted"}]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+        provider.sha = ""
+
+        file = provider.get_diff_files()[0]
+
+        repo_api.get_file_content.assert_called_once_with(
+            owner="owner", repo="repo", commit_sha="base-sha", filepath="gone.py"
+        )
+        assert file.head_file == ""
+        assert provider.file_contents == {}
 
     @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
     @patch("pr_agent.git_providers.gitea_provider.RepoApi")
@@ -2277,3 +2761,128 @@ class TestGiteaAddedFileBaseFetch:
         ]
         assert base_reads == ["mystery.py"]
         assert diff_files[0].edit_type == EDIT_TYPE.UNKNOWN
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_base_content_is_read_at_the_merge_base(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        """Gitea diffs a PR from its merge base; base.sha is the current tip of the target branch."""
+        files = [
+            {"filename": "changed.py", "additions": 1, "deletions": 1, "status": "modified"},
+            {"filename": "renamed.py", "previous_filename": "original.py",
+             "additions": 1, "deletions": 1, "status": "renamed"},
+            {"filename": "gone.py", "additions": 0, "deletions": 1, "status": "deleted"},
+        ]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls,
+                                            merge_base="merge-base-sha")
+        repo_api.get_file_content.side_effect = lambda **kwargs: (
+            f"{kwargs['commit_sha']}:{kwargs['filepath']}"
+        )
+
+        diff_files = provider.get_diff_files()
+
+        assert [(f.base_file, f.head_file) for f in diff_files] == [
+            ("merge-base-sha:changed.py", "head-sha:changed.py"),
+            ("merge-base-sha:original.py", "head-sha:renamed.py"),
+            ("merge-base-sha:gone.py", ""),
+        ]
+        # Repository files such as AGENTS.md are still read at the tip of the target branch.
+        assert provider.get_repo_context_ref() == "base-sha"
+        assert provider.get_repo_file_content("AGENTS.md") == "base-sha:AGENTS.md"
+
+    @pytest.mark.parametrize("pr_fields", [{}, {"merge_base": ""}, {"merge_base": None}],
+                             ids=["absent", "empty", "null"])
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_base_content_falls_back_to_base_sha_without_a_merge_base(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls, pr_fields
+    ):
+        files = [{"filename": "changed.py", "additions": 1, "deletions": 1, "status": "modified"}]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls, **pr_fields)
+        repo_api.get_file_content.side_effect = lambda **kwargs: (
+            f"{kwargs['commit_sha']}:{kwargs['filepath']}"
+        )
+
+        assert provider.get_diff_files()[0].base_file == "base-sha:changed.py"
+
+    @pytest.mark.parametrize("target_header", [
+        '"""Billing helpers."""\nimport logging\n\n',
+        '"""Billing helpers.\n\nPrices are in cents.\n"""\nimport logging\n\n',
+    ], ids=["no-longer-matches", "matches-by-chance"])
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_extra_context_comes_from_the_merge_base(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls, monkeypatch, target_header
+    ):
+        """The target branch added lines on top of the changed file after the PR branched off.
+
+        Read at base.sha, the hunk either no longer matched the old side and got no extra
+        context, or matched by chance and was extended with a line of the shifted file.
+        """
+        monkeypatch.setitem(global_settings.config, "allow_dynamic_context", True)
+        monkeypatch.setitem(global_settings.config, "max_extra_lines_before_dynamic_context", 10)
+        merge_base_file = (
+            "import math\n\n\n"
+            "def subtotal(items):\n"
+            "    total = 0\n"
+            "    for item in items:\n"
+            "        total += item.price * item.qty\n"
+            "    return total\n\n\n"
+            "def apply_discount(total, percent):\n"
+            "    if percent < 0:\n"
+            '        raise ValueError("negative discount")\n'
+            "    discount = total * percent / 100\n"
+            "    return total - discount\n\n\n"
+            "def tax(total, rate):\n"
+            "    return math.floor(total * rate * 100) / 100\n"
+        )
+        head_file = merge_base_file.replace("percent < 0:", "percent < 0 or percent > 100:").replace(
+            "negative discount", "discount must be between 0 and 100")
+        contents = {"merge-base-sha": merge_base_file, "base-sha": target_header + merge_base_file,
+                    "head-sha": head_file}
+        patch_text = (
+            "@@ -9,8 +9,8 @@ def subtotal(items):\n"
+            " \n"
+            " \n"
+            " def apply_discount(total, percent):\n"
+            "-    if percent < 0:\n"
+            '-        raise ValueError("negative discount")\n'
+            "+    if percent < 0 or percent > 100:\n"
+            '+        raise ValueError("discount must be between 0 and 100")\n'
+            "     discount = total * percent / 100\n"
+            "     return total - discount\n"
+            " \n"
+        )
+        files = [{"filename": "billing.py", "additions": 2, "deletions": 2, "status": "modified"}]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls,
+                                            merge_base="merge-base-sha")
+        repo_api.get_pull_request_diff.return_value = "diff --git a/billing.py b/billing.py\n" + patch_text
+        repo_api.get_file_content.side_effect = lambda **kwargs: contents[kwargs["commit_sha"]]
+
+        file = provider.get_diff_files()[0]
+        extended = extend_patch(file.base_file, file.patch, patch_extra_lines_before=5,
+                                patch_extra_lines_after=1, filename=file.filename, new_file_str=file.head_file)
+
+        assert extended.splitlines()[1:] == [
+            "@@ -4,14 +4,14 @@ ",
+            " def subtotal(items):",
+            "     total = 0",
+            "     for item in items:",
+            "         total += item.price * item.qty",
+            "     return total",
+            " ",
+            " ",
+            " def apply_discount(total, percent):",
+            "-    if percent < 0:",
+            '-        raise ValueError("negative discount")',
+            "+    if percent < 0 or percent > 100:",
+            '+        raise ValueError("discount must be between 0 and 100")',
+            "     discount = total * percent / 100",
+            "     return total - discount",
+            " ",
+            " ",
+        ]

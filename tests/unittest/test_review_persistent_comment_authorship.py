@@ -21,13 +21,20 @@ from github import Auth, GithubException
 from jwt.exceptions import InvalidKeyError
 from requests.exceptions import RequestException
 
-from pr_agent.algo.comment_identity import PRReviewHeader, PRReviewIdentity, add_pr_review_identity
+from pr_agent.algo.comment_identity import (
+    PRDescriptionIdentity,
+    PRReviewHeader,
+    PRReviewIdentity,
+    add_pr_review_identity,
+)
 from pr_agent.algo.review_finding_state import append_review_state, reconcile_review_findings
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.tools.pr_reviewer import PRReviewer
+from pr_agent.tools.ticket_pr_compliance_check import extract_and_cache_pr_tickets
+from tests.unittest import _settings_helpers
 
 PR_URL = "https://github.com/org/repo/pull/1"
 HEAD_FILE = "def retry():\n    attempts = 0\n    while attempts < 3:\n        pass\n"
@@ -183,21 +190,31 @@ def _wire_reviewer(monkeypatch, provider):
 @pytest.fixture
 def review_settings(monkeypatch):
     settings = get_settings()
-    monkeypatch.setattr(settings.config, "publish_output", True)
-    monkeypatch.setattr(settings.config, "publish_output_progress", True)
-    monkeypatch.setattr(settings.config, "git_provider", "github")
-    monkeypatch.setattr(settings.config, "is_auto_command", False, raising=False)
-    monkeypatch.setattr(settings.pr_reviewer, "persistent_comment", True)
-    monkeypatch.setattr(settings.pr_reviewer, "persistent_finding_state", True, raising=False)
-    monkeypatch.setattr(settings.pr_reviewer, "final_update_message", False)
-    monkeypatch.setattr(settings.pr_reviewer, "enable_review_labels_effort", False)
-    monkeypatch.setattr(settings.pr_reviewer, "enable_review_labels_security", False)
-    monkeypatch.setattr(settings.pr_reviewer, "inline_key_issues", False, raising=False)
-    monkeypatch.setattr(settings.github, "publish_as_check_run", False, raising=False)
-    monkeypatch.setattr(settings.azure_devops_server, "agent_identity", "", raising=False)
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.config, "publish_output_progress", True)
+    monkeypatch.setitem(settings.config, "git_provider", "github")
+    monkeypatch.setitem(settings.config, "is_auto_command", False)
+    monkeypatch.setitem(settings.pr_reviewer, "persistent_comment", True)
+    monkeypatch.setitem(settings.pr_reviewer, "persistent_finding_state", True)
+    monkeypatch.setitem(settings.pr_reviewer, "final_update_message", False)
+    monkeypatch.setitem(settings.pr_reviewer, "enable_review_labels_effort", False)
+    monkeypatch.setitem(settings.pr_reviewer, "enable_review_labels_security", False)
+    monkeypatch.setitem(settings.pr_reviewer, "inline_key_issues", False)
+    monkeypatch.setitem(settings.github, "publish_as_check_run", False)
+    monkeypatch.setitem(settings.azure_devops_server, "agent_identity", "")
     monkeypatch.setattr(FakeAIHandler, "response", REVIEW_YAML)
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     return settings
+
+
+@pytest.fixture
+def jira_review_settings():
+    snapshot = _settings_helpers.snapshot_settings([
+        "jira.jira_site", "jira.jira_api_email", "jira.jira_api_token", "jira.cloud_id",
+        "jira.project_keys", "jira.jira_requirements_field", "related_tickets",
+    ])
+    yield
+    _settings_helpers.restore_settings(snapshot)
 
 
 def _previous_persistent_review(body_text="previous review body"):
@@ -260,7 +277,7 @@ async def test_azure_devops_without_configured_identity_creates_the_persistent_r
     monkeypatch, review_settings
 ):
     """`agent_identity` is empty by default and there is no comment to overwrite."""
-    monkeypatch.setattr(review_settings.config, "git_provider", "azure")
+    monkeypatch.setitem(review_settings.config, "git_provider", "azure")
     provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
     provider.incremental = SimpleNamespace(is_incremental=False)
     provider._threads_cache = None
@@ -281,6 +298,88 @@ async def test_azure_devops_without_configured_identity_creates_the_persistent_r
 
     assert not any(body.startswith(STANDALONE_HEADING) for body in calls["plain"])
     assert len(calls["persistent"]) == 1
+
+
+@pytest.mark.parametrize("jira_enabled", [False, True])
+async def test_azure_auto_rerun_resolves_identity_and_edits_review(
+    monkeypatch, review_settings, jira_review_settings, jira_enabled
+):
+    """Separate automatic runs update one review, with or without freshly fetched Jira context."""
+    bot_id = "11111111-1111-1111-1111-111111111111"
+    monkeypatch.setitem(review_settings.config, "git_provider", "azure")
+    monkeypatch.setitem(review_settings.config, "is_auto_command", True)
+    monkeypatch.setitem(review_settings.azure_devops, "org", "https://dev.azure.com/test")
+    monkeypatch.setitem(review_settings.azure_devops, "pat", "test-pat")
+    monkeypatch.setitem(review_settings.pr_reviewer, "require_ticket_analysis_review", True)
+    for key, value in {
+        "jira_site": "example" if jira_enabled else "",
+        "jira_api_email": "test@example.test" if jira_enabled else "",
+        "jira_api_token": "test-token" if jira_enabled else "",
+        "cloud_id": "",
+        "project_keys": ["*"],
+        "jira_requirements_field": "",
+    }.items():
+        review_settings.set(f"jira.{key}", value)
+    if jira_enabled:
+        monkeypatch.setattr(FakeAIHandler, "response", REVIEW_YAML.replace("review:\n", """review:
+  ticket_compliance_check:
+    - ticket_url: https://example.atlassian.net/browse/ABC-123
+      ticket_requirements: Retry failed requests.
+      fully_compliant_requirements: ""
+      not_compliant_requirements: The retry loop never increments attempts.
+      requires_further_human_verification: ""
+""", 1))
+    jira_client = MagicMock()
+    jira_client.issue.return_value = {"fields": {
+        "summary": "Add retry loop", "description": "Retry failed requests.", "labels": []}}
+    monkeypatch.setattr("atlassian.Jira", lambda **kwargs: jira_client)
+    connection = MagicMock()
+    connection.clients.get_location_client.return_value.get_connection_data.return_value = SimpleNamespace(
+        authorized_user=SimpleNamespace(id=bot_id))
+    monkeypatch.setattr("pr_agent.git_providers.azuredevops_provider.Connection", lambda **kwargs: connection)
+    client = connection.clients.get_git_client.return_value
+    threads = []
+    client.get_threads.return_value = threads
+
+    def create_thread(comment_thread, **kwargs):
+        comment_thread.id = len(threads) + 1
+        comment_thread.comments[0].id = 1
+        comment_thread.comments[0].author = SimpleNamespace(id=bot_id)
+        threads.append(comment_thread)
+        return comment_thread
+
+    def update_comment(comment, thread_id, comment_id, **kwargs):
+        existing = next(thread for thread in threads if thread.id == thread_id).comments[0]
+        assert existing.id == comment_id
+        existing.content = comment.content
+        return existing
+
+    client.create_thread.side_effect = create_thread
+    client.update_comment.side_effect = update_comment
+    for _ in range(2):
+        # Model separate workflow invocations, with no cached identity or ticket context.
+        review_settings.set("related_tickets", [])
+        provider = AzureDevopsProvider()
+        _stub_pr_data(provider, FakePR([], "pr-agent"))
+        provider.pr.description = "Implements ABC-123."
+        provider.workspace_slug = "project"
+        provider.repo_slug = "repo"
+        provider.get_linked_work_items = lambda: []
+        provider.get_latest_commit_url = lambda: "https://example.test/commit/abc123"
+        _wire_reviewer(monkeypatch, provider)
+        monkeypatch.setattr("pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets", extract_and_cache_pr_tickets)
+        reviewer = PRReviewer(PR_URL, ai_handler=FakeAIHandler)
+        await reviewer.run()
+        if jira_enabled:
+            assert reviewer.vars["related_tickets"][0]["ticket_id"] == "ABC-123"
+
+    assert jira_client.issue.call_count == (2 if jira_enabled else 0)
+    assert len(threads) == 1
+    assert client.update_comment.call_count == 1
+    assert not threads[0].comments[0].content.startswith(STANDALONE_HEADING)
+    assert "pr-agent-review-state:v1" in threads[0].comments[0].content
+    if jira_enabled:
+        assert "https://example.atlassian.net/browse/ABC-123" in threads[0].comments[0].content
 
 
 async def test_control_github_pat_rerun_edits_the_previous_review(monkeypatch, review_settings):
@@ -346,8 +445,8 @@ def test_unusable_key_issues_are_dropped_without_discarding_the_rest():
 
     findings = PRReviewer._review_findings_from_data(data)
 
-    assert [finding["path"] for finding in findings] == ["src/app.py"]
-    assert "Real finding." in findings[0]["body"]
+    assert [finding.path for finding in findings] == ["src/app.py"]
+    assert "Real finding." in findings[0].rendered_body
 
 
 def test_missing_key_issue_collection_still_fails_closed():
@@ -366,8 +465,8 @@ def test_a_transient_app_login_failure_is_retried(monkeypatch):
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: MagicMock())
     provider = GithubProvider(pr_url=None)
     provider.deployment_type = "app"
-    monkeypatch.setattr(get_settings(), "github", SimpleNamespace(
-        app_id="1", private_key="key", deployment_type="app"), raising=False)
+    monkeypatch.setitem(get_settings(), "github", SimpleNamespace(
+        app_id="1", private_key="key", deployment_type="app"))
     attempts = []
     auths = []
 
@@ -391,8 +490,8 @@ def test_a_resolved_app_login_is_cached(monkeypatch):
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: MagicMock())
     provider = GithubProvider(pr_url=None)
     provider.deployment_type = "app"
-    monkeypatch.setattr(get_settings(), "github", SimpleNamespace(
-        app_id="1", private_key="key", deployment_type="app"), raising=False)
+    monkeypatch.setitem(get_settings(), "github", SimpleNamespace(
+        app_id="1", private_key="key", deployment_type="app"))
     attempts = []
     auths = []
 
@@ -414,8 +513,8 @@ def test_an_app_that_never_resolves_stays_unproven(monkeypatch):
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: MagicMock())
     provider = GithubProvider(pr_url=None)
     provider.deployment_type = "app"
-    monkeypatch.setattr(get_settings(), "github", SimpleNamespace(
-        app_id="1", private_key="key", deployment_type="app"), raising=False)
+    monkeypatch.setitem(get_settings(), "github", SimpleNamespace(
+        app_id="1", private_key="key", deployment_type="app"))
     monkeypatch.setattr("pr_agent.git_providers.github_provider.GithubIntegration",
                         lambda **kwargs: (_ for _ in ()).throw(InvalidKeyError("no private key")))
 
@@ -440,11 +539,99 @@ def test_an_unusable_app_key_leaves_the_login_unresolved(monkeypatch, private_ke
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: MagicMock())
     provider = GithubProvider(pr_url=None)
     provider.deployment_type = "app"
-    monkeypatch.setattr(get_settings(), "github", SimpleNamespace(
-        app_id="1", private_key=private_key, deployment_type="app"), raising=False)
+    monkeypatch.setitem(get_settings(), "github", SimpleNamespace(
+        app_id="1", private_key=private_key, deployment_type="app"))
 
     with pytest.raises(AssertionError, match=reason):
         Auth.AppAuth(app_id="1", private_key=private_key)
 
     assert provider._resolve_app_login() == ""
     assert getattr(provider, "_app_login", None) is None
+
+
+APP_BOT_LOGIN = "pr-agent-sponsored[bot]"
+
+
+def _actions_app_token_provider(monkeypatch, comments):
+    """Actions run with a GitHub App installation token: `GET /user` fails, comments are the app's."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    return _github_provider(monkeypatch, "user", comments=comments, bot_login=APP_BOT_LOGIN, user_login=None)
+
+
+async def test_actions_app_token_rerun_edits_the_previous_review(monkeypatch, review_settings):
+    """With the app's login configured, an automatic review updates its earlier comment in place."""
+    monkeypatch.setitem(review_settings.github, "agent_login", APP_BOT_LOGIN)
+    review_settings.set("CONFIG.IS_AUTO_COMMAND", True)
+    previous = FakeComment(_previous_persistent_review(), APP_BOT_LOGIN)
+    provider = _actions_app_token_provider(monkeypatch, [previous])
+    _wire_reviewer(monkeypatch, provider)
+
+    await PRReviewer(PR_URL, ai_handler=FakeAIHandler).run()
+
+    assert [c for c in provider.pr.created if not c.deleted] == []
+    assert len(previous.edits) == 1
+
+
+async def test_actions_app_token_without_agent_login_posts_a_second_review(monkeypatch, review_settings):
+    """Control: without the setting the fallback assumes `github-actions[bot]` and misses the app's comment."""
+    monkeypatch.setitem(review_settings.github, "agent_login", "")
+    review_settings.set("CONFIG.IS_AUTO_COMMAND", True)
+    previous = FakeComment(_previous_persistent_review(), APP_BOT_LOGIN)
+    provider = _actions_app_token_provider(monkeypatch, [previous])
+    _wire_reviewer(monkeypatch, provider)
+
+    await PRReviewer(PR_URL, ai_handler=FakeAIHandler).run()
+
+    assert previous.edits == []
+    assert len([c for c in provider.pr.created if not c.deleted]) == 1
+
+
+@pytest.mark.parametrize("agent_login, found", [(APP_BOT_LOGIN, True), (f"  {APP_BOT_LOGIN}  ", True), ("", False)])
+def test_actions_app_token_previous_review_lookup(monkeypatch, review_settings, agent_login, found):
+    """`/review -i` looks up its anchor before posting anything, so it relies on the configured login."""
+    monkeypatch.setitem(review_settings.github, "agent_login", agent_login)
+    previous = FakeComment(_previous_persistent_review(), APP_BOT_LOGIN)
+    provider = _actions_app_token_provider(monkeypatch, [previous])
+
+    assert (provider.get_previous_review(full=True, incremental=False) is previous) is found
+
+
+def test_actions_app_token_describe_updates_its_persistent_comment(monkeypatch, review_settings):
+    monkeypatch.setitem(review_settings.github, "agent_login", APP_BOT_LOGIN)
+    previous = FakeComment(f"## Title\n\n{PRDescriptionIdentity.PERSISTENT.value}\n\nold description", APP_BOT_LOGIN)
+    provider = _actions_app_token_provider(monkeypatch, [previous])
+
+    provider.publish_persistent_comment(
+        "## Title\n\nnew description",
+        initial_header="## Title",
+        update_header=True,
+        name="describe",
+        final_update_message=False,
+        identity_marker=PRDescriptionIdentity.PERSISTENT.value,
+        legacy_initial_header="## Title",
+        require_agent_authorship=True,
+    )
+
+    assert provider.pr.created == []
+    assert len(previous.edits) == 1
+    assert "new description" in previous.body
+
+
+def test_a_resolvable_token_ignores_agent_login(monkeypatch, review_settings):
+    """The setting only replaces the fallback; a token that can call `GET /user` keeps its own login."""
+    monkeypatch.setitem(review_settings.github, "agent_login", APP_BOT_LOGIN)
+    provider = _github_provider(monkeypatch, "user", comments=[], bot_login="octo-bot", user_login="octo-bot")
+
+    assert provider._resolve_user_login() == "octo-bot"
+
+
+def test_agent_login_is_host_only():
+    from pr_agent.config_security import is_repo_host_only_key
+
+    assert is_repo_host_only_key("github", "agent_login")
+
+
+def test_azure_devops_agent_identity_is_host_only():
+    from pr_agent.config_security import is_repo_host_only_key
+
+    assert is_repo_host_only_key("azure_devops_server", "agent_identity")

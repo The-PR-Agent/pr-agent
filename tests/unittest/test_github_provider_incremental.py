@@ -1,6 +1,6 @@
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 from urllib.parse import parse_qsl, urlsplit
 
 from github.Commit import Commit
@@ -95,6 +95,7 @@ def test_incremental_commit_files_keep_300_item_pages():
     requester.requestJsonAndCheck.side_effect = fetch_page
     commit = Commit(requester, {}, {
         "url": commit_url, "sha": "pushed", "commit": {"message": "Change files"},
+        "parents": [{"sha": "reviewed"}],
     }, completed=False)
     provider = _make_provider([commit])
     provider.incremental.last_seen_commit = SimpleNamespace(sha="reviewed")
@@ -107,3 +108,43 @@ def test_incremental_commit_files_keep_300_item_pages():
 
     assert list(provider.unreviewed_files_map) == [file["filename"] for file in all_files]
     assert requester.requestJsonAndCheck.call_count == 2
+
+
+def test_incremental_review_skips_merge_commits_regardless_of_message():
+    merge_commit = Commit(Mock(), {}, {
+        "url": "https://api.github.com/repos/example/project/commits/merge",
+        "sha": "merge",
+        "commit": {"message": "Sync target branch"},
+        "parents": [{"sha": "base"}, {"sha": "target"}],
+    }, completed=False)
+    provider = _make_provider([merge_commit])
+    provider.incremental.last_seen_commit = SimpleNamespace(sha="reviewed")
+    provider.get_previous_review = lambda **kwargs: provider.previous_review
+    provider.get_commit_range = lambda: [merge_commit]
+    provider.unreviewed_files_map = {}
+
+    provider._get_incremental_commits()
+
+    assert provider.unreviewed_files_map == {}
+
+
+def test_previous_review_ignores_matching_comment_from_another_user():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.pr = Mock()
+    foreign = SimpleNamespace(body="## PR Reviewer Guide 🔍\n\nforeign")
+    provider.pr.get_issue_comments.return_value = [foreign]
+    provider.is_comment_authored_by_pr_agent = Mock(return_value=False)
+
+    assert provider.get_previous_review(full=True, incremental=False) is None
+
+
+def test_previous_review_uses_latest_matching_comment_authored_by_pr_agent():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.pr = Mock()
+    foreign = SimpleNamespace(body="## PR Reviewer Guide 🔍\n\nforeign")
+    agent = SimpleNamespace(body="## PR Reviewer Guide 🔍\n\nagent")
+    provider.pr.get_issue_comments.return_value = [agent, foreign]
+    provider.is_comment_authored_by_pr_agent = Mock(side_effect=[False, True])
+
+    assert provider.get_previous_review(full=True, incremental=False) is agent
+    assert provider.is_comment_authored_by_pr_agent.call_args_list == [call(foreign), call(agent)]

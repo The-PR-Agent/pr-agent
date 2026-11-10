@@ -15,6 +15,11 @@ The tool can be triggered automatically every time a new PR is [opened](../usage
 /improve
 ```
 
+:::note
+`/improve` will be merged into `/review` in the next release. `/improve` will keep working and run
+`/review`, with a warning.
+:::
+
 ## How it looks
 
 <Tabs>
@@ -29,6 +34,11 @@ The tool can be triggered automatically every time a new PR is [opened](../usage
 
 </TabItem>
 </Tabs>
+
+Fixed labels in summary-style `/improve` comments and no-suggestion messages follow
+`config.response_language` for the shipped English and Spanish catalogs. Model-generated
+suggestion text and persistent-comment identity markers remain unchanged; other languages
+fall back to English for these labels.
 
 ___
 
@@ -68,6 +78,19 @@ If any individual retry succeeds, the existing partial-recovery behavior is pres
 
 <img src="/img/improve.png" alt="improve" width="512" />
 
+From the CLI, save the suggestions and token usage as JSON for a later CI step:
+
+```bash
+pr-agent --pr_url https://github.com/org/repo/pull/123 --json-output improve.json improve
+```
+
+The JSON file is written once the suggestions are ready, including when
+`config.publish_output=false`, so a caller can post the suggestions itself. In plain-diff mode,
+the file is written before Markdown output; with `--pr_url`, it is written after publishing.
+It holds a `code_suggestions`
+list, empty when there are none, and a `usage` object. Place `--json-output` before `improve` or
+`improve_code`; it also works with plain-diff input (`--stdin` or `--diff-file`).
+
 ### Automatic triggering
 
 To run the `improve` automatically when a PR is opened, define in a [configuration file](../usage-guide/configuration_options.md#local-configuration-file):
@@ -81,11 +104,13 @@ pr_commands = [
 
 [pr_code_suggestions]
 num_code_suggestions_per_chunk = ...
+publish_failure_comment = true
 ...
 ```
 
 - The `pr_commands` lists commands that will be executed automatically when a PR is opened.
 - The `[pr_code_suggestions]` section contains the configurations for the `improve` tool you want to edit (if any)
+- Set `publish_failure_comment = false` to suppress failure comments while preserving the command failure status.
 
 ### Incremental suggestions
 
@@ -107,9 +132,13 @@ The table format offers several key advantages:
 - **Quick overview and prioritization**: Enables quick review of one-liner summaries, impact levels, and easy prioritization
 - **High-level suggestions**: High-level suggestions that aren't tied to specific code chunks are presented only in the table mode
 - **Centralized tracking**: Shows suggestion implementation status in one place
-- **IDE integration**: Allows applying suggestions directly in your IDE via the CLI tool
 
 Table mode is the default of PR-Agent, and is recommended approach for most users due to these benefits.
+
+When `pr_code_suggestions.new_score_mechanism` is enabled, the Impact column uses
+integer `new_score_mechanism_th_high` and `new_score_mechanism_th_medium` thresholds.
+Quoted integers such as `"9"` and `"7"` are accepted; invalid values fall back to
+the defaults of 9 and 7. Other numeric values follow the existing integer coercion rules.
 
 <img src="/img/code_suggestions_as_comment_closed.png" alt="code_suggestions_as_comment_closed.png" width="512" />
 
@@ -258,7 +287,7 @@ To activate dual publishing mode, use the following setting:
 dual_publishing_score_threshold = x
 ```
 
-Where x represents the minimum score threshold (>=) for suggestions to be presented as committable PR comments in addition to the table. Default is -1 (disabled).
+Where x represents the minimum score threshold (>=) for suggestions to be presented as committable PR comments in addition to the table. Default is -1. Values of -1 or 0 disable dual publishing.
 
 ### Persistent inline comments
 
@@ -399,7 +428,7 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>dual_publishing_score_threshold</b></td>
-    <td>Minimum score threshold for suggestions to be presented as committable PR comments in addition to the table.</td>
+    <td>Minimum score threshold for suggestions to be presented as committable PR comments in addition to the table. Values of -1 or 0 disable dual publishing.</td>
   </tr>
   <tr>
     <td><b>focus_only_on_problems</b></td>
@@ -409,6 +438,12 @@ for the authoritative default values.
   <tr>
     <td><b>persistent_comment</b></td>
     <td>If set to true, the improve comment will be persistent, meaning that every new improve request will edit the previous one.</td>
+  </tr>
+  <tr>
+    <td><b>max_history_len</b></td>
+    <td>Maximum number of previous suggestion sets to retain in a persistent summary. Non-positive values keep only the latest
+    suggestions, updating the same comment when the provider supports comment editing. Lowering a positive limit does not
+    shrink an existing history; use 0 for an update to clear it before choosing a new positive limit. Default is 4.</td>
   </tr>
   <tr>
     <td><b>suggestions_score_threshold</b></td>
@@ -493,8 +528,14 @@ it. Exhausted failures remain in the coverage notice. Cancellation propagates in
 another retry.
 
 This is recovery within one invocation, not persisted resume across commands. Entirely failed initial
-batches still use the existing whole-batch fallback. Valid empty suggestions are successful results;
-responses rejected by the existing YAML parser retain its existing parse-failure behavior.
+batches still use the existing whole-batch fallback. Malformed or invalid top-level
+suggestion responses, and responses marked as truncated by the model (`finish_reason="length"`),
+are treated as failed chunks and can use the remaining fallback models. A truncated response is
+retried as a whole, including any complete suggestions before the cutoff. If no chunk succeeds
+after the configured fallbacks are exhausted, the command reports failure.
+A valid empty suggestion list (including `code_suggestions: []`) in a complete response is a
+successful result and is not retried. Invalid individual suggestions in an otherwise valid list continue to
+be filtered without retrying that entire chunk.
 An ambiguous repeated model/deployment pair skips partial recovery rather than restarting the chain.
 
 ## Understanding AI Code Suggestions

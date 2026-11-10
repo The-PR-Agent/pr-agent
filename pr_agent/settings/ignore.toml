@@ -1,4 +1,6 @@
 [ignore]
+# Pattern list entries must be strings. Non-string entries are skipped with a warning;
+# valid patterns in this file and enabled generated-code lists still apply.
 
 glob = [
     # Ignore files and directories matching these glob patterns, where a '**/' segment matches

@@ -13,6 +13,7 @@ from starlette_context import context
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 
 from ..algo.file_filter import filter_ignored
+from ..algo.git_patch_processing import count_patch_lines, decode_if_bytes
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.utils import find_line_number_of_relevant_line_in_file, replace_suggestion_blocks
@@ -56,12 +57,78 @@ def _split_raw_diff(raw_diff: str) -> list[str]:
 _DIFF_HEADER_RE = re.compile(r'^diff --git ("(?:\\.|[^"\\])*"|\S+) ("(?:\\.|[^"\\])*"|\S+)$')
 
 
+def _decode_git_path(token: str) -> str | None:
+    """Decode a path taken from a diff header, undoing Git's C-style quoting."""
+    try:
+        path = ast.literal_eval(token) if token.startswith('"') else token
+        if token.startswith('"') and re.search(r"\\[0-7]{3}", token):
+            path = path.encode("latin-1").decode("utf-8")
+    except (SyntaxError, ValueError, UnicodeError):
+        return None
+    return path
+
+
+def _strip_diff_prefix(path: str) -> str:
+    """Drop the ``a/`` or ``b/`` prefix Git puts in front of a path in a file header."""
+    if path.startswith(("a/", "b/")):
+        return path[2:]
+    return path
+
+
+def _paths_from_patch_headers(patch: str) -> tuple[str, str] | None:
+    """Read the old and new paths from the rename and file headers of a patch.
+
+    A ``diff --git`` header is ambiguous when a path contains a space, but the
+    ``rename from``/``rename to`` and ``---``/``+++`` headers are not. Only the
+    lines before the first hunk are inspected, so a removed line that looks like
+    a header is not mistaken for one.
+    """
+    rename_old = rename_new = None
+    file_old = file_new = None
+    for line in patch.split("\n"):
+        line = line.removesuffix("\r")
+        if line.startswith("@@"):
+            break
+        if line.startswith("rename from "):
+            rename_old = line[len("rename from "):]
+        elif line.startswith("rename to "):
+            rename_new = line[len("rename to "):]
+        elif line.startswith("--- "):
+            file_old = line[len("--- "):].split("\t", 1)[0]
+        elif line.startswith("+++ "):
+            file_new = line[len("+++ "):].split("\t", 1)[0]
+
+    if rename_old is not None and rename_new is not None:
+        old = _decode_git_path(rename_old)
+        new = _decode_git_path(rename_new)
+        if old is None or new is None:
+            return None
+        return old, new
+
+    if file_old is None or file_new is None:
+        return None
+    old = _decode_git_path(file_old)
+    new = _decode_git_path(file_new)
+    if old is None or new is None:
+        return None
+    if old == "/dev/null":
+        old = new
+    elif new == "/dev/null":
+        new = old
+    return _strip_diff_prefix(old), _strip_diff_prefix(new)
+
+
 def _diff_header_paths(patch: str) -> tuple[str, str] | None:
     """Read the old and new paths from a Git diff header, including quoted paths."""
     header = patch.split("\n", 1)[0].rstrip("\r")
     match = _DIFF_HEADER_RE.fullmatch(header)
     if not match:
-        # Git leaves paths with spaces unquoted; with an unchanged name the header splits at its midpoint.
+        # Git leaves paths with spaces unquoted, so the header cannot be split reliably.
+        # The rename and file headers of the same patch carry the paths unambiguously.
+        paths = _paths_from_patch_headers(patch)
+        if paths is not None:
+            return paths
+        # With an unchanged name the header splits at its midpoint.
         rest = header[len("diff --git "):]
         mid = len(rest) // 2
         if rest.startswith("a/") and rest[mid:mid + 3] == " b/" and rest[2:mid] == rest[mid + 3:]:
@@ -69,13 +136,8 @@ def _diff_header_paths(patch: str) -> tuple[str, str] | None:
         return None
     paths = []
     for token in match.groups():
-        try:
-            path = ast.literal_eval(token) if token.startswith('"') else token
-            if token.startswith('"') and re.search(r"\\[0-7]{3}", token):
-                path = path.encode("latin-1").decode("utf-8")
-        except (SyntaxError, ValueError, UnicodeError):
-            return None
-        if not path.startswith(("a/", "b/")):
+        path = _decode_git_path(token)
+        if path is None or not path.startswith(("a/", "b/")):
             return None
         paths.append(path[2:])
     return paths[0], paths[1]
@@ -98,12 +160,18 @@ def _diffstat_line_count(diff, field: str) -> int | None:
     if value is None:
         return None
     try:
-        return int(value)
-    except (TypeError, ValueError):
+        count = int(value)
+    except (TypeError, ValueError, OverflowError):
         get_logger().warning(
             f"Bitbucket diffstat reported a non-numeric {field} for file {_gef_filename(diff)}"
         )
         return None
+    if count < 0 or isinstance(value, bool) or (not isinstance(value, str) and count != value):
+        get_logger().warning(
+            f"Bitbucket diffstat reported an invalid {field} for file {_gef_filename(diff)}"
+        )
+        return None
+    return count
 
 
 class BitbucketProvider(GitProvider):
@@ -165,6 +233,7 @@ class BitbucketProvider(GitProvider):
         self.incremental = incremental
         self.diff_files = None
         self.git_files = None
+        self._pending_diffstat = None
         if pr_url:
             self.set_pr(pr_url)
         self.bitbucket_comment_api_url = self.pr._BitbucketBase__data["links"]["comments"]["href"]
@@ -181,13 +250,13 @@ class BitbucketProvider(GitProvider):
                    f"{destination_commit}/.pr_agent.toml")
             response = requests.request("GET", url, headers=self.headers, timeout=get_http_request_timeout())
             if response.status_code == 200:  # found
-                settings_files.append(("local", response.text.encode('utf-8')))
+                settings_files.append(("local", decode_if_bytes(response.content).encode('utf-8')))
             elif response.status_code != 404:
                 # Don't treat error bodies (401/403/500/...) as TOML content.
                 get_logger().warning(f"Failed to load local .pr_agent.toml file, status: {response.status_code}")
         except Exception as e:
             get_logger().warning(f"Failed to load local .pr_agent.toml file, error: {e}")
-        return settings_files if settings_files else ""
+        return settings_files or ""
 
     def _get_global_settings_cache_key(self, workspace: str) -> str:
         return f"bitbucket:{workspace}"
@@ -218,7 +287,7 @@ class BitbucketProvider(GitProvider):
         if file_resp.status_code in (403, 404):  # missing file or no access -> expected, cacheable
             return ""
         file_resp.raise_for_status()
-        return file_resp.text.encode('utf-8')
+        return decode_if_bytes(file_resp.content).encode('utf-8')
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         # Read from the PR destination (target) branch, matching the other providers,
@@ -248,7 +317,8 @@ class BitbucketProvider(GitProvider):
         if repo_git_url:
             parsed_git_url = urlparse(repo_git_url)
             scheme_and_netloc = parsed_git_url.scheme + "://" + parsed_git_url.netloc
-            repo_path = parsed_git_url.path.split('.git')[0][1:] #/<workspace>/<repo>.git -> <workspace>/<repo>
+            #/<workspace>/<repo>.git -> <workspace>/<repo>
+            repo_path = parsed_git_url.path.rstrip('/').removesuffix('.git')[1:]
             if repo_path.count('/') != 1:
                 get_logger().error(f"repo_git_url is not a valid git repo url: {repo_git_url}")
                 return ("", "")
@@ -304,7 +374,13 @@ class BitbucketProvider(GitProvider):
         get_logger().error(f"Bitbucket failed to publish code suggestion, error: {error}")
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ['publish_inline_comments', 'get_labels', 'gfm_markdown']:
+        if capability in [
+            'get_labels',
+            'gfm_markdown',
+            'head_ci_status',
+            'head_staleness',
+            'author_human_check',
+        ]:
             return False
         if capability == "push_code":
             return not get_settings().config.restricted_mode and self._pr_head_in_base_repo()
@@ -338,24 +414,40 @@ class BitbucketProvider(GitProvider):
         self.workspace_slug, self.repo_slug, self.pr_num = self._parse_pr_url(pr_url)
         self.pr = self._get_pr()
 
+    def _collect_diffstat(self):
+        diffs = []
+        git_files = []
+        for diff in self.pr.diffstat():
+            diffs.append(diff)
+            git_files.append(_gef_filename(diff))
+        return diffs, git_files
+
     def get_files(self):
         try:
             git_files = context.get("git_files", None)
             if git_files:
                 return git_files
-            self.git_files = [_gef_filename(diff) for diff in self.pr.diffstat()]
+            diffs, git_files = self._collect_diffstat()
+            self.git_files = git_files
+            self._pending_diffstat = diffs or None
             context["git_files"] = self.git_files
             return self.git_files
         except Exception:
             if not self.git_files:
-                self.git_files = [_gef_filename(diff) for diff in self.pr.diffstat()]
+                diffs, git_files = self._collect_diffstat()
+                self.git_files = git_files
+                self._pending_diffstat = diffs or None
             return self.git_files
 
     def get_diff_files(self) -> list[FilePatchInfo]:
         if self.diff_files:
+            self._pending_diffstat = None
             return self.diff_files
 
-        diffs_original = list(self.pr.diffstat())
+        diffs_original = getattr(self, "_pending_diffstat", None)
+        self._pending_diffstat = None
+        if diffs_original is None:
+            diffs_original = list(self.pr.diffstat())
         diffs = filter_ignored(diffs_original, 'bitbucket')
         if diffs != diffs_original:
             try:
@@ -465,13 +557,14 @@ class BitbucketProvider(GitProvider):
             # counting the patch, field by field. The raw diff can carry no textual hunk, or a
             # truncated one, even when the diffstat reports real additions and removals, and a
             # partially populated diffstat still carries the side it does report.
-            patch_lines = diff_split[index].splitlines(keepends=True)
             lines_added = _diffstat_line_count(diff, "lines_added")
-            if lines_added is None:
-                lines_added = len([line for line in patch_lines if line.startswith('+')])
             lines_removed = _diffstat_line_count(diff, "lines_removed")
-            if lines_removed is None:
-                lines_removed = len([line for line in patch_lines if line.startswith('-')])
+            if lines_added is None or lines_removed is None:
+                patch_added, patch_removed = count_patch_lines(diff_split[index])
+                if lines_added is None:
+                    lines_added = patch_added
+                if lines_removed is None:
+                    lines_removed = patch_removed
 
             file_patch_canonic_structure = FilePatchInfo(
                 original_file_content_str,
@@ -509,6 +602,18 @@ class BitbucketProvider(GitProvider):
         except (KeyError, AttributeError, TypeError) as e:
             get_logger().warning(f"Failed to get head SHA, error: {e}")
             return ""
+
+    def get_pr_identity(self) -> dict:
+        repo = "/".join(
+            str(part) for part in (self.workspace_slug, self.repo_slug) if part
+        )
+        return {
+            "url": self.get_pr_url() or "",
+            "provider": "bitbucket",
+            "repo": repo,
+            "number": self.pr_num if self.pr_num is not None else "",
+            "head_sha": self.get_pr_head_sha(),
+        }
 
     def _get_cloud_comment(self, comment):
         if isinstance(comment, SimpleNamespace):
@@ -659,9 +764,6 @@ class BitbucketProvider(GitProvider):
         # list, which would post the already-accepted suggestions a second time.
         return published_count > 0 or publishable_count == 0
 
-    def get_title(self):
-        return self.pr.title
-
     @cache_languages
     def get_languages(self):
         language = self._get_repo().get_data("language")
@@ -810,7 +912,8 @@ class BitbucketProvider(GitProvider):
             # Distinguish an unavailable file from a failed request to prevent an error response
             # body from being treated as repository instructions or changelog content.
             response.raise_for_status()
-            contents = response.text
+            # Raw files come without a charset, so response.text would decode a text/* file as ISO-8859-1.
+            contents = decode_if_bytes(response.content)
             return contents
         except Exception:
             if propagate_errors:
@@ -832,7 +935,7 @@ class BitbucketProvider(GitProvider):
         if response.status_code == 404:
             return FileContentSnapshot("", False, revision)
         response.raise_for_status()
-        return FileContentSnapshot(response.text, True, revision)
+        return FileContentSnapshot(decode_if_bytes(response.content), True, revision)
 
     def create_or_update_pr_file(
         self, file_path: str, branch: str, contents="", message="", *, expected_snapshot: FileContentSnapshot
@@ -868,7 +971,7 @@ class BitbucketProvider(GitProvider):
             if response.status_code == 404:  # not found
                 return ""
             response.raise_for_status()
-            contents = response.text
+            contents = decode_if_bytes(response.content)
             return contents
         except Exception as error:
             if isinstance(error, requests.RequestException):

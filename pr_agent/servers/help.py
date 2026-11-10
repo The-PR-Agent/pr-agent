@@ -1,4 +1,5 @@
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
+from pr_agent.config_loader import get_bot_display_name
 
 
 class HelpMessage:
@@ -18,7 +19,7 @@ class HelpMessage:
 
     @staticmethod
     def get_general_bot_help_text():
-        output = f"> To invoke the PR-Agent, add a comment using one of the following commands:  \n{HelpMessage.get_general_commands_text()} \n"
+        output = f"> To invoke the {get_bot_display_name()}, add a comment using one of the following commands:  \n{HelpMessage.get_general_commands_text()} \n"
         return output
 
     @staticmethod
@@ -83,7 +84,7 @@ the tool will replace every marker of the form `pr_agent:marker_name` in the PR 
   - `type`: the PR type.
   - `summary`: the PR summary.
   - `walkthrough`: the PR walkthrough.
-  - `diagram`: the PR sequence diagram (if enabled).
+  - `diagram`: the PR flowchart (if enabled).
 
 Note that when markers are enabled, if the original PR description does not contain any markers, the tool will not alter the description at all.
 
@@ -131,7 +132,7 @@ Use triple quotes to write multi-line instructions. Use bullet points to make th
 
 
         # general
-        output += "\n\n<tr><td><details> <summary><strong> More PR-Agent commands</strong></summary><hr> \n\n"
+        output += f"\n\n<tr><td><details> <summary><strong> More {get_bot_display_name()} commands</strong></summary><hr> \n\n"
         output += HelpMessage.get_general_bot_help_text()
         output += "\n\n</details></td></tr>\n\n"
 

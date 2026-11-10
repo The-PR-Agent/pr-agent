@@ -8,10 +8,14 @@ network access is performed.
 import asyncio
 import copy
 import json
+import threading
+from contextlib import nullcontext
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from github.Repository import Repository
+from starlette_context import context, request_cycle_context
 
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import AzureDevopsProvider, GithubProvider, GitLabProvider
@@ -189,6 +193,173 @@ def settings_snapshot():
         yield s
     finally:
         restore_settings(snapshot)
+
+
+@pytest.fixture
+def scoped_ticket_settings():
+    base = get_settings(use_context=False)
+    base.get("pr_reviewer")  # Load the lazy defaults before copying them.
+    settings = copy.deepcopy(base)
+    settings.set("related_tickets", [])
+    settings.set("pr_reviewer.require_ticket_analysis_review", True)
+    settings.set("pr_reviewer.max_previous_findings_chars", 0)
+    settings.set("config.repo_context_files", [])
+    settings.set("config.publish_output", False)
+    settings.set("config.propagate_tool_errors", True)
+    settings.set("jira", {})
+    with request_cycle_context({"settings": settings}):
+        yield settings
+
+
+@pytest.mark.parametrize("kind", ["github", "github-uninitialized", "gitlab", "gitlab-sibling", "azure", "jira"])
+async def test_ticket_reads_use_workers_and_request_settings(monkeypatch, scoped_ticket_settings, kind):
+    calls = []
+
+    def record(name, function):
+        def call(*args):
+            calls.append((name, threading.get_ident(), get_settings()))
+            return function(*args)
+        return call
+
+    jira = SimpleNamespace(issue=record("jira", lambda key: {"fields": {"summary": "Jira ticket"}}))
+    monkeypatch.setattr(tpc, "_get_jira_client", lambda: jira)
+    expected = []
+    native_ids = [7]
+    if kind.startswith("github"):
+        child_url = "https://github.com/org/other/issues/8"
+        parent_repo = _FakeRepoObj({7: _FakeIssue(7)})
+        child_repo = _FakeRepoObj({8: _FakeIssue(8, raw_data={"sub_issues_summary": {"total": 0}})})
+        provider = _make_github_provider(
+            user_description=f"Fixes #7 {child_url} PROJ-9", repo_obj=parent_repo,
+        )
+        if kind == "github-uninitialized":
+            provider.repo_obj = None
+            provider.github_client = SimpleNamespace(get_repo=record("repo", lambda name: parent_repo))
+            expected.append("repo")
+        provider.get_sibling_repo = record("sibling", lambda name: child_repo)
+        provider.get_issue_content = record("issue", lambda repo, number: repo.get_issue(number))
+        provider.fetch_sub_issues = record("subissues", lambda url: [child_url])
+        expected += ["issue", "subissues", "sibling", "issue"]
+        native_ids = [7, 8]
+    elif kind.startswith("gitlab"):
+        reference = "group/other#7" if kind == "gitlab-sibling" else "#7"
+        provider, project = _make_gitlab_provider(f"Fixes {reference} PROJ-9")
+        provider.get_pr_branch = lambda: "main"
+        issue = project.issues.get.return_value
+        issue.confidential = False
+        project.issues.get.side_effect = record("issue", lambda number: issue)
+        if kind == "gitlab-sibling":
+            provider.get_sibling_repo = record("sibling", lambda name: project)
+            expected.append("sibling")
+        expected.append("issue")
+    elif kind == "azure":
+        provider = _make_azure_provider([])
+        provider.get_user_description = lambda: "PROJ-9"
+        provider.get_pr_branch = lambda: "main"
+        provider.get_linked_work_items = record("work_items", lambda: [{"id": 7, "body": "Work item"}])
+        expected.append("work_items")
+    else:
+        provider = SimpleNamespace(get_user_description=lambda: "PROJ-9", get_pr_branch=lambda: "main")
+        native_ids = []
+
+    result = await extract_tickets(provider)
+
+    assert [ticket["ticket_id"] for ticket in result] == [*native_ids, "PROJ-9"]
+    assert [name for name, _, _ in calls] == [*expected, "jira"]
+    assert all(thread_id != threading.get_ident() for _, thread_id, _ in calls)
+    assert all(settings is scoped_ticket_settings for _, _, settings in calls)
+    if kind.startswith("github"):
+        assert result[0]["sub_issues"][0]["ticket_url"] == child_url
+        assert child_repo.get_issue_calls == [8]  # Reuse the child when it is also linked directly.
+
+
+@pytest.mark.parametrize("with_context", [False, True])
+async def test_ticket_reads_keep_shared_settings_on_the_event_loop(monkeypatch, with_context):
+    settings = get_settings(use_context=False)
+    provider, project = _make_gitlab_provider("Fixes #7")
+    provider.get_pr_branch = lambda: "main"
+    calls = []
+    issue = project.issues.get.return_value
+
+    def fetch_issue(number):
+        calls.append((threading.get_ident(), get_settings()))
+        return issue
+
+    def unexpected_worker(*args, **kwargs):
+        pytest.fail("Shared settings must not be used from a worker")
+
+    project.issues.get.side_effect = fetch_issue
+    monkeypatch.setattr(tpc.asyncio, "to_thread", unexpected_worker)
+    scope = request_cycle_context({"settings": settings}) if with_context else nullcontext()
+    with scope:
+        result = await extract_tickets(provider)
+
+    assert [ticket["ticket_id"] for ticket in result] == [7]
+    assert calls == [(threading.get_ident(), settings)]
+
+
+@pytest.mark.parametrize("cancel", [False, True], ids=["complete", "cancel"])
+async def test_review_ticket_wait_keeps_loop_responsive(monkeypatch, scoped_ticket_settings, cancel):
+    from pr_agent.tools import pr_reviewer as reviewer_module
+
+    loop = asyncio.get_running_loop()
+    started, finished = asyncio.Event(), asyncio.Event()
+    release = threading.Event()
+    calls = []
+    repo = _FakeRepoObj({number: _FakeIssue(number) for number in (7, 8)})
+    provider = _make_github_provider(user_description="Fixes #7 #8", repo_obj=repo)
+
+    def fetch_issue(repository, number):
+        calls.append(number)
+        try:
+            if number == 7:
+                loop.call_soon_threadsafe(started.set)
+                assert release.wait(10)
+            return repository.get_issue(number)
+        finally:
+            if number == 7:
+                loop.call_soon_threadsafe(finished.set)
+
+    provider.get_issue_content = fetch_issue
+    provider.pr = SimpleNamespace(title="Update app", body="Fixes #7 #8")
+    provider.git_files = ["app.py"]
+    provider.get_languages = lambda: {"Python": 100}
+    provider.get_files = lambda: ["app.py"]
+    provider.get_diff_files = MagicMock(return_value=[])
+    provider.get_commit_messages = lambda: ""
+    pr_url = "https://github.com/org/repo/pull/1"
+    context["git_provider"] = {pr_url: provider}
+    predict = AsyncMock()
+    monkeypatch.setattr(reviewer_module, "retry_with_fallback_models", predict)
+    reviewer = reviewer_module.PRReviewer(pr_url, ai_handler=SimpleNamespace)
+
+    run = asyncio.create_task(reviewer.run())
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        assert not run.done()
+        assert scoped_ticket_settings.get("related_tickets") == []
+        if cancel:
+            run.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await run
+    finally:
+        release.set()
+        await asyncio.wait_for(finished.wait(), 5)
+        if not run.cancelled():
+            await asyncio.wait_for(run, 5)
+
+    if cancel:
+        assert calls == [7]
+        assert scoped_ticket_settings.get("related_tickets") == []
+        assert reviewer.vars["related_tickets"] == []
+        predict.assert_not_awaited()
+        provider.get_diff_files.assert_not_called()
+    else:
+        assert calls == [7, 8]
+        assert [ticket["ticket_id"] for ticket in reviewer.vars["related_tickets"]] == [7, 8]
+        assert reviewer._raw_prompt_vars["related_tickets"] == reviewer.vars["related_tickets"]
+        assert scoped_ticket_settings.get("related_tickets") == reviewer.vars["related_tickets"]
+        predict.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1032,6 +1203,131 @@ class TestGetIssueFailureIsolated:
 # ---------------------------------------------------------------------------
 
 class TestSubIssues:
+    @pytest.mark.parametrize("raw_data,should_fetch", [
+        pytest.param({"sub_issues_summary": {"total": 0}}, False, id="zero"),
+        pytest.param({"sub_issues_summary": {"total": 1}}, True, id="positive"),
+        pytest.param({}, True, id="missing-summary"),
+        pytest.param({"sub_issues_summary": None}, True, id="null-summary"),
+        pytest.param({"sub_issues_summary": []}, True, id="malformed-summary"),
+        pytest.param({"sub_issues_summary": {}}, True, id="missing-total"),
+        pytest.param({"sub_issues_summary": {"total": None}}, True, id="null-total"),
+        pytest.param({"sub_issues_summary": {"total": False}}, True, id="boolean-total"),
+        pytest.param({"sub_issues_summary": {"total": "0"}}, True, id="string-total"),
+        pytest.param({"sub_issues_summary": {"total": 0.0}}, True, id="float-total"),
+        pytest.param({"sub_issues_summary": {"total": -1}}, True, id="negative-total"),
+    ])
+    def test_only_explicit_zero_skips_sub_issue_lookup(self, settings_snapshot, raw_data, should_fetch):
+        repo_obj = _FakeRepoObj({
+            1: _FakeIssue(1, title="Parent", raw_data=raw_data),
+            2: _FakeIssue(2, title="Child"),
+        })
+        provider = _make_github_provider(user_description="Fixes #1", repo_obj=repo_obj)
+        sub_url = "https://github.com/org/repo/issues/2"
+        provider.fetch_sub_issues = MagicMock(return_value=[sub_url] if should_fetch else [])
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert [ticket["title"] for ticket in result] == ["Parent"]
+        assert result[0]["sub_issues"] == (
+            [{"ticket_url": sub_url, "title": "Child", "body": "b", "labels": ""}] if should_fetch else []
+        )
+        assert repo_obj.get_issue_calls == ([1, 2] if should_fetch else [1])
+        if should_fetch:
+            provider.fetch_sub_issues.assert_called_once_with("https://github.com/org/repo/issues/1")
+        else:
+            provider.fetch_sub_issues.assert_not_called()
+
+    def test_zero_summary_reuses_completed_pygithub_issue(self, settings_snapshot):
+        repo_url = "https://api.github.com/repos/org/repo"
+        issue_url = f"{repo_url}/issues/1"
+        requester = MagicMock(is_not_lazy=False, base_url="https://api.github.com")
+        requester.requestJsonAndCheck.return_value = ({}, {
+            "url": issue_url, "repository_url": repo_url, "number": 1,
+            "title": "Parent", "body": "Parent body", "labels": [],
+            "sub_issues_summary": {"total": 0},
+        })
+        repo_obj = Repository(requester, {}, {"url": repo_url, "full_name": "org/repo"}, completed=True)
+        provider = _make_github_provider(user_description="Fixes #1", repo_obj=repo_obj)
+        # Exercise the real provider read, including lazy completion and repository verification.
+        del provider.get_issue_content
+        provider.fetch_sub_issues = MagicMock(return_value=[])
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert result == [{
+            "ticket_id": 1, "ticket_url": "https://github.com/org/repo/issues/1",
+            "title": "Parent", "body": "Parent body", "labels": "", "sub_issues": [],
+        }]
+        requester.requestJsonAndCheck.assert_called_once()
+        assert requester.requestJsonAndCheck.call_args.args == ("GET", issue_url)
+        provider.fetch_sub_issues.assert_not_called()
+
+    @pytest.mark.parametrize("sub_url", [
+        "https://github.com/ORG/REPO/issues/002",
+        "https://api.github.com/repos/ORG/REPO/issues/002",
+    ], ids=["web", "api"])
+    @pytest.mark.parametrize("order", [(1, 2), (2, 1)])
+    def test_direct_and_sub_issue_share_reads_within_each_extraction(self, settings_snapshot, order, sub_url):
+        child = _FakeIssue(2, title="Child", labels=[_FakeLabel("bug")])
+        repo_obj = _FakeRepoObj({1: _FakeIssue(1, title="Parent"), 2: child})
+        provider = _make_github_provider(
+            user_description="Fixes " + " and ".join(f"#{number}" for number in order),
+            repo_obj=repo_obj,
+            sub_issues_map={"https://github.com/org/repo/issues/1": [sub_url]},
+        )
+
+        for body in ("Original body", "Updated body"):
+            child.body = body
+            result = asyncio.run(extract_tickets(provider))
+            assert [ticket["ticket_id"] for ticket in result] == list(order)
+            parent_ticket = next(ticket for ticket in result if ticket["ticket_id"] == 1)
+            child_ticket = next(ticket for ticket in result if ticket["ticket_id"] == 2)
+            assert parent_ticket["sub_issues"] == [{
+                "ticket_url": sub_url,
+                "title": "Child",
+                "body": body,
+                "labels": "bug",
+            }]
+            assert child_ticket["body"] == body
+            assert child_ticket["labels"] == "bug"
+
+        assert repo_obj.get_issue_calls == list(order) * 2
+
+    def test_failed_sub_issue_read_can_succeed_as_direct_reference(self, settings_snapshot):
+        parent = _FakeIssue(1, title="Parent")
+        child = _FakeIssue(2, title="Child")
+        repo_obj = _FakeRepoObj()
+        repo_obj.get_issue = MagicMock(side_effect=[parent, RuntimeError("temporary failure"), child])
+        provider = _make_github_provider(
+            user_description="Fixes #1 and #2",
+            repo_obj=repo_obj,
+            sub_issues_map={"https://github.com/org/repo/issues/1": ["https://github.com/org/repo/issues/2"]},
+        )
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert [call.args[0] for call in repo_obj.get_issue.call_args_list] == [1, 2, 2]
+        assert [ticket["title"] for ticket in result] == ["Parent", "Child"]
+        assert result[0]["sub_issues"] == []
+
+    def test_same_issue_number_in_different_repositories_is_not_reused(self, settings_snapshot):
+        settings_snapshot.set("config.repo_context_sibling_repos", ["org/other"])
+        repo_obj = _FakeRepoObj({1: _FakeIssue(1, title="Parent"), 2: _FakeIssue(2, title="Local")})
+        other = _FakeRepoObj({2: _FakeIssue(2, title="Other")})
+        provider = _make_github_provider(
+            user_description="Fixes #1 and #2",
+            repo_obj=repo_obj,
+            github_client=_FakeGithubClient({"org/other": other}),
+            sub_issues_map={"https://github.com/org/repo/issues/1": ["https://github.com/org/other/issues/2"]},
+        )
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert [ticket["title"] for ticket in result] == ["Parent", "Local"]
+        assert result[0]["sub_issues"][0]["title"] == "Other"
+        assert repo_obj.get_issue_calls == [1, 2]
+        assert other.get_issue_calls == [2]
+
     def test_sub_issue_success_populates_and_truncates(self, settings_snapshot):
         long_sub_body = "y" * 10500
         repo_obj = _FakeRepoObj({
@@ -1564,6 +1860,8 @@ class TestExtractAndCachePrTickets:
 
 class _FakeRequester:
     """Mimic PyGithub's private requester: ``requestJson`` -> (status, headers, body)."""
+
+    graphql_url = "https://api.github.com/graphql"
 
     def __init__(self, responses):
         self._responses = list(responses)

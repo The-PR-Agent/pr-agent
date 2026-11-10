@@ -112,13 +112,27 @@ def test_missing_dynaconf_key_uses_the_default_profile(monkeypatch):
     assert server_utils.get_pr_commands("github_app") == DEFAULT_PR_COMMANDS["github_app"]
 
 
-@pytest.mark.parametrize("override", [[], "", ["/custom"]])
+@pytest.mark.parametrize("override", [[], ["/custom"]])
 def test_explicit_pr_command_overrides_are_preserved(monkeypatch, override):
     configured = copy.deepcopy(override)
     settings = _Settings({"github_app.pr_commands": configured})
     monkeypatch.setattr(server_utils, "get_settings", lambda: settings)
 
     assert server_utils.get_pr_commands("github_app") is configured
+
+
+def test_empty_string_pr_command_override_is_normalized(monkeypatch):
+    settings = _Settings({"github_app.pr_commands": ""})
+    monkeypatch.setattr(server_utils, "get_settings", lambda: settings)
+
+    assert server_utils.get_pr_commands("github_app") == []
+
+
+def test_scalar_pr_command_override_is_dispatchable(monkeypatch):
+    settings = _Settings({"github_app.pr_commands": "/review"})
+    monkeypatch.setattr(server_utils, "get_settings", lambda: settings)
+
+    assert server_utils.get_pr_commands("github_app") == ["/review"]
 
 
 def test_provider_sections_no_longer_duplicate_pr_command_defaults():

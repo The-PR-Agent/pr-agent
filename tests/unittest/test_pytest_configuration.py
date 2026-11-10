@@ -10,6 +10,7 @@ def test_default_pytest_configuration_is_loaded(pytestconfig):
     assert pytestconfig.inipath.name == "pyproject.toml"
     assert pytestconfig.getini("testpaths") == ["tests/unittest"]
     assert pytestconfig.getini("asyncio_mode") == "auto"
+    assert pytestconfig.getini("asyncio_default_fixture_loop_scope") == "function"
     assert "--import-mode=importlib" in pytestconfig.getini("addopts")
 
 

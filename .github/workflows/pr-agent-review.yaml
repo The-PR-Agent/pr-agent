@@ -155,6 +155,9 @@ jobs:
             exec /entrypoint.sh"
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          # The app token posts as `<app-slug>[bot]` and cannot call `GET /user`, so name that login
+          # for the comment-authorship checks; empty keeps the `github-actions[bot]` fallback.
+          GITHUB__AGENT_LOGIN: ${{ steps.app-token.outputs.app-slug && format('{0}[bot]', steps.app-token.outputs.app-slug) || '' }}
           PR_AGENT_EVENT_NAME: ${{ steps.replay.outputs.event_name || github.event_name }}
           PR_AGENT_EVENT_PATH: ${{ steps.replay.outputs.event_path || '/github/workflow/event.json' }}
           OPENAI_KEY: ${{ secrets.QODO_SPONSORSHIP_LLM_KEY }}
@@ -177,8 +180,8 @@ jobs:
           # The default "only critical problems" filter returns an empty list on most PRs here,
           # which made 90 of 99 /improve comments say "No code suggestions found" (#4161).
           PR_CODE_SUGGESTIONS__FOCUS_ONLY_ON_PROBLEMS: 'false'
-          # With suggestions flowing again, drop the empty-list comments instead of posting them.
-          PR_CODE_SUGGESTIONS__PUBLISH_OUTPUT_NO_SUGGESTIONS: 'false'
+          # Confirm that /improve ran even when no suggestions remain after filtering.
+          PR_CODE_SUGGESTIONS__PUBLISH_OUTPUT_NO_SUGGESTIONS: 'true'
           GITHUB_ACTION_CONFIG__AUTO_DESCRIBE: 'true'
           GITHUB_ACTION_CONFIG__AUTO_REVIEW: 'true'
           GITHUB_ACTION_CONFIG__AUTO_IMPROVE: 'true'

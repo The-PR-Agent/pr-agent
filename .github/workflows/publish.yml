@@ -23,6 +23,7 @@ concurrency:
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
@@ -37,6 +38,19 @@ jobs:
         run: |
           echo "::error::workflow_dispatch must be triggered from the main branch (got $GITHUB_REF)."
           exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require published commit to be on main
+        run: |
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}^{commit}" refs/remotes/origin/main; then
+            echo "::error::The published commit must be part of main history."
+            exit 1
+          fi
 
       - name: Resolve version
         id: resolve
@@ -78,16 +92,19 @@ jobs:
             echo "sha=$GITHUB_SHA"
           } >> "$GITHUB_OUTPUT"
 
-  publish-pypi:
+  build-pypi:
     needs: prepare
     runs-on: ubuntu-latest
-    environment: release
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
@@ -96,12 +113,31 @@ jobs:
 
       - name: Build distributions
         run: |
-          python -m pip install --upgrade pip build
+          python -m pip install build==1.6.1
           python -m build
 
-      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
         with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish-pypi:
+    needs: [prepare, build-pypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3  # v8.0.0
+        with:
+          name: python-distributions
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3
+        with:
+          attestations: true
           # Re-running the workflow for the same version (e.g. after a
           # transient registry failure) should not fail because the wheel
           # already exists on PyPI.
@@ -110,6 +146,7 @@ jobs:
   publish-docker:
     needs: prepare
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: release
     permissions:
       contents: read
@@ -172,7 +209,7 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.sha }}
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
@@ -186,7 +223,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -235,6 +272,7 @@ jobs:
       && needs.prepare.result == 'success'
       && needs.publish-docker.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: release
     permissions:
       contents: write
@@ -251,11 +289,11 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           resolution-strategy: lowest
 

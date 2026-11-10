@@ -156,6 +156,71 @@ def test_get_repo_settings_tree_defaults_to_default_branch(project):
     project.repository_tree.assert_called_once_with(ref=SHA_A, recursive=True, page=1, per_page=100)
 
 
+@pytest.mark.parametrize("root_resolved", [False, True])
+def test_get_repo_settings_tree_reuses_complete_paths(project, root_resolved):
+    provider = _provider_with_project(project)
+    if root_resolved:
+        provider._resolved_config_branch = SHA_A
+    first_page = [{"type": "blob", "path": "README.md"}] * 99 + [
+        {"type": "blob", "path": "sub/.pr_agent.toml"}]
+    project.repository_tree.side_effect = lambda **kwargs: first_page if kwargs["page"] == 1 else []
+    settings = MagicMock()
+    settings.config.per_directory_settings_max_tree_pages = 2
+
+    with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
+        paths, ref = provider.get_repo_settings_tree()
+        assert (paths, ref) == (["sub/.pr_agent.toml"], SHA_A)
+        paths.clear()
+        assert provider.get_repo_settings_tree() == (["sub/.pr_agent.toml"], SHA_A)
+        assert provider.get_repo_settings_tree() == (["sub/.pr_agent.toml"], SHA_A)
+        provider._repo_settings_failed = True
+        assert provider.get_repo_settings_tree() == ([], "")
+
+    assert project.repository_tree.call_args_list == [
+        call(ref=SHA_A, recursive=True, page=1, per_page=100),
+        call(ref=SHA_A, recursive=True, page=2, per_page=100),
+    ]
+
+
+@pytest.mark.parametrize(("next_ref", "next_limit", "expected_calls"), [
+    (SHA_B, 1, 2), (SHA_A, 2, 2), (SHA_A, True, 1),
+])
+def test_get_repo_settings_tree_cache_respects_revision_and_page_limit(project, next_ref, next_limit, expected_calls):
+    provider = _provider_with_project(project)
+    provider._resolved_config_branch = SHA_A
+    project.repository_tree.return_value = [{"type": "blob", "path": "sub/.pr_agent.toml"}]
+    settings = MagicMock()
+    settings.config.per_directory_settings_max_tree_pages = 1
+
+    with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
+        assert provider.get_repo_settings_tree() == (["sub/.pr_agent.toml"], SHA_A)
+        assert provider.get_repo_settings_tree() == (["sub/.pr_agent.toml"], SHA_A)
+        assert project.repository_tree.call_count == 1
+        provider._resolved_config_branch = next_ref
+        settings.config.per_directory_settings_max_tree_pages = next_limit
+        expected_paths = [] if isinstance(next_limit, bool) else ["sub/.pr_agent.toml"]
+        assert provider.get_repo_settings_tree() == (expected_paths, next_ref)
+
+    assert project.repository_tree.call_count == expected_calls
+
+
+@pytest.mark.parametrize("first_page_size", [0, 100])
+def test_get_repo_settings_tree_retries_empty_or_incomplete_discovery(project, first_page_size):
+    provider = _provider_with_project(project)
+    provider._resolved_config_branch = SHA_A
+    complete_page = [{"type": "blob", "path": "sub/.pr_agent.toml"}]
+    project.repository_tree.side_effect = [complete_page * first_page_size, complete_page]
+    settings = MagicMock()
+    settings.config.per_directory_settings_max_tree_pages = 1
+
+    with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
+        assert provider.get_repo_settings_tree() == ([], SHA_A)
+        assert provider.get_repo_settings_tree() == (["sub/.pr_agent.toml"], SHA_A)
+        assert provider.get_repo_settings_tree() == (["sub/.pr_agent.toml"], SHA_A)
+
+    assert project.repository_tree.call_count == 2
+
+
 def test_get_repo_settings_tree_retries_default_branch_when_explicit_ref_is_missing(project):
     project.repository_tree.side_effect = [
         GitlabGetError("404 Tree Not Found", response_code=404),

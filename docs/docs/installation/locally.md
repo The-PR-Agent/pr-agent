@@ -29,6 +29,12 @@ To invoke a tool (for example `review`), you can run PR-Agent directly from the 
     -e GITHUB__BASE_URL=https://github.mycompany.com/api/v3
     ```
 
+    For GitHub Enterprise Cloud with data residency (GHE.com), use the API host instead:
+
+    ```bash
+    -e GITHUB__BASE_URL=https://api.mycompany.ghe.com
+    ```
+
 - For GitLab:
 
     ```bash
@@ -81,7 +87,7 @@ OPENAI__KEY="<your key>"
 Then, you can run `pr_agent` using Docker with the following command:
 
 ```shell
-docker run --rm -it --env-file .env pragent/pr-agent:latest <tool> <tool parameter>
+docker run --rm -it --env-file .env pragent/pr-agent:latest --pr_url <pr_url> <tool> <tool parameter>
 ```
 
 ---
@@ -118,11 +124,11 @@ from pr_agent.config_loader import get_settings
 
 def main():
     # Fill in the following values
-    provider = "github" # github/gitlab/bitbucket/azure_devops
+    provider = "github" # github/gitlab/bitbucket/azure
     user_token = "..."  #  user token
     openai_key = "..."  # OpenAI key
     pr_url = "..."      # PR URL, for example 'https://github.com/the-pr-agent/pr-agent/pull/809'
-    command = "/review" # Command to run (e.g. '/review', '/describe', '/ask="What is the purpose of this PR?"', ...)
+    command = "/review" # Command to run (e.g. '/review', '/describe', '/ask "What is the purpose of this PR?"', ...)
 
     # Setting the configurations
     get_settings().set("CONFIG.git_provider", provider)
@@ -136,6 +142,8 @@ def main():
 if __name__ == '__main__':
     raise SystemExit(main())
 ```
+
+For other providers, change `provider` to its provider ID (for example, `gitlab`, `bitbucket`, or `azure`) and replace `github.user_token` with that provider's required credentials and connection settings.
 
 With `config.propagate_tool_errors` enabled, forwarding the return value through `SystemExit` makes this script exit with status 1 after a propagated tool error. The default remains status 0.
 
@@ -151,40 +159,40 @@ This does not change how interactive PR comments are parsed.
 
 1. Clone this repository:
 
-```bash
-git clone https://github.com/the-pr-agent/pr-agent.git
-```
+   ```bash
+   git clone https://github.com/the-pr-agent/pr-agent.git
+   ```
 
 2. Navigate to the `/pr-agent` folder and install dependencies with [uv](https://docs.astral.sh/uv/) (creates a `.venv` from `uv.lock`):
 
-```bash
-uv sync
-```
+   ```bash
+   uv sync
+   ```
 
-*Note: If you get an error related to Rust in the dependency installation then make sure Rust is installed and in your `PATH`, instructions: https://rustup.rs*
+   *Note: If you get an error related to Rust in the dependency installation then make sure Rust is installed and in your `PATH`, instructions: https://rustup.rs*
 
 3. Copy the secrets template file and fill in your OpenAI key and your GitHub user token:
 
-```bash
-cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
-chmod 600 pr_agent/settings/.secrets.toml
-# Edit .secrets.toml file
-```
+   ```bash
+   cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
+   chmod 600 pr_agent/settings/.secrets.toml
+   # Edit .secrets.toml file
+   ```
 
 4. Run the cli.py script:
 
-```bash
-uv run pr-agent --pr_url <pr_url> review
-uv run pr-agent --pr_url <pr_url> ask "<your question>"
-uv run pr-agent --pr_url <pr_url> describe
-uv run pr-agent --pr_url <pr_url> improve
-uv run pr-agent --pr_url <pr_url> add_docs
-uv run pr-agent --pr_url <pr_url> generate_labels
-uv run pr-agent --issue_url <issue_url> similar_issue
-...
-```
+   ```bash
+   uv run pr-agent --pr_url <pr_url> review
+   uv run pr-agent --pr_url <pr_url> ask "<your question>"
+   uv run pr-agent --pr_url <pr_url> describe
+   uv run pr-agent --pr_url <pr_url> improve
+   uv run pr-agent --pr_url <pr_url> add_docs
+   uv run pr-agent --pr_url <pr_url> generate_labels
+   uv run pr-agent --issue_url <issue_url> similar_issue
+   ...
+   ```
 
-*Note: the `similar_issue` tool needs extra dependencies that a bare `uv sync` does not install. Install them with `uv sync --group similar-issue` before running it.*
+   *Note: the `similar_issue` tool needs extra dependencies that a bare `uv sync` does not install. Install them with `uv sync --group similar-issue` before running it.*
 
 [Optional] Add the pr_agent folder to your PYTHONPATH
 

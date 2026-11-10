@@ -214,10 +214,12 @@ async def test_auto_commands_use_provider_scope_reset_hook(monkeypatch):
     ("cached", "expected"),
     [
         ([], None),
-        (["cached"], ["cached"]),
+        (["cached"], None),
     ],
 )
-def test_default_command_reset_preserves_empty_only_behavior(cached, expected):
+def test_default_command_reset_drops_the_whole_cache(cached, expected):
+    # Since #4372 the base reset matches GitHub's: a non-empty diff belongs to the
+    # command that computed it and must not leak into the next auto command either.
     provider = SimpleNamespace(diff_files=list(cached))
 
     GitProvider.reset_diff_cache_for_command(provider)

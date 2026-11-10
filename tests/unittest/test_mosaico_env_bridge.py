@@ -217,5 +217,8 @@ class TestMosaicoLogContext:
 
     def test_empty_meta_is_clean_passthrough(self):
         # Must not raise and must yield even with empty meta and no context_id.
+        executed = False
         with mosaico_log_context({}, None):
-            pass
+            executed = True
+
+        assert executed is True

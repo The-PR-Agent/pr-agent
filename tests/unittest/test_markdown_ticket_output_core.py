@@ -99,13 +99,21 @@ class TestConvertToMarkdownV2Branches:
         assert convert_to_markdown_v2({}).strip() == ""
         assert convert_to_markdown_v2({"review": None}).strip() == ""
 
-    def test_incremental_review_header_and_note(self):
+    def test_incremental_review_header_and_note(self, monkeypatch):
         out = convert_to_markdown_v2(
             {"review": {"security_concerns": "No"}},
             incremental_review="2 commits",
         )
         assert "Incremental PR Reviewer Guide" in out
         assert "Review for commits since previous PR-Agent review 2 commits" in out
+
+        monkeypatch.setitem(get_settings().config, "bot_display_name", "Acme Bot")
+        custom_out = convert_to_markdown_v2(
+            {"review": {"security_concerns": "No"}},
+            incremental_review="2 commits",
+        )
+        assert "Review for commits since previous Acme Bot review 2 commits" in custom_out
+        assert "PR-Agent" not in custom_out
 
     def test_relevant_tests_yes_branch_gfm(self):
         out = convert_to_markdown_v2(
@@ -352,17 +360,25 @@ class TestTicketMarkdownLogic:
         assert "Compliant requirements:" in out
         assert "Non-compliant requirements:" in out
 
-    def test_mixed_full_and_not_compliant_renders_partial(self):
+    @pytest.mark.parametrize("partial", [False, True])
+    @pytest.mark.parametrize("reverse_order", [False, True])
+    @pytest.mark.parametrize("gfm_supported", [True, False])
+    def test_mixed_compliance_renders_partial(self, partial, reverse_order, gfm_supported):
         tickets = [
-            self._ticket(fully_compliant_requirements="- ok\n"),
+            self._ticket(
+                fully_compliant_requirements="- ok\n",
+                not_compliant_requirements="- missing\n" if partial else "",
+            ),
             self._ticket(
                 ticket_url="https://example.com/ticket/43",
                 not_compliant_requirements="- broken\n",
             ),
         ]
-        out = ticket_markdown_logic("🎫", "", tickets, True)
-        # Mix of Fully compliant + Not compliant ⇒ overall Partially compliant 🔶.
+        if reverse_order:
+            tickets.reverse()
+        out = ticket_markdown_logic("🎫", "", tickets, gfm_supported)
         assert "Ticket compliance analysis 🔶" in out
+        assert get_settings().get("config.extra_statistics.compliance_level") == "Partially compliant"
         # Both ticket id slugs are rendered.
         assert "[42](https://example.com/ticket/42)" in out
         assert "[43](https://example.com/ticket/43)" in out
@@ -605,7 +621,7 @@ class TestFindJiraTickets:
         assert find_jira_tickets("nothing here") == []
 
     def test_short_uppercase_prefix_not_matched(self):
-        # Requires at least 2 uppercase letters; single-letter prefixes ignored.
+        # Requires a prefix of at least 2 characters; single-letter prefixes ignored.
         assert find_jira_tickets("A-1 should not match") == []
 
     def test_deduplicates_repeated_tickets(self):

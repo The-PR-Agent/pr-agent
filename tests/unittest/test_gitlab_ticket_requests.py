@@ -2,6 +2,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 from urllib.parse import urlparse
 
 import gitlab
@@ -9,6 +10,7 @@ import pytest
 import requests
 from requests.adapters import BaseAdapter
 
+from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools import ticket_pr_compliance_check as tickets
 
 
@@ -60,12 +62,12 @@ def provider_factory(monkeypatch):
         sessions.append(session)
         client = gitlab.Gitlab("https://gitlab.example/gitlab", private_token=token, session=session,
                                retry_transient_errors=retry)
-        provider = SimpleNamespace(
-            gl=client, id_project="group/repo", gitlab_url="https://gitlab.example/gitlab",
-            get_user_description=lambda: description,
-            supports_issue_url_tickets=lambda: False,
-            supports_issue_reference_tickets=lambda: True,
-        )
+        provider = GitLabProvider.__new__(GitLabProvider)
+        provider.gl = client
+        provider.id_project = "group/repo"
+        provider.gitlab_url = "https://gitlab.example/gitlab"
+        provider.user_description = description
+        provider.mr = SimpleNamespace(title="", description=description, author={"id": 42})
         return provider, transport
 
     yield make
@@ -74,14 +76,14 @@ def provider_factory(monkeypatch):
 
 
 async def test_extract_issues_without_project_metadata(provider_factory):
-    provider, transport = provider_factory("Fixes #1 #2 other/sub/project#3 #4 #1")
+    provider, transport = provider_factory("Fixes #1 #2 #4 #1")
     result = await tickets.extract_tickets(provider)
 
-    assert [ticket["ticket_id"] for ticket in result] == [1, 2, 3]
+    assert [ticket["ticket_id"] for ticket in result] == [1, 2, 4]
     assert [urlparse(request.url).path for request in transport.requests] == [
         "/gitlab/api/v4/projects/group%2Frepo/issues/1",
         "/gitlab/api/v4/projects/group%2Frepo/issues/2",
-        "/gitlab/api/v4/projects/other%2Fsub%2Fproject/issues/3",
+        "/gitlab/api/v4/projects/group%2Frepo/issues/4",
     ]
     assert all(request.headers["PRIVATE-TOKEN"] == "offline-token" for request in transport.requests)
     assert all(ticket["body"] == "x" * tickets.MAX_TICKET_CHARACTERS + "..." for ticket in result)
@@ -198,3 +200,89 @@ async def test_other_ticket_integrations_remain_outside_gitlab_success_limit(pro
     result = await tickets.extract_tickets(provider)
     assert [ticket["ticket_id"] for ticket in result] == [2, 3, 4, "asana-1", "jira-1"]
     assert len(transport.requests) == 4
+
+
+def _sibling_project(path="group/sub/project", visibility="public", confidential=False):
+    project = Mock()
+    project.path_with_namespace = path
+    project.visibility = visibility
+    project.issues.get.return_value = SimpleNamespace(
+        iid=3,
+        web_url="https://gitlab.example/group/sub/project/-/issues/3",
+        title="Issue 3",
+        description="sibling issue",
+        labels=["bug"],
+        confidential=confidential,
+    )
+    return project
+
+
+async def test_allowlisted_sibling_issue_is_fetched(provider_factory, monkeypatch):
+    provider, transport = provider_factory("Fixes other/sub/project#3")
+    project = _sibling_project()
+    monkeypatch.setattr(provider, "_project_by_path", Mock(return_value=project))
+    monkeypatch.setattr(provider, "get_owning_namespace", Mock(return_value="group"))
+    monkeypatch.setattr(provider, "is_sibling_repo_allowed", Mock(return_value=True))
+
+    result = await tickets.extract_tickets(provider)
+
+    assert [ticket["ticket_id"] for ticket in result] == [3]
+    assert transport.requests == []
+    project.issues.get.assert_called_once_with(3)
+
+
+async def test_confidential_sibling_issue_is_skipped(provider_factory, monkeypatch):
+    provider, transport = provider_factory("Fixes other/sub/project#3")
+    project = _sibling_project(confidential=True)
+    monkeypatch.setattr(provider, "_project_by_path", Mock(return_value=project))
+    monkeypatch.setattr(provider, "get_owning_namespace", Mock(return_value="group"))
+    monkeypatch.setattr(provider, "is_sibling_repo_allowed", Mock(return_value=True))
+
+    with patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as logger:
+        result = await tickets.extract_tickets(provider)
+
+    assert result == []
+    assert transport.requests == []
+    project.issues.get.assert_called_once_with(3)
+    logger.return_value.warning.assert_called_once_with(
+        "Ignoring confidential cross-project GitLab issue: other/sub/project#3"
+    )
+
+
+async def test_unapproved_sibling_issue_is_not_resolved(provider_factory, monkeypatch):
+    provider, transport = provider_factory("Fixes other/sub/project#3")
+    project_by_path = Mock()
+    monkeypatch.setattr(provider, "_project_by_path", project_by_path)
+    monkeypatch.setattr(provider, "is_sibling_repo_allowed", Mock(return_value=False))
+
+    with patch("pr_agent.git_providers.gitlab_provider.get_logger") as logger:
+        result = await tickets.extract_tickets(provider)
+
+    assert result == []
+    assert transport.requests == []
+    project_by_path.assert_not_called()
+    logger.return_value.warning.assert_called_once_with(
+        "Ignoring sibling repo absent from the host allowlist: other/sub/project"
+    )
+
+
+@pytest.mark.parametrize("owning_namespace, visibility, access_level", [
+    ("other-group", "public", None),
+    ("group", "private", 10),
+])
+async def test_unauthorized_sibling_issue_is_skipped(
+    provider_factory, monkeypatch, owning_namespace, visibility, access_level
+):
+    provider, transport = provider_factory("Fixes other/sub/project#3")
+    project = _sibling_project(visibility=visibility)
+    if access_level is not None:
+        project.members_all.get.return_value = SimpleNamespace(access_level=access_level)
+    monkeypatch.setattr(provider, "_project_by_path", Mock(return_value=project))
+    monkeypatch.setattr(provider, "get_owning_namespace", Mock(return_value=owning_namespace))
+    monkeypatch.setattr(provider, "is_sibling_repo_allowed", Mock(return_value=True))
+
+    result = await tickets.extract_tickets(provider)
+
+    assert result == []
+    assert transport.requests == []
+    project.issues.get.assert_not_called()

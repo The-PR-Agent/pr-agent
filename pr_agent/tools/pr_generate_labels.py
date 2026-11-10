@@ -11,18 +11,33 @@ from pr_agent.algo.pr_processing import (
     FallbackEligibleError,
     get_pr_diff,
     retry_with_fallback_models,
+    run_diff_preparation,
 )
-from pr_agent.algo.run_details import record_command_failure
+from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
+from pr_agent.algo.run_details import get_run_details, record_command_failure
 from pr_agent.algo.token_budget import AttemptTokenBudget
-from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import filter_generated_labels, get_user_labels, load_yaml, set_custom_labels
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import get_git_provider
+from pr_agent.git_providers import get_git_provider_for_tool
 from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError, get_main_pr_language
 from pr_agent.log import get_logger
 
 
 class PRGenerateLabels:
+    @staticmethod
+    def _write_json_output(labels: list[str]) -> None:
+        if not review_json_output_path.get():
+            return
+        details = get_run_details()
+        usage = {}
+        if details is not None and details.has_token_usage:
+            usage = {
+                "prompt_tokens": details.prompt_tokens,
+                "completion_tokens": details.completion_tokens,
+                "total_tokens": details.total_tokens,
+            }
+        write_review_json_output({"labels": labels, "usage": usage})
+
     def __init__(self, pr_url: str, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         """
@@ -33,7 +48,7 @@ class PRGenerateLabels:
             args (list, optional): List of arguments passed to the PRGenerateLabels class. Defaults to None.
         """
         # Initialize the git provider and main PR language
-        self.git_provider = get_git_provider()(pr_url)
+        self.git_provider = get_git_provider_for_tool(pr_url)
         self.main_pr_language = get_main_pr_language(
             self.git_provider.get_languages(), self.git_provider.get_files()
         )
@@ -55,14 +70,6 @@ class PRGenerateLabels:
             "enable_custom_labels": get_settings().config.enable_custom_labels,
             "custom_labels_class": "",  # will be filled if necessary in 'set_custom_labels' function
         }
-
-        # Initialize the token handler
-        self.token_handler = TokenHandler(
-            getattr(self.git_provider, "pr", None),
-            self.vars,
-            get_settings().pr_custom_labels_prompt.system,
-            get_settings().pr_custom_labels_prompt.user,
-        )
 
         # Initialize prediction state
         self.patches_diff = None
@@ -86,30 +93,29 @@ class PRGenerateLabels:
 
             get_logger().info(f"Preparing answer {self.pr_id}")
             if self.prediction is None:
+                self._write_json_output([])
                 return None
 
             pr_labels = self._prepare_labels()
             if not pr_labels and self.data and self.data.get("labels"):
                 # Preserve existing labels when all generated values are rejected.
                 get_logger().warning("Skipping label publish: all generated labels were rejected")
+                self._write_json_output([])
                 return ""
 
+            self._write_json_output(pr_labels)
             if get_settings().config.publish_output:
                 get_logger().info(f"Pushing labels {self.pr_id}")
 
                 if self.git_provider.is_supported("get_labels"):
-                    current_labels = self.git_provider.get_pr_labels()
+                    current_labels = self.git_provider.get_pr_labels(update=True)
                     if current_labels is None:
-                        # The read failed and there is no earlier snapshot to preserve user
-                        # labels from. publish_labels replaces the whole set, so publishing
-                        # now would delete every label a human added to the PR.
-                        get_logger().error(
-                            "Skipping label publish: existing labels could not be read, "
-                            "and publishing would remove them")
-                    else:
-                        user_labels = get_user_labels(current_labels)
-                        pr_labels = pr_labels + user_labels
-                        self.git_provider.publish_labels(pr_labels)
+                        raise RuntimeError("Existing PR labels could not be read; skipping label publication")
+                    user_labels = get_user_labels(current_labels)
+                    pr_labels = pr_labels + user_labels
+                    if set(pr_labels) != set(current_labels):
+                        if self.git_provider.publish_labels(pr_labels) is False:
+                            raise RuntimeError("Failed to publish PR labels")
                 elif pr_labels:
                     value = ', '.join(v for v in pr_labels)
                     pr_labels_text = f"## PR Labels:\n{value}\n"
@@ -119,6 +125,7 @@ class PRGenerateLabels:
             record_command_failure()
             if (
                 isinstance(e, IncompleteProviderPullRequestFilesError)
+                or review_json_output_path.get()
                 or get_settings().config.get("propagate_tool_errors", False)
             ):
                 raise
@@ -162,12 +169,20 @@ class PRGenerateLabels:
             ai_handler=self.ai_handler,
             output_token_reserve=output_token_reserve,
         )
-        patches_diff = get_pr_diff(
+        output = await run_diff_preparation(
+            get_pr_diff,
             self.git_provider,
             budget.token_handler,
             model,
+            return_remaining_files=True,
             output_token_reserve=output_token_reserve,
         )
+        patches_diff, remaining_files_list = output if isinstance(output, tuple) else (output, [])
+        if not patches_diff and not remaining_files_list:
+            # Every changed file was filtered out (lockfile, asset, ignore rule), so there is
+            # nothing to label. Skip the model chain instead of failing the command.
+            get_logger().info(f"PR has no analyzable files: {self.pr_id}, skipping generate_labels")
+            return
         if not patches_diff:
             raise FallbackEligibleError(f"No PR diff fits the /generate_labels request for {model}")
         fitted = budget.fit_prompt_variable(
@@ -177,6 +192,7 @@ class PRGenerateLabels:
             ai_handler=self.ai_handler,
             default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
             preserve_minimum=True,
+            require_full_text=True,
         )
         if fitted.optional_text != patches_diff:
             raise FallbackEligibleError(
@@ -210,6 +226,8 @@ class PRGenerateLabels:
             system=self._attempt_system_prompt,
             user=self._attempt_user_prompt,
         )
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"Labels response was truncated by {model}")
 
         return response
 

@@ -1,8 +1,8 @@
 # Pin the readable Lambda Python minor tag by immutable image digest.
 # Use Dependabot to refresh the pin and the CI version guard to keep the minor
 # aligned with docker/Dockerfile.
-FROM public.ecr.aws/lambda/python:3.14@sha256:b81a4aa3bc1d56999090333cefea611e5a84bb4e2638c1ae4107fdc9b8622da3 AS base
-COPY --from=ghcr.io/astral-sh/uv:0.12.10@sha256:2bb3ebca0a796a155094a27773d290c4b074572e6107f171d88d086682fd2500 /uv /uvx /bin/
+FROM public.ecr.aws/lambda/python:3.14@sha256:fc4e15a5e09e2c9b6184810ea0fdc87afe1c1c734c98cbe27d739a35c3f15e7e AS base
+COPY --from=ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff /uv /uvx /bin/
 
 # Use the cost map bundled with the litellm pinned in uv.lock so lambda images
 # behave as built rather than fetching today's remote data at import time.

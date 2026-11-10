@@ -23,6 +23,7 @@ from pr_agent.tools.ticket_pr_compliance_check import (
 # every test so values (e.g. JIRA_REQUIREMENTS_FIELD) don't leak between tests.
 _JIRA_KEYS = (
     "JIRA.JIRA_SITE",
+    "JIRA.CLOUD_ID",
     "JIRA.JIRA_API_EMAIL",
     "JIRA.JIRA_API_TOKEN",
     "JIRA.JIRA_REQUIREMENTS_FIELD",
@@ -94,6 +95,32 @@ class TestFindJiraTickets:
             "GHI-3 first, then https://acme.atlassian.net/browse/ABC-1, then DEF-2"
         )
         assert result == ["GHI-3", "ABC-1", "DEF-2"]
+
+    @pytest.mark.parametrize("text, expected", [
+        ("Fixes AB1-23", ["AB1-23"]),
+        ("feature/p2p-42-retry", ["P2P-42"]),
+        ("see https://acme.atlassian.net/browse/B2B-7 for details", ["B2B-7"]),
+        ("PROJ-12 and DEV2-5", ["PROJ-12", "DEV2-5"]),
+    ])
+    def test_project_key_with_digits(self, text, expected):
+        """Jira Cloud project keys may contain digits after the first letter (AB1, P2P, B2B)."""
+        assert find_jira_tickets(text) == expected
+
+    @pytest.mark.parametrize("text", ["A-1 should not match", "released 2026-11-03"])
+    def test_key_starts_with_a_letter_and_has_two_characters(self, text):
+        """A key is still a letter followed by 1-9 letters or digits, so a one-letter prefix
+        or a date is not a key."""
+        assert find_jira_tickets(text) == []
+
+    @pytest.mark.parametrize("text, expected", [
+        ("request id 4f3a9c1e-2716-4b9a-8e2f-0c6d5b7a9e31", []),
+        ("feature/authentication-2", []),
+        ("feature_abc-123", ["ABC-123"]),
+    ])
+    def test_key_does_not_start_inside_a_word(self, text, expected):
+        """A key cannot start in the middle of a run of letters and digits, so part of a hex ID
+        or of a long word is not a key, while an underscore still separates one."""
+        assert find_jira_tickets(text) == expected
 
 
 class TestExtractJiraTickets:
@@ -341,10 +368,30 @@ class TestExtractJiraTickets:
             extract_jira_tickets("OPS-3 SHA-256 PROJ-4")
         assert [call.args[0] for call in client.issue.call_args_list] == ["OPS-3", "PROJ-4"]
 
+    @pytest.mark.parametrize("entries, looked_up", [
+        (["B2B"], ["B2B-7"]),
+        (["B2B", "PROJ"], ["B2B-7", "PROJ-1"]),
+        ("B2B, PROJ", ["B2B-7", "PROJ-1"]),
+    ])
+    def test_project_keys_with_digits_are_valid_entries(self, entries, looked_up):
+        """Jira Cloud project keys may contain digits after the first letter, so "B2B" filters
+        like any other entry. It is not ignored as malformed, which would disable every lookup
+        when it is the only entry."""
+        self._configure_jira()
+        get_settings().set("JIRA.PROJECT_KEYS", entries)
+        client = self._fake_client()
+        with patch("atlassian.Jira", return_value=client), \
+                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+            result = extract_jira_tickets("B2B-7 uses SHA-256, see PROJ-1")
+        assert [call.args[0] for call in client.issue.call_args_list] == looked_up
+        assert [t["ticket_id"] for t in result] == looked_up
+        get_logger.return_value.warning.assert_not_called()
+
     @pytest.mark.parametrize("bad_entry", [
         "https://acme.atlassian.net/browse/PROJ",  # a URL, not a key
         "PROJ-123",                                # a ticket key, not a project key
         "P",                                       # too short to ever match a ticket
+        "2FA",                                     # starts with a digit, not a letter
         "PROJECT_KEY_TOO_LONG",                    # longer than the ticket pattern allows
         "pro j",                                   # whitespace
     ])
@@ -508,8 +555,9 @@ class TestExtractJiraTickets:
 class TestGetJiraClient:
     """Cloud client construction: site-name -> base URL, email+token auth, v2 pin."""
 
-    def _set(self, site=None, email=None, token=None):
+    def _set(self, site=None, email=None, token=None, cloud_id=None):
         get_settings().set("JIRA.JIRA_SITE", site if site is not None else "")
+        get_settings().set("JIRA.CLOUD_ID", cloud_id if cloud_id is not None else "")
         get_settings().set("JIRA.JIRA_API_EMAIL", email if email is not None else "")
         get_settings().set("JIRA.JIRA_API_TOKEN", token if token is not None else "")
 
@@ -522,6 +570,64 @@ class TestGetJiraClient:
             url="https://acme.atlassian.net", username="me@acme.com",
             password="token123", api_version="2",
         )
+
+    def test_scoped_token_builds_gateway_url(self):
+        self._set(
+            site="acme",
+            cloud_id="35273b54-3f06-40d2-880f-dd28cf8daafa",
+            email="me@acme.com",
+            token="token123",
+        )
+        with patch("atlassian.Jira") as jira_cls:
+            _get_jira_client()
+        jira_cls.assert_called_once_with(
+            url="https://api.atlassian.com/ex/jira/35273b54-3f06-40d2-880f-dd28cf8daafa",
+            username="me@acme.com",
+            password="token123",
+            api_version="2",
+        )
+
+    def test_scoped_token_keeps_site_ticket_url(self):
+        self._set(
+            site="acme",
+            cloud_id="35273b54-3f06-40d2-880f-dd28cf8daafa",
+            email="me@acme.com",
+            token="token123",
+        )
+        client = MagicMock()
+        client.issue.return_value = {"fields": {"summary": "Title", "description": "Body", "labels": []}}
+        with patch("atlassian.Jira", return_value=client):
+            result = extract_jira_tickets("ABC-123")
+        assert result[0]["ticket_url"] == "https://acme.atlassian.net/browse/ABC-123"
+
+    def test_numeric_site_keeps_ticket_url(self):
+        self._set(site=123, email="me@acme.com", token="token123")
+        client = MagicMock()
+        client.issue.return_value = {"fields": {"summary": "Title", "description": "Body", "labels": []}}
+        with patch("atlassian.Jira", return_value=client):
+            result = extract_jira_tickets("ABC-123")
+        assert result[0]["ticket_url"] == "https://123.atlassian.net/browse/ABC-123"
+
+    @pytest.mark.parametrize("cloud_id", ["not-a-uuid", 123, True])
+    def test_invalid_cloud_id_skips_lookup(self, cloud_id):
+        self._set(site="acme", cloud_id=cloud_id, email="me@acme.com", token="token123")
+        with patch("atlassian.Jira") as jira_cls, \
+                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_log:
+            assert _get_jira_client() is None
+        jira_cls.assert_not_called()
+        assert "Invalid jira.cloud_id" in get_log.return_value.warning.call_args.args[0]
+
+    @pytest.mark.parametrize("site", ["", "bad.site"])
+    def test_cloud_id_still_requires_a_valid_site(self, site):
+        self._set(
+            site=site,
+            cloud_id="35273b54-3f06-40d2-880f-dd28cf8daafa",
+            email="me@acme.com",
+            token="token123",
+        )
+        with patch("atlassian.Jira") as jira_cls:
+            assert _get_jira_client() is None
+        jira_cls.assert_not_called()
 
     def test_missing_atlassian_dependency_returns_none_with_install_hint(self):
         self._set(site="acme", email="me@acme.com", token="token123")

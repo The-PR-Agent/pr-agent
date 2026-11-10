@@ -14,6 +14,7 @@ permissions:
 jobs:
   docs:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -45,6 +46,7 @@ jobs:
     needs: docs
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

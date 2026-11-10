@@ -62,7 +62,7 @@ stages:
 ```
 
 This script will run PR-Agent on every new merge request, with the `improve`, `review`, and `describe` commands.
-Note that you need to export the `azure_devops__pat` and `OPENAI_KEY` variables in the Azure DevOps pipeline settings (Pipelines -> Library -> + Variable group):
+Note that you need to add the `azure_devops_pat` and `OPENAI_KEY` variables to the `pr_agent` variable group in the Azure DevOps pipeline settings (Pipelines -> Library -> + Variable group). The pipeline maps `azure_devops_pat` to the `azure_devops__pat` environment variable:
 
 <img src="/img/azure_devops_pipeline_secrets.png" alt="PR-Agent" width="468" />
 
@@ -106,6 +106,15 @@ in any case, 'org' value must be assigned in .secrets.toml:
 org = "https://dev.azure.com/YOUR_ORGANIZATION/"
 # pat = "YOUR_PAT_TOKEN" needed only if using PAT for authentication
 ```
+
+Persistent reviews resolve the posting account through Azure DevOps using the same credentials as comment writes.
+Repeated `/review` runs update that account's existing review without requiring an `agent_identity` setting,
+including when Jira ticket context is enabled. This applies to pipelines, CLI runs, and webhook deployments.
+If identity lookup is unavailable, configure `azure_devops_server.agent_identity` in the host environment or settings
+with the posting account's GUID, unique name, or descriptor. Repository settings and comment arguments cannot set it.
+An explicit setting takes precedence over automatic resolution; display names
+do not prove comment ownership. If ownership cannot be verified, an existing review is preserved and a standalone
+result is posted.
 
 ## Azure DevOps Webhook
 

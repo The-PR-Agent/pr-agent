@@ -16,8 +16,14 @@ _MAPPING_TOO_COMPLEX_ARG = '.mapping_value_too_complex'
 class CliArgs:
     @staticmethod
     def _host_only_setting_arg(arg: str) -> str | None:
-        """Return a protected setting token when a CLI arg targets a host-only key."""
-        setting_name = arg.lstrip('-').split('=', 1)[0].strip().replace('__', '.')
+        """Return a protected setting token when a CLI arg targets a host-only key.
+
+        Every whitespace character in the flag is removed before the section and key are
+        split, because ``update_settings_from_args`` strips the token parts before applying
+        them, so a name written e.g. ``--github. seconds_between_requests`` must validate as
+        the same host-only key it would set.
+        """
+        setting_name = ''.join(arg.lstrip('-').split('=', 1)[0].split()).replace('__', '.')
         section, separator, key = setting_name.partition('.')
         if not separator:
             if (section in REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION
@@ -174,7 +180,7 @@ class CliArgs:
             _encoded_args = (
                 'c2hhcmVkX3NlY3JldA==:dXNlcg==:c3lzdGVt'
                 ':ZW5hYmxlX2NvbW1lbnRfYXBwcm92YWw=:ZW5hYmxlX21hbnVhbF9hcHByb3ZhbA=='
-                ':ZW5hYmxlX2F1dG9fYXBwcm92YWw=:YXBwcm92ZV9wcl9vbl9zZWxmX3Jldmlldw=='
+                ':ZW5hYmxlX2F1dG9fYXBwcm92YWw='
                 ':YmFzZV91cmw=:dXJs:d2ViX3VybA==:YXBwX25hbWU=:c2VjcmV0X3Byb3ZpZGVy'
                 ':Z2l0X3Byb3ZpZGVy:c2tpcF9rZXlz:b3BlbmFpLmtleQ==:QU5BTFlUSUNTX0ZPTERFUg=='
                 ':dXJp:YXBwX2lk:d2ViaG9va19zZWNyZXQ=:YmVhcmVyX3Rva2Vu'
@@ -207,6 +213,13 @@ class CliArgs:
                     host_only_arg = CliArgs._host_only_setting_arg(arg_word)
                     if host_only_arg:
                         return False, host_only_arg
+                    # A flag name with whitespace never names a real setting, and applying one can
+                    # replace a whole section, so reject it outright. Checked before the mapping
+                    # branch below, whose `continue` would otherwise skip this validation for a
+                    # mapping-valued flag carrying a spaced key.
+                    flag_name = arg_word.split('=', 1)[0].rstrip()
+                    if flag_name != ''.join(flag_name.split()):
+                        return False, flag_name
                     # A mapping value sets many keys at once, so validate each nested
                     # section.key path against the host-only and forbidden lists instead of
                     # matching the value text, which may legitimately mention a key name.

@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.artifacts import get_artifact_context
 from pr_agent.algo.comment_identity import format_pr_questions_header
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
@@ -12,18 +13,28 @@ from pr_agent.algo.pr_processing import (
     FallbackEligibleError,
     get_pr_diff,
     retry_with_fallback_models,
+    run_diff_preparation,
 )
+from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details
-from pr_agent.algo.run_output import append_run_details
+from pr_agent.algo.run_output import append_run_details, push_outputs_async
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
-from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType, decode_user_text_args
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import get_git_provider
+from pr_agent.git_providers import get_git_provider_for_tool
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
+
+NO_ANALYZABLE_FILES_NOTE = (
+    "Every file changed in this PR is excluded from analysis (for example lockfiles, generated "
+    "files, or files matched by the ignore settings), so there is no diff to answer this question from."
+)
+REPO_CONTEXT_OMITTED_NOTE = (
+    "Repository instruction files were omitted because they did not fit the model context. "
+    "This answer does not use them."
+)
 
 
 def _sanitize_slash_commands(text: str) -> str:
@@ -38,7 +49,7 @@ class PRQuestions:
     def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         question_str = self.parse_args(args)
         self.pr_url = pr_url
-        self.git_provider = get_git_provider()(pr_url)
+        self.git_provider = get_git_provider_for_tool(pr_url)
         self.main_pr_language = get_main_pr_language(
             self.git_provider.get_languages(), self.git_provider.get_files()
         )
@@ -63,13 +74,13 @@ class PRQuestions:
             "commit_messages_str": self.git_provider.get_commit_messages(),
             "extra_instructions": settings.pr_questions.extra_instructions,
             "skills_context": skills_context,
+            "artifact_context": get_artifact_context("pr_questions"),
+            "repo_context": "",
         }
-        self.token_handler = TokenHandler(self.git_provider.pr,
-                                          self.vars,
-                                          get_settings().pr_questions_prompt.system,
-                                          get_settings().pr_questions_prompt.user)
         self.patches_diff = None
         self.prediction = None
+        self.no_analyzable_files = False
+        self._repo_context: str | None = None
 
     def parse_args(self, args):
         return decode_user_text_args(args)
@@ -94,6 +105,15 @@ class PRQuestions:
 
             await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
 
+            if getattr(self, "no_analyzable_files", False):
+                # No model was called, so there are no run details to report.
+                note = self._prepare_no_analyzable_files_answer()
+                if get_settings().config.publish_output:
+                    await self._publish_answer_with_sinks(note, NO_ANALYZABLE_FILES_NOTE)
+                else:
+                    get_settings().set("data.answer", NO_ANALYZABLE_FILES_NOTE)
+                return ""
+
             pr_comment = self._prepare_pr_answer()
             get_logger().debug("PR output", artifact=pr_comment)
 
@@ -103,7 +123,9 @@ class PRQuestions:
                 pr_comment += "\n</details>\n"
 
             if get_settings().config.publish_output:
-                self._publish_answer(append_run_details(pr_comment, self.git_provider))
+                await self._publish_answer_with_sinks(
+                    append_run_details(pr_comment, self.git_provider), (self.prediction or "").strip()
+                )
             else:
                 get_settings().set("data.answer", (self.prediction or "").strip())
         finally:
@@ -115,6 +137,13 @@ class PRQuestions:
                         f"Failed to remove the temporary question comment: {cleanup_error}"
                     )
         return ""
+
+    async def _publish_answer_with_sinks(self, comment: str, answer: str):
+        await push_outputs_async(
+            "ask", payload={"question": self.question_str, "answer": answer},
+            markdown=self._format_answer(_sanitize_slash_commands(answer)), git_provider=self.git_provider,
+        )
+        return self._publish_answer(comment)
 
     def _publish_answer(self, answer: str):
         comment_id = get_settings().get("comment_id", "")
@@ -177,6 +206,7 @@ class PRQuestions:
 
     async def _prepare_prediction(self, model: str):
         variables = copy.deepcopy(self.vars)
+        repo_context_omitted = False
         raw_history = variables.get("conversation_history", "")
         variables["conversation_history"] = ""
         image_path = variables.get("img_path")
@@ -220,12 +250,21 @@ class PRQuestions:
             OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
             preserve_minimum=True,
         )
-        patches_diff = get_pr_diff(
+        output = await run_diff_preparation(
+            get_pr_diff,
             self.git_provider,
             budget.token_handler,
             model,
+            return_remaining_files=True,
             output_token_reserve=output_token_reserve,
         )
+        patches_diff, remaining_files_list = output if isinstance(output, tuple) else (output, [])
+        if not patches_diff and not remaining_files_list:
+            # Every changed file was filtered out (lockfile, asset, ignore rule), so no model can
+            # answer from the diff. Reply with a note instead of failing every model in the chain.
+            get_logger().info(f"PR has no analyzable files: {self.pr_url}, answering /ask with a note")
+            self.no_analyzable_files = True
+            return
         if not patches_diff:
             raise FallbackEligibleError(f"No PR diff fits the /ask request for {model}")
 
@@ -237,17 +276,42 @@ class PRQuestions:
             default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
             preserve_minimum=True,
             image_path=image_path,
+            require_full_text=True,
         )
         if fitted.optional_text != patches_diff:
             raise FallbackEligibleError(
                 f"The complete packed question diff does not fit the token limit for {model}"
             )
-        self.patches_diff = fitted.optional_text
+        if getattr(self, "_repo_context", None) is None:
+            self._repo_context = await run_diff_preparation(build_repo_context, self.git_provider)
+        if self._repo_context:
+            # Use only the room left after selecting the original history and complete diff.
+            variables["diff"] = patches_diff
+            try:
+                fitted = budget.fit_prompt_variable(
+                    variables,
+                    "repo_context",
+                    self._repo_context,
+                    ai_handler=self.ai_handler,
+                    default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+                    preserve_minimum=True,
+                    image_path=image_path,
+                    require_full_text=True,
+                )
+            except FallbackEligibleError:
+                repo_context_omitted = True
+                get_logger().warning("Repository instructions do not fit; keeping the existing question context")
+            else:
+                variables["repo_context"] = self._repo_context
+
+        self.patches_diff = patches_diff
         self._attempt_system_prompt = fitted.system_prompt
         self._attempt_user_prompt = fitted.user_prompt
         self._attempt_variables = variables
         get_logger().debug("PR diff", artifact=self.patches_diff)
         self.prediction = await self._get_prediction(model)
+        if repo_context_omitted:
+            self.prediction = f"{self.prediction.rstrip()}\n\n> {REPO_CONTEXT_OMITTED_NOTE}"
 
     async def _get_prediction(self, model: str):
         system_prompt = self._attempt_system_prompt
@@ -261,6 +325,8 @@ class PRQuestions:
         else:
             response, finish_reason = await self.ai_handler.chat_completion(
                 model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+        if finish_reason == "length":
+            raise FallbackEligibleError(f"The /ask response was truncated by {model}")
         return response
 
     def _prepare_pr_answer(self) -> str:
@@ -269,9 +335,15 @@ class PRQuestions:
         if model_answer_sanitized != model_answer:
             get_logger().debug("Sanitized model answer",
                                artifact={"model_answer": model_answer, "sanitized_answer": model_answer_sanitized})
+        return self._format_answer(model_answer_sanitized)
+
+    def _prepare_no_analyzable_files_answer(self) -> str:
+        return self._format_answer(NO_ANALYZABLE_FILES_NOTE)
+
+    def _format_answer(self, answer: str) -> str:
         answer_header = format_pr_questions_header(
             escape_markdown=self.git_provider.is_supported("markdown_backslash_escapes")
         )
         answer_str = f"{answer_header}\n{_sanitize_slash_commands(self.question_str)}\n\n"
-        answer_str += f"### **Answer:**\n{model_answer_sanitized}\n\n"
+        answer_str += f"### **Answer:**\n{answer}\n\n"
         return answer_str

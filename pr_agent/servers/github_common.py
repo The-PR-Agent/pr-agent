@@ -8,18 +8,13 @@ JSON and overrides GITHUB.DEPLOYMENT_TYPE to "app".
 
 from typing import Any
 
+from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.config_loader import get_settings
 from pr_agent.servers.utils import is_ask_command_comment
 
 
 def _normalise_setting_list(value):
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, (list, tuple, set)):
-        return list(value)
-    return [value]
+    return normalize_setting_list(value)
 
 
 def matches_review_state(review_state: Any, configured_states: Any) -> bool:

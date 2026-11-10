@@ -66,7 +66,7 @@ def test_find_linear_links_deduplicates_identity_in_description_order():
     second = "https://linear.app/acme/issue/LONGTEAMKEY-42"
     text = f"[{first}]({first}) {URL} {other_workspace} <{second}> ENG-999"
     assert tpc.find_linear_tickets(text) == [first, other_workspace, second]
-    assert tpc._get_linear_issue_identifier(first) == "ENG-123"
+    assert tpc._get_linear_issue_identity(first)[1] == "ENG-123"
 
 
 @pytest.mark.parametrize("text", [None, "", "ENG-123", "feature/ENG-123"])
@@ -86,7 +86,7 @@ def test_no_inferred_linear_references(text):
 def test_reject_noncanonical_linear_destinations(url):
     assert tpc.find_linear_tickets(url) == []
     with pytest.raises(ValueError):
-        tpc._get_linear_issue_identifier(url)
+        tpc._get_linear_issue_identity(url)
 
 
 @pytest.mark.parametrize(("value", "expected"), [

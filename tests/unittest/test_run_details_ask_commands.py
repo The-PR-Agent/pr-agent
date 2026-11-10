@@ -1,5 +1,7 @@
 """Run-details coverage for /ask (/ask_question) and /ask_line."""
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from pr_agent.config_loader import get_settings
@@ -126,6 +128,9 @@ def _make_ask_line(answer, fail_primary=False, provider=None, resolve_threads=Fa
     settings.set("side", "RIGHT")
     tool = PR_LineQuestions.__new__(PR_LineQuestions)
     tool.question_str = "Why rename this?"
+    tool.ai_handler = None
+    tool._ai_handler_factory = MagicMock(return_value=MagicMock())
+    tool.main_pr_language = "python"
     tool.git_provider = provider or _provider()
     tool.resolve_threads = resolve_threads
     tool.vars = {"resolve_threads": resolve_threads, "conversation_history": ""}
@@ -161,6 +166,7 @@ async def test_ask_line_plain_comment_reports_the_fallback_model():
     assert body.startswith("Renamed for clarity.")
     assert body.count(TITLE) == 1
     assert f"Model: {BACKUP} (fallback)" in body
+    tool._ai_handler_factory.assert_called_once_with()
 
 
 async def test_ask_line_omits_run_details_when_disabled():
@@ -184,3 +190,4 @@ async def test_ask_line_without_a_matching_hunk_has_no_run_details():
     assert body.startswith("Could not find the requested lines")
     assert TITLE not in body
     assert tool._get_prediction.attempts == []
+    tool._ai_handler_factory.assert_not_called()

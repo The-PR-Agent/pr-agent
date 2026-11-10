@@ -41,8 +41,6 @@ Under the section `[pr_add_docs]`, the following options are available:
 |--------|------|---------|-------------|
 | `extra_instructions` | string | `""` | Additional instructions for the AI model |
 | `docs_style` | string | `"Sphinx"` | Documentation style for Python. Options: `"Sphinx"`, `"Google Style with Args, Returns, Attributes...etc"`, `"Numpy Style"`, `"PEP257"`, `"reStructuredText"` |
-| `file` | string | `""` | Specific file to document (useful when multiple components have the same name) |
-| `class_name` | string | `""` | Specific class name to target (useful when methods have the same name in the same file) |
 
 ### Example configuration
 
@@ -68,7 +66,22 @@ You can pass configuration options directly in the command:
 2. It uses AI to generate appropriate documentation based on the code context and language
 3. Documentation suggestions are published as inline code suggestions that can be applied with a single click
 
+### Model response failures
+
+Each model response is validated before it is accepted. Missing content or an
+invalid documentation structure triggers the next model in `CONFIG.FALLBACK_MODELS`,
+if configured. An explicit empty list or `Code Documentation: null` is a valid
+empty result and does not trigger another model call.
+
+If all model attempts fail, PR-Agent records the command as failed and removes
+the temporary progress comment. With `CONFIG.PUBLISH_OUTPUT` enabled, it also
+attempts to post **Failed to generate code documentation for this PR.**
+
 ### Publication failures
+
+Suggestions are skipped if their original source line cannot be reliably retained,
+including when file content is unavailable or incomplete. Valid suggestions in the
+same response can still be published.
 
 With `CONFIG.PUBLISH_OUTPUT` enabled, PR-Agent retries unsuccessful batch
 publication one suggestion at a time. If the batch and every individual retry

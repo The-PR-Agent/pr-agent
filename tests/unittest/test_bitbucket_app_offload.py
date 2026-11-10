@@ -1,7 +1,10 @@
+import tomllib
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import pr_agent
 from pr_agent.servers import bitbucket_app
 
 
@@ -198,3 +201,14 @@ async def test_push_validation_handles_request_timeout(monkeypatch):
     func, _, kwargs = calls[0]
     assert func is bitbucket_app.requests.get
     assert kwargs["timeout"] == 30
+
+
+def test_secrets_template_declares_app_key_where_the_app_reads_it():
+    """The app reads bitbucket.app_key, so a copied template must provide it there."""
+    template_path = Path(pr_agent.__file__).parent / "settings" / ".secrets_template.toml"
+    with open(template_path, "rb") as f:
+        template = tomllib.load(f)
+
+    assert "app_key" in template["bitbucket"]
+    assert "app_key" not in template["bitbucket_server"]
+    assert "url" in template["bitbucket_server"]

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from pr_agent.algo.comment_identity import PRReviewHeader
+from pr_agent.algo.findings import Finding
 from pr_agent.algo.inline_comment_dedup import key_issue_body_with_markers
 from pr_agent.algo.review_finding_state import (
     normalize_finding,
@@ -66,8 +67,13 @@ def test_gitlab_key_issue_resolved_by_a_human_is_dismissed_with_the_last_reply()
     ], "human")
 
     assert _reviewer(_gitlab_provider([human]))._load_dismissed_key_issues() == [
-        {"path": "app.py", "body": _KEY_ISSUE_BODY, "line_start": 2, "line_end": 2,
-         "reply": "By design: the caller releases it."},
+        Finding(
+            path="app.py",
+            body=_KEY_ISSUE_BODY,
+            line_start=2,
+            line_end=2,
+            reply="By design: the caller releases it.",
+        ),
     ]
 
 
@@ -156,9 +162,9 @@ def test_dismissed_finding_missing_from_the_state_is_rendered_within_the_budget(
 
 def test_previous_findings_context_feeds_human_resolved_gitlab_threads(monkeypatch):
     settings = get_settings()
-    monkeypatch.setattr(settings.config, "publish_output", True)
-    monkeypatch.setattr(settings.pr_reviewer, "persistent_comment", True)
-    monkeypatch.setattr(settings.pr_reviewer, "persistent_finding_state", True)
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.pr_reviewer, "persistent_comment", True)
+    monkeypatch.setitem(settings.pr_reviewer, "persistent_finding_state", True)
     state = reconcile_review_findings(
         None, [{"path": "app.py", "body": _KEY_ISSUE_BODY, "line_start": 2, "line_end": 2}],
         allow_resolution=False, head_sha="head-1").state

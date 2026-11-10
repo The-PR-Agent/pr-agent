@@ -57,7 +57,7 @@ class RunDetails:
     # price a successful response with a positive amount. Use the known-call count to
     # distinguish priced calls from missing pricing data. Retain per-model totals to
     # keep fallback and multi-call runs auditable.
-    total_cost_usd: Decimal = field(default_factory=lambda: Decimal("0"))
+    total_cost_usd: Decimal = field(default_factory=lambda: Decimal(0))
     known_cost_call_count: int = 0
     model_costs_usd: dict[str, Decimal] = field(default_factory=dict)
     # Monotonic reference taken when the collector is installed, i.e. at the top of the
@@ -136,7 +136,7 @@ def _read_token_field(usage, name: str) -> int:
         value = usage.get(name)
     else:
         value = getattr(usage, name, None)
-    return value if isinstance(value, int) else 0
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
 def _read_cache_token_field(usage, public_name: str, private_name: str) -> int:
@@ -175,7 +175,7 @@ def _read_cache_token_field(usage, public_name: str, private_name: str) -> int:
                     value = getattr(details, "cached_tokens", None)
                 if value is not None:
                     break
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
 def add_token_usage(usage) -> None:
@@ -231,4 +231,4 @@ def record_ai_call(usage=None, model: str | None = None, cost_usd=None) -> None:
         details.total_cost_usd += cost
         details.known_cost_call_count += 1
         model_name = model or "unknown"
-        details.model_costs_usd[model_name] = details.model_costs_usd.get(model_name, Decimal("0")) + cost
+        details.model_costs_usd[model_name] = details.model_costs_usd.get(model_name, Decimal(0)) + cost

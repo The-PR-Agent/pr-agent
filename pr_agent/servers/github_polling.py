@@ -11,7 +11,6 @@ import aiohttp
 from starlette_context import request_cycle_context
 
 from pr_agent.agent.pr_agent import PRAgent
-from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
@@ -21,8 +20,7 @@ from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 
-setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
-NOTIFICATION_URL = "https://api.github.com/notifications"
+setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
 DEFAULT_POLLING_REQUEST_TIMEOUT = 10
 MAX_POLLING_REQUEST_TIMEOUT = 60
 POLLING_CAPACITY_CHECK_INTERVAL = 0.25
@@ -50,6 +48,12 @@ def _pr_comments_url(pr_url: str) -> str:
     return f"{base}/issues/{number}/comments" if sep else f"{pr_url}/comments"
 
 
+def _notifications_url() -> str:
+    """Notifications endpoint on the configured GitHub API host (github.com, GHES or GHE.com)."""
+    base_url = global_settings.get("GITHUB.BASE_URL", "https://api.github.com").rstrip("/")
+    return f"{base_url}/notifications"
+
+
 def _get_polling_request_timeout() -> float:
     """Bound the timeout for notification fallback requests."""
     value = global_settings.get("github.polling_request_timeout", DEFAULT_POLLING_REQUEST_TIMEOUT)
@@ -65,6 +69,41 @@ def _get_polling_request_timeout() -> float:
     if timeout > MAX_POLLING_REQUEST_TIMEOUT:
         get_logger().warning(f"Capping github.polling_request_timeout at {MAX_POLLING_REQUEST_TIMEOUT} seconds")
     return min(timeout, float(MAX_POLLING_REQUEST_TIMEOUT))
+
+
+def _normalize_repository_name(full_name) -> str | None:
+    """Return a canonical owner/repo name, or None when it is not usable."""
+    if not isinstance(full_name, str):
+        return None
+    parts = full_name.strip().strip("/").split("/")
+    if len(parts) != 2 or not all(parts):
+        return None
+    return "/".join(parts).casefold()
+
+
+def _get_polling_repositories() -> frozenset[str]:
+    """Return the host allowlist of repositories whose mentions polling may handle."""
+    value = global_settings.get("github.polling_repositories", [])
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        get_logger().warning(
+            "Invalid github.polling_repositories; expected a list of owner/repo entries"
+        )
+        return frozenset()
+    return frozenset(
+        repository
+        for entry in value
+        if (repository := _normalize_repository_name(entry))
+    )
+
+
+def _is_polling_repository_allowed(notification) -> bool:
+    """Fail closed unless the notification names an allowlisted repository."""
+    repository = notification.get("repository")
+    if not isinstance(repository, dict):
+        return False
+    return _normalize_repository_name(repository.get("full_name")) in _get_polling_repositories()
 
 
 def _remaining_polling_timeout(deadline: float) -> float:
@@ -153,7 +192,7 @@ async def _fetch_comment_history(session, url, headers) -> list:
 
 async def mark_notification_as_read(headers, notification, session):
     async with session.patch(
-            f"https://api.github.com/notifications/threads/{notification['id']}",
+            f"{_notifications_url()}/threads/{notification['id']}",
             headers=headers) as mark_read_response:
         if mark_read_response.status != 205:
             get_logger().error(
@@ -237,22 +276,20 @@ def process_comment_sync(pr_url, rest_of_comment, comment_id):
         get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
 
-async def process_comment(pr_url, rest_of_comment, comment_id):
-    try:
-        with _polling_settings_scope():
-            result = await async_handle_request(pr_url, rest_of_comment, comment_id)
-            if result is RequestOutcome.SKIPPED:
-                return
-        get_logger().info(f"Finished processing comment for PR: {pr_url}")
-    except Exception as e:
-        get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
-
 async def is_valid_notification(
     notification, headers, handled_ids, session, user_id, added_handled_ids=None
 ):
     try:
         if 'reason' in notification and notification['reason'] == 'mention':
             if 'subject' in notification and notification['subject']['type'] == 'PullRequest':
+                if not _is_polling_repository_allowed(notification):
+                    repository = notification.get('repository')
+                    repository_name = repository.get('full_name') if isinstance(repository, dict) else None
+                    get_logger().debug(
+                        "Ignoring polling notification from a repository not in "
+                        f"github.polling_repositories: {repository_name}"
+                    )
+                    return False, handled_ids
                 pr_url = notification['subject']['url']
                 latest_comment = notification['subject']['latest_comment_url']
                 if not latest_comment or not isinstance(latest_comment, str):
@@ -263,6 +300,7 @@ async def is_valid_notification(
                     user_tag = "@" + user_id
                     if comment_response.status == 200:
                         comment = await comment_response.json()
+                        latest_comment_id = comment.get('id')
                         if 'id' in comment:
                             if comment['id'] in handled_ids:
                                 get_logger().debug("comment['id'] in handled_ids")
@@ -317,6 +355,13 @@ async def is_valid_notification(
                                 if not comment_body:
                                     continue
                                 if user_tag in comment_body:
+                                    if 'id' in comment:
+                                        # Allow mentions added to the latest comment between the two API reads.
+                                        if comment['id'] in handled_ids and comment['id'] != latest_comment_id:
+                                            return False, handled_ids
+                                        handled_ids.add(comment['id'])
+                                        if added_handled_ids is not None:
+                                            added_handled_ids.add(comment['id'])
                                     get_logger().info("found user tag in previous comments")
                                     get_logger().info(f"Polling, pr_url: {pr_url}",
                                                       artifact={"comment": comment_body})
@@ -407,6 +452,10 @@ async def polling_loop():
         raise ValueError("Deployment mode must be set to 'user' to get notifications")
     if not token:
         raise ValueError("User token must be set to get notifications")
+    if not _get_polling_repositories():
+        get_logger().warning(
+            "github.polling_repositories is empty or invalid; all polling notifications will be ignored"
+        )
 
     active_processes = []
     async with aiohttp.ClientSession() as session:
@@ -427,7 +476,7 @@ async def polling_loop():
                 if last_modified[0]:
                     headers["If-Modified-Since"] = last_modified[0]
 
-                async with session.get(NOTIFICATION_URL, headers=headers, params=params) as response:
+                async with session.get(_notifications_url(), headers=headers, params=params) as response:
                     if response.status == 200:
                         if 'Last-Modified' in response.headers:
                             last_modified[0] = response.headers['Last-Modified']
@@ -465,11 +514,12 @@ async def polling_loop():
                                 # Reset conditional-fetch state because an unread notification may
                                 # retain its modification timestamp.
                                 last_modified[0] = None
-                                raise
+                                get_logger().exception("Failed to mark polling notification as read; retrying later")
+                                break
                             handled_ids.add(notification['id'])
                             if output[0]:
                                 _, handled_ids, comment, comment_body, pr_url, user_tag = output
-                                rest_of_comment = comment_body.split(user_tag)[1].strip()
+                                rest_of_comment = comment_body.split(user_tag, 1)[1].strip()
                                 comment_id = comment['id']
 
                                 # Add to the task queue

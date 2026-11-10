@@ -182,3 +182,72 @@ def test_new_acquisition_clears_old_snapshot_before_failure(failing_method):
             provider.get_repo_settings()
     assert provider.get_repo_settings_tree() == ([], "")
     repo.get_git_tree.assert_not_called()
+
+
+@pytest.mark.parametrize("paths", [[], ["svc/.pr_agent.toml"]])
+def test_settings_tree_reuses_pinned_paths_without_retaining_caller_mutations(paths):
+    repo = _repo()
+    repo.get_git_tree.return_value.tree = [SimpleNamespace(type="blob", path=path) for path in paths]
+    provider = _provider_with_repo(repo)
+    provider._repo_settings_acquired = True
+    provider._repo_settings_snapshot = ("a" * 40, "b" * 40)
+
+    for _ in range(4):
+        result, ref = provider.get_repo_settings_tree()
+        assert (result, ref) == (paths, "a" * 40)
+        result.append("caller-only/.pr_agent.toml")
+
+    repo.get_git_tree.assert_called_once_with("b" * 40, recursive=True)
+
+
+def test_settings_tree_refetches_after_revision_or_repository_changes():
+    repo = _repo()
+    provider = _provider_with_repo(repo)
+    provider._repo_settings_acquired = True
+    provider._repo_settings_snapshot = ("a" * 40, "b" * 40)
+    assert provider.get_repo_settings_tree() == ([], "a" * 40)
+    provider._repo_settings_snapshot = ("c" * 40, "d" * 40)
+    assert provider.get_repo_settings_tree() == ([], "c" * 40)
+    assert repo.get_git_tree.call_args_list == [call("b" * 40, recursive=True), call("d" * 40, recursive=True)]
+
+    other_repo = _repo()
+    provider.repo_obj = other_repo
+    assert provider.get_repo_settings_tree() == ([], "c" * 40)
+    other_repo.get_git_tree.assert_called_once_with("d" * 40, recursive=True)
+
+
+@pytest.mark.parametrize("first_result", [
+    GithubException(404, {}, None),
+    GithubException(503, {}, None),
+    SimpleNamespace(tree=[SimpleNamespace(type="blob", path="partial/.pr_agent.toml")], truncated=True),
+], ids=["missing", "transient-error", "truncated"])
+def test_settings_tree_retries_unsuccessful_reads(first_result):
+    repo = _repo()
+    repo.get_git_tree.side_effect = [first_result, SimpleNamespace(tree=[], truncated=False)]
+    provider = _provider_with_repo(repo)
+    provider._repo_settings_acquired = True
+    provider._repo_settings_snapshot = ("a" * 40, "b" * 40)
+
+    if isinstance(first_result, GithubException) and first_result.status == 503:
+        with pytest.raises(GithubException):
+            provider.get_repo_settings_tree()
+    else:
+        assert provider.get_repo_settings_tree() == ([], "a" * 40)
+    assert provider.get_repo_settings_tree() == ([], "a" * 40)
+    assert provider.get_repo_settings_tree() == ([], "a" * 40)
+    assert repo.get_git_tree.call_count == 2
+
+
+def test_standalone_settings_tree_resolves_branch_before_reusing_paths():
+    repo = _repo()
+    repo.get_commit.side_effect = [
+        SimpleNamespace(sha=commit, commit=SimpleNamespace(tree=SimpleNamespace(sha=tree)), complete=lambda: None)
+        for commit, tree in [("a" * 40, "b" * 40), ("a" * 40, "b" * 40), ("c" * 40, "d" * 40)]
+    ]
+    provider = _provider_with_repo(repo)
+
+    assert provider.get_repo_settings_tree("main") == ([], "a" * 40)
+    assert provider.get_repo_settings_tree("main") == ([], "a" * 40)
+    assert provider.get_repo_settings_tree("main") == ([], "c" * 40)
+    assert repo.get_commit.call_args_list == [call("main")] * 3
+    assert repo.get_git_tree.call_args_list == [call("b" * 40, recursive=True), call("d" * 40, recursive=True)]

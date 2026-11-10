@@ -14,7 +14,7 @@ from dynaconf import Dynaconf
 from dynaconf.loaders import env_loader
 from starlette_context import context
 
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import DEFAULT_BOT_DISPLAY_NAME, get_bot_display_name, get_settings
 from pr_agent.config_security import (
     PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION,
     REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION,
@@ -276,6 +276,9 @@ def apply_host_settings():
     """Merge CONFIG.EXTRA_CONFIG_URL before provider initializers read connection settings."""
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
     extra_source = get_settings().get("CONFIG.EXTRA_CONFIG_URL", None)
+    # The loaded file may clear its own URL; keep the original selection for this request.
+    if context.exists() and isinstance(extra_source, str) and extra_source.strip():
+        context["extra_config_source_seen"] = True
     try:
         if isinstance(extra_source, str) and extra_source.strip():
             extra_path, extra_is_temp = _resolve_extra_config_to_file(extra_source)
@@ -295,6 +298,7 @@ def apply_host_settings():
 
 
 def apply_repo_settings(pr_url):
+    """Apply repository overrides and return the provider that loaded them."""
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
     _restore_per_directory_settings()
 
@@ -353,6 +357,7 @@ def apply_repo_settings(pr_url):
                     os.remove(repo_settings_file)
                 except Exception as e:
                     get_logger().error(f"Failed to remove temporary settings file {repo_settings_file}: {e}")
+    return git_provider
 
 
 def _restore_per_directory_settings():
@@ -815,7 +820,8 @@ def handle_configurations_errors(config_errors, git_provider):
                     "Invalid shared configuration; check the settings repository and server logs for details."
                     if config_type in {"global", "group"} else err['error']
                 )
-                header = f"❌ **PR-Agent failed to apply '{config_type}' repo settings**"
+                bot_display_name = get_bot_display_name()
+                header = f"❌ **{bot_display_name} failed to apply '{config_type}' repo settings**"
                 body = (
                     f"{header}\n\nThe configuration file needs to be a valid "
                     "[TOML](https://docs.pr-agent.ai/usage-guide/configuration_options/), please fix it.\n\n"
@@ -839,7 +845,11 @@ def handle_configurations_errors(config_errors, git_provider):
                         )
                     else:
                         body += f"\n\n**Configuration content:**\n\n```toml\n{configuration_file_content}\n```\n\n"
-                get_logger().warning("Sending a 'configuration error' comment to the PR", artifact={'body': body})
+
+                # Build a minimal log body that excludes raw configuration content
+                log_body = f"{header}\n\n**Error message:**\n`{err_message}`"
+
+                get_logger().warning("Sending a 'configuration error' comment to the PR", artifact={'body': log_body})
                 # git_provider.publish_comment(body)
                 if hasattr(git_provider, 'publish_persistent_comment'):
                     # Use a per-scope name so multiple settings errors (e.g. global + local) don't
@@ -849,7 +859,10 @@ def handle_configurations_errors(config_errors, git_provider):
                                                             initial_header=header,
                                                             update_header=False,
                                                             final_update_message=False,
-                                                            name=f"config-errors-{config_type}")
+                                                            name=f"config-errors-{config_type}",
+                                                            legacy_initial_header=(
+                                                                f"❌ **{DEFAULT_BOT_DISPLAY_NAME} failed to apply "
+                                                                f"'{config_type}' repo settings**"))
                 else:
                     git_provider.publish_comment(body)
     except Exception as e:

@@ -244,3 +244,41 @@ class TestFindLineNumberOfRelevantLineInFile:
         assert find_line_number_of_relevant_line_in_file(
             diff_files, "file1", "No newline at end of filee"
         ) == (3, 1)
+
+    def test_hunk_header_text_is_not_a_source_line(self):
+        header = "@@ -10 +10 @@ def target():"
+        diff_files = [
+            FilePatchInfo(base_file="old", head_file="new",
+                          patch=f"{header}\n-old\n+new\n", filename="file1")
+        ]
+
+        for relevant_line in ("def target():", header, "+def target():"):
+            assert find_line_number_of_relevant_line_in_file(
+                diff_files, "file1", relevant_line
+            ) == (-1, -1)
+
+    def test_absolute_lookup_skips_hunk_header_and_deleted_lines(self):
+        diff_files = [
+            FilePatchInfo(base_file="old", head_file="new",
+                          patch="@@ -10 +10 @@\n-old\n+new\n", filename="file1")
+        ]
+
+        assert find_line_number_of_relevant_line_in_file(
+            diff_files, "file1", "", absolute_position=9
+        ) == (-1, 9)
+        assert find_line_number_of_relevant_line_in_file(
+            diff_files, "file1", "", absolute_position=10
+        ) == (2, 10)
+
+    def test_source_lines_resembling_hunk_headers_remain_anchorable(self):
+        header = "@@ -10,2 +10,2 @@ def target():"
+        diff_files = [
+            FilePatchInfo(base_file="@@ context\nold", head_file=f"@@ context\n{header}",
+                          patch=f"{header}\n @@ context\n-old\n+{header}\n", filename="file1")
+        ]
+
+        for relevant_line, expected in (("@@ context", (1, 10)), (header, (3, 11)),
+                                        (header.replace("():", "() :"), (3, 11))):
+            assert find_line_number_of_relevant_line_in_file(
+                diff_files, "file1", relevant_line
+            ) == expected

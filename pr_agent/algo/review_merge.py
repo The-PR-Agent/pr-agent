@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Hashable
 from typing import Any
+from urllib.parse import urlsplit
 
 from pr_agent.algo.comment_identity import as_review_text
 from pr_agent.algo.output_models import parse_failure_modes
@@ -54,8 +55,8 @@ def merge_review_chunks(chunk_outputs: list[dict],
     `max_findings` is the per-review limit from `num_max_findings`. Each chunk may report up
     to that many findings about its own part of the diff, so the union can be several times
     larger; passing the limit cuts the merged list back to what a single-call review would
-    publish. A cut finding is treated as left out rather than absent, which the
-    `len(findings) < num_max_findings` resolution guard already reads correctly.
+    publish. `all_key_issues` returns the list before this cut, for callers that must tell a cut
+    finding from an absent one.
     """
     reviews = [chunk["review"] for chunk in chunk_outputs
                if isinstance(chunk, dict) and isinstance(chunk.get("review"), dict)]
@@ -114,6 +115,26 @@ def _cap_key_issues(review: dict, max_findings: int | None) -> None:
         review["key_issues_to_review"] = issues[:limit]
 
 
+def _chunk_key_issues(chunk_outputs: list[dict]) -> list[list]:
+    per_chunk = [chunk["review"].get("key_issues_to_review") for chunk in chunk_outputs
+                 if isinstance(chunk, dict) and isinstance(chunk.get("review"), dict)]
+    return [issues if isinstance(issues, list) else [] for issues in per_chunk]
+
+
+def all_key_issues(chunk_outputs: list[dict]) -> list:
+    """Return every distinct finding the chunks reported, before `max_findings` cuts the list."""
+    return _union_of_lists(_key_issue_identity)(_chunk_key_issues(chunk_outputs))
+
+
+def chunk_hit_findings_limit(chunk_outputs: list[dict], max_findings: int) -> bool:
+    """Say whether a chunk reported `max_findings` findings on its own.
+
+    The model may have stopped at its allowance, so a finding it never listed is not known to be
+    gone. A merge that cuts the union is different: `all_key_issues` still holds what it cut.
+    """
+    return any(len(issues) >= max_findings for issues in _chunk_key_issues(chunk_outputs))
+
+
 def _rule_name(key: str) -> str:
     normalized = str(key).strip().lower()
     # the effort field carries its scale in its name: 'estimated_effort_to_review_[1-5]'
@@ -161,9 +182,9 @@ def _merge_effort(values: list[Any]) -> Any:
 
 
 def _merge_score(values: list[Any]) -> Any:
-    """Lowest score wins: a clean chunk must not raise the grade of a bad one."""
+    """Lowest valid score wins: a clean chunk must not raise the grade of a bad one."""
     scored = [(number, value) for number, value in ((_as_int(value), value) for value in values)
-              if number is not None]
+              if number is not None and 0 <= number <= 100]
     if not scored:
         return _first_non_empty(values)
     return min(scored, key=lambda pair: pair[0])[1]
@@ -251,6 +272,8 @@ def _key_issue_identity(issue: Any) -> Hashable:
 
 
 def _todo_identity(todo: Any) -> Hashable:
+    if isinstance(todo, str):
+        return ("", "0", _normalize_text(todo))
     if not isinstance(todo, dict):
         return _normalize_text(todo)
     return (_normalize_path(todo.get("relevant_file")),
@@ -268,7 +291,14 @@ def _sub_pr_identity(sub_pr: Any) -> Hashable:
 
 
 def _merge_todo_sections(values: list[Any]) -> Any:
-    return _union_of_lists(_todo_identity)(values) or _first_non_empty(values)
+    sections = []
+    for value in values:
+        if isinstance(value, list):
+            sections.append(value)
+        elif isinstance(value, str) and value.strip() and not is_value_no(value):
+            # Preserve prose alongside located TODOs without inventing a file or line.
+            sections.append([{"relevant_file": "", "line_number": 0, "content": value}])
+    return _union_of_lists(_todo_identity)(sections) or _first_non_empty(values)
 
 
 def _merge_can_be_split(values: list[Any]) -> list:
@@ -350,7 +380,24 @@ def _canonical_ticket_url(raw_url: Any, ticket_index: tuple) -> str:
         return by_url[_normalize_text(text)]
     number = _ticket_number(text)
     if number and number in by_number:
-        return by_number[number]
+        canonical_url = by_number[number]
+        if re.fullmatch(r"#?\d+", text):
+            return canonical_url
+        # A full URL or a named tracker ID identifies its own ticket, even when its
+        # numeric suffix happens to match a related ticket in another repository.
+        if text.casefold() == canonical_url.rstrip("/").rsplit("/", 1)[-1].casefold():
+            return canonical_url
+        try:
+            source, target = urlsplit(text), urlsplit(canonical_url)
+        except ValueError:
+            return text
+        if (source.scheme == target.scheme and source.netloc.casefold() == target.netloc.casefold()
+                and not source.query and not source.fragment):
+            parts = source.path.split("/")
+            if parts.count("...") == 1:
+                before, after = source.path.split("...", 1)
+                if target.path.startswith(before) and target.path.endswith(after):
+                    return canonical_url
     return text
 
 
@@ -385,9 +432,13 @@ def _merge_ticket_compliance(values: list[Any], ticket_index: tuple = ({}, {})) 
                 if field == "ticket_url":
                     # the canonical URL is already on the recorded entry; never union link text
                     continue
-                if isinstance(field_value, str) and isinstance(target.get(field), str):
-                    target[field] = _union_bullet_lines(target[field], field_value)
-                elif not target.get(field):
+                current = target.get(field)
+                if isinstance(field_value, (list, dict)) or isinstance(current, (list, dict)):
+                    # A chunk may answer a bullet list as a YAML list; flatten both so neither side is dropped.
+                    current, field_value = as_review_text(current or ""), as_review_text(field_value or "")
+                if isinstance(field_value, str) and isinstance(current, str):
+                    target[field] = _union_bullet_lines(current, field_value)
+                elif not current:
                     target[field] = field_value
     return list(merged.values())
 

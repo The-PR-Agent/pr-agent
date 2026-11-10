@@ -42,7 +42,7 @@ def _make_help(monkeypatch, response=HELP_YAML, question="How do I enable automa
     tool.question_str = question
     tool.return_as_string = False
     tool.vars = {"question": question, "snippets": ""}
-    tool._prepare_prediction = _model_stub(response, fail_primary)
+    tool._prepare_prediction = _model_stub(pr_help_message.load_yaml(response), fail_primary)
     return tool
 
 

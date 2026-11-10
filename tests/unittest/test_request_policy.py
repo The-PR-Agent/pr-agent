@@ -8,7 +8,7 @@ from starlette_context import request_cycle_context
 
 from pr_agent import git_providers
 from pr_agent.agent import pr_agent as agent
-from pr_agent.agent.request_policy import RULE_FIELDS, RequestOutcome
+from pr_agent.agent.request_policy import RULE_FIELDS, RequestOutcome, enforce_request_policy
 from pr_agent.config_loader import global_settings
 
 URL = "https://github.com/org/repo/pull/7"
@@ -21,6 +21,7 @@ def environment(monkeypatch):
     settings = copy.deepcopy(global_settings)
     for rule in RULE_FIELDS.values():
         settings.set(f"config.{rule}", [])
+    settings.set("config.include_pr_labels", [])
     provider = Mock()
     provider.get_request_policy_metadata.return_value = METADATA.copy()
     monkeypatch.setattr(git_providers, "get_git_provider_with_context", lambda *_a, **_kw: provider)
@@ -127,6 +128,64 @@ async def test_policy_lookup_error_allows_command(environment, monkeypatch, fail
     agent.flush_telemetry.assert_called_once()
 
 
+@pytest.mark.parametrize(("labels", "allowed"), [
+    (["ai-review", "other"], True),
+    (["other"], False),
+    ([], False),
+    (None, False),
+])
+async def test_include_pr_labels_gates_real_tool_entrypoint(environment, monkeypatch, labels, allowed):
+    settings, provider = environment
+    settings.set("config.include_pr_labels", ["ai-review"])
+    provider.get_request_policy_metadata.return_value = {**METADATA, "labels": labels}
+    tool = SimpleNamespace(run=AsyncMock())
+    factory, notify = Mock(return_value=tool), Mock()
+    monkeypatch.setitem(agent.command2class, "review", factory)
+
+    result = await agent.PRAgent().handle_request(URL, "/review", notify=notify)
+    assert result is (True if allowed else RequestOutcome.SKIPPED)
+    if allowed:
+        tool.run.assert_awaited_once()
+        notify.assert_called_once()
+    else:
+        tool.run.assert_not_awaited()
+        notify.assert_not_called()
+    provider.get_request_policy_metadata.assert_called_once_with({"labels"})
+
+
+@pytest.mark.parametrize("failure_at", ["provider", "metadata"])
+async def test_include_pr_labels_skips_on_metadata_lookup_failure(environment, monkeypatch, failure_at):
+    settings, provider = environment
+    settings.set("config.include_pr_labels", ["ai-review"])
+    if failure_at == "provider":
+        monkeypatch.setattr(git_providers, "get_git_provider_with_context", Mock(side_effect=RuntimeError("outage")))
+    else:
+        provider.get_request_policy_metadata.side_effect = RuntimeError("outage")
+    tool, notify = SimpleNamespace(run=AsyncMock()), Mock()
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=tool))
+
+    assert await agent.PRAgent().handle_request(URL, "/review", notify=notify) is RequestOutcome.SKIPPED
+    tool.run.assert_not_awaited()
+    notify.assert_not_called()
+
+
+@pytest.mark.parametrize("numeric_label", [0, 123])
+async def test_numeric_include_labels_still_gate_tool_entrypoint(environment, monkeypatch, numeric_label):
+    settings, provider = environment
+    settings.set("config.include_pr_labels", numeric_label)
+    tool = SimpleNamespace(run=AsyncMock())
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=tool))
+
+    provider.get_request_policy_metadata.return_value = {**METADATA, "labels": [str(numeric_label)]}
+    assert await agent.PRAgent().handle_request(URL, "/review") is True
+    provider.get_request_policy_metadata.assert_called_with({"labels"})
+    tool.run.assert_awaited_once()
+
+    provider.get_request_policy_metadata.return_value = {**METADATA, "labels": ["other"]}
+    assert await agent.PRAgent().handle_request(URL, "/review") is RequestOutcome.SKIPPED
+    tool.run.assert_awaited_once()
+
+
 async def test_provider_without_metadata_uses_empty_default(environment, monkeypatch):
     from pr_agent.git_providers.git_provider import GitProvider
     settings, provider = environment
@@ -137,6 +196,37 @@ async def test_provider_without_metadata_uses_empty_default(environment, monkeyp
     monkeypatch.setitem(agent.command2class, "review", Mock(return_value=tool))
     assert await agent.PRAgent().handle_request(URL, "/review") is True
     tool.run.assert_awaited_once()
+
+
+@pytest.mark.parametrize("provider_kind", ["current", "unrelated", "subclass"])
+def test_policy_reuses_only_the_current_provider_class(environment, monkeypatch, provider_kind):
+    settings, _ = environment
+    settings.set("config.ignore_pr_title", ["Regular"])
+    constructed = []
+
+    class SelectedProvider:
+        def __init__(self, url):
+            constructed.append(self)
+
+        def get_request_policy_metadata(self, required):
+            assert required == {"title"}
+            return METADATA
+
+    class StaleSubclass(SelectedProvider):
+        def get_request_policy_metadata(self, required):
+            return {**METADATA, "title": "Unmatched"}
+
+    current = SelectedProvider(URL)
+    provider = {"current": current, "unrelated": object(), "subclass": StaleSubclass(URL)}[provider_kind]
+    lookup = Mock(return_value=provider)
+    monkeypatch.setattr(git_providers, "get_git_provider_with_context", lookup)
+    monkeypatch.setattr(git_providers, "get_git_provider", lambda: SelectedProvider)
+
+    assert enforce_request_policy(URL, provider=provider) is False
+
+    lookup.assert_not_called()
+    expected_constructions = 1 if provider_kind == "current" else 2
+    assert sum(type(instance) is SelectedProvider for instance in constructed) == expected_constructions
 
 
 def test_every_builtin_and_mosaico_provider_implements_policy_contract():

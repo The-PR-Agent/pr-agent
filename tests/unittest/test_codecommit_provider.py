@@ -1068,6 +1068,34 @@ class TestCodeCommitProvider:
         provider.codecommit_client.update_comment.assert_not_called()
         provider.codecommit_client.publish_comment.assert_called_once()
 
+    def test_persistent_config_error_updates_legacy_header_after_rename(self):
+        provider = self._make_persistent_provider()
+        legacy_header = "❌ **PR-Agent failed to apply 'local' repo settings**"
+        new_header = "❌ **Acme Bot failed to apply 'local' repo settings**"
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(
+                self._comment(f"{legacy_header}\n\nOld body", comment_id="config-error"),
+                before_commit_id="destination-commit-1",
+                after_commit_id="source-commit-1",
+            )
+        ]
+        provider.codecommit_client.update_comment.side_effect = self._successful_update_response
+
+        result = provider.publish_persistent_comment(
+            f"{new_header}\n\nNew body",
+            initial_header=new_header,
+            update_header=False,
+            final_update_message=False,
+            name="config-errors-local",
+            legacy_initial_header=legacy_header,
+        )
+
+        assert result.id == "config-error"
+        provider.codecommit_client.publish_comment.assert_not_called()
+        comment_id, updated_body = provider.codecommit_client.update_comment.call_args.args
+        assert comment_id == "config-error"
+        assert updated_body == f"{new_header}\n\nNew body"
+
     def test_get_issue_comments_support_does_not_enable_gfm_improve_history(self):
         provider = self._make_persistent_provider()
 
@@ -1129,6 +1157,21 @@ class TestCodeCommitProvider:
             annotation_file="two.py",
             annotation_line=4,
         )
+
+    def test_publish_code_suggestions_skips_an_inverted_line_range(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.codecommit_client = MagicMock()
+
+        assert provider.publish_code_suggestions([
+            {
+                "body": "Use a constant",
+                "relevant_file": "two.py",
+                "relevant_lines_start": 5,
+                "relevant_lines_end": 3,
+            }
+        ]) is True
+
+        provider.codecommit_client.publish_comment.assert_not_called()
 
     def test_publish_code_suggestions_continues_after_one_failure(self):
         provider = object.__new__(CodeCommitProvider)
@@ -1277,13 +1320,6 @@ class TestCodeCommitProvider:
         assert len(sent) <= 10240
         assert sent.endswith("...")
         assert "\n\n" in sent
-
-    def test_get_title(self):
-        # Test that the get_title() function returns the PR title
-        with patch.object(CodeCommitProvider, "__init__", lambda x, y: None):
-            provider = CodeCommitProvider(None)
-            provider.pr = PullRequestCCMimic("My Test PR Title", [])
-            assert provider.get_title() == "My Test PR Title"
 
     def test_get_pr_id(self):
         # Test that the get_pr_id() function returns the correct ID
@@ -1476,11 +1512,13 @@ class TestCodeCommitProvider:
 
         assert CodeCommitProvider._get_edit_type("X") is None
 
-    def test_add_additional_newlines(self):
+    def test_add_additional_newlines_doubles_newlines_in_short_text(self):
         # a short string to test adding double newlines
         input = "abc\ndef\n\n___\nghi\njkl\nmno\n\npqr\n"
         expect = "abc\n\ndef\n\n___\n\nghi\n\njkl\n\nmno\n\npqr\n\n"
         assert CodeCommitProvider._add_additional_newlines(input) == expect
+
+    def test_add_additional_newlines_on_real_pr_description(self):
         # a test example from a real PR
         input = (
             "## PR Type:\nEnhancement\n\n___\n## PR Description:\n"
@@ -1498,6 +1536,7 @@ class TestCodeCommitProvider:
         )
         assert CodeCommitProvider._add_additional_newlines(input) == expect
 
+    def test_add_additional_newlines_preserves_backtick_fenced_code(self):
         # Fenced code block (e.g. suggestion) preserves internal newlines verbatim
         code_suggestion = (
             "**Suggestion:** Use helper\n"
@@ -1521,6 +1560,7 @@ class TestCodeCommitProvider:
         )
         assert CodeCommitProvider._add_additional_newlines(code_suggestion) == expected_suggestion
 
+    def test_add_additional_newlines_preserves_tilde_fenced_code(self):
         # Tilde-fenced code block also preserved verbatim
         tilde_fence = "Intro:\n~~~python\na = 1\nb = 2\n~~~\nOutro"
         expected_tilde = "Intro:\n\n~~~python\na = 1\nb = 2\n~~~\n\nOutro"

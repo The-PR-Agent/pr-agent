@@ -8,7 +8,12 @@ import yaml
 import pr_agent.algo.pr_processing as pr_processing
 import pr_agent.algo.token_budget as token_budget_module
 import pr_agent.tools.pr_code_suggestions as pr_code_suggestions_module
-from pr_agent.algo.comment_identity import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity
+from pr_agent.algo.comment_identity import (
+    PRCodeSuggestionsHeader,
+    PRCodeSuggestionsIdentity,
+    format_pr_code_suggestions_header,
+)
+from pr_agent.algo.i18n import t
 from pr_agent.algo.pr_processing import PackedPRDiffs
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.token_budget import AttemptTokenBudget
@@ -1733,6 +1738,73 @@ def test_summarized_suggestions_use_the_target_file_indentation():
     assert "+\t}" in summary
 
 
+@pytest.mark.parametrize(("language", "labels", "impact"), [
+    ("es-AR", ("Categoría", "Sugerencia", "Impacto", "Importancia de la sugerencia", "Motivo"), "Alto"),
+    ("en-US", ("Category", "Suggestion", "Impact", "Suggestion importance", "Why"), "High"),
+])
+def test_improve_summary_localizes_fixed_labels_not_content_or_identity(language, labels, impact):
+    saved = snapshot_settings(["config.response_language", "config.is_auto_command",
+                               "pr_code_suggestions.new_score_mechanism"])
+    try:
+        get_settings().set("config.response_language", language)
+        get_settings().set("config.is_auto_command", True)
+        get_settings().set("pr_code_suggestions.new_score_mechanism", True)
+        provider = _provider_with_file("new()\n", patch="@@ -1 +1 @@\n-old()\n+new()\n")
+        tool = _make_tool(provider)
+        suggestion = _valid_suggestion(score=9, score_why="Avoid repeated work")
+
+        summary = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
+
+        assert summary.startswith(format_pr_code_suggestions_header())
+        assert "Avoid duplicated work" in summary
+        assert "Avoid repeated work" in summary
+        assert all(label in summary for label in labels)
+        assert f">{impact}\n\n</td>" in summary
+        assert ("Explora estas sugerencias" if language.startswith("es") else
+                "Explore these optional") in summary
+        assert tool.get_score_str(8) == ("Medio" if language.startswith("es") else "Medium")
+        assert tool.get_score_str(6) == ("Bajo" if language.startswith("es") else "Low")
+    finally:
+        restore_settings(saved)
+
+
+@pytest.mark.asyncio
+async def test_improve_empty_result_is_localized_before_provider_publication(monkeypatch):
+    saved = snapshot_settings(["config.response_language", "config.publish_output"])
+    try:
+        get_settings().set("config.response_language", "es-AR")
+        get_settings().set("config.publish_output", True)
+        provider = MagicMock()
+        provider.supports_code_suggestions_artifact.return_value = True
+        tool = _make_tool(provider)
+        monkeypatch.setattr(pr_code_suggestions_module, "push_outputs_async", AsyncMock())
+
+        await tool.publish_no_suggestions()
+
+        kwargs = provider.publish_code_suggestions_artifact.call_args.kwargs
+        assert kwargs["no_suggestions_message"] == "No se encontraron sugerencias de código para el PR."
+        assert pr_code_suggestions_module.push_outputs_async.await_args.kwargs["markdown"].endswith(
+            kwargs["no_suggestions_message"])
+    finally:
+        restore_settings(saved)
+
+
+@pytest.mark.asyncio
+async def test_improve_empty_inline_fallback_uses_response_language():
+    saved = snapshot_settings(["config.response_language"])
+    try:
+        get_settings().set("config.response_language", "es-AR")
+        provider = MagicMock()
+        tool = _make_tool(provider)
+
+        await tool.push_inline_code_suggestions({"code_suggestions": []})
+
+        provider.publish_comment.assert_called_once_with(
+            f"**{t('improve.merge_notice')}**\n\nNo se encontraron sugerencias para mejorar este PR.")
+    finally:
+        restore_settings(saved)
+
+
 def test_summarized_suggestions_use_patch_anchor_for_partial_head_file():
     git_provider = MagicMock()
     git_provider.diff_files = [FilePatchInfo(
@@ -1976,7 +2048,7 @@ async def test_python_validation_failure_remains_best_effort(compile_side_effect
     tool = _make_tool(git_provider)
 
     with patch(
-        "pr_agent.tools.pr_code_suggestions.compile",
+        "pr_agent.algo.code_replacement.compile",
         side_effect=compile_side_effect,
         create=True,
     ):
@@ -2354,6 +2426,7 @@ def _render_suggestions_user_prompt(prompt_key: str, discussion_context: str) ->
     variables = {
         "title": "Test PR",
         "date": "2024-01-01",
+        "commit_messages_str": "",
         "diff_no_line_numbers": "+value",
         "duplicate_prompt_examples": False,
         "suggestion_discussion_context": discussion_context,
@@ -2392,6 +2465,10 @@ def test_supports_incremental_kind_defaults_to_false_on_base_provider():
     # The base-class default must be "no support" so tools fall back to a full run
     # on providers that never implemented kind-aware incremental anchoring.
     assert GitProvider.supports_incremental_kind(MagicMock(), "suggestions") is False
+
+
+def test_get_commit_messages_defaults_to_empty_string_on_base_provider():
+    assert GitProvider.get_commit_messages(MagicMock()) == ""
 
 
 def test_supports_code_suggestions_artifact_defaults_to_false_on_base_provider():
@@ -2479,31 +2556,31 @@ async def test_dual_publishing_keeps_suggestions_without_replacement_code():
         settings.set("pr_code_suggestions.dual_publishing_score_threshold", original_threshold)
 
 
-def test_is_applicable_suggestion_rejects_a_range_in_an_empty_file():
+def test_validate_suggestion_rejects_a_range_in_an_empty_file():
     git_provider = MagicMock()
     git_provider.diff_files = [FilePatchInfo(base_file="", head_file="", patch="", filename="app.py")]
     tool = _make_tool(git_provider)
 
-    assert tool.is_applicable_suggestion("app.py", 1, 1, "old()") is False
+    assert tool._validate_suggestion("app.py", 1, 1, "old()")[0] is False
 
 
-def test_is_applicable_suggestion_rejects_when_existing_code_does_not_cover_the_anchor():
+def test_validate_suggestion_rejects_when_existing_code_does_not_cover_the_anchor():
     git_provider = _provider_with_file("def f():\n    first()\n    second()\n")
     tool = _make_tool(git_provider)
 
-    assert tool.is_applicable_suggestion("app.py", 2, 3, "first()") is False
+    assert tool._validate_suggestion("app.py", 2, 3, "first()")[0] is False
 
 
-def test_is_applicable_suggestion_rejects_when_file_content_is_unavailable():
+def test_validate_suggestion_rejects_when_file_content_is_unavailable():
     git_provider = MagicMock()
     git_provider.diff_files = [FilePatchInfo(base_file="", head_file=None, patch="", filename="app.py")]
     tool = _make_tool(git_provider)
 
-    assert tool.is_applicable_suggestion("app.py", 1, 1, "old()") is False
-    assert tool._suggestion_applyability("app.py", 1, 1, "old()")[1] == "the file content is unavailable"
+    assert tool._validate_suggestion("app.py", 1, 1, "old()")[0] is False
+    assert tool._validate_suggestion("app.py", 1, 1, "old()")[1] == "the file content is unavailable"
 
 
-def test_is_applicable_suggestion_uses_patch_when_file_content_is_unavailable():
+def test_validate_suggestion_uses_patch_when_file_content_is_unavailable():
     git_provider = MagicMock()
     git_provider.diff_files = [FilePatchInfo(
         base_file="",
@@ -2513,10 +2590,10 @@ def test_is_applicable_suggestion_uses_patch_when_file_content_is_unavailable():
     )]
     tool = _make_tool(git_provider)
 
-    assert tool.is_applicable_suggestion("app.py", 2, 2, "return old()") is True
+    assert tool._validate_suggestion("app.py", 2, 2, "return old()")[0] is True
 
 
-def test_is_applicable_suggestion_rejects_a_range_missing_from_the_patch():
+def test_validate_suggestion_rejects_a_range_missing_from_the_patch():
     git_provider = MagicMock()
     git_provider.diff_files = [FilePatchInfo(
         base_file="",
@@ -2526,7 +2603,7 @@ def test_is_applicable_suggestion_rejects_a_range_missing_from_the_patch():
     )]
     tool = _make_tool(git_provider)
 
-    assert tool.is_applicable_suggestion("app.py", 2, 2, "other()") is False
+    assert tool._validate_suggestion("app.py", 2, 2, "other()")[0] is False
 
 
 def test_get_diff_file_does_not_refetch_an_empty_cache():
@@ -2538,23 +2615,23 @@ def test_get_diff_file_does_not_refetch_an_empty_cache():
     git_provider.get_diff_files.assert_not_called()
 
 
-def test_is_applicable_suggestion_preserves_blank_line_positions():
+def test_validate_suggestion_preserves_blank_line_positions():
     git_provider = _provider_with_file("first()\n\nsecond()\n")
     tool = _make_tool(git_provider)
 
-    assert tool.is_applicable_suggestion("app.py", 1, 3, "first()\nsecond()") is False
-    assert tool.is_applicable_suggestion("app.py", 1, 3, "first()\n\nsecond()") is True
+    assert tool._validate_suggestion("app.py", 1, 3, "first()\nsecond()")[0] is False
+    assert tool._validate_suggestion("app.py", 1, 3, "first()\n\nsecond()")[0] is True
 
 
-def test_is_applicable_suggestion_preserves_relative_indentation():
+def test_validate_suggestion_preserves_relative_indentation():
     git_provider = _provider_with_file("if ready:\n    run()\n")
     tool = _make_tool(git_provider)
 
-    assert tool.is_applicable_suggestion("app.py", 1, 2, "    if ready:\n        run()") is True
-    assert tool.is_applicable_suggestion("app.py", 1, 2, "if ready:\nrun()") is False
+    assert tool._validate_suggestion("app.py", 1, 2, "    if ready:\n        run()")[0] is True
+    assert tool._validate_suggestion("app.py", 1, 2, "if ready:\nrun()")[0] is False
 
 
-def test_is_applicable_suggestion_uses_absolute_patch_lines_for_partial_head_content():
+def test_validate_suggestion_uses_absolute_patch_lines_for_partial_head_content():
     git_provider = MagicMock()
     git_provider.diff_files = [FilePatchInfo(
         base_file="first()\nlater()\n",
@@ -2566,7 +2643,7 @@ def test_is_applicable_suggestion_uses_absolute_patch_lines_for_partial_head_con
     )]
     tool = _make_tool(git_provider)
 
-    assert tool.is_applicable_suggestion("app.py", 100, 100, "later()") is True
+    assert tool._validate_suggestion("app.py", 100, 100, "later()")[0] is True
 def test_code_suggestion_state_is_provider_driven():
     provider = MagicMock()
 
@@ -2821,7 +2898,7 @@ def test_marked_persistent_suggestions_take_precedence_over_legacy_comment():
         f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
         "<!-- bbb2222 -->\n\n<table>marked</table>"
     )
-    provider = _persistent_provider([legacy, marked])
+    provider = _persistent_provider([marked, legacy])
     custom_header = "## Latest Custom Heading ✨"
 
     result = PRCodeSuggestions.publish_persistent_comment_with_history(
@@ -2869,13 +2946,16 @@ def test_persistent_suggestions_do_not_adopt_quoted_or_late_identity():
     )
 
 
-def test_legacy_heading_without_generated_shape_is_not_adopted():
+@pytest.mark.parametrize("history_len", [0, 4])
+def test_legacy_heading_without_generated_shape_is_not_adopted(history_len):
     human = MagicMock()
     human.body = (
         f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n"
         "A human-authored comment using the same heading."
     )
     provider = _persistent_provider([human])
+    provider.supports_code_suggestion_state.return_value = False
+    provider.supports_comment_editing.return_value = True
     custom_header = "## Team Suggestions ✨"
 
     PRCodeSuggestions.publish_persistent_comment_with_history(
@@ -2883,6 +2963,7 @@ def test_legacy_heading_without_generated_shape_is_not_adopted():
         f"{custom_header}\n\n<table>new suggestions</table>",
         initial_header=custom_header,
         name="suggestions",
+        max_previous_comments=history_len,
         identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
         legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
     )
@@ -3005,6 +3086,9 @@ class _LifecycleSuggestionProvider:
     def supports_code_suggestion_state(self):
         return self._supports_state
 
+    def supports_comment_editing(self):
+        return True
+
     def should_publish_improve_as_thread(self):
         return False
 
@@ -3045,9 +3129,15 @@ def _lifecycle_suggestion_comment(name):
     return SimpleNamespace(body=body, name=name)
 
 
-def test_persistent_improve_uses_newest_matching_comment():
+@pytest.mark.parametrize("history_len", [-1, 0, 4])
+def test_persistent_improve_uses_newest_matching_comment(history_len):
     old = _lifecycle_suggestion_comment("old")
     newest = _lifecycle_suggestion_comment("newest")
+    newest.body += (
+        "\n\n#### Previous suggestions\n"
+        "<details><summary>Suggestions up to commit aaa1111</summary>\n"
+        "<br><table>previous suggestions</table>\n\n</details>"
+    )
     provider = _LifecycleSuggestionProvider([old, newest])
 
     result = PRCodeSuggestions.publish_persistent_comment_with_history(
@@ -3056,6 +3146,7 @@ def test_persistent_improve_uses_newest_matching_comment():
         PRCodeSuggestionsHeader.SUMMARY.value,
         name="suggestions",
         final_update_message=False,
+        max_previous_comments=history_len,
         identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
         legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
     )
@@ -3063,6 +3154,11 @@ def test_persistent_improve_uses_newest_matching_comment():
     assert result is newest
     assert provider.edits[0][0] is newest
     assert provider.published == []
+    updated_body = provider.edits[0][1]
+    assert "<table>new suggestions</table>" in updated_body
+    assert ("<table>newest</table>" in updated_body) == (history_len > 0)
+    assert ("#### Previous suggestions" in updated_body) == (history_len > 0)
+    assert ("<table>previous suggestions</table>" in updated_body) == (history_len > 0)
 
 
 @pytest.mark.parametrize("edit_result", [False, RuntimeError("edit failed")])
@@ -3177,13 +3273,14 @@ async def test_no_suggestions_failure_removes_stale_progress_comment():
         restore_settings(settings_snapshot)
 
 
-def test_stateful_no_history_edit_failure_has_no_duplicate_authoritative_summary():
+@pytest.mark.parametrize("supports_state", [False, True])
+def test_no_history_edit_failure_has_no_duplicate_authoritative_summary(supports_state):
     details = init_run_details()
     existing = _lifecycle_suggestion_comment("existing")
     provider = _LifecycleSuggestionProvider(
         [existing],
         edit_results=[False],
-        supports_state=True,
+        supports_state=supports_state,
     )
 
     result = PRCodeSuggestions.publish_persistent_comment_with_history(

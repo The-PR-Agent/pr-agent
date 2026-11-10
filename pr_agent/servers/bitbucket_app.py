@@ -22,6 +22,7 @@ from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
@@ -30,6 +31,8 @@ from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
+    auto_feedback_disabled,
+    get_include_pr_labels,
     get_pr_commands,
     is_command_comment,
     payload_log_summary,
@@ -37,7 +40,7 @@ from pr_agent.servers.utils import (
     shared_should_process_pr_logic,
 )
 
-setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
+setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
 router = APIRouter()
 
 
@@ -214,11 +217,11 @@ async def _validate_time_from_last_commit_to_pr_update(data: dict) -> bool:
 async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_url: str, log_context: dict, data: dict):
     apply_repo_settings(api_url)
     # auto commands for PR, and auto feedback is disabled
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:
+    if auto_feedback_disabled():
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
         return
     if commands_conf == "push_commands":
-        if not get_settings().get("bitbucket_app.handle_push_trigger"):
+        if not _as_bool_setting(get_settings().get("bitbucket_app.handle_push_trigger")):
             get_logger().info(
                 "Bitbucket push trigger handling disabled via config; skipping push commands")
             return
@@ -230,7 +233,7 @@ async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_ur
     commands = (
         get_pr_commands("bitbucket_app")
         if commands_conf == "pr_commands"
-        else get_settings().get(f"bitbucket_app.{commands_conf}", {})
+        else normalize_setting_list(get_settings().get(f"bitbucket_app.{commands_conf}", {}))
     )
     if not commands:
         get_logger().info(f"No {commands_conf} configured, skipping auto commands")
@@ -253,6 +256,12 @@ async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_ur
 async def _run_commands_bitbucket(commands, agent: PRAgent, api_url: str, log_context: dict):
     for command in commands:
         try:
+            # Reset diff state between auto commands, like the gitlab/github loops (#4372).
+            if context.exists():
+                provider = context.get("git_provider", {}).get(api_url)
+                reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)
+                if callable(reset_diff_cache):
+                    reset_diff_cache()
             new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):
@@ -366,8 +375,21 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
 
             # Check if the PR should be processed
             if data.get("event", "") == "pullrequest:created":
-                if not should_process_pr_logic(data):
+                prefilter_allowed = (
+                    shared_should_process_pr_logic(data, provider="bitbucket_app", check_include_labels=False)
+                    if get_include_pr_labels() else should_process_pr_logic(data)
+                )
+                if not prefilter_allowed:
                     return "OK"
+
+            event = data["event"]
+            if event not in ("pullrequest:created", "pullrequest:updated", "pullrequest:comment_created"):
+                return
+            if event == "pullrequest:comment_created":
+                comment_body = data["data"]["comment"]["content"]["raw"]
+                if not is_command_comment(comment_body):
+                    get_logger().info("Ignoring comment not starting with /")
+                    return
 
             # Get the username of the sender
             log_context["sender"] = _get_username(data)
@@ -377,7 +399,6 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
             bearer_token = await get_bearer_token(shared_secret, client_key)
             context['bitbucket_bearer_token'] = bearer_token
             context["settings"] = copy.deepcopy(global_settings)
-            event = data["event"]
             agent = PRAgent()
             if event == "pullrequest:created":
                 pr_url = data["data"]["pullrequest"]["links"]["html"]["href"]
@@ -401,10 +422,6 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
                 pr_url = data["data"]["pullrequest"]["links"]["html"]["href"]
                 log_context["api_url"] = pr_url
                 log_context["event"] = "comment"
-                comment_body = data["data"]["comment"]["content"]["raw"]
-                if not is_command_comment(comment_body):
-                    get_logger().info("Ignoring comment not starting with /")
-                    return
                 with get_logger().contextualize(**log_context):
                     if get_identity_provider().verify_eligibility("bitbucket",
                                                                      sender_id, pr_url) is not Eligibility.NOT_ELIGIBLE:

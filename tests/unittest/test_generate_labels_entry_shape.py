@@ -133,11 +133,34 @@ async def test_malformed_primary_uses_valid_fallback_and_preserves_user_labels(f
 
 
 @pytest.mark.asyncio
-async def test_explicit_empty_labels_is_valid_and_keeps_publication_path(fallback_models):
+@pytest.mark.parametrize("prediction,current_labels", [
+    pytest.param("labels: [bug fix]", ["bug fix"], id="same-labels"),
+    pytest.param("labels: [bug fix]", ["keep-me", "bug fix"], id="reordered-labels"),
+    pytest.param("labels: []", [], id="empty-labels"),
+    pytest.param("labels: []", ["keep-me"], id="user-labels-only"),
+])
+async def test_unchanged_labels_are_not_published(prediction, current_labels, fallback_models):
+    provider = MagicMock()
+    provider.is_supported.return_value = True
+    provider.get_pr_labels.return_value = current_labels
+    tool = label_tool(provider)
+    tool._get_prediction = AsyncMock(return_value=prediction)
+
+    with patch("pr_agent.tools.pr_generate_labels.get_pr_diff", return_value="diff"):
+        await tool.run()
+
+    tool._get_prediction.assert_awaited_once_with("primary-model")
+    provider.get_pr_labels.assert_called_once_with(update=True)
+    provider.publish_labels.assert_not_called()
+    provider.remove_initial_comment.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_explicit_empty_labels_is_valid_and_clears_generated_labels(fallback_models):
     provider = MagicMock()
     provider.publish_comment.return_value = MagicMock()
     provider.is_supported.return_value = True
-    provider.get_pr_labels.return_value = ["keep-me"]
+    provider.get_pr_labels.return_value = ["bug fix", "keep-me"]
     tool = label_tool(provider)
     tool._get_prediction = AsyncMock(return_value="labels: []\n")
 

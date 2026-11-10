@@ -14,7 +14,6 @@ from a2a.server.context import ServerCallContext
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.request_handlers.request_handler import validate_request_params
 from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
-from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import CancelTaskRequest, Task
 from a2a.utils.errors import TaskNotFoundError
 from starlette.applications import Starlette
@@ -37,6 +36,7 @@ from pr_agent.mosaico.auth import MosaicoAuthenticationBackend, MosaicoCallConte
 from pr_agent.mosaico.card import build_agent_card
 from pr_agent.mosaico.env_bridge import apply_mosaico_env, langfuse_env_present
 from pr_agent.mosaico.executor import PRAgentExecutor, health_check
+from pr_agent.mosaico.task_store import MosaicoTaskStore
 from pr_agent.servers.request_body_limit import RequestBodyLimitMiddleware, get_max_request_body_size
 
 HEALTH_PATH = "/health"
@@ -85,7 +85,10 @@ def _configure_langfuse() -> None:
         return
     try:
         from langfuse import Langfuse
-        Langfuse(blocked_instrumentation_scopes=["a2a-python-sdk"])
+        # Preserve pre-v4 export behavior while suppressing only A2A transport spans.
+        Langfuse(should_export_span=lambda span: (
+            span.instrumentation_scope is None or span.instrumentation_scope.name != "a2a-python-sdk"
+        ))
         get_logger().info("MOSAICO: Langfuse client initialised (a2a-python-sdk spans blocked).")
     except Exception as e:
         get_logger().warning(f"MOSAICO: Langfuse client init failed (continuing untraced): {e}")
@@ -96,9 +99,14 @@ def build_app():
     RawContextMiddleware on the same app (A2A 1.0)."""
     auth_backend = MosaicoAuthenticationBackend(get_settings().get("MOSAICO.BEARER_TOKENS", {}))
     card = build_agent_card(require_auth=auth_backend.enabled)
-    task_store = InMemoryTaskStore()
+    executor = PRAgentExecutor()
+    task_store = MosaicoTaskStore(
+        max_tasks_per_owner=get_settings().get("MOSAICO.TASK_STORE_MAX_TASKS_PER_OWNER", 1000),
+        on_task_evicted=executor.forget_task,
+    )
+    executor.task_store = task_store
     handler = MosaicoRequestHandler(
-        agent_executor=PRAgentExecutor(task_store=task_store),
+        agent_executor=executor,
         task_store=task_store,
         agent_card=card,
     )

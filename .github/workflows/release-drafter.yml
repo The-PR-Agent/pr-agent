@@ -21,6 +21,7 @@ jobs:
       contents: write
       pull-requests: read
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0  # v7.10.0
         with:
@@ -34,6 +35,7 @@ jobs:
       contents: read
       pull-requests: write
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: release-drafter/release-drafter/autolabeler@978bb0b30c5ee8cdd332ced253758157150d43f0  # v7.10.0
         with:

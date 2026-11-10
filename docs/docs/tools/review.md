@@ -17,6 +17,11 @@ Note that the main purpose of the `review` tool is to provide the **PR reviewer*
 
 (Read more about the different personas in the PR process and how PR-Agent aims to assist them in our [blog](https://www.qodo.ai/blog/understanding-the-challenges-and-pain-points-of-the-pull-request-cycle/))
 
+:::note
+`/improve` will be merged into `/review` in the next release. `/improve` will keep working and run
+`/review`, with a warning.
+:::
+
 ## Example usage
 
 ### Manual triggering
@@ -42,6 +47,8 @@ pr-agent --pr_url https://github.com/org/repo/pull/123 --json-output review.json
 ```
 
 The JSON file is written after the review completes. Place `--json-output` before `review` or `review_pr`.
+Its `coverage` object lists the files the token budget kept out of the review (`files_not_reviewed`) and those whose
+patches were clipped to fit it (`files_partially_reviewed`), the same files the review coverage footer names.
 
 ### Automatic triggering
 
@@ -114,7 +121,8 @@ for the authoritative default values.
       are also passed as dismissed when the status differs from <code>azure_devops.default_comment_status</code>.
       A matching default stays an ordinary prior finding. This infers a human decision; Azure does not identify
       the status-changing actor here, and the current default may differ from the default used at creation.
-      Stable <code>azure_devops_server.agent_identity</code> configuration is required.
+      PR-Agent resolves its posting identity through Azure DevOps. Set
+      <code>azure_devops_server.agent_identity</code> to override it or when automatic lookup is unavailable.
     </td>
   </tr>
   <tr>
@@ -212,6 +220,39 @@ for the authoritative default values.
     <td><b>require_priority_files</b></td>
     <td>If set to true, the tool will add a section listing the files a human reviewer should inspect first.</td>
   </tr>
+  <tr>
+    <td><b>structural_reach_input_file</b></td>
+    <td>Path to a JSON file with structural reach facts, written by a build-graph tool earlier in CI. When the file
+    exists, adds a deterministic change-risk row (Low, Moderate, High or Critical) with no model call. Relative to
+    <code>GITHUB_WORKSPACE</code> when that is set, otherwise to the working directory. Host configuration only: a
+    repository settings file or a comment cannot set it, because the file is read from the host. See
+    <a href="#structural-reach">Structural reach</a>.</td>
+  </tr>
+  <tr>
+    <td><b>enable_risk_checks</b></td>
+    <td>
+      If set to true, deterministically scans diff files and unfiltered PR files for sensitive paths, destructive SQL,
+      cache flushes, and authentication/secrets patterns without making model calls. Findings are rendered as a risk-checks
+      row in the review summary table. When no findings are detected, nothing is added. Default is true. See
+      <a href="#deterministic-risk-checks">Deterministic risk checks</a>.
+    </td>
+  </tr>
+  <tr>
+    <td><b>sensitive_paths</b></td>
+    <td>
+      List of glob patterns identifying files considered sensitive (such as CI workflows, package manifests, lockfiles,
+      migrations, and infrastructure configurations). Changes to matching files flag a deterministic review risk finding.
+      Default includes common CI/CD, package manager, container, infrastructure, and migration paths.
+    </td>
+  </tr>
+  <tr>
+    <td><b>extra_risky_shapes</b></td>
+    <td>
+      List of custom regular expression patterns to scan within added or modified lines in diff hunks. Patterns matching a
+      line flag a deterministic risk finding. Host configuration only: a repository settings file or comment cannot set it.
+      Default is empty.
+    </td>
+  </tr>
 </table>
 
 </details>
@@ -224,11 +265,11 @@ You can enable\disable the `review` tool to add specific labels to the PR:
 <table>
   <tr>
     <td><b>enable_review_labels_security</b></td>
-    <td>If set to true, the tool will publish a 'possible security issue' label if it detects a security issue.</td>
+    <td>If set to true, the tool will publish a 'Possible security concern' label if it detects a security issue.</td>
   </tr>
   <tr>
     <td><b>enable_review_labels_effort</b></td>
-    <td>If set to true, the tool will publish a 'Review effort x/5' label (1–5 scale).</td>
+    <td>If set to true, the tool will publish a 'Review effort x/5' label (1–5 scale). Existing effort labels are kept when this option or effort estimation is disabled, or when the review has no valid replacement estimate. Security labels follow their own settings.</td>
   </tr>
 </table>
 
@@ -266,7 +307,7 @@ Edit this field to enable/disable the tool, or to change the configurations used
 
 The `review` tool can automatically add labels to your Pull Requests:
 
-- **`possible security issue`**: This label is applied if the tool detects a potential [security vulnerability](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L147) in the PR's code. This feedback is controlled by the 'enable_review_labels_security' flag (default is true).
+- **`Possible security concern`**: This label is applied if the tool detects a potential [security vulnerability](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L147) in the PR's code. This feedback is controlled by the 'enable_review_labels_security' flag (default is true).
 - **`review effort [x/5]`**: This label estimates the [effort](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L119) required to review the PR on a relative scale of 1 to 5, where 'x' represents the assessed effort. This feedback is controlled by the 'enable_review_labels_effort' flag (default is true).
 
 Ticket compliance is reported in the review comment, not as a PR label. It is controlled by
@@ -274,6 +315,8 @@ Ticket compliance is reported in the review comment, not as a PR label. It is co
 ticket-compliance labels or a "No ticket found" label. See
 [Fetching ticket context](../core-abilities/fetching_ticket_context.md) for linking and authentication details.
 
+
+:::
 
 ### Auto-blocking PRs from being merged based on the generated labels
 
@@ -360,6 +403,170 @@ merged field by field:
 | `contribution_time_cost_estimate` | The sum over the chunks, per case |
 | `ticket_compliance_check` | One entry per ticket, with its bullet lists unioned across chunks |
 
+When `require_todo_scan` is enabled, the TODO union includes both located findings and prose
+summaries. Prose without a file location is shown as text without a source link.
+
 The merged verdict is deliberately never less alarming than the worst chunk: a clean chunk
 cannot raise a score, clear a security concern, or soften a risk level set by another chunk.
+:::
+
+### Structural reach
+
+:::tip
+
+When `structural_reach_input_file` points at a file that exists, the review gets one row at the top that rates how
+far a defect in the change could spread. The row is computed from that file, not by the model, so the same input
+always gets the same rating.
+
+```
+🔗 Structural reach: Critical
+Reach: 40 projects, cross-domain
+Dependents: billing-api, payments-worker, web-app, admin-app, reports (+35 more)
+Sensitivity: payments
+Rating driven by sensitive domain (escalates regardless of size)
+```
+
+**Rating.** Two facts from the input file set the band:
+
+- **Reach** is the number of downstream projects a defect in the change can break. Only a build-graph tool knows
+  it.
+- **Sensitivity** flags changes to areas the repository marks as high-criticality, such as authentication,
+  payments or secrets. A one-line auth change outranks a wide styling sweep.
+
+Reach is narrow up to 3 projects, moderate up to 25 and wide above that. The band then follows these rules:
+
+| Condition | Band |
+| --- | --- |
+| Wide reach | At least Moderate |
+| Cross-domain change | At least Moderate |
+| Any sensitive domain | At least High |
+| Sensitive domain with wide reach | Critical |
+| Anything else | Low |
+
+The row lists each factor and names the one that set the band. It also lists the first five names in
+`dependents`, in the order the producer wrote them.
+
+The reach bands are defined for projects only. When `reach_unit` is `modules` or `files`, the row shows the count
+and the dependents without a band, because no threshold separates a change to a shared utility from a real spread.
+A cross-domain or sensitive change still gets a band from the rules above. The Reach line still shows the
+number, but it does not affect the band.
+
+Change size is not part of the rating, because
+`estimated_effort_to_review_[1-5]` already reflects it. That row and `require_risk_assessment` are the model's
+judgement; this row adds the structural and sensitivity facts the model cannot see in the diff.
+
+**Input file.** Any build-graph tool (Nx, Bazel, Gradle, Turborepo, and so on) can write the reach facts in an
+earlier CI step, so pr-agent needs no adapter per tool. Point `structural_reach_input_file` at the file in host
+configuration, for example the `PR_REVIEWER__STRUCTURAL_REACH_INPUT_FILE` environment variable. Every field is
+optional:
+
+```json
+{
+  "version": 1,
+  "reach": 12,
+  "reach_unit": "projects",
+  "dependents": ["billing-api", "web-app"],
+  "domains": ["billing", "web"],
+  "cross_domain": true,
+  "sensitive_domains": ["billing"]
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `version` | integer | Schema version. Only `1` is accepted. |
+| `reach` | integer, 0 or more | Number of units affected by the change, including transitive dependents. Defaults to the length of `dependents`. |
+| `reach_unit` | string | What `reach` counts: `projects` (the default), `modules` or `files`. Only `projects` gets a reach band. |
+| `dependents` | list of strings | Names of the affected units, most relevant first. |
+| `domains` | list of strings | Distinct domains or areas the affected projects belong to. |
+| `cross_domain` | boolean | Whether the change spans more than one domain. |
+| `sensitive_domains` | list of strings | Affected domains the repository treats as sensitive. |
+
+Unknown fields are ignored. Strings are limited to 200 characters and the file to 1 MB.
+
+**Trust.** The file is read from inside `GITHUB_WORKSPACE` (or the working directory), so in the GitHub Action a
+checkout of the pull request could already contain a file at that path, written by the pull request's author.
+Generate the file in the same job, right before the review step, and delete any existing copy first. Take the
+project tags and graph configuration the producer reads from the base commit, not from the pull request. Treat the
+band as advisory context for reviewers, never as a merge gate.
+
+**Example producer: Nx.** `nx show projects --affected` lists every project the change affects, including
+transitive dependents. This step writes them as `dependents`, and lists affected projects tagged `sensitive` as
+`sensitive_domains`:
+
+```bash
+affected() { npx nx show projects --affected --base="$BASE_SHA" --head="$HEAD_SHA" --json "$@"; }
+affected | jq --argjson sensitive "$(affected -p 'tag:sensitive')" \
+  '{version: 1, reach_unit: "projects", dependents: ., sensitive_domains: $sensitive}' > structural-reach.json
+```
+
+Then set `PR_REVIEWER__STRUCTURAL_REACH_INPUT_FILE=structural-reach.json` for the review step. Another tool
+needs only a query that lists the affected projects or packages.
+
+**Example producer: tree-sitter.** For a repository without a build-graph tool,
+`scripts/structural_reach_producer.py` builds a reverse-import graph of the Python, TypeScript and JavaScript
+files at the base commit and follows importers from the changed files. Test files are left out of reach and
+domains, because counting them makes most changes to a shared module read wide. It writes `reach_unit` as
+`modules` (directories) by default, so the row shows the count and the first dependents without a band. Run it as
+a CI step before the review; it is not a pr-agent dependency:
+
+```bash
+pip install "tree-sitter-language-pack==1.22.1"
+python scripts/structural_reach_producer.py --repo . --base "$BASE_SHA" --head "$HEAD_SHA" \
+  --unit module --out structural-reach.json
+```
+
+On this repository, the change merged in pull request 4420 gives:
+
+```
+🔗 Structural reach
+Reach: 9 modules
+Dependents: pr_agent/git_providers, pr_agent/tools, pr_agent/servers, pr_agent/algo, pr_agent/mosaico (+4 more)
+```
+
+`dependents` is ordered by the number of affected files in each unit. The graph does not see imports built at
+run time, files loaded by name such as settings, or dependencies declared only in a manifest, such as a shared
+`tsconfig` package used through `extends`. In a monorepo with Nx, Turborepo or Bazel, use that tool instead.
+
+**Failure handling.** The row never blocks a review. If the setting is empty, the input file is missing or does
+not match the schema, or anything fails while computing the row, the review is published without it.
+
+**Sources.**
+
+- Beyer, B. et al. *Site Reliability Engineering* (Google, 2016), and the AWS Well-Architected Framework: blast
+  radius as the scope of impact of a change or failure.
+- OWASP guidance on sensitive functionality: authentication, session management, cryptography and payments.
+
+:::
+
+### Deterministic risk checks
+
+:::tip
+
+When `enable_risk_checks` is enabled (the default), PR-Agent scans changed files and diff hunks for known risk patterns
+without making model calls. Findings are rendered as a dedicated row in the review table:
+
+```
+⚠️ Risk checks: 3 finding(s) detected
+Sensitive paths (1): .github/workflows/deploy.yml
+Risky shapes (1): `Privilege revocation` in db/migrations/002_revoke.sql
+Deleted files (1): old_auth.py
+```
+
+When no findings are detected, the row is omitted completely so clean reviews stay uncluttered.
+
+**Checks performed.**
+
+- **Sensitive paths**: Flags changes to files matching glob patterns in `sensitive_paths`. By default, this covers
+  CI/CD pipelines, package manager manifests and lockfiles, Dockerfiles, Terraform and infrastructure configs, and
+  database migrations.
+- **Risky change shapes**: Scans added or modified lines in diff hunks for destructive SQL (`DROP TABLE`, `ALTER ... RENAME`,
+  `REVOKE ... ON/FROM`, `TRUNCATE`), authentication and secrets keywords, cache invalidations, and any custom patterns
+  configured in `extra_risky_shapes`.
+- **Deleted files**: Flags removed files.
+
+**Custom patterns.** Additional regular expressions can be configured via `extra_risky_shapes`. Because regex execution
+has security implications, `extra_risky_shapes` must be configured through host configuration (such as environment
+variables or host settings) and cannot be overridden by repository `.pr_agent.toml` files.
+
 :::

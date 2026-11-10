@@ -34,7 +34,7 @@ from pr_agent.config_loader import get_settings
 # The declared type can be `int`, `List[Foo]` or `Union[List[Foo], str]`, and
 # `Field(` may be called positionally, so match up to the `= Field(`.
 _DECLARED = re.compile(
-    r"^\s*(?P<field>[\w\[\]\-]+):\s*(?P<type>[^=]+?)\s*=\s*Field\(", re.M
+    r"^\s*(?P<field>[\w\[\]\-]+):\s*(?P<type>[^=]+?)\s*=\s*Field\(", re.MULTILINE
 )
 
 
@@ -57,7 +57,7 @@ def _example_blocks() -> list[str]:
     The blocks are Jinja-conditional, so the raw text is not valid YAML; the
     `{%- ... %}` lines are control flow around the fields, never part of one.
     """
-    blocks = re.findall(r"```yaml\n(.*?)```", _prompt(), re.S)
+    blocks = re.findall(r"```yaml\n(.*?)```", _prompt(), re.DOTALL)
     return [
         "\n".join(line for line in b.splitlines() if not line.strip().startswith("{%"))
         for b in blocks

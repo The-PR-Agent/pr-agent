@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.file_filter import filter_ignored
-from pr_agent.algo.language_handler import build_language_file_matcher, is_valid_file
+from pr_agent.algo.language_handler import is_valid_file
 from pr_agent.algo.review_finding_state import split_review_state_marker
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.codecommit_client import CodeCommitClient
@@ -17,9 +17,8 @@ from ..algo.comment_identity import (
     comment_matches_identity,
 )
 from ..algo.utils import load_large_diff
-from ..config_loader import get_settings
 from ..log import get_logger
-from .git_provider import GitProvider, cache_languages
+from .git_provider import GitProvider, cache_languages, format_persistent_update_header
 
 
 class PullRequestCCMimic:
@@ -60,7 +59,7 @@ class CodeCommitFile:
         self.b_path = b_path
         self.b_blob_id = b_blob_id
         self.edit_type: EDIT_TYPE = edit_type
-        self.filename = b_path if b_path else a_path
+        self.filename = b_path or a_path
         self.repository_name = repository_name
         self.source_commit = source_commit
         self.destination_commit = destination_commit
@@ -103,11 +102,12 @@ class CodeCommitProvider(GitProvider):
 
     def is_supported(self, capability: str) -> bool:
         if capability in [
-            "create_inline_comment",
-            "publish_inline_comments",
             "get_labels",
             "gfm_markdown",
             "markdown_backslash_escapes",
+            "head_ci_status",
+            "head_staleness",
+            "author_human_check",
         ]:
             return False
         return True
@@ -272,13 +272,18 @@ class CodeCommitProvider(GitProvider):
                                    final_update_message=True,
                                    as_thread: bool = False,
                                    identity_marker: str | None = None,
-                                   legacy_initial_header: str | None = None):
+                                   legacy_initial_header: str | None = None,
+                                   require_agent_authorship: bool = False):
         if as_thread:
             get_logger().debug("CodeCommit does not support threaded persistent comments; publishing as a PR comment")
 
-        if not identity_marker:
+        legacy_header_update = (
+            not identity_marker and not update_header and bool(legacy_initial_header)
+        )
+        if (not identity_marker and not legacy_header_update) or require_agent_authorship:
             get_logger().debug(
-                "CodeCommit persistent comment updates require a stable identity marker; publishing a new comment"
+                "CodeCommit cannot safely update this persistent comment without a stable identity; "
+                "publishing a new comment"
             )
             return self.publish_comment(pr_comment)
 
@@ -291,7 +296,11 @@ class CodeCommitProvider(GitProvider):
             )
             return self.publish_comment(persistent_comment)
 
-        identifiers = [identity_marker, legacy_initial_header]
+        identifiers = (
+            [identity_marker, legacy_initial_header]
+            if identity_marker
+            else [initial_header, legacy_initial_header]
+        )
         used_comment_ids = set()
         published_comments = []
         target_contexts = self._get_target_contexts()
@@ -347,6 +356,8 @@ class CodeCommitProvider(GitProvider):
                 get_logger().warning(
                     f"Skipping code suggestion #{counter}: "
                     f"Each suggestion must have 'body', 'relevant_file', 'relevant_lines_start' keys")
+                continue
+            if not self._is_valid_code_suggestion(suggestion):
                 continue
 
             publishable_count += 1
@@ -418,9 +429,6 @@ class CodeCommitProvider(GitProvider):
     def publish_inline_comments(self, comments: list[dict]):
         raise NotImplementedError("CodeCommit provider does not support publishing inline comments yet")
 
-    def get_title(self):
-        return self.pr.title
-
     def get_pr_id(self):
         """
         Returns the PR ID in the format: "repo_name/pr_number".
@@ -433,21 +441,20 @@ class CodeCommitProvider(GitProvider):
         except AttributeError:
             return ""
 
+    def get_pr_identity(self) -> dict:
+        head_sha = getattr(self.pr, "source_commit", "") if self.pr is not None else ""
+        return {
+            "url": self.get_pr_url() or "",
+            "provider": "codecommit",
+            "repo": self.repo_name or "",
+            "number": self.pr_num if self.pr_num is not None else "",
+            "head_sha": head_sha if isinstance(head_sha, str) else "",
+        }
+
     @cache_languages
     def get_languages(self):
         """Return recognized language percentages for diff prioritization."""
-        language_map = get_settings().get("language_extension_map_org", {}) or {}
-        get_language = build_language_file_matcher(language_map)
-        language_counts = Counter()
-        for file in self.get_files():
-            if not file.filename:
-                continue
-            language = get_language(file.filename)
-            if language:
-                language_counts[language] += 1
-
-        total = sum(language_counts.values()) or 1
-        return {language: count / total * 100 for language, count in language_counts.items()}
+        return self._language_percentages(file.filename for file in self.get_files())
 
     def get_pr_branch(self):
         return self.pr.source_branch
@@ -648,7 +655,7 @@ class CodeCommitProvider(GitProvider):
         comments: list,
         target: dict,
         identifiers: list,
-        identity_marker: str,
+        identity_marker: str | None,
         used_comment_ids: set,
         allow_destination_fallback: bool,
         allow_repository_fallback: bool,
@@ -675,7 +682,7 @@ class CodeCommitProvider(GitProvider):
     def _find_persistent_comment(
         comments: list,
         identifiers: list,
-        identity_marker: str,
+        identity_marker: str | None,
         used_comment_ids: set,
         target_matcher,
     ):
@@ -723,7 +730,7 @@ class CodeCommitProvider(GitProvider):
         if not update_header:
             return pr_comment
 
-        update_message = f"#### ({name.capitalize()} updated until commit {target['source_commit']})\n"
+        update_message = format_persistent_update_header(name, target["source_commit"])
         updated_anchor = f"{identity_marker}\n\n{update_message}"
         return pr_comment.replace(identity_marker, updated_anchor, 1)
 

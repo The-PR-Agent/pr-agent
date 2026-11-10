@@ -12,6 +12,7 @@ from pr_agent.tools.pr_description import PRDescription
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _TRACKED_SETTINGS = (
+    "config.bot_display_name",
     "config.is_auto_command",
     "config.propagate_tool_errors",
     "config.publish_output",
@@ -45,6 +46,9 @@ class StubProvider:
         self.html_lists_queries += 1
         return self._html_lists
 
+    def get_diff_files(self):
+        return []
+
     def publish_description(self, title: str, body: str):
         self.descriptions.append((title, body))
 
@@ -53,6 +57,7 @@ class StubProvider:
 def configured_settings():
     snapshot = snapshot_settings(_TRACKED_SETTINGS)
     settings = get_settings()
+    settings.config.bot_display_name = "PR-Agent"
     settings.config.is_auto_command = True
     settings.config.propagate_tool_errors = True
     settings.config.publish_output = True
@@ -109,6 +114,19 @@ async def test_description_help_rendering_follows_html_list_capability(
     assert "qodo-merge-docs.qodo.ai" not in body
     if not html_lists:
         assert PLAIN_BREAK_MARKER in body
+
+
+@pytest.mark.parametrize("html_lists", [True, False])
+async def test_description_help_rendering_uses_configured_bot_display_name(
+    configured_settings, monkeypatch, html_lists
+):
+    get_settings().config.bot_display_name = "Acme Bot"
+    provider = StubProvider(html_lists)
+
+    body = await render_description_help(provider, monkeypatch)
+
+    assert "for any questions about Acme Bot usage." in body
+    assert "PR-Agent usage." not in body
 
 
 def test_providers_declare_html_list_capability():

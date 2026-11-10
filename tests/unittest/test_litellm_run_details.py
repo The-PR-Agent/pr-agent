@@ -159,7 +159,7 @@ def test_zero_inline_cost_without_priceable_usage_stays_unavailable(monkeypatch)
         LiteLLMAIHandler._record_completion_metadata(response, model="model-a")
 
     details = get_run_details()
-    assert details.total_cost_usd == Decimal("0")
+    assert details.total_cost_usd == Decimal(0)
     assert details.known_cost_call_count == 0
     assert details.cost_status == "unavailable"
     completion_cost.assert_not_called()
@@ -332,7 +332,7 @@ async def test_streamed_completion_without_finalized_usage_marks_cost_unavailabl
     assert details.has_token_usage is False
     assert details.known_cost_call_count == 0
     assert details.cost_status == "unavailable"
-    assert details.total_cost_usd == Decimal("0")
+    assert details.total_cost_usd == Decimal(0)
     completion_cost.assert_not_called()
 
 

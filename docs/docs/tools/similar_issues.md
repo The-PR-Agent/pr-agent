@@ -28,10 +28,19 @@ To perform retrieval, the `similar_issue` tool indexes the repository's issues i
 
 - The **first run** indexes up to `max_issues_to_scan` issues (default `500`).
 - **Later runs** check the newest `max_issues_to_scan` issues and index any that are missing, so previously-indexed issues are not re-embedded.
-- `force_update_dataset = true` makes every run re-index the whole repository: LanceDB deletes the repository's rows first, Pinecone and Qdrant upsert over the existing rows.
+- `force_update_dataset = true` makes every run re-index up to `max_issues_to_scan` issues: LanceDB replaces the repository's rows, Pinecone and Qdrant upsert over the existing rows.
 - `skip_comments = true` skips issue comments and embeds only the issue title and body.
 
+Embedding inputs are limited to **8,191 tokens** (one token below the model's
+8,192-token context). Issues or comments exceeding this limit are skipped during
+indexing; an oversized issue also excludes its comments. Long similarity queries
+are truncated to their first 8,191 tokens, so later content does not influence
+the results.
+
 These keys live under the `[pr_similar_issue]` section. Each backend section below describes its own configuration and re-run behaviour.
+
+If the embedding service rejects the credentials (HTTP 401) or denies access (HTTP 403), indexing stops immediately on every vector database backend.
+Correct the embedding API key or access permissions before running the tool again; other embedding errors retain the existing batch and per-item fallback behavior.
 
 ### Selecting a Vector Database
 
@@ -54,7 +63,7 @@ Choose from the following Vector Databases:
 
 LanceDB is the default backend (`vectordb = "lancedb"`) and needs no external credentials. The index is stored in a local directory given by the `[lancedb] uri` key (default `./lancedb`). A single table (`codium-ai-pr-agent-issues`) is shared by every repository indexed into the same directory; rows are tagged with the repository name in the metadata.
 
-As described in [Indexing and re-runs](#indexing-and-re-runs), the first run creates the table and indexes up to `max_issues_to_scan` issues; later runs index any missing issue among the newest `max_issues_to_scan`; `force_update_dataset = true` deletes the repository's rows and re-indexes them.
+As described in [Indexing and re-runs](#indexing-and-re-runs), the first run creates the table and indexes up to `max_issues_to_scan` issues; later runs index any missing issue among the newest `max_issues_to_scan`; `force_update_dataset = true` replaces the repository's rows with a fresh index of up to `max_issues_to_scan` issues.
 
 #### Pinecone Configuration
 
@@ -77,7 +86,7 @@ gcp-starter pod tier is no longer supported.
 created. An existing index is opened by name and is never recreated, so moving an
 existing deployment to the new configuration does not lose the stored vectors.
 
-On re-runs, the first run creates the index and upserts up to `max_issues_to_scan` issues; later runs index any missing issue among the newest `max_issues_to_scan`; `force_update_dataset = true` re-indexes the whole repository.
+On re-runs, the first run creates the index and upserts up to `max_issues_to_scan` issues; later runs index any missing issue among the newest `max_issues_to_scan`; `force_update_dataset = true` re-indexes up to `max_issues_to_scan` issues.
 
 :::note[No backend is tested against its real driver]
 
@@ -112,11 +121,11 @@ vectordb = "qdrant"
 
 You can get a free managed Qdrant instance from [Qdrant Cloud](https://cloud.qdrant.io/).
 
-`api_key` must be present even when the server does not enforce authentication (an empty string is accepted): the tool reads both `url` and `api_key` and raises when either is absent. A re-index uploads the whole repository in a single request.
+`api_key` must be present even when the server does not enforce authentication (an empty string is accepted): the tool reads both `url` and `api_key` and raises when either is absent. A re-index uploads the records from up to `max_issues_to_scan` issues.
 
 Qdrant points are stored in a collection named `codium-ai-pr-agent-issues-v2`, derived by appending a `-v2` suffix to the shared index name (`codium-ai-pr-agent-issues`). The suffix is an implementation detail of the Qdrant backend only; pinecone and lancedb use the unsuffixed name.
 
-On re-runs, the first run creates the collection and stores up to `max_issues_to_scan` issues; later runs index any missing issue among the newest `max_issues_to_scan`; `force_update_dataset = true` re-indexes the whole repository.
+On re-runs, the first run creates the collection and stores up to `max_issues_to_scan` issues; later runs index any missing issue among the newest `max_issues_to_scan`; `force_update_dataset = true` re-indexes up to `max_issues_to_scan` issues.
 
 :::note[Upgrading an index created before the point-id fix]
 
@@ -143,4 +152,6 @@ the new collection. Once you are satisfied with the results, you can delete the 
 - To invoke the 'similar' issue tool via online usage, [comment](https://github.com/the-pr-agent/pr-agent/issues/178#issuecomment-1716934893) on an issue:
 `/similar_issue`
 
-- You can also enable the 'similar issue' tool to run automatically when a new issue is opened, by adding it to the [pr_commands list in the github_app section](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)
+- To run automatically when an issue is opened, create a GitHub Actions workflow for the `issues: opened` event that invokes the CLI with that issue's URL. Adding `/similar_issue` to `github_app.pr_commands` does not handle issue-opened events.
+
+  With the default LanceDB backend, restore the configured `[lancedb] uri` directory (default `./lancedb`, relative to the CLI working directory) before running the CLI and save the updated directory afterward, or use a persistent remote Qdrant or Pinecone backend. On ephemeral hosted runners, an unpreserved local index is rebuilt on each run, repeating embedding costs for up to `max_issues_to_scan` issues (default `500`) and leaving previously indexed issues outside that batch unavailable for retrieval.

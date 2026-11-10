@@ -32,7 +32,7 @@ If you set `config.output_relevant_configurations` to True, each tool will also 
 
 By uploading a local `.pr_agent.toml` file to the root of the repo's default branch, you can customize parameters that support repository-level overrides. Note that you need to upload or update `.pr_agent.toml` before using the PR Agent tools (either at PR creation or via manual trigger) for the configuration to take effect.
 
-Provider endpoint settings are host-controlled: `openai.api_base`, `openai.api_type`, `openai.api_version`, `azure_ad.api_base`, `databricks.api_base`, `huggingface.api_base`, `moonshot.api_base`, `ollama.api_base`, and `openrouter.api_base` are ignored when set in repository-local `.pr_agent.toml` and must be configured on the host. The same restriction applies to provider authentication and TLS settings: `github.deployment_type`, `bitbucket.auth_type`, `gitlab.auth_type`, `gitlab.ssl_verify`, `gitea.skip_ssl_verification`, and `gitea.ssl_ca_cert`. Jira ticket lookups run with the host's Atlassian credentials, so `jira.jira_site`, `jira.jira_api_email`, and `jira.project_keys` are host-controlled as well. These settings are also rejected in command arguments.
+Provider endpoint settings are host-controlled: `openai.api_base`, `openai.api_type`, `openai.api_version`, `azure_ad.api_base`, `databricks.api_base`, `huggingface.api_base`, `moonshot.api_base`, `ollama.api_base`, and `openrouter.api_base` are ignored when set in repository-local `.pr_agent.toml` and must be configured on the host. The same restriction applies to provider authentication and TLS settings: `github.deployment_type`, `bitbucket.auth_type`, `gitlab.auth_type`, `gitlab.ssl_verify`, `gitea.skip_ssl_verification`, and `gitea.ssl_ca_cert`. Jira ticket lookups run with the host's Atlassian credentials, so `jira.cloud_id`, `jira.jira_site`, `jira.jira_api_email`, and `jira.project_keys` are host-controlled as well. These settings are also rejected in command arguments.
 
 For example, if you set in `.pr_agent.toml`:
 
@@ -67,7 +67,7 @@ If `.pr_agent.toml` cannot be loaded from the requested branch (e.g. the branch 
 :::danger[Security: treat the config branch as privileged]
 By default, configuration is read from the **default branch**, so only users who can merge to it can change how PR-Agent behaves. `--config-branch` / `PR_AGENT_CONFIG_BRANCH` move that trust boundary to whatever branch you name.
 
-**Never set the config branch from untrusted or PR-derived input** (e.g. `--config-branch=$GITHUB_HEAD_REF` / `${{ github.head_ref }}` in CI). Doing so lets anyone who can push a branch to the repository supply their own `.pr_agent.toml` and control the review — for example pointing `model`/the API base at an attacker endpoint to exfiltrate the diff, injecting `extra_instructions`, or enabling auto-approval of their own PR. Always pin the config branch to a fixed, maintainer-controlled branch.
+**Never set the config branch from untrusted or PR-derived input** (e.g. `--config-branch=$GITHUB_HEAD_REF` / `${{ github.head_ref }}` in CI). Doing so lets anyone who can push a branch to the repository supply their own `.pr_agent.toml` and change repository-configurable review settings — for example injecting `extra_instructions`, ignoring changed files, or disabling automatic feedback. Host-only settings remain filtered. Always pin the config branch to a fixed, maintainer-controlled branch.
 :::
 
 :::note[Provider branch behavior]
@@ -203,7 +203,7 @@ built-in defaults
   < --extra_config_url
     < global pr-agent-settings
       < local .pr_agent.toml (repo default branch)
-        < environment variables (PR_AGENT__SECTION__KEY)
+        < environment variables (SECTION__KEY)
 ```
 
 This means an external URL acts as an organization-wide *default* that any team can still override with their own `pr-agent-settings` or repo-local `.pr_agent.toml`.

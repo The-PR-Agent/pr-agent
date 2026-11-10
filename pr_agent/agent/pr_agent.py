@@ -2,12 +2,14 @@ import asyncio
 import copy
 import json
 import shlex
+from contextlib import asynccontextmanager, contextmanager
 from functools import partial
 
 import dynaconf
 from opentelemetry.trace import StatusCode
 from starlette_context import context, request_cycle_context
 
+from pr_agent.agent.command_registry import COMMAND_SPECS
 from pr_agent.agent.request_policy import RequestOutcome, enforce_request_policy
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -16,7 +18,7 @@ from pr_agent.algo.comment_identity import (
     add_comment_identity,
     comment_matches_identity,
 )
-from pr_agent.algo.run_details import get_run_details, init_run_details
+from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
 from pr_agent.algo.utils import _fix_key_value, update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
@@ -30,46 +32,18 @@ from pr_agent.log import get_logger
 from pr_agent.telemetry.meter import get_ai_calls_counter, get_commands_counter, get_tokens_counter
 from pr_agent.telemetry.shutdown import flush_telemetry
 from pr_agent.telemetry.tracer import get_tracer
-from pr_agent.tools.pr_add_docs import PRAddDocs
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from pr_agent.tools.pr_config import PRConfig
 from pr_agent.tools.pr_description import PRDescription
-from pr_agent.tools.pr_generate_labels import PRGenerateLabels
-from pr_agent.tools.pr_help_message import PRHelpMessage
-from pr_agent.tools.pr_line_questions import PR_LineQuestions
-from pr_agent.tools.pr_questions import PRQuestions
 from pr_agent.tools.pr_reviewer import PRReviewer
-from pr_agent.tools.pr_similar_issue import PRSimilarIssue
-from pr_agent.tools.pr_update_changelog import PRUpdateChangelog
 
 # Keep the established import path available to integrations and tests while the
 # shared handler works against the provider-neutral base exception.
 IncompleteBitbucketPullRequestFilesError = _IncompleteBitbucketPullRequestFilesError
 IncompletePullRequestFilesError = _IncompletePullRequestFilesError
 
-command2class = {
-    "auto_review": PRReviewer,
-    "answer": PRReviewer,
-    "review": PRReviewer,
-    "review_pr": PRReviewer,
-    "describe": PRDescription,
-    "describe_pr": PRDescription,
-    "improve": PRCodeSuggestions,
-    "improve_code": PRCodeSuggestions,
-    "ask": PRQuestions,
-    "ask_question": PRQuestions,
-    "ask_line": PR_LineQuestions,
-    "update_changelog": PRUpdateChangelog,
-    "config": PRConfig,
-    "settings": PRConfig,
-    "help": PRHelpMessage,
-    "similar_issue": PRSimilarIssue,
-    "add_docs": PRAddDocs,
-    "generate_labels": PRGenerateLabels,
-    # SECURITY: "/help_docs" is temporarily disabled while the clone-target validation
-    # fix is reviewed (see issue #2445). Re-enable by restoring `"help_docs": PRHelpDocs`
-    # and its import once the hardening PR is merged.
-}
+# The single source of truth for commands and aliases is
+# pr_agent/agent/command_registry.py; dispatch reads the tool mapping from it.
+command2class = {name: spec.tool for name, spec in COMMAND_SPECS.items()}
 
 commands = list(command2class.keys())
 
@@ -301,7 +275,14 @@ def prepare_command(command: str) -> list[str]:
         get_logger().error(
             "Dropping auto-command argument(s) targeting forbidden param(s): "
             + ", ".join(f"'{param}'" for param in rejected))
-    update_settings_from_args(kept)
+    settings = get_settings()
+    original_language = settings.config.get("response_language", "en-us")
+    try:
+        update_settings_from_args(kept)
+    finally:
+        # Apply the requested response language only during command execution.
+        if settings.config.get("response_language", "en-us") != original_language:
+            settings.set("CONFIG.RESPONSE_LANGUAGE", original_language)
     return [action] + kept
 
 
@@ -333,9 +314,96 @@ def _record_token_metrics(action: str, git_provider: str) -> None:
         get_ai_calls_counter().add(details.num_ai_calls, labels)
 
 
+@contextmanager
+def response_language_instructions():
+    """Apply generated locale guidance only while a command is running."""
+    settings = get_settings()
+    originals = []
+    try:
+        response_language = settings.config.get("response_language", "en-us")
+        if not isinstance(response_language, str) or not response_language.strip():
+            get_logger().warning("Ignoring response_language: expected a non-empty locale string")
+            response_language = "en-us"
+        if response_language.lower() != "en-us":
+            get_logger().info(f"User has set the response language to: {response_language}")
+            language_instruction = (
+                "Your response MUST be written in the language corresponding "
+                f"to locale code: '{response_language}'. This is crucial. "
+                "Keep schema control values (such as 'No', 'Yes', 'None', "
+                "'false') in their original English form and do not translate them."
+            )
+            for key in settings:
+                section = settings.get(key)
+                if not isinstance(section, dynaconf.DataDict) or not hasattr(section, "extra_instructions"):
+                    continue
+                original = section.extra_instructions
+                if language_instruction not in str(original):
+                    originals.append((section, original))
+                    section.extra_instructions = (
+                        f"{original}\n======\n\nIn addition, {language_instruction}"
+                        if original else language_instruction
+                    )
+        yield
+    finally:
+        for section, original in originals:
+            section.extra_instructions = original
+
+
+_tool_initialization_locks = {}
+
+
+@asynccontextmanager
+async def _serialize_tool_initialization(pr_url):
+    """Keep same-PR initialization sequential without occupying waiting worker threads."""
+    key = (asyncio.get_running_loop(), pr_url)
+    lock, users = _tool_initialization_locks.get(key, (asyncio.Lock(), 0))
+    _tool_initialization_locks[key] = (lock, users + 1)
+    try:
+        async with lock:
+            yield
+    finally:
+        _, users = _tool_initialization_locks[key]
+        if users == 1:
+            del _tool_initialization_locks[key]
+        else:
+            _tool_initialization_locks[key] = (lock, users - 1)
+
+
 class PRAgent:
     def __init__(self, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         self.ai_handler = ai_handler  # handler factory passed to each tool when it is instantiated
+
+    async def _create_tool(self, tool_class, pr_url, **kwargs):
+        """Offload isolated core-tool setup while preserving its cancellation boundary."""
+        if get_settings() is global_settings or tool_class not in (PRReviewer, PRDescription, PRCodeSuggestions):
+            # Preserve shared settings and other tools' existing initialization
+            # (some constructors also update external indexes).
+            return tool_class(pr_url, ai_handler=self.ai_handler, **kwargs)
+
+        async with _serialize_tool_initialization(pr_url):
+            if self.ai_handler is not LiteLLMAIHandler:
+                # Injected factories may require the calling event loop.
+                return tool_class(pr_url, ai_handler=self.ai_handler, **kwargs)
+
+            task = asyncio.create_task(asyncio.to_thread(tool_class, pr_url, ai_handler=self.ai_handler, **kwargs))
+            cancelled = None
+            while True:
+                try:
+                    tool = await asyncio.shield(task)
+                    break
+                except asyncio.CancelledError as error:
+                    if task.cancelled():
+                        raise
+                    # A thread cannot be stopped by cancelling its awaiter. Finish
+                    # setup before restoring settings or starting another command.
+                    cancelled = error
+                except Exception:
+                    if cancelled is not None:
+                        raise cancelled from None
+                    raise
+            if cancelled is not None:
+                raise cancelled
+            return tool
 
     async def _handle_request(
         self, pr_url, request, notify=None, propagate_tool_errors: bool | None = None
@@ -413,87 +481,85 @@ class PRAgent:
             span.set_attribute("error.argument", arg)
             return False
 
-        # Update settings from args
-        args = update_settings_from_args(args)
-
-        # Append the response language in the extra instructions
-        response_language = get_settings().config.get('response_language', 'en-us')
-        if response_language.lower() != 'en-us':
-            get_logger().info(f'User has set the response language to: {response_language}')
-            for key in get_settings():
-                setting = get_settings().get(key)
-                if isinstance(setting, dynaconf.DataDict):
-                    if hasattr(setting, 'extra_instructions'):
-                        current_extra_instructions = setting.extra_instructions
-
-                        # Define the language-specific instruction and the separator
-                        lang_instruction_text = (f"Your response MUST be written in the language corresponding "
-                                                 f"to locale code: '{response_language}'. This is crucial. "
-                                                 f"Keep schema control values (such as 'No', 'Yes', 'None', "
-                                                 f"'false') in their original English form and do not translate them.")
-                        separator_text = "\n======\n\nIn addition, "
-
-                        # Check if the specific language instruction is already present to avoid duplication
-                        if lang_instruction_text not in str(current_extra_instructions):
-                            if current_extra_instructions: # If there's existing text
-                                setting.extra_instructions = (str(current_extra_instructions)
-                                                              + separator_text + lang_instruction_text)
-                            else: # If extra_instructions was None or empty
-                                setting.extra_instructions = lang_instruction_text
-                        # If lang_instruction_text is already present, do nothing.
-
-        action = action.lstrip("/").lower()
-
-        span.set_attribute("pr_agent.args_count", len(args))
-        _git_provider = get_settings().config.git_provider
-        span.set_attribute("vcs.provider.name", _git_provider)
-
-        if action not in command2class:
-            get_logger().warning(f"Unknown command: {action}")
-            span.set_status(StatusCode.ERROR)
-            span.set_attribute("error.type", "unknown_command")
-            if get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False):
-                span.set_attribute("error.message", f"Unknown command: {action}")
-            return False
-
-        # Only after validation: an unknown action is arbitrary user input and
-        # must not become a span name, span attribute, or metric label.
-        span.update_name(f"pr_agent {action}")
-        span.set_attribute("pr_agent.command", action)
-        get_commands_counter().add(1, {"pr_agent.command": action, "vcs.provider.name": _git_provider})
-
+        # Keep command-level language overrides from affecting later commands.
         settings = get_settings()
-        if propagate_tool_errors is not None:
-            # Apply this after repository and command settings so callers that require an honest
-            # result cannot be overridden by either source. Restore it below for request isolation.
-            previous_propagation = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
-            settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_tool_errors)
-        # Install a fresh collector at the per-command boundary so the finally block
-        # exports this command's usage and never repeats or inherits a prior command's
-        # counts. Tools that run their own collector (e.g. /review) replace it on entry.
-        init_run_details()
+        previous_response_language = settings.config.get("response_language", "en-us")
         try:
-            with get_logger().contextualize(command=action, pr_url=pr_url):
+            args = update_settings_from_args(args)
+        except Exception:
+            if settings.config.get("response_language", "en-us") != previous_response_language:
+                settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)
+            raise
+        language_overridden = settings.config.get("response_language", "en-us") != previous_response_language
+
+        try:
+            action = action.lstrip("/").lower()
+
+            span.set_attribute("pr_agent.args_count", len(args))
+            _git_provider = get_settings().config.git_provider
+            span.set_attribute("vcs.provider.name", _git_provider)
+
+            if action not in command2class:
+                get_logger().warning(f"Unknown command: {action}")
+                span.set_status(StatusCode.ERROR)
+                span.set_attribute("error.type", "unknown_command")
+                if get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False):
+                    span.set_attribute("error.message", f"Unknown command: {action}")
+                if language_overridden:
+                    settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)
+                return False
+
+            # Only after validation: an unknown action is arbitrary user input and
+            # must not become a span name, span attribute, or metric label.
+            span.update_name(f"pr_agent {action}")
+            span.set_attribute("pr_agent.command", action)
+            get_commands_counter().add(1, {"pr_agent.command": action, "vcs.provider.name": _git_provider})
+
+            # Install a fresh collector at the per-command boundary so the finally block
+            # exports this command's usage and never repeats or inherits a prior command's
+            # counts. Tools that run their own collector (e.g. /review) replace it on entry.
+            init_run_details()
+            if propagate_tool_errors is not None:
+                # Apply this after repository and command settings so callers that require an honest
+                # result cannot be overridden by either source. Restore it below for request isolation.
+                previous_propagation = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+                settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_tool_errors)
+        except Exception:
+            if language_overridden:
+                settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)
+            raise
+
+        try:
+            with response_language_instructions(), get_logger().contextualize(command=action, pr_url=pr_url):
                 get_logger().info("PR-Agent request handler started", analytics=True)
                 if action == "answer":
                     if notify:
                         notify()
-                    await PRReviewer(pr_url, is_answer=True, args=args, ai_handler=self.ai_handler).run()
+                    tool = await self._create_tool(PRReviewer, pr_url, is_answer=True, args=args)
+                    await tool.run()
                 elif action == "auto_review":
-                    await PRReviewer(pr_url, is_auto=True, args=args, ai_handler=self.ai_handler).run()
+                    tool = await self._create_tool(PRReviewer, pr_url, is_auto=True, args=args)
+                    await tool.run()
                 else:
                     if notify:
                         notify()
 
-                    result = await command2class[action](pr_url, ai_handler=self.ai_handler, args=args).run()
+                    tool = await self._create_tool(command2class[action], pr_url, args=args)
+                    result = await tool.run()
                     if action == "add_docs" and result is False:
                         span.set_status(StatusCode.ERROR)
                         span.set_attribute("error.type", "documentation_publication_failed")
                         return False
 
-                span.set_status(StatusCode.OK)
+                if command_failed():
+                    span.set_status(StatusCode.ERROR)
+                    span.set_attribute("error.type", "tool_execution_failed")
+                else:
+                    span.set_status(StatusCode.OK)
                 return True
         finally:
+            if language_overridden:
+                settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)
             _record_token_metrics(action, _git_provider)
             if propagate_tool_errors is not None:
                 settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", previous_propagation)

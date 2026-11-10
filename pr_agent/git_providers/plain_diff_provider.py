@@ -1,26 +1,44 @@
 import os
+import re
 import sys
-from collections import Counter
 
 from unidiff.errors import UnidiffParseError
 
 from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
-from pr_agent.algo.file_filter import filter_ignored
-from pr_agent.algo.language_handler import build_language_file_matcher
+from pr_agent.algo.file_filter import filter_ignored_with_status
+from pr_agent.algo.language_handler import partition_files_by_language_filter
 from pr_agent.algo.review_json_output import write_review_json_output
-from pr_agent.algo.run_output import show_run_details
+from pr_agent.algo.run_output import append_run_details
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file_checked, to_hunk_only_patch
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
 
+_DEFAULT_PR_TITLE = "Local diff review"
+
+_OUTPUT_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f]")
+
+
+def _plain_diff_context(key: str, default: str = "") -> str:
+    value = get_settings().get(key)
+    return value if isinstance(value, str) and value.strip() else default
+
 
 class PullRequestMimic:
     def __init__(self, title: str, diff_files: list[FilePatchInfo]):
-        self.title = title
+        self._title = title
         self.diff_files = diff_files
+
+    @property
+    def title(self) -> str:
+        # Read command-scoped settings at access time because the provider may be cached.
+        return _plain_diff_context("plain_diff.title", self._title)
+
+    @title.setter
+    def title(self, value: str) -> None:
+        self._title = value
 
 
 class PlainDiffGitProvider(GitProvider):
@@ -50,7 +68,7 @@ class PlainDiffGitProvider(GitProvider):
         # only output channel, and it must never be silently suppressed.
         get_settings().set("config.publish_output", True)
         self.diff_files = None
-        self.pr = PullRequestMimic(self.get_pr_title(), self.get_diff_files())
+        self.pr = PullRequestMimic(_DEFAULT_PR_TITLE, self.get_diff_files())
 
     def get_diff_files(self) -> list[FilePatchInfo]:
         if self.diff_files is not None:
@@ -59,7 +77,7 @@ class PlainDiffGitProvider(GitProvider):
             files = parse_unified_diff(self.diff_text)
         except UnidiffParseError as e:
             raise ValueError(f"Failed to parse the provided diff: {e}") from e
-        files = filter_ignored(files, platform="plain_diff")
+        files, ignore_complete = filter_ignored_with_status(files, platform="plain_diff")
         # Resolve diff paths against the actual repository root (not the raw CWD)
         # so working-tree enrichment still works when run from a subdirectory.
         # If there is no detectable .git root, disable enrichment entirely and
@@ -104,6 +122,7 @@ class PlainDiffGitProvider(GitProvider):
             # rest of the pipeline expects hunk-only patches, so normalize after.
             f.patch = to_hunk_only_patch(f.patch)
         self.diff_files = files
+        self.filtered_diff_file_names = partition_files_by_language_filter(files)[1] if ignore_complete else []
         return files
 
     def get_files(self) -> list[str]:
@@ -121,6 +140,9 @@ class PlainDiffGitProvider(GitProvider):
         incremental.is_incremental = False
 
     def _write_output(self, content: str):
+        # Preserve line breaks and tabs while removing controls such as ESC
+        # and standalone carriage returns from rendered output.
+        content = _OUTPUT_CONTROL_CHARS.sub("", content.replace("\r\n", "\n"))
         try:
             print(content)
         except UnicodeEncodeError:
@@ -156,44 +178,43 @@ class PlainDiffGitProvider(GitProvider):
             write_review_json_output(review, self.json_output_path)
 
     def publish_description(self, pr_title: str, pr_body: str):
-        self._write_output(f"{pr_title}\n\n{pr_body}")
+        title = self.get_pr_title() if pr_title is None else pr_title
+        self._write_output(f"{title}\n\n{pr_body}")
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ["get_issue_comments", "create_inline_comment",
-                          "publish_inline_comments",
-                          "get_labels", "edit_comment", "remove_comment"]:
+        if capability in [
+            "get_issue_comments",
+            "get_labels",
+            "edit_comment",
+            "remove_comment",
+            "head_ci_status",
+            "head_staleness",
+            "author_human_check",
+        ]:
             return False
         return True
+
+    def get_pr_identity(self) -> dict:
+        return {"url": "", "provider": "plain-diff", "repo": "", "number": "", "head_sha": ""}
 
     def supports_code_suggestions_artifact(self) -> bool:
         return True
 
     def get_languages(self):
-        # Return {language-name: percentage}, matching the hosted providers.
-        # sort_files_by_main_languages() keys on language NAMES (it maps each
-        # name back to its extensions), so returning raw extensions here would
-        # drop every file into the "Other" bucket and disable language-based
-        # hunk prioritization. Use the shared filename matcher so full names,
-        # multipart suffixes, and case-sensitive extensions behave consistently.
-        lang_map = get_settings().get("language_extension_map_org", {}) or {}
-        get_language = build_language_file_matcher(lang_map)
-
-        lang_count = Counter()
-        for f in self.get_diff_files():
-            if not f.filename:
-                continue
-            language = get_language(f.filename)
-            if language:
-                lang_count[language] += 1
-
-        total = sum(lang_count.values()) or 1
-        return {lang: count / total * 100 for lang, count in lang_count.items()}
+        return self._language_percentages(f.filename for f in self.get_diff_files())
 
     def get_pr_title(self):
-        return "Local diff review"
+        return _plain_diff_context("plain_diff.title", _DEFAULT_PR_TITLE)
 
     def get_pr_description_full(self):
-        return ""
+        return _plain_diff_context("plain_diff.description")
+
+    def get_pr_description(self, full: bool = True, split_changes_walkthrough=False) -> str | tuple:
+        description = super().get_pr_description(full=full)
+        return (description, []) if split_changes_walkthrough else description
+
+    def get_user_description(self) -> str:
+        return self.get_pr_description_full()
 
     def get_user_id(self):
         return -1
@@ -215,8 +236,7 @@ class PlainDiffGitProvider(GitProvider):
             no_suggestions_message: str = "No code suggestions found for the PR.") -> bool:
         if not code_suggestions:
             content = f"{format_pr_code_suggestions_header()}\n\n{no_suggestions_message}{artifact_footer}"
-            if get_settings().get("config.output_run_details", False):
-                content += show_run_details(self.is_supported("gfm_markdown"))
+            content = append_run_details(content, self)
             self._write_output(content)
             return True
 

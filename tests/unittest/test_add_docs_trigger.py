@@ -46,8 +46,8 @@ async def test_add_docs_trigger(monkeypatch, action, draft, state, should_run):
         lambda pr_url: FakeGitProvider(pr_url),
     )
     monkeypatch.setattr(
-        "pr_agent.tools.pr_add_docs.get_git_provider",
-        lambda: FakeGitProvider,
+        "pr_agent.tools.pr_add_docs.get_git_provider_for_tool",
+        lambda pr_url: FakeGitProvider(pr_url),
     )
 
     # Ensure identity provider always eligible
