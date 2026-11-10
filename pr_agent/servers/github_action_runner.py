@@ -288,9 +288,11 @@ async def run_action():
         enable_output = _as_bool_setting(enable_output, default=True)
     get_settings().set("GITHUB_ACTION_CONFIG.ENABLE_OUTPUT", enable_output)
 
-    # Load the event payload
+    # Load the event payload. GitHub writes it as UTF-8; read it that way instead of
+    # with the runner's locale encoding, which would fail on a non-ASCII PR title or
+    # comment on a cp1252 runner.
     try:
-        with open(GITHUB_EVENT_PATH) as f:
+        with open(GITHUB_EVENT_PATH, encoding="utf-8") as f:
             event_payload = json.load(f)
     except json.decoder.JSONDecodeError as e:
         print(f"Failed to parse JSON: {e}")
