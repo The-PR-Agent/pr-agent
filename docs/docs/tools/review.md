@@ -84,7 +84,7 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>max_commits_per_review</b></td>
-    <td>Maximum number of commits <code>per_commit_review</code> reviews one by one. When more commits are selected for review, they are reviewed together in one review instead, with a notice. It can't be set from a command argument or a per directory configuration file. Default is 0, no limit.</td>
+    <td>Maximum number of commits <code>per_commit_review</code> reviews one by one. When more commits than that are not reviewed yet, the whole PR is reviewed in one review instead, with a notice. It can't be set from a command argument or a per directory configuration file. Default is 0, no limit.</td>
   </tr>
   <tr>
     <td><b>publish_review_failure_comment</b></td>
@@ -346,16 +346,17 @@ Each commit is reviewed against its own parent, with its commit message in the p
 incremental review comment that names and links the commit. These comments are never the persistent
 review comment, and they do not change the review labels.
 
-Each run reviews only the commits added since the last review, as `/review -i` does, so `-i` is not needed in
-`pr_commands` or `push_commands`. When the PR has no earlier review, every commit is reviewed. The commit list is
-read from the git provider on every run, so after a force push the review follows the rewritten history: commits that were rebased, squashed or amended (for
-example with `git rebase --autosquash` folding fixup commits) get new SHAs and newer commit dates and are reviewed
-again, fixup commits that no longer exist are not reviewed, and commits that were left untouched are not repeated.
-The `minimal_commits_for_incremental_review` and `minimal_minutes_for_incremental_review` thresholds apply as for a
-regular incremental review.
+Each run reviews only the commits of the PR that were not reviewed yet, so `-i` is not needed in `pr_commands` or
+`push_commands`, and the first run reviews every commit. A commit counts as reviewed once its review succeeds: the
+SHA is kept in a hidden marker in the commit's review comment, or, when no comment is published for it, in one
+record comment that lists the count of reviewed commits and is edited in place. A commit whose review failed is reviewed again on the next run.
+The commit list is read from the git provider on every run, so after a force push the review follows the rewritten
+history: commits that were rebased, squashed or amended (for example with `git rebase --autosquash` folding fixup
+commits) get new SHAs and are reviewed again, and fixup commits that no longer exist are not reviewed.
 
-Set `publish_output_no_suggestions = false` in the `[pr_reviewer]` section (`--pr_reviewer.publish_output_no_suggestions=false`
-on the command line) to skip the comment of a commit where nothing was found. The setting of the same name in
+Set `publish_output_no_suggestions = false` in the `[pr_reviewer]` section
+(`--pr_reviewer.publish_output_no_suggestions=false` on the command line) to skip the comment of a commit where
+nothing was found. The setting of the same name in
 `[pr_code_suggestions]` applies to `/improve` only.
 With `inline_key_issues = true`, each finding is published as an inline comment on the commit it was found in,
 anchored to that commit's own diff, so GitHub and GitLab show it as outdated once a later commit changes those lines.
@@ -366,9 +367,10 @@ Merge commits, empty commits and the root commit of a history have no diff of th
 fails to review is reported like a failed review and does not stop the remaining commits. Every reviewed commit is a
 separate model call, so the first review of a PR with many commits costs accordingly; later runs review only the new
 commits.
-Hosts that want to bound that cost can set `max_commits_per_review` (default 0, no limit): when more commits than that are selected, they are reviewed
-together in one review with a notice. Both settings belong to the operator, so a command argument such as
-`--pr_reviewer.per_commit_review=true` is rejected.
+Hosts that want to bound that cost can set `max_commits_per_review` (default 0, no limit): when more commits than that
+are not reviewed yet, the whole PR is reviewed in one review with a notice, and its commits count as reviewed.
+Both settings belong to the operator, so a command argument such as `--pr_reviewer.per_commit_review=true` is
+rejected.
 Each commit's comment shows its own run details, while the `--json-output` file and the GitHub Action `review` output
 describe the last reviewed commit only.
 

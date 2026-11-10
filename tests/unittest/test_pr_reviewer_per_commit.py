@@ -5,12 +5,23 @@ from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 from github import GithubException
 
-from pr_agent.algo.comment_identity import add_pr_review_identity
+from pr_agent.algo.comment_identity import (
+    PRCommandNoticeIdentity,
+    PRReviewIdentity,
+    add_pr_review_identity,
+    format_reviewed_commit_marker,
+    parse_reviewed_commits,
+)
 from pr_agent.algo.run_details import command_failed, init_run_details, record_command_failure
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError, IncrementalPR, PRCommit
+from pr_agent.git_providers.git_provider import (
+    GitProvider,
+    IncompleteProviderPullRequestFilesError,
+    IncrementalPR,
+    PRCommit,
+)
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -158,24 +169,6 @@ async def test_max_commits_per_review_reviews_the_commits_together_above_the_cap
 
 
 @pytest.mark.asyncio
-async def test_max_commits_per_review_counts_only_the_new_commits_of_an_incremental_review(settings, monkeypatch):
-    monkeypatch.setitem(get_settings().pr_reviewer, "max_commits_per_review", 2)
-    provider = _provider({"b" * 40: ["b.py"], "c" * 40: ["c.py"]})
-    reviewer = _reviewer(provider)
-    reviewer.incremental = _incremental("b" * 40)
-    reviewed = []
-
-    async def review():
-        reviewed.append(reviewer._review_commit.sha)
-
-    with patch.object(reviewer, "_can_run_incremental_review", return_value=True), \
-            patch.object(reviewer, "_run_review", side_effect=review):
-        await reviewer.run()
-
-    assert reviewed == ["b" * 40, "c" * 40]
-
-
-@pytest.mark.asyncio
 async def test_no_commit_with_changes_publishes_a_skip_notice(settings):
     provider = _provider({"a" * 40: [], "b" * 40: [], "c" * 40: []})
     reviewer = _reviewer(provider)
@@ -185,20 +178,6 @@ async def test_no_commit_with_changes_publishes_a_skip_notice(settings):
 
     run_review.assert_not_awaited()
     assert "skipped" in provider.publish_comment.call_args.args[0]
-
-
-@pytest.mark.asyncio
-async def test_no_new_commit_since_the_last_review_says_so(settings):
-    provider = _provider({})
-    reviewer = _reviewer(provider)
-    reviewer.incremental = _incremental(None)
-
-    with patch.object(reviewer, "_can_run_incremental_review", return_value=True), \
-            patch.object(reviewer, "_run_review") as run_review:
-        await reviewer.run()
-
-    run_review.assert_not_awaited()
-    assert "no new commits with changes since the last review" in provider.publish_comment.call_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -229,122 +208,6 @@ async def test_commit_listing_error_propagates_when_configured(settings, monkeyp
     with pytest.raises(RuntimeError, match="api down"):
         await reviewer.run()
     assert command_failed()
-
-
-def _incremental(first_new_sha):
-    incremental = IncrementalPR(True)
-    incremental.commits_range = [] if first_new_sha is None else [SimpleNamespace(sha=first_new_sha)]
-    incremental.first_new_commit = None if first_new_sha is None else SimpleNamespace(sha=first_new_sha)
-    return incremental
-
-
-@pytest.mark.parametrize(("first_new_sha", "expected"), [
-    ("b" * 40, COMMITS[1:]),
-    ("gone-after-force-push", COMMITS),
-    (None, []),
-])
-def test_incremental_selects_commits_from_the_current_history(first_new_sha, expected):
-    reviewer = _reviewer(MagicMock())
-    reviewer.incremental = _incremental(first_new_sha)
-    with patch.object(reviewer, "_can_run_incremental_review", return_value=True):
-        assert reviewer._commits_to_review(list(COMMITS)) == expected
-
-
-def _previous_review(provider, new_shas):
-    def lookup(incremental):
-        if incremental.is_incremental and new_shas is not None:
-            incremental.commits_range = [SimpleNamespace(sha=sha) for sha in new_shas]
-            incremental.first_new_commit = incremental.commits_range[0] if new_shas else None
-
-    provider.get_incremental_commits.side_effect = lookup
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("is_auto", [False, True])
-@pytest.mark.parametrize(("new_shas", "expected"), [
-    (None, [commit.sha for commit in COMMITS]),
-    (["c" * 40], ["c" * 40]),
-    ([], []),
-])
-async def test_per_commit_review_picks_the_commits_since_the_last_review(settings, is_auto, new_shas, expected):
-    provider = _provider({commit.sha: ["a.py"] for commit in COMMITS})
-    _previous_review(provider, new_shas)
-    reviewer = _reviewer(provider)
-    reviewer.is_auto = is_auto
-    reviewed = []
-
-    async def review():
-        reviewed.append(reviewer._review_commit.sha)
-
-    with patch.object(reviewer, "_run_review", side_effect=review):
-        await reviewer.run()
-
-    assert reviewed == expected
-    assert not reviewer.incremental.is_incremental
-    assert reviewer.vars["commit_messages_str"] == ALL_MESSAGES
-    notices = [call.args[0] for call in provider.publish_comment.call_args_list]
-    assert notices == (["Per commit review skipped: no new commits with changes since the last review."]
-                       if new_shas == [] and not is_auto else [])
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("new_shas", "since_flag", "expected"), [
-    (["b" * 40, "c" * 40], False, (True, "", "")),
-    (None, True, (False, ALL_MESSAGES, "EARLIER")),
-])
-async def test_commits_above_the_cap_are_reviewed_together_with_the_context_of_their_scope(
-        settings, monkeypatch, new_shas, since_flag, expected):
-    monkeypatch.setitem(get_settings().pr_reviewer, "max_commits_per_review", 1)
-    provider = _provider({})
-    provider.get_commit_messages.return_value = ALL_MESSAGES
-    _previous_review(provider, new_shas)
-    reviewer = _reviewer(provider)
-    reviewer.incremental = IncrementalPR(since_flag)
-    reviewer.vars.update(commit_messages_str="" if since_flag else ALL_MESSAGES,
-                         previous_findings="" if since_flag else "EARLIER")
-    base_vars = dict(reviewer.vars)
-    seen = []
-
-    async def review():
-        seen.append((reviewer.incremental.is_incremental, reviewer.vars["commit_messages_str"],
-                     reviewer.vars["previous_findings"]))
-
-    with patch.object(reviewer, "_run_review", side_effect=review), \
-            patch.object(reviewer, "_load_previous_findings_context", return_value="EARLIER"):
-        await reviewer.run()
-
-    assert seen == [expected]
-    assert reviewer.vars == base_vars
-    provider.set_commit_review_scope.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_failing_last_review_lookup_takes_the_review_failure_path(settings):
-    provider = _provider({})
-    provider.get_incremental_commits.side_effect = [RuntimeError("api down"), None]
-    reviewer = _reviewer(provider)
-
-    with patch.object(reviewer, "_run_review") as run_review:
-        await reviewer.run()
-
-    run_review.assert_not_awaited()
-    assert command_failed()
-    assert provider.publish_comment.call_args.args[0].startswith("Failed to review PR")
-    assert not reviewer.incremental.is_incremental
-
-
-def test_incremental_threshold_skip_and_full_fallback():
-    reviewer = _reviewer(MagicMock())
-    reviewer.incremental = _incremental("b" * 40)
-    with patch.object(reviewer, "_can_run_incremental_review", return_value=False):
-        assert reviewer._commits_to_review(list(COMMITS)) is None
-
-    def fall_back():
-        reviewer.incremental.is_incremental = False
-        return False
-
-    with patch.object(reviewer, "_can_run_incremental_review", side_effect=fall_back):
-        assert reviewer._commits_to_review(list(COMMITS)) == COMMITS
 
 
 def test_commit_review_markdown_uses_incremental_header_and_names_the_commit():
@@ -487,8 +350,6 @@ def _commit_reviewer(monkeypatch, prediction):
 
 @pytest.mark.asyncio
 async def test_per_commit_reviews_publish_labelled_incremental_comments_not_the_persistent_one(settings, monkeypatch):
-    from pr_agent.algo.comment_identity import PRReviewIdentity
-
     monkeypatch.setitem(get_settings().pr_reviewer, "inline_key_issues", True)
     reviewer = _commit_reviewer(monkeypatch, "review:\n  security_concerns: 'SQL injection: raw query'\n"
                                              "  key_issues_to_review:\n  - relevant_file: a.py\n    issue_header: Bug\n"
@@ -503,6 +364,8 @@ async def test_per_commit_reviews_publish_labelled_incremental_comments_not_the_
     [suggestions] = provider.publish_code_suggestions.call_args.args
     assert [suggestion["relevant_file"] for suggestion in suggestions] == ["a.py"]
     assert PRReviewIdentity.INCREMENTAL.value in review
+    assert parse_reviewed_commits(review) == {"a" * 40}
+    provider.publish_persistent_comment_full.assert_not_called()
     github = GithubProvider.__new__(GithubProvider)
     github.comments = [SimpleNamespace(body=review)]
     with patch.object(GithubProvider, "is_comment_authored_by_pr_agent", return_value=True):
@@ -528,6 +391,10 @@ async def test_commit_without_findings_publishes_only_when_configured(settings, 
     bodies = [call.args[0] for call in reviewer.git_provider.publish_comment.call_args_list]
     assert any("Review of commit" in body for body in bodies) is publish_no_suggestions
     reviewer.git_provider.publish_persistent_comment.assert_not_called()
+    record = reviewer.git_provider.publish_persistent_comment_full
+    assert record.called is not publish_no_suggestions
+    if record.called:
+        assert parse_reviewed_commits(record.call_args.args[0]) == {"a" * 40}
 
 
 async def _noop():
@@ -707,3 +574,207 @@ async def test_failing_nothing_to_review_notice_is_logged(settings):
 
     provider.publish_comment.assert_called_once()
     assert not command_failed()
+
+
+FINDING = ("review:\n  key_issues_to_review:\n  - relevant_file: a.py\n    issue_header: Bug\n"
+           "    issue_content: Broken\n    start_line: 1\n    end_line: 1\n")
+CLEAN = "review:\n  estimated_effort_to_review_[1-5]: 1\n  security_concerns: No\n  key_issues_to_review: []\n"
+A, B, C, D = (PRCommit(letter * 40, f"commit {letter}") for letter in "abcd")
+
+
+class _Host:
+    def __init__(self, commits):
+        self.commits = list(commits)
+        self.comments = []
+        self.outcomes = {}
+
+    def _publish(self, body, is_temporary=False, **_):
+        comment = SimpleNamespace(body=body, user="bot")
+        if not is_temporary:
+            self.comments.append(comment)
+        return comment
+
+    def records(self):
+        marker = PRCommandNoticeIdentity.REVIEWED_COMMITS.value
+        return [comment for comment in self.comments if marker in comment.body]
+
+    def notices(self):
+        return [comment.body for comment in self.comments if comment.body.startswith("Per commit review skipped")]
+
+    async def run(self, monkeypatch, is_auto=False):
+        from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+        reviewer = _commit_reviewer(monkeypatch, None)
+        reviewer.is_auto = is_auto
+        provider = reviewer.git_provider
+        provider.get_pr_commits.return_value = list(self.commits)
+        provider.pr.commits = len(self.commits)
+        provider.get_issue_comments.side_effect = lambda: list(self.comments)
+        provider.get_issue_comments_newest_first.side_effect = lambda: self.comments[::-1]
+        provider.is_comment_authored_by_pr_agent.side_effect = lambda comment: comment.user == "bot"
+        provider.publish_comment.side_effect = self._publish
+        provider.edit_comment.side_effect = lambda comment, body: setattr(comment, "body", body)
+        provider.publish_persistent_comment_full.side_effect = (
+            lambda *args, **kwargs: GitProvider.publish_persistent_comment_full(provider, *args, **kwargs))
+        reviewed = []
+
+        async def predict(prepare, **_):
+            sha = reviewer._review_commit.sha if reviewer._review_commit else None
+            reviewed.append(sha)
+            outcome = self.outcomes.get(sha, CLEAN)
+            if isinstance(outcome, Exception):
+                raise outcome
+            reviewer.prediction = outcome
+
+        monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", predict)
+        init_run_details()
+        await reviewer.run()
+        return reviewed
+
+
+def _shas(*commits):
+    return [commit.sha for commit in commits]
+
+
+@pytest.mark.asyncio
+async def test_first_run_reviews_every_commit_and_later_runs_only_the_new_ones(settings, monkeypatch):
+    host = _Host([A, B, C])
+    host.outcomes = {A.sha: FINDING, B.sha: FINDING, C.sha: FINDING}
+
+    assert await host.run(monkeypatch) == _shas(A, B, C)
+    assert await host.run(monkeypatch) == []
+    assert host.notices() == ["Per commit review skipped: no new commits with changes since the last review."]
+    host.commits.append(D)
+    assert await host.run(monkeypatch, is_auto=True) == _shas(D)
+    assert host.records() == []
+
+
+@pytest.mark.asyncio
+async def test_clean_commits_are_not_reviewed_again_when_their_comments_are_not_published(settings, monkeypatch):
+    monkeypatch.setitem(get_settings().pr_reviewer, "publish_output_no_suggestions", False)
+    host = _Host([A, B, C])
+
+    assert await host.run(monkeypatch) == _shas(A, B, C)
+    assert not any("Review of commit" in comment.body for comment in host.comments)
+    assert await host.run(monkeypatch) == []
+    host.commits.append(D)
+    host.outcomes[D.sha] = FINDING
+    host.commits.append(PRCommit("e" * 40, "commit e"))
+    assert await host.run(monkeypatch) == [D.sha, "e" * 40]
+    [record] = host.records()
+    assert parse_reviewed_commits(record.body) == {A.sha, B.sha, C.sha, D.sha, "e" * 40}
+
+
+@pytest.mark.asyncio
+async def test_a_commit_that_failed_is_reviewed_again_on_the_next_run(settings, monkeypatch):
+    host = _Host([A, B, C])
+    host.outcomes = {B.sha: RuntimeError("model down")}
+
+    assert await host.run(monkeypatch) == _shas(A, B, C)
+    assert command_failed()
+    host.outcomes = {}
+    assert await host.run(monkeypatch) == _shas(B)
+    assert await host.run(monkeypatch) == []
+
+
+@pytest.mark.asyncio
+async def test_a_commit_pushed_after_the_last_review_is_reviewed_whatever_its_date(settings, monkeypatch):
+    host = _Host([A, C])
+    assert await host.run(monkeypatch) == _shas(A, C)
+    host.commits = [A, B, C]
+    assert await host.run(monkeypatch) == _shas(B)
+
+
+@pytest.mark.asyncio
+async def test_rebased_commits_are_reviewed_again_and_dropped_from_the_record(settings, monkeypatch):
+    monkeypatch.setitem(get_settings().pr_reviewer, "publish_output_no_suggestions", False)
+    host = _Host([A, B])
+    assert await host.run(monkeypatch) == _shas(A, B)
+    host.commits = [PRCommit("1" * 40, "commit a"), PRCommit("2" * 40, "commit b")]
+
+    assert await host.run(monkeypatch) == ["1" * 40, "2" * 40]
+    [record] = host.records()
+    assert parse_reviewed_commits(record.body) == {"1" * 40, "2" * 40}
+
+
+@pytest.mark.asyncio
+async def test_commits_above_the_cap_are_reviewed_as_one_and_count_as_reviewed(settings, monkeypatch):
+    monkeypatch.setitem(get_settings().pr_reviewer, "max_commits_per_review", 2)
+    host = _Host([A, B, C])
+
+    assert await host.run(monkeypatch) == [None]
+    host.commits.append(D)
+    assert await host.run(monkeypatch) == _shas(D)
+    host.commits = [PRCommit(digit * 40, digit) for digit in "1234"]
+    assert await host.run(monkeypatch) == [None]
+    assert await host.run(monkeypatch) == []
+    [record] = host.records()
+    assert parse_reviewed_commits(record.body) == {digit * 40 for digit in "1234"}
+
+
+@pytest.mark.asyncio
+async def test_a_marker_in_a_comment_not_written_by_pr_agent_is_ignored(settings, monkeypatch):
+    host = _Host([A, B])
+    host.comments.append(SimpleNamespace(body=format_reviewed_commit_marker(A.sha), user="someone"))
+    assert await host.run(monkeypatch) == _shas(A, B)
+
+
+@pytest.mark.asyncio
+async def test_incremental_thresholds_do_not_hold_back_a_per_commit_review(settings, monkeypatch):
+    monkeypatch.setitem(get_settings().pr_reviewer, "minimal_commits_for_incremental_review", 10)
+    monkeypatch.setitem(get_settings().pr_reviewer, "minimal_minutes_for_incremental_review", 1000)
+    monkeypatch.setitem(get_settings().pr_reviewer, "require_all_thresholds_for_incremental_review", True)
+    host = _Host([A, B])
+    assert await host.run(monkeypatch) == _shas(A, B)
+    host.commits.append(C)
+    assert await host.run(monkeypatch) == _shas(C)
+
+
+@pytest.mark.asyncio
+async def test_reviewed_commit_lookup_error_takes_the_review_failure_path(settings):
+    provider = _provider({})
+    provider.get_issue_comments.side_effect = RuntimeError("notes listing failed")
+    reviewer = _reviewer(provider)
+
+    with patch.object(reviewer, "_run_review") as run_review:
+        await reviewer.run()
+
+    run_review.assert_not_awaited()
+    provider.set_commit_review_scope.assert_not_called()
+    assert command_failed()
+    assert provider.publish_comment.call_args.args[0].startswith("Failed to review PR")
+
+
+def test_gitlab_reads_reviewed_commits_from_its_own_notes_only():
+    provider = _gitlab_provider()
+    notes = [SimpleNamespace(body=format_reviewed_commit_marker(A.sha), author={"id": 7}),
+             SimpleNamespace(body=format_reviewed_commit_marker(B.sha), author={"id": 9})]
+    provider.mr = MagicMock()
+    provider.mr.notes.list.return_value = notes[::-1]
+    reviewer = _reviewer(provider)
+
+    with patch.object(GitLabProvider, "_get_own_user_id", return_value=7):
+        assert reviewer._reviewed_commit_shas() == {A.sha}
+    with patch.object(GitLabProvider, "_get_own_user_id", return_value=None):
+        assert reviewer._reviewed_commit_shas() == {A.sha, B.sha}
+
+
+def test_github_reads_reviewed_commits_from_its_own_comments_only():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.pr = MagicMock()
+    provider.pr.get_issue_comments.return_value = [
+        SimpleNamespace(body=format_reviewed_commit_marker(A.sha), user=SimpleNamespace(login="pr-agent")),
+        SimpleNamespace(body=format_reviewed_commit_marker(B.sha), user=SimpleNamespace(login="author")),
+    ]
+    reviewer = _reviewer(provider)
+
+    with patch.object(GithubProvider, "_deployment_type", return_value="user"), \
+            patch.object(GithubProvider, "_agent_login", return_value="pr-agent"):
+        assert reviewer._reviewed_commit_shas() == {A.sha}
+
+
+def test_reviewed_commit_markers_parse_only_full_shas():
+    body = "\n".join([format_reviewed_commit_marker(A.sha), format_reviewed_commit_marker("f" * 64),
+                      "<!-- pr-agent:reviewed-commit abc -->", f"<!-- pr-agent:reviewed-commit {'g' * 40} -->"])
+    assert parse_reviewed_commits(body) == {A.sha, "f" * 64}
+    assert parse_reviewed_commits(None) == set()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import string
 from collections.abc import Iterable
 from enum import StrEnum
@@ -30,6 +31,7 @@ class PRCodeSuggestionsIdentity(StrEnum):
 
 class PRCommandNoticeIdentity(StrEnum):
     INCOMPLETE_BITBUCKET_FILES = "<!-- pr-agent:bitbucket-incomplete-files -->"
+    REVIEWED_COMMITS = "<!-- pr-agent:review:commits -->"
 
 
 class PRDescriptionHeader(StrEnum):
@@ -48,9 +50,11 @@ _ALL_COMMENT_IDENTITIES = (
     PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
     PRCodeSuggestionsIdentity.UNANCHORED.value,
     PRCommandNoticeIdentity.INCOMPLETE_BITBUCKET_FILES.value,
+    PRCommandNoticeIdentity.REVIEWED_COMMITS.value,
     PRDescriptionIdentity.PERSISTENT.value,
 )
 _REVIEW_IDENTITY_HEADER_LINES = 5
+_REVIEWED_COMMIT_MARKER_RE = re.compile(r"<!-- pr-agent:reviewed-commit ([0-9a-f]{40}|[0-9a-f]{64}) -->")
 _MARKDOWN_PUNCTUATION_ESCAPE_TABLE = str.maketrans(
     {character: f"\\{character}" for character in string.punctuation}
 )
@@ -165,6 +169,14 @@ def add_comment_identity(pr_comment: str, identity_marker: str | None, git_provi
 
 def add_pr_review_identity(pr_comment: str, identity_marker: str | None, git_provider=None) -> str:
     return add_comment_identity(pr_comment, identity_marker, git_provider)
+
+
+def format_reviewed_commit_marker(sha: str) -> str:
+    return f"<!-- pr-agent:reviewed-commit {sha} -->"
+
+
+def parse_reviewed_commits(body) -> set[str]:
+    return set(_REVIEWED_COMMIT_MARKER_RE.findall(body)) if isinstance(body, str) else set()
 
 
 def comment_authorship_available(git_provider) -> bool:
