@@ -311,9 +311,11 @@ On the other hand, if you find one of the enabled features to be irrelevant for 
 
 :::tip
 When you first install PR-Agent app, the [default mode](../usage-guide/automations_and_usage.md#github-app-automatic-commands-when-a-new-pr-is-opened) for the `review` command is:
+
 ```
 pr_commands = ["/review", ...]
 ```
+
 Meaning the `review` command will run automatically on every PR, without any additional configurations.
 Edit this field to enable/disable the command, or to change the configurations used.
 :::
@@ -331,7 +333,6 @@ Ticket compliance is reported in the review comment, not as a PR label. It is co
 `pr_reviewer.require_ticket_analysis_review` and requires available ticket context. The command does not add
 ticket-compliance labels or a "No ticket found" label. See
 [Fetching ticket context](../core-abilities/fetching_ticket_context.md) for linking and authentication details.
-
 
 :::
 
@@ -356,6 +357,7 @@ The `review` command can be configured with extra instructions, which can be use
 Be specific, clear, and concise in the instructions. With extra instructions, you are the prompter. Specify the relevant sub-command, and the relevant aspects of the PR that you want to emphasize.
 
 Examples of extra instructions:
+
 ```
 [pr_reviewer]
 extra_instructions="""\
@@ -366,6 +368,7 @@ In the code feedback section, emphasize the following:
 ...
 """
 ```
+
 Use triple quotes to write multi-line instructions. Use bullet points to make the instructions more readable.
 :::
 
@@ -391,6 +394,8 @@ Each run reviews only the commits of the PR that were not reviewed yet, so `-i` 
 is kept in a hidden marker in the commit's review comment or, when no comment is published for it, in one record
 comment that is edited in place. A commit whose review failed is reviewed again on the next run; automatic runs stop
 retrying it after 3 failed attempts, while a manual `/review` always retries.
+`minimal_commits_for_incremental_review` and `minimal_minutes_for_incremental_review` do not apply to per commit
+review, since each run picks the commits to review from these markers instead of the `-i` thresholds.
 The commit list is read from the git provider on every run, so after a force push the review follows the rewritten
 history: a commit that was rebased without changing its own patch is not reviewed again, a commit that was amended or
 had fixups folded into it (for example with `git rebase --autosquash`) is reviewed again, and fixup commits that no
@@ -414,6 +419,9 @@ separate model call, so the first review of a PR with many commits costs accordi
 commits.
 Hosts that want to bound that cost can set `max_commits_per_review` (default 0, no limit): when more commits than that
 are not reviewed yet, the whole PR is reviewed in one review with a notice, and its commits count as reviewed.
+The markers live only in PR-Agent's own comments, so if those comments are removed, the next run reviews every commit
+of the PR again, unless `max_commits_per_review` is set and the PR has more commits than that, in which case the whole
+PR gets one review.
 Both settings belong to the operator, so a command argument such as `--pr_reviewer.per_commit_review=true` is
 rejected.
 Each commit's comment shows its own run details, while the `--json-output` file and the GitHub Action `review` output
@@ -462,18 +470,18 @@ Optional run details list all models that contributed to the merged review.
 Each chunk answers the same questions about a different part of the PR, so the answers are
 merged field by field:
 
-| Field | Merge rule |
-| --- | --- |
-| `key_issues_to_review` | Union over the chunks, dropping findings that repeat the same file, header and text |
-| `security_concerns` | Every chunk that reported a concern is kept; "No" only when every chunk said no |
-| `todo_sections`, `review_priority_files`, `can_be_split` | Union, de-duplicated, in chunk order (`can_be_split` keeps at most 3 sub-PRs) |
-| `relevant_tests` | Yes if any chunk found tests |
-| `score` | The lowest score any chunk gave |
-| `risk_level`, `merge_recommendation` | The most conservative value any chunk gave |
-| `failure_modes` | Concatenate valid cases in chunk order, keeping at most three |
-| `estimated_effort_to_review_[1-5]` | The highest value any chunk gave |
-| `contribution_time_cost_estimate` | The sum over the chunks, per case |
-| `ticket_compliance_check` | One entry per ticket, with its bullet lists unioned across chunks |
+| Field                                                    | Merge rule                                                                          |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `key_issues_to_review`                                   | Union over the chunks, dropping findings that repeat the same file, header and text |
+| `security_concerns`                                      | Every chunk that reported a concern is kept; "No" only when every chunk said no     |
+| `todo_sections`, `review_priority_files`, `can_be_split` | Union, de-duplicated, in chunk order (`can_be_split` keeps at most 3 sub-PRs)       |
+| `relevant_tests`                                         | Yes if any chunk found tests                                                        |
+| `score`                                                  | The lowest score any chunk gave                                                     |
+| `risk_level`, `merge_recommendation`                     | The most conservative value any chunk gave                                          |
+| `failure_modes`                                          | Concatenate valid cases in chunk order, keeping at most three                       |
+| `estimated_effort_to_review_[1-5]`                       | The highest value any chunk gave                                                    |
+| `contribution_time_cost_estimate`                        | The sum over the chunks, per case                                                   |
+| `ticket_compliance_check`                                | One entry per ticket, with its bullet lists unioned across chunks                   |
 
 When `require_todo_scan` is enabled, the TODO union includes both located findings and prose
 summaries. Prose without a file location is shown as text without a source link.
@@ -507,13 +515,13 @@ Rating driven by sensitive domain (escalates regardless of size)
 
 Reach is narrow up to 3 projects, moderate up to 25 and wide above that. The band then follows these rules:
 
-| Condition | Band |
-| --- | --- |
-| Wide reach | At least Moderate |
-| Cross-domain change | At least Moderate |
-| Any sensitive domain | At least High |
-| Sensitive domain with wide reach | Critical |
-| Anything else | Low |
+| Condition                        | Band              |
+| -------------------------------- | ----------------- |
+| Wide reach                       | At least Moderate |
+| Cross-domain change              | At least Moderate |
+| Any sensitive domain             | At least High     |
+| Sensitive domain with wide reach | Critical          |
+| Anything else                    | Low               |
 
 The row lists each factor and names the one that set the band. It also lists the first five names in
 `dependents`, in the order the producer wrote them.
@@ -544,15 +552,15 @@ optional:
 }
 ```
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `version` | integer | Schema version. Only `1` is accepted. |
-| `reach` | integer, 0 or more | Number of units affected by the change, including transitive dependents. Defaults to the length of `dependents`. |
-| `reach_unit` | string | What `reach` counts: `projects` (the default), `modules` or `files`. Only `projects` gets a reach band. |
-| `dependents` | list of strings | Names of the affected units, most relevant first. |
-| `domains` | list of strings | Distinct domains or areas the affected projects belong to. |
-| `cross_domain` | boolean | Whether the change spans more than one domain. |
-| `sensitive_domains` | list of strings | Affected domains the repository treats as sensitive. |
+| Field               | Type               | Meaning                                                                                                          |
+| ------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `version`           | integer            | Schema version. Only `1` is accepted.                                                                            |
+| `reach`             | integer, 0 or more | Number of units affected by the change, including transitive dependents. Defaults to the length of `dependents`. |
+| `reach_unit`        | string             | What `reach` counts: `projects` (the default), `modules` or `files`. Only `projects` gets a reach band.          |
+| `dependents`        | list of strings    | Names of the affected units, most relevant first.                                                                |
+| `domains`           | list of strings    | Distinct domains or areas the affected projects belong to.                                                       |
+| `cross_domain`      | boolean            | Whether the change spans more than one domain.                                                                   |
+| `sensitive_domains` | list of strings    | Affected domains the repository treats as sensitive.                                                             |
 
 Unknown fields are ignored. Strings are limited to 200 characters and the file to 1 MB.
 
@@ -605,7 +613,7 @@ not match the schema, or anything fails while computing the row, the review is p
 
 **Sources.**
 
-- Beyer, B. et al. *Site Reliability Engineering* (Google, 2016), and the AWS Well-Architected Framework: blast
+- Beyer, B. et al. _Site Reliability Engineering_ (Google, 2016), and the AWS Well-Architected Framework: blast
   radius as the scope of impact of a change or failure.
 - OWASP guidance on sensitive functionality: authentication, session management, cryptography and payments.
 
