@@ -529,11 +529,12 @@ class TestGetMaxTokens:
     def test_openrouter_input_budget_regression(self, monkeypatch, model, input_limit, cap):
         """Guard verified input budgets, including reductions hidden by the default cap.
 
-        These are compatibility baselines from the pinned bundled map, not immutable
-        provider limits. Revalidate intentional changes rather than deriving expected
-        values from the same SDK lookup under test.
+        These are compatibility baselines, not immutable provider limits. LiteLLM 1.108
+        dropped deepseek-chat and understates claude-sonnet-5 (200000), so both are
+        pinned in MAX_TOKENS at the limits OpenRouter lists. Revalidate intentional
+        changes rather than deriving expected values from the SDK lookup.
         """
-        assert model not in MAX_TOKENS, "Revalidate SDK fallback coverage if this model gains a built-in limit"
+        assert MAX_TOKENS[model] == input_limit
         settings = SimpleNamespace(config=SimpleNamespace(custom_model_max_tokens=0, max_model_tokens=cap))
         monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
 
@@ -1435,6 +1436,10 @@ class TestNoLiteLLMDuplicates:
         "bedrock/converse/moonshotai.kimi-k3",
         "bedrock/converse/us.moonshotai.kimi-k3",
         "bedrock/converse/global.moonshotai.kimi-k3",
+        "bedrock/anthropic.claude-sonnet-4-20250514-v1:0",
+        "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
+        "bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0",
+        "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0",
     }
 
     # Models pinned in MAX_TOKENS because LiteLLM's bundled backup cost map (used
@@ -1448,6 +1453,7 @@ class TestNoLiteLLMDuplicates:
         "vertex_ai/gemini-4-argon",
         "openrouter/x-ai/grok-4.5",
         "openrouter/x-ai/grok-4.6",
+        "openrouter/deepseek/deepseek-chat",
         "xai/grok-build-latest",
         "zai/glm-5.2",
     }
