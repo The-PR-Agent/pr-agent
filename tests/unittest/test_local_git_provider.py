@@ -221,7 +221,7 @@ def test_get_diff_files_deleted_file_falls_back_to_old_path(tmp_path):
 
 
 @pytest.mark.parametrize("change_type", ["added", "modified", "deleted"])
-def test_get_diff_files_skips_non_utf8_file_and_keeps_utf8_sibling(tmp_path, monkeypatch, change_type):
+def test_get_diff_files_marks_non_utf8_file_unreadable_and_keeps_utf8_sibling(tmp_path, monkeypatch, change_type):
     repo = git.Repo.init(tmp_path)
     good_file = tmp_path / "good.py"
     non_utf8_file = tmp_path / "non_utf8.py"
@@ -257,12 +257,26 @@ def test_get_diff_files_skips_non_utf8_file_and_keeps_utf8_sibling(tmp_path, mon
 
     diff_files = provider.pr.diff_files
 
-    assert [file.filename for file in diff_files] == ["good.py"]
-    assert diff_files[0].base_file == "before\n"
-    assert diff_files[0].head_file == "after\n"
-    assert "-before" in diff_files[0].patch
-    assert "+after" in diff_files[0].patch
-    assert diff_files[0].edit_type == EDIT_TYPE.MODIFIED
+    # The undecodable file stays in the inventory as unreadable (as CodeCommit reports it), so
+    # the shared diff renderer shows a manual-review notice instead of the review silently
+    # looking complete without that file. The UTF-8 sibling still gets a normal diff.
+    assert sorted(file.filename for file in diff_files) == ["good.py", "non_utf8.py"]
+    good = next(file for file in diff_files if file.filename == "good.py")
+    unreadable = next(file for file in diff_files if file.filename == "non_utf8.py")
+    assert unreadable.content_fetch_failed is True
+    assert unreadable.patch == ""
+    assert unreadable.base_file == unreadable.head_file == ""
+    # A deletion has no destination path, so the old path is reported as it is for readable files.
+    assert unreadable.old_filename == ("non_utf8.py" if change_type == "deleted" else None)
+    assert unreadable.edit_type == {
+        "added": EDIT_TYPE.ADDED, "modified": EDIT_TYPE.MODIFIED, "deleted": EDIT_TYPE.DELETED,
+    }[change_type]
+    assert good.content_fetch_failed is False
+    assert good.base_file == "before\n"
+    assert good.head_file == "after\n"
+    assert "-before" in good.patch
+    assert "+after" in good.patch
+    assert good.edit_type == EDIT_TYPE.MODIFIED
     assert provider.diff_files is diff_files
 
 

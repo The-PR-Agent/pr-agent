@@ -431,6 +431,14 @@ class GerritProvider(GitProvider):
         diff_files = []
         for diff_item in diffs:
             filename = diff_item.b_path or diff_item.a_path
+            old_filename = None if diff_item.a_path == diff_item.b_path else diff_item.a_path
+            edit_type = EDIT_TYPE.MODIFIED
+            if diff_item.new_file:
+                edit_type = EDIT_TYPE.ADDED
+            elif diff_item.deleted_file:
+                edit_type = EDIT_TYPE.DELETED
+            elif diff_item.renamed_file:
+                edit_type = EDIT_TYPE.RENAMED
             try:
                 if diff_item.a_blob is not None:
                     original_file_content_str = diff_item.a_blob.data_stream.read().decode("utf-8")
@@ -442,15 +450,19 @@ class GerritProvider(GitProvider):
                     new_file_content_str = ""  # empty file
                 patch = diff_item.diff.decode("utf-8")
             except UnicodeDecodeError as e:
-                get_logger().warning(f"Skipping non-UTF-8 file in Gerrit diff: {filename!r} ({e})")
+                # Keep the file in the inventory: the shared diff renderer shows a manual-review
+                # notice for it. Dropping it would make the review look complete without it.
+                get_logger().warning(f"Could not decode non-UTF-8 file in Gerrit diff: {filename!r} ({e})")
+                diff_files.append(FilePatchInfo(
+                    base_file="",
+                    head_file="",
+                    patch="",
+                    filename=filename,
+                    edit_type=edit_type,
+                    old_filename=old_filename,
+                    content_fetch_failed=True,
+                ))
                 continue
-            edit_type = EDIT_TYPE.MODIFIED
-            if diff_item.new_file:
-                edit_type = EDIT_TYPE.ADDED
-            elif diff_item.deleted_file:
-                edit_type = EDIT_TYPE.DELETED
-            elif diff_item.renamed_file:
-                edit_type = EDIT_TYPE.RENAMED
             num_plus_lines, num_minus_lines = count_patch_lines(patch)
             diff_files.append(
                 FilePatchInfo(
@@ -461,9 +473,7 @@ class GerritProvider(GitProvider):
                     num_plus_lines=num_plus_lines,
                     num_minus_lines=num_minus_lines,
                     edit_type=edit_type,
-                    old_filename=None
-                    if diff_item.a_path == diff_item.b_path
-                    else diff_item.a_path
+                    old_filename=old_filename
                 )
             )
         self.diff_files = diff_files
