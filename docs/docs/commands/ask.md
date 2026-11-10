@@ -51,6 +51,12 @@ Including repository instructions can add repository API reads and input tokens,
 
 You can run `/ask` on specific lines of code in the PR from the PR's diff view. The command will answer questions based on the code changes in the selected lines.
 
+For line comments handled by the GitHub App, GitHub Actions, or GitLab webhook, `/ask_question` is an alias of `/ask`.
+Start the comment with `/ask`, `/ask_question`, or `/ask_line` after any leading whitespace;
+these command names are case-insensitive. Other tokens such as `/asking` are not Ask commands.
+Azure DevOps accepts lowercase `/ask_question` for the same thread and line handling as `/ask`;
+its webhook command names remain case-sensitive.
+
 - Click on the '+' sign next to the line number to select the line.
 - To select multiple lines, click on the '+' sign of the first line and then hold and drag to select the rest of the lines.
 - write `/ask "..."` in the comment box and press `Add single comment` button.
@@ -59,7 +65,8 @@ You can run `/ask` on specific lines of code in the PR from the PR's diff view. 
 
 If no matching diff hunk is found for the selected lines, the command explains this without calling a model.
 
-In GitHub Actions, `/ask` comments attached to an entire file use that file's complete diff as context.
+In GitHub Actions, a file comment whose first non-whitespace token is `/ask` or `/ask_question` uses that file's
+complete diff as context. These two command names are case-insensitive.
 The existing file filters and input budgets still apply. If the file has no analyzable diff, or the question cannot
 be prepared within the configured input budget, the command explains this without calling a model.
 The answer is posted in the original file-comment thread with a link to the question.
