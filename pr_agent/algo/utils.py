@@ -1083,6 +1083,26 @@ def _has_yaml_c_loader_risk(response_text: str) -> bool:
     return False
 
 
+def _extract_labelled_yaml_block(response_text: str) -> str | None:
+    """Extract the content of a labelled ```yaml/```yml fence that sits mid-text.
+
+    Returns the block's inner lines joined, or None when no fenced block is
+    labelled as YAML. Used only from the load_yaml exception path, after the
+    leading-fence stripping and the trailing-fence retry have both failed:
+    when the response opens with prose, no leading strip happens and the
+    labelled block embedded later is otherwise unreachable.
+    """
+    lines = response_text.split('\n')
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not (stripped.startswith('```yaml') or stripped.startswith('```yml')):
+            continue
+        for j in range(i + 1, len(lines)):
+            if lines[j].strip() == '```':
+                return '\n'.join(lines[i + 1:j])
+    return None
+
+
 def _load_yaml_initial(response_text: str) -> Any:
     """Parse initial YAML with LibYAML while preserving SafeLoader edge-case semantics."""
     if _YAML_C_SAFE_LOADER is None:
@@ -1139,6 +1159,20 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
         data = _load_yaml_initial(response_text)
     except Exception as e:
         get_logger().warning(f"Initial failure to parse AI prediction: {e}")
+        # The fence stripping above is anchored at the start of the response, so when
+        # the labelled YAML block sits mid-text (for example after a code example the
+        # model included for explanation), the surrounding prose and the other fence
+        # pairs defeat both the initial parse and the trailing-fence retry. Extract the
+        # labelled block's content directly before handing off to the repair pipeline.
+        labelled_block = _extract_labelled_yaml_block(response_text)
+        if labelled_block is not None:
+            try:
+                candidate = _load_yaml_initial(labelled_block)
+                if isinstance(candidate, dict) and candidate:
+                    get_logger().info("Recovered labelled YAML block embedded in prose")
+                    return candidate
+            except Exception:
+                pass
         separators = str.maketrans({"\u2028": " ", "\u2029": " "})
         response_text = response_text.translate(separators)
         response_text_original_sanitized = response_text_original_sanitized.translate(separators)
