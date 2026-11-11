@@ -11,6 +11,7 @@ from typing import Any
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_bot_display_name, get_settings
 from pr_agent.git_providers import get_git_provider_with_context
+from pr_agent.git_providers.utils import apply_host_settings
 from pr_agent.log import get_logger
 from pr_agent.servers.utils import is_ask_command_comment
 
@@ -36,6 +37,11 @@ def revoke_auto_approval_on_push(payload: dict) -> None:
     else:
         return
     pr_url = (payload.get("pull_request") or {}).get("url")
+    # The gates are host-only, so read them after the trusted host layer and before any repository override.
+    try:
+        apply_host_settings()
+    except Exception as e:
+        get_logger().warning(f"Could not apply host settings before approval revocation: {type(e).__name__}")
     config = get_settings().config
     if not pr_url or not _as_bool_setting(
             config.get("enable_auto_approval", False), setting_name="config.enable_auto_approval"):

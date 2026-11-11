@@ -43,6 +43,16 @@ def test_helper_dismisses_on_push(monkeypatch, provider, flag):
     assert "new commits were pushed" in provider.revoke_auto_approval.call_args.args[0]
 
 
+def test_helper_reads_the_gate_from_the_host_layer(monkeypatch, provider):
+    monkeypatch.setitem(get_settings().config, "enable_auto_approval", False)
+    monkeypatch.setattr(github_common, "apply_host_settings",
+                        lambda: get_settings().config.update({"enable_auto_approval": True}))
+
+    github_common.revoke_auto_approval_on_push(_payload("synchronize"))
+
+    provider.revoke_auto_approval.assert_called_once()
+
+
 def test_helper_dismisses_when_the_base_branch_changes(monkeypatch, provider):
     monkeypatch.setitem(get_settings().config, "enable_auto_approval", True)
 
