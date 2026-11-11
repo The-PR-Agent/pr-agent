@@ -3,7 +3,6 @@ import copy
 import difflib
 import math
 import re
-import textwrap
 import traceback
 from datetime import datetime
 from functools import partial
@@ -12,7 +11,6 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import get_artifact_context, prompt_boundary_markers
 from pr_agent.algo.chunk_runner import run_chunk_batch
-from pr_agent.algo.code_replacement import python_replacement_compiles, reindent_to_line
 from pr_agent.algo.comment_identity import (
     PRCodeSuggestionsHeader,
     PRCodeSuggestionsIdentity,
@@ -59,6 +57,12 @@ from pr_agent.algo.run_details import (
 from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
 from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.algo.skills_loader import get_skills_context
+from pr_agent.algo.suggestion_checks import (
+    dedent_code_for_file,
+    get_patch_range_lines,
+    python_syntax_is_valid,
+    validate_suggestion,
+)
 from pr_agent.algo.token_budget import AttemptTokenBudget, FittedPrompt
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
@@ -1863,102 +1867,26 @@ class PRCodeSuggestions:
         new_code_snippet: str,
     ) -> bool | None:
         """Return False only when a verified replacement makes valid Python fail compilation."""
-        if not relevant_file.lower().endswith((".py", ".pyi", ".pyw")):
-            return None
-
-        diff_file = self._get_diff_file(relevant_file)
-        if (diff_file is None
-                or not diff_file.head_file
-                or not getattr(diff_file, "head_file_is_complete", True)):
-            return None
-        return python_replacement_compiles(relevant_file, diff_file.head_file, relevant_lines_start,
-                                           relevant_lines_end, new_code_snippet)
+        return python_syntax_is_valid(relevant_file, self._get_diff_file(relevant_file), relevant_lines_start,
+                                      relevant_lines_end, new_code_snippet)
 
     @staticmethod
     def _get_patch_range_lines(patch, relevant_lines_start, relevant_lines_end) -> list[str] | None:
-        target_lines = {}
-        target_line = None
-        target_remaining = 0
-        for line in split_diff_lines(patch or ""):
-            hunk_match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
-            if hunk_match:
-                target_line = int(hunk_match.group(1))
-                target_remaining = int(hunk_match.group(2) or 1)
-                continue
-            if target_line is None or target_remaining == 0 or line.startswith(("-", "\\")):
-                continue
-            if line.startswith((" ", "+")):
-                if relevant_lines_start <= target_line <= relevant_lines_end:
-                    target_lines[target_line] = line[1:]
-                target_line += 1
-                target_remaining -= 1
-
-        if len(target_lines) != relevant_lines_end - relevant_lines_start + 1:
-            return None
-        return [target_lines[line_number]
-                for line_number in range(relevant_lines_start, relevant_lines_end + 1)]
+        return get_patch_range_lines(patch, relevant_lines_start, relevant_lines_end)
 
     def _validate_suggestion(self, relevant_file, relevant_lines_start, relevant_lines_end,
                              existing_code) -> tuple[bool, str, bool]:
-        if relevant_lines_start < 1 or relevant_lines_end < relevant_lines_start:
-            return False, "the anchored range is outside the file", False
-
-        diff_file = self._get_diff_file(relevant_file)
-        if diff_file is None:
-            return False, "the file content is unavailable", False
-        if diff_file.head_file and getattr(diff_file, "head_file_is_complete", True):
-            file_lines = split_diff_lines(diff_file.head_file)
-            if relevant_lines_end > len(file_lines):
-                return False, "the anchored range is outside the file", False
-            anchored_lines = file_lines[relevant_lines_start - 1:relevant_lines_end]
-        else:
-            anchored_lines = self._get_patch_range_lines(
-                diff_file.patch, relevant_lines_start, relevant_lines_end)
-            if anchored_lines is None:
-                return False, "the file content is unavailable", False
-
-        if not existing_code:
-            return False, "the existing code is unavailable", True
-        anchored_lines = [line.rstrip(" \t") for line in textwrap.dedent("\n".join(anchored_lines)).split("\n")]
-        existing_lines = [line.rstrip(" \t") for line in split_diff_lines(textwrap.dedent(existing_code))]
-        if existing_lines != anchored_lines:
-            return False, "the existing code does not match the anchored range", True
-        return True, "", True
+        return validate_suggestion(self._get_diff_file(relevant_file), relevant_lines_start,
+                                   relevant_lines_end, existing_code)
 
     def dedent_code(self, relevant_file, relevant_lines_start, new_code_snippet):
         try:  # dedent code snippet
             self.diff_files = getattr(self.git_provider, "diff_files", None)
             if self.diff_files is None:
                 self.diff_files = self.git_provider.get_diff_files()
-            original_initial_line = None
             for file in self.diff_files:
                 if file.filename.strip() == relevant_file:
-                    if file.head_file and getattr(file, "head_file_is_complete", True):
-                        file_lines = split_diff_lines(file.head_file)
-                        if relevant_lines_start > len(file_lines):
-                            get_logger().warning(
-                                "Could not dedent code snippet, because relevant_lines_start is out of range",
-                                artifact={'filename': file.filename,
-                                          'file_content': file.head_file,
-                                          'relevant_lines_start': relevant_lines_start,
-                                          'new_code_snippet': new_code_snippet})
-                            return new_code_snippet
-                        else:
-                            original_initial_line = file_lines[relevant_lines_start - 1]
-                    else:
-                        patch_lines = self._get_patch_range_lines(
-                            file.patch, relevant_lines_start, relevant_lines_start)
-                        if patch_lines is None:
-                            get_logger().warning(
-                                "Could not dedent code snippet, because file content is unavailable",
-                                artifact={'filename': file.filename,
-                                          'relevant_lines_start': relevant_lines_start,
-                                          'new_code_snippet': new_code_snippet})
-                            return new_code_snippet
-                        original_initial_line = patch_lines[0]
-                    break
-            if original_initial_line:
-                new_code_snippet = reindent_to_line(new_code_snippet, original_initial_line)
+                    return dedent_code_for_file(file, relevant_lines_start, new_code_snippet)
         except Exception as e:
             get_logger().error(f"Error when dedenting code snippet for file {relevant_file}, error: {e}")
 

@@ -15,14 +15,17 @@ from pr_agent.algo.comment_identity import PRReviewHeader, PRReviewIdentity
 from pr_agent.algo.inline_comment_dedup import (
     body_with_markers,
     get_inline_comment_store,
+    key_issue_body_with_markers,
     key_issue_fingerprint,
+    key_issue_location_fingerprint,
+    marker_fingerprints,
 )
 from pr_agent.algo.review_json_output import review_json_output_path
 from pr_agent.algo.run_details import command_failed
 from pr_agent.algo.token_budget import FallbackEligibleError
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
-from pr_agent.commands.pr_reviewer import PRReviewer, _review_failure_comment
+from pr_agent.commands.pr_reviewer import PRReviewer, _code_lines, _review_failure_comment
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.git_provider import (
@@ -765,13 +768,19 @@ def test_github_key_issue_is_published_inline_and_removed_from_summary():
     assert "key_issues_to_review" not in result["review"]
 
 
-def test_prepare_pr_review_does_not_publish_key_issues_inline_by_default():
+def test_prepare_pr_review_does_not_publish_key_issues_inline_when_disabled(monkeypatch):
     reviewer = _make_prediction_reviewer()
+    monkeypatch.setitem(get_settings().pr_reviewer, "inline_key_issues", False)
+    reviewer._publish_key_issues_as_inline_comments = MagicMock()
 
     review = _render_review(reviewer, [])
 
     assert review == "original review"
-    reviewer.git_provider.publish_code_suggestions.assert_not_called()
+    reviewer._publish_key_issues_as_inline_comments.assert_not_called()
+
+
+def test_inline_key_issues_is_on_by_default():
+    assert get_settings().pr_reviewer.inline_key_issues is True
 
 
 def test_prepare_pr_review_publishes_key_issues_inline_when_enabled():
@@ -918,8 +927,76 @@ def test_batch_publish_failure_keeps_unverified_findings_in_the_summary():
 
     result = reviewer._publish_key_issues_as_inline_comments(data)
 
-    assert reviewer.git_provider.publish_code_suggestions.call_count == 1
+    assert reviewer.git_provider.publish_code_suggestions.call_count == 3
     assert result["review"]["key_issues_to_review"] == [failing, working]
+
+
+def test_batch_that_raises_retries_only_the_comments_it_did_not_post():
+    posted = _key_issue(issue_content="This one was posted before the batch raised.")
+    unposted = _key_issue(issue_content="This one was not.", start_line=1, end_line=1)
+    reviewer, data = _reviewer_with_findings(posted, unposted)
+    provider = reviewer.git_provider
+    provider.publish_code_suggestions.side_effect = [RuntimeError("API died mid-batch"), True]
+
+    def location(issue, start, end):
+        body = f"**Possible Issue**\n\n{issue['issue_content']}"
+        return key_issue_location_fingerprint(key_issue_fingerprint("app.py", body), start, end)
+
+    posted_location = location(posted, 2, 3)
+    reviewer._published_inline_key_issue_fingerprints.side_effect = [
+        {posted_location}, {posted_location, location(unposted, 1, 1)}]
+
+    result = reviewer._publish_key_issues_as_inline_comments(data)
+
+    calls = provider.publish_code_suggestions.call_args_list
+    assert [len(call.args[0]) for call in calls] == [2, 1]
+    assert "This one was not." in calls[1].args[0][0]["body"]
+    assert "key_issues_to_review" not in result["review"]
+
+
+def test_review_sinks_receive_findings_published_inline(monkeypatch):
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = MagicMock()
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.publish_structured_review = None
+    reviewer.pr_url = "https://example/pr/1"
+    reviewer.token_handler = MagicMock()
+    reviewer.remaining_files_list = []
+    reviewer.partial_files_list = []
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+    reviewer.prediction_data = {"review": {"key_issues_to_review": [_key_issue()]}}
+    reviewer.review_chunk_count = 1
+    reviewer.review_failed_chunk_count = 0
+
+    def publish_inline(data):
+        data = copy.deepcopy(data)
+        data["review"].pop("key_issues_to_review")
+        return data
+
+    reviewer._publish_key_issues_as_inline_comments = publish_inline
+    with patch("pr_agent.commands.pr_reviewer.github_action_output"):
+        summary = reviewer._prepare_pr_review()
+
+    message_type, payload, markdown = reviewer._pending_sink_output
+    assert "The new branch never releases the lock." not in summary
+    assert payload["key_issues_to_review"] == [_key_issue()]
+    assert "The new branch never releases the lock." in markdown
+
+
+def test_failed_single_retry_does_not_stop_the_remaining_retries():
+    first = _key_issue(issue_content="This one raises.")
+    second = _key_issue(issue_content="This one publishes.", start_line=1, end_line=1)
+    reviewer, data = _reviewer_with_findings(first, second)
+    reviewer.git_provider.publish_code_suggestions.side_effect = [False, RuntimeError("rejected"), True]
+    reviewer._published_inline_key_issue_fingerprints.side_effect = None
+    reviewer._published_inline_key_issue_fingerprints.return_value = set()
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    assert reviewer.git_provider.publish_code_suggestions.call_count == 3
 
 
 def test_existing_comment_load_failure_skips_inline_publishing():
@@ -2306,3 +2383,260 @@ async def test_init_does_not_pre_invoke_failing_get_diff_files_before_run(monkey
 
     assert exc_info.value is incomplete_error
     provider.get_diff_files.assert_called_once_with()
+
+
+_FIX_ISSUE = {"existing_code": "two\nthree", "improved_code": "TWO\nTHREE"}
+
+
+@pytest.fixture
+def committable_on(monkeypatch):
+    monkeypatch.setitem(get_settings().pr_code_suggestions, "committable_code_suggestions", True)
+
+
+def test_fix_with_matching_lines_is_committable(committable_on):
+    reviewer, data = _reviewer_with_findings(_key_issue(**_FIX_ISSUE))
+
+    result = reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "The new branch never releases the lock." in comment["body"]
+    assert "```suggestion\nTWO\nTHREE\n```" in comment["body"]
+    assert comment["original_suggestion"] == {
+        "existing_code": "two\nthree",
+        "improved_code": "TWO\nTHREE",
+        "relevant_file": "app.py",
+        "relevant_lines_start": 2,
+        "relevant_lines_end": 3,
+        "suggestion_content": "The new branch never releases the lock.",
+        "label": "Possible Issue",
+    }
+    assert "key_issues_to_review" not in result["review"]
+
+
+def test_fix_with_mismatched_existing_code_is_plain(committable_on):
+    issue = _key_issue(existing_code="not\nthe file", improved_code="TWO\nTHREE")
+    reviewer, data = _reviewer_with_findings(issue)
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion" not in comment["body"]
+    assert "```text fix\nTWO\nTHREE\n```" in comment["body"]
+    assert "original_suggestion" not in comment
+
+
+def test_fix_longer_than_ten_lines_is_not_committable(committable_on):
+    improved = "\n".join(f"line{i}" for i in range(11))
+    reviewer, data = _reviewer_with_findings(_key_issue(existing_code="two\nthree", improved_code=improved))
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion" not in comment["body"]
+    assert "line10" in comment["body"]
+    assert "original_suggestion" not in comment
+
+
+def test_fix_not_committable_when_setting_off(monkeypatch):
+    monkeypatch.setitem(get_settings().pr_code_suggestions, "committable_code_suggestions", False)
+    monkeypatch.setitem(get_settings().pr_code_suggestions, "commitable_code_suggestions", False)
+    reviewer, data = _reviewer_with_findings(_key_issue(**_FIX_ISSUE))
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion" not in comment["body"]
+    assert "```text fix\nTWO\nTHREE\n```" in comment["body"]
+    assert "original_suggestion" not in comment
+
+
+def test_fix_identical_to_existing_code_is_dropped(committable_on):
+    reviewer, data = _reviewer_with_findings(_key_issue(existing_code="two\nthree", improved_code="two\nthree\n"))
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```" not in comment["body"]
+    assert "original_suggestion" not in comment
+
+
+def test_indentation_only_fix_is_kept(committable_on):
+    reviewer, data = _reviewer_with_findings(_key_issue(existing_code="    three", improved_code="three"))
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```" in comment["body"]
+
+
+def test_numbered_existing_code_is_stripped(committable_on):
+    issue = _key_issue(existing_code="2  two\n3  three", improved_code="TWO\nTHREE")
+    reviewer, data = _reviewer_with_findings(issue)
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion\nTWO\nTHREE\n```" in comment["body"]
+    assert comment["original_suggestion"]["existing_code"] == "two\nthree"
+
+
+def test_fix_with_backticks_gets_longer_fence(committable_on):
+    issue = _key_issue(existing_code="two\nthree", improved_code="s = '''\n```\n'''")
+    reviewer, data = _reviewer_with_findings(issue)
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "````suggestion\ns = '''\n```\n'''\n````" in comment["body"]
+
+
+def test_indented_fix_after_dedent_still_matches(committable_on):
+    head_file = "def f():\n    a = 1\n    b = 2\n    return a\n"
+    issue = _key_issue(start_line=2, end_line=3, existing_code="a = 1\nb = 2", improved_code="a = 2\nb = 3")
+    reviewer, data = _reviewer_with_findings(issue, head_file=head_file)
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion\n    a = 2\n    b = 3\n```" in comment["body"]
+
+
+def test_fix_that_changes_indentation_keeps_the_change(committable_on):
+    head_file = "def f(x):\n    if x:\n        a = 1\n        b = 2\n    return a\n"
+    issue = _key_issue(start_line=4, end_line=4, existing_code="        b = 2", improved_code="    b = 2")
+    reviewer, data = _reviewer_with_findings(issue, head_file=head_file)
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion\n    b = 2\n```" in comment["body"]
+
+
+def test_fix_that_breaks_python_syntax_is_plain(committable_on):
+    head_file = "def f():\n    a = 1\n    return a\n"
+    issue = _key_issue(start_line=2, end_line=2, existing_code="a = 1", improved_code="a = (")
+    reviewer, data = _reviewer_with_findings(issue, head_file=head_file)
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion" not in comment["body"]
+    assert "```text fix\n    a = (\n```" in comment["body"]
+
+
+def test_gitlab_position_fallback_posts_fix(committable_on):
+    from gitlab import GitlabError
+
+    reviewer, data = _reviewer_with_findings(_key_issue(**_FIX_ISSUE))
+    reviewer._publish_key_issues_as_inline_comments(data)
+    comment = _published_comment(reviewer.git_provider)
+
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_mr = 1
+    provider.mr = MagicMock()
+    provider.mr.discussions.create.side_effect = GitlabError("position rejected")
+    provider.get_relevant_diff = MagicMock(return_value=SimpleNamespace(
+        base_commit_sha="b", start_commit_sha="s", head_commit_sha="h"))
+    provider.get_line_link = MagicMock(return_value="https://gitlab/link")
+    target_file = SimpleNamespace(filename="app.py", old_filename="app.py")
+
+    created = provider.send_inline_comment(
+        body=comment["body"], edit_type="addition", found=True, relevant_file="app.py",
+        relevant_line_in_file="two", source_line_no=2, target_file=target_file, target_line_no=2,
+        original_suggestion=comment["original_suggestion"])
+
+    assert created is True
+    note = provider.mr.notes.create.call_args.args[0]["body"]
+    assert "The new branch never releases the lock." in note
+    assert "Possible Issue" in note
+    assert "+TWO" in note
+
+
+def test_gitlab_position_fallback_keeps_the_review_markers(committable_on):
+    from gitlab import GitlabError
+
+    reviewer, data = _reviewer_with_findings(_key_issue(**_FIX_ISSUE))
+    reviewer._publish_key_issues_as_inline_comments(data)
+    comment = _published_comment(reviewer.git_provider)
+    body = key_issue_body_with_markers(comment["body"], "aabbccddeeff", "112233445566")
+
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_mr = 1
+    provider.mr = MagicMock()
+    provider.mr.discussions.create.side_effect = GitlabError("position rejected")
+    provider.get_relevant_diff = MagicMock(return_value=SimpleNamespace(
+        base_commit_sha="b", start_commit_sha="s", head_commit_sha="h"))
+    provider.get_line_link = MagicMock(return_value="https://gitlab/link")
+    target_file = SimpleNamespace(filename="app.py", old_filename="app.py")
+
+    provider.send_inline_comment(
+        body=body, edit_type="addition", found=True, relevant_file="app.py",
+        relevant_line_in_file="two", source_line_no=2, target_file=target_file, target_line_no=2,
+        original_suggestion=comment["original_suggestion"])
+
+    note = provider.mr.notes.create.call_args.args[0]["body"]
+    assert {"aabbccddeeff", "112233445566"} <= marker_fingerprints(note)
+
+
+def test_github_rejected_committable_finding_keeps_its_fix_as_text(committable_on):
+    reviewer, data = _reviewer_with_findings(_key_issue(**_FIX_ISSUE))
+    reviewer._publish_key_issues_as_inline_comments(data)
+    body = key_issue_body_with_markers(
+        _published_comment(reviewer.git_provider)["body"], "aabbccddeeff", "112233445566")
+    provider = GithubProvider.__new__(GithubProvider)
+
+    fixed = provider._try_fix_invalid_inline_comments([{"path": "app.py", "line": 3, "start_line": 2, "body": body}])
+
+    assert "```suggestion" not in fixed[0]["body"]
+    assert "```text fix\nTWO\nTHREE\n```" in fixed[0]["body"]
+    assert "112233445566" in fixed[0]["body"]
+
+
+def test_code_lines_split_only_on_newlines():
+    assert _code_lines("a\r\nb\t \n") == ["a", "b"]
+    assert _code_lines("s = 'x y'") != _code_lines("s = 'x\ny'")
+
+
+def test_rerun_with_changed_fix_does_not_repost(committable_on):
+    changed = _key_issue(existing_code="two\nthree", improved_code="other\nfix")
+    reviewer, data = _reviewer_with_findings(changed)
+    store = MagicMock()
+    store.load_failed = False
+    store.seen.side_effect = lambda fingerprint: fingerprint == key_issue_fingerprint(
+        "app.py", "**Possible Issue**\n\nThe new branch never releases the lock.")
+    with patch("pr_agent.commands.pr_reviewer.get_inline_comment_store", return_value=store):
+        result = reviewer._publish_key_issues_as_inline_comments(data)
+
+    reviewer.git_provider.publish_code_suggestions.assert_not_called()
+    assert "key_issues_to_review" not in result["review"]
+
+
+def test_batch_failure_retries_per_comment(committable_on):
+    first = _key_issue(**_FIX_ISSUE)
+    second = _key_issue(start_line=1, end_line=1, issue_content="Another problem.")
+    reviewer, data = _reviewer_with_findings(first, second)
+    reviewer.git_provider.publish_code_suggestions.side_effect = [False, True, True]
+
+    result = reviewer._publish_key_issues_as_inline_comments(data)
+
+    calls = reviewer.git_provider.publish_code_suggestions.call_args_list
+    assert [len(call.args[0]) for call in calls] == [2, 1, 1]
+    assert "key_issues_to_review" not in result["review"]
+
+
+def test_github_publish_gets_full_original_suggestion(committable_on):
+    head_file = "\n".join(f"line{i}" for i in range(1, 31)) + "\n"
+    issue = _key_issue(start_line=8, end_line=9, existing_code="line8\nline9", improved_code="LINE8\nLINE9")
+    reviewer, data = _reviewer_with_findings(issue, head_file=head_file)
+    reviewer._publish_key_issues_as_inline_comments(data)
+    comment = _published_comment(reviewer.git_provider)
+
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.get_diff_files = MagicMock(return_value=[FilePatchInfo(
+        base_file="", head_file=head_file, filename="app.py",
+        patch="@@ -1,4 +1,4 @@\n line1\n+line2\n line3\n line4\n")])
+    validated = provider.validate_comments_inside_hunks([comment])
+
+    assert len(validated) == 1
+    assert "```suggestion" not in validated[0]["body"]
+    assert "-line8" in validated[0]["body"] and "+LINE8" in validated[0]["body"]

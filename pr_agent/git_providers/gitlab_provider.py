@@ -41,6 +41,7 @@ from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import count_patch_lines, decode_if_bytes, split_diff_lines
 from ..algo.inline_comment_dedup import (
     body_fingerprint,
+    body_with_carried_markers,
     body_with_markers,
     code_fingerprint,
     get_inline_comment_store,
@@ -2860,6 +2861,9 @@ class GitLabProvider(GitProvider):
                 if store is not None:
                     body_fallback = body_with_markers(
                         body_fallback, body_fp, code_fp, getattr(self, "max_comment_chars", None))
+                # A review finding's markers let the reviewer verify this note and skip it on the next run.
+                body_fallback = body_with_carried_markers(
+                    body_fallback, body, getattr(self, "max_comment_chars", None))
                 # Create a general note on the file in the MR
                 fallback_position = {
                     'base_sha': diff.base_commit_sha,

@@ -192,6 +192,44 @@ class TestConvertToMarkdown:
 
         assert '<strong></strong><br>The function needs review.' in output
 
+    @pytest.mark.parametrize("gfm", [True, False])
+    def test_summary_shows_fix_for_findings_left_in_summary(self, gfm):
+        issue = {
+            'relevant_file': 'src/utils.py',
+            'issue_header': 'Code Smell',
+            'issue_content': 'The function is too long.',
+            'start_line': 30,
+            'end_line': 50,
+            'improved_code': 'x = 1\n```\nprint(x)',
+        }
+        input_data = {'review': {'key_issues_to_review': [issue]}}
+
+        output = convert_to_markdown_v2(input_data, gfm_supported=gfm)
+
+        fix_block = "````text\nx = 1\n```\nprint(x)\n````"
+        assert fix_block in output
+        assert output.index('The function is too long.') < output.index(fix_block)
+        assert ('<details><summary>Suggested fix</summary>' in output) is gfm
+        assert ('**Suggested fix**' in output) is not gfm
+
+    @pytest.mark.parametrize("gfm,expected", [
+        (True, "<strong>Code Smell</strong><br>The function is too long.\n\n"),
+        (False, "**Code Smell**\n\nThe function is too long.\n\n\n\n"),
+    ])
+    def test_summary_without_fix_renders_unchanged(self, gfm, expected):
+        issue = {
+            'relevant_file': 'src/utils.py',
+            'issue_header': 'Code Smell',
+            'issue_content': 'The function is too long.',
+            'improved_code': '   ',
+        }
+        output = convert_to_markdown_v2({'review': {'key_issues_to_review': [issue]}}, gfm_supported=gfm)
+        del issue['improved_code']
+        baseline = convert_to_markdown_v2({'review': {'key_issues_to_review': [issue]}}, gfm_supported=gfm)
+
+        assert expected in output
+        assert output == baseline
+
     def test_ticket_compliance(self):
         input_data = {'review': {
             'ticket_compliance_check': [

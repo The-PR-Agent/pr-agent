@@ -32,6 +32,7 @@ from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import count_patch_lines, extract_hunk_headers
 from ..algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
+    TEXT_FIX_INFO,
     body_fingerprint,
     body_with_markers,
     code_fingerprint,
@@ -1754,7 +1755,11 @@ class GithubProvider(GitProvider):
                     # block may be fenced with more than three backticks.
                     fence = opener.group(1)
                     before, rest = comment["body"][:opener.start()], comment["body"][opener.end():]
-                    fixed_comment["body"] = before + rest.rsplit(fence, 1)[-1]
+                    if KEY_ISSUE_LOCATION_MARKER_RE.search(comment["body"]):
+                        # A review finding leaves its summary once posted, so its fix stays as plain text.
+                        fixed_comment["body"] = f"{before}{fence}{TEXT_FIX_INFO}{rest}"
+                    else:
+                        fixed_comment["body"] = before + rest.rsplit(fence, 1)[-1]
                 if "start_line" in comment:
                     fixed_comment["line"] = comment["start_line"]
                     del fixed_comment["start_line"]
