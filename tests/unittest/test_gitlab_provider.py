@@ -268,6 +268,14 @@ def test_neutralize_gitlab_mentions_leaves_indented_code_inside_a_list():
         "<pre>\n```\n@all\n</pre>\n@reviewer",
         "<pre>\n```\n@\u200ball\n</pre>\n@\u200breviewer",
     ),
+    (
+        "a ` stray\n<div>`@all`</div>",
+        "a ` stray\n<div>`@\u200ball`</div>",
+    ),
+    (
+        "<details>\n`@all`\n\n`@literal`",
+        "<details>\n`@\u200ball`\n\n`@literal`",
+    ),
 ])
 def test_neutralize_gitlab_mentions_stops_a_code_span_at_a_heading_break_or_html_block(text, expected):
     assert _neutralize_gitlab_mentions(text) == expected
@@ -275,7 +283,7 @@ def test_neutralize_gitlab_mentions_stops_a_code_span_at_a_heading_break_or_html
 
 @pytest.mark.parametrize(("text", "expected"), [
     ("Escaped \\` tick, @all and `x`", "Escaped \\` tick, @\u200ball and `x`"),
-    ("Escaped \\``` @literal`` and @all", "Escaped \\``` @literal`` and @​all"),
+    ("Escaped \\``` @literal`` and @all", "Escaped \\``` @literal`` and @\u200ball"),
     ("Escaped backslash \\\\` @literal `x`", "Escaped backslash \\\\` @literal `x`"),
     ("Inside `a\\` @all `x`", "Inside `a\\` @\u200ball `x`"),
 ])

@@ -173,9 +173,10 @@ def _is_gitlab_table_delimiter(line: str) -> bool:
     return all(_GITLAB_TABLE_CELL_RE.fullmatch(part.strip()) for part in parts)
 
 
-def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
-    """Classify each line as code and collect offsets where a new block starts."""
+def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int], set[int]]:
+    """Classify each line as code and collect offsets where a new block or an HTML block line starts."""
     code_by_start: dict[int, bool] = {}
+    html_starts: set[int] = set()
     boundaries: list[int] = []
     fence_char = None
     fence_size = 0
@@ -254,6 +255,7 @@ def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
             if not is_code and stripped and relative_indent <= 3:
                 html_block = _gitlab_html_block_ends(line.lstrip(" \t"))
             if html_block is not None:
+                in_html = True
                 boundary = True
                 in_table = False
                 if not html_block:
@@ -300,6 +302,8 @@ def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
                     list_indents.append(content_indent)
 
         code_by_start[offset] = is_code
+        if in_html:
+            html_starts.add(offset)
         if boundary:
             boundaries.append(offset)
         prev_blank = not stripped
@@ -307,7 +311,7 @@ def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
         prev_start = offset
         offset += len(raw_line) + 1
 
-    return code_by_start, boundaries
+    return code_by_start, boundaries, html_starts
 
 
 def _gitlab_autolink_spans(text: str) -> tuple[list[int], list[int]]:
@@ -332,19 +336,21 @@ def _neutralize_gitlab_mentions(text: str) -> str:
     for run in _GITLAB_TICK_RUN_RE.finditer(text):
         tick_runs.setdefault(len(run.group()), []).append(run.start())
 
-    code_by_start, boundaries = _gitlab_line_flags(text)
+    code_by_start, boundaries, html_starts = _gitlab_line_flags(text)
     url_spans = _gitlab_autolink_spans(text)
 
     output = []
     index = 0
     inline_ticks = 0
     line_start = True
+    line_offset = 0
 
     while index < len(text):
         if text[index] == "\n":
             output.append("\n")
             index += 1
             line_start = True
+            line_offset = index
             continue
 
         if line_start and not inline_ticks and code_by_start.get(index):
@@ -372,7 +378,8 @@ def _neutralize_gitlab_mentions(text: str) -> str:
                     continue
 
                 runs = tick_runs.get(ticks)
-                if runs:
+                # Backticks inside a raw HTML block are literal text, not code spans
+                if runs and line_offset not in html_starts:
                     closer_index = bisect_left(runs, end)
                     boundary_index = bisect_left(boundaries, end)
                     boundary = boundaries[boundary_index] if boundary_index < len(boundaries) else len(text)
@@ -390,6 +397,8 @@ def _neutralize_gitlab_mentions(text: str) -> str:
             output.append(char)
             index += 1
             line_start = char == "\n"
+            if line_start:
+                line_offset = index
             continue
 
         next_special = index + 1
@@ -411,6 +420,7 @@ def _neutralize_gitlab_mentions(text: str) -> str:
             output.append("\n")
             index += 1
             line_start = True
+            line_offset = index
         else:
             line_start = False
 
