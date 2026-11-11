@@ -33,11 +33,11 @@ from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     DefaultDictWithTimeout,
     auto_feedback_disabled,
-    get_include_pr_labels,
     get_pr_commands,
     is_ask_command_comment,
     push_trigger_slot,
     shared_should_process_pr_logic,
+    should_process_pr_before_repo_settings,
     verify_signature,
 )
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
@@ -413,10 +413,11 @@ async def _dispatch_request(body: dict[str, Any], event: str, action: str):
         get_logger().debug("Request ignored: bot user detected")
         return {}
     if action != 'created' and 'check_run' not in body:
-        # Defer the opt-in label gate until repository settings have been applied.
+        # Closed-PR analytics have no post-settings check; keep their existing filtering.
         prefilter_allowed = (
             shared_should_process_pr_logic(body, provider="github", check_include_labels=False)
-            if get_include_pr_labels() else should_process_pr_logic(body)
+            if event == "pull_request" and action == "closed"
+            else should_process_pr_before_repo_settings(body, provider="github")
         )
         if not prefilter_allowed:
             get_logger().debug("Request ignored: PR logic filtering")

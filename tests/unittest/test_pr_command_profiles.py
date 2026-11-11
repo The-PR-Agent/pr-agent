@@ -289,8 +289,9 @@ async def _run_bitbucket_created_webhook(
             trace.append("eligibility")
             return eligibility
 
-    def should_process_pr_logic(_data):
+    def should_process_pr_logic(_data, **_kwargs):
         phase = "repo_filter" if "repo_settings" in trace else "host_filter"
+        assert _kwargs == ({"provider": "bitbucket_app"} if phase == "host_filter" else {})
         trace.append(phase)
         return repo_should_process if phase == "repo_filter" else True
 
@@ -304,6 +305,7 @@ async def _run_bitbucket_created_webhook(
 
     monkeypatch.setattr(bitbucket_app, "is_bot_user", lambda _data: False)
     monkeypatch.setattr(bitbucket_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(bitbucket_app, "should_process_pr_before_repo_settings", should_process_pr_logic)
     monkeypatch.setattr(bitbucket_app, "get_fork_safe_secret_provider", lambda: secret_provider)
     monkeypatch.setattr(bitbucket_app, "get_bearer_token", get_bearer_token)
     monkeypatch.setattr(

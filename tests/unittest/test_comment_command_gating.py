@@ -298,7 +298,7 @@ async def _run_bitbucket_comment_webhook(
             return Eligibility.ELIGIBLE
 
     monkeypatch.setattr(bitbucket_app, "is_bot_user", lambda _data: bot)
-    monkeypatch.setattr(bitbucket_app, "should_process_pr_logic", lambda _data: process_pr)
+    monkeypatch.setattr(bitbucket_app, "should_process_pr_before_repo_settings", lambda _data, **_kwargs: process_pr)
     monkeypatch.setattr(bitbucket_app, "get_fork_safe_secret_provider", lambda: secret_provider)
     monkeypatch.setattr(bitbucket_app, "get_bearer_token", get_bearer_token)
     monkeypatch.setattr(bitbucket_app, "copy", mock.Mock(deepcopy=clone_settings))

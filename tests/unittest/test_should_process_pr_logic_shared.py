@@ -16,9 +16,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from starlette.background import BackgroundTasks
+from starlette_context import request_cycle_context
 
+from pr_agent import git_providers
+from pr_agent.agent import pr_agent as agent
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import utils as git_utils
+from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.servers import bitbucket_app, bitbucket_server_webhook, gitea_app, github_app
+from pr_agent.servers import utils as server_utils
 from pr_agent.servers.utils import should_process_pr_logic as shared_should_process_pr_logic
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
@@ -145,6 +152,35 @@ def ignore_settings():
     restore_settings(snapshot)
 
 
+@pytest.fixture
+def github_repo_policy(ignore_settings, monkeypatch):
+    settings = copy.deepcopy(ignore_settings)
+    for key, value in {
+        "CONFIG.USE_REPO_SETTINGS_FILE": True,
+        "CONFIG.EXTRA_CONFIG_URL": None,
+        "CONFIG.ENABLE_PER_DIRECTORY_SETTINGS": False,
+        "CONFIG.DISABLE_AUTO_FEEDBACK": False,
+        "CONFIG.GIT_PROVIDER": "github",
+        "GITHUB_APP.HANDLE_PR_ACTIONS": ["opened"],
+        "GITHUB_APP.PR_COMMANDS": ["/review"],
+        "GITHUB_APP.IGNORE_BOT_PR": False,
+        "GITHUB.PUBLISH_AS_CHECK_RUN": False,
+    }.items():
+        settings.set(key, value)
+    provider = Mock()
+    for module in (git_providers, git_utils, agent, github_app):
+        monkeypatch.setattr(module, "get_git_provider_with_context", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(github_app, "get_identity_provider", lambda: SimpleNamespace(
+        verify_eligibility=lambda *_args: Eligibility.ELIGIBLE))
+    monkeypatch.setattr(agent, "flush_telemetry", Mock())
+    # The real loader changes this environment variable; restore it after each test.
+    monkeypatch.setenv("AUTO_CAST_FOR_DYNACONF", "false")
+    command = SimpleNamespace(run=AsyncMock())
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=command))
+    with request_cycle_context({"settings": settings, "git_provider": {}}):
+        yield settings, provider, command
+
+
 def _assert_all(providers, fields, expected, reason, only_with_labels=False):
     for name, should_process, build_payload, carries_labels in providers:
         if only_with_labels and not carries_labels:
@@ -246,8 +282,14 @@ def test_prefilter_defers_include_labels_but_still_applies_exclusions(ignore_set
 
 
 @pytest.mark.asyncio
-async def test_github_and_gitea_prefilters_allow_repository_label_overrides(ignore_settings, monkeypatch):
-    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", ["host-label"])
+@pytest.mark.parametrize("setting, host_value, repo_value", [
+    ("CONFIG.INCLUDE_PR_LABELS", ["host-label"], ["team-label"]),
+    ("CONFIG.IGNORE_PR_LABELS", ["team-label"], []),
+])
+async def test_github_and_gitea_prefilters_allow_repository_label_overrides(
+    ignore_settings, monkeypatch, setting, host_value, repo_value
+):
+    ignore_settings.set(setting, host_value)
     body = _github_body(_fields(labels=("team-label",)))
     body["action"] = "opened"
     body["pull_request"]["url"] = "https://github.com/org/repo/pull/7"
@@ -264,17 +306,20 @@ async def test_github_and_gitea_prefilters_allow_repository_label_overrides(igno
     await gitea_app.handle_request(body, "pull_request")
     gitea_dispatch.assert_awaited_once()
 
-    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", ["team-label"])
+    ignore_settings.set(setting, repo_value)
     assert github_app.should_process_pr_logic(body) is True
     assert gitea_app.should_process_pr_logic(body) is True
 
 
 @pytest.mark.asyncio
-async def test_gitlab_prefilter_allows_repository_label_override(gitlab_webhook_module, ignore_settings, monkeypatch):
-    from starlette.background import BackgroundTasks
-    from starlette_context import request_cycle_context
-
-    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", ["host-label"])
+@pytest.mark.parametrize("setting, host_value, repo_value", [
+    ("CONFIG.INCLUDE_PR_LABELS", ["host-label"], ["team-label"]),
+    ("CONFIG.IGNORE_PR_LABELS", ["team-label"], []),
+])
+async def test_gitlab_prefilter_allows_repository_label_override(
+    gitlab_webhook_module, ignore_settings, monkeypatch, setting, host_value, repo_value
+):
+    ignore_settings.set(setting, host_value)
     payload = _gitlab_payload(_fields(labels=("team-label",)))
     payload["object_kind"] = "merge_request"
     payload["object_attributes"].update(action="open", url="https://gitlab.com/org/repo/-/merge_requests/7")
@@ -283,7 +328,7 @@ async def test_gitlab_prefilter_allows_repository_label_override(gitlab_webhook_
     monkeypatch.setattr(gitlab_webhook_module, "global_settings", ignore_settings)
 
     async def apply_repo(_url):
-        get_settings().set("CONFIG.INCLUDE_PR_LABELS", ["team-label"])
+        get_settings().set(setting, repo_value)
 
     run_commands = AsyncMock()
     monkeypatch.setattr(gitlab_webhook_module, "apply_new_mr_repo_settings", apply_repo)
@@ -294,6 +339,161 @@ async def test_gitlab_prefilter_allows_repository_label_override(gitlab_webhook_
         await background()
         assert gitlab_webhook_module.should_process_pr_logic(payload) is True
     run_commands.assert_awaited_once()
+
+
+@pytest.mark.parametrize("use_repo_settings, extra_source, expected", [
+    (True, None, True),
+    (False, None, False),
+    (False, "  ", False),
+    (False, "host.toml", True),
+    ("false", None, True),  # Match the existing loader's truthiness check.
+])
+def test_prefilter_only_applies_host_exclusions_when_no_settings_source_can_override_them(
+    ignore_settings, use_repo_settings, extra_source, expected
+):
+    settings = copy.deepcopy(ignore_settings)
+    settings.set("CONFIG.USE_REPO_SETTINGS_FILE", use_repo_settings)
+    settings.set("CONFIG.EXTRA_CONFIG_URL", extra_source)
+    settings.set("CONFIG.IGNORE_PR_LABELS", ["skip"])
+    settings.set("CONFIG.INCLUDE_PR_LABELS", ["selected"])
+    with request_cycle_context({"settings": settings}):
+        body = _github_body(_fields(labels=("skip",)))
+        assert server_utils.should_process_pr_before_repo_settings(body, provider="github") is expected
+        # The existing opt-in gate is still deferred, even on the fast path.
+        body = _github_body(_fields(labels=("other",)))
+        assert server_utils.should_process_pr_before_repo_settings(body, provider="github") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("setting, host_value, repo_toml, fields, allowed", [
+    ("ignore_pr_labels", ["skip"], b"", _fields(labels=("skip",)), False),
+    ("ignore_pr_labels", ["skip"], b"[config]\nignore_pr_labels=[]", _fields(labels=("skip",)), True),
+    ("ignore_pr_labels", ["host"], b'[config]\nignore_pr_labels=["repo"]', _fields(labels=("host",)), True),
+    ("ignore_pr_labels", ["host"], b'[config]\nignore_pr_labels=["repo"]', _fields(labels=("repo",)), False),
+    ("ignore_pr_title", [r"^\[Auto\]"], b"[config]\nignore_pr_title=[]", _fields(title="[Auto] Update"), True),
+    ("include_pr_labels", ["host"], b'[config]\ninclude_pr_labels=["repo"]', _fields(labels=("repo",)), True),
+])
+async def test_github_auto_commands_use_repository_policy(
+    github_repo_policy, setting, host_value, repo_toml, fields, allowed
+):
+    settings, provider, command = github_repo_policy
+    settings.set(f"CONFIG.{setting}", host_value)
+    provider.get_repo_settings.return_value = repo_toml
+    provider.get_request_policy_metadata.return_value = fields
+    body = _github_body(fields)
+    body["action"] = "opened"
+    body["pull_request"].update(url="https://api.github.com/repos/org/repo/pulls/7", state="open", draft=False)
+
+    await github_app._dispatch_request(body, "pull_request", "opened")
+
+    assert command.run.await_count == int(allowed)
+    # The webhook and Agent both apply settings, but share the request's cached file.
+    provider.get_repo_settings.assert_called_once()
+    if allowed and settings.get(f"CONFIG.{setting}"):
+        provider.get_request_policy_metadata.assert_called_once_with({"labels"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra_toml, expected_repo_reads", [
+    ("[config]\nignore_pr_labels=[]", 0),
+    ("[config]\nuse_repo_settings_file=true", 1),
+])
+async def test_github_extra_settings_can_override_exclusions_or_enable_repo_settings(
+    github_repo_policy, tmp_path, extra_toml, expected_repo_reads
+):
+    settings, provider, command = github_repo_policy
+    extra_file = tmp_path / "host.toml"
+    extra_file.write_text(extra_toml)
+    settings.set("CONFIG.USE_REPO_SETTINGS_FILE", False)
+    settings.set("CONFIG.EXTRA_CONFIG_URL", str(extra_file))
+    settings.set("CONFIG.IGNORE_PR_LABELS", ["skip"])
+    provider.get_repo_settings.return_value = b"[config]\nignore_pr_labels=[]"
+    fields = _fields(labels=("skip",))
+    provider.get_request_policy_metadata.return_value = fields
+    body = _github_body(fields)
+    body["action"] = "opened"
+    body["pull_request"].update(url="https://api.github.com/repos/org/repo/pulls/7", state="open", draft=False)
+
+    await github_app._dispatch_request(body, "pull_request", "opened")
+
+    command.run.assert_awaited_once()
+    assert provider.get_repo_settings.call_count == expected_repo_reads
+
+
+@pytest.mark.asyncio
+async def test_github_repository_override_keeps_environment_exclusion(github_repo_policy, monkeypatch):
+    settings, provider, command = github_repo_policy
+    settings.set("CONFIG.IGNORE_PR_LABELS", ["skip"])
+    monkeypatch.setenv("CONFIG__IGNORE_PR_LABELS", '["skip"]')
+    provider.get_repo_settings.return_value = b"[config]\nignore_pr_labels=[]"
+    body = _github_body(_fields(labels=("skip",)))
+    body["action"] = "opened"
+    body["pull_request"].update(url="https://api.github.com/repos/org/repo/pulls/7", state="open", draft=False)
+
+    await github_app._dispatch_request(body, "pull_request", "opened")
+
+    provider.get_repo_settings.assert_called_once()
+    command.run.assert_not_awaited()
+    assert settings.config.ignore_pr_labels == ["skip"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_repo_settings", [False, True])
+async def test_bitbucket_created_prefilter_preserves_host_only_fast_path(
+    ignore_settings, monkeypatch, use_repo_settings
+):
+    settings = copy.deepcopy(ignore_settings)
+    settings.set("CONFIG.USE_REPO_SETTINGS_FILE", use_repo_settings)
+    settings.set("CONFIG.EXTRA_CONFIG_URL", None)
+    settings.set("CONFIG.IGNORE_PR_TITLE", [r"^\[Auto\]"])
+    payload = _bitbucket_payload(_fields(title="[Auto] Update"))
+    payload["event"] = "pullrequest:created"
+    payload["data"]["pullrequest"]["links"] = {"html": {"href": "https://bitbucket.org/org/repo/pull-requests/7"}}
+    payload["data"]["actor"].update(type="user", account_id="alice")
+    monkeypatch.setattr(bitbucket_app, "global_settings", settings)
+    monkeypatch.setattr(bitbucket_app, "_verify_webhook_jwt", lambda *_args: ("client", "secret"))
+    bearer = AsyncMock(return_value="token")
+    monkeypatch.setattr(bitbucket_app, "get_bearer_token", bearer)
+    monkeypatch.setattr(bitbucket_app, "get_identity_provider", lambda: SimpleNamespace(
+        verify_eligibility=lambda *_args: Eligibility.ELIGIBLE))
+    dispatch = AsyncMock()
+    monkeypatch.setattr(bitbucket_app, "_perform_commands_bitbucket", dispatch)
+    request = SimpleNamespace(headers={"authorization": "JWT token"}, json=AsyncMock(return_value=payload))
+    background = BackgroundTasks()
+    with request_cycle_context({"settings": settings, "git_provider": {}}):
+        await bitbucket_app.handle_github_webhooks(background, request)
+        await background()
+    assert bearer.await_count == int(use_repo_settings)
+    assert dispatch.await_count == int(use_repo_settings)
+
+
+@pytest.mark.asyncio
+async def test_github_closed_analytics_keeps_host_exclusions(ignore_settings, monkeypatch):
+    settings = copy.deepcopy(ignore_settings)
+    settings.set("CONFIG.USE_REPO_SETTINGS_FILE", True)
+    settings.set("CONFIG.ANALYTICS_FOLDER", "analytics")
+    settings.set("CONFIG.IGNORE_PR_LABELS", ["skip"])
+    body = _github_body(_fields(labels=("skip",)))
+    body["action"] = "closed"
+    body["pull_request"].update(state="closed", merged=True)
+    analytics = Mock()
+    monkeypatch.setattr(github_app, "handle_closed_pr", analytics)
+    with request_cycle_context({"settings": settings}):
+        await github_app._dispatch_request(body, "pull_request", "closed")
+    analytics.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attributes", [None, []])
+async def test_gitlab_prefilter_ignores_malformed_merge_request_attributes(
+    gitlab_webhook_module, ignore_settings, monkeypatch, attributes
+):
+    payload = _gitlab_payload(_fields())
+    payload.update(object_kind="merge_request", object_attributes=attributes)
+    dispatch = AsyncMock()
+    monkeypatch.setattr(gitlab_webhook_module, "_perform_commands_gitlab", dispatch)
+    await gitlab_webhook_module.process_gitlab_event(payload, {})
+    dispatch.assert_not_awaited()
 
 
 def test_bitbucket_server_filter_error_respects_opt_in_gate(ignore_settings, monkeypatch):

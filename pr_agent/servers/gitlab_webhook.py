@@ -31,13 +31,13 @@ from pr_agent.servers import lambda_handoff
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     auto_feedback_disabled,
-    get_include_pr_labels,
     get_pr_commands,
     is_ask_command_comment,
     is_command_comment,
     payload_log_summary,
     push_trigger_slot,
     shared_should_process_pr_logic,
+    should_process_pr_before_repo_settings,
 )
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
@@ -433,14 +433,11 @@ async def process_gitlab_event(data: dict, log_context: dict):
 
     log_context["sender"] = sender
     if data.get('object_kind') == 'merge_request':
-        # ignore MRs based on title, labels, source and target branches
-        prefilter_allowed = (
-            shared_should_process_pr_logic(data, provider="gitlab", check_include_labels=False)
-            if get_include_pr_labels() else should_process_pr_logic(data)
-        )
-        if not prefilter_allowed:
+        object_attributes = data.get('object_attributes')
+        if not isinstance(object_attributes, dict):
             return
-        object_attributes = data.get('object_attributes', {})
+        if not should_process_pr_before_repo_settings(data, provider="gitlab"):
+            return
         if object_attributes.get('action') in ['open', 'reopen']:
             url = object_attributes.get('url')
             get_logger().info(f"New merge request: {url}")

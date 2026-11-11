@@ -32,6 +32,10 @@ If you set `config.output_relevant_configurations` to True, each command will al
 
 By uploading a local `.pr_agent.toml` file to the root of the repo's default branch, you can customize parameters that support repository-level overrides. Note that you need to upload or update `.pr_agent.toml` before using the PR Agent commands (either at PR creation or via manual trigger) for the configuration to take effect.
 
+PR selection settings (`config.include_pr_labels`, the `config.ignore_pr_*` rules, and `config.ignore_repositories`) follow this precedence for automatic commands and manual requests. A local list replaces the inherited list; for example, `ignore_pr_labels = []` clears inherited label exclusions. Environment variables retain higher precedence than these files.
+
+Webhooks that trigger automatic commands defer these rules until enabled configuration sources have been applied. An event excluded by host defaults may therefore still require a configuration lookup before it is skipped. With `config.use_repo_settings_file = false` and no `config.extra_config_url`, GitHub App, GitLab, Gitea, and Bitbucket Cloud retain their early ignore-rule checks.
+
 Provider endpoint settings are host-controlled: `openai.api_base`, `openai.api_type`, `openai.api_version`, `azure_ad.api_base`, `databricks.api_base`, `huggingface.api_base`, `moonshot.api_base`, `ollama.api_base`, and `openrouter.api_base` are ignored when set in repository-local `.pr_agent.toml` and must be configured on the host. The same restriction applies to provider authentication and TLS settings: `github.deployment_type`, `bitbucket.auth_type`, `gitlab.auth_type`, `gitlab.ssl_verify`, `gitea.skip_ssl_verification`, and `gitea.ssl_ca_cert`. Jira ticket lookups run with the host's Atlassian credentials, so `jira.cloud_id`, `jira.jira_site`, `jira.jira_api_email`, and `jira.project_keys` are host-controlled as well. These settings are also rejected in command arguments.
 
 For example, if you set in `.pr_agent.toml`:
