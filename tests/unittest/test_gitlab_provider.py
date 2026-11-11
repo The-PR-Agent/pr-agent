@@ -2336,8 +2336,11 @@ class TestGitLabProvider:
                                   current_head_sha=_CURRENT_HEAD_SHA):
         gitlab_provider._own_user_id = own_user_id
         gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.diff_refs = {'head_sha': current_head_sha}
+        gitlab_provider.mr.diff_refs = {'head_sha': current_head_sha, 'start_sha': 'target-start'}
         gitlab_provider.mr.discussions.list.return_value = threads
+        gitlab_provider._get_merge_request = MagicMock(
+            side_effect=lambda: SimpleNamespace(diff_refs=dict(gitlab_provider.mr.diff_refs))
+        )
 
     def _run_outdated_cleanup(self, gitlab_provider, enabled=True):
         with patch("pr_agent.git_providers.gitlab_provider.get_settings",
@@ -2438,6 +2441,27 @@ class TestGitLabProvider:
         self._run_outdated_cleanup(gitlab_provider)
 
         outdated.save.assert_called_once()
+
+    def test_outdated_cleanup_does_not_resolve_after_head_changes_during_scan(self, gitlab_provider):
+        outdated = _thread([_thread_note()])
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated])
+        gitlab_provider._get_merge_request = MagicMock(
+            return_value=SimpleNamespace(diff_refs={'head_sha': _OUTDATED_HEAD_SHA})
+        )
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+        outdated.save.assert_not_called()
+
+    def test_outdated_cleanup_rejects_target_update_without_head_change(self, gitlab_provider):
+        outdated = _thread([_thread_note()])
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated])
+        gitlab_provider._get_merge_request = MagicMock(return_value=SimpleNamespace(
+            diff_refs={'head_sha': _CURRENT_HEAD_SHA, 'start_sha': 'new-target'}
+        ))
+
+        self._run_outdated_cleanup(gitlab_provider)
+        outdated.save.assert_not_called()
 
     def test_resolve_outdated_inline_threads_soft_fails(self, gitlab_provider):
         self._prepare_outdated_cleanup(gitlab_provider, [])

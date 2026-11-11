@@ -6,7 +6,7 @@ import re
 import time
 import urllib.parse
 from bisect import bisect_left, bisect_right
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from http.client import HTTPException
 from socket import SHUT_RDWR
@@ -1906,6 +1906,12 @@ class GitLabProvider(GitProvider):
         # where two calls in one command could see different file sets.
         self.diff_files = diff_files
         self._diff_head_sha = head_sha_for_content
+        # Pin the target revision associated with the reviewed diff.
+        mr_refs = getattr(getattr(self, "mr", None), "diff_refs", None)
+        self._cleanup_diff_start_sha = (
+            diff_refs.get("start_sha") if not incremental_active
+            else mr_refs.get("start_sha") if isinstance(mr_refs, dict) else None
+        )
         return diff_files
 
     def get_files(self) -> list:
@@ -2402,15 +2408,52 @@ class GitLabProvider(GitProvider):
             get_logger().warning(f"Failed to resolve comment thread: {e}")
         return False
 
+    def _cleanup_target_start_sha(self) -> str | None:
+        """Return the target revision associated with the reviewed diff."""
+        if getattr(self, "diff_files", None) is not None:
+            sha = getattr(self, "_cleanup_diff_start_sha", None)
+        else:
+            refs = getattr(self.mr, "diff_refs", None)
+            sha = refs.get("start_sha") if isinstance(refs, dict) else None
+        return sha if isinstance(sha, str) and sha else None
+
+    def _cleanup_revision_is_current(self, head_sha: str) -> bool:
+        """Verify live head and target revisions before resolving a discussion."""
+        expected_start = self._cleanup_target_start_sha()
+        if not expected_start:
+            return False
+        try:
+            latest = self._get_merge_request()
+            refs = getattr(latest, "diff_refs", None)
+            latest_head = refs.get("head_sha") if isinstance(refs, dict) else None
+            latest_start = refs.get("start_sha") if isinstance(refs, dict) else None
+            latest_sha = getattr(latest, "sha", None)
+            old_target = getattr(self.mr, "target_branch", None)
+            new_target = getattr(latest, "target_branch", None)
+            return (isinstance(latest_head, str) and bool(latest_head)
+                    and latest_head == head_sha
+                    and latest_start == expected_start
+                    and (not isinstance(old_target, str) or not old_target or old_target == new_target)
+                    and (not isinstance(latest_sha, str) or not latest_sha or latest_sha == latest_head))
+        except (GitlabError, RequestException, AttributeError, TypeError):
+            get_logger().warning("Cannot verify GitLab MR revision before discussion cleanup")
+            return False
+
+    def _cleanup_command_head(self) -> str | None:
+        """Use the reviewed diff head when it is available, including after an MR push."""
+        if getattr(self, "diff_files", None) is not None:
+            head_sha = getattr(self, "_diff_head_sha", None)
+        else:
+            refs = getattr(self.mr, "diff_refs", None)
+            head_sha = refs.get("head_sha") if isinstance(refs, dict) else None
+        return head_sha if isinstance(head_sha, str) and head_sha else None
+
     def resolve_outdated_inline_threads(self):
         if (not get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False)
                 or getattr(self, "_commit_diff_refs", None) is not None):
             return
         own_user_id = self._get_own_user_id()
-        try:
-            current_head_sha = self.mr.diff_refs['head_sha']
-        except (KeyError, TypeError, AttributeError):
-            current_head_sha = None
+        current_head_sha = self._cleanup_command_head()
         if own_user_id is None or not current_head_sha:
             get_logger().warning(
                 f"Skipping outdated inline thread cleanup on merge request {self.id_mr} "
@@ -2429,6 +2472,9 @@ class GitLabProvider(GitProvider):
             try:
                 if not _is_outdated_own_inline_thread(discussion, own_user_id, current_head_sha):
                     continue
+                if not self._cleanup_revision_is_current(current_head_sha):
+                    get_logger().warning("GitLab MR changed during outdated-thread cleanup; stopping")
+                    break
                 discussion.resolved = True
                 discussion.save()
                 resolved += 1
@@ -2443,23 +2489,47 @@ class GitLabProvider(GitProvider):
             get_logger().info(
                 f"Resolved {resolved} outdated inline thread(s) on merge request {self.id_mr}")
 
-    def _removed_lines_since(self, base_sha: str, head_sha: str) -> dict:
-        """Base-side line numbers removed per path between two commits, via repository_compare."""
+    def _removed_lines_since(self, base_sha: str, head_sha: str,
+                             *, older_in_mr_history: Callable[[str, str], bool] | None = None) -> dict | None:
+        """Return base-side removed lines after verifying revision order."""
         removed = {}
         try:
             project = self.gl.projects.get(self.id_project, lazy=True)
+            ancestor = project.repository_merge_base(refs=[base_sha, head_sha])
+            if not isinstance(ancestor, dict) or not isinstance(ancestor.get('id'), str):
+                raise ValueError("GitLab merge-base response is incomplete")
+            if ancestor['id'] == head_sha:
+                # Do not compare a newer discussion backwards.
+                return removed
+            if (ancestor['id'] != base_sha
+                    and (older_in_mr_history is None or not older_in_mr_history(base_sha, head_sha))):
+                # Require verified MR version ordering across rebases.
+                return removed
             # straight=True: direct base..head comparison. The default merge-base
             # comparison reports lines dropped by a rebase/merge as removed, which
             # would resolve threads whose flagged code still exists at head.
             comparison = project.repository_compare(base_sha, head_sha, straight=True)
-        except (GitlabError, RequestException) as e:
+            if isinstance(comparison, dict):
+                timed_out = comparison.get("compare_timeout", False)
+                diffs = comparison.get("diffs")
+            else:
+                timed_out = getattr(comparison, "compare_timeout", False)
+                diffs = getattr(comparison, "diffs", None)
+            if timed_out or not isinstance(diffs, list):
+                raise ValueError("GitLab comparison is incomplete or timed out")
+            for entry in diffs:
+                if isinstance(entry, dict):
+                    flags = (entry.get("collapsed"), entry.get("too_large"))
+                    patch = entry.get("diff")
+                else:
+                    flags = (getattr(entry, "collapsed", False), getattr(entry, "too_large", False))
+                    patch = getattr(entry, "diff", None)
+                if any(flags) or not isinstance(patch, str):
+                    raise ValueError("GitLab comparison contains an incomplete file diff")
+        except (GitlabError, RequestException, ValueError) as e:
             get_logger().warning(
-                f"Could not compare {base_sha[:12]}..{head_sha[:12]} for fixed-thread detection: {e}")
-            return removed
-        if isinstance(comparison, dict):
-            diffs = comparison.get('diffs', []) or []
-        else:
-            diffs = getattr(comparison, 'diffs', []) or []
+                f"Could not verify {base_sha[:12]}..{head_sha[:12]} for fixed-thread detection: {e}")
+            return None
         for diff in diffs:
             # Compare entries are dicts in practice; normalize object-shaped
             # responses the same way the incremental-review path does.
@@ -2468,41 +2538,81 @@ class GitLabProvider(GitProvider):
                         for key in ('new_path', 'old_path', 'diff')}
             path = diff.get('old_path') or diff.get('new_path')
             if path:
-                removed.setdefault(path, set()).update(_removed_lines_from_patch(diff.get('diff')))
+                if not diff.get('diff'):
+                    removed[path] = None  # A missing patch cannot prove the line survived.
+                elif removed.get(path, set()) is not None:
+                    removed.setdefault(path, set()).update(_removed_lines_from_patch(diff['diff']))
         return removed
 
     def reconcile_code_suggestion_threads(self) -> int:
         if not get_settings().get("GITLAB.AUTO_RESOLVE_FIXED_INLINE_THREADS", False):
             return 0
-        if getattr(self, '_fixed_threads_swept', False):
-            return 0  # one sweep per process: repeats only burn API calls
         own_user_id = self._get_own_user_id()
-        try:
-            current_head_sha = self.mr.diff_refs['head_sha']
-        except (KeyError, TypeError, AttributeError):
-            current_head_sha = None
+        current_head_sha = self._cleanup_command_head()
         if own_user_id is None or not current_head_sha:
             get_logger().warning(
                 f"Skipping fixed inline thread cleanup on merge request {self.id_mr} "
                 f"(bot user: {own_user_id}, current head sha: {current_head_sha})"
             )
             return 0
+        sweep_revision = (current_head_sha, self._cleanup_target_start_sha())
+        if not sweep_revision[1]:
+            return 0
+        if getattr(self, '_fixed_threads_swept_revision', None) == sweep_revision:
+            return 0  # Reuse one completed scan for these revisions.
         try:
             discussions = self.mr.discussions.list(get_all=True, per_page=100)
         except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to list discussions of merge request {self.id_mr}: {e}")
             return 0
-        self._fixed_threads_swept = True
         # Threads pinned to the same head share one compare call.
         removed_lines_cache = {}
+        sweep_complete = True
+        version_ids = None
 
-        def removed_lines_for(position) -> dict:
+        def older_in_mr_history(recorded: str, reviewed: str) -> bool:
+            nonlocal version_ids
+            if version_ids is None:
+                # Cache an invalid or unavailable history for this sweep; retry on the next sweep.
+                version_ids = {}
+                versions = self.mr.diffs.list(get_all=True, per_page=100)
+                if not isinstance(versions, list) or not versions:
+                    raise ValueError("GitLab MR diff version history is incomplete")
+                checked_ids = {}
+                seen_ids = set()
+                for version in versions:
+                    sha = (version.get('head_commit_sha') if isinstance(version, dict)
+                           else getattr(version, 'head_commit_sha', None))
+                    version_id = (version.get('id') if isinstance(version, dict)
+                                  else getattr(version, 'id', None))
+                    if (not isinstance(sha, str) or not sha or type(version_id) is not int
+                            or version_id <= 0 or version_id in seen_ids):
+                        raise ValueError("GitLab MR diff version history is incomplete")
+                    seen_ids.add(version_id)
+                    checked_ids.setdefault(sha, []).append(version_id)
+                # Commit this cache only after the entire API result is valid.
+                version_ids = checked_ids
+            # IDs establish chronology even if API pagination changes order.
+            # A repeated head makes a discussion's version ambiguous.
+            recorded_ids = version_ids.get(recorded, [])
+            reviewed_ids = version_ids.get(reviewed, [])
+            if not recorded_ids or not reviewed_ids:
+                raise ValueError("GitLab MR diff version history lacks required revisions")
+            return (len(recorded_ids) == len(reviewed_ids) == 1
+                    and recorded_ids[0] < reviewed_ids[0])
+
+        def removed_lines_for(position) -> dict | None:
             recorded = position.get('head_sha')
-            if not recorded or recorded == current_head_sha:
+            if not isinstance(recorded, str) or not recorded or recorded == current_head_sha:
                 return None  # nothing pushed since the comment - nothing could be fixed yet
             if recorded not in removed_lines_cache:
-                removed_lines_cache[recorded] = self._removed_lines_since(recorded, current_head_sha)
-            return removed_lines_cache[recorded]
+                removed_lines_cache[recorded] = self._removed_lines_since(
+                    recorded, current_head_sha, older_in_mr_history=older_in_mr_history
+                )
+            removed_lines = removed_lines_cache[recorded]
+            if removed_lines is not None and removed_lines.get(position.get('new_path'), set()) is None:
+                return None  # Retry an unverified patch on the discussion's file.
+            return removed_lines
 
         resolved = 0
         released_fps = set()
@@ -2517,9 +2627,15 @@ class GitLabProvider(GitProvider):
                     continue
                 removed_lines = removed_lines_for(position)
                 if removed_lines is None:
+                    if position.get('head_sha') != current_head_sha:
+                        sweep_complete = False  # Compare failed; retry on the next sweep.
                     continue
                 if not _flagged_line_removed(position, removed_lines):
                     continue
+                if not self._cleanup_revision_is_current(current_head_sha):
+                    get_logger().warning("GitLab MR changed during fixed-thread cleanup; stopping")
+                    sweep_complete = False
+                    break
                 discussion.resolved = True
                 discussion.save()
                 resolved += 1
@@ -2528,6 +2644,9 @@ class GitLabProvider(GitProvider):
                         released_fps |= marker_fingerprints(note.get('body'))
             except (GitlabError, RequestException, KeyError, TypeError) as e:
                 get_logger().warning(f"Failed to resolve fixed inline thread {discussion_id}: {e}")
+                sweep_complete = False
+        if sweep_complete:
+            self._fixed_threads_swept_revision = sweep_revision
         if released_fps:
             get_inline_comment_store(self).release(released_fps)
         if resolved:
