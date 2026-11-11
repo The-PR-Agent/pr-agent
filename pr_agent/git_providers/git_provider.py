@@ -695,6 +695,10 @@ class GitProvider(ABC):
         """
         return self.get_files()
 
+    def get_verdict_diff_files(self) -> list | None:
+        """Return full, unfiltered diff details when a provider can guarantee completeness."""
+        return None
+
     @abstractmethod
     def get_diff_files(self) -> list[FilePatchInfo]:
         pass

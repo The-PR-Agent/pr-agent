@@ -1258,6 +1258,7 @@ class TestCompletePullRequestFiles:
         )
 
         assert provider.get_pr_file_paths() == files
+        assert provider.get_verdict_diff_files() == files
         assert provider.git_files == files
         assert request_context["git_files"] == files
         assert pr.get_files_calls == 1

@@ -1839,6 +1839,9 @@ class GitLabProvider(GitProvider):
         raw_changes = self._expand_submodule_changes(mr_changes.get('changes', []), mr_changes["diff_refs"])
         return [c for c in raw_changes if c.get('new_path') or c.get('old_path')]
 
+    def get_verdict_diff_files(self) -> list:
+        return self.get_pr_file_paths()
+
     def publish_description(self, pr_title: str, pr_body: str) -> None:
         try:
             if pr_title is not None:
@@ -1875,6 +1878,38 @@ class GitLabProvider(GitProvider):
         except (GitlabError, RequestException, AttributeError) as e:
             get_logger().exception(f"Could not get head SHA: {e}")
             return ""
+
+    def publish_merge_recommendation_status(self, recommendation: str) -> bool:
+        """Publish the computed verdict as a GitLab commit status on the reviewed head SHA."""
+        states = {
+            "no_concerns_found": "success",
+            "needs_review": "skipped",
+            "changes_required": "failed",
+        }
+        state = states.get(recommendation)
+        if state is None:
+            get_logger().warning(f"Cannot publish an unknown merge recommendation: {recommendation!r}")
+            return False
+
+        head_sha = self.get_pr_head_sha()
+        if not head_sha:
+            get_logger().error("Cannot publish merge recommendation status without a head SHA")
+            return False
+
+        source_project_id = getattr(self.mr, "source_project_id", None)
+        project_id = source_project_id if source_project_id is not None else self.id_project
+        try:
+            project = self.gl.projects.get(project_id, lazy=True)
+            commit = project.commits.get(head_sha)
+            commit.statuses.create({
+                "state": state,
+                "name": "PR Agent - Review",
+                "description": f"Computed merge recommendation: {recommendation}",
+            })
+            return True
+        except (GitlabError, RequestException) as e:
+            get_logger().exception(f"Could not publish merge recommendation status: {e}")
+            return False
 
     def get_pr_identity(self) -> dict:
         repo = getattr(self, "id_project", None)
@@ -1931,7 +1966,44 @@ class GitLabProvider(GitProvider):
             if status == "success":
                 return "passed"
             if status in ("failed", "canceled", "cancelled"):
-                return "failed"
+                try:
+                    pipeline_obj = pipeline
+                    if isinstance(pipeline, dict):
+                        pipeline_id = pipeline.get("id")
+                        if not pipeline_id:
+                            return "failed"
+                        source_project_id = getattr(mr, "source_project_id", None)
+                        project_id = source_project_id if source_project_id is not None else self.id_project
+                        project = self.gl.projects.get(project_id, lazy=True)
+                        pipeline_obj = project.pipelines.get(pipeline_id)
+                    jobs = getattr(getattr(pipeline_obj, "jobs", None), "list", None)
+                    if not callable(jobs):
+                        return None
+
+                    has_other_jobs = False
+                    has_pending_jobs = False
+                    for job in jobs(all=True):
+                        name = job.get("name") if isinstance(job, dict) else getattr(job, "name", None)
+                        if isinstance(name, str) and name.casefold() == "pr agent - review":
+                            continue
+                        has_other_jobs = True
+                        job_status = job.get("status") if isinstance(job, dict) else getattr(job, "status", None)
+                        job_status = job_status.lower() if isinstance(job_status, str) else ""
+                        if job_status in ("failed", "canceled", "cancelled"):
+                            return "failed"
+                        if job_status in (
+                            "running", "pending", "waiting_for_resource", "preparing", "created", "manual",
+                            "scheduled",
+                        ):
+                            has_pending_jobs = True
+                        elif job_status not in ("success", "skipped"):
+                            return "failed"
+                    if not has_other_jobs:
+                        return "none"
+                    return "pending" if has_pending_jobs else "passed"
+                except Exception as e:
+                    get_logger().warning(f"Could not inspect failed GitLab pipeline jobs: {e}")
+                    return None
             if status in ("running", "pending", "waiting_for_resource", "preparing", "created", "manual", "scheduled"):
                 return "pending"
             if status == "skipped":
