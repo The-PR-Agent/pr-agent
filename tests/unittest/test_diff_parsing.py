@@ -232,3 +232,41 @@ def test_reverse_patch_does_not_strip_multiple_carriage_returns_from_line_conten
     patch = "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n first\r\r\n-old\n+new\n"
 
     assert reconstruct_base_file_checked(head, patch) == "first\r\nold\n"
+
+
+def test_reconstruct_base_without_trailing_newline_when_the_patch_adds_one():
+    # Git marks the side that lacks the final newline with "\ No newline at end of file";
+    # here the base lacked it, so the base must not take the head's trailing newline.
+    patch = (
+        "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n"
+        " a\n-b\n\\ No newline at end of file\n+b\n"
+    )
+
+    assert reconstruct_base_file_checked("a\nb\n", patch) == "a\nb"
+
+
+def test_reconstruct_base_with_trailing_newline_when_the_patch_removes_it():
+    patch = (
+        "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n"
+        " a\n-b\n+b\n\\ No newline at end of file\n"
+    )
+
+    assert reconstruct_base_file_checked("a\nb", patch) == "a\nb\n"
+
+
+def test_reconstruct_base_keeps_a_missing_newline_shared_by_both_sides():
+    patch = (
+        "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n"
+        "-a\n+A\n b\n\\ No newline at end of file\n"
+    )
+
+    assert reconstruct_base_file_checked("A\nb", patch) == "a\nb"
+
+
+def test_reconstruct_base_when_neither_side_ends_with_a_newline():
+    patch = (
+        "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n"
+        " a\n-b\n\\ No newline at end of file\n+B\n\\ No newline at end of file\n"
+    )
+
+    assert reconstruct_base_file_checked("a\nB", patch) == "a\nb"
