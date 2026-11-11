@@ -475,6 +475,26 @@ class GithubProvider(GitProvider):
                          parents=tuple(parent.sha for parent in commit.parents))
                 for commit in self.pr.get_commits()]
 
+    def is_base_branch_merge(self, sha: str, previous_head: str) -> bool:
+        """Whether commit `sha` only merges the base branch into `previous_head`, as "Update branch" does.
+
+        The commit must have exactly two parents: `previous_head` first, so nothing else was committed on top of
+        it, then a commit on the base branch. The PR's commits were read with their parents when the PR loaded,
+        so one of them costs no request, and neither does a second parent that is the PR's base commit. Any other
+        commit is read from the repository, and any other second parent is compared with the base branch.
+        """
+        loaded = [*(getattr(self, "pr_commits", None) or []), getattr(self, "last_commit_id", None)]
+        commit = next((commit for commit in loaded if getattr(commit, "sha", None) == sha), None)
+        if commit is None:
+            commit = self._get_repo().get_commit(sha)
+        parents = [parent.sha for parent in commit.parents]
+        if len(parents) != 2 or parents[0] != previous_head:
+            return False
+        if parents[1] == self.pr.base.sha:
+            return True
+        # "ahead" or "identical": the second parent is an ancestor of the base branch's head, or that head.
+        return self._get_repo().compare(parents[1], self.pr.base.ref).status in ("ahead", "identical")
+
     def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> str | None:
         self.incremental = incremental
         self.diff_files = None

@@ -786,8 +786,13 @@ async def test_file_question_keeps_literal_text_and_path_through_dispatch(
     )]
 
 
-def _patch_synchronize_deps(monkeypatch, handled, push_commands, handle_push_trigger=True):
-    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
+def _patch_synchronize_deps(monkeypatch, handled, push_commands, handle_push_trigger=True, base_branch_merges=None):
+    # apply_repo_settings returns the provider it loaded, which knows each PR commit's parents; it tells
+    # which (head, previous head) pairs only merge the base branch.
+    provider = None if base_branch_merges is None else SimpleNamespace(
+        is_base_branch_merge=lambda sha, previous_head: (sha, previous_head) in base_branch_merges
+    )
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: provider)
     settings = get_settings()
     monkeypatch.setitem(settings.store["github_app"], "push_commands", list(push_commands))
     settings.set("github_action_config", {
@@ -1394,19 +1399,44 @@ async def test_synchronize_event_triggers_push_commands_on_pull_request_target(
 
 @pytest.mark.asyncio
 async def test_synchronize_skips_merge_commit(monkeypatch, tmp_path, restore_github_settings):
+    # "Update branch" pushes a merge of the base branch onto the previous head; merge_commit_sha is
+    # GitHub's test merge of that head into the base, not the pushed commit.
     handled = []
-    _patch_synchronize_deps(monkeypatch, handled, ["/describe"])
+    _patch_synchronize_deps(monkeypatch, handled, ["/describe"], base_branch_merges={("merge123", "abc")})
     settings = get_settings()
     monkeypatch.setitem(settings.store["github_action_config"], "push_trigger_ignore_merge_commits", True)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(
-        tmp_path, before_sha="abc", after_sha="merge123", merge_commit_sha="merge123"
+        tmp_path, before_sha="abc", after_sha="merge123", merge_commit_sha="testmerge"
     )))
     monkeypatch.setenv("GITHUB_TOKEN", "token")
 
     await github_action_runner.run_action()
 
     assert handled == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("before_sha", ["abc", None], ids=["not-a-base-branch-merge", "no-before"])
+async def test_synchronize_runs_unless_push_only_merges_base_branch(
+    monkeypatch, tmp_path, restore_github_settings, before_sha
+):
+    # merge123 merges the base branch onto "older", not onto the head this push replaced.
+    handled = []
+    _patch_synchronize_deps(
+        monkeypatch, handled, ["/describe"], base_branch_merges={("merge123", "older"), ("merge123", None)}
+    )
+    settings = get_settings()
+    monkeypatch.setitem(settings.store["github_action_config"], "push_trigger_ignore_merge_commits", True)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(
+        tmp_path, before_sha=before_sha, after_sha="merge123", merge_commit_sha="testmerge"
+    )))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", ["/describe"])]
 
 
 @pytest.mark.asyncio
@@ -1432,7 +1462,7 @@ async def test_synchronize_skips_bot_commit(monkeypatch, tmp_path, restore_githu
     [
         (
             "push_trigger_ignore_merge_commits",
-            {"before_sha": "abc", "after_sha": "merge123", "merge_commit_sha": "merge123"},
+            {"before_sha": "abc", "after_sha": "merge123", "merge_commit_sha": "testmerge"},
         ),
         ("push_trigger_ignore_bot_commits", {"sender_type": "Bot"}),
     ],
@@ -1442,7 +1472,7 @@ async def test_synchronize_fails_closed_for_invalid_ignore_setting(
     monkeypatch, tmp_path, restore_github_settings, setting_name, event_kwargs
 ):
     handled = []
-    _patch_synchronize_deps(monkeypatch, handled, ["/describe"])
+    _patch_synchronize_deps(monkeypatch, handled, ["/describe"], base_branch_merges={("merge123", "abc")})
     settings = get_settings()
     monkeypatch.setitem(settings.store["github_action_config"], setting_name, "y")
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
