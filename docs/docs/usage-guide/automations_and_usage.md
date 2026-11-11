@@ -415,7 +415,7 @@ pr_commands = [
 ]
 ```
 
-Since this platform only supports inline code suggestions, `/review` posts each finding inline and limits their number with `pr_reviewer.num_max_findings` (3 by default).
+Since this platform only supports inline code suggestions, `/review` posts each finding inline and limits their number with `pr_reviewer.num_max_findings` (6 by default).
 
 To enable BitBucket app to respond to each **push** to the PR, set (for example):
 

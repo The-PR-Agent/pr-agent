@@ -370,7 +370,7 @@ GitLab, Gitea), each finding is posted as an inline comment. If `pr_code_suggest
 `existing_code` matches the file at the finding's lines, the fix is posted as a committable suggestion that you can apply from the
 PR page. Otherwise the fix is shown as a text block in the comment. A finding that is not posted inline (the provider cannot verify
 inline comments, `inline_key_issues` is off, or publishing failed) stays in the review summary, and its fix appears there as a text
-block. Findings are capped by `pr_reviewer.num_max_findings` (3 by default), and chunked reviews keep the same cap.
+block. Findings are capped by `pr_reviewer.num_max_findings` (6 by default), and chunked reviews keep the same cap.
 
 Two `pr_code_suggestions` settings are honoured: `committable_code_suggestions` and `extra_instructions`
 (added to the review's extra instructions when it differs from `pr_reviewer.extra_instructions`).
