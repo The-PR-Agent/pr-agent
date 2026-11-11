@@ -6,6 +6,7 @@ import pytest
 
 from pr_agent.algo.comment_identity import PRDescriptionIdentity
 from pr_agent.algo.run_details import command_failed
+from pr_agent.algo.types import FilePatchInfo
 from pr_agent.commands import pr_description as pr_description_module
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.config_loader import get_settings
@@ -86,7 +87,8 @@ async def test_run_removes_progress_comment_when_description_generation_fails(
 
 
 @pytest.mark.asyncio
-async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
+@pytest.mark.parametrize("content_fetch_failed", [False, True])
+async def test_run_prefetches_diff_off_the_event_loop(monkeypatch, content_fetch_failed):
     started = threading.Event()
     release = threading.Event()
     fetch_thread_ids = []
@@ -95,7 +97,16 @@ async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
         fetch_thread_ids.append(threading.get_ident())
         started.set()
         assert release.wait(10)
-        return [MagicMock(), MagicMock()]
+        return [
+            FilePatchInfo(base_file="", head_file="", patch="", filename="app.py",
+                          content_fetch_failed=content_fetch_failed),
+            FilePatchInfo(base_file="", head_file="", patch="", filename="package-lock.json"),
+        ]
+
+    tickets = [{"ticket_url": "https://example/issues/42"}]
+
+    async def extract_tickets(provider, variables):
+        variables["related_tickets"] = tickets
 
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:
@@ -105,7 +116,8 @@ async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
         description = _make_description(provider)
         description.COLLAPSIBLE_FILE_LIST_THRESHOLD = 8
 
-        monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", AsyncMock())
+        extract = AsyncMock(side_effect=extract_tickets)
+        monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", extract)
         monkeypatch.setattr(pr_description_module, "retry_with_fallback_models", AsyncMock())
         get_settings().config.publish_output = False
 
@@ -120,6 +132,8 @@ async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
         assert len(fetch_thread_ids) == 1
         assert fetch_thread_ids[0] != threading.get_ident()
         provider.get_diff_files.assert_called_once_with()
+        extract.assert_awaited_once_with(provider, description.vars)
+        assert description._raw_prompt_vars["related_tickets"] == tickets
         # Ignored files returned by get_files() must not collapse the file summary.
         assert description.vars["include_file_summary_changes"] is True
     finally:
@@ -439,10 +453,17 @@ async def test_run_always_includes_walkthrough_in_the_description_body(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_run_skips_without_recording_failure_when_all_changed_files_are_filtered(monkeypatch):
+@pytest.mark.parametrize("provider_filters_files", [True, False], ids=["provider-filter", "shared-filter"])
+async def test_run_skips_without_recording_failure_when_all_changed_files_are_filtered(
+    monkeypatch, provider_filters_files,
+):
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:
         provider = MagicMock()
+        provider.get_diff_files.return_value = [] if provider_filters_files else [
+            FilePatchInfo(base_file="", head_file="", patch="", filename="package-lock.json")
+        ]
+        provider.diff_files = provider.get_diff_files.return_value
         progress_comment = MagicMock(name="progress_comment")
         provider.publish_comment.return_value = progress_comment
         provider.is_supported.return_value = False
@@ -451,7 +472,8 @@ async def test_run_skips_without_recording_failure_when_all_changed_files_are_fi
         async def fake_retry(prepare_fn, model_type=None):
             await prepare_fn("primary-model")
 
-        monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", AsyncMock())
+        extract_tickets = AsyncMock()
+        monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", extract_tickets)
         monkeypatch.setattr(pr_description_module, "retry_with_fallback_models", fake_retry)
         # A lockfile-only or asset-only PR has no diff left after file-type filtering.
         monkeypatch.setattr(pr_description_module, "get_pr_diff", MagicMock(return_value=("", [])))
@@ -470,10 +492,36 @@ async def test_run_skips_without_recording_failure_when_all_changed_files_are_fi
         await description.run()
 
         assert not command_failed()
+        extract_tickets.assert_not_awaited()
         provider.publish_comment.assert_called_once_with(
             "Preparing PR description...", is_temporary=True
         )
         provider.remove_comment.assert_called_once_with(progress_comment)
         provider.publish_description.assert_not_called()
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_run_extracts_tickets_for_provisional_empty_diff(monkeypatch):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        provider.get_diff_files.return_value = []
+        # GitLab leaves an unverified empty diff uncached so the next read may find files.
+        provider.diff_files = None
+        description = _make_description(provider)
+
+        extract_tickets = AsyncMock()
+        retry = AsyncMock()
+        monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", extract_tickets)
+        monkeypatch.setattr(pr_description_module, "retry_with_fallback_models", retry)
+        get_settings().config.publish_output = False
+
+        await description.run()
+
+        extract_tickets.assert_awaited_once_with(provider, description.vars)
+        retry.assert_awaited_once()
+        provider.get_diff_files.assert_called_once_with()
     finally:
         restore_settings(settings_snapshot)

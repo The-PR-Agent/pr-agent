@@ -17,6 +17,7 @@ import pytest
 from github.Repository import Repository
 from starlette_context import context, request_cycle_context
 
+from pr_agent.algo.types import FilePatchInfo
 from pr_agent.commands import ticket_pr_compliance_check as tpc
 from pr_agent.commands.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
@@ -325,7 +326,9 @@ async def test_review_ticket_wait_keeps_loop_responsive(monkeypatch, scoped_tick
     provider.git_files = ["app.py"]
     provider.get_languages = lambda: {"Python": 100}
     provider.get_files = lambda: ["app.py"]
-    provider.get_diff_files = MagicMock(return_value=[])
+    provider.get_diff_files = MagicMock(return_value=[
+        FilePatchInfo(base_file="", head_file="", patch="", filename="app.py")
+    ])
     provider.get_commit_messages = lambda: ""
     pr_url = "https://github.com/org/repo/pull/1"
     context["git_provider"] = {pr_url: provider}
@@ -348,12 +351,12 @@ async def test_review_ticket_wait_keeps_loop_responsive(monkeypatch, scoped_tick
         if not run.cancelled():
             await asyncio.wait_for(run, 5)
 
+    provider.get_diff_files.assert_called_once_with()
     if cancel:
         assert calls == [7]
         assert scoped_ticket_settings.get("related_tickets") == []
         assert reviewer.vars["related_tickets"] == []
         predict.assert_not_awaited()
-        provider.get_diff_files.assert_not_called()
     else:
         assert calls == [7, 8]
         assert [ticket["ticket_id"] for ticket in reviewer.vars["related_tickets"]] == [7, 8]
