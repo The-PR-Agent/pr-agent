@@ -231,9 +231,14 @@ class GiteaProvider(GitProvider):
         )
         self.last_commit_id = self.last_commit
 
-    def __add_file_content(self, file_path: str):
+    def __add_file_content(self, file_path: str) -> bool:
+        """Cache head content. Return False when the fetch failed.
+
+        A failed fetch is left uncached. An empty string in the cache is a file
+        that was read successfully and is genuinely empty.
+        """
         if not is_valid_file(file_path) or file_path in self.file_contents:
-            return
+            return True
 
         if file_path and self.sha:
             try:
@@ -241,12 +246,14 @@ class GiteaProvider(GitProvider):
                     owner=self.owner,
                     repo=self.repo,
                     commit_sha=self.sha,
-                    filepath=file_path
+                    filepath=file_path,
+                    propagate_errors=True,
                 )
                 self.file_contents[file_path] = content
-            except ApiException as e:
+            except Exception as e:
                 self.logger.error(f"Error getting file content for {file_path}: {str(e)}")
-                self.file_contents[file_path] = ""
+                return False
+        return True
 
     def __add_file_diff(self):
         try:
@@ -623,7 +630,8 @@ class GiteaProvider(GitProvider):
             owner=self.owner,
             repo=self.repo,
             commit_sha=self.merge_base or self.base_sha,
-            filepath=filename
+            filepath=filename,
+            propagate_errors=True,
         )
 
     def _get_file_content_from_latest_commit(self, filename: str) -> str:
@@ -631,7 +639,8 @@ class GiteaProvider(GitProvider):
             owner=self.owner,
             repo=self.repo,
             commit_sha=self.last_commit.sha if self.last_commit else self.sha,
-            filepath=filename
+            filepath=filename,
+            propagate_errors=True,
         )
 
     def get_diff_files(self) -> list[FilePatchInfo]:
@@ -665,6 +674,7 @@ class GiteaProvider(GitProvider):
             patch = (self.file_diffs or {}).get(filename, "")
             head_file = ""
             base_file = ""
+            content_fetch_failed = False
             status = file.get("status", "")
             previous_filename = file.get("previous_filename") if status == "renamed" else None
             old_filename = previous_filename if isinstance(previous_filename, str) and previous_filename else None
@@ -680,21 +690,49 @@ class GiteaProvider(GitProvider):
                   and not (self.incremental.is_incremental and self.unreviewed_files_map)):
                 # A full deletion has no head content; retain any existing cached value.
                 head_file = self.file_contents.setdefault(filename, "")
-            else:
+            elif self.__add_file_content(filename):
                 # Get file content from this pr only when the full content is needed.
-                self.__add_file_content(filename)
-                head_file = self.file_contents.get(filename,"")
+                head_file = self.file_contents.get(filename, "")
+            else:
+                head_file = ""
+                content_fetch_failed = True
 
-            if self.incremental.is_incremental and self.unreviewed_files_map:
-                base_file = self._get_file_content_from_latest_commit(filename)
-                self.unreviewed_files_map[filename] = patch
+            incremental_active = bool(self.incremental.is_incremental and self.unreviewed_files_map)
+            if incremental_active:
+                if not content_fetch_failed:
+                    try:
+                        base_file = self._get_file_content_from_latest_commit(filename)
+                    except Exception as e:
+                        self.logger.error(f"Error getting file content for {filename}: {str(e)}")
+                        base_file = ""
+                        content_fetch_failed = True
             else:
                 # An added file cannot exist at the merge base, so fetching it there only costs a
                 # request and logs an error. Matches GithubProvider.get_diff_files().
-                if avoid_load or status == 'added':
+                if avoid_load or status == 'added' or content_fetch_failed:
                     base_file = ""
                 else:
-                    base_file = self._get_file_content_from_base(old_filename or filename)
+                    try:
+                        base_file = self._get_file_content_from_base(old_filename or filename)
+                    except Exception as e:
+                        base_name = old_filename or filename
+                        self.logger.error(f"Error getting file content for {base_name}: {str(e)}")
+                        base_file = ""
+                        content_fetch_failed = True
+
+            if content_fetch_failed:
+                # An empty side is a real empty file only when the read succeeded. Drop the patch
+                # so review commands show an unreadable-file notice instead of a full add or delete.
+                head_file = ""
+                base_file = ""
+                patch = ""
+                self.logger.warning(
+                    f"Not emitting a patch for {filename}: its content could not be fetched "
+                    "and will not be treated as an empty file"
+                )
+
+            if incremental_active:
+                self.unreviewed_files_map[filename] = patch
 
             num_plus_lines = file.get("additions",0)
             num_minus_lines = file.get("deletions",0)
@@ -720,6 +758,7 @@ class GiteaProvider(GitProvider):
                 num_plus_lines=num_plus_lines,
                 edit_type=edit_type,
                 old_filename=old_filename,
+                content_fetch_failed=content_fetch_failed,
             )
             diff_files.append(file_patch_info)
 

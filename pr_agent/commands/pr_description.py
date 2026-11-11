@@ -163,7 +163,9 @@ class PRDescription:
             )
 
             # ticket extraction if exists
-            # A provisional GitLab empty diff is not yet cached as an authoritative result.
+            # Since #4861 every provider caches a completed empty diff, so an unconfirmed
+            # one — an empty result whose provider left the cache unset — is only possible
+            # for a provider that does not follow the contract yet.
             unconfirmed_empty_diff = not diff_files and getattr(self.git_provider, "diff_files", diff_files) is None
             if unconfirmed_empty_diff or (diff_files and filter_bad_extensions(diff_files)):
                 await extract_and_cache_pr_tickets(self.git_provider, self.vars)

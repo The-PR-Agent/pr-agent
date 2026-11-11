@@ -5,7 +5,7 @@ import posixpath
 import re
 import time
 import urllib.parse
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from http.client import HTTPException
@@ -118,7 +118,11 @@ query($project: ID!, $ref: String!, $paths: [String!]!) {
 """
 
 
-_GITLAB_MENTION_RE = re.compile(r"(?<![\w/])@(?=[\w-])", re.UNICODE)
+# GitLab matches references after an ASCII-only boundary (Ruby's \w), and decodes entities for @ first.
+_GITLAB_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_])(?:@|&#0{0,5}64;|&#[xX]0{0,4}40;|&commat;)(?=[\w-])")
+# Autolinked URLs render as links, which GitLab never scans for references. The span stops at Markdown
+# delimiters, so a mention right after a link, code span, quote, emphasis, table cell or escape is still neutralised.
+_GITLAB_AUTOLINK_RE = re.compile(r"(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{1,31}://[^\s<>`()\[\]\"'*~|\\]+")
 _GITLAB_TICK_RUN_RE = re.compile(r"`+")
 _GITLAB_FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})")
 _GITLAB_ATX_RE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
@@ -239,6 +243,22 @@ def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
     return code_by_start, boundaries
 
 
+def _gitlab_autolink_spans(text: str) -> tuple[list[int], list[int]]:
+    """Return the sorted start and end offsets of bare URLs that GitLab autolinks."""
+    spans = [(match.start(), match.end()) for match in _GITLAB_AUTOLINK_RE.finditer(text)]
+    return [start for start, _ in spans], [end for _, end in spans]
+
+
+def _neutralize_gitlab_mention(mention: re.Match, offset: int, url_spans: tuple[list[int], list[int]]) -> str:
+    """Append a zero-width space to a mention unless it sits inside an autolinked URL."""
+    starts, ends = url_spans
+    position = offset + mention.start()
+    span_index = bisect_right(starts, position) - 1
+    if span_index >= 0 and position < ends[span_index]:
+        return mention.group()
+    return mention.group() + "\u200b"
+
+
 def _neutralize_gitlab_mentions(text: str) -> str:
     """Disable GitLab notifications while leaving Markdown code spans untouched."""
     if not text:
@@ -249,6 +269,7 @@ def _neutralize_gitlab_mentions(text: str) -> str:
         tick_runs.setdefault(len(run.group()), []).append(run.start())
 
     code_by_start, boundaries = _gitlab_line_flags(text)
+    url_spans = _gitlab_autolink_spans(text)
 
     output = []
     index = 0
@@ -303,7 +324,11 @@ def _neutralize_gitlab_mentions(text: str) -> str:
             next_special += 1
         chunk = text[index:next_special]
         prefix = text[index - 1:index] if index else ""
-        output.append(_GITLAB_MENTION_RE.sub("@\u200b", prefix + chunk)[len(prefix):])
+        offset = index - len(prefix)
+        output.append(_GITLAB_MENTION_RE.sub(
+            lambda mention, offset=offset: _neutralize_gitlab_mention(mention, offset, url_spans),
+            prefix + chunk,
+        )[len(prefix):])
         index = next_special
         if index < len(text) and text[index] == "\n":
             output.append("\n")
@@ -1084,6 +1109,12 @@ class GitLabProvider(GitProvider):
         "suggestions": _SUGGESTIONS_STABLE_ANCHORS + _SUGGESTIONS_LEGACY_ANCHORS,
     }
 
+    def reset_diff_cache_for_command(self) -> None:
+        super().reset_diff_cache_for_command()
+        # The provisional-empty retry lives at the command boundary now (#4860), so the
+        # MR changes cache re-polls together with the diff cache it feeds.
+        self._merge_request_changes_cache = None
+
     def get_incremental_commits(self, incremental: IncrementalPR | None = None, kind: str = "review"):
         """Populate state needed for an incremental run.
 
@@ -1782,11 +1813,10 @@ class GitLabProvider(GitProvider):
             get_logger().info(f"Filtered out files with invalid extensions: {invalid_files_names}")
 
         self.filtered_diff_file_names = invalid_files_names
-        # Retry provisional empty diffs until GitLab reports a verified change count.
-        if not diff_files and not incremental_active:
-            change_count = mr_changes.get("changes_count")
-            if not isinstance(change_count, str) or not change_count.isdecimal():
-                return diff_files
+        # A provisional empty diff (no verified change count yet) caches like any other
+        # result: consistent within a command, and re-polled at the next command boundary
+        # (reset_diff_cache_for_command, #4373) instead of on every get_diff_files() call,
+        # where two calls in one command could see different file sets.
         self.diff_files = diff_files
         self._diff_head_sha = head_sha_for_content
         return diff_files

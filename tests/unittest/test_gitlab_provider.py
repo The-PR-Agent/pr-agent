@@ -112,7 +112,7 @@ def test_line_question_history_reads_only_selected_gitlab_discussion(origin_note
 @pytest.mark.parametrize(("text", "expected"), [
     (
         "Ping @user, email x@y.com, package /package/@scope/pkg, and (@group).",
-        "Ping @\u200buser, email x@y.com, package /package/@scope/pkg, and (@\u200bgroup).",
+        "Ping @\u200buser, email x@y.com, package /package/@\u200bscope/pkg, and (@\u200bgroup).",
     ),
     (
         "Inline `@literal` and fenced:\n```text\n@literal\n```\n@active",
@@ -136,6 +136,53 @@ def test_line_question_history_reads_only_selected_gitlab_discussion(origin_note
     ),
 ])
 def test_neutralize_gitlab_mentions_preserves_literals(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("café@user", "café@\u200buser"),
+    ("Тест@user", "Тест@\u200buser"),
+    ("packages/@scope/pkg", "packages/@\u200bscope/pkg"),
+    ("cc &#64;user", "cc &#64;\u200buser"),
+    ("cc &#0064;user", "cc &#0064;\u200buser"),
+    ("cc &#x40;user and &#X0040;team", "cc &#x40;\u200buser and &#X0040;\u200bteam"),
+    ("cc &commat;user", "cc &commat;\u200buser"),
+    ("cc é&#64;user", "cc é&#64;\u200buser"),
+])
+def test_neutralize_gitlab_mentions_uses_gitlab_reference_boundaries(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "email x@y.com and first.last_1@example.org",
+    "entity in a word a&#64;b.com",
+    "unknown entities &#640;user &#x400;user &at;user &#64user",
+    "see https://medium.com/@user/post and <https://example.com/@team>",
+    "mentions inside code `&#64;user` and `/@scope/pkg`",
+    "already neutralised @\u200buser and &#64;\u200buser",
+])
+def test_neutralize_gitlab_mentions_leaves_non_mentions_unchanged(text):
+    assert _neutralize_gitlab_mentions(text) == text
+
+
+def test_neutralize_gitlab_mentions_resumes_after_an_autolinked_url():
+    text = "see https://medium.com/@user then @reviewer"
+    expected = "see https://medium.com/@user then @\u200breviewer"
+
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("[docs](https://example.com)@reviewer", "[docs](https://example.com)@\u200breviewer"),
+    ("`https://example.com`/@user", "`https://example.com`/@\u200buser"),
+    ("[https://example.com]@user", "[https://example.com]@\u200buser"),
+    ("\"https://example.com\"@user", "\"https://example.com\"@\u200buser"),
+    ("**https://x.com**@all", "**https://x.com**@\u200ball"),
+    ("~~https://x.com~~@all", "~~https://x.com~~@\u200ball"),
+    ("|https://x.com|@all|", "|https://x.com|@\u200ball|"),
+    ("https://x.com\\@all", "https://x.com\\@\u200ball"),
+])
+def test_neutralize_gitlab_mentions_ends_a_url_at_markdown_delimiters(text, expected):
     assert _neutralize_gitlab_mentions(text) == expected
 
 

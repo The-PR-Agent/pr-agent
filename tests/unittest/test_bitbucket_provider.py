@@ -812,7 +812,7 @@ index 1111111..2222222 100644
 
         assert provider.pr.diffstat.call_count == 3
 
-    def test_filtered_empty_diff_reacquires_after_the_initial_pair(self):
+    def test_filtered_empty_diff_is_consistent_within_a_command_and_reacquires_at_the_boundary(self):
         provider, _ = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
         provider.git_files = None
         with (
@@ -823,6 +823,13 @@ index 1111111..2222222 100644
             assert provider.get_diff_files() == []
             calls_after_first_diff = provider.pr.diffstat.call_count
             assert calls_after_first_diff == 1
+            # The filtered-empty verdict is completed, so the second call in the command
+            # is served from the cache instead of re-fetching (#4860).
+            assert provider.get_diff_files() == []
+            assert provider.pr.diffstat.call_count == calls_after_first_diff
+
+            # The command boundary re-acquires, as every auto command gets a fresh scope.
+            provider.reset_diff_cache_for_command()
             assert provider.get_diff_files() == []
 
         assert provider.pr.diffstat.call_count == calls_after_first_diff + 1
@@ -2316,7 +2323,9 @@ class TestBitbucketServerProvider:
         provider.pr_num = 1
         provider.pr = SimpleNamespace(fromRef={"latestCommit": "head-sha"})
         provider.bitbucket_api_version = None
-        provider.diff_files = []
+        # Nothing cached yet; under the #4860 contract an empty list is a completed
+        # verdict, so "not fetched" is None.
+        provider.diff_files = None
         provider.bitbucket_client = MagicMock()
         provider.bitbucket_client.get_pull_requests_commits.return_value = [
             {"parents": [{"id": "base-sha"}]}

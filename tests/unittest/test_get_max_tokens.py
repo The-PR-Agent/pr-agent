@@ -522,18 +522,26 @@ class TestGetMaxTokens:
         assert get_max_tokens(model, ignore_max_model_tokens=True) == expected
 
     @pytest.mark.parametrize("model, input_limit", [
-        ("openrouter/anthropic/claude-sonnet-5", 1000000),
         ("openrouter/deepseek/deepseek-chat", 163840),
+        *[
+            (f"openrouter/anthropic/claude-{name}", 1000000)
+            for name in (
+                "sonnet-5", "sonnet-5.5", "sonnet-4.6", "sonnet-4.5",
+                "opus-5.5", "opus-5", "opus-4.8", "opus-4.7", "opus-4.6",
+                "haiku-5.5", "fable-5.2", "fable-5.1", "fable-5",
+            )
+        ],
     ])
     @pytest.mark.parametrize("cap", [0, 32000, 500000])
     def test_openrouter_input_budget_regression(self, monkeypatch, model, input_limit, cap):
         """Guard verified input budgets, including reductions hidden by the default cap.
 
-        These are compatibility baselines from the pinned bundled map, not immutable
-        provider limits. Revalidate intentional changes rather than deriving expected
-        values from the same SDK lookup under test.
+        These are compatibility baselines, not immutable provider limits. LiteLLM 1.108
+        dropped deepseek-chat and reports 200000 for these Anthropic models, so they
+        are pinned in MAX_TOKENS at the limits OpenRouter lists. Revalidate intentional
+        changes rather than deriving expected values from the SDK lookup.
         """
-        assert model not in MAX_TOKENS, "Revalidate SDK fallback coverage if this model gains a built-in limit"
+        assert MAX_TOKENS[model] == input_limit
         settings = SimpleNamespace(config=SimpleNamespace(custom_model_max_tokens=0, max_model_tokens=cap))
         monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
 
@@ -645,6 +653,8 @@ class TestGetMaxTokens:
     @pytest.mark.parametrize("model", [
         "gemini/gemini-4-argon",
         "vertex_ai/gemini-4-argon",
+        "gemini/gemini-4-carbon",
+        "vertex_ai/gemini-4-carbon",
     ])
     def test_gemini_4_x_models_max_tokens(self, monkeypatch, model):
         fake_settings = type("", (), {
@@ -1435,6 +1445,10 @@ class TestNoLiteLLMDuplicates:
         "bedrock/converse/moonshotai.kimi-k3",
         "bedrock/converse/us.moonshotai.kimi-k3",
         "bedrock/converse/global.moonshotai.kimi-k3",
+        "bedrock/anthropic.claude-sonnet-4-20250514-v1:0",
+        "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
+        "bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0",
+        "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0",
     }
 
     # Models pinned in MAX_TOKENS because LiteLLM's bundled backup cost map (used
@@ -1446,8 +1460,11 @@ class TestNoLiteLLMDuplicates:
         "vertex_ai/gemini-3.8-flash",
         "gemini/gemini-4-argon",
         "vertex_ai/gemini-4-argon",
+        "gemini/gemini-4-carbon",
+        "vertex_ai/gemini-4-carbon",
         "openrouter/x-ai/grok-4.5",
         "openrouter/x-ai/grok-4.6",
+        "openrouter/deepseek/deepseek-chat",
         "xai/grok-build-latest",
         "zai/glm-5.2",
     }

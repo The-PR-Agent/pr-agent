@@ -227,7 +227,7 @@ def native_oauth(monkeypatch):
     monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "request-secret")
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings({}))
     token = MagicMock(return_value="request-oauth-token")
-    monkeypatch.setattr(DatabricksBase, "_get_oauth_m2m_token", token)
+    monkeypatch.setattr(DatabricksBase, "get_oauth_m2m_token", token)
     return token
 
 

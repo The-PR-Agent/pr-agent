@@ -2460,6 +2460,122 @@ def test_sdk_header_marker_fails_before_http_without_bridge(monkeypatch):
     assert not captured
 
 
+@pytest.mark.parametrize("override", (None, "explicit-account", "omit"))
+def test_sdk_wire_string_sentinels_are_restored_by_build_headers(override):
+    # LiteLLM validates extra_headers as dict[str, str], so the bridge sends strings.
+    from pr_agent.algo.ai_handlers import cloud_auth
+
+    litellm_handler._install_sdk_header_bridge()
+    captured = []
+    headers = {"OpenAI-Organization": "custom-account", "OpenAI-Project": "custom-account"}
+    explicit = {} if override is None else {
+        name.lower(): openai.Omit() if override == "omit" else override for name in headers
+    }
+    token = cloud_auth._register_sdk_snapshot({
+        "organization": "env-org", "project": "env-project", "custom_headers": headers,
+        "explicit_headers": explicit,
+    })
+    request_headers = {name: cloud_auth._CAPTURED_HEADER_VALUE for name in headers}
+    request_headers["X-Dropped"] = cloud_auth._OMITTED_HEADER_VALUE
+    request_headers[litellm_handler._SDK_HEADER_MARKER] = token
+    assert all(isinstance(value, str) for value in request_headers.values())
+
+    def send(request):
+        captured.append(request)
+        return httpx.Response(200, request=request, json={
+            "id": "test", "object": "chat.completion", "created": 0, "model": "gpt-4o", "choices": [],
+        })
+
+    try:
+        with httpx.Client(transport=httpx.MockTransport(send)) as http_client:
+            with openai.OpenAI(api_key="handler-key", http_client=http_client) as client:
+                client.chat.completions.create(model="gpt-4o", messages=[], extra_headers=request_headers)
+    finally:
+        cloud_auth._sdk_header_snapshots.pop(token, None)
+    assert len(captured) == 1
+    for name in headers:
+        expected = [] if override == "omit" else ["custom-account" if override is None else override]
+        assert captured[0].headers.get_list(name) == expected
+    assert captured[0].headers.get_list("x-dropped") == []
+    assert cloud_auth._CAPTURED_HEADER_VALUE not in str(captured[0].headers)
+    assert litellm_handler._SDK_HEADER_MARKER not in captured[0].headers
+
+
+def test_sdk_header_token_without_snapshot_fails_before_http():
+    litellm_handler._install_sdk_header_bridge()
+    captured = []
+
+    def send(request):
+        captured.append(request)
+        raise AssertionError("A stale snapshot token must fail before HTTP")
+
+    with httpx.Client(transport=httpx.MockTransport(send)) as http_client:
+        with openai.OpenAI(api_key="handler-key", http_client=http_client, max_retries=0) as client:
+            with pytest.raises(RuntimeError, match="no longer available"):
+                client.chat.completions.create(model="gpt-4o", messages=[], extra_headers={
+                    litellm_handler._SDK_HEADER_MARKER: "stale-token",
+                })
+    assert not captured
+
+
+def test_sdk_snapshot_token_is_rejected_by_http_layer_when_unconsumed():
+    import h11
+
+    from pr_agent.algo.ai_handlers import cloud_auth
+
+    token = cloud_auth._register_sdk_snapshot({})
+    try:
+        with pytest.raises(h11.LocalProtocolError):
+            h11.Request(method="POST", target="/", headers=[
+                ("host", "example.com"), (litellm_handler._SDK_HEADER_MARKER, token),
+            ])
+    finally:
+        cloud_auth._sdk_header_snapshots.pop(token, None)
+
+
+@pytest.mark.asyncio
+async def test_sdk_snapshot_is_released_after_call_stream_close_and_discard():
+    import gc
+
+    from pr_agent.algo.ai_handlers import cloud_auth
+
+    registry = cloud_auth._sdk_header_snapshots
+
+    async def call():
+        return "done"
+
+    async def stream():
+        yield 1
+        yield 2
+
+    token = cloud_auth._register_sdk_snapshot({})
+    wrapped = cloud_auth._release_sdk_snapshot_after(call(), token)
+    assert token in registry
+    assert await wrapped == "done"
+    assert token not in registry
+
+    token = cloud_auth._register_sdk_snapshot({})
+    wrapped = cloud_auth._release_sdk_snapshot_after(stream(), token)
+    assert await wrapped.__anext__() == 1
+    assert token in registry
+    await wrapped.aclose()
+    assert token not in registry
+
+    token = cloud_auth._register_sdk_snapshot({})
+    inner = call()
+    wrapped = cloud_auth._release_sdk_snapshot_after(inner, token)
+    assert token in registry
+    wrapped.close()
+    inner.close()
+    del wrapped
+    gc.collect()
+    assert token not in registry
+
+    token = cloud_auth._register_sdk_snapshot({})
+    assert cloud_auth._release_sdk_snapshot_after("sync-result", token) == "sync-result"
+    assert token not in registry
+
+
 @pytest.mark.parametrize("initial_key", (None, "handler-key"))
 @pytest.mark.asyncio
 async def test_manus_responses_transport_uses_request_local_credentials(monkeypatch, initial_key):
@@ -4574,7 +4690,8 @@ async def test_vertex_executable_default_adc_and_path_are_rejected(monkeypatch, 
         return vertex.get_access_token(credentials, project)
 
     kwargs = {"vertex_credentials": str(path)} if source == "direct_path" else {}
-    with pytest.raises(ValueError, match="executable.*request isolation"):
+    # LiteLLM 1.108 reports a generic message for unreadable credential files and logs the reason.
+    with pytest.raises(ValueError, match="executable.*request isolation|Unable to load the vertex credentials file"):
         await LiteLLMAIHandler()._acompletion(
             _completion=completion, model="vertex_ai/gemini-2.5-pro", **kwargs,
         )
@@ -7555,7 +7672,7 @@ def test_json_responses_native_config_contract():
     providers = {name for name in registry.list_providers() if registry.supports_responses_api(name)}
     assert providers == {
         "neosantara", "tensormesh", "parasail", "empiriolabs", "meta", "pinstripes",
-        "cortecs", "prism", "sail",
+        "cortecs", "prism", "sail", "coralbricks", "inferenceapis",
     }
     # Pinned native HTTP client selection rejects this registry-only provider
     # before authentication; do not claim transport coverage for that path.
