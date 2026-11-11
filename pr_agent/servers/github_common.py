@@ -10,6 +10,7 @@ from typing import Any
 
 from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.config_loader import get_settings
+from pr_agent.log import get_logger
 from pr_agent.servers.utils import is_ask_command_comment
 
 
@@ -29,6 +30,22 @@ def matches_review_state(review_state: Any, configured_states: Any) -> bool:
         isinstance(state, str) and state.strip().lower() == normalized_state
         for state in configured_states
     )
+
+
+def pushed_merge_commit(git_provider: Any, after_sha: Any) -> bool:
+    """Whether a synchronize event's `after` commit, the head the push left on the PR, is a merge commit.
+
+    The event does not say: its `pull_request.merge_commit_sha` is GitHub's test merge of the head into
+    the base, never the head itself. When the provider cannot tell, the push is treated as an ordinary one.
+    """
+    is_merge_commit = getattr(git_provider, "is_merge_commit", None)
+    if not isinstance(after_sha, str) or not after_sha or not callable(is_merge_commit):
+        return False
+    try:
+        return bool(is_merge_commit(after_sha))
+    except Exception as e:
+        get_logger().warning(f"Could not tell whether {after_sha} is a merge commit; handling the push: {e}")
+        return False
 
 
 def _reformat_quote_ask_command(comment_body: str) -> str | None:

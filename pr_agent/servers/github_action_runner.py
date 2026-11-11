@@ -39,6 +39,7 @@ from pr_agent.servers.github_common import (
     _reformat_quote_ask_command,
     handle_line_comments,
     matches_review_state,
+    pushed_merge_commit,
 )
 from pr_agent.servers.utils import is_ask_command_comment
 
@@ -405,8 +406,6 @@ async def run_action():
                 after_sha = event_payload.get("after")
                 if before_sha is not None and before_sha == after_sha:
                     return
-                pull_request = event_payload.get("pull_request", {})
-                merge_commit_sha = pull_request.get("merge_commit_sha")
                 ignore_merge_commits = get_settings().get(
                     "github_action_config.push_trigger_ignore_merge_commits",
                     get_settings().get("github_app.push_trigger_ignore_merge_commits", True),
@@ -415,7 +414,7 @@ async def run_action():
                     ignore_merge_commits,
                     default=True,
                     setting_name="github_action_config.push_trigger_ignore_merge_commits",
-                ) and after_sha is not None and after_sha == merge_commit_sha:
+                ) and pushed_merge_commit(settings_provider, after_sha):
                     get_logger().info("Skipping synchronize: merge commit detected")
                     return
                 sender_type = event_payload.get("sender", {}).get("type")

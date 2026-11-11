@@ -26,6 +26,7 @@ from pr_agent.servers import lambda_handoff
 from pr_agent.servers.github_common import (
     _normalise_setting_list,
     _reformat_quote_ask_command,
+    pushed_merge_commit,
 )
 from pr_agent.servers.github_common import handle_line_comments as handle_line_comments
 from pr_agent.servers.github_common import matches_review_state as matches_review_state
@@ -315,7 +316,7 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
 
     # we need to apply the repo settings to get the correct settings for the PR.
     # This is quite expensive - a call to the git provider is made for each PR event.
-    apply_repo_settings(api_url)
+    git_provider = apply_repo_settings(api_url)
     if not _as_bool_setting(get_settings().github_app.handle_push_trigger):
         return {}
     if (_as_bool_setting(
@@ -329,7 +330,6 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
 
     before_sha = body.get("before")
     after_sha = body.get("after")
-    merge_commit_sha = pull_request.get("merge_commit_sha")
     if before_sha == after_sha:
         return {}
     if (_as_bool_setting(
@@ -337,7 +337,8 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
             default=True,
             setting_name="github_app.push_trigger_ignore_merge_commits",
         )
-            and after_sha == merge_commit_sha):
+            and pushed_merge_commit(git_provider, after_sha)):
+        get_logger().info(f"Skipping {event}: merge commit detected")
         return {}
 
     async with push_trigger_slot(

@@ -61,3 +61,31 @@ def test_import_action_runner_without_github_app():
     result = subprocess.run([sys.executable, "-c", _IMPORT_WITHOUT_GITHUB_APP],
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, f"importing the action runner pulled in github_app:\n{result.stderr}"
+
+
+class _Provider:
+    def __init__(self, merge_shas):
+        self.merge_shas = merge_shas
+        self.looked_up = []
+
+    def is_merge_commit(self, sha):
+        self.looked_up.append(sha)
+        return sha in self.merge_shas
+
+
+@pytest.mark.parametrize(
+    ("provider", "after_sha", "expected"),
+    [
+        (_Provider({"merge"}), "merge", True),
+        (_Provider({"merge"}), "ordinary", False),
+        (None, "merge", False),
+        (object(), "merge", False),
+        (_Provider({"merge"}), None, False),
+        (_Provider({"merge"}), "", False),
+    ],
+    ids=["merge-commit", "ordinary-commit", "no-provider", "provider-without-lookup", "no-after", "empty-after"],
+)
+def test_pushed_merge_commit(provider, after_sha, expected):
+    assert github_common.pushed_merge_commit(provider, after_sha) is expected
+    if isinstance(provider, _Provider) and not after_sha:
+        assert provider.looked_up == []

@@ -475,6 +475,18 @@ class GithubProvider(GitProvider):
                          parents=tuple(parent.sha for parent in commit.parents))
                 for commit in self.pr.get_commits()]
 
+    def is_merge_commit(self, sha: str) -> bool:
+        """Whether commit `sha` has more than one parent.
+
+        The PR's commits were read with their parents when the PR loaded, so one of them costs no request;
+        any other commit is read from the repository.
+        """
+        loaded = [*(getattr(self, "pr_commits", None) or []), getattr(self, "last_commit_id", None)]
+        commit = next((commit for commit in loaded if getattr(commit, "sha", None) == sha), None)
+        if commit is None:
+            commit = self._get_repo().get_commit(sha)
+        return len(commit.parents) > 1
+
     def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> str | None:
         self.incremental = incremental
         self.diff_files = None

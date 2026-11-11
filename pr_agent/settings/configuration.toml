@@ -388,7 +388,7 @@ webhook_delivery_deduplication = false
 # settings for "pull_request" event with "synchronize" action - used to detect and handle push triggers for new commits
 handle_push_trigger = false
 push_trigger_ignore_bot_commits = true
-push_trigger_ignore_merge_commits = true
+push_trigger_ignore_merge_commits = true # skip push_commands when the pushed head is a merge commit, such as the one "Update branch" creates
 # GitHub App only. Keep one queued push-trigger task per PR instead of dropping it; other servers always queue.
 push_trigger_pending_tasks_backlog = true
 # GitHub App only. Seconds idle per-PR push-trigger state is kept (other servers: 300); also the

@@ -565,9 +565,19 @@ class TestPushTriggerDedupe:
 
         assert push_trigger_env["count"] == 0
 
+    @staticmethod
+    def _provider_with_merge_commits(monkeypatch, *merge_shas):
+        """apply_repo_settings returns the provider it loaded; it knows each commit's parents."""
+        provider = SimpleNamespace(is_merge_commit=lambda sha: sha in merge_shas)
+        monkeypatch.setattr(github_app, "apply_repo_settings", lambda api_url: provider)
+        return provider
+
     def test_skips_merge_commit_when_configured(self, push_trigger_env, monkeypatch):
+        # "Update branch" pushes a merge of the base as the new head. The event's merge_commit_sha
+        # is GitHub's test merge of that head into the base, so it is not the pushed commit.
         body = _push_body()
-        body["after"] = body["pull_request"]["merge_commit_sha"]
+        self._provider_with_merge_commits(monkeypatch, body["after"])
+        assert body["after"] != body["pull_request"]["merge_commit_sha"]
         settings = github_app.get_settings()
         settings.github_app.push_trigger_ignore_merge_commits = True
 
@@ -578,6 +588,35 @@ class TestPushTriggerDedupe:
         )
 
         assert push_trigger_env["count"] == 0
+
+    def test_processes_ordinary_commit_when_merge_commits_are_ignored(self, push_trigger_env, monkeypatch):
+        body = _push_body()
+        self._provider_with_merge_commits(monkeypatch, body["pull_request"]["merge_commit_sha"])
+        github_app.get_settings().github_app.push_trigger_ignore_merge_commits = True
+
+        asyncio.run(
+            github_app.handle_push_trigger_for_new_commits(
+                body, "push", "alice", "1", "synchronize", {}, agent=None
+            )
+        )
+
+        assert push_trigger_env["count"] == 1
+
+    def test_processes_push_when_merge_commit_lookup_fails(self, push_trigger_env, monkeypatch):
+        def unreadable(sha):
+            raise RuntimeError("commit unavailable")
+
+        provider = SimpleNamespace(is_merge_commit=unreadable)
+        monkeypatch.setattr(github_app, "apply_repo_settings", lambda api_url: provider)
+        github_app.get_settings().github_app.push_trigger_ignore_merge_commits = True
+
+        asyncio.run(
+            github_app.handle_push_trigger_for_new_commits(
+                _push_body(), "push", "alice", "1", "synchronize", {}, agent=None
+            )
+        )
+
+        assert push_trigger_env["count"] == 1
 
     @pytest.mark.parametrize("ignore", [False, "false", "off"])
     def test_processes_bot_commit_when_ignore_is_disabled(self, push_trigger_env, ignore):
@@ -594,10 +633,10 @@ class TestPushTriggerDedupe:
         assert push_trigger_env["count"] == 1
 
     @pytest.mark.parametrize("ignore", [False, "false", "off"])
-    def test_processes_merge_commit_when_ignore_is_disabled(self, push_trigger_env, ignore):
+    def test_processes_merge_commit_when_ignore_is_disabled(self, push_trigger_env, monkeypatch, ignore):
         github_app.get_settings().github_app.push_trigger_ignore_merge_commits = ignore
         body = _push_body()
-        body["after"] = body["pull_request"]["merge_commit_sha"]
+        self._provider_with_merge_commits(monkeypatch, body["after"])
 
         asyncio.run(
             github_app.handle_push_trigger_for_new_commits(

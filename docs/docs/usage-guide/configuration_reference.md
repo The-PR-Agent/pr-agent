@@ -413,7 +413,7 @@ See [GitHub App](../usage-guide/automations_and_usage.md#github-app).
 | `webhook_delivery_deduplication` | false | Opt in to in-memory deduplication by X-GitHub-Delivery within each worker process. Active work stays protected; completed IDs expire after the deployment's push_trigger_pending_tasks_ttl (read at startup, 300 seconds by default). Failed or cancelled work can retry immediately. Repeated deliveries do not extend the TTL. Manual redeliveries are also suppressed during this window. State is cleared on restart and is not shared across workers or replicas. |
 | `handle_push_trigger` | false | settings for "pull_request" event with "synchronize" action - used to detect and handle push triggers for new commits |
 | `push_trigger_ignore_bot_commits` | true |  |
-| `push_trigger_ignore_merge_commits` | true |  |
+| `push_trigger_ignore_merge_commits` | true | skip push_commands when the pushed head is a merge commit, such as the one "Update branch" creates |
 | `push_trigger_pending_tasks_backlog` | true | GitHub App only. Keep one queued push-trigger task per PR instead of dropping it; other servers always queue. |
 | `push_trigger_pending_tasks_ttl` | 300 | GitHub App only. Seconds idle per-PR push-trigger state is kept (other servers: 300); also the dedupe window when webhook_delivery_deduplication is on. |
 | `push_commands` | ["/describe", "/review"] |  |
