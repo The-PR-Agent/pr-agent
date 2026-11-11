@@ -184,6 +184,12 @@ def test_scan_file_diff_risky_shapes_added(line, expected_cat):
         ("-export function processPayment(token) {", "removed_function"),
         ("-func ValidateSignature(req *Request) bool {", "removed_function"),
         ("-pub fn verify_signature(data: &[u8]) -> bool {", "removed_function"),
+        # Methods: the replay over 1,307 merged PRs found these were never flagged.
+        ("-    def get_files(self):", "removed_function"),
+        ("-        async def publish(self, body):", "removed_function"),
+        ("-\tdef tabbed(self):", "removed_function"),
+        ("-  async function load() {", "removed_function"),
+        ("-    pub fn verify(&self) -> bool {", "removed_function"),
     ],
 )
 def test_scan_file_diff_removed_functions(line, expected_cat):
