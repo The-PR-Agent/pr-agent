@@ -62,7 +62,9 @@ from .git_provider import (
     GitProvider,
     IncompletePullRequestFilesError,
     IncrementalPR,
+    PRCommit,
     cache_languages,
+    commit_patch_fingerprint,
     get_config_branch,
     redact_credentials,
 )
@@ -216,6 +218,8 @@ class GithubProvider(GitProvider):
         if context.exists():
             context.pop("diff_files", None)
         self.incremental = incremental if incremental is not None else IncrementalPR(False)
+        if getattr(self, "_pr_head_commit", None) is not None:
+            self.last_commit_id, self._pr_head_commit = self._pr_head_commit, None
         if self.incremental.is_incremental:
             self.unreviewed_files_map = dict()
             self._get_incremental_commits()
@@ -403,6 +407,19 @@ class GithubProvider(GitProvider):
         if not self.pr_commits:
             self.pr_commits = list(self.pr.get_commits())
 
+        if (
+            not self.pr_commits
+            or len(self.pr_commits) != self.pr.commits
+            or self.pr_commits[-1].sha != self.pr.head.sha
+        ):
+            get_logger().info(
+                f"PR commit list inconsistent ({len(self.pr_commits)}/{self.pr.commits} commits, "
+                f"last={self.pr_commits[-1].sha if self.pr_commits else 'none'}, head={self.pr.head.sha}); "
+                "falling back to a full review"
+            )
+            self.incremental.is_incremental = False
+            return
+
         self.previous_review = self.get_previous_review(full=True, incremental=True)
         if self.previous_review:
             self.incremental.commits_range = self.get_commit_range()
@@ -455,6 +472,40 @@ class GithubProvider(GitProvider):
                 self.incremental.last_seen_commit = self.pr_commits[index]
                 break
         return self.pr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
+
+    def get_pr_commits(self) -> list[PRCommit]:
+        return [PRCommit(sha=commit.sha, message=commit.commit.message or "", url=commit.html_url or "",
+                         parents=tuple(parent.sha for parent in commit.parents))
+                for commit in self.pr.get_commits()]
+
+    def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> str | None:
+        self.incremental = incremental
+        self.diff_files = None
+        if context.exists():
+            context.pop("diff_files", None)
+        self.unreviewed_files_map = {}
+        loaded = vars(self).setdefault("_loaded_commits", {})
+        if commit.sha not in loaded:
+            gh_commit = self._get_repo().get_commit(commit.sha)
+            loaded[commit.sha] = gh_commit, (list(gh_commit.get_files(commit_files_per_page=300))
+                                             if len(gh_commit.parents) == 1 else [])
+        gh_commit, files = loaded[commit.sha]
+        parents = gh_commit.parents
+        if len(parents) != 1:
+            get_logger().info(f"Skipping commit {commit.sha} with {len(parents)} parents in per commit review")
+            return None
+
+        incremental.first_new_commit = gh_commit
+        incremental.last_seen_commit = parents[0]
+        incremental.head_sha = commit.sha
+        self._pr_head_commit = getattr(self, "_pr_head_commit", None) or getattr(self, "last_commit_id", None)
+        self.last_commit_id = gh_commit
+        self.unreviewed_files_map = {file.filename: file for file in files}
+        if not files:
+            return None
+        return commit_patch_fingerprint(
+            (f"{file.previous_filename or ''}\0{file.filename}", file.patch if file.patch is not None else file.sha)
+            for file in files)
 
     def get_previous_review(self, *, full: bool, incremental: bool):
         if not (full or incremental):
@@ -675,7 +726,8 @@ class GithubProvider(GitProvider):
                         new_file_content_str = ""
                     else:
                         # communication with GitHub
-                        new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha, **read_options)
+                        new_file_content_str = self._get_pr_file_content(
+                            file, getattr(self.incremental, "head_sha", None) or self.pr.head.sha, **read_options)
 
                     if self.incremental.is_incremental and self.unreviewed_files_map:
                         original_file_content_str = self._get_pr_file_content(
@@ -1667,6 +1719,8 @@ class GithubProvider(GitProvider):
         for suggestion in code_suggestions_with_fingerprints:
             suggestion["_dedup_code_fp"] = code_fingerprint(
                 suggestion.get("relevant_file", ""), None, suggestion.get("body", ""))
+        if getattr(getattr(self, "incremental", None), "head_sha", None):
+            return code_suggestions_with_fingerprints
         return self.validate_comments_inside_hunks(code_suggestions_with_fingerprints)
 
     def _build_code_suggestion_payload(self, suggestion: dict) -> dict:
@@ -2043,7 +2097,8 @@ class GithubProvider(GitProvider):
         current_owner = self.get_owning_namespace(resolved=True)
         # Reject redirects/transfers unless the canonical same-owner repository was selected.
         if (not isinstance(resolved_name, str) or resolved_name.casefold() != repo_id.casefold()
-                or not current_owner or resolved_name.split("/")[0].casefold() != current_owner.casefold()):
+                or not self.is_sibling_namespace_allowed(resolved_name.split("/")[0], current_owner,
+                                                         case_sensitive=False)):
             get_logger().warning(f"Ignoring out-of-owner sibling repo in repo context: {repo_id}")
             return None
         if not self._requester_can_read_sibling_repo(sibling_repo):

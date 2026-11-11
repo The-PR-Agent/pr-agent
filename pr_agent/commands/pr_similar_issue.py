@@ -358,12 +358,9 @@ class PRSimilarIssue:
 
                 self._update_table_with_issues(issues, repo_name_for_index, ingest=ingest, force_refresh=force_refresh)
             else:  # update table if needed
-                issues_to_scan = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                for scanned, issue in enumerate(i for i in issues_paginated_list if not _is_pull_request(i)):
-                    if scanned >= self.max_issues_to_scan:
-                        break
-                    issues_to_scan.append(issue)
+                issues = (issue for issue in issues_paginated_list if not _is_pull_request(issue))
+                issues_to_scan = list(islice(issues, max(0, self.max_issues_to_scan)))
 
                 indexed_ids = set()
                 if issues_to_scan:

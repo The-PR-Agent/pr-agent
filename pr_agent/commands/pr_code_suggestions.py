@@ -353,7 +353,8 @@ class PRCodeSuggestions:
         self.token_handler = TokenHandler(self.git_provider.pr,
                                           self.vars,
                                           self.pr_code_suggestions_prompt_system,
-                                          self.pr_code_suggestions_prompt_user)
+                                          self.pr_code_suggestions_prompt_user,
+                                          ai_handler=self.ai_handler)
 
         self.progress = build_progress_comment()
         self.progress_response = None
@@ -823,9 +824,8 @@ class PRCodeSuggestions:
                            f"analysis to fit the token budget: {file_list}.")
         return "\n\n⚠️ **Suggestion coverage:** " + " ".join(details)
 
-    @staticmethod
-    def _write_json_output(data: dict) -> None:
-        """Write the suggestions and the run's token usage to the CLI's --json-output path, if one was given."""
+    def _write_json_output(self, data: dict) -> None:
+        """Write suggestions, token usage, and analysis coverage to the CLI's --json-output path."""
         if not review_json_output_path.get():
             return
         details = get_run_details()
@@ -836,7 +836,17 @@ class PRCodeSuggestions:
                 "completion_tokens": details.completion_tokens,
                 "total_tokens": details.total_tokens,
             }
-        write_review_json_output({"code_suggestions": list(data.get("code_suggestions") or []), "usage": usage})
+        coverage = {
+            "total_chunks": getattr(self, "total_chunk_count", 0),
+            "failed_chunks": getattr(self, "failed_chunk_count", 0),
+            "files_not_reviewed": list(getattr(self, "remaining_files_list", []) or []),
+            "files_partially_reviewed": list(getattr(self, "partial_files_list", []) or []),
+        }
+        write_review_json_output({
+            "code_suggestions": list(data.get("code_suggestions") or []),
+            "usage": usage,
+            "coverage": coverage,
+        })
 
     async def publish_no_suggestions(self):
         coverage_footer = self._get_suggestions_coverage_footer(suggestions_present=False)

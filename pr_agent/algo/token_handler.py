@@ -121,7 +121,7 @@ class TokenHandler:
     CLAUDE_MAX_CONTENT_SIZE = 9_000_000 # Maximum allowed content size (9MB) for Claude API
 
     def __init__(self, pr=None, vars: dict | None = None, system="", user="", model=None, *,
-                 count_prompt_tokens: bool = True):
+                 count_prompt_tokens: bool = True, ai_handler=None):
         """
         Initializes the TokenHandler object.
 
@@ -132,10 +132,12 @@ class TokenHandler:
         - user: The user string.
         - model: Optional model name whose tokenizer should be used.
         - count_prompt_tokens: Whether to render and count the initial prompt during construction.
+        - ai_handler: Optional request handler whose token-limit policy applies to this prompt.
         """
         if vars is None:
             vars = {}
         self.model = model or get_settings().config.model
+        self.ai_handler = ai_handler
         self.pr = pr
         self.vars = vars
         self.system = system
@@ -150,7 +152,7 @@ class TokenHandler:
         """Return a handler bound to ``model`` without mutating this handler."""
         if model == self.model:
             return self
-        return TokenHandler(self.pr, self.vars, self.system, self.user, model=model)
+        return TokenHandler(self.pr, self.vars, self.system, self.user, model=model, ai_handler=self.ai_handler)
 
     def _get_system_user_tokens(self, pr, encoder, vars: dict, system, user):
         """

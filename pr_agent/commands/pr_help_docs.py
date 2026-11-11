@@ -470,7 +470,8 @@ class PRHelpDocs:
             self.token_handler = TokenHandler(None,
                                                   self.vars,
                                                   get_settings().pr_help_docs_prompts.system,
-                                                  get_settings().pr_help_docs_prompts.user)
+                                                  get_settings().pr_help_docs_prompts.user,
+                                                  ai_handler=self.ai_handler)
         except Exception:
             get_logger().exception(
                 "Caught exception during init. Setting self.question to None to prevent run() to do anything."

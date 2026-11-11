@@ -133,8 +133,9 @@ def handle_line_comment(body: str, thread_id: int, comment_id: int, provider: Az
         return None
     body = body.strip()
     cli_args = ""
-    if body == "/ask" or body.startswith("/ask "):
-        cli_args, question = _split_leading_cli_args(body[5:])
+    parts = body.split(maxsplit=1)
+    if parts and parts[0] in ("/ask", "/ask_question"):
+        cli_args, question = _split_leading_cli_args(parts[1] if len(parts) > 1 else "")
     elif available_commands_rgx.match(body):
         return body
     else:

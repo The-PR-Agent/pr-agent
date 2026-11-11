@@ -505,8 +505,10 @@ async def run_action():
                 if GITHUB_EVENT_NAME == "pull_request_review_comment":
                     if is_ask_command_comment(comment_body):
                         comment = event_payload["comment"]
-                        if comment.get("subject_type") == "file" and comment_body.split(maxsplit=1)[0] == "/ask":
-                            question = comment_body.strip().removeprefix("/ask").strip()
+                        if (comment.get("subject_type") == "file"
+                                and comment_body.split(maxsplit=1)[0].lower() in ("/ask", "/ask_question")):
+                            parts = comment_body.strip().split(maxsplit=1)
+                            question = parts[1] if len(parts) > 1 else ""
                             context["file_question_path"] = comment["path"]
                             context["file_question_comment_id"] = comment.get("in_reply_to_id") or comment["id"]
                             context["file_question_origin_comment_id"] = comment["id"]

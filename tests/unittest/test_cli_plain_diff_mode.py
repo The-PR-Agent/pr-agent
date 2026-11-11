@@ -556,7 +556,14 @@ def test_plain_diff_improve_writes_empty_json_when_all_files_are_ignored(monkeyp
 
     run(inargs=["--stdin", "--json-output", str(output), "improve"])
 
-    assert json.loads(output.read_text(encoding="utf-8")) == {"code_suggestions": [], "usage": {}}
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        "code_suggestions": [],
+        "usage": {},
+        "coverage": {
+            "total_chunks": 0, "failed_chunks": 0,
+            "files_not_reviewed": [], "files_partially_reviewed": [],
+        },
+    }
 
 
 def test_plain_diff_describe_fails_when_all_files_are_ignored(monkeypatch, tmp_path, cfg):
