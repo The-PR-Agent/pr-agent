@@ -645,6 +645,8 @@ class TestGetMaxTokens:
     @pytest.mark.parametrize("model", [
         "gemini/gemini-4-argon",
         "vertex_ai/gemini-4-argon",
+        "gemini/gemini-4-carbon",
+        "vertex_ai/gemini-4-carbon",
     ])
     def test_gemini_4_x_models_max_tokens(self, monkeypatch, model):
         fake_settings = type("", (), {
@@ -1446,6 +1448,8 @@ class TestNoLiteLLMDuplicates:
         "vertex_ai/gemini-3.8-flash",
         "gemini/gemini-4-argon",
         "vertex_ai/gemini-4-argon",
+        "gemini/gemini-4-carbon",
+        "vertex_ai/gemini-4-carbon",
         "openrouter/x-ai/grok-4.5",
         "openrouter/x-ai/grok-4.6",
         "xai/grok-build-latest",
