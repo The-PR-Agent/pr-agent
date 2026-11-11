@@ -1,6 +1,7 @@
 
 from pr_agent.algo.utils import load_yaml
 
+
 def test_yaml_after_code_example():
     """Test YAML parsing when code example precedes YAML block"""
     input_text = """Explanation:
