@@ -27,9 +27,11 @@ from pr_agent.algo.comment_identity import (
 )
 from pr_agent.algo.deterministic_risk import build_risk_checks
 from pr_agent.algo.findings import Finding
+from pr_agent.algo.git_patch_processing import split_diff_lines
 from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
+    TEXT_FIX_INFO,
     InlineCommentStore,
     can_verify_inline_comment_publication,
     get_inline_comment_store,
@@ -223,7 +225,26 @@ def _strip_line_numbers(code: str | None, start_line: int, end_line: int) -> str
 
 
 def _code_lines(code: str) -> list[str]:
-    return [line.rstrip() for line in code.strip("\n").splitlines()]
+    # Split on newlines only: splitlines() also splits on Unicode separators that can sit inside a string.
+    return [line.rstrip(" \t") for line in code.replace("\r\n", "\n").strip("\n").split("\n")]
+
+
+def _without_fix_block(body: str) -> str:
+    """Drop the fix block that _build_key_issue_comment appends to a finding's body.
+
+    Only the block it opens with ``suggestion`` or ``TEXT_FIX_INFO`` is dropped, so a code block of the
+    finding's own text is kept. The fence is longer than any backtick run in the fix, which makes the
+    closest opener with the closing fence's length the right one.
+    """
+    lines = body.split("\n")
+    fence = lines[-1]
+    if len(fence) < 3 or fence.strip("`"):
+        return body
+    for index in range(len(lines) - 2, -1, -1):
+        info = lines[index][len(fence):] if lines[index].startswith(fence) else None
+        if info is not None and (info.startswith("suggestion") or info == TEXT_FIX_INFO):
+            return "\n".join(lines[:index]).rstrip()
+    return body
 
 
 class PRReviewer:
@@ -1014,7 +1035,7 @@ class PRReviewer:
                     continue
                 finding = Finding(
                     path=thread.file,
-                    body=strip_markers(thread.suggestion).strip(),
+                    body=_without_fix_block(strip_markers(thread.suggestion).strip()),
                     line_start=thread.start_line,
                     line_end=thread.end_line,
                 )
@@ -1703,6 +1724,8 @@ class PRReviewer:
             data['review']['key_issues_to_review'] = key_issues_to_review
 
         self._prepare_review_finding_state(data)
+        # Inline publication returns a pruned copy; the external sinks get the complete review, as /improve's do.
+        complete_data = data
         if get_settings().config.publish_output and get_settings().pr_reviewer.get('inline_key_issues', True):
             data = self._publish_key_issues_as_inline_comments(data)
         issues = data['review'].get('key_issues_to_review')
@@ -1838,7 +1861,13 @@ class PRReviewer:
         # suppression deliberately does not: that only silences the PR comment.
         # The delivery itself is left to run(), which awaits it off the event loop.
         if get_settings().config.publish_output:
-            self._pending_sink_output = ("review", data.get('review', {}), markdown_text)
+            sink_markdown = markdown_text
+            if complete_data is not data:
+                sink_markdown = convert_to_markdown_v2(
+                    complete_data, self.git_provider.is_supported("gfm_markdown"),
+                    incremental_review_markdown_text, git_provider=self.git_provider,
+                    files=self.git_provider.get_diff_files(), commit_review=commit_review_markdown_text)
+            self._pending_sink_output = ("review", complete_data.get('review', {}), sink_markdown)
 
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)
@@ -1906,9 +1935,16 @@ class PRReviewer:
         if get_committable_code_suggestions():
             is_applicable, _, has_valid_anchor = validate_suggestion(file, start_line, end_line, existing_code)
             if has_valid_anchor:
-                improved_code = dedent_code_for_file(file, start_line, improved_code)
                 if existing_code:
-                    existing_code = dedent_code_for_file(file, start_line, existing_code)
+                    # Align both snippets with one offset, so an indentation change in the fix survives.
+                    existing_code = existing_code.strip("\n")
+                    existing_count = len(split_diff_lines(existing_code))
+                    aligned = split_diff_lines(
+                        dedent_code_for_file(file, start_line, f"{existing_code}\n{improved_code}"))
+                    existing_code = "\n".join(aligned[:existing_count])
+                    improved_code = "\n".join(aligned[existing_count:])
+                else:
+                    improved_code = dedent_code_for_file(file, start_line, improved_code)
             if is_applicable and python_syntax_is_valid(
                     finding.path, file, start_line, end_line, improved_code) is not False:
                 fence = get_suggestion_fence(improved_code)
@@ -1923,7 +1959,7 @@ class PRReviewer:
                     "label": finding.header or "",
                 }
         if original_suggestion is None:
-            body += f"\n\n{fence}text\n{improved_code}\n{fence}"
+            body += f"\n\n{fence}{TEXT_FIX_INFO}\n{improved_code}\n{fence}"
         return finding.to_inline_comment(
             body,
             fallback_to_pr_comment=False,
@@ -2011,9 +2047,19 @@ class PRReviewer:
         if candidate_comments:
             try:
                 batch = list(candidate_comments.values())
-                if not self.git_provider.publish_code_suggestions(batch):
+                already_posted = set()
+                try:
+                    batch_published = self.git_provider.publish_code_suggestions(batch)
+                except Exception as e:
+                    get_logger().warning(f"Batch publication of review findings raised, error: {e}")
+                    batch_published = False
+                    # The batch may have posted some comments before it raised: retry only the others.
+                    already_posted = self._published_inline_key_issue_fingerprints(store, set(candidate_comments))
+                if not batch_published:
                     get_logger().info("Failed to publish review findings, trying to publish each one separately")
-                    for comment in batch:
+                    for location_fingerprint, comment in candidate_comments.items():
+                        if location_fingerprint in already_posted:
+                            continue
                         try:
                             self.git_provider.publish_code_suggestions([comment])
                         except Exception as e:
