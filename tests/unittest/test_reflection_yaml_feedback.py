@@ -105,3 +105,14 @@ def test_bounded_traversal_200_fences():
 
     input_text = CountingText("\n".join(["```yaml"] * 200))
     assert _extract_labelled_yaml_block(input_text) is None
+
+
+def test_labelled_list_legacy_baseline():
+    result = load_yaml("Explanation:\n```yaml\n- a\n- b\n```\n")
+    assert result == ["a", "b"]
+
+
+def test_unlabelled_list_legacy_baseline():
+    input_text = "```python\nprint('hi')\n```\n```yaml\n- x\n- y\n```\n"
+    result = load_yaml(input_text)
+    assert result == {}

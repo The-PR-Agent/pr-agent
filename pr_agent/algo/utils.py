@@ -1191,22 +1191,19 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
         # pairs defeat both the initial parse and the trailing-fence retry. Extract the
         # labelled block's content directly before handing off to the repair pipeline.
         labelled_block = _extract_labelled_yaml_block(response_text)
-        has_labelled_yaml_fence = "```yaml" in response_text or "```yml" in response_text
         if labelled_block is not None:
             try:
                 candidate = _load_yaml_initial(labelled_block)
                 if isinstance(candidate, dict) and candidate:
                     get_logger().info("Recovered labelled YAML block embedded in prose")
                     return candidate
-            except Exception:
-                pass
+            except Exception as e:
+                get_logger().debug(f"Mid-text YAML block parse failed: {e}")
         separators = str.maketrans({"\u2028": " ", "\u2029": " "})
         response_text = response_text.translate(separators)
         response_text_original_sanitized = response_text_original_sanitized.translate(separators)
         data = try_fix_yaml(response_text, keys_fix_yaml=keys_fix_yaml, first_key=first_key, last_key=last_key,
                             response_text_original=response_text_original_sanitized)
-        if has_labelled_yaml_fence and not isinstance(data, dict):
-            data = {}
         if not data:
             get_logger().error("Failed to parse AI prediction after fallbacks",
                                artifact={'response_text': response_text})
@@ -1332,10 +1329,10 @@ def try_fix_yaml(response_text: str,
             snippet_text = response_text_original[fence_start:fence_end].rstrip()
             try:
                 data = _parse_yaml(snippet_text)
-                if data is not None:
+                if isinstance(data, dict) and data:
                     return data
-            except Exception:
-                pass
+            except Exception as e:
+                get_logger().debug(f"Trailing labelled YAML fence retry failed: {e}")
 
 
     # third fallback - try to remove leading and trailing curly brackets
