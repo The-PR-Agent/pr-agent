@@ -1982,13 +1982,15 @@ class GitLabProvider(GitProvider):
 
                     has_other_jobs = False
                     has_pending_jobs = False
+                    skipped_failed_verdict_job = False
                     for job in jobs(all=True):
                         name = job.get("name") if isinstance(job, dict) else getattr(job, "name", None)
-                        if isinstance(name, str) and name.casefold() == "pr agent - review":
-                            continue
-                        has_other_jobs = True
                         job_status = job.get("status") if isinstance(job, dict) else getattr(job, "status", None)
                         job_status = job_status.lower() if isinstance(job_status, str) else ""
+                        if isinstance(name, str) and name.casefold() == "pr agent - review":
+                            skipped_failed_verdict_job |= job_status in ("failed", "canceled", "cancelled")
+                            continue
+                        has_other_jobs = True
                         if job_status in ("failed", "canceled", "cancelled"):
                             return "failed"
                         if job_status in (
@@ -1998,6 +2000,9 @@ class GitLabProvider(GitProvider):
                             has_pending_jobs = True
                         elif job_status not in ("success", "skipped"):
                             return "failed"
+                    # Only our own failed verdict job may be discounted; any other failure or a cancel stays failed.
+                    if not skipped_failed_verdict_job:
+                        return "failed"
                     if not has_other_jobs:
                         return "none"
                     return "pending" if has_pending_jobs else "passed"
@@ -2052,18 +2057,8 @@ class GitLabProvider(GitProvider):
                 if created_at:
                     ref_dt = _parse_gitlab_iso_datetime(created_at)
 
-            if ref_dt is None:
-                head_sha = self.get_pr_head_sha()
-                if head_sha and hasattr(self, "gl"):
-                    try:
-                        proj = self.gl.projects.get(self.id_project, lazy=True)
-                        commit = proj.commits.get(head_sha)
-                        c_date = getattr(commit, "committed_date", None) or getattr(commit, "created_at", None)
-                        if c_date:
-                            ref_dt = _parse_gitlab_iso_datetime(c_date)
-                    except Exception as e:
-                        get_logger().warning(f"Could not retrieve GitLab commit {head_sha} for timestamp: {e}")
-
+            # The head commit's dates are set by its author, so without a pipeline timestamp
+            # the staleness is unknown rather than guessed.
             if ref_dt is None:
                 return None
 
