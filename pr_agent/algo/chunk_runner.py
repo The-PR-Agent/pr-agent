@@ -33,7 +33,7 @@ class ChunkProgressSink(Protocol):
     """The progress-reporting half of a chunked run: advance one settled chunk."""
 
     async def record_settled(self, count: int = 1) -> None:
-        ...
+        """Advance the progress line by `count` settled chunks."""
 
 
 async def run_chunk_batch[T, R](
