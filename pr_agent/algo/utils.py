@@ -1262,7 +1262,7 @@ def try_fix_yaml(response_text: str,
     # closing fence. Retry the final explicitly labelled YAML block in that case.
     yaml_fences = list(re.finditer(r'(?im)^```(?:yaml|yml)[ \t]*\r?\n', response_text_original))
     if yaml_fences and response_text_original.rstrip().endswith('```'):
-        # Extract content between the last YAML fence and the final ``` 
+        # Extract content between the last YAML fence and the final ```
         fence_start = yaml_fences[-1].end()
         fence_end = response_text_original.rfind('```')
         if fence_end > fence_start:
