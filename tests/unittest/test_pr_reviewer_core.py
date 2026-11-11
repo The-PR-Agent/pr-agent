@@ -907,6 +907,19 @@ def test_batch_publish_failure_keeps_unverified_findings_in_the_summary():
     assert result["review"]["key_issues_to_review"] == [failing, working]
 
 
+def test_failed_single_retry_does_not_stop_the_remaining_retries():
+    first = _key_issue(issue_content="This one raises.")
+    second = _key_issue(issue_content="This one publishes.", start_line=1, end_line=1)
+    reviewer, data = _reviewer_with_findings(first, second)
+    reviewer.git_provider.publish_code_suggestions.side_effect = [False, RuntimeError("rejected"), True]
+    reviewer._published_inline_key_issue_fingerprints.side_effect = None
+    reviewer._published_inline_key_issue_fingerprints.return_value = set()
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    assert reviewer.git_provider.publish_code_suggestions.call_count == 3
+
+
 def test_existing_comment_load_failure_skips_inline_publishing():
     issue = _key_issue()
     reviewer, data = _reviewer_with_findings(issue)
@@ -2354,6 +2367,15 @@ def test_fix_identical_to_existing_code_is_dropped(committable_on):
     comment = _published_comment(reviewer.git_provider)
     assert "```" not in comment["body"]
     assert "original_suggestion" not in comment
+
+
+def test_indentation_only_fix_is_kept(committable_on):
+    reviewer, data = _reviewer_with_findings(_key_issue(existing_code="    three", improved_code="three"))
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```" in comment["body"]
 
 
 def test_numbered_existing_code_is_stripped(committable_on):
