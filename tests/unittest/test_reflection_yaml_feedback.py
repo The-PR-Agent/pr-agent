@@ -59,17 +59,21 @@ if __name__ == "__main__":
 
 
 def test_inner_fence_preserves_all_suggestions():
-    input_text = """```yaml
-code_suggestions:
-  - suggestion_score: 8
-    why: |
-      Explanation with an embedded fence:
-      ```yaml
-      nested: true
-      ```
-  - suggestion_score: 7
-    why: Second suggestion
-```"""
+    input_text = (
+        "Lead\n"
+        "```yaml\n"
+        "code_suggestions:\n"
+        "  - suggestion_score: 8\n"
+        "    why: |\n"
+        "      ```yaml\n"
+        "      nested: true\n"
+        "      ```\n"
+        "    relevant_line: 1\n"
+        "  - suggestion_score: 9\n"
+        "    why: Second suggestion\n"
+        "    relevant_line: 2\n"
+        "```\n"
+    )
     result = load_yaml(input_text)
     assert isinstance(result, dict)
     assert "code_suggestions" in result
