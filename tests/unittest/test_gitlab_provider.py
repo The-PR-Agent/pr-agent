@@ -239,6 +239,88 @@ def test_neutralize_gitlab_mentions_leaves_indented_code_inside_a_list():
     assert _neutralize_gitlab_mentions(text) == expected
 
 
+@pytest.mark.parametrize(("text", "expected"), [
+    (
+        "Note the ` here\n===\n@all about `x`",
+        "Note the ` here\n===\n@\u200ball about `x`",
+    ),
+    (
+        "Note the ` here\n---\n@all about `x`",
+        "Note the ` here\n---\n@\u200ball about `x`",
+    ),
+    (
+        "Note the ` here\n***\n@all about `x`",
+        "Note the ` here\n***\n@\u200ball about `x`",
+    ),
+    (
+        "### Note the ` here\n@all about `x`",
+        "### Note the ` here\n@\u200ball about `x`",
+    ),
+    (
+        "Note the ` here\n<details><summary>More</summary>\n@all about `x`",
+        "Note the ` here\n<details><summary>More</summary>\n@\u200ball about `x`",
+    ),
+    (
+        "<!-- a ` here -->\n@all about `x`",
+        "<!-- a ` here -->\n@\u200ball about `x`",
+    ),
+    (
+        "<pre>\n```\n@all\n</pre>\n@reviewer",
+        "<pre>\n```\n@\u200ball\n</pre>\n@\u200breviewer",
+    ),
+    (
+        "a ` stray\n<div>`@all`</div>",
+        "a ` stray\n<div>`@\u200ball`</div>",
+    ),
+    (
+        "<details>\n`@all`\n\n`@literal`",
+        "<details>\n`@\u200ball`\n\n`@literal`",
+    ),
+])
+def test_neutralize_gitlab_mentions_stops_a_code_span_at_a_heading_break_or_html_block(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("Escaped \\` tick, @all and `x`", "Escaped \\` tick, @\u200ball and `x`"),
+    ("Escaped \\``` @literal`` and @all", "Escaped \\``` @literal`` and @\u200ball"),
+    ("Escaped backslash \\\\` @literal `x`", "Escaped backslash \\\\` @literal `x`"),
+    ("Inside `a\\` @all `x`", "Inside `a\\` @\u200ball `x`"),
+])
+def test_neutralize_gitlab_mentions_handles_escaped_backticks(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_ignores_a_backtick_fence_with_a_backtick_in_its_info():
+    text = "```a`b\n@all\n"
+    expected = "```a`b\n@\u200ball\n"
+
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_does_not_close_a_fence_on_a_line_with_an_info_string():
+    text = "```\n@first\n```js\n@second\n```\n@active"
+    expected = "```\n@first\n```js\n@second\n```\n@\u200bactive"
+
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("cc _@all_ please", "cc _@\u200ball_ please"),
+    ("cc __@all__ please", "cc __@\u200ball__ please"),
+    ("snake_@case stays", "snake_@case stays"),
+    ("@_@all", "@\u200b_@\u200ball"),
+])
+def test_neutralize_gitlab_mentions_handles_underscore_emphasis(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_handles_many_escaped_ticks_and_underscores():
+    text = "\\` " * 20000 + "_" * 20000 + "@active"
+
+    assert _neutralize_gitlab_mentions(text).endswith("_@\u200bactive")
+
+
 class TestGitLabProvider:
     """Test suite for GitLab provider functionality."""
 

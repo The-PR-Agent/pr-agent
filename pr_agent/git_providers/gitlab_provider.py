@@ -119,16 +119,45 @@ query($project: ID!, $ref: String!, $paths: [String!]!) {
 
 
 # GitLab matches references after an ASCII-only boundary (Ruby's \w), and decodes entities for @ first.
-_GITLAB_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_])(?:@|&#0{0,5}64;|&#[xX]0{0,4}40;|&commat;)(?=[\w-])")
+# Underscores before the mention can open emphasis (`_@user_`), which leaves the mention live.
+_GITLAB_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_])_*(?:@|&#0{0,5}64;|&#[xX]0{0,4}40;|&commat;)(?=[\w-])")
+_GITLAB_ZERO_WIDTH_SPACE = "\u200b"
 # Autolinked URLs render as links, which GitLab never scans for references. The span stops at Markdown
 # delimiters, so a mention right after a link, code span, quote, emphasis, table cell or escape is still neutralised.
 _GITLAB_AUTOLINK_RE = re.compile(r"(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{1,31}://[^\s<>`()\[\]\"'*~|\\]+")
 _GITLAB_TICK_RUN_RE = re.compile(r"`+")
 _GITLAB_FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})")
 _GITLAB_ATX_RE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
+_GITLAB_THEMATIC_RE = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
+_GITLAB_SETEXT_RE = re.compile(r" {0,3}(?:=+|-+)[ \t]*$")
 _GITLAB_QUOTE_RE = re.compile(r" {0,3}>")
 _GITLAB_LIST_RE = re.compile(r"( *)([-+*]|\d{1,9}[.)])( +|$)")
 _GITLAB_TABLE_CELL_RE = re.compile(r":?-+:?")
+_GITLAB_HTML_BLOCK_TAGS = (
+    "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|"
+    "dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|"
+    "header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|"
+    "param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul"
+)
+# CommonMark HTML blocks that can interrupt paragraph
+# An empty tuple means block ends at a blank line
+_GITLAB_HTML_BLOCK_STARTS = (
+    (re.compile(r"<(?:pre|script|style|textarea)(?:[\s>]|$)", re.IGNORECASE),
+     ("</pre>", "</script>", "</style>", "</textarea>")),
+    (re.compile(r"<!--"), ("-->",)),
+    (re.compile(r"<\?"), ("?>",)),
+    (re.compile(r"<![A-Za-z]"), (">",)),
+    (re.compile(r"<!\[CDATA\["), ("]]>",)),
+    (re.compile(rf"</?(?:{_GITLAB_HTML_BLOCK_TAGS})(?:[\s>]|/>|$)", re.IGNORECASE), ()),
+)
+
+
+def _gitlab_html_block_ends(line: str) -> tuple[str, ...] | None:
+    """Return the end markers of the HTML block the line starts, or None."""
+    for start, ends in _GITLAB_HTML_BLOCK_STARTS:
+        if start.match(line):
+            return ends
+    return None
 
 
 def _is_gitlab_table_delimiter(line: str) -> bool:
@@ -144,16 +173,20 @@ def _is_gitlab_table_delimiter(line: str) -> bool:
     return all(_GITLAB_TABLE_CELL_RE.fullmatch(part.strip()) for part in parts)
 
 
-def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
-    """Classify each line as code and collect offsets where a new block starts."""
+def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int], set[int]]:
+    """Classify each line as code and collect offsets where a new block or an HTML block line starts."""
     code_by_start: dict[int, bool] = {}
+    html_starts: set[int] = set()
     boundaries: list[int] = []
     fence_char = None
     fence_size = 0
+    html_ends: tuple[str, ...] | None = None
     indented_code = False
     list_indents: list[int] = []
     in_table = False
     prev_blank = True
+    prev_paragraph = False
+    boundary_next = False
     prev_start = None
     offset = 0
 
@@ -161,23 +194,34 @@ def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
         line = raw_line.removesuffix("\r")
         stripped = line.strip()
         is_code = False
-        boundary = False
+        boundary = boundary_next
+        boundary_next = False
+        paragraph = False
+        in_html = html_ends is not None
 
-        if fence_char is not None:
+        if in_html:
+            boundary = True
+            if html_ends and any(end in line.lower() for end in html_ends):
+                html_ends = None
+                boundary_next = True
+            elif not html_ends and not stripped:
+                html_ends = None
+        elif fence_char is not None:
             is_code = True
             fence = _GITLAB_FENCE_RE.match(line)
-            if fence and fence.group(1)[0] == fence_char and len(fence.group(1)) >= fence_size:
+            if (fence and fence.group(1)[0] == fence_char and len(fence.group(1)) >= fence_size
+                    and not line[fence.end():].strip()):
                 fence_char = None
                 fence_size = 0
         else:
             fence = _GITLAB_FENCE_RE.match(line)
-            if fence:
+            if fence and not (fence.group(1)[0] == "`" and "`" in line[fence.end():]):
                 marker = fence.group(1)
                 fence_char, fence_size = marker[0], len(marker)
                 is_code = True
                 boundary = True
 
-        if not is_code and fence_char is None:
+        if not in_html and not is_code and fence_char is None:
             indent = 0
             for char in line:
                 if char == " ":
@@ -207,9 +251,23 @@ def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
                 is_code = True
                 boundary = True
 
-            if not is_code:
+            html_block = None
+            if not is_code and stripped and relative_indent <= 3:
+                html_block = _gitlab_html_block_ends(line.lstrip(" \t"))
+            if html_block is not None:
+                in_html = True
+                boundary = True
+                in_table = False
+                if not html_block:
+                    html_ends = html_block
+                elif any(end in line.lstrip(" \t")[1:].lower() for end in html_block):
+                    boundary_next = True
+                else:
+                    html_ends = html_block
+            elif not is_code:
                 list_match = _GITLAB_LIST_RE.match(line)
                 is_list_item = bool(list_match) and relative_indent <= 3
+                single_line_block = False
                 if not stripped:
                     boundary = True
                     in_table = False
@@ -223,10 +281,20 @@ def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
                     boundary = True
                 else:
                     in_table = False
-                    if _GITLAB_ATX_RE.match(line) or _GITLAB_QUOTE_RE.match(line) or is_list_item:
+                    single_line_block = bool(
+                        _GITLAB_ATX_RE.match(line) or _GITLAB_THEMATIC_RE.match(line)
+                        or (prev_paragraph and _GITLAB_SETEXT_RE.match(line)))
+                    if single_line_block:
                         boundary = True
+                        boundary_next = True
+                    elif _GITLAB_QUOTE_RE.match(line):
+                        boundary = True
+                    else:
+                        paragraph = True
+                        if is_list_item:
+                            boundary = True
 
-                if is_list_item:
+                if is_list_item and not single_line_block:
                     leading = len(list_match.group(1))
                     marker = list_match.group(2)
                     spaces = len(list_match.group(3))
@@ -234,13 +302,16 @@ def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
                     list_indents.append(content_indent)
 
         code_by_start[offset] = is_code
+        if in_html:
+            html_starts.add(offset)
         if boundary:
             boundaries.append(offset)
         prev_blank = not stripped
+        prev_paragraph = paragraph
         prev_start = offset
         offset += len(raw_line) + 1
 
-    return code_by_start, boundaries
+    return code_by_start, boundaries, html_starts
 
 
 def _gitlab_autolink_spans(text: str) -> tuple[list[int], list[int]]:
@@ -249,14 +320,11 @@ def _gitlab_autolink_spans(text: str) -> tuple[list[int], list[int]]:
     return [start for start, _ in spans], [end for _, end in spans]
 
 
-def _neutralize_gitlab_mention(mention: re.Match, offset: int, url_spans: tuple[list[int], list[int]]) -> str:
-    """Append a zero-width space to a mention unless it sits inside an autolinked URL."""
+def _in_gitlab_autolink(position: int, url_spans: tuple[list[int], list[int]]) -> bool:
+    """Return True when the offset sits inside an autolinked URL."""
     starts, ends = url_spans
-    position = offset + mention.start()
     span_index = bisect_right(starts, position) - 1
-    if span_index >= 0 and position < ends[span_index]:
-        return mention.group()
-    return mention.group() + "\u200b"
+    return span_index >= 0 and position < ends[span_index]
 
 
 def _neutralize_gitlab_mentions(text: str) -> str:
@@ -268,19 +336,21 @@ def _neutralize_gitlab_mentions(text: str) -> str:
     for run in _GITLAB_TICK_RUN_RE.finditer(text):
         tick_runs.setdefault(len(run.group()), []).append(run.start())
 
-    code_by_start, boundaries = _gitlab_line_flags(text)
+    code_by_start, boundaries, html_starts = _gitlab_line_flags(text)
     url_spans = _gitlab_autolink_spans(text)
 
     output = []
     index = 0
     inline_ticks = 0
     line_start = True
+    line_offset = 0
 
     while index < len(text):
         if text[index] == "\n":
             output.append("\n")
             index += 1
             line_start = True
+            line_offset = index
             continue
 
         if line_start and not inline_ticks and code_by_start.get(index):
@@ -298,8 +368,18 @@ def _neutralize_gitlab_mentions(text: str) -> str:
                 end += 1
             ticks = end - index
             if not inline_ticks:
+                backslashes = 0
+                while index - backslashes > 0 and text[index - backslashes - 1] == "\\":
+                    backslashes += 1
+                if backslashes % 2:
+                    output.append("`")
+                    index += 1
+                    line_start = False
+                    continue
+
                 runs = tick_runs.get(ticks)
-                if runs:
+                # Backticks inside a raw HTML block are literal text, not code spans
+                if runs and line_offset not in html_starts:
                     closer_index = bisect_left(runs, end)
                     boundary_index = bisect_left(boundaries, end)
                     boundary = boundaries[boundary_index] if boundary_index < len(boundaries) else len(text)
@@ -317,23 +397,30 @@ def _neutralize_gitlab_mentions(text: str) -> str:
             output.append(char)
             index += 1
             line_start = char == "\n"
+            if line_start:
+                line_offset = index
             continue
 
         next_special = index + 1
         while next_special < len(text) and text[next_special] not in "@`\n":
             next_special += 1
-        chunk = text[index:next_special]
-        prefix = text[index - 1:index] if index else ""
-        offset = index - len(prefix)
-        output.append(_GITLAB_MENTION_RE.sub(
-            lambda mention, offset=offset: _neutralize_gitlab_mention(mention, offset, url_spans),
-            prefix + chunk,
-        )[len(prefix):])
+        search_start = index
+        while search_start and text[search_start - 1] == "_":
+            search_start -= 1
+        copied = index
+        for mention in _GITLAB_MENTION_RE.finditer(text, search_start, next_special):
+            if _in_gitlab_autolink(mention.start(), url_spans):
+                continue
+            output.append(text[copied:mention.end()])
+            output.append(_GITLAB_ZERO_WIDTH_SPACE)
+            copied = mention.end()
+        output.append(text[copied:next_special])
         index = next_special
         if index < len(text) and text[index] == "\n":
             output.append("\n")
             index += 1
             line_start = True
+            line_offset = index
         else:
             line_start = False
 
