@@ -1093,13 +1093,39 @@ def _extract_labelled_yaml_block(response_text: str) -> str | None:
     labelled block embedded later is otherwise unreachable.
     """
     lines = response_text.split('\n')
-    for i, line in enumerate(lines):
-        stripped = line.strip()
+    i = 0
+    n = len(lines)
+    while i < n:
+        stripped = lines[i].strip()
         if not (stripped.startswith('```yaml') or stripped.startswith('```yml')):
+            i += 1
             continue
-        for j in range(i + 1, len(lines)):
-            if lines[j].strip() == '```':
-                return '\n'.join(lines[i + 1:j])
+        j = i + 1
+        block_lines = []
+        fence_depth = 1
+        while j < n:
+            j_stripped = lines[j].strip()
+            if j_stripped.startswith('```yaml') or j_stripped.startswith('```yml'):
+                fence_depth += 1
+                block_lines.append(lines[j])
+                j += 1
+                continue
+            if j_stripped == '```':
+                fence_depth -= 1
+                if fence_depth == 0:
+                    break
+            block_lines.append(lines[j])
+            j += 1
+        if fence_depth != 0:
+            break
+        candidate = '\n'.join(block_lines)
+        try:
+            parsed = yaml.safe_load(candidate)
+            if isinstance(parsed, dict) and parsed:
+                return candidate
+        except Exception as e:
+            get_logger().debug(f"Labelled YAML block parse failed: {e}")
+        i = j + 1
     return None
 
 
@@ -1165,6 +1191,7 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
         # pairs defeat both the initial parse and the trailing-fence retry. Extract the
         # labelled block's content directly before handing off to the repair pipeline.
         labelled_block = _extract_labelled_yaml_block(response_text)
+        has_labelled_yaml_fence = "```yaml" in response_text or "```yml" in response_text
         if labelled_block is not None:
             try:
                 candidate = _load_yaml_initial(labelled_block)
@@ -1178,6 +1205,8 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
         response_text_original_sanitized = response_text_original_sanitized.translate(separators)
         data = try_fix_yaml(response_text, keys_fix_yaml=keys_fix_yaml, first_key=first_key, last_key=last_key,
                             response_text_original=response_text_original_sanitized)
+        if has_labelled_yaml_fence and not isinstance(data, dict):
+            data = {}
         if not data:
             get_logger().error("Failed to parse AI prediction after fallbacks",
                                artifact={'response_text': response_text})

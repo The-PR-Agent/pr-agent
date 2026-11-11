@@ -1,5 +1,5 @@
 
-from pr_agent.algo.utils import load_yaml
+from pr_agent.algo.utils import _extract_labelled_yaml_block, load_yaml
 
 
 def test_yaml_after_code_example():
@@ -56,3 +56,52 @@ if __name__ == "__main__":
     test_yaml_with_code_block()
     test_simple_yaml()
     print("All tests passed!")
+
+
+def test_inner_fence_preserves_all_suggestions():
+    input_text = """```yaml
+code_suggestions:
+  - suggestion_score: 8
+    why: |
+      Explanation with an embedded fence:
+      ```yaml
+      nested: true
+      ```
+  - suggestion_score: 7
+    why: Second suggestion
+```"""
+    result = load_yaml(input_text)
+    assert isinstance(result, dict)
+    assert "code_suggestions" in result
+    assert len(result["code_suggestions"]) == 2
+
+
+def test_trailing_list_not_returned():
+    input_text = """Code example:
+```python
+print("hello")
+```
+Final answer:
+```yaml
+- a
+- b
+```"""
+    result = load_yaml(input_text)
+    assert isinstance(result, dict)
+
+
+def test_bounded_traversal_200_fences():
+    class CountingLines(list):
+        visits = 0
+
+        def __getitem__(self, index):
+            self.visits += 1
+            assert self.visits <= 2 * len(self)
+            return super().__getitem__(index)
+
+    class CountingText(str):
+        def split(self, sep=None, maxsplit=-1):
+            return CountingLines(super().split(sep, maxsplit))
+
+    input_text = CountingText("\n".join(["```yaml"] * 200))
+    assert _extract_labelled_yaml_block(input_text) is None
