@@ -1258,6 +1258,23 @@ def try_fix_yaml(response_text: str,
             get_logger().debug(f"Failed to parse AI prediction after extracting yaml snippet: {e}")
 
 
+    # A preceding code example can make the generic fence match start at its
+    # closing fence. Retry the final explicitly labelled YAML block in that case.
+    yaml_fences = list(re.finditer(r'(?im)^```(?:yaml|yml)[ \t]*\r?\n', response_text_original))
+    if yaml_fences and response_text_original.rstrip().endswith('```'):
+        # Extract content between the last YAML fence and the final ``` 
+        fence_start = yaml_fences[-1].end()
+        fence_end = response_text_original.rfind('```')
+        if fence_end > fence_start:
+            snippet_text = response_text_original[fence_start:fence_end].rstrip()
+            try:
+                data = _parse_yaml(snippet_text)
+                if data is not None:
+                    return data
+            except Exception:
+                pass
+
+
     # third fallback - try to remove leading and trailing curly brackets
     response_text_copy = response_text.strip().rstrip().removeprefix('{').removesuffix('}').rstrip(':\n')
     try:
