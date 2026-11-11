@@ -123,23 +123,25 @@ def test_addressed_comment_uses_available_line_position():
                        "--origin_comment_id=31 __pr_agent_encoded_text__:check%20this")
 
 
-def test_slash_ask_does_not_require_agent_identity_discovery():
+@pytest.mark.parametrize("ask_command", ["/ask", "/ask_question"])
+def test_slash_ask_does_not_require_agent_identity_discovery(ask_command):
     provider = MagicMock()
     provider.get_thread_context.return_value = None
 
-    command = webhook.handle_line_comment("/ask check this PR", 22, 31, provider)
+    command = webhook.handle_line_comment(f"{ask_command} check this PR", 22, 31, provider)
 
     assert command == ("/ask --comment_id=22 --origin_comment_id=31 "
                        "__pr_agent_encoded_text__:check%20this%20PR")
     provider.get_agent_mention_aliases.assert_not_called()
 
 
-def test_slash_ask_keeps_explicit_cli_overrides_out_of_the_question():
+@pytest.mark.parametrize("ask_command", ["/ask", "/ask_question"])
+def test_slash_ask_keeps_explicit_cli_overrides_out_of_the_question(ask_command):
     provider = MagicMock()
     provider.get_thread_context.return_value = None
 
     command = webhook.handle_line_comment(
-        '/ask --pr_questions.extra_instructions="be terse" what does this do?', 22, 31, provider
+        f'{ask_command} --pr_questions.extra_instructions="be terse" what does this do?', 22, 31, provider
     )
     lexer = shlex.shlex(command.replace("'", "\\'"), posix=True)
     lexer.whitespace_split = True
@@ -153,7 +155,8 @@ def test_slash_ask_keeps_explicit_cli_overrides_out_of_the_question():
                for call in settings.return_value.set.call_args_list)
 
 
-def test_slash_ask_line_keeps_explicit_cli_overrides_out_of_the_question():
+@pytest.mark.parametrize("ask_command", ["/ask", "/ask_question"])
+def test_slash_ask_line_keeps_explicit_cli_overrides_out_of_the_question(ask_command):
     provider = MagicMock()
     provider.get_thread_context.return_value = SimpleNamespace(
         file_path="/src/app.cs",
@@ -163,7 +166,9 @@ def test_slash_ask_line_keeps_explicit_cli_overrides_out_of_the_question():
         right_file_end=SimpleNamespace(line=8),
     )
 
-    command = webhook.handle_line_comment("/ask --pr_questions.extra_instructions=terse why?", 22, 31, provider)
+    command = webhook.handle_line_comment(
+        f"{ask_command} --pr_questions.extra_instructions=terse why?", 22, 31, provider
+    )
 
     assert "--pr_questions.extra_instructions=terse" in command
     assert command.endswith("__pr_agent_encoded_text__:why%3F")

@@ -1,7 +1,9 @@
 import asyncio
 import copy
+import gc
 import json
 import threading
+import weakref
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1054,12 +1056,23 @@ async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
     started = threading.Event()
     release = threading.Event()
     fetch_thread_ids = []
+    prefetched_file_ref = None
+    retained_during_prediction = []
 
     def fetch_diff():
+        nonlocal prefetched_file_ref
         fetch_thread_ids.append(threading.get_ident())
         started.set()
         assert release.wait(10)
-        return []
+        file = FilePatchInfo(base_file="", head_file="", patch="", filename="app.py")
+        prefetched_file_ref = weakref.ref(file)
+        return [file]
+
+    async def predict(*args, **kwargs):
+        # Let the completed worker future release its result before checking ownership.
+        await asyncio.sleep(0)
+        gc.collect()
+        retained_during_prediction.append(prefetched_file_ref() is not None)
 
     git_provider = MagicMock()
     git_provider.get_files.return_value = ["app.py"]
@@ -1070,7 +1083,7 @@ async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
     reviewer.prediction = None
 
     monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
-    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", predict)
     monkeypatch.setitem(get_settings().config, "publish_output", False)
 
     run = asyncio.create_task(reviewer.run())
@@ -1084,6 +1097,7 @@ async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
     assert len(fetch_thread_ids) == 1
     assert fetch_thread_ids[0] != threading.get_ident()
     git_provider.get_diff_files.assert_called_once_with()
+    assert retained_during_prediction == [False]
 
 
 @pytest.mark.asyncio
@@ -1098,6 +1112,9 @@ async def test_run_extracts_tickets_only_when_incremental_review_proceeds(monkey
     git_provider = MagicMock()
     # GitHub can return the full PR file list when its incremental file map is empty.
     git_provider.get_files.return_value = ["app.py"]
+    git_provider.get_diff_files.return_value = [
+        FilePatchInfo(base_file="", head_file="", patch="", filename="app.py")
+    ]
     git_provider.unreviewed_files_map = {"app.py": "patch"} if has_new_files else {}
     previous_review_url = "https://example/pr/1#previous-review"
     git_provider.previous_review = SimpleNamespace(html_url=previous_review_url)
@@ -1191,13 +1208,20 @@ async def test_run_removes_its_progress_comment_when_quiet_output_suppresses_rev
 
 
 @pytest.mark.asyncio
-async def test_run_skips_without_recording_failure_when_all_changed_files_are_filtered(monkeypatch):
+@pytest.mark.parametrize("provider_filters_files", [True, False], ids=["provider-filter", "shared-filter"])
+async def test_run_skips_without_recording_failure_when_all_changed_files_are_filtered(
+    monkeypatch, provider_filters_files,
+):
     from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
     git_provider = MagicMock()
     # The no-files guard reads the unfiltered file list, so a lockfile-only PR still passes it.
     git_provider.get_files.return_value = ["package-lock.json"]
+    git_provider.get_diff_files.return_value = [] if provider_filters_files else [
+        FilePatchInfo(base_file="", head_file="", patch="", filename="package-lock.json")
+    ]
+    git_provider.diff_files = git_provider.get_diff_files.return_value
     git_provider.publish_comment.return_value = progress_comment
     reviewer = _make_reviewer(git_provider)
     reviewer.incremental = SimpleNamespace(is_incremental=False)
@@ -1207,7 +1231,8 @@ async def test_run_skips_without_recording_failure_when_all_changed_files_are_fi
     async def fake_retry(prepare_fn, model_type=None, git_provider=None):
         await prepare_fn("primary-model")
 
-    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    extract_tickets = AsyncMock()
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", extract_tickets)
     monkeypatch.setattr(
         pr_reviewer_module,
         "fit_related_tickets_to_prompt_budget",
@@ -1231,9 +1256,37 @@ async def test_run_skips_without_recording_failure_when_all_changed_files_are_fi
         settings.config.is_auto_command = original["is_auto_command"]
 
     assert command_failed() is False
+    extract_tickets.assert_not_awaited()
     git_provider.publish_comment.assert_called_once_with("Preparing review...", is_temporary=True)
     git_provider.remove_comment.assert_called_once_with(progress_comment)
     git_provider.publish_persistent_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_extracts_tickets_for_provisional_empty_diff(monkeypatch):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    provider = MagicMock()
+    provider.get_files.return_value = ["src/ready.py"]
+    provider.get_diff_files.return_value = []
+    # GitLab keeps this unset until an empty diff has a verified change count.
+    provider.diff_files = None
+    reviewer = _make_reviewer(provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    extract_tickets = AsyncMock()
+    retry = AsyncMock()
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", extract_tickets)
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", retry)
+    monkeypatch.setitem(get_settings().config, "publish_output", False)
+
+    await reviewer.run()
+
+    extract_tickets.assert_awaited_once_with(provider, reviewer.vars)
+    retry.assert_awaited_once()
+    provider.get_diff_files.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -1734,7 +1787,10 @@ def test_prepare_review_publishes_provider_neutral_structured_data(monkeypatch):
             "security_concerns": False,
         },
         "usage": {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42},
-        "coverage": {"files_not_reviewed": [], "files_partially_reviewed": []},
+        "coverage": {
+            "total_chunks": 1, "failed_chunks": 0,
+            "files_not_reviewed": [], "files_partially_reviewed": [],
+        },
     })
     # Assert key order to prove the snapshot is isolated: _prepare_pr_review moves
     # key_issues_to_review to the end of its own dict after the hook fires, so an
@@ -1770,7 +1826,10 @@ def test_prepare_review_captures_json_without_provider_hook(monkeypatch, tmp_pat
     assert reviewer._structured_review_data == {
         "review": {"merge_recommendation": "needs_review", "key_issues_to_review": []},
         "usage": {},
-        "coverage": {"files_not_reviewed": [], "files_partially_reviewed": []},
+        "coverage": {
+            "total_chunks": 1, "failed_chunks": 0,
+            "files_not_reviewed": [], "files_partially_reviewed": [],
+        },
     }
 
 
@@ -1800,6 +1859,8 @@ def test_prepare_review_json_lists_files_left_out_by_the_token_budget(monkeypatc
         review_json_output_path.reset(token)
 
     assert reviewer._structured_review_data["coverage"] == {
+        "total_chunks": 1,
+        "failed_chunks": 0,
         "files_not_reviewed": ["src/large.py", "docs/guide.md"],
         "files_partially_reviewed": ["src/clipped.py"],
     }

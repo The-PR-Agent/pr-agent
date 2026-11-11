@@ -188,13 +188,18 @@ def matches_sensitive_path(path: str, patterns: Sequence[str] | None = None) -> 
     if not norm:
         return None
     globs = patterns if patterns is not None else DEFAULT_SENSITIVE_PATHS
+    parsed = None
     for pat in globs:
         if not isinstance(pat, str) or not pat or len(pat) > MAX_GLOB_LENGTH:
             continue
-        if fnmatchcase(norm, pat) or PurePosixPath(norm).match(pat):
+        if fnmatchcase(norm, pat):
+            return pat
+        if parsed is None:
+            parsed = PurePosixPath(norm)
+        if parsed.match(pat):
             return pat
         # Also check basename for simple filename patterns like *.tf or package.json
-        if fnmatchcase(PurePosixPath(norm).name, pat):
+        if fnmatchcase(parsed.name, pat):
             return pat
     return None
 

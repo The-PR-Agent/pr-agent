@@ -276,7 +276,7 @@ async def test_gitlab_diff_note_ask_still_uses_ask_line(gitlab_webhook_module, m
     assert calls == [(
         "https://gitlab.com/org/repo/-/merge_requests/1",
         ["/ask_line", "--line_start=3", "--line_end=3", "--side=RIGHT",
-         "--file_name=src/app.py", "--comment_id=discussion-42", "why this?"],
+         "--file_name=src/app.py", "--comment_id=discussion-42", "--origin_comment_id=99", "why this?"],
     )]
 
 

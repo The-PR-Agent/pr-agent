@@ -88,8 +88,15 @@ The JSON file is written once the suggestions are ready, including when
 `config.publish_output=false`, so a caller can post the suggestions itself. In plain-diff mode,
 the file is written before Markdown output; with `--pr_url`, it is written after publishing.
 It holds a `code_suggestions`
-list, empty when there are none, and a `usage` object. Place `--json-output` before `improve` or
+list, empty when there are none, a `usage` object, and a `coverage` object. Place `--json-output` before `improve` or
 `improve_code`; it also works with plain-diff input (`--stdin` or `--diff-file`).
+
+`coverage` includes `total_chunks` and `failed_chunks` after fallback recovery, `files_not_reviewed` for files
+left out by the token budget or chunk-call limit, and `files_partially_reviewed` for patches clipped to fit the
+token budget. Chunk counts describe the final analysis plan, not model requests or retry attempts;
+both counts are zero when no files need analysis.
+An empty `code_suggestions` list can still have incomplete coverage. Check the counts and file lists even when
+the coverage footer or comment publishing is disabled.
 
 ### Automatic triggering
 

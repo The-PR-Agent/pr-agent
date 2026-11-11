@@ -473,6 +473,7 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
     published = reviewer.git_provider.publish_comment.call_args.args[0]
     if not has_successful_chunks:
         render.assert_not_called()
+        assert reviewer._structured_review_data is None
         assert published == "Failed to review PR"
         assert reviewer.prediction_data is None
         assert calls[3:] == [("fallback", chunk) for chunk in ("chunk-a", "chunk-b", "chunk-c")]
@@ -482,6 +483,12 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
     assert reviewer.review_chunk_count == 3
     assert reviewer.review_failed_chunk_count == 1
     assert reviewer.remaining_files_list == []
+    assert reviewer._structured_review_data["coverage"] == {
+        "total_chunks": 3,
+        "failed_chunks": 1,
+        "files_not_reviewed": [],
+        "files_partially_reviewed": [],
+    }
     assert "1 chunk(s) failed and are not covered by this review." in published
     issues = reviewer.prediction_data["review"]["key_issues_to_review"]
     assert [issue["relevant_file"].strip() for issue in issues] == ["a.py", "c.py"]
