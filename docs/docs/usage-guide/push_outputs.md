@@ -17,9 +17,8 @@ The commands that currently emit are:
 
 | Command | `type` in the record |
 |---|---|
-| `/review` | `review` |
+| `/review` (and `/improve`, which runs it) | `review` |
 | `/describe` | `describe` |
-| `/improve` | `improve` |
 | `/ask` | `ask` (opt-in with `commands`) |
 
 A record is a JSON object:
@@ -69,7 +68,7 @@ The defaults are defined at the end of the
 [push_outputs]
 enable = false
 channels = []                          # any of: "stdout", "file", "webhook", "slack", "telegram", "teams"
-commands = ["review", "describe", "improve"] # command types to deliver; opt in to "ask" explicitly
+commands = ["review", "describe"] # command types to deliver; opt in to "ask" explicitly
 file_path = "pr-agent-outputs/reviews.jsonl"
 webhook_url = ""                       # must be an absolute https:// URL
 slack_webhook_url = ""                 # Slack Incoming Webhook; must be an absolute https:// URL
@@ -80,7 +79,7 @@ teams_webhook_url = ""                 # Teams Workflows webhook URL; must be an
 
 - `enable` — master switch (default `false`). When `false`, nothing is emitted.
 - `channels` — which sinks to use. Use exact registered names as a list/tuple or a comma-separated string; surrounding whitespace is ignored. Nothing is emitted until at least one channel is listed here.
-- `commands` — which command results to send to those sinks. Defaults to `review`, `describe`, and `improve`, preserving existing delivery. Use a list/tuple or comma-separated string of exact names. Add `ask` to receive answers, or select only the commands of interest. This does not change which commands PR-Agent runs.
+- `commands` — which command results to send to those sinks. Defaults to `review` and `describe`; `/improve` now runs `/review`, so its output arrives as `review`. Use a list/tuple or comma-separated string of exact names. Add `ask` to receive answers, or select only the commands of interest. This does not change which commands PR-Agent runs.
 - `file_path` — the file the `file` channel appends to.
 - `webhook_url` — the endpoint the `webhook` channel POSTs the generic record to.
 - `slack_webhook_url` — a Slack Incoming Webhook URL that the `slack` channel posts a `{"text": ...}` payload to.

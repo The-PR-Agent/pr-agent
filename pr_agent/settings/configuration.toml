@@ -8,7 +8,7 @@ bot_display_name="PR-Agent" # product name shown in user-visible PR comments; ho
 # models
 model="gpt-6.1-sol"
 fallback_models=["gpt-6-luna"]
-#model_reasoning="gpt-6.1-sol" # dedicated reasoning model for self-reflection
+#model_reasoning="gpt-6.1-sol" # unused: it served /improve's self-reflection, and /improve now runs /review
 # Leave model_weak unset with the shipped fallbacks: Luna would retry Luna, not a distinct model.
 #model_weak="gpt-6-luna" # optional, a weaker model to use for some easier tasks
 # CLI
@@ -186,6 +186,8 @@ require_ticket_analysis_review=true
 # Opt-in structured assessment fields. Each adds one field to the review output and to the model's output schema.
 require_risk_assessment=false # ask the model for an overall risk level (low/medium/high)
 require_merge_recommendation=false # ask the model for a merge recommendation: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge)
+max_changed_lines=100 # Host-only changed-line cap; a larger diff vetoes no_concerns_found. See docs/docs/commands/review.md
+publish_merge_recommendation_status=false # Publish the computed verdict as a SHA-scoped check/commit status. See docs/docs/commands/review.md
 require_failure_modes=false # ask for up to three concrete failure scenarios and their detection/coverage
 require_artifact_findings=false # with a CI artifact, list up to five neutral facts from it, each with a quote checked against the artifact. See docs/docs/commands/review.md
 require_priority_files=false # ask the model which files a human should inspect first
@@ -210,9 +212,9 @@ max_previous_findings_chars = 8000
 # Show a 'Since the last review' section at the top of the review: addressed, reappeared, still-open and new findings (needs persistent_finding_state).
 show_previous_findings_summary = true
 
-inline_key_issues=false # Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab, Gitea).
+inline_key_issues=true # Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab, Gitea). Findings with a fix become committable suggestions when pr_code_suggestions.committable_code_suggestions is on. Set to false to keep every finding in the review summary.
 extra_instructions = ""
-num_max_findings = 3
+num_max_findings = 6 # maximum number of key issues /review reports (integer; default 6)
 final_update_message = true
 # review labels
 enable_review_labels_security=true
@@ -272,6 +274,7 @@ resolve_threads=false
 extra_instructions = ""
 
 
+# Ignored since 0.51 except committable_code_suggestions and extra_instructions, which /review reads.
 [pr_code_suggestions] # /improve #
 # Deprecated alias still accepted until 1.0: pr_code_suggestions.commitable_code_suggestions
 committable_code_suggestions = false
@@ -287,7 +290,7 @@ enable_chat_text=false
 persistent_comment=true
 # Set to false to suppress /improve failure comments without changing the command's failure status.
 publish_failure_comment=true
-max_history_len=4 # Previous sets to retain; <=0 keeps latest only (same comment if editable). See https://docs.pr-agent.ai/commands/improve#configuration-options
+max_history_len=4 # Previous sets to retain; <=0 keeps latest only (same comment if editable).
 publish_output_no_suggestions=true
 enable_suggestions_coverage_footer=true # show failed chunks and files omitted by the token or AI-call budget
 # suggestions scoring
@@ -353,12 +356,12 @@ polling_repositories = [] # Host-only allowlist of GitHub repositories ("owner/r
 base_url = "https://api.github.com"
 try_fix_invalid_inline_comments = true
 ignore_bot_pr = true
-publish_as_check_run = false # when true, publish review/description/improve output as GitHub Checks instead of PR comments
+publish_as_check_run = false # when true, publish review/description output as GitHub Checks instead of PR comments
 
 [github_action_config]
 # auto_review = true    # set as env var in .github/workflows/pr-agent.yaml
 # auto_describe = true  # set as env var in .github/workflows/pr-agent.yaml
-# auto_improve = true   # set as env var in .github/workflows/pr-agent.yaml
+# auto_improve = true   # set as env var in .github/workflows/pr-agent.yaml; /improve runs /review, so either flag runs the one review
 # pr_actions = ['opened', 'reopened', 'ready_for_review', 'review_requested']
 # handle_push_trigger = false  # when true, handle synchronize events using push_commands (falls back to github_app.handle_push_trigger)
 # push_trigger_ignore_bot_commits = true
@@ -406,7 +409,7 @@ expand_submodule_diffs = false
 feedback_on_draft_pr = false
 # Post the /review summary as a resolvable thread (discussion) instead of a plain note.
 publish_review_as_thread = false
-# Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note.
+# Ignored: /improve runs /review, so there is no suggestions comment. Use publish_review_as_thread.
 publish_improve_as_thread = false
 # Reply in the triggering GitLab discussion for `/review`, `/improve`, or `/ask` (true/false); see docs/docs/usage-guide/additional_configurations.md.
 reply_to_trigger_comment = false
@@ -674,7 +677,7 @@ agent_identity = "" # Host-only GUID, unique name, descriptor, or list; empty re
 [push_outputs] # push command outputs to external sinks without calling git-provider APIs (disabled by default)
 enable = false
 channels = [] # exact names as a list/tuple or comma-separated string: "stdout", "file", "webhook", "slack", "telegram", "teams"; empty emits nothing
-commands = ["review", "describe", "improve"] # output types to deliver; add "ask" to include Q&A, or select fewer commands; supports comma-separated strings
+commands = ["review", "describe"] # output types to deliver; add "ask" to include Q&A, or select fewer commands; supports comma-separated strings
 file_path = "pr-agent-outputs/reviews.jsonl" # used by the "file" channel
 webhook_url = "" # used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL
 slack_webhook_url = "" # used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL

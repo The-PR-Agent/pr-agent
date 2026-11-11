@@ -40,6 +40,7 @@ from pr_agent.algo.git_patch_processing import (
 )
 from pr_agent.algo.i18n import t
 from pr_agent.algo.language_handler import build_language_file_matcher
+from pr_agent.algo.merge_verdict import render_merge_recommendation_checks
 from pr_agent.algo.output_models import PRType, SubPR, parse_failure_modes
 from pr_agent.algo.structural_reach import render_structural_reach
 from pr_agent.algo.types import FilePatchInfo
@@ -344,6 +345,8 @@ def convert_to_markdown_v2(output_data: dict,
             markdown_text += render_structural_reach(value, gfm_supported)
         elif key.lower() in ('risk_checks', 'deterministic_risk'):
             markdown_text += render_risk_checks(value, gfm_supported)
+        elif key.lower() == 'merge_recommendation_checks':
+            markdown_text += render_merge_recommendation_checks(value, gfm_supported)
         elif 'risk level' in key_nice.lower():
             risk_value = str(value).strip().lower().replace("_", " ")
             risk_display = risk_value.capitalize() if risk_value else "Unknown"
@@ -521,6 +524,18 @@ def convert_to_markdown_v2(output_data: dict,
                                 issue_str = f"[**{issue_header}**]({reference_link})\n\n{issue_content}\n\n"
                             else:
                                 issue_str = f"**{issue_header}**\n\n{issue_content}\n\n"
+                        improved_code = issue.get('improved_code')
+                        if isinstance(improved_code, str) and improved_code.strip():
+                            fix = improved_code.rstrip()
+                            fence = get_suggestion_fence(fix)
+                            fix_block = f"{fence}text\n{fix}\n{fence}"
+                            if gfm_supported:
+                                issue_str += (
+                                    f"\n\n<details><summary>{t('review.suggested_fix')}</summary>\n\n"
+                                    f"{fix_block}\n\n</details>"
+                                )
+                            else:
+                                issue_str += f"**{t('review.suggested_fix')}**\n\n{fix_block}\n\n"
                         markdown_text += f"{issue_str}\n\n"
                     except Exception as e:
                         get_logger().exception(f"Failed to process 'Recommended focus areas for review': {e}")

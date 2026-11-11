@@ -1,6 +1,6 @@
 import copy
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from starlette_context import request_cycle_context
@@ -12,7 +12,6 @@ from pr_agent.algo.run_details import command_failed
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.commands import ticket_pr_compliance_check as tickets_module
-from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.commands.pr_questions import NO_ANALYZABLE_FILES_NOTE, PRQuestions
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers import get_git_provider_with_context
@@ -647,23 +646,28 @@ async def test_publishing_commands_reject_truncated_responses(
         compile(suggestion + "\n" + head.split("\n", 1)[1], "foo.py", "exec")
 
 
+_COMPLETE_REVIEW = (
+    "review:\n  estimated_effort_to_review_[1-5]: '1'\n  score: '90'\n  relevant_tests: 'No'\n"
+    "  key_issues_to_review: []\n  security_concerns: 'No'\n"
+)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("response,finish_reason,expected_failure", [
-    pytest.param("code_suggestions: []", "stop", False, id="complete-empty"),
-    pytest.param("code_suggestions: []", "length", True, id="truncated-empty"),
+    pytest.param(_COMPLETE_REVIEW, "stop", False, id="complete"),
+    pytest.param(_COMPLETE_REVIEW, "length", True, id="truncated-complete-looking"),
     pytest.param(
-        "code_suggestions:\n- relevant_file: foo.py\n  language: python\n"
-        "  existing_code: line2-changed\n  suggestion_content: Handle the error.\n"
-        "  improved_code: |\n    new(",
+        "review:\n  key_issues_to_review:\n  - relevant_file: foo.py\n    issue_header: Bug\n"
+        "    issue_content: |\n      The call fails because",
         "length",
         True,
         id="truncated-parseable-yaml",
     ),
 ])
-async def test_improve_rejects_truncated_responses_through_diff_provider(
+async def test_improve_alias_rejects_truncated_responses_through_diff_provider(
     tmp_path, monkeypatch, capsys, response, finish_reason, expected_failure
 ):
-    """Verify command dispatch rejects truncated suggestions even when YAML parses."""
+    """Verify /improve, which runs /review, rejects truncated output even when YAML parses."""
     monkeypatch.chdir(tmp_path)
     calls = []
 
@@ -694,8 +698,8 @@ async def test_improve_rejects_truncated_responses_through_diff_provider(
             "plain_diff.content": DIFF,
             "plain_diff.output_path": None,
             "plain_diff.json_output_path": None,
-            "pr_code_suggestions.publish_failure_comment": True,
-            "pr_code_suggestions.decouple_hunks": True,
+            "config.is_auto_command": False,
+            "pr_reviewer.publish_review_failure_comment": True,
             "push_outputs.enable": False,
         }.items():
             get_settings().set(key, value)
@@ -706,63 +710,4 @@ async def test_improve_rejects_truncated_responses_through_diff_provider(
     assert len(calls) == 1
     assert "line2-changed" in calls[0]
     output = capsys.readouterr().out
-    if expected_failure:
-        assert "Failed to generate code suggestions for PR" in output
-        assert "No code suggestions found for the PR." not in output
-    else:
-        assert "No code suggestions found for the PR." in output
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("decouple_hunks,line_count,max_tokens,remove_calls", [
-    pytest.param(True, 1, 32_000, 1, id="decoupled"),
-    pytest.param(False, 1, 32_000, 0, id="ordinary-default"),
-    pytest.param(False, 400, 10_000, 1, id="default-numbered-budget-fallback"),
-])
-async def test_improve_preserves_inline_separator_in_model_prompt(
-    tmp_path, monkeypatch, decouple_hunks, line_count, max_tokens, remove_calls
-):
-    monkeypatch.chdir(tmp_path)
-    diff = (
-        "diff --git a/message.py b/message.py\n--- a/message.py\n+++ b/message.py\n"
-        f"@@ -1,{line_count} +1,{line_count} @@\n"
-        + "".join(f'-VALUE_{i} = "old"\n' for i in range(line_count))
-        + "".join(f'+VALUE_{i} = "part\u2028123"\n' for i in range(line_count))
-    )
-    calls = []
-
-    class RecordingAI(BaseAiHandler):
-        def __init__(self):
-            pass
-
-        @property
-        def deployment_id(self):
-            return None
-
-        async def chat_completion(self, model, system, user, temperature=0.2, img_path=None):
-            calls.append(user)
-            return "code_suggestions: []", "stop"
-
-    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
-        for key, value in {
-            "config.git_provider": "plain-diff",
-            "config.model": "gpt-4o-mini",
-            "config.max_model_tokens": max_tokens,
-            "config.fallback_models": [],
-            "config.repo_context_files": [],
-            "config.publish_output_progress": False,
-            "plain_diff.content": diff,
-            "plain_diff.output_path": None,
-            "plain_diff.json_output_path": None,
-            "pr_code_suggestions.decouple_hunks": decouple_hunks,
-        }.items():
-            get_settings().set(key, value)
-
-        # Spy on the real method: the default case must reach the fallback through token packing.
-        with patch.object(PRCodeSuggestions, "remove_line_numbers", autospec=True,
-                          side_effect=PRCodeSuggestions.remove_line_numbers) as remove:
-            assert await PRAgent(ai_handler=RecordingAI).handle_request("local_diff", "/improve") is True
-
-    assert remove.call_count == remove_calls
-    assert len(calls) == 1
-    assert '+VALUE_0 = "part\u2028123"' in calls[0]
+    assert ("Failed to review PR" in output) is expected_failure

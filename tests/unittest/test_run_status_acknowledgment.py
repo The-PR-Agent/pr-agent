@@ -334,7 +334,7 @@ async def test_each_command_gets_its_own_check_run(check_runs_enabled, auto_comm
     assert [e[:2] for e in events if e[0] != "run"] == [
         ("start", "describe"), ("finish", "describe"),
         ("start", "review"), ("finish", "review"),
-        ("start", "suggestions"), ("finish", "suggestions"),
+        ("start", "review"), ("finish", "review"),
     ]
 
 

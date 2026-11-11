@@ -505,3 +505,10 @@ class TestInjectArtifactContext:
             inject_artifact_context()
             inject_artifact_context()
         assert get_artifact_context("pr_reviewer")["content"].count("FAILED: test_login") == 1
+
+
+def test_code_suggestion_artifact_target_reaches_the_review():
+    from pr_agent.algo.artifacts import _artifact_target_commands
+
+    assert "pr_reviewer" in _artifact_target_commands(["pr_code_suggestions"], frozenset())
+    assert _artifact_target_commands(["pr_description"], frozenset()) == frozenset({"pr_description"})

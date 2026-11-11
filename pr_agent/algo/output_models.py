@@ -21,6 +21,8 @@ class KeyIssuesComponentLink(BaseModel):
     issue_content: str
     start_line: int
     end_line: int
+    existing_code: str | None = None
+    improved_code: str | None = None
 
 
 class TodoSection(BaseModel):

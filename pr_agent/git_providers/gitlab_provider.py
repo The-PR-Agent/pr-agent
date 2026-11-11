@@ -6,7 +6,7 @@ import re
 import time
 import urllib.parse
 from bisect import bisect_left, bisect_right
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from http.client import HTTPException
 from socket import SHUT_RDWR
@@ -41,6 +41,7 @@ from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import count_patch_lines, decode_if_bytes, split_diff_lines
 from ..algo.inline_comment_dedup import (
     body_fingerprint,
+    body_with_carried_markers,
     body_with_markers,
     code_fingerprint,
     get_inline_comment_store,
@@ -119,16 +120,45 @@ query($project: ID!, $ref: String!, $paths: [String!]!) {
 
 
 # GitLab matches references after an ASCII-only boundary (Ruby's \w), and decodes entities for @ first.
-_GITLAB_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_])(?:@|&#0{0,5}64;|&#[xX]0{0,4}40;|&commat;)(?=[\w-])")
+# Underscores before the mention can open emphasis (`_@user_`), which leaves the mention live.
+_GITLAB_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_])_*(?:@|&#0{0,5}64;|&#[xX]0{0,4}40;|&commat;)(?=[\w-])")
+_GITLAB_ZERO_WIDTH_SPACE = "\u200b"
 # Autolinked URLs render as links, which GitLab never scans for references. The span stops at Markdown
 # delimiters, so a mention right after a link, code span, quote, emphasis, table cell or escape is still neutralised.
 _GITLAB_AUTOLINK_RE = re.compile(r"(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{1,31}://[^\s<>`()\[\]\"'*~|\\]+")
 _GITLAB_TICK_RUN_RE = re.compile(r"`+")
 _GITLAB_FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})")
 _GITLAB_ATX_RE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
+_GITLAB_THEMATIC_RE = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
+_GITLAB_SETEXT_RE = re.compile(r" {0,3}(?:=+|-+)[ \t]*$")
 _GITLAB_QUOTE_RE = re.compile(r" {0,3}>")
 _GITLAB_LIST_RE = re.compile(r"( *)([-+*]|\d{1,9}[.)])( +|$)")
 _GITLAB_TABLE_CELL_RE = re.compile(r":?-+:?")
+_GITLAB_HTML_BLOCK_TAGS = (
+    "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|"
+    "dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|"
+    "header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|"
+    "param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul"
+)
+# CommonMark HTML blocks that can interrupt paragraph
+# An empty tuple means block ends at a blank line
+_GITLAB_HTML_BLOCK_STARTS = (
+    (re.compile(r"<(?:pre|script|style|textarea)(?:[\s>]|$)", re.IGNORECASE),
+     ("</pre>", "</script>", "</style>", "</textarea>")),
+    (re.compile(r"<!--"), ("-->",)),
+    (re.compile(r"<\?"), ("?>",)),
+    (re.compile(r"<![A-Za-z]"), (">",)),
+    (re.compile(r"<!\[CDATA\["), ("]]>",)),
+    (re.compile(rf"</?(?:{_GITLAB_HTML_BLOCK_TAGS})(?:[\s>]|/>|$)", re.IGNORECASE), ()),
+)
+
+
+def _gitlab_html_block_ends(line: str) -> tuple[str, ...] | None:
+    """Return the end markers of the HTML block the line starts, or None."""
+    for start, ends in _GITLAB_HTML_BLOCK_STARTS:
+        if start.match(line):
+            return ends
+    return None
 
 
 def _is_gitlab_table_delimiter(line: str) -> bool:
@@ -144,16 +174,20 @@ def _is_gitlab_table_delimiter(line: str) -> bool:
     return all(_GITLAB_TABLE_CELL_RE.fullmatch(part.strip()) for part in parts)
 
 
-def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
-    """Classify each line as code and collect offsets where a new block starts."""
+def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int], set[int]]:
+    """Classify each line as code and collect offsets where a new block or an HTML block line starts."""
     code_by_start: dict[int, bool] = {}
+    html_starts: set[int] = set()
     boundaries: list[int] = []
     fence_char = None
     fence_size = 0
+    html_ends: tuple[str, ...] | None = None
     indented_code = False
     list_indents: list[int] = []
     in_table = False
     prev_blank = True
+    prev_paragraph = False
+    boundary_next = False
     prev_start = None
     offset = 0
 
@@ -161,23 +195,34 @@ def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
         line = raw_line.removesuffix("\r")
         stripped = line.strip()
         is_code = False
-        boundary = False
+        boundary = boundary_next
+        boundary_next = False
+        paragraph = False
+        in_html = html_ends is not None
 
-        if fence_char is not None:
+        if in_html:
+            boundary = True
+            if html_ends and any(end in line.lower() for end in html_ends):
+                html_ends = None
+                boundary_next = True
+            elif not html_ends and not stripped:
+                html_ends = None
+        elif fence_char is not None:
             is_code = True
             fence = _GITLAB_FENCE_RE.match(line)
-            if fence and fence.group(1)[0] == fence_char and len(fence.group(1)) >= fence_size:
+            if (fence and fence.group(1)[0] == fence_char and len(fence.group(1)) >= fence_size
+                    and not line[fence.end():].strip()):
                 fence_char = None
                 fence_size = 0
         else:
             fence = _GITLAB_FENCE_RE.match(line)
-            if fence:
+            if fence and not (fence.group(1)[0] == "`" and "`" in line[fence.end():]):
                 marker = fence.group(1)
                 fence_char, fence_size = marker[0], len(marker)
                 is_code = True
                 boundary = True
 
-        if not is_code and fence_char is None:
+        if not in_html and not is_code and fence_char is None:
             indent = 0
             for char in line:
                 if char == " ":
@@ -207,9 +252,23 @@ def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
                 is_code = True
                 boundary = True
 
-            if not is_code:
+            html_block = None
+            if not is_code and stripped and relative_indent <= 3:
+                html_block = _gitlab_html_block_ends(line.lstrip(" \t"))
+            if html_block is not None:
+                in_html = True
+                boundary = True
+                in_table = False
+                if not html_block:
+                    html_ends = html_block
+                elif any(end in line.lstrip(" \t")[1:].lower() for end in html_block):
+                    boundary_next = True
+                else:
+                    html_ends = html_block
+            elif not is_code:
                 list_match = _GITLAB_LIST_RE.match(line)
                 is_list_item = bool(list_match) and relative_indent <= 3
+                single_line_block = False
                 if not stripped:
                     boundary = True
                     in_table = False
@@ -223,10 +282,20 @@ def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
                     boundary = True
                 else:
                     in_table = False
-                    if _GITLAB_ATX_RE.match(line) or _GITLAB_QUOTE_RE.match(line) or is_list_item:
+                    single_line_block = bool(
+                        _GITLAB_ATX_RE.match(line) or _GITLAB_THEMATIC_RE.match(line)
+                        or (prev_paragraph and _GITLAB_SETEXT_RE.match(line)))
+                    if single_line_block:
                         boundary = True
+                        boundary_next = True
+                    elif _GITLAB_QUOTE_RE.match(line):
+                        boundary = True
+                    else:
+                        paragraph = True
+                        if is_list_item:
+                            boundary = True
 
-                if is_list_item:
+                if is_list_item and not single_line_block:
                     leading = len(list_match.group(1))
                     marker = list_match.group(2)
                     spaces = len(list_match.group(3))
@@ -234,13 +303,16 @@ def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
                     list_indents.append(content_indent)
 
         code_by_start[offset] = is_code
+        if in_html:
+            html_starts.add(offset)
         if boundary:
             boundaries.append(offset)
         prev_blank = not stripped
+        prev_paragraph = paragraph
         prev_start = offset
         offset += len(raw_line) + 1
 
-    return code_by_start, boundaries
+    return code_by_start, boundaries, html_starts
 
 
 def _gitlab_autolink_spans(text: str) -> tuple[list[int], list[int]]:
@@ -249,14 +321,11 @@ def _gitlab_autolink_spans(text: str) -> tuple[list[int], list[int]]:
     return [start for start, _ in spans], [end for _, end in spans]
 
 
-def _neutralize_gitlab_mention(mention: re.Match, offset: int, url_spans: tuple[list[int], list[int]]) -> str:
-    """Append a zero-width space to a mention unless it sits inside an autolinked URL."""
+def _in_gitlab_autolink(position: int, url_spans: tuple[list[int], list[int]]) -> bool:
+    """Return True when the offset sits inside an autolinked URL."""
     starts, ends = url_spans
-    position = offset + mention.start()
     span_index = bisect_right(starts, position) - 1
-    if span_index >= 0 and position < ends[span_index]:
-        return mention.group()
-    return mention.group() + "\u200b"
+    return span_index >= 0 and position < ends[span_index]
 
 
 def _neutralize_gitlab_mentions(text: str) -> str:
@@ -268,19 +337,21 @@ def _neutralize_gitlab_mentions(text: str) -> str:
     for run in _GITLAB_TICK_RUN_RE.finditer(text):
         tick_runs.setdefault(len(run.group()), []).append(run.start())
 
-    code_by_start, boundaries = _gitlab_line_flags(text)
+    code_by_start, boundaries, html_starts = _gitlab_line_flags(text)
     url_spans = _gitlab_autolink_spans(text)
 
     output = []
     index = 0
     inline_ticks = 0
     line_start = True
+    line_offset = 0
 
     while index < len(text):
         if text[index] == "\n":
             output.append("\n")
             index += 1
             line_start = True
+            line_offset = index
             continue
 
         if line_start and not inline_ticks and code_by_start.get(index):
@@ -298,8 +369,18 @@ def _neutralize_gitlab_mentions(text: str) -> str:
                 end += 1
             ticks = end - index
             if not inline_ticks:
+                backslashes = 0
+                while index - backslashes > 0 and text[index - backslashes - 1] == "\\":
+                    backslashes += 1
+                if backslashes % 2:
+                    output.append("`")
+                    index += 1
+                    line_start = False
+                    continue
+
                 runs = tick_runs.get(ticks)
-                if runs:
+                # Backticks inside a raw HTML block are literal text, not code spans
+                if runs and line_offset not in html_starts:
                     closer_index = bisect_left(runs, end)
                     boundary_index = bisect_left(boundaries, end)
                     boundary = boundaries[boundary_index] if boundary_index < len(boundaries) else len(text)
@@ -317,23 +398,30 @@ def _neutralize_gitlab_mentions(text: str) -> str:
             output.append(char)
             index += 1
             line_start = char == "\n"
+            if line_start:
+                line_offset = index
             continue
 
         next_special = index + 1
         while next_special < len(text) and text[next_special] not in "@`\n":
             next_special += 1
-        chunk = text[index:next_special]
-        prefix = text[index - 1:index] if index else ""
-        offset = index - len(prefix)
-        output.append(_GITLAB_MENTION_RE.sub(
-            lambda mention, offset=offset: _neutralize_gitlab_mention(mention, offset, url_spans),
-            prefix + chunk,
-        )[len(prefix):])
+        search_start = index
+        while search_start and text[search_start - 1] == "_":
+            search_start -= 1
+        copied = index
+        for mention in _GITLAB_MENTION_RE.finditer(text, search_start, next_special):
+            if _in_gitlab_autolink(mention.start(), url_spans):
+                continue
+            output.append(text[copied:mention.end()])
+            output.append(_GITLAB_ZERO_WIDTH_SPACE)
+            copied = mention.end()
+        output.append(text[copied:next_special])
         index = next_special
         if index < len(text) and text[index] == "\n":
             output.append("\n")
             index += 1
             line_start = True
+            line_offset = index
         else:
             line_start = False
 
@@ -1819,6 +1907,12 @@ class GitLabProvider(GitProvider):
         # where two calls in one command could see different file sets.
         self.diff_files = diff_files
         self._diff_head_sha = head_sha_for_content
+        # Pin the target revision associated with the reviewed diff.
+        mr_refs = getattr(getattr(self, "mr", None), "diff_refs", None)
+        self._cleanup_diff_start_sha = (
+            diff_refs.get("start_sha") if not incremental_active
+            else mr_refs.get("start_sha") if isinstance(mr_refs, dict) else None
+        )
         return diff_files
 
     def get_files(self) -> list:
@@ -1843,6 +1937,9 @@ class GitLabProvider(GitProvider):
         mr_changes = self._get_merge_request_changes()
         raw_changes = self._expand_submodule_changes(mr_changes.get('changes', []), mr_changes["diff_refs"])
         return [c for c in raw_changes if c.get('new_path') or c.get('old_path')]
+
+    def get_verdict_diff_files(self) -> list:
+        return self.get_pr_file_paths()
 
     def publish_description(self, pr_title: str, pr_body: str) -> None:
         try:
@@ -1880,6 +1977,38 @@ class GitLabProvider(GitProvider):
         except (GitlabError, RequestException, AttributeError) as e:
             get_logger().exception(f"Could not get head SHA: {e}")
             return ""
+
+    def publish_merge_recommendation_status(self, recommendation: str) -> bool:
+        """Publish the computed verdict as a GitLab commit status on the reviewed head SHA."""
+        states = {
+            "no_concerns_found": "success",
+            "needs_review": "skipped",
+            "changes_required": "failed",
+        }
+        state = states.get(recommendation)
+        if state is None:
+            get_logger().warning(f"Cannot publish an unknown merge recommendation: {recommendation!r}")
+            return False
+
+        head_sha = self.get_pr_head_sha()
+        if not head_sha:
+            get_logger().error("Cannot publish merge recommendation status without a head SHA")
+            return False
+
+        source_project_id = getattr(self.mr, "source_project_id", None)
+        project_id = source_project_id if source_project_id is not None else self.id_project
+        try:
+            project = self.gl.projects.get(project_id, lazy=True)
+            commit = project.commits.get(head_sha)
+            commit.statuses.create({
+                "state": state,
+                "name": "PR Agent - Review",
+                "description": f"Computed merge recommendation: {recommendation}",
+            })
+            return True
+        except (GitlabError, RequestException) as e:
+            get_logger().exception(f"Could not publish merge recommendation status: {e}")
+            return False
 
     def get_pr_identity(self) -> dict:
         repo = getattr(self, "id_project", None)
@@ -1936,7 +2065,49 @@ class GitLabProvider(GitProvider):
             if status == "success":
                 return "passed"
             if status in ("failed", "canceled", "cancelled"):
-                return "failed"
+                try:
+                    pipeline_obj = pipeline
+                    if isinstance(pipeline, dict):
+                        pipeline_id = pipeline.get("id")
+                        if not pipeline_id:
+                            return "failed"
+                        source_project_id = getattr(mr, "source_project_id", None)
+                        project_id = source_project_id if source_project_id is not None else self.id_project
+                        project = self.gl.projects.get(project_id, lazy=True)
+                        pipeline_obj = project.pipelines.get(pipeline_id)
+                    jobs = getattr(getattr(pipeline_obj, "jobs", None), "list", None)
+                    if not callable(jobs):
+                        return None
+
+                    has_other_jobs = False
+                    has_pending_jobs = False
+                    skipped_failed_verdict_job = False
+                    for job in jobs(all=True):
+                        name = job.get("name") if isinstance(job, dict) else getattr(job, "name", None)
+                        job_status = job.get("status") if isinstance(job, dict) else getattr(job, "status", None)
+                        job_status = job_status.lower() if isinstance(job_status, str) else ""
+                        if isinstance(name, str) and name.casefold() == "pr agent - review":
+                            skipped_failed_verdict_job |= job_status in ("failed", "canceled", "cancelled")
+                            continue
+                        has_other_jobs = True
+                        if job_status in ("failed", "canceled", "cancelled"):
+                            return "failed"
+                        if job_status in (
+                            "running", "pending", "waiting_for_resource", "preparing", "created", "manual",
+                            "scheduled",
+                        ):
+                            has_pending_jobs = True
+                        elif job_status not in ("success", "skipped"):
+                            return "failed"
+                    # Only our own failed verdict job may be discounted; any other failure or a cancel stays failed.
+                    if not skipped_failed_verdict_job:
+                        return "failed"
+                    if not has_other_jobs:
+                        return "none"
+                    return "pending" if has_pending_jobs else "passed"
+                except Exception as e:
+                    get_logger().warning(f"Could not inspect failed GitLab pipeline jobs: {e}")
+                    return None
             if status in ("running", "pending", "waiting_for_resource", "preparing", "created", "manual", "scheduled"):
                 return "pending"
             if status == "skipped":
@@ -1985,18 +2156,8 @@ class GitLabProvider(GitProvider):
                 if created_at:
                     ref_dt = _parse_gitlab_iso_datetime(created_at)
 
-            if ref_dt is None:
-                head_sha = self.get_pr_head_sha()
-                if head_sha and hasattr(self, "gl"):
-                    try:
-                        proj = self.gl.projects.get(self.id_project, lazy=True)
-                        commit = proj.commits.get(head_sha)
-                        c_date = getattr(commit, "committed_date", None) or getattr(commit, "created_at", None)
-                        if c_date:
-                            ref_dt = _parse_gitlab_iso_datetime(c_date)
-                    except Exception as e:
-                        get_logger().warning(f"Could not retrieve GitLab commit {head_sha} for timestamp: {e}")
-
+            # The head commit's dates are set by its author, so without a pipeline timestamp
+            # the staleness is unknown rather than guessed.
             if ref_dt is None:
                 return None
 
@@ -2248,15 +2409,52 @@ class GitLabProvider(GitProvider):
             get_logger().warning(f"Failed to resolve comment thread: {e}")
         return False
 
+    def _cleanup_target_start_sha(self) -> str | None:
+        """Return the target revision associated with the reviewed diff."""
+        if getattr(self, "diff_files", None) is not None:
+            sha = getattr(self, "_cleanup_diff_start_sha", None)
+        else:
+            refs = getattr(self.mr, "diff_refs", None)
+            sha = refs.get("start_sha") if isinstance(refs, dict) else None
+        return sha if isinstance(sha, str) and sha else None
+
+    def _cleanup_revision_is_current(self, head_sha: str) -> bool:
+        """Verify live head and target revisions before resolving a discussion."""
+        expected_start = self._cleanup_target_start_sha()
+        if not expected_start:
+            return False
+        try:
+            latest = self._get_merge_request()
+            refs = getattr(latest, "diff_refs", None)
+            latest_head = refs.get("head_sha") if isinstance(refs, dict) else None
+            latest_start = refs.get("start_sha") if isinstance(refs, dict) else None
+            latest_sha = getattr(latest, "sha", None)
+            old_target = getattr(self.mr, "target_branch", None)
+            new_target = getattr(latest, "target_branch", None)
+            return (isinstance(latest_head, str) and bool(latest_head)
+                    and latest_head == head_sha
+                    and latest_start == expected_start
+                    and (not isinstance(old_target, str) or not old_target or old_target == new_target)
+                    and (not isinstance(latest_sha, str) or not latest_sha or latest_sha == latest_head))
+        except (GitlabError, RequestException, AttributeError, TypeError):
+            get_logger().warning("Cannot verify GitLab MR revision before discussion cleanup")
+            return False
+
+    def _cleanup_command_head(self) -> str | None:
+        """Use the reviewed diff head when it is available, including after an MR push."""
+        if getattr(self, "diff_files", None) is not None:
+            head_sha = getattr(self, "_diff_head_sha", None)
+        else:
+            refs = getattr(self.mr, "diff_refs", None)
+            head_sha = refs.get("head_sha") if isinstance(refs, dict) else None
+        return head_sha if isinstance(head_sha, str) and head_sha else None
+
     def resolve_outdated_inline_threads(self):
         if (not get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False)
                 or getattr(self, "_commit_diff_refs", None) is not None):
             return
         own_user_id = self._get_own_user_id()
-        try:
-            current_head_sha = self.mr.diff_refs['head_sha']
-        except (KeyError, TypeError, AttributeError):
-            current_head_sha = None
+        current_head_sha = self._cleanup_command_head()
         if own_user_id is None or not current_head_sha:
             get_logger().warning(
                 f"Skipping outdated inline thread cleanup on merge request {self.id_mr} "
@@ -2275,6 +2473,9 @@ class GitLabProvider(GitProvider):
             try:
                 if not _is_outdated_own_inline_thread(discussion, own_user_id, current_head_sha):
                     continue
+                if not self._cleanup_revision_is_current(current_head_sha):
+                    get_logger().warning("GitLab MR changed during outdated-thread cleanup; stopping")
+                    break
                 discussion.resolved = True
                 discussion.save()
                 resolved += 1
@@ -2289,23 +2490,47 @@ class GitLabProvider(GitProvider):
             get_logger().info(
                 f"Resolved {resolved} outdated inline thread(s) on merge request {self.id_mr}")
 
-    def _removed_lines_since(self, base_sha: str, head_sha: str) -> dict:
-        """Base-side line numbers removed per path between two commits, via repository_compare."""
+    def _removed_lines_since(self, base_sha: str, head_sha: str,
+                             *, older_in_mr_history: Callable[[str, str], bool] | None = None) -> dict | None:
+        """Return base-side removed lines after verifying revision order."""
         removed = {}
         try:
             project = self.gl.projects.get(self.id_project, lazy=True)
+            ancestor = project.repository_merge_base(refs=[base_sha, head_sha])
+            if not isinstance(ancestor, dict) or not isinstance(ancestor.get('id'), str):
+                raise ValueError("GitLab merge-base response is incomplete")
+            if ancestor['id'] == head_sha:
+                # Do not compare a newer discussion backwards.
+                return removed
+            if (ancestor['id'] != base_sha
+                    and (older_in_mr_history is None or not older_in_mr_history(base_sha, head_sha))):
+                # Require verified MR version ordering across rebases.
+                return removed
             # straight=True: direct base..head comparison. The default merge-base
             # comparison reports lines dropped by a rebase/merge as removed, which
             # would resolve threads whose flagged code still exists at head.
             comparison = project.repository_compare(base_sha, head_sha, straight=True)
-        except (GitlabError, RequestException) as e:
+            if isinstance(comparison, dict):
+                timed_out = comparison.get("compare_timeout", False)
+                diffs = comparison.get("diffs")
+            else:
+                timed_out = getattr(comparison, "compare_timeout", False)
+                diffs = getattr(comparison, "diffs", None)
+            if timed_out or not isinstance(diffs, list):
+                raise ValueError("GitLab comparison is incomplete or timed out")
+            for entry in diffs:
+                if isinstance(entry, dict):
+                    flags = (entry.get("collapsed"), entry.get("too_large"))
+                    patch = entry.get("diff")
+                else:
+                    flags = (getattr(entry, "collapsed", False), getattr(entry, "too_large", False))
+                    patch = getattr(entry, "diff", None)
+                if any(flags) or not isinstance(patch, str):
+                    raise ValueError("GitLab comparison contains an incomplete file diff")
+        except (GitlabError, RequestException, ValueError) as e:
             get_logger().warning(
-                f"Could not compare {base_sha[:12]}..{head_sha[:12]} for fixed-thread detection: {e}")
-            return removed
-        if isinstance(comparison, dict):
-            diffs = comparison.get('diffs', []) or []
-        else:
-            diffs = getattr(comparison, 'diffs', []) or []
+                f"Could not verify {base_sha[:12]}..{head_sha[:12]} for fixed-thread detection: {e}")
+            return None
         for diff in diffs:
             # Compare entries are dicts in practice; normalize object-shaped
             # responses the same way the incremental-review path does.
@@ -2314,41 +2539,81 @@ class GitLabProvider(GitProvider):
                         for key in ('new_path', 'old_path', 'diff')}
             path = diff.get('old_path') or diff.get('new_path')
             if path:
-                removed.setdefault(path, set()).update(_removed_lines_from_patch(diff.get('diff')))
+                if not diff.get('diff'):
+                    removed[path] = None  # A missing patch cannot prove the line survived.
+                elif removed.get(path, set()) is not None:
+                    removed.setdefault(path, set()).update(_removed_lines_from_patch(diff['diff']))
         return removed
 
     def reconcile_code_suggestion_threads(self) -> int:
         if not get_settings().get("GITLAB.AUTO_RESOLVE_FIXED_INLINE_THREADS", False):
             return 0
-        if getattr(self, '_fixed_threads_swept', False):
-            return 0  # one sweep per process: repeats only burn API calls
         own_user_id = self._get_own_user_id()
-        try:
-            current_head_sha = self.mr.diff_refs['head_sha']
-        except (KeyError, TypeError, AttributeError):
-            current_head_sha = None
+        current_head_sha = self._cleanup_command_head()
         if own_user_id is None or not current_head_sha:
             get_logger().warning(
                 f"Skipping fixed inline thread cleanup on merge request {self.id_mr} "
                 f"(bot user: {own_user_id}, current head sha: {current_head_sha})"
             )
             return 0
+        sweep_revision = (current_head_sha, self._cleanup_target_start_sha())
+        if not sweep_revision[1]:
+            return 0
+        if getattr(self, '_fixed_threads_swept_revision', None) == sweep_revision:
+            return 0  # Reuse one completed scan for these revisions.
         try:
             discussions = self.mr.discussions.list(get_all=True, per_page=100)
         except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to list discussions of merge request {self.id_mr}: {e}")
             return 0
-        self._fixed_threads_swept = True
         # Threads pinned to the same head share one compare call.
         removed_lines_cache = {}
+        sweep_complete = True
+        version_ids = None
 
-        def removed_lines_for(position) -> dict:
+        def older_in_mr_history(recorded: str, reviewed: str) -> bool:
+            nonlocal version_ids
+            if version_ids is None:
+                # Cache an invalid or unavailable history for this sweep; retry on the next sweep.
+                version_ids = {}
+                versions = self.mr.diffs.list(get_all=True, per_page=100)
+                if not isinstance(versions, list) or not versions:
+                    raise ValueError("GitLab MR diff version history is incomplete")
+                checked_ids = {}
+                seen_ids = set()
+                for version in versions:
+                    sha = (version.get('head_commit_sha') if isinstance(version, dict)
+                           else getattr(version, 'head_commit_sha', None))
+                    version_id = (version.get('id') if isinstance(version, dict)
+                                  else getattr(version, 'id', None))
+                    if (not isinstance(sha, str) or not sha or type(version_id) is not int
+                            or version_id <= 0 or version_id in seen_ids):
+                        raise ValueError("GitLab MR diff version history is incomplete")
+                    seen_ids.add(version_id)
+                    checked_ids.setdefault(sha, []).append(version_id)
+                # Commit this cache only after the entire API result is valid.
+                version_ids = checked_ids
+            # IDs establish chronology even if API pagination changes order.
+            # A repeated head makes a discussion's version ambiguous.
+            recorded_ids = version_ids.get(recorded, [])
+            reviewed_ids = version_ids.get(reviewed, [])
+            if not recorded_ids or not reviewed_ids:
+                raise ValueError("GitLab MR diff version history lacks required revisions")
+            return (len(recorded_ids) == len(reviewed_ids) == 1
+                    and recorded_ids[0] < reviewed_ids[0])
+
+        def removed_lines_for(position) -> dict | None:
             recorded = position.get('head_sha')
-            if not recorded or recorded == current_head_sha:
+            if not isinstance(recorded, str) or not recorded or recorded == current_head_sha:
                 return None  # nothing pushed since the comment - nothing could be fixed yet
             if recorded not in removed_lines_cache:
-                removed_lines_cache[recorded] = self._removed_lines_since(recorded, current_head_sha)
-            return removed_lines_cache[recorded]
+                removed_lines_cache[recorded] = self._removed_lines_since(
+                    recorded, current_head_sha, older_in_mr_history=older_in_mr_history
+                )
+            removed_lines = removed_lines_cache[recorded]
+            if removed_lines is not None and removed_lines.get(position.get('new_path'), set()) is None:
+                return None  # Retry an unverified patch on the discussion's file.
+            return removed_lines
 
         resolved = 0
         released_fps = set()
@@ -2363,9 +2628,15 @@ class GitLabProvider(GitProvider):
                     continue
                 removed_lines = removed_lines_for(position)
                 if removed_lines is None:
+                    if position.get('head_sha') != current_head_sha:
+                        sweep_complete = False  # Compare failed; retry on the next sweep.
                     continue
                 if not _flagged_line_removed(position, removed_lines):
                     continue
+                if not self._cleanup_revision_is_current(current_head_sha):
+                    get_logger().warning("GitLab MR changed during fixed-thread cleanup; stopping")
+                    sweep_complete = False
+                    break
                 discussion.resolved = True
                 discussion.save()
                 resolved += 1
@@ -2374,6 +2645,9 @@ class GitLabProvider(GitProvider):
                         released_fps |= marker_fingerprints(note.get('body'))
             except (GitlabError, RequestException, KeyError, TypeError) as e:
                 get_logger().warning(f"Failed to resolve fixed inline thread {discussion_id}: {e}")
+                sweep_complete = False
+        if sweep_complete:
+            self._fixed_threads_swept_revision = sweep_revision
         if released_fps:
             get_inline_comment_store(self).release(released_fps)
         if resolved:
@@ -2587,6 +2861,9 @@ class GitLabProvider(GitProvider):
                 if store is not None:
                     body_fallback = body_with_markers(
                         body_fallback, body_fp, code_fp, getattr(self, "max_comment_chars", None))
+                # A review finding's markers let the reviewer verify this note and skip it on the next run.
+                body_fallback = body_with_carried_markers(
+                    body_fallback, body, getattr(self, "max_comment_chars", None))
                 # Create a general note on the file in the MR
                 fallback_position = {
                     'base_sha': diff.base_commit_sha,

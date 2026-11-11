@@ -207,7 +207,7 @@ OUTPUT_SINK_TYPES: dict[str, type[OutputSink]] = {
 
 def _selected_output_commands(cfg: dict) -> list[str] | None:
     """Return selected output types, or None for an invalid configuration."""
-    commands = cfg.get("commands", ["review", "describe", "improve"])
+    commands = cfg.get("commands", ["review", "describe"])
     if isinstance(commands, str):
         commands = normalize_setting_list(commands, split_commas=True)
     if (not isinstance(commands, (list, tuple)) or not commands

@@ -239,6 +239,88 @@ def test_neutralize_gitlab_mentions_leaves_indented_code_inside_a_list():
     assert _neutralize_gitlab_mentions(text) == expected
 
 
+@pytest.mark.parametrize(("text", "expected"), [
+    (
+        "Note the ` here\n===\n@all about `x`",
+        "Note the ` here\n===\n@\u200ball about `x`",
+    ),
+    (
+        "Note the ` here\n---\n@all about `x`",
+        "Note the ` here\n---\n@\u200ball about `x`",
+    ),
+    (
+        "Note the ` here\n***\n@all about `x`",
+        "Note the ` here\n***\n@\u200ball about `x`",
+    ),
+    (
+        "### Note the ` here\n@all about `x`",
+        "### Note the ` here\n@\u200ball about `x`",
+    ),
+    (
+        "Note the ` here\n<details><summary>More</summary>\n@all about `x`",
+        "Note the ` here\n<details><summary>More</summary>\n@\u200ball about `x`",
+    ),
+    (
+        "<!-- a ` here -->\n@all about `x`",
+        "<!-- a ` here -->\n@\u200ball about `x`",
+    ),
+    (
+        "<pre>\n```\n@all\n</pre>\n@reviewer",
+        "<pre>\n```\n@\u200ball\n</pre>\n@\u200breviewer",
+    ),
+    (
+        "a ` stray\n<div>`@all`</div>",
+        "a ` stray\n<div>`@\u200ball`</div>",
+    ),
+    (
+        "<details>\n`@all`\n\n`@literal`",
+        "<details>\n`@\u200ball`\n\n`@literal`",
+    ),
+])
+def test_neutralize_gitlab_mentions_stops_a_code_span_at_a_heading_break_or_html_block(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("Escaped \\` tick, @all and `x`", "Escaped \\` tick, @\u200ball and `x`"),
+    ("Escaped \\``` @literal`` and @all", "Escaped \\``` @literal`` and @\u200ball"),
+    ("Escaped backslash \\\\` @literal `x`", "Escaped backslash \\\\` @literal `x`"),
+    ("Inside `a\\` @all `x`", "Inside `a\\` @\u200ball `x`"),
+])
+def test_neutralize_gitlab_mentions_handles_escaped_backticks(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_ignores_a_backtick_fence_with_a_backtick_in_its_info():
+    text = "```a`b\n@all\n"
+    expected = "```a`b\n@\u200ball\n"
+
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_does_not_close_a_fence_on_a_line_with_an_info_string():
+    text = "```\n@first\n```js\n@second\n```\n@active"
+    expected = "```\n@first\n```js\n@second\n```\n@\u200bactive"
+
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("cc _@all_ please", "cc _@\u200ball_ please"),
+    ("cc __@all__ please", "cc __@\u200ball__ please"),
+    ("snake_@case stays", "snake_@case stays"),
+    ("@_@all", "@\u200b_@\u200ball"),
+])
+def test_neutralize_gitlab_mentions_handles_underscore_emphasis(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_handles_many_escaped_ticks_and_underscores():
+    text = "\\` " * 20000 + "_" * 20000 + "@active"
+
+    assert _neutralize_gitlab_mentions(text).endswith("_@\u200bactive")
+
+
 class TestGitLabProvider:
     """Test suite for GitLab provider functionality."""
 
@@ -278,6 +360,30 @@ class TestGitLabProvider:
 
             mock_gitlab_client.http_get.side_effect = _current_mr_metadata
             return provider
+
+    @pytest.mark.parametrize(
+        ("recommendation", "state"),
+        [
+            ("no_concerns_found", "success"),
+            ("needs_review", "skipped"),
+            ("changes_required", "failed"),
+        ],
+    )
+    def test_publish_merge_recommendation_status_on_reviewed_commit(
+        self, gitlab_provider, recommendation, state
+    ):
+        gitlab_provider.mr.diff_refs = {"head_sha": "reviewed-head"}
+        gitlab_provider.mr.source_project_id = 741
+
+        assert gitlab_provider.publish_merge_recommendation_status(recommendation) is True
+
+        gitlab_provider.gl.projects.get.assert_called_with(741, lazy=True)
+        commit = gitlab_provider.gl.projects.get.return_value.commits.get.return_value
+        commit.statuses.create.assert_called_once_with({
+            "state": state,
+            "name": "PR Agent - Review",
+            "description": f"Computed merge recommendation: {recommendation}",
+        })
 
     def test_get_commit_messages_reads_all_commits_with_larger_pages(self, gitlab_provider):
         client = Gitlab("https://gitlab.example.com", private_token="test-token")
@@ -2230,8 +2336,11 @@ class TestGitLabProvider:
                                   current_head_sha=_CURRENT_HEAD_SHA):
         gitlab_provider._own_user_id = own_user_id
         gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.diff_refs = {'head_sha': current_head_sha}
+        gitlab_provider.mr.diff_refs = {'head_sha': current_head_sha, 'start_sha': 'target-start'}
         gitlab_provider.mr.discussions.list.return_value = threads
+        gitlab_provider._get_merge_request = MagicMock(
+            side_effect=lambda: SimpleNamespace(diff_refs=dict(gitlab_provider.mr.diff_refs))
+        )
 
     def _run_outdated_cleanup(self, gitlab_provider, enabled=True):
         with patch("pr_agent.git_providers.gitlab_provider.get_settings",
@@ -2332,6 +2441,27 @@ class TestGitLabProvider:
         self._run_outdated_cleanup(gitlab_provider)
 
         outdated.save.assert_called_once()
+
+    def test_outdated_cleanup_does_not_resolve_after_head_changes_during_scan(self, gitlab_provider):
+        outdated = _thread([_thread_note()])
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated])
+        gitlab_provider._get_merge_request = MagicMock(
+            return_value=SimpleNamespace(diff_refs={'head_sha': _OUTDATED_HEAD_SHA})
+        )
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+        outdated.save.assert_not_called()
+
+    def test_outdated_cleanup_rejects_target_update_without_head_change(self, gitlab_provider):
+        outdated = _thread([_thread_note()])
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated])
+        gitlab_provider._get_merge_request = MagicMock(return_value=SimpleNamespace(
+            diff_refs={'head_sha': _CURRENT_HEAD_SHA, 'start_sha': 'new-target'}
+        ))
+
+        self._run_outdated_cleanup(gitlab_provider)
+        outdated.save.assert_not_called()
 
     def test_resolve_outdated_inline_threads_soft_fails(self, gitlab_provider):
         self._prepare_outdated_cleanup(gitlab_provider, [])

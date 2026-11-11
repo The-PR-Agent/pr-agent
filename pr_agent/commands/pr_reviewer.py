@@ -28,9 +28,11 @@ from pr_agent.algo.comment_identity import (
 )
 from pr_agent.algo.deterministic_risk import build_risk_checks
 from pr_agent.algo.findings import Finding
+from pr_agent.algo.git_patch_processing import split_diff_lines
 from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
+    TEXT_FIX_INFO,
     InlineCommentStore,
     can_verify_inline_comment_publication,
     get_inline_comment_store,
@@ -40,6 +42,8 @@ from pr_agent.algo.inline_comment_dedup import (
     strip_markers,
 )
 from pr_agent.algo.language_handler import filter_bad_extensions
+from pr_agent.algo.markdown_span import _markdown_code_span
+from pr_agent.algo.merge_verdict import compute_merge_verdict
 from pr_agent.algo.output_models import PRReview, parse_artifact_findings, parse_failure_modes
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
@@ -81,14 +85,16 @@ from pr_agent.algo.run_output import (
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.structural_reach import build_structural_reach
+from pr_agent.algo.suggestion_checks import dedent_code_for_file, python_syntax_is_valid, validate_suggestion
 from pr_agent.algo.token_budget import AttemptTokenBudget, clip_tokens
 from pr_agent.algo.utils import (
     ModelType,
     convert_to_markdown_v2,
+    get_suggestion_fence,
     is_value_no,
     load_yaml,
 )
-from pr_agent.commands.pr_code_suggestions import _markdown_code_span
+from pr_agent.commands.pr_code_suggestions import get_committable_code_suggestions
 from pr_agent.commands.progress_comment import ChunkProgressReporter
 from pr_agent.commands.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
@@ -202,6 +208,82 @@ def _is_risk_checks_key(key) -> bool:
     return re.sub(r"[^a-z0-9]", "", str(key).lower()) in ("riskchecks", "deterministicrisk")
 
 
+_LINE_NUMBER_PREFIX_RE = re.compile(r"(\d+)(?: |$)")
+
+
+def _strip_line_numbers(code: str | None, start_line: int, end_line: int) -> str | None:
+    """Drop the diff's line-number prefix when every line of the model's code carries the expected one."""
+    if not code:
+        return code
+    lines = code.splitlines()
+    if len(lines) != end_line - start_line + 1:
+        return code
+    stripped = []
+    for expected, line in enumerate(lines, start=start_line):
+        match = _LINE_NUMBER_PREFIX_RE.match(line)
+        if match is None or int(match.group(1)) != expected:
+            return code
+        stripped.append(line[match.end():])
+    return "\n".join(stripped)
+
+
+_MAX_COMMITTABLE_FIX_LINES = 10
+
+
+def _code_lines(code: str) -> list[str]:
+    # Split on newlines only: splitlines() also splits on Unicode separators that can sit inside a string.
+    return [line.rstrip(" \t") for line in code.replace("\r\n", "\n").strip("\n").split("\n")]
+
+
+def _without_fix_block(body: str) -> str:
+    """Drop the fix block that _build_key_issue_comment appends to a finding's body.
+
+    Only the block it opens with ``suggestion`` or ``TEXT_FIX_INFO`` is dropped, so a code block of the
+    finding's own text is kept. The fence is longer than any backtick run in the fix, which makes the
+    closest opener with the closing fence's length the right one.
+    """
+    lines = body.split("\n")
+    fence = lines[-1]
+    if len(fence) < 3 or fence.strip("`"):
+        return body
+    for index in range(len(lines) - 2, -1, -1):
+        info = lines[index][len(fence):] if lines[index].startswith(fence) else None
+        if info is not None and (info.startswith("suggestion") or info == TEXT_FIX_INFO):
+            return "\n".join(lines[:index]).rstrip()
+    return body
+
+
+def _is_merge_recommendation_key(key) -> bool:
+    """Whether a review key would render like the computed merge recommendation, whatever its separators."""
+    return re.sub(r"[^a-z0-9]", "", str(key).lower()) == "mergerecommendation"
+
+
+def _is_merge_recommendation_checks_key(key) -> bool:
+    """Whether a review key would render like the deterministic merge checks row."""
+    return re.sub(r"[^a-z0-9]", "", str(key).lower()) == "mergerecommendationchecks"
+
+
+def _with_merge_verdict(review: dict, verdict: dict) -> dict:
+    """Put the computed recommendation and its checks next to the model's answer."""
+    updated = {}
+    inserted = False
+    for key, value in review.items():
+        if _is_merge_recommendation_checks_key(key):
+            continue
+        if _is_merge_recommendation_key(key):
+            if inserted:
+                continue
+            updated["merge_recommendation"] = verdict["recommendation"]
+            updated["merge_recommendation_checks"] = verdict["checks"]
+            inserted = True
+        else:
+            updated[key] = value
+    if not inserted:
+        updated["merge_recommendation"] = verdict["recommendation"]
+        updated["merge_recommendation_checks"] = verdict["checks"]
+    return updated
+
+
 class PRReviewer:
     """
     The PRReviewer class is responsible for reviewing a pull request and generating feedback using an AI model.
@@ -217,6 +299,7 @@ class PRReviewer:
     review_all_issues = None
     review_chunk_hit_limit = None
     partial_files_list = ()
+    alias_notice = ""  # one line under the heading when an alias such as /improve ran this review
     _review_commit: PRCommit | None = None
     _review_has_findings = False
     _review_fingerprint = ""
@@ -224,7 +307,7 @@ class PRReviewer:
     _review_published = False
 
     def __init__(self, pr_url: str, args: list = None,
-                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
+                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, alias_notice: str = ""):
         """
         Initialize the PRReviewer object with the necessary attributes and objects to review a pull request.
 
@@ -232,9 +315,11 @@ class PRReviewer:
             pr_url (str): The URL of the pull request to be reviewed.
             ai_handler (BaseAiHandler): The AI handler to be used for the review. Defaults to None.
             args (list, optional): List of arguments passed to the PRReviewer class. Defaults to None.
+            alias_notice (str, optional): One line shown under the review heading when the review runs for an alias.
         """
         self.git_provider = get_git_provider_with_context(pr_url)
         self.args = args
+        self.alias_notice = alias_notice
         self.incremental = self.parse_incremental(args)  # -i command
         if self.incremental and self.incremental.is_incremental:
             self.git_provider.get_incremental_commits(self.incremental)
@@ -294,7 +379,7 @@ class PRReviewer:
             'require_can_be_split_review': get_settings().pr_reviewer.require_can_be_split_review,
             'require_security_review': get_settings().pr_reviewer.require_security_review,
             'require_todo_scan': get_settings().pr_reviewer.get("require_todo_scan", False),
-            "extra_instructions": get_settings().pr_reviewer.extra_instructions,
+            "extra_instructions": self._extra_instructions(),
             "artifact_context": get_artifact_context("pr_reviewer"),
             "skills_context": get_skills_context(),
             "repo_context": build_repo_context(self.git_provider),
@@ -317,6 +402,14 @@ class PRReviewer:
             'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
             "date": datetime.datetime.now().strftime('%Y-%m-%d'),
         }
+
+    @staticmethod
+    def _extra_instructions() -> str:
+        review_extra = get_settings().pr_reviewer.extra_instructions
+        suggestions_extra = str(get_settings().pr_code_suggestions.get("extra_instructions") or "").strip()
+        if not suggestions_extra or suggestions_extra in str(review_extra or ""):
+            return review_extra
+        return f"{review_extra}\n\n{suggestions_extra}" if review_extra else suggestions_extra
 
     def parse_incremental(self, args: list[str]):
         is_incremental = False
@@ -670,6 +763,7 @@ class PRReviewer:
                     reason += ": no major issues detected."
                 get_logger().info(reason)
                 get_settings().data = {"artifact": pr_review}
+                self._publish_merge_recommendation_status()
                 review_completed = True
                 self._review_done = True
                 return
@@ -793,6 +887,8 @@ class PRReviewer:
                     self.git_provider.remove_comment(progress_response)
                 except Exception as e:
                     get_logger().exception(f"Failed to remove review progress comment, error: {e}")
+            if not review_failed:
+                self._publish_merge_recommendation_status()
             if review_failed:
                 # Record the failure here, where `review_failed` is consumed: the branches above
                 # set it and go on to publish a failure comment instead of raising, so the run
@@ -887,6 +983,24 @@ class PRReviewer:
                 f"Failed to publish review check run, error: {error}"
             )
             return False
+
+    def _publish_merge_recommendation_status(self) -> None:
+        recommendation = getattr(self, "_merge_recommendation_status", None)
+        settings = get_settings()
+        if (
+            not recommendation
+            or not settings.config.publish_output
+            or not _as_bool(settings.pr_reviewer.get("publish_merge_recommendation_status", False))
+        ):
+            return
+
+        publisher = getattr(self.git_provider, "publish_merge_recommendation_status", None)
+        if not callable(publisher):
+            get_logger().warning(
+                f"Git provider does not support publishing merge recommendation status: {recommendation}"
+            )
+        elif not publisher(recommendation):
+            get_logger().warning(f"Failed to publish merge recommendation status: {recommendation}")
 
     def _review_finding_state_in_play(self) -> bool:
         if not get_settings().pr_reviewer.get("persistent_finding_state", True):
@@ -988,7 +1102,7 @@ class PRReviewer:
                     continue
                 finding = Finding(
                     path=thread.file,
-                    body=strip_markers(thread.suggestion).strip(),
+                    body=_without_fix_block(strip_markers(thread.suggestion).strip()),
                     line_start=thread.start_line,
                     line_end=thread.end_line,
                 )
@@ -1532,7 +1646,8 @@ class PRReviewer:
         return load_yaml(prediction.strip(),
                          keys_fix_yaml=["ticket_compliance_check", "estimated_effort_to_review_[1-5]:", "risk_level:",
                                         "merge_recommendation:", "security_concerns:", "key_issues_to_review:",
-                                        "relevant_file:", "relevant_line:", "suggestion:"],
+                                        "relevant_file:", "relevant_line:", "suggestion:", "existing_code:",
+                                        "improved_code:"],
                         first_key='review', last_key='security_concerns')
 
     def _validate_review_schema(self, data: object) -> bool:
@@ -1593,13 +1708,17 @@ class PRReviewer:
         Prepare the PR review by processing the AI prediction and generating a markdown-formatted text that summarizes
         the feedback.
         """
+        self._merge_recommendation_status = None
         data = self.prediction_data if self.prediction_data is not None else self._load_review_yaml(self.prediction)
         if isinstance(data, dict) and isinstance(data.get("review"), dict):
             if not getattr(self, "vars", {}).get("require_failure_modes", False):
                 data["review"].pop("failure_modes", None)
             if not getattr(self, "vars", {}).get("require_artifact_findings", False):
                 data["review"].pop("artifact_findings", None)
-            for key in [k for k in data["review"] if _is_structural_reach_key(k) or _is_risk_checks_key(k)]:
+            for key in [k for k in data["review"]
+                        if _is_structural_reach_key(k)
+                        or _is_risk_checks_key(k)
+                        or _is_merge_recommendation_checks_key(k)]:
                 data["review"].pop(key)
         if self.prediction_data is None:
             self._validate_review_schema(data)
@@ -1623,7 +1742,20 @@ class PRReviewer:
         if structural_reach:
             data["review"] = {"structural_reach": structural_reach, **data["review"]}
 
+        diff_files = self.git_provider.get_diff_files()
+        require_merge_recommendation = getattr(self, "vars", {}).get("require_merge_recommendation", False)
         unfiltered_files = None
+        verdict_diff_files = None
+        if require_merge_recommendation:
+            get_verdict_diff_files = getattr(self.git_provider, "get_verdict_diff_files", None)
+            try:
+                verdict_diff_files = get_verdict_diff_files() if callable(get_verdict_diff_files) else None
+            except Exception as error:
+                get_logger().warning(f"Could not retrieve the complete PR diff for merge recommendation: {error}")
+                verdict_diff_files = None
+            risk_diff_files = verdict_diff_files
+        else:
+            risk_diff_files = diff_files
         if hasattr(self.git_provider, "get_pr_file_paths"):
             try:
                 unfiltered_files = self.git_provider.get_pr_file_paths()
@@ -1641,9 +1773,26 @@ class PRReviewer:
 
         # The model's own answers, before a computed verdict replaces merge_recommendation in the review.
         self._approval_model_fields = (data["review"].get("merge_recommendation"), data["review"].get("risk_level"))
-        risk_checks = build_risk_checks(self.git_provider.get_diff_files(), unfiltered_files=unfiltered_files)
+        risk_checks = build_risk_checks(
+            risk_diff_files,
+            unfiltered_files=unfiltered_files,
+            include_clean=require_merge_recommendation,
+        )
+        if require_merge_recommendation and verdict_diff_files is None:
+            risk_checks = None
         if risk_checks and risk_checks.get("has_findings"):
             data["review"] = {"risk_checks": risk_checks, **data["review"]}
+
+        if require_merge_recommendation:
+            verdict = compute_merge_verdict(
+                self.git_provider,
+                verdict_diff_files,
+                model_recommendation=data["review"].get("merge_recommendation"),
+                model_risk_level=data["review"].get("risk_level"),
+                risk_checks=risk_checks,
+            )
+            self._merge_recommendation_status = verdict["recommendation"]
+            data["review"] = _with_merge_verdict(data["review"], verdict)
 
         structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
         if callable(structured_publisher) or review_json_output_path.get():
@@ -1678,7 +1827,9 @@ class PRReviewer:
             data['review']['key_issues_to_review'] = key_issues_to_review
 
         self._prepare_review_finding_state(data)
-        if get_settings().config.publish_output and get_settings().pr_reviewer.get('inline_key_issues', False):
+        # Inline publication returns a pruned copy; the external sinks get the complete review, as /improve's do.
+        complete_data = data
+        if get_settings().config.publish_output and get_settings().pr_reviewer.get('inline_key_issues', True):
             data = self._publish_key_issues_as_inline_comments(data)
         issues = data['review'].get('key_issues_to_review')
         self._review_has_findings = isinstance(issues, list) and any(
@@ -1713,10 +1864,11 @@ class PRReviewer:
             lifecycle_summary = render_lifecycle_summary(
                 self._review_finding_previous_state, self._review_state_result
             )
-            if lifecycle_summary:
-                summary_block = f"\n\n{lifecycle_summary}\n\n"
-                heading, _, rest = (markdown_text or "").partition("\n")
-                markdown_text = f"{heading}{summary_block}{rest}" if rest else f"{heading}{summary_block.strip()}"
+        under_heading = "\n\n".join(part for part in (self.alias_notice, lifecycle_summary) if part)
+        if under_heading:
+            summary_block = f"\n\n{under_heading}\n\n"
+            heading, _, rest = (markdown_text or "").partition("\n")
+            markdown_text = f"{heading}{summary_block}{rest}" if rest else f"{heading}{summary_block.strip()}"
 
         if self.review_chunk_count > 1:
             markdown_text += (
@@ -1813,7 +1965,13 @@ class PRReviewer:
         # suppression deliberately does not: that only silences the PR comment.
         # The delivery itself is left to run(), which awaits it off the event loop.
         if get_settings().config.publish_output:
-            self._pending_sink_output = ("review", data.get('review', {}), markdown_text)
+            sink_markdown = markdown_text
+            if complete_data is not data:
+                sink_markdown = convert_to_markdown_v2(
+                    complete_data, self.git_provider.is_supported("gfm_markdown"),
+                    incremental_review_markdown_text, git_provider=self.git_provider,
+                    files=self.git_provider.get_diff_files(), commit_review=commit_review_markdown_text)
+            self._pending_sink_output = ("review", complete_data.get('review', {}), sink_markdown)
 
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)
@@ -1867,9 +2025,50 @@ class PRReviewer:
             line_start=start_line,
             line_end=end_line,
         )
+        body = finding.rendered_body
+        improved_code = (finding.improved_code or "").strip("\n")
+        if not improved_code.strip():
+            return finding.to_inline_comment(body, fallback_to_pr_comment=False)
+
+        existing_code = _strip_line_numbers(finding.existing_code, start_line, end_line)
+        # Keep leading whitespace: an indentation-only change is a real fix in Python.
+        if existing_code and _code_lines(existing_code) == _code_lines(improved_code):
+            return finding.to_inline_comment(body, fallback_to_pr_comment=False)
+        fence = get_suggestion_fence(improved_code)
+        original_suggestion = None
+        # The prompt asks for fixes of at most ten lines; a longer one is shown, never offered as a commit.
+        if get_committable_code_suggestions() and len(_code_lines(improved_code)) <= _MAX_COMMITTABLE_FIX_LINES:
+            is_applicable, _, has_valid_anchor = validate_suggestion(file, start_line, end_line, existing_code)
+            if has_valid_anchor:
+                if existing_code:
+                    # Align both snippets with one offset, so an indentation change in the fix survives.
+                    existing_code = existing_code.strip("\n")
+                    existing_count = len(split_diff_lines(existing_code))
+                    aligned = split_diff_lines(
+                        dedent_code_for_file(file, start_line, f"{existing_code}\n{improved_code}"))
+                    existing_code = "\n".join(aligned[:existing_count])
+                    improved_code = "\n".join(aligned[existing_count:])
+                else:
+                    improved_code = dedent_code_for_file(file, start_line, improved_code)
+            if is_applicable and python_syntax_is_valid(
+                    finding.path, file, start_line, end_line, improved_code) is not False:
+                fence = get_suggestion_fence(improved_code)
+                body += f"\n\n{fence}suggestion\n{improved_code}\n{fence}"
+                original_suggestion = {
+                    "existing_code": existing_code,
+                    "improved_code": improved_code,
+                    "relevant_file": finding.path,
+                    "relevant_lines_start": start_line,
+                    "relevant_lines_end": end_line,
+                    "suggestion_content": finding.body,
+                    "label": finding.header or "",
+                }
+        if original_suggestion is None:
+            body += f"\n\n{fence}{TEXT_FIX_INFO}\n{improved_code}\n{fence}"
         return finding.to_inline_comment(
-            finding.rendered_body,
+            body,
             fallback_to_pr_comment=False,
+            original_suggestion=original_suggestion,
         )
 
     def _can_verify_inline_key_issue_publication(self) -> bool:
@@ -1924,7 +2123,7 @@ class PRReviewer:
                 if comment is None:
                     remaining_issues.append(issue)
                     continue
-                fingerprint = key_issue_fingerprint(comment["relevant_file"], comment["body"])
+                fingerprint = key_issue_fingerprint(comment["relevant_file"], finding.rendered_body)
                 if store.seen(fingerprint):
                     published += 1
                     continue
@@ -1952,7 +2151,28 @@ class PRReviewer:
 
         if candidate_comments:
             try:
-                self.git_provider.publish_code_suggestions(list(candidate_comments.values()))
+                batch = list(candidate_comments.values())
+                already_posted = set()
+                try:
+                    batch_published = self.git_provider.publish_code_suggestions(batch)
+                except Exception as e:
+                    get_logger().warning(f"Batch publication of review findings raised, error: {e}")
+                    batch_published = False
+                    # The batch may have posted some comments before it raised: retry only the others.
+                    already_posted = self._published_inline_key_issue_fingerprints(store, set(candidate_comments))
+                if not batch_published:
+                    get_logger().info("Failed to publish review findings, trying to publish each one separately")
+                    for location_fingerprint, comment in candidate_comments.items():
+                        if location_fingerprint in already_posted:
+                            continue
+                        try:
+                            self.git_provider.publish_code_suggestions([comment])
+                        except Exception as e:
+                            get_logger().warning(
+                                f"Failed to publish a review finding as an inline comment, error: {e}",
+                                artifact={"relevant_file": comment["relevant_file"],
+                                          "start_line": comment["relevant_lines_start"],
+                                          "end_line": comment["relevant_lines_end"]})
             except Exception as e:
                 locations = [{"relevant_file": comment["relevant_file"],
                               "start_line": comment["relevant_lines_start"],

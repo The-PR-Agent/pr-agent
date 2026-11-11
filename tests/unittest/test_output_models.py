@@ -70,6 +70,24 @@ def _review_fixture():
     }
 
 
+def test_key_issue_model_accepts_fix_fields():
+    payload = {
+        "relevant_file": "src/app.py",
+        "issue_header": "Possible Bug",
+        "issue_content": "The lock is never released.",
+        "start_line": 4,
+        "end_line": 5,
+    }
+
+    plain = KeyIssuesComponentLink.model_validate(payload)
+    fixed = KeyIssuesComponentLink.model_validate(
+        {**payload, "existing_code": "lock.acquire()", "improved_code": "with lock: ..."}
+    )
+
+    assert (plain.existing_code, plain.improved_code) == (None, None)
+    assert (fixed.existing_code, fixed.improved_code) == ("lock.acquire()", "with lock: ...")
+
+
 def test_review_model_does_not_expose_user_answer_insights():
     assert "insights_from_user_answers" not in Review.model_fields
 

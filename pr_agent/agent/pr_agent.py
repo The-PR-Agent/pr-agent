@@ -14,10 +14,12 @@ from pr_agent.agent.request_policy import RequestOutcome, enforce_request_policy
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.cli_args import CliArgs
+from pr_agent.algo.command_words import _split_command
 from pr_agent.algo.comment_identity import (
     add_comment_identity,
     comment_matches_identity,
 )
+from pr_agent.algo.i18n import t
 from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.utils import _fix_key_value, update_settings_from_args
@@ -47,6 +49,7 @@ IncompletePullRequestFilesError = _IncompletePullRequestFilesError
 command2class = {name: spec.command for name, spec in COMMAND_SPECS.items()}
 
 commands = list(command2class.keys())
+_IMPROVE_ALIASES = frozenset({"improve", "improve_code"})
 
 def publish_incomplete_files_comment(
     pr_url: str, error: IncompleteProviderPullRequestFilesError
@@ -104,91 +107,6 @@ def _publish_incomplete_files_comment(
         provider.publish_comment(body)
     except Exception:
         get_logger().exception("Failed to publish the incomplete-files notice")
-
-def _split_command(command: str, *, single_quotes: bool = True) -> list[tuple[str, bool]]:
-    """Split an auto command and retain whether each token was quoted.
-
-    ``shlex.split`` removes quote markers before setting overrides are handed to
-    ``yaml.safe_load``. That makes a quoted ``#`` look like a YAML comment and
-    changes quoted scalar values such as ``"true"`` into booleans. This small
-    tokenizer keeps the normal shell-style token boundaries while recording the
-    presence of quotes so setting values can be normalized as strings later.
-
-    Apostrophes inside a word remain literal, matching the legacy request parser
-    (for example, ``What's``). An apostrophe at a token boundary or immediately
-    after ``=`` still starts a single-quoted value, as used by the documented
-    webhook configuration examples. Raw request parsing disables single quotes
-    to match its shlex lexer.
-    """
-    tokens = []
-    token = []
-    quote = None
-    value_was_quoted = False
-    equals_seen = False
-    token_started = False
-
-    def flush_token():
-        nonlocal equals_seen, token_started, token, value_was_quoted
-        if token_started:
-            tokens.append(("".join(token), value_was_quoted))
-        token = []
-        equals_seen = False
-        token_started = False
-        value_was_quoted = False
-
-    index = 0
-    while index < len(command):
-        character = command[index]
-        if quote is None:
-            if character.isspace():
-                flush_token()
-            elif character == "\\":
-                if index + 1 >= len(command):
-                    raise ValueError("No escaped character")
-                token.append(command[index + 1])
-                token_started = True
-                index += 1
-            elif character == "=":
-                token.append(character)
-                equals_seen = True
-                token_started = True
-            elif character == '"':
-                quote = character
-                value_was_quoted = equals_seen
-                token_started = True
-            elif single_quotes and character == "'" and (not token_started or command[index - 1] == "="):
-                quote = character
-                value_was_quoted = equals_seen
-                token_started = True
-            else:
-                token.append(character)
-                token_started = True
-        elif quote == "'":
-            if character == "'":
-                quote = None
-            else:
-                token.append(character)
-        else:
-            if character == '"':
-                quote = None
-            elif character == "\\":
-                if index + 1 >= len(command):
-                    raise ValueError("No escaped character")
-                escaped = command[index + 1]
-                if escaped in {'"', "\\", "$", "`"}:
-                    token.append(escaped)
-                elif escaped != "\n":
-                    token.extend(("\\", escaped))
-                index += 1
-            else:
-                token.append(character)
-        index += 1
-
-    if quote is not None:
-        raise ValueError("No closing quotation")
-    flush_token()
-    return tokens
-
 
 def parse_command(command: str) -> list[str]:
     """Normalize configured command strings to argv without applying settings."""
@@ -552,7 +470,11 @@ class PRAgent:
                 if notify:
                     notify()
 
-                command = await self._create_command(command2class[action], pr_url, args=args)
+                command_kwargs = {}
+                if action in _IMPROVE_ALIASES:
+                    get_logger().warning(f"/{action} now runs /review")
+                    command_kwargs["alias_notice"] = t("improve.alias_notice")
+                command = await self._create_command(command2class[action], pr_url, args=args, **command_kwargs)
                 result = await command.run()
                 if action == "add_docs" and result is False:
                     span.set_status(StatusCode.ERROR)

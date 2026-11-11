@@ -189,12 +189,8 @@ async def test_run_action_invokes_enabled_auto_commands_for_pull_request_event(
     class FakeReviewer(FakeCommand):
         name = "review"
 
-    class FakeSuggestions(FakeCommand):
-        name = "improve"
-
     monkeypatch.setattr(github_action_runner, "PRDescription", FakeDescription)
     monkeypatch.setattr(github_action_runner, "PRReviewer", FakeReviewer)
-    monkeypatch.setattr(github_action_runner, "PRCodeSuggestions", FakeSuggestions)
 
     try:
         settings.config.response_language = "en-us"
@@ -204,7 +200,7 @@ async def test_run_action_invokes_enabled_auto_commands_for_pull_request_event(
         assert settings.get("GITHUB_ACTION_CONFIG.ENABLE_OUTPUT") is expected_output
         assert runs == [
             ("describe", "https://api.github.com/repos/org/repo/pulls/1"),
-            ("improve", "https://api.github.com/repos/org/repo/pulls/1"),
+            ("review", "https://api.github.com/repos/org/repo/pulls/1"),
         ]
     finally:
         settings.config.is_auto_command = original_is_auto_command
@@ -323,10 +319,41 @@ async def test_first_open_review_request_stream(
     expected_commands = [
         github_action_runner.PRDescription,
         github_action_runner.PRReviewer,
-        github_action_runner.PRCodeSuggestions,
     ] * (expected_batches if include_opened else 1)
     assert [invocation.args[0] for invocation in run_command.await_args_list] == expected_commands
     assert all(invocation.args[1] == pr_url for invocation in run_command.await_args_list)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("auto_review", "auto_improve", "expected_reviews"),
+    [(True, True, 1), (False, True, 1), (True, False, 1), (None, None, 1), (False, False, 0)],
+)
+async def test_action_auto_review_and_auto_improve_run_one_review(
+    monkeypatch, tmp_path, restore_github_settings, auto_review, auto_improve, expected_reviews
+):
+    pr_url = "https://api.github.com/repos/org/repo/pulls/1"
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({"action": "opened", "pull_request": {"url": pr_url}}))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", "unit-test-token")
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(github_action_runner, "_inject_artifact_context", lambda: None)
+    flags = {"GITHUB_ACTION.AUTO_REVIEW": auto_review, "GITHUB_ACTION.AUTO_IMPROVE": auto_improve,
+             "GITHUB_ACTION.AUTO_DESCRIBE": False}
+    monkeypatch.setattr(
+        github_action_runner, "get_setting_or_env", lambda key, default=None: flags.get(key, default)
+    )
+    get_settings().set("GITHUB_ACTION_CONFIG.PR_ACTIONS", ["opened"])
+    run_command = AsyncMock()
+    monkeypatch.setattr(github_action_runner, "_run_auto_command", run_command)
+
+    await github_action_runner.run_action()
+
+    assert [call.args[0] for call in run_command.await_args_list] == (
+        [github_action_runner.PRReviewer] * expected_reviews
+    )
 
 
 def _write_synchronize_event(tmp_path, before_sha="abc", after_sha="def", merge_commit_sha=None, sender_type="User"):
@@ -847,7 +874,7 @@ def test_action_exits_nonzero_when_command_fails_and_continues(
     monkeypatch, tmp_path, restore_github_settings
 ):
     handled = []
-    _patch_synchronize_deps(monkeypatch, handled, ["/review", "/improve"])
+    _patch_synchronize_deps(monkeypatch, handled, ["/review", "/describe"])
 
     class FakeAgent:
         async def handle_request(self, url, body, notify=None):
@@ -866,7 +893,7 @@ def test_action_exits_nonzero_when_command_fails_and_continues(
     assert exc_info.value.code == 1
     assert handled == [
         ("https://api.github.com/repos/org/repo/pulls/1", ["/review"]),
-        ("https://api.github.com/repos/org/repo/pulls/1", ["/improve"]),
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/describe"]),
     ]
 
 
@@ -928,8 +955,8 @@ async def test_auto_actions_apply_policy_after_repo_settings_without_rebuilding_
     client = Mock()
     client.get_repo.return_value = repo
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: client)
-    commands = [Mock(return_value=SimpleNamespace(run=AsyncMock())) for _ in range(3)]
-    for name, command in zip(("PRDescription", "PRReviewer", "PRCodeSuggestions"), commands, strict=True):
+    commands = [Mock(return_value=SimpleNamespace(run=AsyncMock())) for _ in range(2)]
+    for name, command in zip(("PRDescription", "PRReviewer"), commands, strict=True):
         monkeypatch.setattr(github_action_runner, name, command)
     event = (_write_workflow_run_event(tmp_path) if event_name == "workflow_run"
              else _write_pull_request_opened_event(tmp_path))
@@ -1010,16 +1037,11 @@ class _FakeReviewer(_FakeAutoCommand):
     name = "review"
 
 
-class _FakeSuggestions(_FakeAutoCommand):
-    name = "improve"
-
-
 def _install_fake_auto_commands(monkeypatch):
-    for command in (_FakeDescription, _FakeReviewer, _FakeSuggestions):
+    for command in (_FakeDescription, _FakeReviewer):
         command.runs = []
     monkeypatch.setattr(github_action_runner, "PRDescription", _FakeDescription)
     monkeypatch.setattr(github_action_runner, "PRReviewer", _FakeReviewer)
-    monkeypatch.setattr(github_action_runner, "PRCodeSuggestions", _FakeSuggestions)
 
 
 def test_recorded_auto_command_failure_fails_action_with_default_gate(monkeypatch, tmp_path, restore_github_settings):
@@ -1075,7 +1097,7 @@ def test_fresh_collector_per_command_and_sticky_status_when_gate_on(monkeypatch,
             if body == ["/review"]:
                 record_command_failure()
 
-    _patch_synchronize_deps(monkeypatch, handled, ["/review", "/improve"])
+    _patch_synchronize_deps(monkeypatch, handled, ["/review", "/describe"])
     monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
     monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
     _install_action_env(monkeypatch, tmp_path, _write_synchronize_event(tmp_path))
@@ -1106,7 +1128,7 @@ def test_fresh_collector_per_command_when_gate_off(monkeypatch, tmp_path, restor
             if body == ["/review"]:
                 record_command_failure()
 
-    _patch_synchronize_deps(monkeypatch, handled, ["/review", "/improve"])
+    _patch_synchronize_deps(monkeypatch, handled, ["/review", "/describe"])
     monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
     monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
     settings = get_settings()
@@ -1184,7 +1206,7 @@ def test_comment_argument_cannot_disable_recorded_failure_check(monkeypatch, tmp
 
 def test_command_returning_false_fails_action_even_with_gate_off(monkeypatch, tmp_path, restore_github_settings):
     handled = []
-    _patch_synchronize_deps(monkeypatch, handled, ["/review", "/improve"])
+    _patch_synchronize_deps(monkeypatch, handled, ["/review", "/describe"])
 
     class FakeAgent:
         async def handle_request(self, url, body, notify=None):
@@ -1203,7 +1225,7 @@ def test_command_returning_false_fails_action_even_with_gate_off(monkeypatch, tm
     assert exc_info.value.code == 1
     assert handled == [
         ("https://api.github.com/repos/org/repo/pulls/1", ["/review"]),
-        ("https://api.github.com/repos/org/repo/pulls/1", ["/improve"]),
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/describe"]),
     ]
 
 
@@ -1393,7 +1415,7 @@ async def test_synchronize_event_triggers_push_commands_on_pull_request_target(
 
     assert handled == [
         ("https://api.github.com/repos/org/repo/pulls/1", ["/describe"]),
-        ("https://api.github.com/repos/org/repo/pulls/1", ["/improve"]),
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/review"]),
     ]
 
 
@@ -1591,12 +1613,8 @@ def _patch_workflow_run_deps(monkeypatch, runs):
     class FakeReviewer(FakeCommand):
         name = "review"
 
-    class FakeSuggestions(FakeCommand):
-        name = "improve"
-
     monkeypatch.setattr(github_action_runner, "PRDescription", FakeDescription)
     monkeypatch.setattr(github_action_runner, "PRReviewer", FakeReviewer)
-    monkeypatch.setattr(github_action_runner, "PRCodeSuggestions", FakeSuggestions)
 
 
 @pytest.mark.asyncio
@@ -1884,7 +1902,7 @@ async def test_action_configured_commands_share_one_artifact_context_after_real_
     settings.set("CONFIG.USE_REPO_SETTINGS_FILE", True)
     settings.set("GITHUB_ACTION_CONFIG", {
         "handle_push_trigger": True,
-        "push_commands": ["/review", "/review"],
+        "push_commands": ["/review", "/describe"],
         "push_trigger_ignore_merge_commits": False,
         "push_trigger_ignore_bot_commits": False,
     }, merge=False)
@@ -1895,6 +1913,7 @@ async def test_action_configured_commands_share_one_artifact_context_after_real_
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(git_utils, "get_git_provider_with_context", lambda _url: Provider())
     monkeypatch.setitem(pr_agent_module.command2class, "review", RecordingReviewer)
+    monkeypatch.setitem(pr_agent_module.command2class, "describe", RecordingReviewer)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
     read = Mock(wraps=artifacts._read_and_truncate)
     monkeypatch.setattr(artifacts, "_read_and_truncate", read)
@@ -1940,9 +1959,6 @@ async def test_direct_action_and_workflow_run_keep_artifact_separate_from_ci_con
     class Reviewer(RecordingCommand):
         section = "pr_reviewer"
 
-    class Suggestions(RecordingCommand):
-        section = "pr_code_suggestions"
-
     settings.set("ARTIFACTS", {
         "enable": True,
         "artifact_path": str(artifact),
@@ -1952,7 +1968,6 @@ async def test_direct_action_and_workflow_run_keep_artifact_separate_from_ci_con
     monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda _url: None)
     monkeypatch.setattr(github_action_runner, "PRDescription", Description)
     monkeypatch.setattr(github_action_runner, "PRReviewer", Reviewer)
-    monkeypatch.setattr(github_action_runner, "PRCodeSuggestions", Suggestions)
 
     def action_settings(key, default=None):
         values = {
@@ -1976,9 +1991,7 @@ async def test_direct_action_and_workflow_run_keep_artifact_separate_from_ci_con
 
     await github_action_runner.run_action()
 
-    assert {section for section, _text, _context in observations} == {
-        "pr_description", "pr_reviewer", "pr_code_suggestions",
-    }
+    assert {section for section, _text, _context in observations} == {"pr_description", "pr_reviewer"}
     assert all("ACTION_DIRECT_ARTIFACT" not in text for _section, text, _context in observations)
     assert all(
         context["content"].count("ACTION_DIRECT_ARTIFACT") == 1
@@ -2097,14 +2110,13 @@ def _stub_auto_commands(monkeypatch, tmp_path):
 
     monkeypatch.setattr(github_action_runner, "PRDescription", make_command("describe"))
     monkeypatch.setattr(github_action_runner, "PRReviewer", make_command("review"))
-    monkeypatch.setattr(github_action_runner, "PRCodeSuggestions", make_command("improve"))
     return created, runs
 
 
 def _stub_push_commands(monkeypatch, tmp_path):
     """Set up a synchronize run of three push commands that record what the shared probe provider showed them."""
     handled = []
-    _patch_synchronize_deps(monkeypatch, handled, ["/describe", "/review", "/improve"])
+    _patch_synchronize_deps(monkeypatch, handled, ["/describe", "/review", "/describe"])
     monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
@@ -2132,7 +2144,7 @@ def test_auto_commands_share_one_provider_and_refresh_it_before_each_command(
     # The repo-settings step builds the provider every command then reuses; each command resets its diff and re-reads
     # the PR first.
     assert len(created) == 1
-    assert runs == [("describe", 1, 1), ("review", 2, 2), ("improve", 3, 3)]
+    assert runs == [("describe", 1, 1), ("review", 2, 2)]
 
 
 def test_auto_commands_end_the_run_when_the_pull_request_cannot_be_read_before_a_command(
@@ -2156,7 +2168,7 @@ def test_push_commands_share_one_provider_and_refresh_it_before_each_command(
     github_action_runner.main()
 
     assert len(created) == 1
-    assert handled == [("/describe", 1, 1), ("/review", 2, 2), ("/improve", 3, 3)]
+    assert handled == [("/describe", 1, 1), ("/review", 2, 2), ("/describe", 3, 3)]
 
 
 def test_push_commands_skip_a_command_whose_pull_request_cannot_be_read(
@@ -2170,7 +2182,7 @@ def test_push_commands_skip_a_command_whose_pull_request_cannot_be_read(
 
     # The command fails the run without being run, and the next one reads the PR for itself.
     assert exit_info.value.code == 1
-    assert handled == [("/describe", 1, 1), ("/improve", 3, 3)]
+    assert handled == [("/describe", 1, 1), ("/describe", 3, 3)]
 
 
 @pytest.mark.asyncio

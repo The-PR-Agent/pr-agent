@@ -55,7 +55,7 @@ You can use our pre-built GitHub Action Docker image to run PR-Agent as a GitHub
            # ... previous environment values
            OPENAI.ORG: "<Your organization name under your OpenAI account>"
            PR_REVIEWER.REQUIRE_TESTS_REVIEW: "false" # Disable tests review
-           PR_CODE_SUGGESTIONS.NUM_CODE_SUGGESTIONS_PER_CHUNK: 6 # Increase number of code suggestions
+           PR_REVIEWER.NUM_MAX_FINDINGS: 5 # Increase number of review findings
    ```
 
 See detailed usage instructions in the [USAGE GUIDE](../usage-guide/automations_and_usage.md#github-action)
@@ -400,8 +400,7 @@ Configure for specific programming languages:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Language-specific settings
         pr_reviewer.extra_instructions: "Focus on Python best practices, type hints, and docstrings."
-        pr_code_suggestions.num_code_suggestions_per_chunk: "8"
-        pr_code_suggestions.suggestions_score_threshold: "7"
+        pr_reviewer.num_max_findings: "5"
         # Command configuration
         github_action_config.auto_review: "true"
         github_action_config.auto_describe: "true"
@@ -416,7 +415,7 @@ Run only specific commands automatically:
       env:
         OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # Only run review and describe, skip improve
+        # Only run review and describe; the review also runs when auto_improve is enabled
         github_action_config.auto_review: "true"
         github_action_config.auto_describe: "true"
         github_action_config.auto_improve: "false"
@@ -426,7 +425,7 @@ Run only specific commands automatically:
 
 ##### CI artifact context
 
-A file produced by an earlier CI step — a test report, a coverage summary, a linter or SAST output — can be injected into the prompts of `/review`, `/describe` and `/improve`, so the model reviews the PR with your pipeline's own findings in hand.
+A file produced by an earlier CI step — a test report, a coverage summary, a linter or SAST output — can be injected into the prompts of `/review` and `/describe`, so the model reviews the PR with your pipeline's own findings in hand.
 
 Point the action at the file with the `artifact_path` input. The path is resolved relative to `GITHUB_WORKSPACE` (an absolute path also works), so the file must already exist in the workspace when PR-Agent runs — produce it in a previous step, or download it with `actions/download-artifact`:
 
@@ -497,8 +496,7 @@ Instead of setting all options via environment variables, you can use a `.pr_age
    extra_instructions = "Focus on security issues and code quality."
 
    [pr_code_suggestions]
-   num_code_suggestions_per_chunk = 6
-   suggestions_score_threshold = 7
+   committable_code_suggestions = true
    ```
 
 2. Use a simpler workflow file:
@@ -601,8 +599,8 @@ A 429 is returned immediately; raising `config.ai_timeout` only bounds the durat
     issues: write
     pull-requests: write
   ```
-  The default commands need no additional scopes. Add `checks: write` only when
-  `github.publish_as_check_run` is enabled. Features that push repository contents, such as
+  The default commands need no additional scopes. Add `checks: write` when
+  `github.publish_as_check_run` or `pr_reviewer.publish_merge_recommendation_status` is enabled. Features that push repository contents, such as
   `pr_update_changelog.push_changelog_changes`, require `contents: write`, and so does
   `pr_questions.resolve_threads`, because GitHub gates thread resolution on that scope. If you omit
   `contents: write`, enable `config.restricted_mode` so operations that need it are skipped or fall

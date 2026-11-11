@@ -17,6 +17,7 @@ from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     auto_feedback_disabled,
+    dedupe_review_commands,
     get_include_pr_labels,
     get_pr_commands,
     is_command_comment,
@@ -158,7 +159,7 @@ async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict
     commands = (
         get_pr_commands("gitea")
         if commands_conf == "pr_commands"
-        else normalize_setting_list(get_settings().get(f"gitea.{commands_conf}"))
+        else dedupe_review_commands(normalize_setting_list(get_settings().get(f"gitea.{commands_conf}")))
     )
     if not commands:
         get_logger().info("New PR, but no auto commands configured")

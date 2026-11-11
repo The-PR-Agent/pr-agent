@@ -133,7 +133,7 @@ Full notes for every release are on the [Releases page](https://github.com/the-p
 
 ### 🎯 Built for Real Development Teams
 
-**Fast & Affordable**: Each command (`/review`, `/improve`, `/ask`) uses a single LLM call (~30 seconds, low cost)
+**Fast & Affordable**: Each command (`/review`, `/ask`) uses a single LLM call (~30 seconds, low cost)
 
 **Handles Any PR Size**: Our [PR Compression strategy](https://docs.pr-agent.ai/core-abilities/compression_strategy/) effectively processes both small and large PRs
 
@@ -201,7 +201,6 @@ PR-Agent commands run as a comment on a PR or from the CLI. A few common ones:
 # Comment on a PR (GitHub/GitLab/Bitbucket/…):
 /describe
 /review
-/improve
 /ask "What does this PR change?" # free-text Q&A about the PR
 
 # Issue-scoped commands run on an issue instead of a PR:

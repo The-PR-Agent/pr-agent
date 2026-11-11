@@ -645,12 +645,14 @@ enable_large_pr_chunking = true
 max_number_of_calls = 9999
 per_commit_review = true
 max_commits_per_review = 2
-inline_key_issues = true
+inline_key_issues = false
 enable_review_labels_security = false
 enable_review_labels_effort = false
 require_security_review = false
 require_estimate_effort_to_review = false
 require_ticket_analysis_review = false
+max_changed_lines = 9999
+sensitive_paths = []
 
 [pr_description]
 publish_labels = true
@@ -727,7 +729,7 @@ dual_publishing_score_threshold = 7
         assert get_settings().pr_description.generate_ai_title is False
         assert get_settings().pr_description.publish_description_as_comment is False
         assert get_settings().pr_description.publish_description_as_comment_persistent is True
-        assert get_settings().pr_reviewer.inline_key_issues is False
+        assert get_settings().pr_reviewer.inline_key_issues is True
         assert get_settings().pr_reviewer.enable_review_labels_security is True
         assert get_settings().pr_reviewer.enable_review_labels_effort is True
         assert get_settings().pr_reviewer.require_security_review is True
@@ -747,6 +749,40 @@ dual_publishing_score_threshold = 7
         assert get_settings().pr_code_suggestions.max_number_of_calls != 99
         assert get_settings().pr_code_suggestions.parallel_calls is True
         assert get_settings().pr_code_suggestions.max_discussion_context_chars != 999999
+
+    def test_merge_verdict_limits_stay_host_controlled(self, per_dir_settings, monkeypatch):
+        settings = get_settings()
+        settings.pr_reviewer.max_changed_lines = 250
+        settings.pr_reviewer.sensitive_paths = ["host-controlled/**"]
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": self._HOST_ONLY_KEYS_CONFIG},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        assert settings.pr_reviewer.max_changed_lines == 250
+        assert settings.pr_reviewer.sensitive_paths == ["host-controlled/**"]
+
+    def test_custom_risk_shapes_stay_host_controlled_per_directory(self, per_dir_settings, monkeypatch):
+        settings = get_settings()
+        settings.pr_reviewer.extra_risky_shapes = ["HOST_RISK"]
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": b'[pr_reviewer]\nextra_risky_shapes = ["CUSTOM_RISK"]\n'},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        assert settings.pr_reviewer.extra_risky_shapes == ["HOST_RISK"]
 
     def test_self_review_demand_stays_root_controlled(self, host_only_keys_applied):
         # The self-review workflow stays root-controlled: a nested file cannot make

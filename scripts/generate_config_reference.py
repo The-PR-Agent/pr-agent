@@ -85,7 +85,10 @@ SECTION_DOCS = {
     "pr_reviewer": ("Review", "../commands/review.md#configuration-options"),
     "pr_description": ("Describe", "../commands/describe.md#configuration-options"),
     "pr_questions": ("Ask", "../commands/ask.md#configuration-options"),
-    "pr_code_suggestions": ("Improve", "../commands/improve.mdx#configuration-options"),
+    "pr_code_suggestions": (
+        "Fixes and committable suggestions",
+        "../commands/review.md#fixes-and-committable-suggestions",
+    ),
     "pr_add_docs": ("Add Docs", "../commands/add_docs.md#configuration-options"),
     "pr_update_changelog": ("Update Changelog", "../commands/update_changelog.md#configuration-options"),
     "pr_config": (

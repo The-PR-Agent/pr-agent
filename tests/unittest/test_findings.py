@@ -61,3 +61,21 @@ def test_code_suggestion_finding_can_be_resolved_and_reopened():
     assert resolved.state["findings"][0]["state"] == "RESOLVED"
     assert reopened.state["findings"][0]["state"] == "ACTIVE"
     assert reopened.state["findings"][0]["reopened_count"] == 1
+
+
+def test_from_review_issue_carries_fix():
+    issue = {
+        "relevant_file": "src/app.py",
+        "issue_header": "Possible Bug",
+        "issue_content": "The lock is never released.",
+        "start_line": 4,
+        "end_line": 5,
+        "existing_code": "lock.acquire()",
+        "improved_code": "with lock:\n    pass",
+    }
+
+    finding = Finding.from_review_issue(issue)
+    without_fix = Finding.from_review_issue({**issue, "existing_code": 3, "improved_code": None})
+
+    assert (finding.existing_code, finding.improved_code) == ("lock.acquire()", "with lock:\n    pass")
+    assert (without_fix.existing_code, without_fix.improved_code) == (None, None)

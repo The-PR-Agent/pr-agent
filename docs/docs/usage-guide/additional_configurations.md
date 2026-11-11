@@ -38,7 +38,7 @@ API-cost collection is a separate, default-off option controlled by `config.outp
 
 `config.output_run_details` remains the public-output gate: setting only `config.output_run_cost=true` collects run-level cost data but never adds it to a PR comment.
 
-On providers that support GitHub-Flavored Markdown this appends a collapsible section to the generated comment; elsewhere the same information is appended as plain text (except for `/improve`, see the notes below):
+On providers that support GitHub-Flavored Markdown this appends a collapsible section to the generated comment; elsewhere the same information is appended as plain text:
 
 ```
 ⚙️ Agent run details
@@ -60,7 +60,6 @@ The amount is an estimate based on LiteLLM's pricing data, not provider-invoice-
 Notes:
 
 - `/ask`, `/ask_line`, and `/help <question>` append the section to the published answer. `/update_changelog` appends it to its comment only; the content committed to `CHANGELOG.md` and the review comment that points at it never include it, so a push whose review succeeds shows no section. Messages that need no AI call, such as the static `/help` walkthrough or an `/ask_line` question that matches no diff lines, carry no section.
-- `/improve` appends the section to summary comments and "no suggestions" results. Runs that publish suggestions only as inline comments do not add it. Local and plain-diff providers write artifacts instead of inline comments; their "no suggestions" artifacts can include run details too.
 - With `pr_description.use_description_markers=true`, repeated `/describe` runs accumulate one run details block per run because the existing PR description is preserved and only the markers are replaced.
 
 ## Ignoring files from analysis
@@ -231,17 +230,6 @@ falls back to a normal note so output is not lost. GitHub Conversation comments 
 reply endpoint.
 
 With `persistent_comment=true` (the default for both commands), a rerun updates the earlier result where it was first posted, which may be a different discussion; `/review` also posts a short link to it in the new command's discussion.
-
-## Post the /improve suggestions as a GitLab thread
-
-By default, PR-Agent posts the `/improve` suggestions as a plain note. To post them as a resolvable thread (GitLab discussion) instead, enable (default: `false`):
-
-```toml
-[gitlab]
-publish_improve_as_thread = true
-```
-
-- A run that finds no suggestions edits the thread in place and resolves it, so a status message does not leave an open thread behind.
 
 ## Resolve outdated GitLab inline threads
 

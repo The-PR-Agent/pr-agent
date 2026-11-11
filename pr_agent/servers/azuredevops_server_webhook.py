@@ -28,7 +28,7 @@ from pr_agent.git_providers.azuredevops_provider import AZURE_AGENT_RESPONSE_MAR
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.request_body_limit import create_server_app
-from pr_agent.servers.utils import auto_feedback_disabled, basic_auth_matches, get_pr_commands
+from pr_agent.servers.utils import auto_feedback_disabled, basic_auth_matches, dedupe_review_commands, get_pr_commands
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
@@ -221,6 +221,8 @@ async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: s
         if commands_conf == "pr_commands"
         else get_settings().get(f"azure_devops_server.{commands_conf}")
     )
+    if commands:
+        commands = dedupe_review_commands(commands)
     if not commands:
         return
 

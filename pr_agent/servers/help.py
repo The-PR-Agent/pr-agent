@@ -7,7 +7,7 @@ class HelpMessage:
     def get_general_commands_text():
        commands_text = f"> - **/review**: {COMMAND_DESCRIPTIONS['review']}   \n" \
                 f"> - **/describe**: {COMMAND_DESCRIPTIONS['describe']}   \n" \
-                f"> - **/improve [--extended]**: {COMMAND_DESCRIPTIONS['improve']} Extended mode provides more thorough feedback.   \n" \
+                f"> - **/improve**: {COMMAND_DESCRIPTIONS['improve']}   \n" \
                 "> - **/ask \\<QUESTION\\>**: Ask a question about the PR.   \n" \
                 "> - **/update_changelog**: Update the changelog based on the PR's contents.   \n" \
                 "> - **/add_docs**: Generate docstring for new components introduced in the PR.   \n" \
@@ -173,24 +173,7 @@ You can ask questions about the entire PR, about specific code lines, or about a
     def get_improve_usage_guide():
         output = "**Overview:**\n"
         output += f"{COMMAND_DESCRIPTIONS['improve']} "
-        output += "The command can be triggered [automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-commands-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on a PR.\n"
-        output += """\
-- When commenting, to edit [configurations](https://docs.pr-agent.ai/usage-guide/configuration_reference/#pr_code_suggestions-improve) related to the improve command (`pr_code_suggestions` section), use the following template:
-
-```
-/improve --pr_code_suggestions.some_config1=... --pr_code_suggestions.some_config2=...
-```
-
-- With a [configuration file](https://docs.pr-agent.ai/usage-guide/configuration_options/), use the following template:
-
-```
-[pr_code_suggestions]
-some_config1=...
-some_config2=...
-```
-
-"""
-
+        output += "Configure it through the [review settings](https://docs.pr-agent.ai/commands/review/#configuration-options).\n"
         output += "\n\nSee the improve [usage page](https://docs.pr-agent.ai/commands/improve/) for a comprehensive guide on using this command.\n\n"
 
         return output
