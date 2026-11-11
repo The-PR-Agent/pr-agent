@@ -26,7 +26,7 @@ from pr_agent.servers import lambda_handoff
 from pr_agent.servers.github_common import (
     _normalise_setting_list,
     _reformat_quote_ask_command,
-    pushed_merge_commit,
+    pushed_base_branch_merge,
 )
 from pr_agent.servers.github_common import handle_line_comments as handle_line_comments
 from pr_agent.servers.github_common import matches_review_state as matches_review_state
@@ -337,8 +337,8 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
             default=True,
             setting_name="github_app.push_trigger_ignore_merge_commits",
         )
-            and pushed_merge_commit(git_provider, after_sha)):
-        get_logger().info(f"Skipping {event}: merge commit detected")
+            and pushed_base_branch_merge(git_provider, before_sha, after_sha)):
+        get_logger().info(f"Skipping {event}: the push only merged the base branch")
         return {}
 
     async with push_trigger_slot(
