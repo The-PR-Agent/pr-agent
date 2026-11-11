@@ -724,8 +724,8 @@ GitHub approves the exact commit it reviewed when all of these hold:
   model's context, and no part of the diff failed;
 - the review completed and its finding state could be updated.
 
-Any other `/review` run, including one that fails, withdraws the approval PR-Agent gave, because the evidence behind
-it no longer holds. On a push, a change of base branch or a reopen, the GitHub App and the GitHub Action dismiss it
+Each `/review` run withdraws the approval PR-Agent gave when it starts, and approves again only when it ends with all
+of these holding, so a run that fails or finds a concern leaves no approval behind. On a push, a change of base branch or a reopen, the GitHub App and the GitHub Action dismiss it
 before any other event filter runs. PR-Agent only dismisses approvals it gave automatically; manual approvals from
 the same account are left alone. With `publish_output` off, nothing is approved or dismissed.
 

@@ -118,8 +118,10 @@ async def test_run_reconciles_once_on_the_path_that_does_not_publish(monkeypatch
 
     await reviewer.run()
 
-    provider.auto_approve.assert_called_once()
-    provider.revoke_auto_approval.assert_not_called()
+    # The earlier approval is withdrawn when the run starts, and the new one is given only at its end.
+    assert [name for name, *_ in provider.mock_calls
+            if name in ("revoke_auto_approval", "auto_approve")] == ["revoke_auto_approval", "auto_approve"]
+    assert "a new review started" in provider.revoke_auto_approval.call_args.args[0]
 
 
 def test_files_left_out_of_the_review_dismiss(approval_on):
@@ -153,7 +155,8 @@ async def test_failed_run_withdraws_an_earlier_approval(monkeypatch, approval_on
     await reviewer.run()
 
     provider.auto_approve.assert_not_called()
-    provider.revoke_auto_approval.assert_called_once()
+    # Once when the run starts, and again when it ends without a clean verdict.
+    assert provider.revoke_auto_approval.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -185,4 +188,4 @@ async def test_cancelled_publish_does_not_approve(monkeypatch, approval_on):
         await reviewer.run()
 
     provider.auto_approve.assert_not_called()
-    provider.revoke_auto_approval.assert_called_once()
+    assert provider.revoke_auto_approval.call_count == 2

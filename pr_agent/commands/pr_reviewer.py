@@ -668,6 +668,9 @@ class PRReviewer:
         self._structured_review_data = None
         self._approval_model_fields = (None, None)
         self._review_done = self._review_published = False
+        # An approval stands only for a run that finished clean; a new run starts without one.
+        if self._auto_approval_enabled():
+            self._withdraw_auto_approval("a new review started")
         try:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
@@ -2330,11 +2333,7 @@ class PRReviewer:
         """Approve the reviewed commit when every gated-approval check passes, otherwise
         dismiss any approval PR-Agent holds, since an earlier run's approval no longer stands."""
         settings = get_settings()
-        if not _as_bool_setting(settings.config.get("enable_auto_approval", False),
-                                setting_name="config.enable_auto_approval"):
-            return
-        # A dry run writes nothing, approvals included.
-        if not _as_bool_setting(settings.config.get("publish_output", True), default=True):
+        if not self._auto_approval_enabled():
             return
         if not _as_bool_setting(settings.pr_reviewer.get("require_merge_recommendation", False)):
             get_logger().warning("enable_auto_approval needs pr_reviewer.require_merge_recommendation; not approving")
@@ -2363,9 +2362,19 @@ class PRReviewer:
             except Exception as e:
                 get_logger().exception(f"Auto-approval failed, error: {e}")
                 reason = "the approval could not be submitted"
+        get_logger().info(f"Not auto-approving: {reason}")
+        self._withdraw_auto_approval(reason)
+
+    @staticmethod
+    def _auto_approval_enabled() -> bool:
+        config = get_settings().config
+        # A dry run writes nothing, approvals and dismissals included.
+        return (_as_bool_setting(config.get("enable_auto_approval", False), setting_name="config.enable_auto_approval")
+                and _as_bool_setting(config.get("publish_output", True), default=True))
+
+    def _withdraw_auto_approval(self, reason: str) -> None:
         try:
-            get_logger().info(f"Not auto-approving: {reason}")
-            if not self.git_provider.revoke_auto_approval(f"{bot_display_name} withdrew its approval: {reason}."):
+            if not self.git_provider.revoke_auto_approval(f"{get_bot_display_name()} withdrew its approval: {reason}."):
                 get_logger().error("Could not confirm that PR-Agent's earlier approvals were dismissed")
         except Exception as e:
             get_logger().exception(f"Auto-approval reconcile failed, error: {e}")
