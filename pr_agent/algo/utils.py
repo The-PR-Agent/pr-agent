@@ -1105,7 +1105,7 @@ def _extract_labelled_yaml_block(response_text: str) -> str | None:
         fence_depth = 1
         while j < n:
             j_stripped = lines[j].strip()
-            if j_stripped.startswith('```yaml') or j_stripped.startswith('```yml'):
+            if j_stripped.startswith('```') and j_stripped != '```':
                 fence_depth += 1
                 block_lines.append(lines[j])
                 j += 1

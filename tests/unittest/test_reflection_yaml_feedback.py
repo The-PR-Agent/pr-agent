@@ -120,3 +120,25 @@ def test_unlabelled_list_legacy_baseline():
     input_text = "Explanation:\n" + "```\n" + "- a\n" + "- b\n" + "```\n"
     result = load_yaml(input_text)
     assert result == ["a", "b"]
+
+
+def test_python_fence_inside_why_preserves_all_suggestions():
+    input_text = (
+        "Lead\n"
+        "```yaml\n"
+        "code_suggestions:\n"
+        "  - suggestion_score: 8\n"
+        "    why: |\n"
+        "      ```python\n"
+        "      print(x)\n"
+        "      ```\n"
+        "      more prose\n"
+        "    relevant_line: 1\n"
+        "  - suggestion_score: 9\n"
+        "    why: Second suggestion\n"
+        "    relevant_line: 2\n"
+        "```\n"
+    )
+    result = load_yaml(input_text)
+    assert isinstance(result, dict)
+    assert len(result["code_suggestions"]) == 2
