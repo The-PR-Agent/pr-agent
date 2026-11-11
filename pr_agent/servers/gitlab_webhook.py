@@ -31,6 +31,7 @@ from pr_agent.servers import lambda_handoff
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     auto_feedback_disabled,
+    dedupe_review_commands,
     get_include_pr_labels,
     get_pr_commands,
     is_ask_command_comment,
@@ -105,7 +106,7 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
     commands = (
         get_pr_commands("gitlab")
         if commands_conf == "pr_commands"
-        else normalize_setting_list(get_settings().get(f"gitlab.{commands_conf}", {}))
+        else dedupe_review_commands(normalize_setting_list(get_settings().get(f"gitlab.{commands_conf}", {})))
     )
     get_settings().set("config.is_auto_command", True)
     for command in commands:

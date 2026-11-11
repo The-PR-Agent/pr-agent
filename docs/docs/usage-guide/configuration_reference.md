@@ -284,7 +284,7 @@ See [Ask](../commands/ask.md#configuration-options).
 
 ## `[pr_code_suggestions]` — /improve {#pr_code_suggestions-improve}
 
-See [Improve](../commands/improve.mdx#configuration-options).
+See [Fixes and committable suggestions](../commands/review.md#fixes-and-committable-suggestions).
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -297,7 +297,7 @@ See [Improve](../commands/improve.mdx#configuration-options).
 | `enable_chat_text` | false |  |
 | `persistent_comment` | true |  |
 | `publish_failure_comment` | true | Set to false to suppress /improve failure comments without changing the command's failure status. |
-| `max_history_len` | 4 | Previous sets to retain; <=0 keeps latest only (same comment if editable). See https://docs.pr-agent.ai/commands/improve#configuration-options |
+| `max_history_len` | 4 | Previous sets to retain; <=0 keeps latest only (same comment if editable). |
 | `publish_output_no_suggestions` | true |  |
 | `enable_suggestions_coverage_footer` | true | show failed chunks and files omitted by the token or AI-call budget |
 **suggestions scoring**
@@ -387,7 +387,7 @@ See [GitHub](../installation/github.md#run-as-a-github-app).
 | `base_url` | "https://api.github.com" |  |
 | `try_fix_invalid_inline_comments` | true |  |
 | `ignore_bot_pr` | true |  |
-| `publish_as_check_run` | false | when true, publish review/description/improve output as GitHub Checks instead of PR comments |
+| `publish_as_check_run` | false | when true, publish review/description output as GitHub Checks instead of PR comments |
 
 
 ## `[github_action_config]` {#github_action_config}
@@ -431,7 +431,7 @@ See [GitLab](../usage-guide/automations_and_usage.md#gitlab-webhook).
 | `expand_submodule_diffs` | false | Submodule targets must also be listed in config.repo_context_sibling_repos. |
 | `feedback_on_draft_pr` | false |  |
 | `publish_review_as_thread` | false | Post the /review summary as a resolvable thread (discussion) instead of a plain note. |
-| `publish_improve_as_thread` | false | Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note. |
+| `publish_improve_as_thread` | false | Ignored: /improve runs /review, so there is no suggestions comment. Use publish_review_as_thread. |
 | `reply_to_trigger_comment` | false | Reply in the triggering GitLab discussion for `/review`, `/improve`, or `/ask` (true/false); see docs/docs/usage-guide/additional_configurations.md. |
 | `publish_code_suggestions_as_review` | false | When pr_code_suggestions.committable_code_suggestions is true, queue each suggestion as a GitLab draft note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of posting each as its own live discussion - and its own notification - as soon as it's created. |
 | `resolve_outdated_inline_threads` | false | Resolve the bot's own inline threads that a later push left on an outdated diff version. |
@@ -706,7 +706,7 @@ See [Push outputs](../usage-guide/push_outputs.md#configuration).
 | --- | --- | --- |
 | `enable` | false |  |
 | `channels` | [] | exact names as a list/tuple or comma-separated string: "stdout", "file", "webhook", "slack", "telegram", "teams"; empty emits nothing |
-| `commands` | ["review", "describe", "improve"] | output types to deliver; add "ask" to include Q&A, or select fewer commands; supports comma-separated strings |
+| `commands` | ["review", "describe"] | output types to deliver; add "ask" to include Q&A, or select fewer commands; supports comma-separated strings |
 | `file_path` | "pr-agent-outputs/reviews.jsonl" | used by the "file" channel |
 | `webhook_url` | "" | used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL |
 | `slack_webhook_url` | "" | used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL |

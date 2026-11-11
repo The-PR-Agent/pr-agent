@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from pr_agent.algo.command_words import split_command_words
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -21,13 +22,11 @@ from pr_agent.log import get_logger
 _STANDARD_PR_COMMANDS = (
     "/describe --pr_description.final_update_message=false",
     "/review",
-    "/improve",
 )
-_PLAIN_PR_COMMANDS = ("/describe", "/review", "/improve")
+_PLAIN_PR_COMMANDS = ("/describe", "/review")
 _COMMITTABLE_PR_COMMANDS = (
     "/describe --pr_description.final_update_message=false",
-    "/review",
-    "/improve --pr_code_suggestions.committable_code_suggestions=true",
+    "/review --pr_code_suggestions.committable_code_suggestions=true",
 )
 _DEFAULT_PR_COMMANDS_BY_PROVIDER = {
     "github_app": _STANDARD_PR_COMMANDS,
@@ -104,11 +103,58 @@ def auto_feedback_disabled() -> bool:
     )
 
 
+_REVIEW_COMMAND_NAMES = frozenset({"review", "review_pr", "improve", "improve_code"})
+
+
+def _review_command_tokens(command) -> list[str]:
+    """Words of a /review, /improve or /improve_code entry, quoting kept, or [] for anything else.
+
+    An entry the command parser rejects (an unterminated quote, for instance) stays apart
+    instead of swallowing a valid review entry.
+    """
+    if not isinstance(command, str):
+        return []
+    try:
+        tokens = split_command_words(command)
+    except ValueError:
+        return []
+    return tokens if tokens and tokens[0].lstrip("/").lower() in _REVIEW_COMMAND_NAMES else []
+
+
+def dedupe_review_commands(commands: Sequence[str]) -> list[str]:
+    """Rewrite /improve and /improve_code to /review and keep a single /review entry.
+
+    /improve runs /review, so a list naming both would review twice. The first review entry stays in
+    place and takes the arguments of the removed ones, in order, without repeating an identical argument. Other
+    commands, and entries that are not strings, pass through untouched and in order.
+    """
+    result: list = []
+    review_tokens: list[str] | None = None
+    review_index = -1
+    for command in commands:
+        tokens = _review_command_tokens(command)
+        if not tokens:
+            result.append(command)
+            continue
+        if review_tokens is None:
+            slash = "/" if tokens[0].startswith("/") else ""
+            review_tokens = [f"{slash}review", *tokens[1:]]
+            review_index = len(result)
+            result.append(command)
+            continue
+        review_tokens.extend(token for token in tokens[1:] if token not in review_tokens[1:])
+    if review_tokens is not None:
+        result[review_index] = " ".join(review_tokens)
+    return result
+
+
 def get_pr_commands(provider: str) -> Sequence[str]:
     """Return an explicit provider override or a fresh copy of its default profile."""
     configured = get_settings().get(f"{provider}.pr_commands", _MISSING)
     if configured is not _MISSING:
-        return normalize_setting_list(configured) if isinstance(configured, str) else configured
+        if isinstance(configured, str):
+            configured = normalize_setting_list(configured)
+        return dedupe_review_commands(configured) if configured else configured
     return list(_DEFAULT_PR_COMMANDS_BY_PROVIDER[provider])
 
 

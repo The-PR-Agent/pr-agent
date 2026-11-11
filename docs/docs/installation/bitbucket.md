@@ -45,10 +45,10 @@ No configuration change is required.
 
 PR-Agent stops when Bitbucket Cloud returns a different number of patches than
 entries in the filtered changed-file list, instead of treating the diff as empty.
-An affected `/add_docs`, `/generate_labels`, `/describe`, `/review`, or `/improve`
+An affected `/add_docs`, `/generate_labels`, `/describe`, or `/review`
 run may post **PR-Agent command was not run** with a Bitbucket-specific explanation
 when `CONFIG.PUBLISH_OUTPUT` is enabled. This provider-specific notice replaces the
-generic `/review` and `/improve` failure output to avoid duplicate comments.
+generic `/review` failure output to avoid duplicate comments.
 
 Retry the command. If the problem persists, check the pull request's diff in
 Bitbucket. PR-Agent does not recover missing patches automatically.

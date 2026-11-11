@@ -36,9 +36,6 @@ _PLAIN_DIFF_MARKDOWN_COMMANDS = frozenset(
 _JSON_REVIEW_COMMANDS = frozenset(
     name for name, spec in COMMAND_SPECS.items() if spec.json_output == "review"
 )
-_JSON_IMPROVE_COMMANDS = frozenset(
-    name for name, spec in COMMAND_SPECS.items() if spec.json_output == "improve"
-)
 _JSON_DESCRIBE_COMMANDS = frozenset(
     name for name, spec in COMMAND_SPECS.items() if spec.json_output == "describe"
 )
@@ -111,7 +108,7 @@ def _validate_output_options(parser, args, diff_mode):
             parser.error(f"--output is not supported for plain-diff command '{command}'")
 
     if json_output is not None:
-        pr_commands = _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS
+        pr_commands = _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS
         if command not in _JSON_REVIEW_COMMANDS | pr_commands:
             parser.error("--json-output is only supported for review, improve, describe, or generate_labels commands")
         if not diff_mode and (not args.pr_url or args.issue_url):
@@ -163,7 +160,6 @@ def set_parser():
     - describe / describe_pr - {COMMAND_DESCRIPTIONS["describe"]}
 
     - improve / improve_code - {COMMAND_DESCRIPTIONS["improve"]}
-    Extended mode ('improve --extended') employs several calls, and provides a more thorough feedback
 
     - update_changelog - Update the changelog based on the PR's contents.
 
@@ -267,10 +263,10 @@ def run(inargs=None, args=None):
         get_settings().set("CONFIG.CONFIG_BRANCH", cli_branch or env_branch or None)
         get_settings().set("CONFIG.EXTRA_CONFIG_URL", getattr(args, "extra_config_url", None))
         async def inner():
-            # Plain-diff reviews write through their provider; describe and improve
-            # already use the shared JSON writer, as they do with --pr_url.
+            # Plain-diff reviews (and /improve, which runs /review) write through their provider; describe
+            # and labels already use the shared JSON writer, as they do with --pr_url.
             command_json_output = getattr(args, "json_output", None) if (
-                not diff_mode or command in _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS
+                not diff_mode or command in _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS
             ) else None
             output_token = review_json_output_path.set(command_json_output)
             try:
@@ -313,7 +309,7 @@ def run(inargs=None, args=None):
         )
         json_artifact_required = label_json_required or bool(
             diff_mode and getattr(args, "json_output", None) is not None
-            and command in _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS
+            and command in _JSON_REVIEW_COMMANDS | _JSON_DESCRIBE_COMMANDS
         )
         if (settings.config.get("propagate_command_errors", False) or json_artifact_required) and (
             result is False or recorded_failure

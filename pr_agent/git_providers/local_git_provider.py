@@ -30,8 +30,8 @@ class LocalGitProvider(GitProvider):
     It mimics the PR functionality of the GitProvider interface,
     but does not require a hosted git repository.
     Instead of providing a PR url, the user provides a local branch path to generate a diff-patch.
-    It supports the /review, /describe and /improve capabilities; each writes its output to a
-    file (review.md, description.md, improve.md) since there is no hosted PR to comment on.
+    It supports /review (which /improve runs) and /describe; each writes its output to a
+    file (review.md, description.md) since there is no hosted PR to comment on.
     """
 
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:

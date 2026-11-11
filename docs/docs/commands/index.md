@@ -9,7 +9,7 @@ Each PR-Agent command has a dedicated page that explains its behavior and usage:
 |------|-------------|
 | **[PR Description (`/describe`)](./describe.md)** | Generate a PR title, type, summary, code walkthrough and labels. |
 | **[PR Review (`/review`)](./review.md)** | Generate a PR review with feedback on possible issues, security concerns, tests and review effort. |
-| **[Code Suggestions (`/improve`)](./improve.mdx)** | Generate actionable code suggestions for improving the PR. |
+| **[Code Suggestions (`/improve`)](./improve.mdx)** | Runs /review, whose findings can carry committable code fixes. |
 | **[Question Answering (`/ask ...`)](./ask.md)** | Answering free-text questions about the PR, or on specific code lines |
 | **[Add Documentation (`/add_docs`)](./add_docs.md)** | Generate documentation for code components that are missing it |
 | **[Generate Labels (`/generate_labels`)](./generate_labels.md)** | Generate custom labels for the PR based on the code changes |

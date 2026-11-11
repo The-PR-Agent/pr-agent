@@ -8,7 +8,7 @@ bot_display_name="PR-Agent" # product name shown in user-visible PR comments; ho
 # models
 model="gpt-6.1-sol"
 fallback_models=["gpt-6-luna"]
-#model_reasoning="gpt-6.1-sol" # dedicated reasoning model for self-reflection
+#model_reasoning="gpt-6.1-sol" # unused: it served /improve's self-reflection, and /improve now runs /review
 # Leave model_weak unset with the shipped fallbacks: Luna would retry Luna, not a distinct model.
 #model_weak="gpt-6-luna" # optional, a weaker model to use for some easier tasks
 # CLI
@@ -274,6 +274,7 @@ resolve_threads=false
 extra_instructions = ""
 
 
+# Ignored since 0.51 except committable_code_suggestions and extra_instructions, which /review reads.
 [pr_code_suggestions] # /improve #
 # Deprecated alias still accepted until 1.0: pr_code_suggestions.commitable_code_suggestions
 committable_code_suggestions = false
@@ -289,7 +290,7 @@ enable_chat_text=false
 persistent_comment=true
 # Set to false to suppress /improve failure comments without changing the command's failure status.
 publish_failure_comment=true
-max_history_len=4 # Previous sets to retain; <=0 keeps latest only (same comment if editable). See https://docs.pr-agent.ai/commands/improve#configuration-options
+max_history_len=4 # Previous sets to retain; <=0 keeps latest only (same comment if editable).
 publish_output_no_suggestions=true
 enable_suggestions_coverage_footer=true # show failed chunks and files omitted by the token or AI-call budget
 # suggestions scoring
@@ -355,12 +356,12 @@ polling_repositories = [] # Host-only allowlist of GitHub repositories ("owner/r
 base_url = "https://api.github.com"
 try_fix_invalid_inline_comments = true
 ignore_bot_pr = true
-publish_as_check_run = false # when true, publish review/description/improve output as GitHub Checks instead of PR comments
+publish_as_check_run = false # when true, publish review/description output as GitHub Checks instead of PR comments
 
 [github_action_config]
 # auto_review = true    # set as env var in .github/workflows/pr-agent.yaml
 # auto_describe = true  # set as env var in .github/workflows/pr-agent.yaml
-# auto_improve = true   # set as env var in .github/workflows/pr-agent.yaml
+# auto_improve = true   # set as env var in .github/workflows/pr-agent.yaml; /improve runs /review, so either flag runs the one review
 # pr_actions = ['opened', 'reopened', 'ready_for_review', 'review_requested']
 # handle_push_trigger = false  # when true, handle synchronize events using push_commands (falls back to github_app.handle_push_trigger)
 # push_trigger_ignore_bot_commits = true
@@ -408,7 +409,7 @@ expand_submodule_diffs = false
 feedback_on_draft_pr = false
 # Post the /review summary as a resolvable thread (discussion) instead of a plain note.
 publish_review_as_thread = false
-# Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note.
+# Ignored: /improve runs /review, so there is no suggestions comment. Use publish_review_as_thread.
 publish_improve_as_thread = false
 # Reply in the triggering GitLab discussion for `/review`, `/improve`, or `/ask` (true/false); see docs/docs/usage-guide/additional_configurations.md.
 reply_to_trigger_comment = false
@@ -676,7 +677,7 @@ agent_identity = "" # Host-only GUID, unique name, descriptor, or list; empty re
 [push_outputs] # push command outputs to external sinks without calling git-provider APIs (disabled by default)
 enable = false
 channels = [] # exact names as a list/tuple or comma-separated string: "stdout", "file", "webhook", "slack", "telegram", "teams"; empty emits nothing
-commands = ["review", "describe", "improve"] # output types to deliver; add "ask" to include Q&A, or select fewer commands; supports comma-separated strings
+commands = ["review", "describe"] # output types to deliver; add "ask" to include Q&A, or select fewer commands; supports comma-separated strings
 file_path = "pr-agent-outputs/reviews.jsonl" # used by the "file" channel
 webhook_url = "" # used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL
 slack_webhook_url = "" # used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL
