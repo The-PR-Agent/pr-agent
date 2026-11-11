@@ -73,9 +73,13 @@ The answer is posted in the original file-comment thread with a link to the ques
 Earlier replies are included when `pr_questions.use_conversation_history` is enabled and the input budget allows.
 Text resembling command options is treated as part of the question.
 
-With `pr_questions.use_conversation_history=true` (the default), line questions on GitHub and Azure DevOps can
-include earlier comments from the same thread. Azure DevOps also supports history for threaded top-level questions.
+With `pr_questions.use_conversation_history=true` (the default), line questions on GitHub, GitLab, and Azure DevOps
+can include earlier comments from the same thread. Azure DevOps also supports history for threaded top-level questions.
 Other questions are answered independently.
+
+On GitLab, this reads the selected discussion before answering, adding an API request and potentially more model input
+tokens, but no separate model request. Set `pr_questions.use_conversation_history=false` to answer without earlier
+comments. Line questions still require a matching hunk in the current diff.
 
 ## Ask on images
 
@@ -166,7 +170,7 @@ tickets when there is no room. The usual diff-based answer remains available in 
   </tr>
   <tr>
     <td><b>use_conversation_history</b></td>
-    <td>If set to true, the command will use the conversation history from the same thread when answering questions on specific code lines (GitHub and Azure DevOps) or threaded top-level questions (Azure DevOps only). Default is true.</td>
+    <td>If set to true, the command will use the conversation history from the same thread when answering questions on specific code lines (GitHub, GitLab, and Azure DevOps) or threaded top-level questions (Azure DevOps only). Default is true.</td>
   </tr>
   <tr>
     <td><b>use_ticket_context</b></td>
