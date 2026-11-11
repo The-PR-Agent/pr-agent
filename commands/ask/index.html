@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">Ask | PR-Agent</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" property="og:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.pr-agent.ai/commands/ask/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Ask | PR-Agent"><meta data-rh="true" name="description" content="Overview"><meta data-rh="true" property="og:description" content="Overview"><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.pr-agent.ai/commands/ask/"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/commands/ask/" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/commands/ask/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Ask","item":"https://docs.pr-agent.ai/commands/ask"}]}</script><script src="https://widget.kapa.ai/kapa-widget.bundle.js" data-website-id="5c89c0b1-b2ee-43c9-8c6f-43ed762b3c1e" data-project-name="PR-Agent" data-project-color="#2459db" data-project-logo="/img/favicon.svg" data-launcher-button-image="/img/favicon-white.svg" data-color-scheme-selector="[data-theme=&#39;dark&#39;]" async></script><link rel="stylesheet" href="/assets/css/styles.928a3cd8.css">
-<script src="/assets/js/runtime~main.6132404f.js" defer="defer"></script>
+<script src="/assets/js/runtime~main.da1ebc41.js" defer="defer"></script>
 <script src="/assets/js/main.9670db7a.js" defer="defer"></script>
 </head>
 <body>
@@ -56,9 +56,12 @@ be prepared within the configured input budget, the command explains this withou
 The answer is posted in the original file-comment thread with a link to the question.
 Earlier replies are included when <code>pr_questions.use_conversation_history</code> is enabled and the input budget allows.
 Text resembling command options is treated as part of the question.</p>
-<p>With <code>pr_questions.use_conversation_history=true</code> (the default), line questions on GitHub and Azure DevOps can
-include earlier comments from the same thread. Azure DevOps also supports history for threaded top-level questions.
+<p>With <code>pr_questions.use_conversation_history=true</code> (the default), line questions on GitHub, GitLab, and Azure DevOps
+can include earlier comments from the same thread. Azure DevOps also supports history for threaded top-level questions.
 Other questions are answered independently.</p>
+<p>On GitLab, this reads the selected discussion before answering, adding an API request and potentially more model input
+tokens, but no separate model request. Set <code>pr_questions.use_conversation_history=false</code> to answer without earlier
+comments. Line questions still require a matching hunk in the current diff.</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="ask-on-images">Ask on images<a href="#ask-on-images" class="hash-link" aria-label="Direct link to Ask on images" title="Direct link to Ask on images" translate="no">​</a></h2>
 <p>You can also ask questions about images that appear in the comment, where the entire PR code will be used as context.
 <br>
@@ -128,7 +131,7 @@ tickets when there is no room. The usual diff-based answer remains available in 
   </tr>
   <tr>
     <td><b>use_conversation_history</b></td>
-    <td>If set to true, the command will use the conversation history from the same thread when answering questions on specific code lines (GitHub and Azure DevOps) or threaded top-level questions (Azure DevOps only). Default is true.</td>
+    <td>If set to true, the command will use the conversation history from the same thread when answering questions on specific code lines (GitHub, GitLab, and Azure DevOps) or threaded top-level questions (Azure DevOps only). Default is true.</td>
   </tr>
   <tr>
     <td><b>use_ticket_context</b></td>
