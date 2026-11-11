@@ -2323,7 +2323,9 @@ class TestBitbucketServerProvider:
         provider.pr_num = 1
         provider.pr = SimpleNamespace(fromRef={"latestCommit": "head-sha"})
         provider.bitbucket_api_version = None
-        provider.diff_files = []
+        # Nothing cached yet; under the #4860 contract an empty list is a completed
+        # verdict, so "not fetched" is None.
+        provider.diff_files = None
         provider.bitbucket_client = MagicMock()
         provider.bitbucket_client.get_pull_requests_commits.return_value = [
             {"parents": [{"id": "base-sha"}]}

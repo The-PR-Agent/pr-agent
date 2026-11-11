@@ -10,7 +10,20 @@ across commands via reset_diff_cache_for_command().
 from unittest.mock import MagicMock
 
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
+from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
+
+
+def test_bitbucket_server_empty_diff_is_served_from_the_cache():
+    provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+    provider.diff_files = []
+    provider.pr = MagicMock()
+
+    assert provider.get_diff_files() == []
+    assert provider.get_diff_files() == []
+    # The cached empty verdict makes no API calls; the old truthiness guard fell
+    # through to pr.fromRef on every call.
+    provider.pr.assert_not_called()
 
 
 def test_bitbucket_empty_diff_caches_after_the_first_call():
