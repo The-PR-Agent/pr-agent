@@ -18,7 +18,7 @@ Note that the main purpose of the `review` command is to provide the **PR review
 (Read more about the different personas in the PR process and how PR-Agent aims to assist them in our [blog](https://www.qodo.ai/blog/understanding-the-challenges-and-pain-points-of-the-pull-request-cycle/))
 
 :::note
-`/improve` runs `/review` as of 0.52. See [Improve](./improve.mdx).
+`/improve` runs `/review` as of 0.51. See [Improve](./improve.mdx).
 :::
 
 ## Example usage
@@ -386,7 +386,7 @@ block. Findings are capped by `pr_reviewer.num_max_findings` (6 by default), and
 
 Two `pr_code_suggestions` settings are honoured: `committable_code_suggestions` and `extra_instructions`
 (added to the review's extra instructions when it differs from `pr_reviewer.extra_instructions`).
-Every other `pr_code_suggestions` setting is ignored since 0.52.
+Every other `pr_code_suggestions` setting is ignored since 0.51.
 
 ```
 /review --pr_code_suggestions.committable_code_suggestions=true

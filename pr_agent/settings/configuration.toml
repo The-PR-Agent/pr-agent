@@ -272,7 +272,7 @@ resolve_threads=false
 extra_instructions = ""
 
 
-# Ignored since 0.52 except committable_code_suggestions and extra_instructions, which /review reads.
+# Ignored since 0.51 except committable_code_suggestions and extra_instructions, which /review reads.
 [pr_code_suggestions] # /improve #
 # Deprecated alias still accepted until 1.0: pr_code_suggestions.commitable_code_suggestions
 committable_code_suggestions = false

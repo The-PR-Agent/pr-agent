@@ -64,7 +64,7 @@ COMMAND_SPECS: dict[str, CommandSpec] = {
         PRDescription, check_run="describe",
         plain_diff_markdown=True, json_output="describe",
     ),
-    # /improve runs /review since 0.52 (PRCodeSuggestions stays importable but is no longer dispatched).
+    # /improve runs /review since 0.51 (PRCodeSuggestions stays importable but is no longer dispatched).
     "improve": CommandSpec(
         PRReviewer, check_run="review", takes_comment_id=True,
         plain_diff_markdown=True, json_output="review",
