@@ -76,29 +76,29 @@ const sidebars = {
   ],
 
   // What does each command do?
-  tools: [
-    {type: 'doc', id: 'tools/index', label: 'Overview'},
+  commands: [
+    {type: 'doc', id: 'commands/index', label: 'Overview'},
     {
       // The commands that run on a pull request by default or are used most.
       type: 'category',
-      label: 'Main tools',
+      label: 'Main commands',
       collapsible: false,
       items: [
-        {type: 'doc', id: 'tools/describe', label: 'Describe'},
-        {type: 'doc', id: 'tools/review', label: 'Review'},
-        {type: 'doc', id: 'tools/improve', label: 'Improve'},
-        {type: 'doc', id: 'tools/ask', label: 'Ask'},
+        {type: 'doc', id: 'commands/describe', label: 'Describe'},
+        {type: 'doc', id: 'commands/review', label: 'Review'},
+        {type: 'doc', id: 'commands/improve', label: 'Improve'},
+        {type: 'doc', id: 'commands/ask', label: 'Ask'},
       ],
     },
     {
       type: 'category',
-      label: 'More tools',
+      label: 'More commands',
       collapsible: false,
       items: [
-        {type: 'doc', id: 'tools/add_docs', label: 'Add docs'},
-        {type: 'doc', id: 'tools/generate_labels', label: 'Generate labels'},
-        {type: 'doc', id: 'tools/update_changelog', label: 'Update changelog'},
-        {type: 'doc', id: 'tools/similar_issues', label: 'Similar issues'},
+        {type: 'doc', id: 'commands/add_docs', label: 'Add docs'},
+        {type: 'doc', id: 'commands/generate_labels', label: 'Generate labels'},
+        {type: 'doc', id: 'commands/update_changelog', label: 'Update changelog'},
+        {type: 'doc', id: 'commands/similar_issues', label: 'Similar issues'},
       ],
     },
     {
@@ -106,8 +106,8 @@ const sidebars = {
       label: 'Help',
       collapsible: false,
       items: [
-        {type: 'doc', id: 'tools/help', label: 'Help'},
-        {type: 'doc', id: 'tools/help_docs', label: 'Help docs'},
+        {type: 'doc', id: 'commands/help', label: 'Help'},
+        {type: 'doc', id: 'commands/help_docs', label: 'Help docs'},
       ],
     },
   ],

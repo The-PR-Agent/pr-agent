@@ -533,7 +533,7 @@ async def process_gitlab_event(data: dict, log_context: dict):
             body = data.get('object_attributes', {}).get('note')
             if not is_command_comment(body):
                 # A plain comment whose first word happens to be a command name must not
-                # dispatch a tool: the dispatcher strips an optional leading slash.
+                # dispatch a command: the dispatcher strips an optional leading slash.
                 get_logger().info("Ignoring comment not starting with /")
                 return
             await asyncio.to_thread(apply_host_settings)
@@ -565,7 +565,7 @@ async def process_gitlab_event(data: dict, log_context: dict):
                 url, body, log_context, sender_id, notify=notify_start_reaction)
             if result is RequestOutcome.SKIPPED or not dispatched:
                 return
-            # `propagate_tool_errors` is off, so a tool that failed internally still returns
+            # `propagate_command_errors` is off, so a command that failed internally still returns
             # normally. Reading that as success would tick a comment whose command never ran.
             # `bool()` rather than `result is not False`, so a `None` reads as failure here the
             # same way it does in `pr_reviewer` and the GitHub App
@@ -597,7 +597,8 @@ def handle_ask_line(body, data):
             start_line = line_range_['start']['new_line']
             end_line = line_range_['end']['new_line']
             side = 'RIGHT'
-        question = body.strip().removeprefix('/ask').strip()
+        parts = body.strip().split(maxsplit=1)
+        question = parts[1] if len(parts) > 1 else ""
         path = position['new_path']
         comment_id = data['object_attributes']["discussion_id"]
         get_logger().info("Handling line ")
@@ -609,6 +610,9 @@ def handle_ask_line(body, data):
             f"--file_name={path}",
             f"--comment_id={comment_id}",
         ]
+        origin_comment_id = data['object_attributes'].get('id')
+        if origin_comment_id is not None:
+            body.append(f"--origin_comment_id={origin_comment_id}")
         if question:
             body.append(question)
     except Exception as e:

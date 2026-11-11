@@ -4,8 +4,8 @@ from unittest.mock import MagicMock
 
 from pr_agent.algo.findings import Finding
 from pr_agent.algo.inline_comment_dedup import key_issue_body_with_markers
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.git_providers.github_provider import GithubProvider
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 _BODY = "**Possible Issue**\n\nThe lock is never released."
 

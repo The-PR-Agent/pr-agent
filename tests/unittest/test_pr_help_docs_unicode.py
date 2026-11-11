@@ -2,7 +2,7 @@ from io import StringIO
 
 import pytest
 
-from pr_agent.tools.pr_help_docs import map_documentation_files_to_contents, return_document_headings
+from pr_agent.commands.pr_help_docs import map_documentation_files_to_contents, return_document_headings
 
 
 @pytest.mark.parametrize(
@@ -69,7 +69,7 @@ def test_documentation_read_modes(monkeypatch, content, limit, expected):
             return super().read(min(size, 3))
 
     monkeypatch.setattr(
-        "pr_agent.tools.pr_help_docs.open", lambda *args, **kwargs: BoundedReader(content), raising=False
+        "pr_agent.commands.pr_help_docs.open", lambda *args, **kwargs: BoundedReader(content), raising=False
     )
 
     result = map_documentation_files_to_contents("/docs", ["/docs/guide.md"], limit)

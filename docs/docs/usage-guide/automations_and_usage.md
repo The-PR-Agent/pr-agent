@@ -6,7 +6,7 @@ sidebar_position: 5
 ## Local repo (CLI)
 
 When running from your locally cloned PR-Agent repo (CLI), your local configuration file will be used.
-Examples of invoking the different tools via the CLI:
+Examples of invoking the different commands via the CLI:
 
 - **Review**:       `python -m pr_agent.cli --pr_url=<pr_url>  review`
 - **Describe**:     `python -m pr_agent.cli --pr_url=<pr_url>  describe`
@@ -36,20 +36,20 @@ The commands above assume the `pr_agent` package is importable — use the venv 
    verbosity_level=2
    ```
 
-   This is useful for debugging or experimenting with different tools.
+   This is useful for debugging or experimenting with different commands.
 
 3. **git provider**: The [git_provider](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) field in a configuration file determines the GIT provider that will be used by PR-Agent. Currently, the following providers are supported:
    `github` **(default)**, `gitlab`, `bitbucket`, `bitbucket_server`, `azure`, `codecommit`, `local`, `gerrit`, `gitea`, and `plain-diff`.
 
-4. For scripts that need a failed request to return a non-zero process status, enable tool error propagation:
+4. For scripts that need a failed request to return a non-zero process status, enable command error propagation:
 
    ```bash
-   python -m pr_agent.cli --pr_url=<pr_url> review --config.propagate_tool_errors=true
+   python -m pr_agent.cli --pr_url=<pr_url> review --config.propagate_command_errors=true
    ```
 
-   With `config.propagate_tool_errors=true`, the installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1 when a propagated tool error makes the request fail or a tool records a failure even though it returns successfully. In the latter case, the CLI logs a warning explaining the non-zero exit.
+   With `config.propagate_command_errors=true`, the installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1 when a propagated command error makes the request fail or a command records a failure even though it returns successfully. In the latter case, the CLI logs a warning explaining the non-zero exit.
 
-   Tool error propagation is disabled by default, preserving the existing status 0 behavior for these tool failures. Argparse parse and usage errors continue to exit with status 2.
+   Command error propagation is disabled by default, preserving the existing status 0 behavior for these command failures. Argparse parse and usage errors continue to exit with status 2.
 
 ### CLI Health Check
 
@@ -98,8 +98,8 @@ Before running the health check, ensure you have:
 
 ## Online usage
 
-Online usage means invoking PR-Agent tools by [comments](https://github.com/the-pr-agent/pr-agent/pull/229#issuecomment-1695021901) on a PR.
-Commands for invoking the different tools via comments:
+Online usage means invoking PR-Agent commands by [comments](https://github.com/the-pr-agent/pr-agent/pull/229#issuecomment-1695021901) on a PR.
+Commands for invoking the different commands via comments:
 
 - **Review**:       `/review`
 - **Describe**:     `/describe`
@@ -108,7 +108,7 @@ Commands for invoking the different tools via comments:
 - **Update Changelog**:      `/update_changelog`
 
 To edit a specific configuration value, just add `--config_path=<value>` to any command.
-For example, if you want to edit the `review` tool configurations, you can run:
+For example, if you want to edit the `review` command configurations, you can run:
 
 ```
 /review --pr_reviewer.extra_instructions="..." --pr_reviewer.require_score_review=false
@@ -127,7 +127,7 @@ To easily disable all automatic feedback from PR-Agent (GitHub App, GitLab Webho
 disable_auto_feedback = true
 ```
 
-When this parameter is set to `true`, PR-Agent will not run any automatic tools (like `describe`, `review`, `improve`) when a new PR is opened, or when new code is pushed to an open PR.
+When this parameter is set to `true`, PR-Agent will not run any automatic commands (like `describe`, `review`, `improve`) when a new PR is opened, or when new code is pushed to an open PR.
 
 ### GitHub App
 
@@ -135,11 +135,11 @@ When this parameter is set to `true`, PR-Agent will not run any automatic tools 
 These settings apply to self-hosted GitHub App, GitLab webhook, and Bitbucket App deployments.
 :::
 
-#### GitHub app automatic tools when a new PR is opened
+#### GitHub app automatic commands when a new PR is opened
 
 The [github_app](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) section defines GitHub app specific configurations.
 
-The configuration parameter `pr_commands` defines the list of tools that will be **run automatically** when a new PR is opened:
+The configuration parameter `pr_commands` defines the list of commands that will be **run automatically** when a new PR is opened:
 
 ```toml
 [github_app]
@@ -150,11 +150,11 @@ pr_commands = [
 ]
 ```
 
-This means that when a new PR is opened/reopened or marked as ready for review, PR-Agent will run the `describe`, `review` and `improve` tools.
+This means that when a new PR is opened/reopened or marked as ready for review, PR-Agent will run the `describe`, `review` and `improve` commands.
 
 **Draft PRs:**
 
-By default, the GitHub App does not consider draft PRs for automatic tools. You can change this by setting the `feedback_on_draft_pr` parameter to `true` in the configuration file. The GitHub Action applies the same setting to `pull_request_review` events. The GitLab webhook also skips draft MRs by default, while Gitea, Azure DevOps, and Bitbucket do not apply a draft check.
+By default, the GitHub App does not consider draft PRs for automatic commands. You can change this by setting the `feedback_on_draft_pr` parameter to `true` in the configuration file. The GitHub Action applies the same setting to `pull_request_review` events. The GitLab webhook also skips draft MRs by default, while Gitea, Azure DevOps, and Bitbucket do not apply a draft check.
 When enabled, marking the PR as ready does not run `pr_commands` a second time.
 Because this setting can be overridden per repository, draft PR events, including each `synchronize` event caused by a push, still fetch the repository configuration before being skipped.
 
@@ -163,9 +163,9 @@ Because this setting can be overridden per repository, draft PR events, includin
 feedback_on_draft_pr = true
 ```
 
-**Changing default tool parameters:**
+**Changing default command parameters:**
 
-You can override the default tool parameters by using one the three options for a [configuration file](./configuration_options.md): **local**, **global**, or **external URL**.
+You can override the default command parameters by using one the three options for a [configuration file](./configuration_options.md): **local**, **global**, or **external URL**.
 For example, if your configuration file contains:
 
 ```toml
@@ -173,14 +173,14 @@ For example, if your configuration file contains:
 generate_ai_title = true
 ```
 
-Every time you run the `describe` tool (including automatic runs) the PR title will be generated by the AI.
+Every time you run the `describe` command (including automatic runs) the PR title will be generated by the AI.
 
 
 **Parameters for automated runs:**
 
 You can customize configurations specifically for automated runs by using the `--config_path=<value>` parameter.
 These command parameters apply before repository loading, so they can control that loading, and again afterward so command values take precedence over repository settings.
-For instance, to modify the `review` tool settings only for newly opened PRs, use:
+For instance, to modify the `review` command settings only for newly opened PRs, use:
 
 ```toml
 [github_app]
@@ -191,12 +191,12 @@ pr_commands = [
 ]
 ```
 
-#### Automatic tools for push actions (commits to an open PR)
+#### Automatic commands for push actions (commits to an open PR)
 
-In addition to running automatic tools when a PR is opened, PR-Agent can also respond to new code that is pushed to an open PR. This works for both **GitHub App** and **GitHub Action** deployments.
+In addition to running automatic commands when a PR is opened, PR-Agent can also respond to new code that is pushed to an open PR. This works for both **GitHub App** and **GitHub Action** deployments.
 
 The configuration toggle `handle_push_trigger` can be used to enable this feature.
-The configuration parameter `push_commands` defines the list of tools that will be **run automatically** when new code is pushed to the PR.
+The configuration parameter `push_commands` defines the list of commands that will be **run automatically** when new code is pushed to the PR.
 
 ```toml
 [github_app]
@@ -209,13 +209,13 @@ push_commands = [
 
 For GitHub Action, settings fall back from `github_action_config.*` to `github_app.*`, so you can set either section.
 
-This means that when new code is pushed to the PR, PR-Agent will run the `describe` and `review` tools, with the specified parameters.
+This means that when new code is pushed to the PR, PR-Agent will run the `describe` and `review` commands, with the specified parameters.
 
 The `push_trigger_pending_tasks_backlog` and `push_trigger_pending_tasks_ttl` settings apply to the GitHub App only; the GitLab, Gitea, and Bitbucket servers use fixed values.
 
 ### GitHub Action
 
-`GitHub Action` is a different way to trigger PR-Agent tools, and uses a different configuration mechanism than `GitHub App`.<br>
+`GitHub Action` is a different way to trigger PR-Agent commands, and uses a different configuration mechanism than `GitHub App`.<br>
 You can configure settings for `GitHub Action` by adding environment variables under the env section in `.github/workflows/pr_agent.yml` file.
 
 :::tip[Fork/contribution support]
@@ -234,26 +234,26 @@ Specifically, start by setting the following environment variables:
         github_action_config.pr_actions: '["opened", "reopened", "ready_for_review", "review_requested"]'
 ```
 
-`github_action_config.auto_review`, `github_action_config.auto_describe` and `github_action_config.auto_improve` are used to enable/disable automatic tools that run when a new PR is opened.
-If not set, the default configuration is for all three tools to run automatically when a new PR is opened.
+`github_action_config.auto_review`, `github_action_config.auto_describe` and `github_action_config.auto_improve` are used to enable/disable automatic commands that run when a new PR is opened.
+If not set, the default configuration is for all three commands to run automatically when a new PR is opened.
 
 `github_action_config.pr_actions` is used to configure which `pull_requests` events will trigger the enabled auto flags
 If not set, the default configuration is `["opened", "reopened", "ready_for_review", "review_requested"]`
-Adding `"synchronize"` to this list enables auto tools on new commits pushed to an open PR. You must also add `synchronize` to the workflow `pull_request: types:` list.
+Adding `"synchronize"` to this list enables auto commands on new commits pushed to an open PR. You must also add `synchronize` to the workflow `pull_request: types:` list.
 
 `github_action_config.handle_push_trigger` controls whether synchronize events run the push commands (default `false`). Settings fall back to `github_app.*` if not set under `github_action_config`. Since it defaults to `false`, synchronize is opt-in — you must explicitly enable it by either adding `"synchronize"` to `pr_actions` or setting `handle_push_trigger = true`.
 
-`github_action_config.push_commands` defines which tools run on synchronize events when `handle_push_trigger` is enabled (fallback to `github_app.push_commands`).
+`github_action_config.push_commands` defines which commands run on synchronize events when `handle_push_trigger` is enabled (fallback to `github_app.push_commands`).
 
-`github_action_config.push_trigger_ignore_merge_commits` (default `true`) skips processing when the push contains a merge commit, avoiding duplicate reviews on "Update branch" clicks.
+`github_action_config.push_trigger_ignore_merge_commits` (default `true`) skips processing when the push only merges the base branch into the PR, as "Update branch" does, avoiding duplicate reviews on those clicks. The pushed head must be a merge commit whose first parent is the previous head and whose second parent is on the base branch. Any other push is processed, including one that adds commits before the merge or merges another branch.
 
 `github_action_config.push_trigger_ignore_bot_commits` (default `true`) skips processing when the push author is a bot, avoiding redundant runs on automated commits.
 
-`github_action_config.fail_on_tool_errors` (default `true`) makes the Action exit non-zero when a tool recorded a swallowed failure (the default `propagate_tool_errors = false` case), instead of finishing green on a pull request that got no review. Set it to `false` to restore the previous behavior of ignoring recorded tool failures. Set it in the workflow configuration; comment arguments such as `/review --github_action_config.fail_on_tool_errors=false` are rejected.
+`github_action_config.fail_on_command_errors` (default `true`) makes the Action exit non-zero when a command recorded a swallowed failure (the default `propagate_command_errors = false` case), instead of finishing green on a pull request that got no review. Set it to `false` to restore the previous behavior of ignoring recorded command failures. Set it in the workflow configuration; comment arguments such as `/review --github_action_config.fail_on_command_errors=false` are rejected.
 
-#### Automatic tools after a submitted GitHub review
+#### Automatic commands after a submitted GitHub review
 
-The GitHub App can run configured tools after a human reviewer submits a native GitHub review. This is opt-in: `review_commands` is empty by default. By default, only reviews submitted with the `changes_requested` state by a `User` review author trigger the commands. This conservative default avoids running on the repository's high-volume `commented` reviews; set `review_states` or `review_author_types` explicitly when a different workflow is needed.
+The GitHub App can run configured commands after a human reviewer submits a native GitHub review. This is opt-in: `review_commands` is empty by default. By default, only reviews submitted with the `changes_requested` state by a `User` review author trigger the commands. This conservative default avoids running on the repository's high-volume `commented` reviews; set `review_states` or `review_author_types` explicitly when a different workflow is needed.
 
 ```toml
 [github_app]
@@ -264,7 +264,7 @@ review_commands = [
 ]
 ```
 
-The event must be `submitted`; edited or dismissed reviews do not trigger tools. The review author's `user.type` must match `review_author_types`, which defaults to `User` and prevents bot reviews from triggering commands. Existing repository filtering, draft-PR handling, eligibility checks, and `config.disable_auto_feedback` still apply. The review text is not treated as a command; each configured command runs with the normal pull-request context.
+The event must be `submitted`; edited or dismissed reviews do not trigger commands. The review author's `user.type` must match `review_author_types`, which defaults to `User` and prevents bot reviews from triggering commands. Existing repository filtering, draft-PR handling, eligibility checks, and `config.disable_auto_feedback` still apply. The review text is not treated as a command; each configured command runs with the normal pull-request context.
 
 For GitHub Action, add the review event to the workflow and configure the equivalent settings. `github_action_config.*` overrides the corresponding `github_app.*` setting when present.
 
@@ -285,7 +285,7 @@ env:
 Review result is output as JSON to `steps.{step-id}.outputs.review` property.
 The JSON structure is equivalent to the yaml data structure defined in [pr_reviewer_prompts.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml).
 
-`github.publish_as_check_run` controls whether tool output (review, describe, improve) is published as a GitHub Check Run instead of a PR comment (default is `false`). When enabled, results appear in the "Checks" tab of the PR. Requires `checks: write` permission in the workflow YAML. On the GitHub App, each automatic command opens its check run as in progress before the tool runs, so the author sees that PR-Agent picked the pull request up before any output exists; while a chunked command runs, that in-progress run also shows the analyzed chunk count, for example `PR-Agent is running /review analyzed 2 of 3 chunks`. The run is completed with the tool's output, or marked failed if the command did not finish.
+`github.publish_as_check_run` controls whether command output (review, describe, improve) is published as a GitHub Check Run instead of a PR comment (default is `false`). When enabled, results appear in the "Checks" tab of the PR. Requires `checks: write` permission in the workflow YAML. On the GitHub App, each automatic command opens its check run as in progress before the command runs, so the author sees that PR-Agent picked the pull request up before any output exists; while a chunked command runs, that in-progress run also shows the analyzed chunk count, for example `PR-Agent is running /review analyzed 2 of 3 chunks`. The run is completed with the command's output, or marked failed if the command did not finish.
 
 Note that you can give additional config parameters by adding environment variables to `.github/workflows/pr_agent.yml`, or by using a `.pr_agent.toml` [configuration file](./configuration_options.md#global-configuration-file) in the root of your repo
 
@@ -296,7 +296,7 @@ For example, you can set an environment variable: `pr_description.publish_labels
 publish_labels = false
 ```
 
-to prevent PR-Agent from publishing labels when running the `describe` tool.
+to prevent PR-Agent from publishing labels when running the `describe` command.
 
 #### Enable using commands in PR
 
@@ -351,7 +351,7 @@ For environment-based deployments, set `GITLAB__FEEDBACK_ON_DRAFT_PR=true`.
 
 the GitLab webhook can also respond to new code that is pushed to an open MR.
 The configuration toggle `handle_push_trigger` can be used to enable this feature.
-The configuration parameter `push_commands` defines the list of tools that will be **run automatically** when new code is pushed to the MR.
+The configuration parameter `push_commands` defines the list of commands that will be **run automatically** when new code is pushed to the MR.
 
 ```toml
 [gitlab]
@@ -366,7 +366,7 @@ Note that to use the 'handle_push_trigger' feature, you need to give the gitlab 
 
 The GitLab webhook can also respond to the bot being assigned as a reviewer on an open MR.
 The configuration toggle `handle_reviewer_assignment` can be used to enable this feature.
-The configuration parameter `reviewer_commands` defines the list of tools that will be **run automatically** when the bot is added to the MR's reviewers.
+The configuration parameter `reviewer_commands` defines the list of commands that will be **run automatically** when the bot is added to the MR's reviewers.
 
 ```toml
 [gitlab]
@@ -395,7 +395,7 @@ For example, if your local `.pr_agent.toml` file contains:
 extra_instructions = "Answer in japanese"
 ```
 
-Each time you invoke a `/review` tool, it will use the extra instructions you set in the local configuration file.
+Each time you invoke a `/review` command, it will use the extra instructions you set in the local configuration file.
 
 Note that among other limitations, BitBucket provides relatively low rate-limits for applications (up to 1000 requests per hour), and does not provide an API to track the actual rate-limit usage.
 If you experience a lack of responses from PR-Agent, you might want to set: `bitbucket_app.avoid_full_files=true` in your configuration file.
@@ -406,7 +406,7 @@ response-read inactivity timeout, in positive seconds, for offloaded BitBucket H
 is read from host-level configuration or the `BITBUCKET_APP__REQUEST_TIMEOUT` environment variable; repository
 `.pr_agent.toml` overrides do not apply to this host resource limit.
 
-#### BitBucket Self-Hosted App automatic tools
+#### BitBucket Self-Hosted App automatic commands
 
 To control which commands will run automatically when a new PR is opened, you can set the `pr_commands` parameter in the configuration file:
 Specifically, set the following values:
@@ -435,7 +435,7 @@ push_commands = [
 
 ### BitBucket Server webhook
 
-For a BitBucket Server webhook deployment, new commits pushed to an open PR (the `pr:from_ref_updated` and `repo:refs_changed` events) run no tools by default. To run tools on each **push**, set (for example):
+For a BitBucket Server webhook deployment, new commits pushed to an open PR (the `pr:from_ref_updated` and `repo:refs_changed` events) run no commands by default. To run commands on each **push**, set (for example):
 
 ```toml
 [bitbucket_server]

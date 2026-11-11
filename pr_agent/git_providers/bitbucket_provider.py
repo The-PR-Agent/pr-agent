@@ -440,7 +440,9 @@ class BitbucketProvider(GitProvider):
             return self.git_files
 
     def get_diff_files(self) -> list[FilePatchInfo]:
-        if self.diff_files:
+        # `is not None`: an empty diff is a completed result and caches like any other,
+        # so repeated calls within a command make one diffstat + diff round trip.
+        if self.diff_files is not None:
             self._pending_diffstat = None
             return self.diff_files
 
@@ -465,24 +467,15 @@ class BitbucketProvider(GitProvider):
 
         # get the pr patches
         try:
-            pr_patches = self.pr.diff()
+            diff_split = _split_raw_diff(self.pr.diff())
         except Exception as e:
-            # Try different encodings if UTF-8 fails
-            get_logger().warning(f"Failed to decode PR patch with utf-8, error: {e}")
-            encodings_to_try = ['iso-8859-1', 'latin-1', 'ascii', 'utf-16']
-            pr_patches = None
-            for encoding in encodings_to_try:
-                try:
-                    pr_patches = self.pr.diff(encoding=encoding)
-                    get_logger().info(f"Successfully decoded PR patch with encoding {encoding}")
-                    break
-                except UnicodeDecodeError:
-                    continue
+            # A file that is not UTF-8 fails the decode of the whole diff. Read it as ISO-8859-1, which maps every
+            # byte to one character, and decode each file on its own, so the other files keep their UTF-8 text.
+            get_logger().warning(
+                f"Failed to get the PR diff as UTF-8 ({type(e).__name__}: {e}), decoding each file on its own")
+            pr_patches = self.pr.diff(encoding='iso-8859-1')
+            diff_split = [decode_if_bytes(patch.encode('iso-8859-1')) for patch in _split_raw_diff(pr_patches)]
 
-            if pr_patches is None:
-                raise ValueError(f"Failed to decode PR patch with encodings {encodings_to_try}") from e
-
-        diff_split = _split_raw_diff(pr_patches)
         patches_by_path = {}
         for patch in diff_split:
             paths = _diff_header_paths(patch)

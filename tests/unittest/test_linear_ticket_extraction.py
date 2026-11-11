@@ -3,8 +3,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from pr_agent.commands import ticket_pr_compliance_check as tpc
 from pr_agent.config_loader import get_settings
-from pr_agent.tools import ticket_pr_compliance_check as tpc
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 from tests.unittest.test_ticket_pr_compliance_capabilities import (
     _BaseStubProvider,

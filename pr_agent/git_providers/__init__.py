@@ -137,7 +137,7 @@ def get_git_provider():
         provider_id = get_settings().config.git_provider
     except AttributeError as e:
         raise ValueError("git_provider is a required attribute in the configuration file") from e
-    # Same plain-diff keying as get_git_provider_with_context(): tools that build
+    # Same plain-diff keying as get_git_provider_with_context(): commands that build
     # their provider through this function (e.g. PRQuestions for `ask`) must also
     # honor loaded diff content, so an extra/repo config that overwrote
     # config.git_provider can't route a supported command to a hosted provider.
@@ -185,14 +185,14 @@ def get_git_provider_with_context(pr_url) -> GitProvider:
             raise ValueError(f"Failed to get git provider for {pr_url}") from e
 
 
-def get_git_provider_for_tool(pr_url) -> GitProvider:
+def get_git_provider_for_command(pr_url) -> GitProvider:
     """Reuse an eligible request provider only before an automatic command boundary."""
     provider_class = get_git_provider()
-    if provider_class.__dict__.get("reuse_for_manual_tool", False) and context.exists():
+    if provider_class.__dict__.get("reuse_for_manual_command", False) and context.exists():
         cached = context.get("git_provider", {}).get(pr_url)
         if (
             type(cached) is provider_class
-            and not getattr(cached, "_tool_provider_stale", False)
+            and not getattr(cached, "_command_provider_stale", False)
             and not get_settings().get("CONFIG.EXTRA_CONFIG_URL")
             and not context.get("extra_config_source_seen", False)
         ):

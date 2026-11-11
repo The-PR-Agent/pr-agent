@@ -188,13 +188,18 @@ def matches_sensitive_path(path: str, patterns: Sequence[str] | None = None) -> 
     if not norm:
         return None
     globs = patterns if patterns is not None else DEFAULT_SENSITIVE_PATHS
+    parsed = None
     for pat in globs:
         if not isinstance(pat, str) or not pat or len(pat) > MAX_GLOB_LENGTH:
             continue
-        if fnmatchcase(norm, pat) or PurePosixPath(norm).match(pat):
+        if fnmatchcase(norm, pat):
+            return pat
+        if parsed is None:
+            parsed = PurePosixPath(norm)
+        if parsed.match(pat):
             return pat
         # Also check basename for simple filename patterns like *.tf or package.json
-        if fnmatchcase(PurePosixPath(norm).name, pat):
+        if fnmatchcase(parsed.name, pat):
             return pat
     return None
 
@@ -242,10 +247,14 @@ def scan_file_diff(
     """
     spent = custom_pattern_seconds if custom_pattern_seconds is not None else {}
     findings = []
-    filename = file_info.filename or ""
+    filename = _file_value(file_info, "filename", "new_path", default="") or ""
 
     # Check for deleted file
-    if getattr(file_info, "edit_type", None) == EDIT_TYPE.DELETED:
+    if (
+        _file_value(file_info, "edit_type") == EDIT_TYPE.DELETED
+        or _file_value(file_info, "deleted_file") is True
+        or _file_value(file_info, "status") in ("removed", "deleted")
+    ):
         findings.append({
             "category": "deleted_file",
             "description": "Deleted file",
@@ -262,7 +271,7 @@ def scan_file_diff(
             "line": "",
         })
 
-    patch = file_info.patch or ""
+    patch = _file_value(file_info, "patch", "diff") or ""
     if not patch:
         return findings
 
@@ -381,16 +390,26 @@ def _extract_file_paths(file_entry: Any) -> list[str]:
     return paths
 
 
+def _file_value(file_entry: Any, *names: str, default: Any = None) -> Any:
+    for name in names:
+        value = file_entry.get(name) if isinstance(file_entry, dict) else getattr(file_entry, name, None)
+        if value is not None:
+            return value
+    return default
+
+
 def build_risk_checks(
     diff_files: list[FilePatchInfo] | None,
     unfiltered_files: Sequence[Any] | None = None,
+    *,
+    include_clean: bool = False,
 ) -> dict | None:
-    """Assess deterministic risk for all diff files and unfiltered files in the PR. Return findings dict or None."""
+    """Assess PR risk; return clean results only when requested, and None when unavailable."""
     try:
         settings = get_settings()
         if not _as_bool_setting(settings.pr_reviewer.get("enable_risk_checks", True), default=True):
             return None
-        if not diff_files and not unfiltered_files:
+        if diff_files is None and not unfiltered_files:
             return None
 
         configured_paths = settings.pr_reviewer.get("sensitive_paths", DEFAULT_SENSITIVE_PATHS)
@@ -408,9 +427,11 @@ def build_risk_checks(
 
         seen_sensitive = set()
         for file in (diff_files or []):
-            filename = normalize_file_path(getattr(file, "filename", ""))
+            if isinstance(file, dict) and (file.get("too_large") is True or file.get("collapsed") is True):
+                return None
+            filename = normalize_file_path(_file_value(file, "filename", "new_path", default=""))
             old_filename = normalize_file_path(
-                getattr(file, "old_filename", None) or getattr(file, "previous_filename", None)
+                _file_value(file, "old_filename", "previous_filename", "old_path")
             )
 
             # Check sensitive paths for current filename
@@ -428,12 +449,18 @@ def build_risk_checks(
                     sensitive_matches.append({"file": old_filename, "pattern": matched_old})
 
             # Check deleted files
-            if getattr(file, "edit_type", None) == EDIT_TYPE.DELETED:
+            if (
+                _file_value(file, "edit_type") == EDIT_TYPE.DELETED
+                or _file_value(file, "deleted_file") is True
+                or _file_value(file, "status") in ("removed", "deleted")
+            ):
                 deleted_name = filename or old_filename
                 if deleted_name and deleted_name not in deleted_files:
                     deleted_files.append(deleted_name)
 
             # Scan diff patch
+            if _file_value(file, "patch", "diff") is None:
+                return None
             shapes = scan_file_diff(file, custom_patterns, custom_pattern_seconds)
             risky_shapes.extend(shape for shape in shapes if shape["category"] != "deleted_file")
 
@@ -449,7 +476,7 @@ def build_risk_checks(
                             sensitive_matches.append({"file": norm, "pattern": matched})
 
         has_findings = bool(sensitive_matches or risky_shapes or deleted_files)
-        if not has_findings:
+        if not has_findings and not include_clean:
             return None
 
         return {
