@@ -720,7 +720,9 @@ async def test_review_comment_with_review_command_mentioning_ask_stays_review(
 @pytest.mark.parametrize("action", ["created", "edited"])
 @pytest.mark.parametrize("subject_type,command", [
     ("file", "/ask"), ("line", "/ask"), (None, "/ask"), ("file", "/ask_line"),
-], ids=["file", "line", "omitted", "file-explicit-line"])
+    ("file", "/ask_question"), ("file", "/ASK"),
+    ("line", "/ask_question"), ("line", "/ASK"), ("line", "/ask_line"), ("line", "/ASK_LINE"),
+])
 async def test_review_comment_ask_routes_by_subject_type(
     monkeypatch, tmp_path, restore_github_settings, action, subject_type, command
 ):
@@ -734,7 +736,9 @@ async def test_review_comment_ask_routes_by_subject_type(
     else:
         payload["comment"]["subject_type"] = subject_type
     if subject_type == "file":
-        payload["comment"].update(start_line=None, line=1, original_line=1, diff_hunk="")
+        # GitHub file comments can carry a line=1 placeholder even with subject_type=file.
+        line = 1 if command in ("/ask", "/ask_line") else None
+        payload["comment"].update(start_line=None, line=line, original_line=line, diff_hunk="")
     event_path.write_text(json.dumps(payload))
 
     handled = []
@@ -747,7 +751,7 @@ async def test_review_comment_ask_routes_by_subject_type(
     assert len(handled) == 1
     url, request = handled[0]
     assert url == "https://api.github.com/repos/org/repo/pulls/1"
-    if subject_type == "file" and command == "/ask":
+    if subject_type == "file" and command.lower() in ("/ask", "/ask_question"):
         assert request[0] == "/ask"
         assert decode_user_text_args(request[1:]) == question
     else:
@@ -756,10 +760,11 @@ async def test_review_comment_ask_routes_by_subject_type(
             "/ask_line", f"--line_start={start}", f"--line_end={end}", "--side=RIGHT",
             "--file_name=src/app.py", "--comment_id=123",
         ]
-        assert request[6].endswith(question)
+        assert request[6] == question
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("command,file_line", [("/ask", 1), ("/ask_question", None)])
 @pytest.mark.parametrize("question,file_path,in_reply_to_id", [
     ('Why is `"` escaped here?', "src/Other File.py", None),
     ("Explain --config.publish_output=false in this code.", "src/Other File.py", None),
@@ -770,7 +775,7 @@ async def test_review_comment_ask_routes_by_subject_type(
     ("Why this change?", "src/app.py", 456),
 ])
 async def test_file_question_keeps_literal_text_and_path_through_dispatch(
-    monkeypatch, tmp_path, restore_github_settings, question, file_path, in_reply_to_id
+    monkeypatch, tmp_path, restore_github_settings, question, file_path, in_reply_to_id, command, file_line
 ):
     observed = []
 
@@ -782,9 +787,12 @@ async def test_file_question_keeps_literal_text_and_path_through_dispatch(
         ))
         return SimpleNamespace(run=AsyncMock())
 
-    event_path = _write_review_comment_event_with_body(tmp_path, f"/ask {question}")
+    event_path = _write_review_comment_event_with_body(tmp_path, f"{command} {question}")
     payload = json.loads(event_path.read_text())
-    payload["comment"].update(subject_type="file", path=file_path, start_line=None, line=1, diff_hunk="")
+    payload["comment"].update(
+        subject_type="file", path=file_path, start_line=None, line=file_line,
+        original_line=file_line, diff_hunk="",
+    )
     payload["comment"]["in_reply_to_id"] = in_reply_to_id
     event_path.write_text(json.dumps(payload))
     _patch_issue_comment_deps(monkeypatch, [])
@@ -805,8 +813,13 @@ async def test_file_question_keeps_literal_text_and_path_through_dispatch(
     )]
 
 
-def _patch_synchronize_deps(monkeypatch, handled, push_commands, handle_push_trigger=True):
-    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
+def _patch_synchronize_deps(monkeypatch, handled, push_commands, handle_push_trigger=True, base_branch_merges=None):
+    # apply_repo_settings returns the provider it loaded, which knows each PR commit's parents; it tells
+    # which (head, previous head) pairs only merge the base branch.
+    provider = None if base_branch_merges is None else SimpleNamespace(
+        is_base_branch_merge=lambda sha, previous_head: (sha, previous_head) in base_branch_merges
+    )
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: provider)
     settings = get_settings()
     monkeypatch.setitem(settings.store["github_app"], "push_commands", list(push_commands))
     settings.set("github_action_config", {
@@ -1408,19 +1421,44 @@ async def test_synchronize_event_triggers_push_commands_on_pull_request_target(
 
 @pytest.mark.asyncio
 async def test_synchronize_skips_merge_commit(monkeypatch, tmp_path, restore_github_settings):
+    # "Update branch" pushes a merge of the base branch onto the previous head; merge_commit_sha is
+    # GitHub's test merge of that head into the base, not the pushed commit.
     handled = []
-    _patch_synchronize_deps(monkeypatch, handled, ["/describe"])
+    _patch_synchronize_deps(monkeypatch, handled, ["/describe"], base_branch_merges={("merge123", "abc")})
     settings = get_settings()
     monkeypatch.setitem(settings.store["github_action_config"], "push_trigger_ignore_merge_commits", True)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(
-        tmp_path, before_sha="abc", after_sha="merge123", merge_commit_sha="merge123"
+        tmp_path, before_sha="abc", after_sha="merge123", merge_commit_sha="testmerge"
     )))
     monkeypatch.setenv("GITHUB_TOKEN", "token")
 
     await github_action_runner.run_action()
 
     assert handled == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("before_sha", ["abc", None], ids=["not-a-base-branch-merge", "no-before"])
+async def test_synchronize_runs_unless_push_only_merges_base_branch(
+    monkeypatch, tmp_path, restore_github_settings, before_sha
+):
+    # merge123 merges the base branch onto "older", not onto the head this push replaced.
+    handled = []
+    _patch_synchronize_deps(
+        monkeypatch, handled, ["/describe"], base_branch_merges={("merge123", "older"), ("merge123", None)}
+    )
+    settings = get_settings()
+    monkeypatch.setitem(settings.store["github_action_config"], "push_trigger_ignore_merge_commits", True)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(
+        tmp_path, before_sha=before_sha, after_sha="merge123", merge_commit_sha="testmerge"
+    )))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", ["/describe"])]
 
 
 @pytest.mark.asyncio
@@ -1446,7 +1484,7 @@ async def test_synchronize_skips_bot_commit(monkeypatch, tmp_path, restore_githu
     [
         (
             "push_trigger_ignore_merge_commits",
-            {"before_sha": "abc", "after_sha": "merge123", "merge_commit_sha": "merge123"},
+            {"before_sha": "abc", "after_sha": "merge123", "merge_commit_sha": "testmerge"},
         ),
         ("push_trigger_ignore_bot_commits", {"sender_type": "Bot"}),
     ],
@@ -1456,7 +1494,7 @@ async def test_synchronize_fails_closed_for_invalid_ignore_setting(
     monkeypatch, tmp_path, restore_github_settings, setting_name, event_kwargs
 ):
     handled = []
-    _patch_synchronize_deps(monkeypatch, handled, ["/describe"])
+    _patch_synchronize_deps(monkeypatch, handled, ["/describe"], base_branch_merges={("merge123", "abc")})
     settings = get_settings()
     monkeypatch.setitem(settings.store["github_action_config"], setting_name, "y")
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")

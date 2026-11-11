@@ -61,7 +61,9 @@ def test_is_command_comment(body, expected):
         ("/ask_line --line_start=1", True),
         ("/asking about retries", False),
         ("/askfoo", False),
-        ("/ASK why?", False),
+        ("/ASK why?", True),
+        ("/ask_question why?", True),
+        ("/ASK_LINE why?", True),
         ("/review please, I will /ask later", False),
         ("review please, I will /ask later", False),
         ("can you /ask about this line?", False),
@@ -144,8 +146,9 @@ async def test_gitlab_diffnote_review_mentioning_ask_stays_review(monkeypatch):
     )]
 
 
-async def test_gitlab_diffnote_starting_with_ask_still_routes_to_ask_line(monkeypatch):
-    dispatched = await _run_gitlab_note_webhook(monkeypatch, "/ask why is this null?", note_type="DiffNote")
+@pytest.mark.parametrize("command", ["/ask", "/ask_question", "/ASK", "/ask_line", "/ASK_LINE"])
+async def test_gitlab_diffnote_starting_with_ask_still_routes_to_ask_line(monkeypatch, command):
+    dispatched = await _run_gitlab_note_webhook(monkeypatch, f"{command} why is this null?", note_type="DiffNote")
 
     assert len(dispatched) == 1
     _url, body = dispatched[0]

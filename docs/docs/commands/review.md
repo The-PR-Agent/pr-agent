@@ -46,8 +46,12 @@ pr-agent --pr_url https://github.com/org/repo/pull/123 --json-output review.json
 ```
 
 The JSON file is written after the review completes. Place `--json-output` before `review` or `review_pr`.
-Its `coverage` object lists the files the token budget kept out of the review (`files_not_reviewed`) and those whose
-patches were clipped to fit it (`files_partially_reviewed`), the same files the review coverage footer names.
+Its `coverage` object lists the files the token budget or chunk-call limit kept out of the review (`files_not_reviewed`)
+and those whose patches were clipped to fit the token budget (`files_partially_reviewed`).
+The JSON includes the full lists even when the Markdown footer summarizes them.
+It also includes `total_chunks` and `failed_chunks` for the final analysis plan, after fallback recovery.
+These count analysis chunks, not model requests or retry attempts. A nonzero `failed_chunks` means that the
+review is partial even if both file lists are empty; findings from successful chunks are retained.
 
 ### Automatic triggering
 
@@ -81,6 +85,14 @@ for the authoritative default values.
   <tr>
     <td><b>persistent_comment</b></td>
     <td>If set to true, the review comment will be persistent, meaning that every new review request will edit the previous one.</td>
+  </tr>
+  <tr>
+    <td><b>per_commit_review</b></td>
+    <td>If set to true, each commit of the PR is reviewed on its own diff and commit message, and one review comment is published per commit. See <a href="#reviewing-each-commit-separately">Reviewing each commit separately</a>. It can't be turned on from a command argument, only from a configuration file or environment variable. Default is false.</td>
+  </tr>
+  <tr>
+    <td><b>max_commits_per_review</b></td>
+    <td>Maximum number of commits <code>per_commit_review</code> reviews one by one. When more commits than that are not reviewed yet, the whole PR is reviewed in one review instead, with a notice. It can't be set from a command argument or a per directory configuration file. Default is 0, no limit.</td>
   </tr>
   <tr>
     <td><b>publish_review_failure_comment</b></td>
@@ -379,6 +391,65 @@ Every other `pr_code_suggestions` setting is ignored since 0.52.
 ```
 /review --pr_code_suggestions.committable_code_suggestions=true
 ```
+
+### Reviewing each commit separately
+
+:::tip
+
+Projects that keep one logical change per commit can ask for a review of every commit instead of the combined PR diff,
+in a configuration file:
+
+```
+[pr_reviewer]
+per_commit_review = true
+```
+
+Each commit is reviewed against its own parent, with its commit message in the prompt, and gets its own
+incremental review comment that names and links the commit. These comments are never the persistent
+review comment, and they do not change the review labels.
+
+Each run reviews only the commits of the PR that were not reviewed yet, so `-i` is not needed in `pr_commands` or
+`push_commands`, and the first run reviews every commit. A commit is identified by a fingerprint of its own changes
+(file names and patch lines, without line numbers), and counts as reviewed once its review succeeds: the fingerprint
+is kept in a hidden marker in the commit's review comment or, when no comment is published for it, in one record
+comment that is edited in place. A commit whose review failed is reviewed again on the next run; automatic runs stop
+retrying it after 3 failed attempts, while a manual `/review` always retries.
+`minimal_commits_for_incremental_review` and `minimal_minutes_for_incremental_review` do not apply to per commit
+review, since each run picks the commits to review from these markers instead of the `-i` thresholds.
+The commit list is read from the git provider on every run, so after a force push the review follows the rewritten
+history: a commit that was rebased without changing its own patch is not reviewed again, a commit that was amended or
+had fixups folded into it (for example with `git rebase --autosquash`) is reviewed again, and fixup commits that no
+longer exist are not reviewed. Markers count only in comments PR-Agent wrote; when the git provider cannot confirm
+that, the whole PR is reviewed in one review with a notice instead.
+On GitLab, a commit with a collapsed, too large or rename only file is reviewed again after a rebase, since its
+fingerprint includes its SHA.
+
+Set `publish_output_no_suggestions = false` in the `[pr_reviewer]` section
+(`--pr_reviewer.publish_output_no_suggestions=false` on the command line) to skip the comment of a commit where
+nothing was found.
+With `inline_key_issues = true`, each finding is published as an inline comment on the commit it was found in,
+anchored to that commit's own diff, so GitHub and GitLab show it as outdated once a later commit changes those lines.
+A finding that cannot be anchored there, for example because its line is outside that commit's diff or the provider
+rejects it, stays in that commit's review comment instead of being moved to a nearby line.
+
+Merge commits, empty commits and the root commit of a history have no diff of their own and are skipped. A commit that
+fails to review is reported like a failed review and does not stop the remaining commits. Every reviewed commit is a
+separate model call, so the first review of a PR with many commits costs accordingly; later runs review only the new
+commits.
+Hosts that want to bound that cost can set `max_commits_per_review` (default 0, no limit): when more commits than that
+are not reviewed yet, the whole PR is reviewed in one review with a notice, and its commits count as reviewed.
+The markers live only in PR-Agent's own comments, so if those comments are removed, the next run reviews every commit
+of the PR again, unless `max_commits_per_review` is set and the PR has more commits than that, in which case the whole
+PR gets one review.
+Both settings belong to the operator, so a command argument such as `--pr_reviewer.per_commit_review=true` is
+rejected.
+Each commit's comment shows its own run details, while the `--json-output` file and the GitHub Action `review` output
+describe the last reviewed commit only.
+
+Per commit review is available on GitHub and GitLab. Other git providers fall back to a regular review of the whole PR.
+GitHub lists at most 250 commits of a PR, so a PR with more commits than that is also reviewed as a whole, with a
+notice explaining why.
+:::
 
 ### Reviewing a PR that does not fit in one call
 

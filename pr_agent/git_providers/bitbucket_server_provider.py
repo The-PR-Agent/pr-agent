@@ -233,9 +233,10 @@ class BitbucketServerProvider(GitProvider):
     def get_file(self, path: str, commit_id: str, *, missing_is_error: bool = False):
         file_content = ""
         try:
+            # atlassian adds the path to the URL unescaped; quote it so "#", "?" and "%" stay part of the file name.
             file_content = self.bitbucket_client.get_content_of_file(self.workspace_slug,
                                                                      self.repo_slug,
-                                                                     path,
+                                                                     quote(path, safe="/"),
                                                                      commit_id)
         except HTTPError as e:
             if getattr(getattr(e, "response", None), "status_code", None) == 404:
@@ -276,7 +277,9 @@ class BitbucketServerProvider(GitProvider):
         return guaranteed_common_ancestor
 
     def get_diff_files(self) -> list[FilePatchInfo]:
-        if self.diff_files:
+        # `is not None`: an empty diff is a completed result and caches like any other,
+        # so repeated calls within a command make one round of API calls (#4860).
+        if self.diff_files is not None:
             return self.diff_files
 
         head_sha = self.pr.fromRef['latestCommit']

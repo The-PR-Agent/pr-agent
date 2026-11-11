@@ -59,7 +59,9 @@ from .git_provider import (
     GitProvider,
     IncompletePullRequestFilesError,
     IncrementalPR,
+    PRCommit,
     cache_languages,
+    commit_patch_fingerprint,
     get_config_branch,
     redact_credentials,
 )
@@ -213,6 +215,8 @@ class GithubProvider(GitProvider):
         if context.exists():
             context.pop("diff_files", None)
         self.incremental = incremental if incremental is not None else IncrementalPR(False)
+        if getattr(self, "_pr_head_commit", None) is not None:
+            self.last_commit_id, self._pr_head_commit = self._pr_head_commit, None
         if self.incremental.is_incremental:
             self.unreviewed_files_map = dict()
             self._get_incremental_commits()
@@ -400,6 +404,19 @@ class GithubProvider(GitProvider):
         if not self.pr_commits:
             self.pr_commits = list(self.pr.get_commits())
 
+        if (
+            not self.pr_commits
+            or len(self.pr_commits) != self.pr.commits
+            or self.pr_commits[-1].sha != self.pr.head.sha
+        ):
+            get_logger().info(
+                f"PR commit list inconsistent ({len(self.pr_commits)}/{self.pr.commits} commits, "
+                f"last={self.pr_commits[-1].sha if self.pr_commits else 'none'}, head={self.pr.head.sha}); "
+                "falling back to a full review"
+            )
+            self.incremental.is_incremental = False
+            return
+
         self.previous_review = self.get_previous_review(full=True, incremental=True)
         if self.previous_review:
             self.incremental.commits_range = self.get_commit_range()
@@ -452,6 +469,60 @@ class GithubProvider(GitProvider):
                 self.incremental.last_seen_commit = self.pr_commits[index]
                 break
         return self.pr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
+
+    def get_pr_commits(self) -> list[PRCommit]:
+        return [PRCommit(sha=commit.sha, message=commit.commit.message or "", url=commit.html_url or "",
+                         parents=tuple(parent.sha for parent in commit.parents))
+                for commit in self.pr.get_commits()]
+
+    def is_base_branch_merge(self, sha: str, previous_head: str) -> bool:
+        """Whether commit `sha` only merges the base branch into `previous_head`, as "Update branch" does.
+
+        The commit must have exactly two parents: `previous_head` first, so nothing else was committed on top of
+        it, then a commit on the base branch. The PR's commits were read with their parents when the PR loaded,
+        so one of them costs no request, and neither does a second parent that is the PR's base commit. Any other
+        commit is read from the repository, and any other second parent is compared with the base branch.
+        """
+        loaded = [*(getattr(self, "pr_commits", None) or []), getattr(self, "last_commit_id", None)]
+        commit = next((commit for commit in loaded if getattr(commit, "sha", None) == sha), None)
+        if commit is None:
+            commit = self._get_repo().get_commit(sha)
+        parents = [parent.sha for parent in commit.parents]
+        if len(parents) != 2 or parents[0] != previous_head:
+            return False
+        if parents[1] == self.pr.base.sha:
+            return True
+        # "ahead" or "identical": the second parent is an ancestor of the base branch's head, or that head.
+        return self._get_repo().compare(parents[1], self.pr.base.ref).status in ("ahead", "identical")
+
+    def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> str | None:
+        self.incremental = incremental
+        self.diff_files = None
+        if context.exists():
+            context.pop("diff_files", None)
+        self.unreviewed_files_map = {}
+        loaded = vars(self).setdefault("_loaded_commits", {})
+        if commit.sha not in loaded:
+            gh_commit = self._get_repo().get_commit(commit.sha)
+            loaded[commit.sha] = gh_commit, (list(gh_commit.get_files(commit_files_per_page=300))
+                                             if len(gh_commit.parents) == 1 else [])
+        gh_commit, files = loaded[commit.sha]
+        parents = gh_commit.parents
+        if len(parents) != 1:
+            get_logger().info(f"Skipping commit {commit.sha} with {len(parents)} parents in per commit review")
+            return None
+
+        incremental.first_new_commit = gh_commit
+        incremental.last_seen_commit = parents[0]
+        incremental.head_sha = commit.sha
+        self._pr_head_commit = getattr(self, "_pr_head_commit", None) or getattr(self, "last_commit_id", None)
+        self.last_commit_id = gh_commit
+        self.unreviewed_files_map = {file.filename: file for file in files}
+        if not files:
+            return None
+        return commit_patch_fingerprint(
+            (f"{file.previous_filename or ''}\0{file.filename}", file.patch if file.patch is not None else file.sha)
+            for file in files)
 
     def get_previous_review(self, *, full: bool, incremental: bool):
         if not (full or incremental):
@@ -672,7 +743,8 @@ class GithubProvider(GitProvider):
                         new_file_content_str = ""
                     else:
                         # communication with GitHub
-                        new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha, **read_options)
+                        new_file_content_str = self._get_pr_file_content(
+                            file, getattr(self.incremental, "head_sha", None) or self.pr.head.sha, **read_options)
 
                     if self.incremental.is_incremental and self.unreviewed_files_map:
                         original_file_content_str = self._get_pr_file_content(
@@ -1137,6 +1209,13 @@ class GithubProvider(GitProvider):
             return False
         check_run_name = self._check_run_name(name)
         create_body = {"name": check_run_name, "head_sha": self.last_commit_id.sha, **body}
+        run_id = os.environ.get("GITHUB_RUN_ID", "").strip()
+        if run_id:
+            # Stamp the workflow run id so `_is_current_action_run` recognises
+            # this as the running Action's own check run: its app is
+            # `github-actions`, shared with every other workflow, so the app
+            # alone cannot identify it.
+            create_body.setdefault("external_id", run_id)
         update_body = body
         existing_id = self._check_run_ids.get(name)
         if not existing_id:
@@ -1664,6 +1743,8 @@ class GithubProvider(GitProvider):
         for suggestion in code_suggestions_with_fingerprints:
             suggestion["_dedup_code_fp"] = code_fingerprint(
                 suggestion.get("relevant_file", ""), None, suggestion.get("body", ""))
+        if getattr(getattr(self, "incremental", None), "head_sha", None):
+            return code_suggestions_with_fingerprints
         return self.validate_comments_inside_hunks(code_suggestions_with_fingerprints)
 
     def _build_code_suggestion_payload(self, suggestion: dict) -> dict:
@@ -2040,7 +2121,8 @@ class GithubProvider(GitProvider):
         current_owner = self.get_owning_namespace(resolved=True)
         # Reject redirects/transfers unless the canonical same-owner repository was selected.
         if (not isinstance(resolved_name, str) or resolved_name.casefold() != repo_id.casefold()
-                or not current_owner or resolved_name.split("/")[0].casefold() != current_owner.casefold()):
+                or not self.is_sibling_namespace_allowed(resolved_name.split("/")[0], current_owner,
+                                                         case_sensitive=False)):
             get_logger().warning(f"Ignoring out-of-owner sibling repo in repo context: {repo_id}")
             return None
         if not self._requester_can_read_sibling_repo(sibling_repo):
@@ -2584,28 +2666,72 @@ class GithubProvider(GitProvider):
             get_logger().exception(f"Failed to auto-approve, error: {e}")
             return False
 
-    def _get_pr_agent_check_names(self) -> set[str]:
-        names = {
-            self._check_run_name(cmd)
-            for cmd in (
-                "review",
-                "describe",
-                "improve",
-                "ask",
-                "reflect",
-                "test",
-                "similar_issue",
-                "checks",
-                "verdict",
-                "auto_review",
-                "review_pr",
-                "improve_code",
-                "ask_question",
-            )
-        }
-        if hasattr(self, "_check_run_ids"):
-            names.update(self._check_run_name(k) for k in self._check_run_ids)
-        return names
+    def _is_own_check_run(self, run, own_app_login: str) -> bool:
+        """Return whether `run` was published by the running PR-Agent app.
+
+        The check run's app slug is compared against the identity this
+        deployment resolves for itself (`_resolve_app_login()`), so a
+        self-hosted app under any slug is recognised and a foreign run
+        that merely reuses one of PR-Agent's check names is not. When the
+        identity cannot be resolved, nothing is skipped: guessing would
+        reintroduce the slug matching this replaces. The GitHub Action
+        deployment is not covered here — its app is `github-actions`,
+        shared with every other workflow, so its own runs are recognised
+        by the stamped workflow run id instead (`_is_current_action_run`).
+        """
+        if not own_app_login:
+            return False
+        app = getattr(run, "app", None)
+        app_slug = (getattr(app, "slug", "") or "").lower() if app else ""
+        if not app_slug:
+            return False
+        return f"{app_slug}[bot]" == own_app_login.lower()
+
+    def _get_head_push_time(self, repo, sha: str) -> datetime | None:
+        """Return when `sha` was pushed, from the repo push events.
+
+        The head commit's author/committer dates are set by the PR author,
+        so a forward-dated commit must never stand in for the push time.
+        Push events carry a server-side timestamp instead. Only the most
+        recent 300 events are scanned; None means the push was not found
+        and the caller must fail closed.
+
+        For a fork PR the pushes land in the fork's event stream, not the
+        base repo's, so the events are read from the head repository when
+        it differs from `repo`.
+        """
+        try:
+            head_ref = None
+            pr = getattr(self, "pr", None)
+            head = getattr(pr, "head", None) if pr else None
+            if head is not None:
+                head_ref = getattr(head, "ref", None)
+            expected_ref = f"refs/heads/{head_ref}" if head_ref else None
+
+            events_repo = repo
+            head_repo = getattr(head, "repo", None) if head is not None else None
+            if head_repo is not None:
+                head_full_name = getattr(head_repo, "full_name", None)
+                repo_full_name = getattr(repo, "full_name", None)
+                if head_full_name and repo_full_name and head_full_name != repo_full_name:
+                    events_repo = head_repo
+
+            events = events_repo.get_events() if hasattr(events_repo, "get_events") else []
+            for event in islice(events, 300):
+                if getattr(event, "type", "") != "PushEvent":
+                    continue
+                payload = getattr(event, "payload", None) or {}
+                if payload.get("head") != sha:
+                    continue
+                if expected_ref and payload.get("ref") != expected_ref:
+                    continue
+                pushed_at = getattr(event, "created_at", None)
+                if pushed_at:
+                    return _ensure_utc(pushed_at)
+            return None
+        except Exception as e:
+            get_logger().debug(f"Could not determine head push time for {sha}: {e}")
+            return None
 
     @staticmethod
     def _is_current_action_run(run) -> bool:
@@ -2656,17 +2782,15 @@ class GithubProvider(GitProvider):
                     return None
 
             if check_runs is not None:
-                pr_agent_check_names = self._get_pr_agent_check_names()
-
+                own_app_login = self._resolve_app_login()
                 for run in check_runs:
-                    # Ignore PR-Agent's own check runs to avoid self-blocking
-                    app = getattr(run, "app", None)
-                    app_slug = (getattr(app, "slug", "") or "").lower() if app else ""
-                    run_name = getattr(run, "name", "") or ""
-
-                    if app_slug in ("pr-agent", "pr_agent", "the-pr-agent"):
-                        continue
-                    if run_name in pr_agent_check_names:
+                    # Ignore PR-Agent's own check runs to avoid self-blocking.
+                    # The running app's resolved identity is the authenticator:
+                    # any workflow can name a job "PR Agent - Review", so a
+                    # name alone must never skip a run, or that job's failure
+                    # would never count. A self-hosted app under any slug is
+                    # recognised the same way.
+                    if self._is_own_check_run(run, own_app_login):
                         continue
 
                     # Leave out the running GitHub Action job so it doesn't keep CI pending
@@ -2758,22 +2882,21 @@ class GithubProvider(GitProvider):
             if repo is None:
                 return None
 
-            # Determine reference timestamp: latest completed CI check or head commit timestamp
+            # Determine reference timestamp: latest completed CI check or head push time
             ref_dt = None
             sha = self.get_pr_head_sha()
             if sha:
                 try:
                     commit = repo.get_commit(sha)
                     if hasattr(commit, "get_check_runs"):
-                        pr_agent_check_names = self._get_pr_agent_check_names()
-
+                        own_app_login = self._resolve_app_login()
                         for run in commit.get_check_runs():
-                            app = getattr(run, "app", None)
-                            app_slug = (getattr(app, "slug", "") or "").lower() if app else ""
-                            run_name = getattr(run, "name", "") or ""
-                            if app_slug in ("pr-agent", "pr_agent", "the-pr-agent"):
-                                continue
-                            if run_name in pr_agent_check_names:
+                            # Same rule as the CI-status check above: only the
+                            # running app's resolved identity authenticates
+                            # PR-Agent's own runs. A foreign run that reuses
+                            # one of their names must still set the reference
+                            # timestamp.
+                            if self._is_own_check_run(run, own_app_login):
                                 continue
                             if self._is_current_action_run(run):
                                 continue
@@ -2784,12 +2907,11 @@ class GithubProvider(GitProvider):
                                 if ref_dt is None or run_dt > ref_dt:
                                     ref_dt = run_dt
                     if ref_dt is None:
-                        git_commit = getattr(commit, "commit", None)
-                        committer = getattr(git_commit, "committer", None)
-                        author = getattr(git_commit, "author", None)
-                        commit_dt = getattr(committer, "date", None) or getattr(author, "date", None)
-                        if commit_dt:
-                            ref_dt = _ensure_utc(commit_dt)
+                        # No CI timestamp: fall back to when the head was
+                        # pushed, never to the commit dates — the PR author
+                        # sets both, so a forward-dated commit would fake
+                        # freshness. Unknown push time fails closed below.
+                        ref_dt = self._get_head_push_time(repo, sha)
                 except Exception as e:
                     get_logger().debug(f"Could not determine head reference timestamp: {e}")
 

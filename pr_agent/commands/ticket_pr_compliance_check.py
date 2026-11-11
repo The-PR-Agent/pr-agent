@@ -363,6 +363,13 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets
     # instance-specific (e.g. "customfield_10127"), so it must be configured; empty
     # means no requirements are extracted.
     requirements_field = get_settings().get("JIRA.JIRA_REQUIREMENTS_FIELD", "") or ""
+    requested_fields = "summary,description,labels"
+    if requirements_field:
+        if isinstance(requirements_field, str) and re.fullmatch(r"customfield_[0-9]+", requirements_field):
+            requested_fields += "," + requirements_field
+        else:
+            # Preserve other existing field keys without interpreting them as Jira selectors.
+            requested_fields = "*all"
     tickets_content = []
     for attempt, key in enumerate(keys, start=1):
         if len(tickets_content) >= max_tickets:
@@ -373,7 +380,7 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets
                 f"Stopped after {MAX_JIRA_FETCH_ATTEMPTS} Jira lookups; skipping remaining keys")
             break
         try:
-            issue = jira_client.issue(key)
+            issue = jira_client.issue(key, fields=requested_fields)
         except Exception as e:
             get_logger().warning(f"Failed to fetch Jira ticket {key}: {e}")
             continue

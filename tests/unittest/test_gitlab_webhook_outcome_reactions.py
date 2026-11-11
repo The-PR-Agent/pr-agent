@@ -273,6 +273,7 @@ def test_single_line_diff_note_dispatch(run_comment, position, expected_line, ex
             f"--side={expected_side}",
             "--file_name=new/src/app.py",
             "--comment_id=abc123",
+            f"--origin_comment_id={COMMENT_ID}",
             question,
         ]]
 

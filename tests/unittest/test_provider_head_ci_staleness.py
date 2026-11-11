@@ -74,10 +74,14 @@ def _make_github_provider(
     combined_status=None,
     pr=None,
     repo_obj=None,
+    app_login="pr-agent[bot]",
 ):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "owner/repo"
     provider.base_url = "https://api.github.com"
+    # Resolved app identity, as `_resolve_app_login()` would return it:
+    # setting the cache avoids a live `GET /app` in tests.
+    provider._app_login = app_login
     if pr is None:
         pr = SimpleNamespace(head=SimpleNamespace(sha=head_sha))
     provider.pr = pr
@@ -154,6 +158,72 @@ def test_github_ci_status_returns_none_if_only_pr_agent_runs_exist():
     ]
     provider = _make_github_provider(check_runs=runs)
     assert provider.get_head_ci_status() == "none"
+
+
+def test_github_ci_status_counts_spoofed_pr_agent_named_run():
+    # A foreign check run that merely reuses one of PR-Agent's names must
+    # still count: the app slug, not the name, authenticates PR-Agent's runs.
+    runs = [
+        SimpleNamespace(status="completed", conclusion="failure", app=None, name="PR Agent - Review"),
+        SimpleNamespace(status="completed", conclusion="success", app=None, name="test"),
+    ]
+    provider = _make_github_provider(check_runs=runs)
+    assert provider.get_head_ci_status() == "failed"
+
+    # Same for a run from another app (e.g. a workflow job with that name)
+    other_app = SimpleNamespace(slug="github-actions", name="GitHub Actions")
+    runs_other_app = [
+        SimpleNamespace(status="completed", conclusion="failure", app=other_app, name="PR Agent - Describe"),
+    ]
+    provider_other_app = _make_github_provider(check_runs=runs_other_app)
+    assert provider_other_app.get_head_ci_status() == "failed"
+
+
+def test_github_ci_status_ignores_self_hosted_app_check_run():
+    # A self-hosted app under any slug is recognised by its resolved
+    # identity, not by a hard-coded slug list.
+    own_app = SimpleNamespace(slug="acme-pr-agent", name="Acme PR Agent")
+    runs = [
+        SimpleNamespace(status="in_progress", conclusion=None, app=own_app, name="PR Agent - Review"),
+        SimpleNamespace(status="completed", conclusion="success", app=None, name="ci/build"),
+    ]
+    provider = _make_github_provider(check_runs=runs, app_login="acme-pr-agent[bot]")
+    assert provider.get_head_ci_status() == "passed"
+
+
+def test_github_ci_status_counts_pr_agent_slug_under_other_identity():
+    # Same slug, different running app: not our run, so it counts.
+    other_app = SimpleNamespace(slug="pr-agent", name="PR Agent")
+    runs = [
+        SimpleNamespace(status="completed", conclusion="failure", app=other_app, name="PR Agent - Review"),
+    ]
+    provider = _make_github_provider(check_runs=runs, app_login="acme-pr-agent[bot]")
+    assert provider.get_head_ci_status() == "failed"
+
+
+def test_github_ci_status_counts_github_actions_run():
+    # The Action's runs share the `github-actions` app with every other
+    # workflow, so identity alone never skips them; only the running job
+    # is left out (via GITHUB_RUN_ID).
+    actions_app = SimpleNamespace(slug="github-actions", name="GitHub Actions")
+    runs = [
+        SimpleNamespace(status="in_progress", conclusion=None, app=actions_app, name="PR Agent - Review"),
+        SimpleNamespace(status="completed", conclusion="success", app=None, name="test"),
+    ]
+    provider = _make_github_provider(check_runs=runs)
+    assert provider.get_head_ci_status() == "pending"
+
+
+def test_github_ci_status_counts_own_slug_when_identity_unresolvable(monkeypatch):
+    # Identity unresolvable: fail closed, do not guess from the slug.
+    pr_agent_app = SimpleNamespace(slug="pr-agent", name="PR Agent")
+    runs = [
+        SimpleNamespace(status="in_progress", conclusion=None, app=pr_agent_app, name="PR Agent - Review"),
+        SimpleNamespace(status="completed", conclusion="success", app=None, name="test"),
+    ]
+    provider = _make_github_provider(check_runs=runs)
+    monkeypatch.setattr(provider, "_resolve_app_login", lambda: "")
+    assert provider.get_head_ci_status() == "pending"
 
 
 def test_github_ci_status_from_combined_status():
@@ -272,12 +342,129 @@ def test_github_staleness_handles_naive_and_aware_datetimes():
     assert provider.is_head_stale_against_base() is True
 
 
-def test_github_staleness_falls_back_to_head_commit_date_when_no_ci_runs():
+def test_github_staleness_falls_back_to_head_push_time_when_no_ci_runs():
     now = datetime.now(UTC)
     provider = _make_github_provider(check_runs=[])
-    # Configure commit timestamp on head
+    # The head commit is forward-dated by a day: that date must NOT stand in
+    # for the push time, or the head would look fresh.
     head_commit = provider.repo_obj.get_commit.return_value
-    head_commit.commit = SimpleNamespace(committer=SimpleNamespace(date=now))
+    head_commit.commit = SimpleNamespace(committer=SimpleNamespace(date=now + timedelta(days=1)))
+    # The push actually happened at `now`.
+    provider.repo_obj.get_events.return_value = [
+        SimpleNamespace(
+            type="PushEvent",
+            payload={"head": "head123"},
+            created_at=now,
+        )
+    ]
+
+    provider.get_diff_files = lambda: [SimpleNamespace(filename="app/main.py")]
+    provider.pr.base = SimpleNamespace(ref="main")
+
+    base_commit = SimpleNamespace(
+        commit=SimpleNamespace(committer=SimpleNamespace(date=now + timedelta(minutes=5))),
+        files=[SimpleNamespace(filename="app/main.py")],
+    )
+    provider.repo_obj.get_commits.return_value = [base_commit]
+    assert provider.is_head_stale_against_base() is True
+
+
+def test_github_staleness_returns_none_when_push_time_unknown():
+    # No CI runs and no push event for the head: fail closed, not fresh.
+    provider = _make_github_provider(check_runs=[])
+    provider.repo_obj.get_events.return_value = []
+
+    provider.get_diff_files = lambda: [SimpleNamespace(filename="app/main.py")]
+    provider.pr.base = SimpleNamespace(ref="main")
+    provider.repo_obj.get_commits.return_value = []
+    assert provider.is_head_stale_against_base() is None
+
+
+def test_github_staleness_counts_spoofed_pr_agent_named_run():
+    # A foreign run reusing a PR-Agent check name is still real CI: its
+    # completion time sets the reference timestamp.
+    now = datetime.now(UTC)
+    runs = [
+        SimpleNamespace(
+            status="completed",
+            conclusion="success",
+            app=None,
+            completed_at=now + timedelta(hours=1),
+            name="PR Agent - Review",
+        )
+    ]
+    provider = _make_github_provider(check_runs=runs)
+    provider.get_diff_files = lambda: [SimpleNamespace(filename="app/main.py")]
+    provider.pr.base = SimpleNamespace(ref="main")
+
+    # Base moved 30 minutes after the push, but CI ran an hour after it,
+    # so the head's CI is current and the head is not stale.
+    base_commit = SimpleNamespace(
+        commit=SimpleNamespace(committer=SimpleNamespace(date=now + timedelta(minutes=30))),
+        files=[SimpleNamespace(filename="app/main.py")],
+    )
+    provider.repo_obj.get_commits.return_value = [base_commit]
+    assert provider.is_head_stale_against_base() is False
+
+
+def test_github_staleness_skips_own_run_by_identity():
+    # The only completed run is PR-Agent's own (self-hosted slug, matching
+    # identity): it must not set the reference timestamp, so with no push
+    # event either, staleness is unknown rather than fresh.
+    now = datetime.now(UTC)
+    own_app = SimpleNamespace(slug="acme-pr-agent", name="Acme PR Agent")
+    runs = [
+        SimpleNamespace(
+            status="completed",
+            conclusion="success",
+            app=own_app,
+            completed_at=now,
+            name="PR Agent - Review",
+        )
+    ]
+    provider = _make_github_provider(check_runs=runs, app_login="acme-pr-agent[bot]")
+    provider.repo_obj.get_events.return_value = []
+    provider.get_diff_files = lambda: [SimpleNamespace(filename="app/main.py")]
+    provider.pr.base = SimpleNamespace(ref="main")
+    provider.repo_obj.get_commits.return_value = []
+    assert provider.is_head_stale_against_base() is None
+
+
+def test_github_staleness_reads_push_time_from_fork_events():
+    # Fork PR: the push event lives in the fork's stream, not the base
+    # repo's, so the fork's events must be read.
+    now = datetime.now(UTC)
+    provider = _make_github_provider(check_runs=[])
+    provider.repo_obj.full_name = "owner/repo"
+    provider.repo_obj.get_events.return_value = []
+    provider.pr.head.repo = SimpleNamespace(
+        full_name="contributor/repo",
+        get_events=lambda: [
+            SimpleNamespace(type="PushEvent", payload={"head": "head123"}, created_at=now),
+        ],
+    )
+
+    provider.get_diff_files = lambda: [SimpleNamespace(filename="app/main.py")]
+    provider.pr.base = SimpleNamespace(ref="main")
+
+    base_commit = SimpleNamespace(
+        commit=SimpleNamespace(committer=SimpleNamespace(date=now + timedelta(minutes=5))),
+        files=[SimpleNamespace(filename="app/main.py")],
+    )
+    provider.repo_obj.get_commits.return_value = [base_commit]
+    assert provider.is_head_stale_against_base() is True
+
+
+def test_github_staleness_uses_base_events_for_same_repo_pr():
+    # Same-repo PR: the head repo is the base repo, so its events are used
+    # even though the head carries a repo object.
+    now = datetime.now(UTC)
+    provider = _make_github_provider(check_runs=[])
+    provider.repo_obj.full_name = "owner/repo"
+    provider.repo_obj.get_events.return_value = [
+        SimpleNamespace(type="PushEvent", payload={"head": "head123"}, created_at=now),
+    ]
+    provider.pr.head.repo = SimpleNamespace(full_name="owner/repo", get_events=lambda: [])
 
     provider.get_diff_files = lambda: [SimpleNamespace(filename="app/main.py")]
     provider.pr.base = SimpleNamespace(ref="main")
@@ -763,3 +950,46 @@ def test_gitlab_staleness_detects_filtered_file_moved_by_base():
     provider.gl.projects.get.return_value = proj_mock
 
     assert provider.is_head_stale_against_base() is True
+
+
+# ---------------------------------------------------------------------------
+# 9. GithubProvider._upsert_check_run external_id stamping
+# ---------------------------------------------------------------------------
+
+class _CapturingRequester:
+    def __init__(self):
+        self.calls = []
+
+    def requestJsonAndCheck(self, method, url, input=None, **kwargs):
+        self.calls.append({"method": method, "url": url, "input": input})
+        return {}, {"id": 99}
+
+
+def _make_check_run_provider(requester):
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "owner/repo"
+    provider.base_url = "https://api.github.com"
+    provider.last_commit_id = SimpleNamespace(sha="head123")
+    provider._check_run_ids = {}
+    provider.pr = SimpleNamespace(_requester=requester)
+    provider._find_existing_check_run = lambda *args, **kwargs: None
+    return provider
+
+
+def test_upsert_check_run_stamps_workflow_run_id(monkeypatch):
+    monkeypatch.setenv("GITHUB_RUN_ID", "123456789")
+    requester = _CapturingRequester()
+    provider = _make_check_run_provider(requester)
+    assert provider._upsert_check_run("review", {"status": "in_progress"}) is True
+    assert len(requester.calls) == 1
+    created = requester.calls[0]["input"]
+    assert created["name"] == "PR Agent - Review"
+    assert created["external_id"] == "123456789"
+
+
+def test_upsert_check_run_no_external_id_without_run_id(monkeypatch):
+    monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
+    requester = _CapturingRequester()
+    provider = _make_check_run_provider(requester)
+    assert provider._upsert_check_run("review", {"status": "in_progress"}) is True
+    assert "external_id" not in requester.calls[0]["input"]

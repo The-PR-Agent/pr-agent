@@ -267,7 +267,7 @@ def test_empty_diff_result_is_cached_until_scope_reset(provider_factory, changes
     assert len(transport.diff_requests) == 2
 
 
-def test_unready_empty_diff_remains_retryable(provider_factory):
+def test_unready_empty_diff_is_consistent_within_a_command_and_retryable_at_the_boundary(provider_factory):
     pending = {**_metadata(count=None), "changes_count": None, "diff_refs": None}
     ready = _metadata(count="1")
     provider, transport = provider_factory(
@@ -276,8 +276,15 @@ def test_unready_empty_diff_remains_retryable(provider_factory):
         metadata_responses=_metadata_reads(pending, pending, ready, ready),
     )
 
+    # Both calls in the command see the same provisional empty; one diff poll.
     assert provider.get_diff_files() == []
-    assert provider.diff_files is None
+    assert provider.diff_files == []
+    assert provider.get_diff_files() == []
+    assert len(transport.diff_requests) == 1
+
+    # The command boundary (#4373) clears the diff and MR-changes caches together,
+    # so the next command re-polls and sees the ready diff.
+    provider.reset_diff_cache_for_command()
     assert [file.filename for file in provider.get_diff_files()] == ["ready.py"]
     assert len(transport.diff_requests) == 2
 

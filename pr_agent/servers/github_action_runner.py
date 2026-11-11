@@ -38,6 +38,7 @@ from pr_agent.servers.github_common import (
     _reformat_quote_ask_command,
     handle_line_comments,
     matches_review_state,
+    pushed_base_branch_merge,
 )
 from pr_agent.servers.utils import dedupe_review_commands, is_ask_command_comment
 
@@ -404,8 +405,6 @@ async def run_action():
                 after_sha = event_payload.get("after")
                 if before_sha is not None and before_sha == after_sha:
                     return
-                pull_request = event_payload.get("pull_request", {})
-                merge_commit_sha = pull_request.get("merge_commit_sha")
                 ignore_merge_commits = get_settings().get(
                     "github_action_config.push_trigger_ignore_merge_commits",
                     get_settings().get("github_app.push_trigger_ignore_merge_commits", True),
@@ -414,8 +413,8 @@ async def run_action():
                     ignore_merge_commits,
                     default=True,
                     setting_name="github_action_config.push_trigger_ignore_merge_commits",
-                ) and after_sha is not None and after_sha == merge_commit_sha:
-                    get_logger().info("Skipping synchronize: merge commit detected")
+                ) and pushed_base_branch_merge(settings_provider, before_sha, after_sha):
+                    get_logger().info("Skipping synchronize: the push only merged the base branch")
                     return
                 sender_type = event_payload.get("sender", {}).get("type")
                 ignore_bot_commits = get_settings().get(
@@ -499,8 +498,10 @@ async def run_action():
                 if GITHUB_EVENT_NAME == "pull_request_review_comment":
                     if is_ask_command_comment(comment_body):
                         comment = event_payload["comment"]
-                        if comment.get("subject_type") == "file" and comment_body.split(maxsplit=1)[0] == "/ask":
-                            question = comment_body.strip().removeprefix("/ask").strip()
+                        if (comment.get("subject_type") == "file"
+                                and comment_body.split(maxsplit=1)[0].lower() in ("/ask", "/ask_question")):
+                            parts = comment_body.strip().split(maxsplit=1)
+                            question = parts[1] if len(parts) > 1 else ""
                             context["file_question_path"] = comment["path"]
                             context["file_question_comment_id"] = comment.get("in_reply_to_id") or comment["id"]
                             context["file_question_origin_comment_id"] = comment["id"]

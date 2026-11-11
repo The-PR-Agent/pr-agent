@@ -101,6 +101,7 @@ def test_matches_sensitive_path_custom():
     assert dr.matches_sensitive_path("config/secrets/prod.json", custom) == "config/secrets/**"
     assert dr.matches_sensitive_path("certs/server.pem", custom) == "*.pem"
     assert dr.matches_sensitive_path(".github/workflows/ci.yml", custom) is None
+    assert dr.matches_sensitive_path("config/secrets/prod.json", ["prod.json", "config/**"]) == "prod.json"
 
 
 def test_matches_sensitive_path_ignores_oversized_globs():

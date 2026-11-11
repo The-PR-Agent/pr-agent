@@ -14,8 +14,10 @@ import inspect
 import json
 import os
 import re
+import secrets
 import shutil
 import sys
+import weakref
 from contextvars import ContextVar
 from functools import lru_cache, wraps
 from types import FunctionType, SimpleNamespace
@@ -769,6 +771,69 @@ class _SDKHeaderSnapshot:
         return "<request-local SDK headers>"
 
 
+# LiteLLM validates request extra_headers as dict[str, str] (and coerces str subclasses to
+# plain str), so SDK-only header objects cross that boundary as strings and are restored
+# in the patched _build_headers. The sentinels are unguessable per process.
+_CAPTURED_HEADER_VALUE = f"pr-agent-captured-{secrets.token_hex(16)}"
+_OMITTED_HEADER_VALUE = f"pr-agent-omitted-{secrets.token_hex(16)}"
+_sdk_header_snapshots: dict[str, _SDKHeaderSnapshot] = {}
+
+
+def _sdk_header_to_wire(value):
+    if isinstance(value, _CapturedSDKHeader):
+        return _CAPTURED_HEADER_VALUE
+    if isinstance(value, openai.Omit):
+        return _OMITTED_HEADER_VALUE
+    return value
+
+
+def _sdk_header_from_wire(value):
+    if value == _CAPTURED_HEADER_VALUE:
+        return _CapturedSDKHeader()
+    if value == _OMITTED_HEADER_VALUE:
+        return openai.Omit()
+    return value
+
+
+def _register_sdk_snapshot(snapshot) -> str:
+    # The trailing newline is an illegal HTTP header value, so a token that no bridge
+    # consumed fails in the HTTP layer instead of reaching the provider.
+    token = f"{secrets.token_hex(16)}\n"
+    _sdk_header_snapshots[token] = _SDKHeaderSnapshot(snapshot)
+    return token
+
+
+def _release_sdk_snapshot_after(result, token):
+    """Drop the registered snapshot once the request, or its lazy stream, is finished."""
+    def release():
+        _sdk_header_snapshots.pop(token, None)
+
+    if inspect.isasyncgen(result):
+        async def stream():
+            try:
+                async for item in result:
+                    yield item
+            finally:
+                release()
+                await result.aclose()
+
+        wrapped = stream()
+    elif inspect.isawaitable(result):
+        async def call():
+            try:
+                return await result
+            finally:
+                release()
+
+        wrapped = call()
+    else:
+        release()
+        return result
+    # A wrapper that is never started or awaited still releases the snapshot when collected.
+    weakref.finalize(wrapped, release)
+    return wrapped
+
+
 def _merge_sdk_headers(*layers):
     """Merge before HTTPX so differently cased names cannot duplicate credentials."""
     result = {}
@@ -818,6 +883,7 @@ def _sdk_data_adapter(original, *, text=False, copilot=False):
         if snapshot is None:
             return original(*args, **kwargs)
         bound = signature.bind(*args, **kwargs)
+        token = None
         if copilot:
             if snapshot["provider"] != "github_copilot":
                 return original(*args, **kwargs)
@@ -831,15 +897,23 @@ def _sdk_data_adapter(original, *, text=False, copilot=False):
                 # LiteLLM also copies this auth argument into text request data.
                 # Keep it on the native client parameters, never in the SDK payload.
                 data.pop("azure_ad_token", None)
-            headers = dict(data.get("extra_headers") or {})
+            headers = {name: _sdk_header_to_wire(value) for name, value in (data.get("extra_headers") or {}).items()}
             _check_sdk_marker_collision(headers)
-            headers[_SDK_HEADER_MARKER] = _SDKHeaderSnapshot(snapshot)
+            token = _register_sdk_snapshot(snapshot)
+            headers[_SDK_HEADER_MARKER] = token
             data["extra_headers"] = headers
             bound.arguments["data"] = data
             if text and bound.arguments.get("logging_obj") is not None:
                 bound.arguments["logging_obj"] = _SDKHeaderLoggingProxy(bound.arguments["logging_obj"])
         # Capture before returning a lazy text streaming generator, not at first iteration.
-        return original(*bound.args, **bound.kwargs)
+        if token is None:
+            return original(*bound.args, **bound.kwargs)
+        try:
+            result = original(*bound.args, **bound.kwargs)
+        except BaseException:
+            _sdk_header_snapshots.pop(token, None)
+            raise
+        return _release_sdk_snapshot_after(result, token)
 
     scoped._pr_agent_sdk_headers_original = original
     scoped._pr_agent_sdk_headers_context = _sdk_request_headers
@@ -881,8 +955,13 @@ def _install_sdk_header_bridge():
         def build_headers(client, options, *, retries_taken=0):
             headers = dict(options.headers or {})
             marker = headers.get(_SDK_HEADER_MARKER)
+            if isinstance(marker, str):
+                marker = _sdk_header_snapshots.get(marker)
+                if marker is None:
+                    raise RuntimeError("The request-local SDK header snapshot is no longer available")
             if not isinstance(marker, _SDKHeaderSnapshot):
                 return sdk_build_headers(client, options, retries_taken=retries_taken)
+            headers = {name: _sdk_header_from_wire(value) for name, value in headers.items()}
             if type(client) not in (openai.OpenAI, openai.AsyncOpenAI, openai.AzureOpenAI, openai.AsyncAzureOpenAI):
                 raise ValueError("Custom SDK clients are incompatible with request header isolation")
             del headers[_SDK_HEADER_MARKER]

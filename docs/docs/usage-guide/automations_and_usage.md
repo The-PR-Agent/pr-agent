@@ -243,7 +243,7 @@ Adding `"synchronize"` to this list enables auto commands on new commits pushed 
 
 `github_action_config.push_commands` defines which commands run on synchronize events when `handle_push_trigger` is enabled (fallback to `github_app.push_commands`).
 
-`github_action_config.push_trigger_ignore_merge_commits` (default `true`) skips processing when the push contains a merge commit, avoiding duplicate reviews on "Update branch" clicks.
+`github_action_config.push_trigger_ignore_merge_commits` (default `true`) skips processing when the push only merges the base branch into the PR, as "Update branch" does, avoiding duplicate reviews on those clicks. The pushed head must be a merge commit whose first parent is the previous head and whose second parent is on the base branch. Any other push is processed, including one that adds commits before the merge or merges another branch.
 
 `github_action_config.push_trigger_ignore_bot_commits` (default `true`) skips processing when the push author is a bot, avoiding redundant runs on automated commits.
 
