@@ -222,6 +222,10 @@ def _strip_line_numbers(code: str | None, start_line: int, end_line: int) -> str
     return "\n".join(stripped)
 
 
+def _code_lines(code: str) -> list[str]:
+    return [line.rstrip() for line in code.strip("\n").splitlines()]
+
+
 class PRReviewer:
     """
     The PRReviewer class is responsible for reviewing a pull request and generating feedback using an AI model.
@@ -1894,7 +1898,8 @@ class PRReviewer:
             return finding.to_inline_comment(body, fallback_to_pr_comment=False)
 
         existing_code = _strip_line_numbers(finding.existing_code, start_line, end_line)
-        if existing_code and existing_code.strip() == improved_code.strip():
+        # Keep leading whitespace: an indentation-only change is a real fix in Python.
+        if existing_code and _code_lines(existing_code) == _code_lines(improved_code):
             return finding.to_inline_comment(body, fallback_to_pr_comment=False)
         fence = get_suggestion_fence(improved_code)
         original_suggestion = None
@@ -2009,7 +2014,14 @@ class PRReviewer:
                 if not self.git_provider.publish_code_suggestions(batch):
                     get_logger().info("Failed to publish review findings, trying to publish each one separately")
                     for comment in batch:
-                        self.git_provider.publish_code_suggestions([comment])
+                        try:
+                            self.git_provider.publish_code_suggestions([comment])
+                        except Exception as e:
+                            get_logger().warning(
+                                f"Failed to publish a review finding as an inline comment, error: {e}",
+                                artifact={"relevant_file": comment["relevant_file"],
+                                          "start_line": comment["relevant_lines_start"],
+                                          "end_line": comment["relevant_lines_end"]})
             except Exception as e:
                 locations = [{"relevant_file": comment["relevant_file"],
                               "start_line": comment["relevant_lines_start"],
