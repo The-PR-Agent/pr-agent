@@ -3659,7 +3659,8 @@ class TestGitLabRelevantDiff:
     version anchors the comment to a superseded diff — the state a force-push leaves behind."""
 
     # the versions endpoint is ordered newest-first
-    VERSIONS = ["newest", "older", "oldest"]
+    VERSIONS = [SimpleNamespace(base_commit_sha="base", start_commit_sha="base", head_commit_sha=head)
+                for head in ("head", "older", "oldest")]
 
     def _provider(self, changes):
         provider = GitLabProvider.__new__(GitLabProvider)
@@ -3681,12 +3682,12 @@ class TestGitLabRelevantDiff:
     def test_matching_change_resolves_to_the_newest_version(self):
         provider = self._provider([{"new_path": "app.py", "diff": "@@\n+added line\n"}])
 
-        assert provider.get_relevant_diff("app.py", "+added line") == "newest"
+        assert provider.get_relevant_diff("app.py", "+added line") is self.VERSIONS[0]
 
-    def test_fallback_uses_the_latest_version_not_the_oldest(self):
+    def test_fallback_uses_the_latest_version_not_the_construction_snapshot(self):
         provider = self._provider([{"new_path": "other.py", "diff": "@@\n+unrelated\n"}])
 
-        assert provider.get_relevant_diff("app.py", "+added line") == "latest-at-construction"
+        assert provider.get_relevant_diff("app.py", "+added line") is self.VERSIONS[0]
 
     def test_returns_none_when_the_mr_has_no_diff_versions(self):
         provider = self._provider([{"new_path": "app.py", "diff": "@@\n+added line\n"}])
@@ -3702,15 +3703,16 @@ class TestGitLabRelevantDiff:
              patch.object(GitLabProvider, "_get_merge_request", return_value=mr):
             provider._set_merge_request("https://gitlab.com/group/repo/-/merge_requests/1")
 
-        assert provider.last_diff == "newest"
+        assert provider.last_diff is self.VERSIONS[0]
 
-    def test_fallback_is_logged_once_not_once_per_version(self):
-        provider = self._provider([{"new_path": "other.py", "diff": "@@\n+unrelated\n"}])
+    @pytest.mark.parametrize("ref", ["base", "start", "head"])
+    def test_missing_version_ref_is_rejected(self, ref):
+        provider = self._provider([{"new_path": "app.py", "diff": "@@\n+added line\n"}])
+        latest = SimpleNamespace(base_commit_sha="base", start_commit_sha="base", head_commit_sha="head")
+        setattr(latest, f"{ref}_commit_sha", None)
+        provider.mr.diffs.list.return_value = [latest]
 
-        with patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_logger:
-            provider.get_relevant_diff("app.py", "+added line")
-
-        assert mock_logger.return_value.debug.call_count == 1
+        assert provider.get_relevant_diff("app.py", "+added line") is None
 
 
 class TestGitLabProviderUrlParsing:

@@ -1,5 +1,6 @@
 """Exercise MR diff retrieval through python-gitlab's HTTP and pagination code."""
 import json
+import re
 from types import SimpleNamespace
 from unittest.mock import Mock, call
 from urllib.parse import urlparse
@@ -107,6 +108,87 @@ def _metadata(count="2", **refs):
 
 def _metadata_reads(*snapshots):
     return [(200, snapshot, {}) for snapshot in snapshots]
+
+
+def _prepare_suggestion_publication(provider, monkeypatch, refs):
+    settings = {
+        "gitlab.publish_code_suggestions_as_review": False,
+        "GITLAB.RESOLVE_OUTDATED_INLINE_THREADS": False,
+        "GITLAB.AUTO_RESOLVE_FIXED_INLINE_THREADS": False,
+        "config.persistent_inline_comments": False,
+    }
+    monkeypatch.setattr(gitlab_provider, "get_settings", lambda: settings)
+    provider.id_mr = 7
+    provider.last_diff = SimpleNamespace(
+        base_commit_sha="construction-base", start_commit_sha="construction-start", head_commit_sha="construction-head",
+    )
+    provider.mr.diffs.list = Mock(return_value=[SimpleNamespace(
+        **{f"{key}_commit_sha": refs[f"{key}_sha"] for key in ("base", "start", "head")},
+    )])
+    provider.mr.discussions.create = Mock()
+    provider.RE_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
+    return [{"body": "```suggestion\nfixed\n```", "relevant_file": "a.py",
+             "relevant_lines_start": 1, "relevant_lines_end": 1}]
+
+
+def test_reconstructed_patch_uses_the_reviewed_version_not_the_construction_version(provider_factory, monkeypatch):
+    provider, transport = provider_factory([(200, [_change("a.py", diff="")], {})], count="1")
+    suggestions = _prepare_suggestion_publication(provider, monkeypatch, _metadata()["diff_refs"])
+
+    assert provider.publish_code_suggestions(suggestions)
+
+    position = provider.mr.discussions.create.call_args.args[0]["position"]
+    assert {key: position[key] for key in ("base_sha", "start_sha", "head_sha")} == _metadata()["diff_refs"]
+    assert position["new_path"] == "a.py" and position["new_line"] == 1
+    assert len(transport.diff_requests) == 1
+
+
+def test_missing_position_ref_does_not_prevent_read_only_analysis(provider_factory, monkeypatch):
+    provider, transport = provider_factory([(200, [_change("a.py")], {})], count="1")
+    transport.metadata["diff_refs"].pop("start_sha")
+    assert provider.get_diff_files()[0].head_file == "new\n"
+    suggestions = _prepare_suggestion_publication(provider, monkeypatch, _metadata()["diff_refs"])
+
+    assert provider.publish_code_suggestions(suggestions) is False
+
+    provider.mr.discussions.create.assert_not_called()
+    provider.mr.diffs.list.assert_not_called()
+
+
+@pytest.mark.parametrize("changed_ref", ["head_sha", "base_sha", "start_sha"])
+@pytest.mark.parametrize("count", ["1", None], ids=["cached", "uncached"])
+def test_suggestions_reject_a_changed_version_after_analysis(provider_factory, monkeypatch, changed_ref, count):
+    provider, transport = provider_factory([(200, [_change("a.py")], {})] * 2, count=count)
+    provider.get_diff_files()
+    newer = _metadata(count=count, **{changed_ref: "newer-ref"})
+    transport.metadata = newer
+    suggestions = _prepare_suggestion_publication(provider, monkeypatch, newer["diff_refs"])
+
+    assert provider.publish_code_suggestions(suggestions) is False
+
+    provider.mr.discussions.create.assert_not_called()
+    assert len(transport.diff_requests) == 1
+
+
+@pytest.mark.parametrize("scope_available", [True, False])
+def test_incremental_positions_require_verified_mr_refs(provider_factory, monkeypatch, scope_available):
+    response = (200, [_change("a.py")], {}) if scope_available else (503, {"message": "unavailable"}, {})
+    provider, _ = provider_factory([response, (200, [_change("a.py")], {})], count="1")
+    _prepare_incremental(provider)
+    provider._get_incremental_commits()
+    files = provider.get_diff_files()
+    assert files and provider.incremental.is_incremental
+    suggestions = _prepare_suggestion_publication(provider, monkeypatch, _metadata()["diff_refs"])
+
+    assert provider.publish_code_suggestions(suggestions) is scope_available
+
+    if scope_available:
+        position = provider.mr.discussions.create.call_args.args[0]["position"]
+        assert position["base_sha"] == "base"
+        assert position["base_sha"] != provider.incremental.last_seen_commit_sha
+    else:
+        provider.mr.discussions.create.assert_not_called()
+        provider.mr.diffs.list.assert_not_called()
 
 
 def _pages(first, second):

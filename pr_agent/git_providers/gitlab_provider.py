@@ -1201,6 +1201,7 @@ class GitLabProvider(GitProvider):
         # The provisional-empty retry lives at the command boundary now (#4860), so the
         # MR changes cache re-polls together with the diff cache it feeds.
         self._merge_request_changes_cache = None
+        self._diff_mr_refs = None
 
     def get_incremental_commits(self, incremental: IncrementalPR | None = None, kind: str = "review"):
         """Populate state needed for an incremental run.
@@ -1217,6 +1218,7 @@ class GitLabProvider(GitProvider):
         # a diff computed under a different incremental scope (or none). Invalidate it so the
         # next get_diff_files() call reflects the scope configured here.
         self.diff_files = None
+        self._diff_mr_refs = None
         self._merge_request_changes_cache = None
         self.mr_commits = None
         self._commit_diff_refs = None
@@ -1327,6 +1329,7 @@ class GitLabProvider(GitProvider):
                 self._merge_request_changes_cache = None
                 self.incremental.is_incremental = False
                 return
+            self._diff_mr_refs = dict(mr_changes["diff_refs"])
             mr_change_paths = {
                 c.get('new_path')
                 for c in mr_changes.get('changes', [])
@@ -1789,10 +1792,13 @@ class GitLabProvider(GitProvider):
             if not head_sha_for_content:
                 head_sha_for_content = (self.mr.diff_refs or {}).get('head_sha')
             diff_refs = {"base_sha": base_sha_for_content, "head_sha": head_sha_for_content}
+            # Positions use MR refs, not the previous review used as the incremental blob base.
+            mr_diff_refs = dict(getattr(self, "_diff_mr_refs", None) or {})
         else:
             mr_changes = self._get_merge_request_changes()
             raw_changes = mr_changes.get('changes', [])
             diff_refs = mr_changes["diff_refs"]
+            mr_diff_refs = dict(diff_refs)
             base_sha_for_content = diff_refs.get('base_sha')
             head_sha_for_content = diff_refs.get('head_sha')
         raw_changes = self._expand_submodule_changes(raw_changes, diff_refs)
@@ -1912,6 +1918,7 @@ class GitLabProvider(GitProvider):
             diff_refs.get("start_sha") if not incremental_active
             else mr_refs.get("start_sha") if isinstance(mr_refs, dict) else None
         )
+        self._diff_mr_refs = mr_diff_refs
         return diff_files
 
     def get_files(self) -> list:
@@ -2887,22 +2894,24 @@ class GitLabProvider(GitProvider):
     def get_relevant_diff(self, relevant_file: str, relevant_line_in_file: str) -> dict | None:
         if getattr(self, "_commit_diff_refs", None) is not None:
             return self._commit_diff_refs
-        _changes = self._get_merge_request_changes()
-        _changes['changes'] = self._expand_submodule_changes(_changes.get('changes', []), _changes["diff_refs"])
-        changes = _changes
-        if not changes:
-            get_logger().error('No changes found for the merge request.')
+        if getattr(self, "diff_files", None) is not None:
+            refs = getattr(self, "_diff_mr_refs", None) or {}
+        else:
+            refs = self._get_merge_request_changes()["diff_refs"]
+        if any(not isinstance(refs.get(f"{key}_sha"), str) or not refs[f"{key}_sha"]
+               for key in ("base", "start", "head")):
+            get_logger().warning('No complete reviewed diff refs found for the merge request.')
             return None
         all_diffs = self.mr.diffs.list(page=1, per_page=1, get_all=False)
         if not all_diffs:
             get_logger().error('No diffs found for the merge request.')
             return None
-        for change in changes['changes']:
-            if change['new_path'] == relevant_file and relevant_line_in_file in change['diff']:
-                return all_diffs[0]
-        get_logger().debug(
-            f'No relevant diff found for {relevant_file} {relevant_line_in_file}. Falling back to latest diff.')
-        return self.last_diff  # fallback to the latest diff if no relevant diff is found
+        latest_diff = all_diffs[0]
+        if any(getattr(latest_diff, f"{key}_commit_sha", None) != refs[f"{key}_sha"]
+               for key in ("base", "start", "head")):
+            get_logger().warning('Latest GitLab diff version differs from the reviewed refs; skipping suggestion.')
+            return None
+        return latest_diff
 
     def _publish_suggestion_drafts(self, pending) -> None:
         if pending:
