@@ -190,7 +190,7 @@ See [Review](../commands/review.md#configuration-options).
 | `show_previous_findings_summary` | true | Show a 'Since the last review' section at the top of the review: addressed, reappeared, still-open and new findings (needs persistent_finding_state). |
 | `inline_key_issues` | true | Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab, Gitea). Findings with a fix become committable suggestions when pr_code_suggestions.committable_code_suggestions is on. Set to false to keep every finding in the review summary. |
 | `extra_instructions` | "" |  |
-| `num_max_findings` | 3 |  |
+| `num_max_findings` | 6 | maximum number of key issues /review reports (integer; default 6) |
 | `final_update_message` | true |  |
 
 Azure DevOps also supplies verified PR-Agent inline key issues as dismissed when their status is `wontFix`
