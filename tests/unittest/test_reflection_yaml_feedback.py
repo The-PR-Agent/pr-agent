@@ -117,6 +117,6 @@ def test_labelled_list_legacy_baseline():
 
 
 def test_unlabelled_list_legacy_baseline():
-    input_text = "```python\nprint('hi')\n```\n```yaml\n- x\n- y\n```\n"
+    input_text = "Explanation:\n" + "```\n" + "- a\n" + "- b\n" + "```\n"
     result = load_yaml(input_text)
-    assert result == {}
+    assert result == ["a", "b"]
