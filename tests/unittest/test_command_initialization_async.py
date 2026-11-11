@@ -47,6 +47,7 @@ def providers(monkeypatch):
             provider.get_issue_comments_newest_first.return_value = []
             provider.supports_review_finding_state.return_value = False
             provider.supports_code_suggestion_state.return_value = False
+            provider.supports_threaded_pr_questions.return_value = False
             provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
             instances[url] = provider
         return instances[url]
@@ -59,6 +60,8 @@ def providers(monkeypatch):
     ("review", agent.PRReviewer, "PR_REVIEWER"),
     ("describe", agent.PRDescription, "PR_DESCRIPTION"),
     ("improve", agent.PRCodeSuggestions, "PR_CODE_SUGGESTIONS"),
+    ("ask", agent.command2class["ask"], "PR_QUESTIONS"),
+    ("ask_question", agent.command2class["ask_question"], "PR_QUESTIONS"),
 ])
 async def test_real_initializers_overlap_without_mixing_request_settings(monkeypatch, providers,
                                                                         command, command_class, section):
@@ -208,7 +211,8 @@ async def test_cancellation_waits_for_initialization_before_restoring_settings(m
             await asyncio.gather(task, return_exceptions=True)
 
 
-async def test_injected_ai_factory_keeps_its_running_loop(providers):
+@pytest.mark.parametrize("command", ["review", "ask"])
+async def test_injected_ai_factory_keeps_its_running_loop(monkeypatch, providers, command):
     loop = asyncio.get_running_loop()
     calls = []
 
@@ -216,8 +220,10 @@ async def test_injected_ai_factory_keeps_its_running_loop(providers):
         calls.append(asyncio.get_running_loop())
         return SimpleNamespace()
 
+    if command == "ask":
+        monkeypatch.setattr(agent.command2class["ask"], "run", AsyncMock(return_value=""))
     with request_cycle_context({"settings": _settings()}):
-        assert await agent.PRAgent(ai_handler=factory).handle_request(URL, "/review") is True
+        assert await agent.PRAgent(ai_handler=factory).handle_request(URL, f"/{command}") is True
     assert calls == [loop]
 
 

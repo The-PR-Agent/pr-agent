@@ -23,6 +23,7 @@ from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.utils import _fix_key_value, update_settings_from_args
 from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.commands.pr_description import PRDescription
+from pr_agent.commands.pr_questions import PRQuestions
 from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
@@ -390,8 +391,10 @@ class PRAgent:
         self.ai_handler = ai_handler  # handler factory passed to each command when it is instantiated
 
     async def _create_command(self, command_class, pr_url, **kwargs):
-        """Offload isolated core-command setup while preserving its cancellation boundary."""
-        if get_settings() is global_settings or command_class not in (PRReviewer, PRDescription, PRCodeSuggestions):
+        """Offload eligible command setup while preserving its cancellation boundary."""
+        if get_settings() is global_settings or command_class not in (
+            PRReviewer, PRDescription, PRCodeSuggestions, PRQuestions
+        ):
             # Preserve shared settings and other commands' existing initialization
             # (some constructors also update external indexes).
             return command_class(pr_url, ai_handler=self.ai_handler, **kwargs)
