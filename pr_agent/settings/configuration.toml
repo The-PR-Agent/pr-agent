@@ -209,7 +209,7 @@ show_previous_findings_summary = true
 
 inline_key_issues=false # Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab, Gitea).
 extra_instructions = ""
-num_max_findings = 3
+num_max_findings = 6 # maximum number of key issues /review reports (integer; default 6)
 final_update_message = true
 # review labels
 enable_review_labels_security=true
