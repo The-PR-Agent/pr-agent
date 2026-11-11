@@ -2720,6 +2720,21 @@ class GithubProvider(GitProvider):
                 except (GithubException, RequestException) as e:
                     get_logger().error(f"An approval PR-Agent cannot attribute is still in place, error: {e}")
                 return False
+            # A push between the check above and the approval may have been revoked before this
+            # approval existed, so check again and withdraw it if the PR moved.
+            try:
+                moved_pr = self._get_pr()
+                moved = (policy_value(moved_pr, "head", "sha") != reviewed_head_sha
+                         or policy_value(moved_pr, "base", "sha") != reviewed_base_sha)
+            except (GithubException, RequestException) as e:
+                get_logger().warning(f"Cannot confirm the PR did not move during approval: {e}")
+                moved = True
+            if moved:
+                try:
+                    res.dismiss("The pull request changed while PR-Agent was approving it")
+                except (GithubException, RequestException) as e:
+                    get_logger().error(f"An approval of a moved pull request is still in place, error: {e}")
+                return False
             return True
         except (GithubException, RequestException, AttributeError) as e:
             get_logger().exception(f"Failed to auto-approve, error: {e}")

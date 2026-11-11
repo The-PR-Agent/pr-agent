@@ -213,3 +213,25 @@ def test_auto_approve_skips_when_the_base_moved():
 
     assert provider.auto_approve() is False
     provider.pr.create_review.assert_not_called()
+
+
+def _pr_at(head, base="base-sha"):
+    return SimpleNamespace(head=SimpleNamespace(sha=head), base=SimpleNamespace(sha=base))
+
+
+def test_auto_approve_withdraws_when_a_push_lands_during_approval():
+    review = Mock(state="APPROVED")
+    provider = make_provider(reviewed_sha="aaa111", current_sha="aaa111", review_result=review)
+    provider._get_pr = Mock(side_effect=[_pr_at("aaa111"), _pr_at("bbb222")])
+
+    assert provider.auto_approve() is False
+    review.dismiss.assert_called_once()
+
+
+def test_auto_approve_withdraws_when_the_recheck_fails():
+    review = Mock(state="APPROVED")
+    provider = make_provider(reviewed_sha="aaa111", current_sha="aaa111", review_result=review)
+    provider._get_pr = Mock(side_effect=[_pr_at("aaa111"), gp.GithubException(502, "bad gateway", None)])
+
+    assert provider.auto_approve() is False
+    review.dismiss.assert_called_once()
