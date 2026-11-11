@@ -166,7 +166,7 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>inline_key_issues</b></td>
-    <td>If set to true (the default), each key issue is published as an inline comment where the provider supports verified inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab, Gitea). A finding leaves the review summary when a matching comment exists or the provider accepts the new comment. Findings that cannot be anchored or published stay in the summary. A finding that carries a fix is published as a committable suggestion when `pr_code_suggestions.committable_code_suggestions` is true and the fix's `existing_code` matches the file at the finding's lines; otherwise the fix appears as a code block in the comment.</td>
+    <td>If set to true (the default), each key issue is published as an inline comment where the provider supports verified inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab, Gitea). A finding leaves the review summary when a matching comment exists or the provider accepts the new comment. Findings that cannot be anchored or published stay in the summary. A finding that carries a fix is published as a committable suggestion when `pr_code_suggestions.committable_code_suggestions` is true, the fix is at most ten lines and its `existing_code` matches the file at the finding's lines; otherwise the fix appears as a code block in the comment.</td>
   </tr>
 </table>
 

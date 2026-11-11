@@ -224,6 +224,9 @@ def _strip_line_numbers(code: str | None, start_line: int, end_line: int) -> str
     return "\n".join(stripped)
 
 
+_MAX_COMMITTABLE_FIX_LINES = 10
+
+
 def _code_lines(code: str) -> list[str]:
     # Split on newlines only: splitlines() also splits on Unicode separators that can sit inside a string.
     return [line.rstrip(" \t") for line in code.replace("\r\n", "\n").strip("\n").split("\n")]
@@ -1936,7 +1939,8 @@ class PRReviewer:
             return finding.to_inline_comment(body, fallback_to_pr_comment=False)
         fence = get_suggestion_fence(improved_code)
         original_suggestion = None
-        if get_committable_code_suggestions():
+        # The prompt asks for fixes of at most ten lines; a longer one is shown, never offered as a commit.
+        if get_committable_code_suggestions() and len(_code_lines(improved_code)) <= _MAX_COMMITTABLE_FIX_LINES:
             is_applicable, _, has_valid_anchor = validate_suggestion(file, start_line, end_line, existing_code)
             if has_valid_anchor:
                 if existing_code:
