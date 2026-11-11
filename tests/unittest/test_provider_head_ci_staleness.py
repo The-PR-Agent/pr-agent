@@ -623,6 +623,41 @@ def test_gitlab_ci_status_fallback_to_pipelines_list():
 # 7. GitLabProvider.is_head_stale_against_base
 # ---------------------------------------------------------------------------
 
+def _gitlab_failed_pipeline_with_jobs(status, jobs):
+    provider = _make_gitlab_provider(head_pipeline={"status": status, "sha": "glhead123", "id": 17})
+    pipeline = provider.gl.projects.get.return_value.pipelines.get.return_value
+    pipeline.jobs.list.return_value = [SimpleNamespace(name=name, status=job) for name, job in jobs]
+    return provider
+
+
+def test_gitlab_ci_status_ignores_its_failed_verdict_job():
+    provider = _gitlab_failed_pipeline_with_jobs("failed", [("PR Agent - Review", "failed"), ("test", "success")])
+    assert provider.get_head_ci_status() == "passed"
+
+
+def test_gitlab_ci_status_keeps_other_pipeline_failures():
+    provider = _gitlab_failed_pipeline_with_jobs("failed", [("PR Agent - Review", "failed"), ("test", "failed")])
+    assert provider.get_head_ci_status() == "failed"
+
+
+def test_gitlab_ci_status_keeps_unexplained_pipeline_failures():
+    for status in ("failed", "canceled"):
+        provider = _gitlab_failed_pipeline_with_jobs(status, [("test", "success")])
+        assert provider.get_head_ci_status() == "failed"
+
+
+def test_gitlab_staleness_is_unknown_without_a_pipeline_timestamp():
+    provider = _make_gitlab_provider(head_pipeline=None)
+    provider.mr.target_branch = "main"
+    provider.get_diff_files = lambda: [SimpleNamespace(filename="app/main.py")]
+    project = MagicMock()
+    provider.gl.projects.get.return_value = project
+
+    assert provider.is_head_stale_against_base() is None
+    project.commits.get.assert_not_called()
+    project.commits.list.assert_not_called()
+
+
 def test_gitlab_staleness_returns_false_when_target_branch_unrelated():
     now_iso = "2026-01-01T12:00:00Z"
     provider = _make_gitlab_provider(head_pipeline={"status": "success", "created_at": now_iso})

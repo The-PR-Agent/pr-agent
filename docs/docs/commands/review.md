@@ -219,7 +219,22 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>require_merge_recommendation</b></td>
-    <td>If set to true, the command will add a section describing what the review found: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge). The value reports the model's findings, not a guarantee about the code.</td>
+    <td>If set to true, the command publishes a recommendation computed from deterministic checks. Only passing checks
+    allow no_concerns_found; needs_review means a check did not pass or could not be evaluated, and changes_required
+    reflects a model veto. The value reports the review's findings, not a guarantee about the code. See
+    <a href="#merge-recommendation">Merge recommendation</a>.</td>
+  </tr>
+  <tr>
+    <td><b>publish_merge_recommendation_status</b></td>
+    <td>If set to true with <code>require_merge_recommendation</code>, publishes the verdict on the reviewed commit.
+    GitHub uses the <code>PR Agent - Review</code> check; GitLab uses a commit status. <code>needs_review</code>
+    publishes as neutral on GitHub and skipped on GitLab, so it does not block a merge; <code>changes_required</code>
+    publishes as a failure.</td>
+  </tr>
+  <tr>
+    <td><b>max_changed_lines</b></td>
+    <td>Host-only changed-line cap for <code>no_concerns_found</code>. A larger diff makes the recommendation
+    <code>needs_review</code> at best. The cap counts added and removed lines.</td>
   </tr>
   <tr>
     <td><b>require_failure_modes</b></td>
@@ -671,3 +686,21 @@ pattern has a 50 ms limit, and each custom pattern has 1 s in total per review. 
 PR-Agent logs a warning and skips that pattern for the rest of the review.
 
 :::
+
+### Merge recommendation
+
+When `require_merge_recommendation` is enabled, PR-Agent computes the recommendation from deterministic checks;
+the model can only make it more cautious. `no_concerns_found` requires passing CI on the reviewed head, a current
+head, human authors, no sensitive paths or risky changes, and a diff within `max_changed_lines`. A check that
+cannot be evaluated fails closed. The review includes each check and its result.
+
+When `publish_merge_recommendation_status` is enabled, PR-Agent publishes the verdict against the exact head SHA
+that was reviewed. GitHub uses the `PR Agent - Review` check run and GitLab uses a commit status. `needs_review`
+publishes as neutral on GitHub and skipped on GitLab, so it does not block a merge. `changes_required` publishes
+as failure/failed and blocks merging when that status is required by branch protection or the project's merge rules.
+A new commit has no PR-Agent verdict status until it is reviewed.
+
+The line cap, sensitive-path patterns, and custom risky-shape patterns are host-only settings; repository,
+per-directory, and comment configuration cannot weaken or replace them. The verdict scans the complete PR diff,
+including ignored paths and files already reviewed by an incremental review. If the full diff or a trustworthy CI
+timestamp is unavailable, the verdict cannot be `no_concerns_found`.
