@@ -2,11 +2,13 @@ import os
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
+from urllib.parse import unquote, urlsplit
 
 import pytest
 from atlassian.bitbucket import Bitbucket
 from packaging.version import parse as parse_version
-from requests import Request, Response
+from requests import Request, Response, Session
+from requests.adapters import BaseAdapter
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import HTTPError, Timeout
 from requests.utils import get_encoding_from_headers
@@ -46,6 +48,34 @@ def _raw_file_response(contents: str, content_type: str, encoding: str = "utf-8"
     response.encoding = get_encoding_from_headers(response.headers)
     response._content = contents.encode(encoding)
     return response
+
+
+class _RawFileTransport(BaseAdapter):
+    """Answer like Bitbucket Server: raw files by the path and query it decodes, and the PR merge base."""
+
+    def __init__(self):
+        super().__init__()
+        self.files = {}
+        self.reads = []
+
+    def send(self, request, **kwargs):
+        target = urlsplit(request.url)  # a fragment after "#" is never sent
+        response = Response()
+        response.request = request
+        response.headers["Content-Type"] = "application/json"
+        if target.path.endswith("/merge-base"):
+            response.status_code, response._content = 200, b'{"id": "base-sha"}'
+            return response
+        read = (unquote(target.path.removeprefix("/rest/api/1.0/projects/AAA/repos/my-repo/raw/")), target.query)
+        self.reads.append(read)
+        if read in self.files:
+            response.status_code, response._content = 200, self.files[read].encode()
+        else:
+            response.status_code, response._content = 404, b'{"errors": [{"message": "No such path"}]}'
+        return response
+
+    def close(self):
+        pass
 
 
 class TestBitbucketProvider:
@@ -2332,6 +2362,46 @@ class TestBitbucketServerProvider:
 
         with pytest.raises(HTTPError, match="500 error"):
             provider.get_diff_files()
+
+    @pytest.fixture
+    def raw_read_provider(self):
+        transport = _RawFileTransport()
+        with Session() as session:
+            session.mount("https://", transport)
+            provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+            provider.workspace_slug = "AAA"
+            provider.repo_slug = "my-repo"
+            provider.bitbucket_client = Bitbucket(url="https://bb.example.com", token="test-token", session=session)
+            yield provider, transport
+
+    @pytest.mark.parametrize("path", ["src/C#/Program.cs", "docs/what?.md", "data/100%25.txt"])
+    def test_get_file_sends_the_whole_path_and_revision(self, raw_read_provider, path):
+        provider, transport = raw_read_provider
+        transport.files[(path, "at=abc123")] = "content\n"
+
+        content = provider.get_file(path, "abc123")
+
+        assert transport.reads == [(path, "at=abc123")]
+        assert content == b"content\n"
+
+    def test_get_diff_files_reads_a_csharp_folder_file_at_both_revisions(self, raw_read_provider):
+        provider, transport = raw_read_provider
+        transport.files[("src/C#/Program.cs", "at=base-sha")] = "old\n"
+        transport.files[("src/C#/Program.cs", "at=head-sha")] = "new\n"
+        provider.pr_num = 1
+        provider.pr = SimpleNamespace(fromRef={"latestCommit": "head-sha"})
+        provider.bitbucket_api_version = parse_version("8.16")
+        provider.diff_files = None
+        provider._get_pull_request_changes = MagicMock(
+            return_value=[{"type": "MODIFY", "path": {"toString": "src/C#/Program.cs"}}]
+        )
+
+        [diff_file] = provider.get_diff_files()
+
+        assert transport.reads == [("src/C#/Program.cs", "at=base-sha"), ("src/C#/Program.cs", "at=head-sha")]
+        assert diff_file.filename == "src/C#/Program.cs"
+        assert diff_file.content_fetch_failed is False
+        assert diff_file.patch == "@@ -1 +1 @@\n-old\n+new\n"
 
     def test_get_repo_file_content_propagates_non_404_errors(self):
         provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
