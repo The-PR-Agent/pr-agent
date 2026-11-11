@@ -48,11 +48,11 @@ def _as_int(value, default: int = 0) -> int:
         return default
 
 
-def _gpt6_budget_model(model: str, settings) -> tuple[str, bool]:
+def _gpt6_budget_model(model: str, settings, custom_llm_provider: str | None = None) -> tuple[str, bool]:
     """Resolve a GPT-6 budget alias and identify its native provider route."""
-    custom_llm_provider = str(
-        getattr(getattr(settings, "litellm", None), "custom_llm_provider", "") or ""
-    ).strip().lower()
+    if custom_llm_provider is None:
+        custom_llm_provider = getattr(getattr(settings, "litellm", None), "custom_llm_provider", "")
+    custom_llm_provider = str(custom_llm_provider or "").strip().lower()
     openrouter_route = custom_llm_provider == "openrouter" or (
         not custom_llm_provider and model.startswith("openrouter/")
     )
@@ -73,13 +73,13 @@ def _gpt6_budget_model(model: str, settings) -> tuple[str, bool]:
     return model_base, native_gpt6_route
 
 
-def get_max_input_tokens(model: str) -> int | None:
+def get_max_input_tokens(model: str, *, custom_llm_provider: str | None = None) -> int | None:
     """Return a maintained native input ceiling independently of the total context window."""
-    model_base, native_route = _gpt6_budget_model(model, get_settings())
+    model_base, native_route = _gpt6_budget_model(model, get_settings(), custom_llm_provider)
     return GPT6_MAX_INPUT_TOKENS.get(model_base) if native_route else None
 
 
-def get_max_tokens(model, ignore_max_model_tokens=False):
+def get_max_tokens(model, ignore_max_model_tokens=False, *, custom_llm_provider: str | None = None):
     """
     Get the maximum number of tokens allowed for a model.
     logic:
@@ -97,7 +97,7 @@ def get_max_tokens(model, ignore_max_model_tokens=False):
     """
     settings = get_settings()
     custom_max_tokens = _as_int(settings.config.custom_model_max_tokens)
-    model_base, native_gpt6_route = _gpt6_budget_model(model, settings)
+    model_base, native_gpt6_route = _gpt6_budget_model(model, settings, custom_llm_provider)
     # Resolve supported aliases while preserving custom limits on non-native routes.
     if (
         custom_max_tokens <= 0 and model_base in GPT6_MODELS
@@ -314,13 +314,22 @@ class AttemptTokenBudget:
         bound_token_handler = (
             token_handler.for_model(model) if isinstance(token_handler, TokenHandler) else token_handler
         )
+        ai_handler = getattr(bound_token_handler, "ai_handler", None)
+        resolve_limits = getattr(type(ai_handler), "get_model_token_limits", None)
+        if callable(resolve_limits):
+            context_window, max_input_tokens = resolve_limits(
+                ai_handler, model, ignore_max_model_tokens=ignore_max_model_tokens,
+            )
+        else:
+            context_window = get_max_tokens(model, ignore_max_model_tokens=ignore_max_model_tokens)
+            max_input_tokens = get_max_input_tokens(model)
         return cls(
             model=model,
             source_token_handler=token_handler,
             token_handler=bound_token_handler,
-            context_window=get_max_tokens(model, ignore_max_model_tokens=ignore_max_model_tokens),
+            context_window=context_window,
             output_token_reserve=output_token_reserve,
-            max_input_tokens=get_max_input_tokens(model),
+            max_input_tokens=max_input_tokens,
         )
 
     @classmethod
@@ -345,6 +354,7 @@ class AttemptTokenBudget:
             user_template,
             model=model,
             count_prompt_tokens=False,
+            ai_handler=ai_handler,
         )
         budget = cls.for_attempt(
             model,

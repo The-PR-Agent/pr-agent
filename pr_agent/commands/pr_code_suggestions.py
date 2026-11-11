@@ -11,6 +11,7 @@ from functools import partial
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import get_artifact_context, prompt_boundary_markers
+from pr_agent.algo.chunk_runner import run_chunk_batch
 from pr_agent.algo.code_replacement import python_replacement_compiles, reindent_to_line
 from pr_agent.algo.comment_identity import (
     PRCodeSuggestionsHeader,
@@ -353,7 +354,8 @@ class PRCodeSuggestions:
         self.token_handler = TokenHandler(self.git_provider.pr,
                                           self.vars,
                                           self.pr_code_suggestions_prompt_system,
-                                          self.pr_code_suggestions_prompt_user)
+                                          self.pr_code_suggestions_prompt_user,
+                                          ai_handler=self.ai_handler)
 
         self.progress = build_progress_comment()
         self.progress_response = None
@@ -823,9 +825,8 @@ class PRCodeSuggestions:
                            f"analysis to fit the token budget: {file_list}.")
         return "\n\n⚠️ **Suggestion coverage:** " + " ".join(details)
 
-    @staticmethod
-    def _write_json_output(data: dict) -> None:
-        """Write the suggestions and the run's token usage to the CLI's --json-output path, if one was given."""
+    def _write_json_output(self, data: dict) -> None:
+        """Write suggestions, token usage, and analysis coverage to the CLI's --json-output path."""
         if not review_json_output_path.get():
             return
         details = get_run_details()
@@ -836,7 +837,17 @@ class PRCodeSuggestions:
                 "completion_tokens": details.completion_tokens,
                 "total_tokens": details.total_tokens,
             }
-        write_review_json_output({"code_suggestions": list(data.get("code_suggestions") or []), "usage": usage})
+        coverage = {
+            "total_chunks": getattr(self, "total_chunk_count", 0),
+            "failed_chunks": getattr(self, "failed_chunk_count", 0),
+            "files_not_reviewed": list(getattr(self, "remaining_files_list", []) or []),
+            "files_partially_reviewed": list(getattr(self, "partial_files_list", []) or []),
+        }
+        write_review_json_output({
+            "code_suggestions": list(data.get("code_suggestions") or []),
+            "usage": usage,
+            "coverage": coverage,
+        })
 
     async def publish_no_suggestions(self):
         coverage_footer = self._get_suggestions_coverage_footer(suggestions_present=False)
@@ -2003,31 +2014,19 @@ class PRCodeSuggestions:
             return patches_diff_list
 
     async def _predict_chunks(self, model: str, chunk_pairs: list) -> list:
-        if get_settings().pr_code_suggestions.parallel_calls:
-            results = await asyncio.gather(
-                *[self._predict_chunk(model, numbered, unnumbered) for numbered, unnumbered in chunk_pairs],
-                return_exceptions=True,
-            )
-        else:
-            results = []
-            for numbered, unnumbered in chunk_pairs:
-                try:
-                    results.append(await self._predict_chunk(model, numbered, unnumbered))
-                except Exception as error:
-                    results.append(error)
-        for result in results:
-            if isinstance(result, BaseException) and not isinstance(result, Exception):
-                raise result
-        return results
+        """Run one suggestion call per chunk through the shared chunk runner.
 
-    async def _predict_chunk(self, model: str, numbered: str, unnumbered: str):
-        """Suggest one chunk, then advance the in-place progress comment it was published under."""
-        try:
-            return await self._get_prediction(model, numbered, unnumbered)
-        finally:
-            progress = getattr(self, "_chunk_progress", None)
-            if progress is not None:
-                await progress.record_settled()
+        Failed chunks stay in the returned list as exceptions so the caller can
+        recover them on the remaining models; a cancelled chunk is re-raised by
+        the runner after its siblings settle. Kept as a method because the
+        recovery step re-enters it for each fallback model.
+        """
+        return await run_chunk_batch(
+            chunk_pairs,
+            lambda pair: self._get_prediction(model, pair[0], pair[1]),
+            parallel=get_settings().pr_code_suggestions.parallel_calls,
+            reporter=getattr(self, "_chunk_progress", None),
+        )
 
     def _chunk_progress_reporter(self, total: int) -> ChunkProgressReporter | None:
         """Report chunk progress by appending a line to the published progress comment in place.

@@ -5,7 +5,7 @@ import posixpath
 import re
 import time
 import urllib.parse
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from http.client import HTTPException
@@ -60,6 +60,8 @@ from .git_provider import (
     GitProvider,
     IncompleteProviderPullRequestFilesError,
     IncrementalPR,
+    PRCommit,
+    commit_patch_fingerprint,
     get_cached_global_settings,
     get_config_branch,
     redact_credentials,
@@ -116,7 +118,11 @@ query($project: ID!, $ref: String!, $paths: [String!]!) {
 """
 
 
-_GITLAB_MENTION_RE = re.compile(r"(?<![\w/])@(?=[\w-])", re.UNICODE)
+# GitLab matches references after an ASCII-only boundary (Ruby's \w), and decodes entities for @ first.
+_GITLAB_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_])(?:@|&#0{0,5}64;|&#[xX]0{0,4}40;|&commat;)(?=[\w-])")
+# Autolinked URLs render as links, which GitLab never scans for references. The span stops at Markdown
+# delimiters, so a mention right after a link, code span, quote, emphasis, table cell or escape is still neutralised.
+_GITLAB_AUTOLINK_RE = re.compile(r"(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{1,31}://[^\s<>`()\[\]\"'*~|\\]+")
 _GITLAB_TICK_RUN_RE = re.compile(r"`+")
 _GITLAB_FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})")
 _GITLAB_ATX_RE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
@@ -237,6 +243,22 @@ def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
     return code_by_start, boundaries
 
 
+def _gitlab_autolink_spans(text: str) -> tuple[list[int], list[int]]:
+    """Return the sorted start and end offsets of bare URLs that GitLab autolinks."""
+    spans = [(match.start(), match.end()) for match in _GITLAB_AUTOLINK_RE.finditer(text)]
+    return [start for start, _ in spans], [end for _, end in spans]
+
+
+def _neutralize_gitlab_mention(mention: re.Match, offset: int, url_spans: tuple[list[int], list[int]]) -> str:
+    """Append a zero-width space to a mention unless it sits inside an autolinked URL."""
+    starts, ends = url_spans
+    position = offset + mention.start()
+    span_index = bisect_right(starts, position) - 1
+    if span_index >= 0 and position < ends[span_index]:
+        return mention.group()
+    return mention.group() + "\u200b"
+
+
 def _neutralize_gitlab_mentions(text: str) -> str:
     """Disable GitLab notifications while leaving Markdown code spans untouched."""
     if not text:
@@ -247,6 +269,7 @@ def _neutralize_gitlab_mentions(text: str) -> str:
         tick_runs.setdefault(len(run.group()), []).append(run.start())
 
     code_by_start, boundaries = _gitlab_line_flags(text)
+    url_spans = _gitlab_autolink_spans(text)
 
     output = []
     index = 0
@@ -301,7 +324,11 @@ def _neutralize_gitlab_mentions(text: str) -> str:
             next_special += 1
         chunk = text[index:next_special]
         prefix = text[index - 1:index] if index else ""
-        output.append(_GITLAB_MENTION_RE.sub("@\u200b", prefix + chunk)[len(prefix):])
+        offset = index - len(prefix)
+        output.append(_GITLAB_MENTION_RE.sub(
+            lambda mention, offset=offset: _neutralize_gitlab_mention(mention, offset, url_spans),
+            prefix + chunk,
+        )[len(prefix):])
         index = next_special
         if index < len(text) and text[index] == "\n":
             output.append("\n")
@@ -741,7 +768,8 @@ class GitLabProvider(GitProvider):
     def _submodule_target_allowed(self, project) -> bool:
         """Apply the sibling-repository checks to a resolved cross-project target."""
         path = getattr(project, "path_with_namespace", None) or ""
-        return (self.is_sibling_repo_allowed(path) and path.split("/")[0] == self.get_owning_namespace(resolved=True)
+        return (self.is_sibling_repo_allowed(path)
+                and self.is_sibling_namespace_allowed(path.split("/")[0], self.get_owning_namespace(resolved=True))
                 and self._requester_can_read_sibling_project(project))
 
     def get_sibling_repo(self, repo_id: str):
@@ -1081,6 +1109,12 @@ class GitLabProvider(GitProvider):
         "suggestions": _SUGGESTIONS_STABLE_ANCHORS + _SUGGESTIONS_LEGACY_ANCHORS,
     }
 
+    def reset_diff_cache_for_command(self) -> None:
+        super().reset_diff_cache_for_command()
+        # The provisional-empty retry lives at the command boundary now (#4860), so the
+        # MR changes cache re-polls together with the diff cache it feeds.
+        self._merge_request_changes_cache = None
+
     def get_incremental_commits(self, incremental: IncrementalPR | None = None, kind: str = "review"):
         """Populate state needed for an incremental run.
 
@@ -1098,6 +1132,7 @@ class GitLabProvider(GitProvider):
         self.diff_files = None
         self._merge_request_changes_cache = None
         self.mr_commits = None
+        self._commit_diff_refs = None
         if not self.incremental.is_incremental:
             return
         self.unreviewed_files_map = {}
@@ -1262,6 +1297,47 @@ class GitLabProvider(GitProvider):
                 self.incremental.last_seen_commit = adapter
                 break
         return self.mr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
+
+    def get_pr_commits(self) -> list[PRCommit]:
+        commits = []
+        for commit in list(self.mr.commits(per_page=100))[::-1]:
+            parent_ids = getattr(commit, "parent_ids", None)
+            commits.append(PRCommit(sha=commit.id, message=commit.message or "",
+                                    url=getattr(commit, "web_url", "") or "",
+                                    parents=None if parent_ids is None else tuple(parent_ids)))
+        return commits
+
+    def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> str | None:
+        self.incremental = incremental
+        self.diff_files = None
+        self.unreviewed_files_map = {}
+        self._commit_diff_refs = None
+        loaded = vars(self).setdefault("_loaded_commits", {})
+        if commit.sha not in loaded:
+            gl_commit = self.gl.projects.get(self.id_project, lazy=True).commits.get(commit.sha)
+            parent_ids = list(getattr(gl_commit, "parent_ids", None) or [])
+            loaded[commit.sha] = parent_ids, (list(gl_commit.diff(get_all=True, per_page=100))
+                                              if len(parent_ids) == 1 else [])
+        parent_ids, diffs = loaded[commit.sha]
+        if len(parent_ids) != 1:
+            get_logger().info(f"Skipping commit {commit.sha} with {len(parent_ids)} parents in per commit review")
+            return None
+
+        incremental.first_new_commit = SimpleNamespace(sha=commit.sha)
+        incremental.last_seen_commit = SimpleNamespace(sha=parent_ids[0])
+        self._incremental_head_sha = commit.sha
+        self._commit_diff_refs = SimpleNamespace(
+            base_commit_sha=parent_ids[0], start_commit_sha=parent_ids[0], head_commit_sha=commit.sha)
+        for diff in diffs:
+            if diff.get("new_path"):
+                self.unreviewed_files_map[diff["new_path"]] = diff
+        if not self.unreviewed_files_map:
+            return None
+        files = [(f"{diff.get('old_path') or ''}\0{diff.get('new_path') or ''}", diff.get("diff") or "")
+                 for diff in diffs]
+        if any(not patch for _, patch in files):
+            files.append(("", commit.sha))
+        return commit_patch_fingerprint(files)
 
     def get_previous_review(self, *, full: bool, incremental: bool):
         if not (full or incremental):
@@ -1737,11 +1813,10 @@ class GitLabProvider(GitProvider):
             get_logger().info(f"Filtered out files with invalid extensions: {invalid_files_names}")
 
         self.filtered_diff_file_names = invalid_files_names
-        # Retry provisional empty diffs until GitLab reports a verified change count.
-        if not diff_files and not incremental_active:
-            change_count = mr_changes.get("changes_count")
-            if not isinstance(change_count, str) or not change_count.isdecimal():
-                return diff_files
+        # A provisional empty diff (no verified change count yet) caches like any other
+        # result: consistent within a command, and re-polled at the next command boundary
+        # (reset_diff_cache_for_command, #4373) instead of on every get_diff_files() call,
+        # where two calls in one command could see different file sets.
         self.diff_files = diff_files
         self._diff_head_sha = head_sha_for_content
         return diff_files
@@ -2174,7 +2249,8 @@ class GitLabProvider(GitProvider):
         return False
 
     def resolve_outdated_inline_threads(self):
-        if not get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False):
+        if (not get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False)
+                or getattr(self, "_commit_diff_refs", None) is not None):
             return
         own_user_id = self._get_own_user_id()
         try:
@@ -2304,6 +2380,41 @@ class GitLabProvider(GitProvider):
             get_logger().info(
                 f"Resolved {resolved} fixed inline thread(s) on merge request {self.id_mr}")
         return resolved
+
+    def supports_line_question_history(self) -> bool:
+        return True
+
+    def get_review_thread_comments(self, discussion_id: str) -> list[SimpleNamespace]:
+        """Return earlier GitLab discussion notes for an inline question."""
+        origin_note_id = get_settings().get("origin_comment_id")
+        if origin_note_id is None:
+            return []
+
+        discussion = self.mr.discussions.get(discussion_id)
+        notes = discussion.attributes.get("notes") or []
+        # python-gitlab returns discussion notes in chronological order.
+        origin_index = next((i for i, note in enumerate(notes)
+                             if isinstance(note, dict) and note.get("id") == origin_note_id), None)
+        if origin_index is None:
+            get_logger().warning(
+                f"Origin note {origin_note_id} not found in GitLab discussion {discussion_id}; skipping history")
+            return []
+        notes = notes[:origin_index]
+
+        comments = []
+        for note in notes:
+            if not isinstance(note, dict) or note.get("system"):
+                continue
+            body = note.get("body")
+            if not isinstance(body, str) or not body.strip():
+                continue
+            author = note.get("author")
+            author = author if isinstance(author, dict) else {}
+            comments.append(SimpleNamespace(
+                id=note.get("id"), body=body,
+                user=SimpleNamespace(login=author.get("username") or "Unknown"),
+            ))
+        return comments
 
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
         body = self.limit_output_characters(_neutralize_gitlab_mentions(body), self.max_comment_chars)
@@ -2501,6 +2612,8 @@ class GitLabProvider(GitProvider):
                 return False
 
     def get_relevant_diff(self, relevant_file: str, relevant_line_in_file: str) -> dict | None:
+        if getattr(self, "_commit_diff_refs", None) is not None:
+            return self._commit_diff_refs
         _changes = self._get_merge_request_changes()
         _changes['changes'] = self._expand_submodule_changes(_changes.get('changes', []), _changes["diff_refs"])
         changes = _changes
@@ -2996,7 +3109,7 @@ class GitLabProvider(GitProvider):
             numeric_id = repo_id.isascii() and repo_id.isdigit()
             identity_matches = str(project.id) == repo_id if numeric_id else resolved_path == repo_id
             if (not isinstance(resolved_path, str) or "/" not in resolved_path or not identity_matches
-                    or not current_namespace or resolved_path.split("/")[0] != current_namespace):
+                    or not self.is_sibling_namespace_allowed(resolved_path.split("/")[0], current_namespace)):
                 get_logger().warning(f"Ignoring out-of-namespace sibling repo in repo context: {repo_id}")
                 return ""
             if not self._requester_can_read_sibling_project(project):

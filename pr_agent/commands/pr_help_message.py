@@ -267,8 +267,13 @@ class PRHelpMessage:
             output_tokens = self._coerce_output_token_limit(raw_output_tokens)
         if output_tokens <= 0:
             output_tokens = HELP_OUTPUT_TOKEN_RESERVE
-        input_capacity = get_max_tokens(model, ignore_max_model_tokens=True) - output_tokens
-        max_input_tokens = get_max_input_tokens(model)
+        resolve_limits = getattr(type(self.ai_handler), "get_model_token_limits", None)
+        if callable(resolve_limits):
+            window, max_input_tokens = resolve_limits(self.ai_handler, model, ignore_max_model_tokens=True)
+        else:
+            window = get_max_tokens(model, ignore_max_model_tokens=True)
+            max_input_tokens = get_max_input_tokens(model)
+        input_capacity = window - output_tokens
         if max_input_tokens is not None:
             input_capacity = min(input_capacity, max_input_tokens)
         return max(input_capacity, 0)

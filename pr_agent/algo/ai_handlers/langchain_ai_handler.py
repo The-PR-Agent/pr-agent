@@ -1,8 +1,12 @@
+import os
+import re
+
 import openai
 from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.run_details import record_ai_call
+from pr_agent.algo.token_budget import _as_int, get_max_input_tokens, get_max_tokens
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -17,6 +21,19 @@ except ImportError:  # we don't enforce langchain as a dependency, so if it's no
     pass
 
 OPENAI_RETRIES = 5
+
+
+def _is_native_openai_endpoint(api_base: str | None) -> bool:
+    """Recognize native defaults without overriding LangChain's endpoint selection."""
+    api_base = api_base or os.getenv("OPENAI_API_BASE") or None
+    if api_base is None:
+        # Newer LangChain versions select this gateway before the SDK's own defaults.
+        if os.getenv("LANGSMITH_GATEWAY", "").lower() not in ("", "false", "0", "no"):
+            return False
+        api_base = os.getenv("OPENAI_BASE_URL")
+        if api_base is None:
+            return True
+    return re.fullmatch(r"(?ai:https://api\.openai\.com)(?::443)?/v1/?", api_base) is not None
 
 
 class LangChainOpenAIHandler(BaseAiHandler):
@@ -35,6 +52,21 @@ class LangChainOpenAIHandler(BaseAiHandler):
         Returns the deployment ID for the OpenAI API.
         """
         return get_settings().get("OPENAI.DEPLOYMENT_ID", None)
+
+    def get_model_token_limits(self, model: str, *, ignore_max_model_tokens: bool = False) -> tuple[int, int | None]:
+        """Use this client's route, not LiteLLM's independent provider setting."""
+        provider = "azure" if self.azure else "openai"
+        window = get_max_tokens(
+            model, ignore_max_model_tokens=ignore_max_model_tokens, custom_llm_provider=provider,
+        )
+        input_limit = get_max_input_tokens(model, custom_llm_provider=provider)
+        api_base = get_settings().get("OPENAI.API_BASE", None)
+        custom_limit = _as_int(get_settings().config.custom_model_max_tokens)
+        # A compatible gateway does not establish ownership of the native model's full window.
+        if (not self.azure and input_limit is not None and custom_limit > 0
+                and not _is_native_openai_endpoint(api_base)):
+            window = min(window, custom_limit)
+        return window, input_limit
 
     async def _create_chat_async(self, deployment_id=None):
         try:

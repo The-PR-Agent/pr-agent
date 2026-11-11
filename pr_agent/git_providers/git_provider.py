@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import os
 import re
@@ -705,6 +706,12 @@ class GitProvider(ABC):
     def get_incremental_commits(self, is_incremental) -> None:
         return None
 
+    def get_pr_commits(self) -> list["PRCommit"] | None:
+        return None
+
+    def set_commit_review_scope(self, commit: "PRCommit", incremental: "IncrementalPR") -> str | None:
+        raise NotImplementedError
+
     @abstractmethod
     def publish_description(self, pr_title: str, pr_body: str) -> None:
         """Publish the pull request title and description.
@@ -1042,6 +1049,33 @@ class GitProvider(ABC):
             return False
         normalize = (lambda value: value) if case_sensitive else str.casefold
         return normalize(repo_id) in {
+            normalize(value.strip().strip("/")) for value in allowed if isinstance(value, str) and value.strip()
+        }
+
+    def is_sibling_namespace_allowed(self, sibling_namespace: str, owning_namespace: str | None,
+                                     *, case_sensitive: bool = True) -> bool:
+        """Approve the namespace a sibling repository resolved into.
+
+        The reviewed repository's own org/group/workspace is always approved, which is the
+        only thing allowed by default: config.repo_context_sibling_namespaces is empty, so
+        this keeps the owning-namespace bound exactly as it was. A host that spreads one
+        project's dependencies over several groups (a submodule in a shared library group,
+        say) names the extra ones there.
+
+        This widens only which namespaces an already-approved repo_context_sibling_repos
+        entry may resolve into; it never makes a repository selectable on its own, and the
+        requester's read access is still checked separately. Host-only, like the repository
+        allowlist it accompanies: repository settings and comment arguments cannot set it.
+        """
+        if not sibling_namespace:
+            return False
+        normalize = (lambda value: value) if case_sensitive else str.casefold
+        if owning_namespace and normalize(sibling_namespace) == normalize(owning_namespace):
+            return True
+        allowed = get_settings().config.get("repo_context_sibling_namespaces", [])
+        if not isinstance(allowed, list):
+            return False
+        return normalize(sibling_namespace) in {
             normalize(value.strip().strip("/")) for value in allowed if isinstance(value, str) and value.strip()
         }
 
@@ -1540,12 +1574,31 @@ def get_main_pr_language(languages, files) -> str:
 
 
 
+@dataclass(frozen=True)
+class PRCommit:
+    sha: str
+    message: str
+    url: str = ""
+    parents: tuple[str, ...] | None = None
+
+
+_HUNK_LINE_NUMBERS_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", re.MULTILINE)
+
+
+def commit_patch_fingerprint(files: Iterable[tuple[str, str]]) -> str:
+    digest = hashlib.sha256()
+    for name, patch in sorted((name, _HUNK_LINE_NUMBERS_RE.sub("@@", patch)) for name, patch in files):
+        digest.update(f"{name}\0{patch}\0".encode())
+    return digest.hexdigest()
+
+
 class IncrementalPR:
     def __init__(self, is_incremental: bool = False):
         self.is_incremental = is_incremental
         self.commits_range = None
         self.first_new_commit = None
         self.last_seen_commit = None
+        self.head_sha = None
 
     @property
     def first_new_commit_sha(self):

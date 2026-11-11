@@ -2,6 +2,7 @@ import io
 import re
 
 from unidiff import PatchSet
+from unidiff.constants import LINE_TYPE_NO_NEWLINE
 from unidiff.errors import UnidiffParseError
 
 from pr_agent.algo.git_patch_processing import split_diff_lines
@@ -110,6 +111,9 @@ def reconstruct_base_file_checked(head_file_str: str, patch_str: str) -> str | N
     head_lines = split_diff_lines(head_file_str)
     base_lines: list[str] = []
     head_idx = 0  # 0-based cursor into head_lines
+    # Whether the base ends with a newline, when a "\ No newline at end of file"
+    # marker in the patch says so; None leaves it to the head file.
+    base_ends_with_newline = None
 
     for hunk in patch_set[0]:
         # 1-based -> 0-based. A hunk with no head lines (a pure deletion, as in
@@ -121,7 +125,18 @@ def reconstruct_base_file_checked(head_file_str: str, patch_str: str) -> str | N
         base_lines.extend(head_lines[head_idx:hunk_head_start])
         head_idx = hunk_head_start
 
+        previous = None
         for line in hunk:
+            if line.line_type == LINE_TYPE_NO_NEWLINE:
+                # The marker applies to the line before it: a removed or context line
+                # is the base's last line, so the base has no final newline. Marked only
+                # on an added line, the head lacks it and the base's last line has one.
+                if previous is not None and not previous.is_added:
+                    base_ends_with_newline = False
+                elif previous is not None and base_ends_with_newline is None:
+                    base_ends_with_newline = True
+                continue
+            previous = line
             value = line.value.removesuffix("\n").removesuffix("\r")
             if line.is_context:
                 if head_idx >= len(head_lines) or head_lines[head_idx] != value:
@@ -140,6 +155,8 @@ def reconstruct_base_file_checked(head_file_str: str, patch_str: str) -> str | N
     # Preserve a trailing newline only when the base actually has content; an
     # empty base (e.g. reversing an add-file patch) must stay "" so downstream
     # extend_patch() correctly treats it as having no original file.
-    if base_lines and head_file_str.endswith("\n"):
+    if base_ends_with_newline is None:
+        base_ends_with_newline = head_file_str.endswith("\n")
+    if base_lines and base_ends_with_newline:
         result += "\n"
     return result
