@@ -32,7 +32,7 @@ This integration enriches the review process by automatically surfacing relevant
 
 Image attachments are not fetched or sent to the model as images by the ticket integration.
 
-## Affected Tools
+## Affected Commands
 
 Ticket Recognition Requirements:
 
@@ -40,14 +40,14 @@ Ticket Recognition Requirements:
 - For Jira tickets, you should follow the instructions in [Jira Integration](#jira-integration) in order to authenticate with Jira.
 - For Asana tickets, see [Asana Integration](#asana-integration).
 
-### Describe tool
+### Describe command
 
 PR-Agent will recognize the ticket and use the ticket content (title, description, labels) to provide additional context for the code changes.
 By understanding the reasoning and intent behind modifications, the LLM can offer more insightful and relevant code analysis.
 
-### Review tool
+### Review command
 
-Similarly to the `describe` tool, the `review` tool will use the ticket content to provide additional context for the code changes.
+Similarly to the `describe` command, the `review` command will use the ticket content to provide additional context for the code changes.
 
 In addition, this feature will evaluate how well a Pull Request (PR) adheres to its original purpose/intent as defined by the associated ticket or issue.
 Each ticket will be assigned a compliance assessment in the review comment, indicating the degree to which the PR fulfills its original purpose. These assessments are not added as PR labels:
@@ -64,13 +64,21 @@ A `PR Code Verified` assessment indicates the PR code meets ticket requirements,
 
 #### Configuration options
 
-- By default, the `review` tool will automatically validate if the PR complies with the referenced ticket.
+- By default, the `review` command will automatically validate if the PR complies with the referenced ticket.
     If you want to disable this feedback, add the following line to your configuration file:
 
     ```toml
     [pr_reviewer]
     require_ticket_analysis_review=false
     ```
+
+### Ask command
+
+Set `pr_questions.use_ticket_context=true` to include linked ticket content in top-level `/ask` questions.
+This is disabled by default and is independent of `pr_reviewer.require_ticket_analysis_review`.
+It reuses the ticket integrations below and fits complete ticket records into the space left after the question,
+conversation history and selected diff. See [Linked ticket context](../commands/ask.md#linked-ticket-context)
+for usage and limits.
 
 ## GitHub/GitLab Issues Integration
 
@@ -88,8 +96,8 @@ GitHub processes references from the description first, then the branch name, th
 description references before title references. Repeated identical references do not add lookups, and title references use
 the existing ticket lookup and result limits without displacing earlier sources.
 
-The optional `config.description_issue_regex` setting applies only to the GitHub PR description. GitHub titles use
-the built-in reference formats above, including local `#<ISSUE_NUMBER>` references of up to six digits.
+The optional `config.description_issue_regex` setting applies only to the GitHub PR description. Built-in matching on
+GitHub and GitLab recognizes local `#<ISSUE_NUMBER>` references of up to six digits.
 
 Branch names can also be used to link issues, for example:
 - `123-fix-bug` (where `123` is the issue number)

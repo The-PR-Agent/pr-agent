@@ -3,7 +3,7 @@
 The registry is the one place where command spellings, aliases, and the
 per-command facts the entry points need live. These tests pin the refactor:
 the registry must cover exactly the dispatched commands, aliases must share
-their canonical command's tool and check run, and an automatic ``/review_pr``
+their canonical command's command and check run, and an automatic ``/review_pr``
 must open and complete the ``review`` check run like ``/review`` does.
 """
 
@@ -24,6 +24,7 @@ from pr_agent.agent.pr_agent import command2class, commands
 from pr_agent.cli import (
     _JSON_DESCRIBE_COMMANDS,
     _JSON_IMPROVE_COMMANDS,
+    _JSON_LABEL_COMMANDS,
     _JSON_REVIEW_COMMANDS,
     _PLAIN_DIFF_MARKDOWN_COMMANDS,
 )
@@ -35,14 +36,13 @@ def test_registry_covers_exactly_the_dispatched_commands():
     assert set(COMMAND_SPECS) == set(command2class)
     assert set(COMMAND_SPECS) == set(commands)
     for name, spec in COMMAND_SPECS.items():
-        assert spec.tool is command2class[name]
+        assert spec.command is command2class[name]
 
 
 @pytest.mark.parametrize(
     ("alias", "canonical"),
     [
         ("review_pr", "review"),
-        ("auto_review", "review"),
         ("describe_pr", "describe"),
         ("improve_code", "improve"),
         ("ask_question", "ask"),
@@ -50,7 +50,7 @@ def test_registry_covers_exactly_the_dispatched_commands():
     ],
 )
 def test_aliases_share_their_canonical_command(alias, canonical):
-    assert resolve_command(alias).tool is resolve_command(canonical).tool
+    assert resolve_command(alias).command is resolve_command(canonical).command
 
 
 @pytest.mark.parametrize(
@@ -65,8 +65,6 @@ def test_aliases_share_their_canonical_command(alias, canonical):
         ("/improve", "suggestions"),
         ("/improve_code", "suggestions"),
         ("/ask", None),
-        ("/answer", None),
-        ("/auto_review", None),
         ("/help", None),
         ("/unknown_command", None),
     ],
@@ -83,9 +81,11 @@ def test_command_check_run_resolution(spelling, expected):
         ("/review_pr", True),
         ("/improve", True),
         ("/improve_code", True),
-        ("/auto_review", False),
         ("/describe", False),
-        ("/ask", False),
+        ("/ask", True),
+        ("/ask_question", True),
+        ("/answer", False),
+        ("/auto_review", False),
         ("/unknown_command", False),
     ],
 )
@@ -95,7 +95,7 @@ def test_command_takes_comment_id(spelling, expected):
 
 def test_cli_command_sets_match_the_registry():
     assert _PLAIN_DIFF_MARKDOWN_COMMANDS == {
-        "review", "review_pr", "auto_review",
+        "review", "review_pr",
         "describe", "describe_pr",
         "improve", "improve_code",
         "ask", "ask_question",
@@ -104,6 +104,14 @@ def test_cli_command_sets_match_the_registry():
     assert _JSON_REVIEW_COMMANDS == {"review", "review_pr"}
     assert _JSON_IMPROVE_COMMANDS == {"improve", "improve_code"}
     assert _JSON_DESCRIBE_COMMANDS == {"describe", "describe_pr"}
+    assert _JSON_LABEL_COMMANDS == {"generate_labels"}
+
+
+@pytest.mark.parametrize("name", ["answer", "auto_review"])
+def test_removed_commands_are_not_registered(name):
+    assert resolve_command(name) is None
+    assert name not in command2class
+    assert name not in commands
 
 
 @pytest.mark.parametrize("succeeded", [True, False])

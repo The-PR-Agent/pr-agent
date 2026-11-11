@@ -60,6 +60,8 @@ from .git_provider import (
     GitProvider,
     IncompleteProviderPullRequestFilesError,
     IncrementalPR,
+    PRCommit,
+    commit_patch_fingerprint,
     get_cached_global_settings,
     get_config_branch,
     redact_credentials,
@@ -75,13 +77,14 @@ class DiffNotFoundError(Exception):
 class IncompleteGitLabDiffError(DiffNotFoundError, IncompleteProviderPullRequestFilesError):
     """Represent an incomplete GitLab merge-request diff response."""
 
-    notice = (
-        "## PR-Agent command was not run\n\n"
-        "GitLab returned an incomplete or inconsistent merge-request diff, so PR-Agent stopped "
+    notice_template = (
+        "## {bot_name} command was not run\n\n"
+        "GitLab returned an incomplete or inconsistent merge-request diff, so {bot_name} stopped "
         "instead of analyzing only part of it.\n\n"
         "Retry the command in a few minutes. If the problem persists, check the merge request diff in GitLab or "
         "split an unusually large merge request into smaller ones."
     )
+    notice = notice_template.format(bot_name="PR-Agent")
     notice_marker = "<!-- pr-agent:gitlab-incomplete-diff -->"
 
 
@@ -115,35 +118,141 @@ query($project: ID!, $ref: String!, $paths: [String!]!) {
 """
 
 
+_GITLAB_MENTION_RE = re.compile(r"(?<![\w/])@(?=[\w-])", re.UNICODE)
+_GITLAB_TICK_RUN_RE = re.compile(r"`+")
+_GITLAB_FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})")
+_GITLAB_ATX_RE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
+_GITLAB_QUOTE_RE = re.compile(r" {0,3}>")
+_GITLAB_LIST_RE = re.compile(r"( *)([-+*]|\d{1,9}[.)])( +|$)")
+_GITLAB_TABLE_CELL_RE = re.compile(r":?-+:?")
+
+
+def _is_gitlab_table_delimiter(line: str) -> bool:
+    """Return True when the line is a GFM table delimiter row."""
+    if "|" not in line:
+        return False
+    cells = line.strip()
+    cells = cells.removeprefix("|")
+    cells = cells.removesuffix("|")
+    parts = cells.split("|")
+    if len(parts) < 2:
+        return False
+    return all(_GITLAB_TABLE_CELL_RE.fullmatch(part.strip()) for part in parts)
+
+
+def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int]]:
+    """Classify each line as code and collect offsets where a new block starts."""
+    code_by_start: dict[int, bool] = {}
+    boundaries: list[int] = []
+    fence_char = None
+    fence_size = 0
+    indented_code = False
+    list_indents: list[int] = []
+    in_table = False
+    prev_blank = True
+    prev_start = None
+    offset = 0
+
+    for raw_line in text.split("\n"):
+        line = raw_line.removesuffix("\r")
+        stripped = line.strip()
+        is_code = False
+        boundary = False
+
+        if fence_char is not None:
+            is_code = True
+            fence = _GITLAB_FENCE_RE.match(line)
+            if fence and fence.group(1)[0] == fence_char and len(fence.group(1)) >= fence_size:
+                fence_char = None
+                fence_size = 0
+        else:
+            fence = _GITLAB_FENCE_RE.match(line)
+            if fence:
+                marker = fence.group(1)
+                fence_char, fence_size = marker[0], len(marker)
+                is_code = True
+                boundary = True
+
+        if not is_code and fence_char is None:
+            indent = 0
+            for char in line:
+                if char == " ":
+                    indent += 1
+                elif char == "\t":
+                    indent += 4 - (indent % 4)
+                else:
+                    break
+
+            if stripped:
+                while list_indents and indent < list_indents[-1]:
+                    list_indents.pop()
+            base_indent = list_indents[-1] if list_indents else 0
+            relative_indent = indent - base_indent
+
+            if indented_code:
+                if not stripped:
+                    is_code = True
+                elif relative_indent >= 4:
+                    is_code = True
+                else:
+                    indented_code = False
+
+            if (not is_code and not indented_code and stripped and prev_blank
+                    and relative_indent >= 4):
+                indented_code = True
+                is_code = True
+                boundary = True
+
+            if not is_code:
+                list_match = _GITLAB_LIST_RE.match(line)
+                is_list_item = bool(list_match) and relative_indent <= 3
+                if not stripped:
+                    boundary = True
+                    in_table = False
+                elif _is_gitlab_table_delimiter(line):
+                    boundary = True
+                    in_table = True
+                    if prev_start is not None and (not boundaries or boundaries[-1] != prev_start):
+                        boundaries.append(prev_start)
+                elif in_table and "|" in line and not (
+                        _GITLAB_ATX_RE.match(line) or _GITLAB_QUOTE_RE.match(line) or is_list_item):
+                    boundary = True
+                else:
+                    in_table = False
+                    if _GITLAB_ATX_RE.match(line) or _GITLAB_QUOTE_RE.match(line) or is_list_item:
+                        boundary = True
+
+                if is_list_item:
+                    leading = len(list_match.group(1))
+                    marker = list_match.group(2)
+                    spaces = len(list_match.group(3))
+                    content_indent = leading + len(marker) + (spaces if 1 <= spaces <= 4 else 1)
+                    list_indents.append(content_indent)
+
+        code_by_start[offset] = is_code
+        if boundary:
+            boundaries.append(offset)
+        prev_blank = not stripped
+        prev_start = offset
+        offset += len(raw_line) + 1
+
+    return code_by_start, boundaries
+
+
 def _neutralize_gitlab_mentions(text: str) -> str:
     """Disable GitLab notifications while leaving Markdown code spans untouched."""
     if not text:
         return text
 
-    mention = re.compile(r"(?<![\w/])@(?=[\w-])", re.UNICODE)
     tick_runs: dict[int, list[int]] = {}
-    for run in re.finditer(r"`+", text):
+    for run in _GITLAB_TICK_RUN_RE.finditer(text):
         tick_runs.setdefault(len(run.group()), []).append(run.start())
 
-    boundaries: list[int] = []
-    boundary_line = 0
-    while boundary_line <= len(text):
-        line_end = text.find("\n", boundary_line)
-        if line_end < 0:
-            line_end = len(text)
-        line = text[boundary_line:line_end]
-        if not line.strip() or re.match(r" {0,3}(`{3,}|~{3,})", line):
-            boundaries.append(boundary_line)
-        if line_end == len(text):
-            break
-        boundary_line = line_end + 1
+    code_by_start, boundaries = _gitlab_line_flags(text)
 
     output = []
     index = 0
-    fence_char = None
-    fence_size = 0
     inline_ticks = 0
-    indented_code = False
     line_start = True
 
     while index < len(text):
@@ -153,38 +262,13 @@ def _neutralize_gitlab_mentions(text: str) -> str:
             line_start = True
             continue
 
-        if line_start and not inline_ticks:
+        if line_start and not inline_ticks and code_by_start.get(index):
             line_end = text.find("\n", index)
             if line_end < 0:
                 line_end = len(text)
-            line = text[index:line_end]
-            fence = re.match(r" {0,3}(`{3,}|~{3,})", line)
-            if fence:
-                marker = fence.group(1)
-                if fence_char is None:
-                    fence_char, fence_size = marker[0], len(marker)
-                elif marker[0] == fence_char and len(marker) >= fence_size:
-                    fence_char = None
-                    fence_size = 0
-                output.append(line)
-                index = line_end
-                line_start = False
-                continue
-            if line.startswith(("    ", "\t")) and (indented_code or (
-                    (index == 0 or text[index - 2:index] == "\n\n")
-                    and not re.match(r"\s*(?:[-*+]|\d+[.)])\s", line))):
-                indented_code = True
-                output.append(line)
-                index = line_end
-                line_start = False
-                continue
-            indented_code = False
-
-        if fence_char:
-            char = text[index]
-            output.append(char)
-            index += 1
-            line_start = char == "\n"
+            output.append(text[index:line_end])
+            index = line_end
+            line_start = False
             continue
 
         if text[index] == "`":
@@ -219,7 +303,7 @@ def _neutralize_gitlab_mentions(text: str) -> str:
             next_special += 1
         chunk = text[index:next_special]
         prefix = text[index - 1:index] if index else ""
-        output.append(mention.sub("@\u200b", prefix + chunk)[len(prefix):])
+        output.append(_GITLAB_MENTION_RE.sub("@\u200b", prefix + chunk)[len(prefix):])
         index = next_special
         if index < len(text) and text[index] == "\n":
             output.append("\n")
@@ -421,7 +505,7 @@ class _GitLabIncrementalNote:
 _GITLAB_ACCESS_LEVEL_REPORTER = 20
 
 class GitLabProvider(GitProvider):
-    reuse_for_manual_tool = True
+    reuse_for_manual_command = True
 
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         return policy_metadata(title=self.mr.title, sender=policy_value(self.mr, "author", "username"),
@@ -659,7 +743,8 @@ class GitLabProvider(GitProvider):
     def _submodule_target_allowed(self, project) -> bool:
         """Apply the sibling-repository checks to a resolved cross-project target."""
         path = getattr(project, "path_with_namespace", None) or ""
-        return (self.is_sibling_repo_allowed(path) and path.split("/")[0] == self.get_owning_namespace(resolved=True)
+        return (self.is_sibling_repo_allowed(path)
+                and self.is_sibling_namespace_allowed(path.split("/")[0], self.get_owning_namespace(resolved=True))
                 and self._requester_can_read_sibling_project(project))
 
     def get_sibling_repo(self, repo_id: str):
@@ -825,7 +910,16 @@ class GitLabProvider(GitProvider):
         """Collect the diff pages once, failing on unstable or not-yet-ready responses."""
         for attempt in range(2):
             before = self.gl.http_get(path)
-            changes = self.gl.http_list(f"{path}/diffs", get_all=True, per_page=100)
+            try:
+                changes = self.gl.http_list(f"{path}/diffs", get_all=True, per_page=100)
+            except gitlab.GitlabHttpError as e:
+                # GitLab before 17.11 answers HTTP 500 on this endpoint when per_page exceeds 30.
+                if e.response_code != 500:
+                    raise
+                get_logger().warning(
+                    f"GitLab returned HTTP 500 for merge request {self.id_mr} diffs with per_page=100, "
+                    "retrying with GitLab's default page size")
+                changes = self.gl.http_list(f"{path}/diffs", get_all=True, per_page=20)
             after = self.gl.http_get(path)
             if any(before.get(key) != after.get(key) for key in ("sha", "diff_refs", "changes_count")):
                 if attempt == 0:
@@ -1007,6 +1101,7 @@ class GitLabProvider(GitProvider):
         self.diff_files = None
         self._merge_request_changes_cache = None
         self.mr_commits = None
+        self._commit_diff_refs = None
         if not self.incremental.is_incremental:
             return
         self.unreviewed_files_map = {}
@@ -1171,6 +1266,47 @@ class GitLabProvider(GitProvider):
                 self.incremental.last_seen_commit = adapter
                 break
         return self.mr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
+
+    def get_pr_commits(self) -> list[PRCommit]:
+        commits = []
+        for commit in list(self.mr.commits(per_page=100))[::-1]:
+            parent_ids = getattr(commit, "parent_ids", None)
+            commits.append(PRCommit(sha=commit.id, message=commit.message or "",
+                                    url=getattr(commit, "web_url", "") or "",
+                                    parents=None if parent_ids is None else tuple(parent_ids)))
+        return commits
+
+    def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> str | None:
+        self.incremental = incremental
+        self.diff_files = None
+        self.unreviewed_files_map = {}
+        self._commit_diff_refs = None
+        loaded = vars(self).setdefault("_loaded_commits", {})
+        if commit.sha not in loaded:
+            gl_commit = self.gl.projects.get(self.id_project, lazy=True).commits.get(commit.sha)
+            parent_ids = list(getattr(gl_commit, "parent_ids", None) or [])
+            loaded[commit.sha] = parent_ids, (list(gl_commit.diff(get_all=True, per_page=100))
+                                              if len(parent_ids) == 1 else [])
+        parent_ids, diffs = loaded[commit.sha]
+        if len(parent_ids) != 1:
+            get_logger().info(f"Skipping commit {commit.sha} with {len(parent_ids)} parents in per commit review")
+            return None
+
+        incremental.first_new_commit = SimpleNamespace(sha=commit.sha)
+        incremental.last_seen_commit = SimpleNamespace(sha=parent_ids[0])
+        self._incremental_head_sha = commit.sha
+        self._commit_diff_refs = SimpleNamespace(
+            base_commit_sha=parent_ids[0], start_commit_sha=parent_ids[0], head_commit_sha=commit.sha)
+        for diff in diffs:
+            if diff.get("new_path"):
+                self.unreviewed_files_map[diff["new_path"]] = diff
+        if not self.unreviewed_files_map:
+            return None
+        files = [(f"{diff.get('old_path') or ''}\0{diff.get('new_path') or ''}", diff.get("diff") or "")
+                 for diff in diffs]
+        if any(not patch for _, patch in files):
+            files.append(("", commit.sha))
+        return commit_patch_fingerprint(files)
 
     def get_previous_review(self, *, full: bool, incremental: bool):
         if not (full or incremental):
@@ -1730,6 +1866,197 @@ class GitLabProvider(GitProvider):
             "head_sha": self.get_pr_head_sha(),
         }
 
+    def get_head_ci_status(self, sha: str | None = None) -> str | None:
+        """Return the head CI state for `sha` (or the MR head SHA if None).
+
+        Returns 'passed', 'failed', 'pending', 'none', or None if unsupported or on error.
+        """
+        try:
+            mr = getattr(self, "mr", None)
+            if not mr:
+                return None
+            target_sha = sha or self.get_pr_head_sha()
+
+            pipeline = None
+            head_pipe = getattr(mr, "head_pipeline", None)
+            if head_pipe:
+                p_sha = head_pipe.get("sha") if isinstance(head_pipe, dict) else getattr(head_pipe, "sha", None)
+                if not target_sha or p_sha == target_sha:
+                    pipeline = head_pipe
+
+            if pipeline is None and hasattr(mr, "pipelines"):
+                try:
+                    plist = mr.pipelines.list(page=1, per_page=10)
+                    for p in plist:
+                        p_sha = p.get("sha") if isinstance(p, dict) else getattr(p, "sha", None)
+                        if not target_sha or p_sha == target_sha:
+                            pipeline = p
+                            break
+                except Exception as e:
+                    get_logger().warning(f"Could not list GitLab MR pipelines: {e}")
+
+            if pipeline is None:
+                return "none"
+
+            status = pipeline.get("status") if isinstance(pipeline, dict) else getattr(pipeline, "status", None)
+            if not status or not isinstance(status, str):
+                return "none"
+            status = status.lower()
+
+            if status == "success":
+                return "passed"
+            if status in ("failed", "canceled", "cancelled"):
+                return "failed"
+            if status in ("running", "pending", "waiting_for_resource", "preparing", "created", "manual", "scheduled"):
+                return "pending"
+            if status == "skipped":
+                return "passed"
+            return "failed"
+        except Exception as e:
+            get_logger().warning(f"Failed to get GitLab head CI status: {e}")
+            return None
+
+    def is_head_stale_against_base(self) -> bool | None:
+        """Return whether any file in the PR changed on the base branch after the head's last CI run.
+
+        Returns True (stale), False (not stale), or None if unsupported or on error.
+        """
+        try:
+            mr = getattr(self, "mr", None)
+            if not mr:
+                return None
+            diff_files = self.get_diff_files()
+            if diff_files is None:
+                return None
+
+            pr_filenames = set(self.get_filtered_diff_file_names())
+            for f in diff_files:
+                fn = getattr(f, "filename", None)
+                if fn:
+                    pr_filenames.add(fn)
+                old_fn = getattr(f, "old_filename", None) or getattr(f, "previous_filename", None)
+                if old_fn:
+                    pr_filenames.add(old_fn)
+            if not pr_filenames:
+                return False
+
+            target_branch = getattr(mr, "target_branch", None)
+            if not target_branch:
+                return None
+
+            ref_dt = None
+            head_pipe = getattr(mr, "head_pipeline", None)
+            if head_pipe:
+                created_at = (
+                    head_pipe.get("created_at")
+                    if isinstance(head_pipe, dict)
+                    else getattr(head_pipe, "created_at", None)
+                )
+                if created_at:
+                    ref_dt = _parse_gitlab_iso_datetime(created_at)
+
+            if ref_dt is None:
+                head_sha = self.get_pr_head_sha()
+                if head_sha and hasattr(self, "gl"):
+                    try:
+                        proj = self.gl.projects.get(self.id_project, lazy=True)
+                        commit = proj.commits.get(head_sha)
+                        c_date = getattr(commit, "committed_date", None) or getattr(commit, "created_at", None)
+                        if c_date:
+                            ref_dt = _parse_gitlab_iso_datetime(c_date)
+                    except Exception as e:
+                        get_logger().warning(f"Could not retrieve GitLab commit {head_sha} for timestamp: {e}")
+
+            if ref_dt is None:
+                return None
+
+            proj = self.gl.projects.get(self.id_project, lazy=True)
+            since_iso = ref_dt.isoformat() + "Z"
+            commits = proj.commits.list(ref_name=target_branch, since=since_iso, page=1, per_page=50)
+
+            stale = False
+            for c in commits:
+                c_date_str = getattr(c, "committed_date", None) or getattr(c, "created_at", None)
+                if c_date_str:
+                    c_dt = _parse_gitlab_iso_datetime(c_date_str)
+                    if c_dt and c_dt <= ref_dt:
+                        continue
+                try:
+                    c_diffs = c.diff(get_all=True, per_page=100)
+                    for d in c_diffs:
+                        new_path = d.get("new_path") if isinstance(d, dict) else getattr(d, "new_path", None)
+                        old_path = d.get("old_path") if isinstance(d, dict) else getattr(d, "old_path", None)
+                        if (new_path and new_path in pr_filenames) or (old_path and old_path in pr_filenames):
+                            stale = True
+                            break
+                except Exception as e:
+                    get_logger().warning(f"Could not read a base commit diff for staleness: {e}")
+                    return None
+                if stale:
+                    break
+
+            if stale:
+                return True
+            if commits and len(commits) >= 50:
+                get_logger().warning("Base commit history reached pagination limit (50); failing closed as unknown")
+                return None
+            return False
+        except Exception as e:
+            get_logger().warning(f"Failed to check GitLab head staleness: {e}")
+            return None
+
+    def are_all_authors_human(self) -> bool | None:
+        """Return whether the PR author and every commit author are human (not bot accounts).
+
+        Returns True (all human), False (contains bot account), or None if unsupported or on error.
+        """
+        try:
+            mr = getattr(self, "mr", None)
+            if not mr:
+                return None
+            author = getattr(mr, "author", None)
+            if not author:
+                return None
+
+            def is_access_token_bot(val: str) -> bool:
+                if not val or not isinstance(val, str):
+                    return False
+                low = val.lower().strip()
+                return bool(re.search(r"^(?:project|group)_\d+_bot(?:_|\b)", low)) or "_bot_" in low
+
+            def is_bot_identity(val: str) -> bool:
+                if not val or not isinstance(val, str):
+                    return False
+                low = val.lower().strip()
+                return low.endswith("[bot]") or "[bot]" in low or low in ("gitlab-bot", "dependabot")
+
+            is_bot = author.get("bot", False) if isinstance(author, dict) else getattr(author, "bot", False)
+            username = (
+                author.get("username", "") if isinstance(author, dict) else getattr(author, "username", "")
+            ) or ""
+            author_name = (
+                author.get("name", "") if isinstance(author, dict) else getattr(author, "name", "")
+            ) or ""
+            if is_access_token_bot(username) or is_access_token_bot(author_name):
+                return None
+            if is_bot or is_bot_identity(username) or is_bot_identity(author_name):
+                return False
+
+            commits = mr.commits() if callable(getattr(mr, "commits", None)) else getattr(mr, "commits", [])
+            if hasattr(commits, "_list"):
+                commits = commits._list
+            for c in commits:
+                name = (c.get("author_name", "") if isinstance(c, dict) else getattr(c, "author_name", "")) or ""
+                email = (c.get("author_email", "") if isinstance(c, dict) else getattr(c, "author_email", "")) or ""
+                if is_access_token_bot(name) or is_access_token_bot(email):
+                    return None
+                if is_bot_identity(name) or is_bot_identity(email):
+                    return False
+            return True
+        except Exception as e:
+            get_logger().warning(f"Failed to check if GitLab authors are human: {e}")
+            return None
+
     def get_comment_url(self, comment):
         return f"{self.mr.web_url}#note_{comment.id}"
 
@@ -1892,7 +2219,8 @@ class GitLabProvider(GitProvider):
         return False
 
     def resolve_outdated_inline_threads(self):
-        if not get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False):
+        if (not get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False)
+                or getattr(self, "_commit_diff_refs", None) is not None):
             return
         own_user_id = self._get_own_user_id()
         try:
@@ -2022,6 +2350,41 @@ class GitLabProvider(GitProvider):
             get_logger().info(
                 f"Resolved {resolved} fixed inline thread(s) on merge request {self.id_mr}")
         return resolved
+
+    def supports_line_question_history(self) -> bool:
+        return True
+
+    def get_review_thread_comments(self, discussion_id: str) -> list[SimpleNamespace]:
+        """Return earlier GitLab discussion notes for an inline question."""
+        origin_note_id = get_settings().get("origin_comment_id")
+        if origin_note_id is None:
+            return []
+
+        discussion = self.mr.discussions.get(discussion_id)
+        notes = discussion.attributes.get("notes") or []
+        # python-gitlab returns discussion notes in chronological order.
+        origin_index = next((i for i, note in enumerate(notes)
+                             if isinstance(note, dict) and note.get("id") == origin_note_id), None)
+        if origin_index is None:
+            get_logger().warning(
+                f"Origin note {origin_note_id} not found in GitLab discussion {discussion_id}; skipping history")
+            return []
+        notes = notes[:origin_index]
+
+        comments = []
+        for note in notes:
+            if not isinstance(note, dict) or note.get("system"):
+                continue
+            body = note.get("body")
+            if not isinstance(body, str) or not body.strip():
+                continue
+            author = note.get("author")
+            author = author if isinstance(author, dict) else {}
+            comments.append(SimpleNamespace(
+                id=note.get("id"), body=body,
+                user=SimpleNamespace(login=author.get("username") or "Unknown"),
+            ))
+        return comments
 
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
         body = self.limit_output_characters(_neutralize_gitlab_mentions(body), self.max_comment_chars)
@@ -2219,6 +2582,8 @@ class GitLabProvider(GitProvider):
                 return False
 
     def get_relevant_diff(self, relevant_file: str, relevant_line_in_file: str) -> dict | None:
+        if getattr(self, "_commit_diff_refs", None) is not None:
+            return self._commit_diff_refs
         _changes = self._get_merge_request_changes()
         _changes['changes'] = self._expand_submodule_changes(_changes.get('changes', []), _changes["diff_refs"])
         changes = _changes
@@ -2714,7 +3079,7 @@ class GitLabProvider(GitProvider):
             numeric_id = repo_id.isascii() and repo_id.isdigit()
             identity_matches = str(project.id) == repo_id if numeric_id else resolved_path == repo_id
             if (not isinstance(resolved_path, str) or "/" not in resolved_path or not identity_matches
-                    or not current_namespace or resolved_path.split("/")[0] != current_namespace):
+                    or not self.is_sibling_namespace_allowed(resolved_path.split("/")[0], current_namespace)):
                 get_logger().warning(f"Ignoring out-of-namespace sibling repo in repo context: {repo_id}")
                 return ""
             if not self._requester_can_read_sibling_project(project):

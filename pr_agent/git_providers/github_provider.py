@@ -8,6 +8,7 @@ import random
 import re
 import time
 import traceback
+from datetime import UTC, datetime
 from itertools import islice
 from urllib.parse import quote, urlparse
 
@@ -58,7 +59,9 @@ from .git_provider import (
     GitProvider,
     IncompletePullRequestFilesError,
     IncrementalPR,
+    PRCommit,
     cache_languages,
+    commit_patch_fingerprint,
     get_config_branch,
     redact_credentials,
 )
@@ -126,8 +129,16 @@ def _review_comment_root_id(comment) -> int:
     return payload.get("in_reply_to_id") or comment.id
 
 
+def _ensure_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
 class GithubProvider(GitProvider):
-    reuse_for_manual_tool = True
+    reuse_for_manual_command = True
 
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         pr = self.pr
@@ -204,6 +215,8 @@ class GithubProvider(GitProvider):
         if context.exists():
             context.pop("diff_files", None)
         self.incremental = incremental if incremental is not None else IncrementalPR(False)
+        if getattr(self, "_pr_head_commit", None) is not None:
+            self.last_commit_id, self._pr_head_commit = self._pr_head_commit, None
         if self.incremental.is_incremental:
             self.unreviewed_files_map = dict()
             self._get_incremental_commits()
@@ -391,6 +404,19 @@ class GithubProvider(GitProvider):
         if not self.pr_commits:
             self.pr_commits = list(self.pr.get_commits())
 
+        if (
+            not self.pr_commits
+            or len(self.pr_commits) != self.pr.commits
+            or self.pr_commits[-1].sha != self.pr.head.sha
+        ):
+            get_logger().info(
+                f"PR commit list inconsistent ({len(self.pr_commits)}/{self.pr.commits} commits, "
+                f"last={self.pr_commits[-1].sha if self.pr_commits else 'none'}, head={self.pr.head.sha}); "
+                "falling back to a full review"
+            )
+            self.incremental.is_incremental = False
+            return
+
         self.previous_review = self.get_previous_review(full=True, incremental=True)
         if self.previous_review:
             self.incremental.commits_range = self.get_commit_range()
@@ -443,6 +469,40 @@ class GithubProvider(GitProvider):
                 self.incremental.last_seen_commit = self.pr_commits[index]
                 break
         return self.pr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
+
+    def get_pr_commits(self) -> list[PRCommit]:
+        return [PRCommit(sha=commit.sha, message=commit.commit.message or "", url=commit.html_url or "",
+                         parents=tuple(parent.sha for parent in commit.parents))
+                for commit in self.pr.get_commits()]
+
+    def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> str | None:
+        self.incremental = incremental
+        self.diff_files = None
+        if context.exists():
+            context.pop("diff_files", None)
+        self.unreviewed_files_map = {}
+        loaded = vars(self).setdefault("_loaded_commits", {})
+        if commit.sha not in loaded:
+            gh_commit = self._get_repo().get_commit(commit.sha)
+            loaded[commit.sha] = gh_commit, (list(gh_commit.get_files(commit_files_per_page=300))
+                                             if len(gh_commit.parents) == 1 else [])
+        gh_commit, files = loaded[commit.sha]
+        parents = gh_commit.parents
+        if len(parents) != 1:
+            get_logger().info(f"Skipping commit {commit.sha} with {len(parents)} parents in per commit review")
+            return None
+
+        incremental.first_new_commit = gh_commit
+        incremental.last_seen_commit = parents[0]
+        incremental.head_sha = commit.sha
+        self._pr_head_commit = getattr(self, "_pr_head_commit", None) or getattr(self, "last_commit_id", None)
+        self.last_commit_id = gh_commit
+        self.unreviewed_files_map = {file.filename: file for file in files}
+        if not files:
+            return None
+        return commit_patch_fingerprint(
+            (f"{file.previous_filename or ''}\0{file.filename}", file.patch if file.patch is not None else file.sha)
+            for file in files)
 
     def get_previous_review(self, *, full: bool, incremental: bool):
         if not (full or incremental):
@@ -663,7 +723,8 @@ class GithubProvider(GitProvider):
                         new_file_content_str = ""
                     else:
                         # communication with GitHub
-                        new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha, **read_options)
+                        new_file_content_str = self._get_pr_file_content(
+                            file, getattr(self.incremental, "head_sha", None) or self.pr.head.sha, **read_options)
 
                     if self.incremental.is_incremental and self.unreviewed_files_map:
                         original_file_content_str = self._get_pr_file_content(
@@ -1056,7 +1117,7 @@ class GithubProvider(GitProvider):
         return False
 
     def start_check_run(self, name: str, summary: str) -> bool:
-        """Open the tool's check run as in_progress before it has any output to publish.
+        """Open the command's check run as in_progress before it has any output to publish.
 
         Automatic commands publish no progress comment, so this is the first sign that the
         pull request was picked up. `_publish_check_run` completes the same run in place.
@@ -1102,9 +1163,9 @@ class GithubProvider(GitProvider):
         return updated
 
     def finish_check_run(self, name: str, conclusion: str, summary: str) -> bool:
-        """Complete a check run opened by `start_check_run` that no tool completed.
+        """Complete a check run opened by `start_check_run` that no command completed.
 
-        A no-op when the tool already published its output to the run, so its conclusion
+        A no-op when the command already published its output to the run, so its conclusion
         and text are kept. Otherwise the run would stay in_progress on the commit forever.
         """
         if name not in self._check_runs_in_progress:
@@ -1128,6 +1189,13 @@ class GithubProvider(GitProvider):
             return False
         check_run_name = self._check_run_name(name)
         create_body = {"name": check_run_name, "head_sha": self.last_commit_id.sha, **body}
+        run_id = os.environ.get("GITHUB_RUN_ID", "").strip()
+        if run_id:
+            # Stamp the workflow run id so `_is_current_action_run` recognises
+            # this as the running Action's own check run: its app is
+            # `github-actions`, shared with every other workflow, so the app
+            # alone cannot identify it.
+            create_body.setdefault("external_id", run_id)
         update_body = body
         existing_id = self._check_run_ids.get(name)
         if not existing_id:
@@ -1404,14 +1472,23 @@ class GithubProvider(GitProvider):
 
     def _iter_review_threads(self):
         """Yield human-resolved PR-Agent key issues for the previous-findings context."""
-        agent_login = self._agent_login()
-        if not agent_login or self._deployment_type() not in {"user", "app"}:
+        if self._deployment_type() not in {"user", "app"}:
             return
+        review_comments = getattr(self.pr, "review_comments", None)
+        if type(review_comments) is int and review_comments <= 0:
+            return
+        agent_login = None
         threads = []
         for thread in self._review_thread_nodes():
             resolved_by = (thread.get("resolvedBy") or {}).get("login")
-            if (thread.get("isResolved") is True and isinstance(resolved_by, str)
-                    and resolved_by.strip() and resolved_by.casefold() != agent_login.casefold()):
+            if not (thread.get("isResolved") is True and isinstance(resolved_by, str)
+                    and resolved_by.strip()):
+                continue
+            if agent_login is None:
+                agent_login = self._agent_login()
+                if not agent_login:
+                    return
+            if resolved_by.casefold() != agent_login.casefold():
                 threads.append(thread)
         if not threads:
             return
@@ -1646,6 +1723,8 @@ class GithubProvider(GitProvider):
         for suggestion in code_suggestions_with_fingerprints:
             suggestion["_dedup_code_fp"] = code_fingerprint(
                 suggestion.get("relevant_file", ""), None, suggestion.get("body", ""))
+        if getattr(getattr(self, "incremental", None), "head_sha", None):
+            return code_suggestions_with_fingerprints
         return self.validate_comments_inside_hunks(code_suggestions_with_fingerprints)
 
     def _build_code_suggestion_payload(self, suggestion: dict) -> dict:
@@ -2022,7 +2101,8 @@ class GithubProvider(GitProvider):
         current_owner = self.get_owning_namespace(resolved=True)
         # Reject redirects/transfers unless the canonical same-owner repository was selected.
         if (not isinstance(resolved_name, str) or resolved_name.casefold() != repo_id.casefold()
-                or not current_owner or resolved_name.split("/")[0].casefold() != current_owner.casefold()):
+                or not self.is_sibling_namespace_allowed(resolved_name.split("/")[0], current_owner,
+                                                         case_sensitive=False)):
             get_logger().warning(f"Ignoring out-of-owner sibling repo in repo context: {repo_id}")
             return None
         if not self._requester_can_read_sibling_repo(sibling_repo):
@@ -2566,6 +2646,359 @@ class GithubProvider(GitProvider):
             get_logger().exception(f"Failed to auto-approve, error: {e}")
             return False
 
+    def _is_own_check_run(self, run, own_app_login: str) -> bool:
+        """Return whether `run` was published by the running PR-Agent app.
+
+        The check run's app slug is compared against the identity this
+        deployment resolves for itself (`_resolve_app_login()`), so a
+        self-hosted app under any slug is recognised and a foreign run
+        that merely reuses one of PR-Agent's check names is not. When the
+        identity cannot be resolved, nothing is skipped: guessing would
+        reintroduce the slug matching this replaces. The GitHub Action
+        deployment is not covered here — its app is `github-actions`,
+        shared with every other workflow, so its own runs are recognised
+        by the stamped workflow run id instead (`_is_current_action_run`).
+        """
+        if not own_app_login:
+            return False
+        app = getattr(run, "app", None)
+        app_slug = (getattr(app, "slug", "") or "").lower() if app else ""
+        if not app_slug:
+            return False
+        return f"{app_slug}[bot]" == own_app_login.lower()
+
+    def _get_head_push_time(self, repo, sha: str) -> datetime | None:
+        """Return when `sha` was pushed, from the repo push events.
+
+        The head commit's author/committer dates are set by the PR author,
+        so a forward-dated commit must never stand in for the push time.
+        Push events carry a server-side timestamp instead. Only the most
+        recent 300 events are scanned; None means the push was not found
+        and the caller must fail closed.
+
+        For a fork PR the pushes land in the fork's event stream, not the
+        base repo's, so the events are read from the head repository when
+        it differs from `repo`.
+        """
+        try:
+            head_ref = None
+            pr = getattr(self, "pr", None)
+            head = getattr(pr, "head", None) if pr else None
+            if head is not None:
+                head_ref = getattr(head, "ref", None)
+            expected_ref = f"refs/heads/{head_ref}" if head_ref else None
+
+            events_repo = repo
+            head_repo = getattr(head, "repo", None) if head is not None else None
+            if head_repo is not None:
+                head_full_name = getattr(head_repo, "full_name", None)
+                repo_full_name = getattr(repo, "full_name", None)
+                if head_full_name and repo_full_name and head_full_name != repo_full_name:
+                    events_repo = head_repo
+
+            events = events_repo.get_events() if hasattr(events_repo, "get_events") else []
+            for event in islice(events, 300):
+                if getattr(event, "type", "") != "PushEvent":
+                    continue
+                payload = getattr(event, "payload", None) or {}
+                if payload.get("head") != sha:
+                    continue
+                if expected_ref and payload.get("ref") != expected_ref:
+                    continue
+                pushed_at = getattr(event, "created_at", None)
+                if pushed_at:
+                    return _ensure_utc(pushed_at)
+            return None
+        except Exception as e:
+            get_logger().debug(f"Could not determine head push time for {sha}: {e}")
+            return None
+
+    @staticmethod
+    def _is_current_action_run(run) -> bool:
+        current_run_id = os.environ.get("GITHUB_RUN_ID")
+        if not current_run_id:
+            return False
+        html_url = getattr(run, "html_url", "") or ""
+        details_url = getattr(run, "details_url", "") or ""
+        pattern = f"/actions/runs/{current_run_id}/"
+        if pattern in html_url or pattern in details_url:
+            return True
+        external_id = str(getattr(run, "external_id", "") or "")
+        return bool(
+            external_id and (external_id == str(current_run_id) or external_id.startswith(f"{current_run_id}_"))
+        )
+
+    def get_head_ci_status(self, sha: str | None = None) -> str | None:
+        """Return the head CI state for `sha` (or the PR head SHA if None).
+
+        Returns 'passed', 'failed', 'pending', 'none', or None if unsupported or on error.
+        """
+        try:
+            target_sha = sha or self.get_pr_head_sha()
+            if not target_sha:
+                return None
+
+            repo = getattr(self, "repo_obj", None)
+            if repo is None:
+                try:
+                    repo = self.get_repo()
+                except Exception:
+                    repo = None
+            if repo is None:
+                return None
+
+            commit = repo.get_commit(target_sha)
+            has_checks = False
+            has_failure = False
+            has_pending = False
+
+            # 1. Evaluate check runs
+            check_runs = None
+            if hasattr(commit, "get_check_runs"):
+                try:
+                    check_runs = commit.get_check_runs()
+                except (GithubException, RequestException) as e:
+                    get_logger().warning(f"Failed to fetch check runs for {target_sha}: {e}")
+                    return None
+
+            if check_runs is not None:
+                own_app_login = self._resolve_app_login()
+                for run in check_runs:
+                    # Ignore PR-Agent's own check runs to avoid self-blocking.
+                    # The running app's resolved identity is the authenticator:
+                    # any workflow can name a job "PR Agent - Review", so a
+                    # name alone must never skip a run, or that job's failure
+                    # would never count. A self-hosted app under any slug is
+                    # recognised the same way.
+                    if self._is_own_check_run(run, own_app_login):
+                        continue
+
+                    # Leave out the running GitHub Action job so it doesn't keep CI pending
+                    status = (getattr(run, "status", "") or "").lower()
+                    if self._is_current_action_run(run) and status != "completed":
+                        continue
+
+                    has_checks = True
+                    conclusion = getattr(run, "conclusion", None)
+                    conclusion = conclusion.lower() if isinstance(conclusion, str) else None
+
+                    if status != "completed" or conclusion is None or status in ("queued", "in_progress"):
+                        has_pending = True
+                    elif conclusion in ("failure", "timed_out", "cancelled", "action_required", "stale"):
+                        has_failure = True
+                    elif conclusion in ("success", "neutral", "skipped"):
+                        pass
+                    else:
+                        has_failure = True
+
+            # 2. Evaluate combined status API
+            combined_status = None
+            if hasattr(commit, "get_combined_status"):
+                try:
+                    combined_status = commit.get_combined_status()
+                except (GithubException, RequestException) as e:
+                    get_logger().warning(f"Failed to fetch combined status for {target_sha}: {e}")
+                    return None
+
+            if combined_status is not None:
+                total_count = getattr(combined_status, "total_count", 0) or 0
+                if total_count > 0:
+                    has_checks = True
+                    state = (getattr(combined_status, "state", "") or "").lower()
+                    if state in ("failure", "error"):
+                        has_failure = True
+                    elif state == "pending":
+                        has_pending = True
+                    elif state == "success":
+                        pass
+
+            if not has_checks:
+                return "none"
+            if has_failure:
+                return "failed"
+            if has_pending:
+                return "pending"
+            return "passed"
+        except Exception as e:
+            get_logger().warning(f"Failed to get head CI status: {e}")
+            return None
+
+    def is_head_stale_against_base(self) -> bool | None:
+        """Return whether any file in the PR changed on the base branch after the head's last CI run.
+
+        Returns True (stale), False (not stale), or None if unsupported or on error.
+        """
+        try:
+            pr = getattr(self, "pr", None)
+            if not pr:
+                return None
+
+            diff_files = self.get_diff_files()
+            if diff_files is None:
+                return None
+
+            pr_filenames = set(self.get_filtered_diff_file_names())
+            for f in diff_files:
+                fn = getattr(f, "filename", None)
+                if fn:
+                    pr_filenames.add(fn)
+                old_fn = getattr(f, "old_filename", None) or getattr(f, "previous_filename", None)
+                if old_fn:
+                    pr_filenames.add(old_fn)
+            if not pr_filenames:
+                return False
+
+            base = getattr(pr, "base", None)
+            base_ref = getattr(base, "ref", None)
+            if not base_ref:
+                return None
+
+            repo = getattr(self, "repo_obj", None)
+            if repo is None:
+                try:
+                    repo = self.get_repo()
+                except Exception:
+                    repo = None
+            if repo is None:
+                return None
+
+            # Determine reference timestamp: latest completed CI check or head push time
+            ref_dt = None
+            sha = self.get_pr_head_sha()
+            if sha:
+                try:
+                    commit = repo.get_commit(sha)
+                    if hasattr(commit, "get_check_runs"):
+                        own_app_login = self._resolve_app_login()
+                        for run in commit.get_check_runs():
+                            # Same rule as the CI-status check above: only the
+                            # running app's resolved identity authenticates
+                            # PR-Agent's own runs. A foreign run that reuses
+                            # one of their names must still set the reference
+                            # timestamp.
+                            if self._is_own_check_run(run, own_app_login):
+                                continue
+                            if self._is_current_action_run(run):
+                                continue
+
+                            run_dt = getattr(run, "completed_at", None) or getattr(run, "created_at", None)
+                            if run_dt:
+                                run_dt = _ensure_utc(run_dt)
+                                if ref_dt is None or run_dt > ref_dt:
+                                    ref_dt = run_dt
+                    if ref_dt is None:
+                        # No CI timestamp: fall back to when the head was
+                        # pushed, never to the commit dates — the PR author
+                        # sets both, so a forward-dated commit would fake
+                        # freshness. Unknown push time fails closed below.
+                        ref_dt = self._get_head_push_time(repo, sha)
+                except Exception as e:
+                    get_logger().debug(f"Could not determine head reference timestamp: {e}")
+
+            if ref_dt is None:
+                return None
+
+            # Query base branch commits since the reference timestamp
+            base_commits = repo.get_commits(sha=base_ref, since=ref_dt)
+            stale = False
+            count = 0
+            truncated = False
+            for c in base_commits:
+                count += 1
+                if count > 50:
+                    truncated = True
+                    break
+                c_git = getattr(c, "commit", None)
+                c_committer = getattr(c_git, "committer", None)
+                c_author = getattr(c_git, "author", None)
+                c_dt = getattr(c_committer, "date", None) or getattr(c_author, "date", None)
+                if c_dt:
+                    c_dt = _ensure_utc(c_dt)
+                    if c_dt <= ref_dt:
+                        continue
+
+                c_files = getattr(c, "files", None) or []
+                for f in c_files:
+                    fn = getattr(f, "filename", None)
+                    prev_fn = getattr(f, "previous_filename", None)
+                    if (fn and fn in pr_filenames) or (prev_fn and prev_fn in pr_filenames):
+                        stale = True
+                        break
+                if stale:
+                    break
+
+            if stale:
+                return True
+            if truncated:
+                get_logger().warning("Base commit history reached pagination limit (50); failing closed as unknown")
+                return None
+            return False
+        except Exception as e:
+            get_logger().warning(f"Failed to check head staleness: {e}")
+            return None
+
+    def are_all_authors_human(self) -> bool | None:
+        """Return whether the PR author and every commit author are human (not bot accounts).
+
+        Returns True (all human), False (contains bot account), or None if unsupported or on error.
+        """
+        try:
+            pr = getattr(self, "pr", None)
+            if not pr:
+                return None
+
+            # 1. Verify PR author
+            pr_user = getattr(pr, "user", None)
+            if pr_user is None:
+                return False
+
+            user_type = getattr(pr_user, "type", "") or ""
+            user_login = getattr(pr_user, "login", "") or ""
+            if user_type.lower() != "user" or user_login.lower().endswith("[bot]") or "[bot]" in user_login.lower():
+                return False
+
+            # 2. Verify all commit authors
+            pr_commits_count = getattr(pr, "commits", None)
+            if pr_commits_count is not None and isinstance(pr_commits_count, int) and pr_commits_count > 250:
+                get_logger().warning("PR commit count exceeds GitHub limit of 250; failing closed as unknown")
+                return None
+
+            commits = pr.get_commits()
+            commit_count = 0
+            for c in commits:
+                commit_count += 1
+                if commit_count > 250:
+                    get_logger().warning("PR commits exceeded 250 limit; failing closed as unknown")
+                    return None
+
+                author = getattr(c, "author", None)
+                if author is None:
+                    # Unlinked GitHub user or unknown author
+                    return False
+
+                author_type = getattr(author, "type", "") or ""
+                author_login = getattr(author, "login", "") or ""
+                if (
+                    author_type.lower() != "user"
+                    or author_login.lower().endswith("[bot]")
+                    or "[bot]" in author_login.lower()
+                ):
+                    return False
+
+                git_commit = getattr(c, "commit", None)
+                if git_commit:
+                    git_author = getattr(git_commit, "author", None)
+                    if git_author:
+                        email = getattr(git_author, "email", "") or ""
+                        name = getattr(git_author, "name", "") or ""
+                        if email.lower().endswith("[bot]@users.noreply.github.com") or name.lower().endswith("[bot]"):
+                            return False
+
+            return True
+        except Exception as e:
+            get_logger().warning(f"Failed to check if authors are human: {e}")
+            return None
+
     def calc_pr_statistics(self, pull_request_data: dict):
             return {}
 
@@ -2603,7 +3036,13 @@ class GithubProvider(GitProvider):
                         comment_start_line = suggestion.get('relevant_lines_start', None)
                         comment_end_line = suggestion.get('relevant_lines_end', None)
                         original_suggestion = suggestion.get('original_suggestion', None) # needed for diff code
-                        if not comment_start_line or not comment_end_line or not original_suggestion:
+                        if not comment_start_line or not comment_end_line:
+                            continue
+                        if (
+                            not original_suggestion
+                            and replace_suggestion_blocks(suggestion["body"], "") != suggestion["body"]
+                        ):
+                            # moving a committable block would apply it to another line
                             continue
 
                         # check if the comment is inside a valid hunk
@@ -2619,7 +3058,7 @@ class GithubProvider(GitProvider):
                                 min_distance = 0
                                 patch_range_min = patch_range
                                 break
-                            elif d1 * d2 <= 0:  # comment is possibly inside the hunk
+                            else:  # comment overlaps, encloses or lies near the hunk
                                 d1_clip = abs(min(0, d1))
                                 d2_clip = abs(min(0, d2))
                                 d = max(d1_clip, d2_clip)
@@ -2629,29 +3068,30 @@ class GithubProvider(GitProvider):
                         if not is_valid_hunk:
                             # 10 lines - a reasonable distance to consider the comment inside the hunk
                             if min_distance < 10:
-                                # make the suggestion non-committable, yet multi line
                                 # clamp both ends into the hunk: a suggestion wholly above or below it
                                 # would otherwise get start > end and be dropped by the publisher
                                 new_start = min(max(suggestion['relevant_lines_start'], patch_range_min['start']),
                                                 patch_range_min['end'])
                                 new_end = max(min(suggestion['relevant_lines_end'], patch_range_min['end']), new_start)
-                                body = suggestion['body'].strip()
+                                if original_suggestion:
+                                    # make the suggestion non-committable, yet multi line
+                                    body = suggestion['body'].strip()
 
-                                # present new diff code in collapsible
-                                existing_code = original_suggestion['existing_code'].rstrip() + "\n"
-                                improved_code = original_suggestion['improved_code'].rstrip() + "\n"
-                                diff = difflib.unified_diff(existing_code.split('\n'),
-                                                            improved_code.split('\n'), n=999)
-                                patch_orig = "\n".join(diff)
-                                patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
-                                diff_code = (f"\n\n<details><summary>New proposed code:</summary>\n\n"
-                                             f"```diff\n{patch.rstrip()}\n```")
-                                # replace ```suggestion ... ``` with diff_code:
-                                body = replace_suggestion_blocks(body, diff_code)
-                                body += "\n\n</details>"
+                                    # present new diff code in collapsible
+                                    existing_code = original_suggestion['existing_code'].rstrip() + "\n"
+                                    improved_code = original_suggestion['improved_code'].rstrip() + "\n"
+                                    diff = difflib.unified_diff(existing_code.split('\n'),
+                                                                improved_code.split('\n'), n=999)
+                                    patch_orig = "\n".join(diff)
+                                    patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
+                                    diff_code = (f"\n\n<details><summary>New proposed code:</summary>\n\n"
+                                                 f"```diff\n{patch.rstrip()}\n```")
+                                    # replace ```suggestion ... ``` with diff_code:
+                                    body = replace_suggestion_blocks(body, diff_code)
+                                    body += "\n\n</details>"
+                                    suggestion['body'] = body
                                 suggestion['relevant_lines_start'] = new_start
                                 suggestion['relevant_lines_end'] = new_end
-                                suggestion['body'] = body
                                 get_logger().info(f"Comment was moved to a valid hunk, "
                                                   f"start_line={new_start}, end_line={new_end}, file={file.filename}")
                             else:

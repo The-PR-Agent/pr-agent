@@ -41,8 +41,8 @@ def test_the_bar_is_always_five_segments(value):
 @pytest.mark.parametrize("score, expected", [("8", 5), ("0", 1), ("3", 3)])
 def test_the_review_label_matches_the_rendered_bar(score, expected, monkeypatch):
     """Clamp the label the same way as the bar, so the two never disagree."""
+    from pr_agent.commands.pr_reviewer import PRReviewer
     from pr_agent.config_loader import get_settings
-    from pr_agent.tools.pr_reviewer import PRReviewer
 
     reviewer = PRReviewer.__new__(PRReviewer)
     published = []

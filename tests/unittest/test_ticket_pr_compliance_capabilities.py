@@ -3,6 +3,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from pr_agent.commands.ticket_pr_compliance_check import (
+    _provider_supports,
+    extract_and_cache_pr_tickets,
+    extract_tickets,
+)
 from pr_agent.git_providers import (
     AzureDevopsProvider,
     BitbucketProvider,
@@ -15,11 +20,6 @@ from pr_agent.git_providers import (
     GitProvider,
     LocalGitProvider,
     PlainDiffGitProvider,
-)
-from pr_agent.tools.ticket_pr_compliance_check import (
-    _provider_supports,
-    extract_and_cache_pr_tickets,
-    extract_tickets,
 )
 
 
@@ -330,7 +330,7 @@ async def test_extract_tickets_unsupported_provider_preserves_asana_results(monk
         assert urls == ["https://app.asana.com/0/99/123456789012"]
         return [{"ticket_id": "123456789012", "ticket_url": urls[0]}]
 
-    monkeypatch.setattr("pr_agent.tools.ticket_pr_compliance_check._fetch_asana_ticket_contents", fake_fetch)
+    monkeypatch.setattr("pr_agent.commands.ticket_pr_compliance_check._fetch_asana_ticket_contents", fake_fetch)
     tickets = await extract_tickets(provider)
     assert tickets == [{"ticket_id": "123456789012", "ticket_url": "https://app.asana.com/0/99/123456789012"}]
 
@@ -374,7 +374,7 @@ async def test_extract_tickets_linked_work_item_failure_preserves_other_context(
         return tickets
 
     jira = MagicMock(side_effect=add_jira)
-    module = "pr_agent.tools.ticket_pr_compliance_check"
+    module = "pr_agent.commands.ticket_pr_compliance_check"
     monkeypatch.setattr(f"{module}._fetch_asana_ticket_contents", AsyncMock(return_value=[asana_ticket]))
     monkeypatch.setattr(f"{module}._fetch_linear_ticket_contents", AsyncMock(return_value=[linear_ticket]))
     monkeypatch.setattr(f"{module}.add_jira_tickets", jira)
@@ -400,7 +400,7 @@ async def test_extract_and_cache_linked_failure_leaves_ticket_context_empty(monk
         "pr_reviewer.require_ticket_analysis_review": True,
         "related_tickets": cached,
     }.get(key, default)
-    monkeypatch.setattr("pr_agent.tools.ticket_pr_compliance_check.get_settings", lambda use_context=True: settings)
+    monkeypatch.setattr("pr_agent.commands.ticket_pr_compliance_check.get_settings", lambda use_context=True: settings)
 
     assert await extract_and_cache_pr_tickets(provider, vars_) is None
 
@@ -414,7 +414,7 @@ async def test_extract_and_cache_linked_failure_leaves_ticket_context_empty(monk
 async def test_extract_tickets_linked_empty_is_normal_empty_success(monkeypatch):
     provider = _CustomAzureSubstitute(work_items=[])
     jira = MagicMock(side_effect=lambda _, tickets: tickets)
-    monkeypatch.setattr("pr_agent.tools.ticket_pr_compliance_check.add_jira_tickets", jira)
+    monkeypatch.setattr("pr_agent.commands.ticket_pr_compliance_check.add_jira_tickets", jira)
 
     assert await extract_tickets(provider) == []
     jira.assert_called_once_with(provider, [])

@@ -1,6 +1,6 @@
 """
 Unit tests for async ticket extraction & caching in
-``pr_agent.tools.ticket_pr_compliance_check``.
+``pr_agent.commands.ticket_pr_compliance_check``.
 
 These tests are deterministic and fake-provider based — no live API or
 network access is performed.
@@ -17,14 +17,15 @@ import pytest
 from github.Repository import Repository
 from starlette_context import context, request_cycle_context
 
-from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import AzureDevopsProvider, GithubProvider, GitLabProvider
-from pr_agent.tools import ticket_pr_compliance_check as tpc
-from pr_agent.tools.ticket_pr_compliance_check import (
+from pr_agent.algo.types import FilePatchInfo
+from pr_agent.commands import ticket_pr_compliance_check as tpc
+from pr_agent.commands.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
     extract_gitlab_ticket_references,
     extract_tickets,
 )
+from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import AzureDevopsProvider, GithubProvider, GitLabProvider
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
@@ -205,7 +206,7 @@ def scoped_ticket_settings():
     settings.set("pr_reviewer.max_previous_findings_chars", 0)
     settings.set("config.repo_context_files", [])
     settings.set("config.publish_output", False)
-    settings.set("config.propagate_tool_errors", True)
+    settings.set("config.propagate_command_errors", True)
     settings.set("jira", {})
     with request_cycle_context({"settings": settings}):
         yield settings
@@ -216,12 +217,12 @@ async def test_ticket_reads_use_workers_and_request_settings(monkeypatch, scoped
     calls = []
 
     def record(name, function):
-        def call(*args):
+        def call(*args, **kwargs):
             calls.append((name, threading.get_ident(), get_settings()))
-            return function(*args)
+            return function(*args, **kwargs)
         return call
 
-    jira = SimpleNamespace(issue=record("jira", lambda key: {"fields": {"summary": "Jira ticket"}}))
+    jira = SimpleNamespace(issue=record("jira", lambda key, fields: {"fields": {"summary": "Jira ticket"}}))
     monkeypatch.setattr(tpc, "_get_jira_client", lambda: jira)
     expected = []
     native_ids = [7]
@@ -300,7 +301,7 @@ async def test_ticket_reads_keep_shared_settings_on_the_event_loop(monkeypatch, 
 
 @pytest.mark.parametrize("cancel", [False, True], ids=["complete", "cancel"])
 async def test_review_ticket_wait_keeps_loop_responsive(monkeypatch, scoped_ticket_settings, cancel):
-    from pr_agent.tools import pr_reviewer as reviewer_module
+    from pr_agent.commands import pr_reviewer as reviewer_module
 
     loop = asyncio.get_running_loop()
     started, finished = asyncio.Event(), asyncio.Event()
@@ -325,7 +326,9 @@ async def test_review_ticket_wait_keeps_loop_responsive(monkeypatch, scoped_tick
     provider.git_files = ["app.py"]
     provider.get_languages = lambda: {"Python": 100}
     provider.get_files = lambda: ["app.py"]
-    provider.get_diff_files = MagicMock(return_value=[])
+    provider.get_diff_files = MagicMock(return_value=[
+        FilePatchInfo(base_file="", head_file="", patch="", filename="app.py")
+    ])
     provider.get_commit_messages = lambda: ""
     pr_url = "https://github.com/org/repo/pull/1"
     context["git_provider"] = {pr_url: provider}
@@ -348,12 +351,12 @@ async def test_review_ticket_wait_keeps_loop_responsive(monkeypatch, scoped_tick
         if not run.cancelled():
             await asyncio.wait_for(run, 5)
 
+    provider.get_diff_files.assert_called_once_with()
     if cancel:
         assert calls == [7]
         assert scoped_ticket_settings.get("related_tickets") == []
         assert reviewer.vars["related_tickets"] == []
         predict.assert_not_awaited()
-        provider.get_diff_files.assert_not_called()
     else:
         assert calls == [7, 8]
         assert [ticket["ticket_id"] for ticket in reviewer.vars["related_tickets"]] == [7, 8]
@@ -1651,6 +1654,18 @@ class TestGitLabExtraction:
                 'https://gitlab.com/gitlab',
                 [],
             ),
+            (
+                "[other #7](https://gitlab.example.com/gitlab/group/other-project/-/issues/9) and #8",
+                "group/repo",
+                "https://gitlab.example.com/gitlab",
+                [("group/other-project", 9), ("group/repo", 8)],
+            ),
+            (
+                "[#7](https://gitlab.com/group/other-project/-/work_items/9)",
+                "group/repo",
+                "https://gitlab.com",
+                [("group/other-project", 9)],
+            ),
         ],
     )
     def test_url_reference_boundaries(self, description, repo_path, gitlab_url, expected):
@@ -1662,6 +1677,19 @@ class TestGitLabExtraction:
             ("##7", []),
             ("group/proj#7", [("group/proj", 7)]),
             ("#7", [("group/repo", 7)]),
+            ("#123456", [("group/repo", 123456)]),
+            ("#1234567", []),
+            ("group/proj#1234567", [("group/proj", 1234567)]),
+            (
+                "<!-- Closes #1234 or group/proj#56 or https://gitlab.com/group/repo/-/issues/78 --> #42",
+                [("group/repo", 42)],
+            ),
+            ("See [#6211][release]\n\n[release]: https://example.com/changelog", []),
+            ('<a href="https://example.com/changelog">#42</a> Fixes #7', [("group/repo", 7)]),
+            ('class="bg-[#121212]" dark:bg-[#123456]', []),
+            ("#0 group/proj#0 https://gitlab.com/group/repo/-/issues/000", []),
+            ("#١٢ group/proj#١٢ https://gitlab.com/group/repo/-/issues/١٢", []),
+            (f"group/proj#{'9' * 4301} #42", [("group/repo", 42)]),
         ],
     )
     def test_shorthand_reference_boundaries(self, description, expected):

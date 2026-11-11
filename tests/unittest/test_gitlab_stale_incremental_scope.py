@@ -130,6 +130,6 @@ class TestStaleIncrementalScopeAcrossCommands:
 
         # ---- Command 2: '/improve' without -i ----
         # pr_code_suggestions.py guards get_incremental_commits behind the command's
-        # OWN flag, so the tool only calls get_diff_files(); it must see the full MR.
+        # OWN flag, so the command only calls get_diff_files(); it must see the full MR.
         second_command_files = provider.get_diff_files()
         assert [f.filename for f in second_command_files] == ["a.py", "b.py", "c.py"]

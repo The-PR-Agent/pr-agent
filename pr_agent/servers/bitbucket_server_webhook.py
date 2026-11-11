@@ -22,6 +22,7 @@ from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     auto_feedback_disabled,
+    get_include_pr_labels,
     get_pr_commands,
     is_command_comment,
     payload_log_summary,
@@ -55,8 +56,8 @@ def should_process_pr_logic(data) -> bool:
         if not shared_should_process_pr_logic(data, provider="bitbucket_server", raise_on_error=True):
             return False
     except Exception:
-        # Preserve fail-open fallback without continuing into folder filtering on error
-        return True
+        # Fail closed for an opt-in label gate, but preserve exclusion-only fallback.
+        return not bool(get_include_pr_labels())
 
     try:
         # Filter by allowed folders if configured
@@ -180,7 +181,7 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
         comment_text = data["comment"]["text"]
         if not is_command_comment(comment_text):
             # A plain comment whose first word happens to be a command name must not
-            # dispatch a tool: the dispatcher strips an optional leading slash.
+            # dispatch a command: the dispatcher strips an optional leading slash.
             get_logger().info("Ignoring comment not starting with /")
             return JSONResponse(
                 status_code=status.HTTP_200_OK,

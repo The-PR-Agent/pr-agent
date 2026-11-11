@@ -1,6 +1,7 @@
 import builtins
 import io
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 from git import Repo
@@ -21,7 +22,7 @@ _SETTINGS_KEYS = [
     "plain_diff.json_output_path",
     "config.git_provider",
     "config.publish_output",
-    "config.propagate_tool_errors",
+    "config.propagate_command_errors",
     "config.cli_mode",
     "config.config_branch",
     "config.extra_config_url",
@@ -35,7 +36,7 @@ _DIFF = (
     "@@ -1,3 +1,3 @@\n"
     " line1\n-line2\n+line2-changed\n line3\n"
 )
-_REVIEW_MARKER = "plain-diff auto-review output"
+_REVIEW_MARKER = "plain-diff review output"
 _CANNED_REVIEW = f"""\
 review:
   estimated_effort_to_review_[1-5]: '1'
@@ -69,7 +70,6 @@ _OUTPUT_OPTION_PREFIXES = [
 _MARKDOWN_COMMANDS = [
     "review",
     "review_pr",
-    "auto_review",
     "describe",
     "describe_pr",
     "improve",
@@ -82,7 +82,6 @@ _MARKDOWN_COMMANDS = [
 ]
 
 _NON_MARKDOWN_COMMANDS = [
-    "answer",
     "ask_line",
     "update_changelog",
     "similar_issue",
@@ -205,7 +204,9 @@ def test_missing_diff_file_fails_fast(tmp_path, monkeypatch, capsys):
     assert "Could not read --diff-file" in err
 
 
-@pytest.mark.parametrize("command", ["review", "review_pr", "improve", "improve_code", "describe", "describe_pr"])
+@pytest.mark.parametrize("command", [
+    "review", "review_pr", "improve", "improve_code", "describe", "describe_pr", "generate_labels",
+])
 def test_json_output_accepts_pr_review(command, monkeypatch, tmp_path):
     from pr_agent.algo.review_json_output import review_json_output_path
 
@@ -226,7 +227,7 @@ def test_json_output_accepts_pr_review(command, monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("command", ["improve", "improve_code", "describe", "describe_pr"])
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])
-def test_json_output_accepts_plain_diff_tool_aliases(command, input_mode, monkeypatch, tmp_path):
+def test_json_output_accepts_plain_diff_command_aliases(command, input_mode, monkeypatch, tmp_path):
     from pr_agent.algo.review_json_output import review_json_output_path
 
     captured = {}
@@ -257,7 +258,8 @@ def test_json_output_rejects_non_review_pr_command(monkeypatch, capsys):
     _fail_if_agent_constructed(monkeypatch)
     with pytest.raises(SystemExit, match="2"):
         run(inargs=["--pr_url", "https://example/pr/1", "--json-output", "out.json", "ask"])
-    assert "--json-output is only supported for review, improve, or describe commands" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "--json-output is only supported for review, improve, describe, or generate_labels commands" in error
 
 
 @pytest.mark.parametrize("command", ["review", "review_pr", "describe", "improve"])
@@ -393,24 +395,6 @@ def test_compatible_non_model_commands_write_markdown_artifacts(
     assert output.read_text(encoding="utf-8").strip()
 
 
-def test_auto_review_writes_markdown_artifact_with_stubbed_model(
-    monkeypatch, tmp_path,
-):
-    async def fake_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
-        return _CANNED_REVIEW, "stop"
-
-    monkeypatch.setattr(
-        "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion",
-        fake_chat_completion,
-    )
-    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
-    output = tmp_path / "auto-review.md"
-
-    run(inargs=["--stdin", "--output", str(output), "auto_review"])
-
-    assert _REVIEW_MARKER in output.read_text(encoding="utf-8")
-
-
 @pytest.mark.parametrize(
     ("generate_ai_title", "expected_title"),
     [(False, "Local diff review"), (True, "Update foo.py")],
@@ -444,6 +428,7 @@ pr_files:
     markdown = output.read_text(encoding="utf-8")
     assert markdown.startswith(f"{expected_title}\n\n")
     assert "Update the second line." in markdown
+    assert "+1/-1" in markdown
     assert capsys.readouterr().out == markdown + "\n"
 
 
@@ -490,7 +475,7 @@ def test_plain_diff_improve_preserves_nonempty_json_even_if_markdown_fails(
         "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion",
         fake_chat_completion,
     )
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.PRCodeSuggestions._self_reflect_with_fallback",
+    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.PRCodeSuggestions._self_reflect_with_fallback",
                         no_reflection)
     if publish_failure:
         def broken_output(self, content):
@@ -525,7 +510,7 @@ def test_plain_diff_improve_still_publishes_markdown_when_json_unwritable(
         "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion",
         fake_chat_completion,
     )
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.PRCodeSuggestions._self_reflect_with_fallback",
+    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.PRCodeSuggestions._self_reflect_with_fallback",
                         no_reflection)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     unreachable_path = tmp_path / "missing" / "suggestions.json"
@@ -571,7 +556,14 @@ def test_plain_diff_improve_writes_empty_json_when_all_files_are_ignored(monkeyp
 
     run(inargs=["--stdin", "--json-output", str(output), "improve"])
 
-    assert json.loads(output.read_text(encoding="utf-8")) == {"code_suggestions": [], "usage": {}}
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        "code_suggestions": [],
+        "usage": {},
+        "coverage": {
+            "total_chunks": 0, "failed_chunks": 0,
+            "files_not_reviewed": [], "files_partially_reviewed": [],
+        },
+    }
 
 
 def test_plain_diff_describe_fails_when_all_files_are_ignored(monkeypatch, tmp_path, cfg):
@@ -587,7 +579,7 @@ def test_plain_diff_describe_fails_when_all_files_are_ignored(monkeypatch, tmp_p
         unexpected_model_call,
     )
     failure_recorder = Mock(wraps=record_command_failure)
-    monkeypatch.setattr("pr_agent.tools.pr_description.record_command_failure", failure_recorder)
+    monkeypatch.setattr("pr_agent.commands.pr_description.record_command_failure", failure_recorder)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     cfg("ignore.glob", ["foo.py"])
     output = tmp_path / "description.json"
@@ -597,7 +589,7 @@ def test_plain_diff_describe_fails_when_all_files_are_ignored(monkeypatch, tmp_p
     assert not output.exists()
 
 
-def test_plain_diff_json_tool_failure_returns_nonzero_without_error_propagation(monkeypatch, tmp_path, cfg):
+def test_plain_diff_json_command_failure_returns_nonzero_without_error_propagation(monkeypatch, tmp_path, cfg):
     from pr_agent.algo.run_details import record_command_failure
 
     class FailedAgent:
@@ -605,7 +597,7 @@ def test_plain_diff_json_tool_failure_returns_nonzero_without_error_propagation(
             record_command_failure()
             return True
 
-    cfg("config.propagate_tool_errors", False)
+    cfg("config.propagate_command_errors", False)
     monkeypatch.setattr("pr_agent.cli.PRAgent", FailedAgent)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
 
@@ -628,6 +620,58 @@ def test_plain_diff_ask_keeps_output_after_command_settings(monkeypatch, tmp_pat
     assert "The changed line is correct." in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(("title", "description"), [
+    ("Fix: invoice approvals", "Acceptance criteria: require approval"),
+    ("true", "123"),
+    ("DEL\x7f title", "C1\x80\x9f description"),
+    ("繁體中文標題", "內容：需審核"),
+    ("Fix 🚀", "Ship 🎯 when ready"),
+])
+def test_plain_diff_cli_preserves_context_text_in_prompts(monkeypatch, tmp_path, title, description):
+    captured = {}
+
+    async def answer(self, model, system, user, temperature=0.2, **kwargs):
+        captured["title"] = get_settings().get("plain_diff.title")
+        captured["description"] = get_settings().get("plain_diff.description")
+        captured["prompt"] = system + "\n" + user
+        return "The changed line is correct.", "stop"
+
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion", answer,
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+
+    run(inargs=["--stdin", "ask", "Explain.",
+                f"--plain_diff.title={title}", f"--plain_diff.description={description}"])
+
+    assert captured["title"] == title
+    assert captured["description"] == description
+    assert title in captured["prompt"]
+    assert description in captured["prompt"]
+
+
+def test_plain_diff_cli_encodes_context_with_issue_target(monkeypatch):
+    captured = {}
+
+    class FakeAgent:
+        async def handle_request(self, target, request, notify=None):
+            captured.update(target=target, request=request)
+            return True
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+
+    run(inargs=["--stdin", "--issue_url", "https://example/issue/1", "ask",
+                "--plain_diff.title=true", "--plain_diff.description=Acceptance: ready"])
+
+    assert captured == {
+        "target": "https://example/issue/1",
+        "request": ["ask", '--plain_diff.title="true"',
+                    '--plain_diff.description="Acceptance: ready"'],
+    }
+
+
 def test_plain_diff_ask_applies_command_ignore_filter(monkeypatch):
     diff = (
         "diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-old\n+new\n"
@@ -638,7 +682,7 @@ def test_plain_diff_ask_applies_command_ignore_filter(monkeypatch):
     async def capture(self):
         seen.extend(f.filename for f in self.git_provider.get_diff_files())
 
-    monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions.run", capture)
+    monkeypatch.setattr("pr_agent.commands.pr_questions.PRQuestions.run", capture)
     monkeypatch.setattr("sys.stdin", io.StringIO(diff))
     run(inargs=["--stdin", "ask", "Explain.", '--ignore.glob=["foo.py"]'])
 
@@ -679,18 +723,18 @@ def test_local_git_ask_applies_command_ignore_filter(monkeypatch, tmp_path, cfg,
     async def capture(self):
         seen.extend(f.filename for f in self.git_provider.get_diff_files())
 
-    monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions.run", capture)
+    monkeypatch.setattr("pr_agent.commands.pr_questions.PRQuestions.run", capture)
     run(inargs=["--pr_url", "main", "ask", "Explain.", '--ignore.glob=["foo.py"]'])
 
     assert seen == ["bar.py"]
 
 
-def test_answer_output_is_rejected_without_creating_artifact(monkeypatch, tmp_path, capsys):
+def test_ask_line_output_is_rejected_without_creating_artifact(monkeypatch, tmp_path, capsys):
     input_args = _rejecting_input_args("stdin", monkeypatch)
-    output = tmp_path / "answer.md"
+    output = tmp_path / "ask-line.md"
 
     with pytest.raises(SystemExit) as exc_info:
-        run(inargs=[*input_args, "--output", str(output), "answer"])
+        run(inargs=[*input_args, "--output", str(output), "ask_line"])
 
     assert exc_info.value.code == 2
     assert "--output is not supported for" in capsys.readouterr().err
@@ -725,7 +769,8 @@ def test_json_output_accepts_review_aliases(command, input_mode, monkeypatch, tm
 
 
 @pytest.mark.parametrize("command", [
-    *_NON_MARKDOWN_COMMANDS, "auto_review", "ask", "ask_question", "config", "settings", "help",
+    *(name for name in _NON_MARKDOWN_COMMANDS if name != "generate_labels"),
+    "ask", "ask_question", "config", "settings", "help",
 ])
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])
 def test_json_output_rejects_non_review_commands_before_read(
@@ -737,7 +782,62 @@ def test_json_output_rejects_non_review_commands_before_read(
         run(inargs=[*input_args, "--json-output", "out.json", command])
 
     assert exc_info.value.code == 2
-    assert "--json-output is only supported for review, improve, or describe commands" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "--json-output is only supported for review, improve, describe, or generate_labels commands" in error
+
+
+@pytest.mark.parametrize("input_mode", ["stdin", "file"])
+def test_plain_diff_generate_labels_writes_filtered_json(input_mode, monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+    input_args = _valid_input_args(input_mode, monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "pr_agent.commands.pr_generate_labels.PRGenerateLabels._get_prediction",
+        AsyncMock(return_value="labels: [Bug fix, not-a-supported-label]"),
+    )
+    output = tmp_path / "labels.json"
+
+    assert run(inargs=[*input_args, "--json-output", str(output), "generate_labels"]) is None
+
+    result = json.loads(output.read_text(encoding="utf-8"))
+    assert result["labels"] == ["Bug fix"]
+    assert isinstance(result["usage"], dict)
+    assert "## PR Labels:" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("mode", ["hosted", "plain_diff"])
+@pytest.mark.parametrize("json_requested", [False, True])
+def test_generate_labels_policy_skip_only_fails_when_json_is_required(
+    mode, json_requested, monkeypatch, tmp_path, capsys,
+):
+    from pr_agent.agent.request_policy import RequestOutcome
+
+    class SkippedAgent:
+        async def handle_request(self, target, request, notify=None):
+            return RequestOutcome.SKIPPED
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", SkippedAgent)
+    args = ["--pr_url", "https://example/pr/1"] if mode == "hosted" else ["--stdin"]
+    if mode == "plain_diff":
+        monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+    output = tmp_path / "labels.json"
+    if json_requested:
+        args.extend(["--json-output", str(output)])
+
+    assert run(inargs=[*args, "generate_labels"]) == (1 if json_requested else None)
+    assert not output.exists()
+    assert "Usage:" not in capsys.readouterr().out
+
+
+def test_plain_diff_generate_labels_failure_does_not_write_success_json(monkeypatch, tmp_path):
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+    monkeypatch.setattr(
+        "pr_agent.commands.pr_generate_labels.retry_with_fallback_models",
+        AsyncMock(side_effect=RuntimeError("model unavailable")),
+    )
+    output = tmp_path / "labels.json"
+
+    assert run(inargs=["--stdin", "--json-output", str(output), "generate_labels"]) == 1
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(
@@ -768,7 +868,7 @@ def test_output_options_after_command_fail_before_read(
     assert f"{option} must appear before the command" in err
 
 
-def test_near_match_after_command_remains_a_tool_argument(monkeypatch):
+def test_near_match_after_command_remains_a_command_argument(monkeypatch):
     captured = {}
 
     class FakeAgent:

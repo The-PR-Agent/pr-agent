@@ -5,7 +5,7 @@ on either side, or inside a Tailwind arbitrary value (`bg-[#121212]`) must not b
 """
 import pytest
 
-from pr_agent.tools.ticket_pr_compliance_check import extract_ticket_links_from_pr_description
+from pr_agent.commands.ticket_pr_compliance_check import extract_ticket_links_from_pr_description
 
 REPO = "org/repo"
 BASE = "https://github.com"

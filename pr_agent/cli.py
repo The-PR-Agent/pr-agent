@@ -5,6 +5,7 @@ import os
 import sys
 from contextlib import contextmanager
 
+import yaml
 from starlette_context import context, request_cycle_context
 
 from pr_agent.agent.command_registry import COMMAND_SPECS
@@ -40,6 +41,9 @@ _JSON_IMPROVE_COMMANDS = frozenset(
 )
 _JSON_DESCRIBE_COMMANDS = frozenset(
     name for name, spec in COMMAND_SPECS.items() if spec.json_output == "describe"
+)
+_JSON_LABEL_COMMANDS = frozenset(
+    name for name, spec in COMMAND_SPECS.items() if spec.json_output == "labels"
 )
 _OUTPUT_OPTIONS = ("--output", "--json-output")
 _CLI_CONTEXT_CACHES = (
@@ -107,12 +111,12 @@ def _validate_output_options(parser, args, diff_mode):
             parser.error(f"--output is not supported for plain-diff command '{command}'")
 
     if json_output is not None:
-        pr_tool_commands = _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS
-        if command not in _JSON_REVIEW_COMMANDS | pr_tool_commands:
-            parser.error("--json-output is only supported for review, improve, or describe commands")
+        pr_commands = _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS
+        if command not in _JSON_REVIEW_COMMANDS | pr_commands:
+            parser.error("--json-output is only supported for review, improve, describe, or generate_labels commands")
         if not diff_mode and (not args.pr_url or args.issue_url):
             parser.error("--json-output requires --pr_url, --stdin, or --diff-file")
-        if diff_mode and output is not None and command in pr_tool_commands | _JSON_REVIEW_COMMANDS:
+        if diff_mode and output is not None and command in pr_commands | _JSON_REVIEW_COMMANDS:
             same_destination = os.path.normcase(os.path.realpath(output)) == os.path.normcase(
                 os.path.realpath(json_output)
             )
@@ -123,6 +127,19 @@ def _validate_output_options(parser, args, diff_mode):
                     pass  # One or both destinations may not exist yet.
             if same_destination:
                 parser.error("--output and --json-output must use different files")
+
+
+def _encode_plain_diff_context_args(args):
+    """Keep Plain Diff context as text when command arguments are parsed as YAML."""
+    encoded = []
+    for arg in args:
+        if arg.startswith("--") and "=" in arg:
+            key, value = arg.split("=", 1)
+            if key[2:].lower() in ("plain_diff.title", "plain_diff.description"):
+                quoted = yaml.safe_dump(value, allow_unicode=True, default_style='"').strip()
+                arg = f"{key}={quoted}"
+        encoded.append(arg)
+    return encoded
 
 
 def set_parser():
@@ -182,8 +199,8 @@ def set_parser():
                         help=("Write Plain Diff Markdown output to this file "
                               "(place before the command)"))
     parser.add_argument("--json-output", dest="json_output", type=str, default=None,
-                        help=("Write parsed review, improve, or describe results and token usage "
-                              "to this JSON file (place before the command)"))
+                        help=("Write supported command results and token usage to this JSON file "
+                              "(place before the command)"))
     parser.add_argument('command', type=str, help='The', choices=[*commands, *DOCTOR_COMMANDS], default='review')
     parser.add_argument('rest', nargs=argparse.REMAINDER, default=[])
     return parser
@@ -252,10 +269,10 @@ def run(inargs=None, args=None):
         async def inner():
             # Plain-diff reviews write through their provider; describe and improve
             # already use the shared JSON writer, as they do with --pr_url.
-            tool_json_output = getattr(args, "json_output", None) if (
-                not diff_mode or command in _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS
+            command_json_output = getattr(args, "json_output", None) if (
+                not diff_mode or command in _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS
             ) else None
-            output_token = review_json_output_path.set(tool_json_output)
+            output_token = review_json_output_path.set(command_json_output)
             try:
                 return await run_inner()
             finally:
@@ -267,14 +284,15 @@ def run(inargs=None, args=None):
             inject_artifact_context()
             init_run_details()
             # Read the verdict in the same task where the request installs its collector.
+            command_args = _encode_plain_diff_context_args(args.rest) if diff_mode else args.rest
             if args.issue_url:
-                result = await PRAgent().handle_request(args.issue_url, [command] + args.rest)
+                result = await PRAgent().handle_request(args.issue_url, [command] + command_args)
             else:
                 target = args.pr_url or "local_diff"
-                result = await PRAgent().handle_request(target, [command] + args.rest)
+                result = await PRAgent().handle_request(target, [command] + command_args)
             if result is RequestOutcome.SKIPPED:
-                # No tool ran, so there are no command callbacks or failures to drain.
-                return True, False
+                # No command ran, so there are no command callbacks or failures to drain.
+                return RequestOutcome.SKIPPED, False
 
             # litellm defers its success/failure callbacks onto the event loop, which
             # asyncio.run() below tears down the moment this coroutine returns. Give
@@ -288,15 +306,21 @@ def run(inargs=None, args=None):
             return result, command_failed()
 
         result, recorded_failure = asyncio.run(inner())
-        if not result:
+        if not result and result is not RequestOutcome.SKIPPED:
             parser.print_help()
-        json_artifact_required = bool(diff_mode and getattr(args, "json_output", None) is not None and
-                                      command in _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS)
-        if (settings.config.get("propagate_tool_errors", False) or json_artifact_required) and (
+        label_json_required = bool(
+            getattr(args, "json_output", None) is not None and command in _JSON_LABEL_COMMANDS
+        )
+        json_artifact_required = label_json_required or bool(
+            diff_mode and getattr(args, "json_output", None) is not None
+            and command in _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS
+        )
+        if (settings.config.get("propagate_command_errors", False) or json_artifact_required) and (
             result is False or recorded_failure
+            or (label_json_required and result is RequestOutcome.SKIPPED)
         ):
             if result is not False and recorded_failure:
-                get_logger().warning("Tool reported success but recorded a failure; exiting with an error")
+                get_logger().warning("Command reported success but recorded a failure; exiting with an error")
             return 1
 
 

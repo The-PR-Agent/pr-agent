@@ -9,20 +9,36 @@ from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
 from pr_agent.algo.file_filter import filter_ignored_with_status
 from pr_agent.algo.language_handler import partition_files_by_language_filter
 from pr_agent.algo.review_json_output import write_review_json_output
-from pr_agent.algo.run_output import show_run_details
+from pr_agent.algo.run_output import append_run_details
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file_checked, to_hunk_only_patch
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
 
+_DEFAULT_PR_TITLE = "Local diff review"
+
 _OUTPUT_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f]")
+
+
+def _plain_diff_context(key: str, default: str = "") -> str:
+    value = get_settings().get(key)
+    return value if isinstance(value, str) and value.strip() else default
 
 
 class PullRequestMimic:
     def __init__(self, title: str, diff_files: list[FilePatchInfo]):
-        self.title = title
+        self._title = title
         self.diff_files = diff_files
+
+    @property
+    def title(self) -> str:
+        # Read command-scoped settings at access time because the provider may be cached.
+        return _plain_diff_context("plain_diff.title", self._title)
+
+    @title.setter
+    def title(self, value: str) -> None:
+        self._title = value
 
 
 class PlainDiffGitProvider(GitProvider):
@@ -47,12 +63,12 @@ class PlainDiffGitProvider(GitProvider):
         self.json_output_path = get_settings().get("plain_diff.json_output_path", None)
         # cli.run() already forces config.publish_output=True, but apply_repo_settings()
         # runs afterwards and can overwrite it back to False from an extra/repo config
-        # (tools gate all publishing on this flag). This provider is constructed after
+        # (commands gate all publishing on this flag). This provider is constructed after
         # apply_repo_settings, so re-assert it here: stdout/--output is plain-diff mode's
         # only output channel, and it must never be silently suppressed.
         get_settings().set("config.publish_output", True)
         self.diff_files = None
-        self.pr = PullRequestMimic(self.get_pr_title(), self.get_diff_files())
+        self.pr = PullRequestMimic(_DEFAULT_PR_TITLE, self.get_diff_files())
 
     def get_diff_files(self) -> list[FilePatchInfo]:
         if self.diff_files is not None:
@@ -131,7 +147,7 @@ class PlainDiffGitProvider(GitProvider):
             print(content)
         except UnicodeEncodeError:
             # Emit UTF-8 bytes when a redirected stdout uses a locale encoding (cp1252 on
-            # Windows) that cannot encode the emoji in tool output, so publishing does not
+            # Windows) that cannot encode the emoji in command output, so publishing does not
             # abort before --output is written.
             buffer = getattr(sys.stdout, "buffer", None)
             if buffer is None:
@@ -166,7 +182,15 @@ class PlainDiffGitProvider(GitProvider):
         self._write_output(f"{title}\n\n{pr_body}")
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ["get_issue_comments", "get_labels", "edit_comment", "remove_comment"]:
+        if capability in [
+            "get_issue_comments",
+            "get_labels",
+            "edit_comment",
+            "remove_comment",
+            "head_ci_status",
+            "head_staleness",
+            "author_human_check",
+        ]:
             return False
         return True
 
@@ -180,10 +204,17 @@ class PlainDiffGitProvider(GitProvider):
         return self._language_percentages(f.filename for f in self.get_diff_files())
 
     def get_pr_title(self):
-        return "Local diff review"
+        return _plain_diff_context("plain_diff.title", _DEFAULT_PR_TITLE)
 
     def get_pr_description_full(self):
-        return ""
+        return _plain_diff_context("plain_diff.description")
+
+    def get_pr_description(self, full: bool = True, split_changes_walkthrough=False) -> str | tuple:
+        description = super().get_pr_description(full=full)
+        return (description, []) if split_changes_walkthrough else description
+
+    def get_user_description(self) -> str:
+        return self.get_pr_description_full()
 
     def get_user_id(self):
         return -1
@@ -193,7 +224,7 @@ class PlainDiffGitProvider(GitProvider):
 
     # ---- code suggestions: rendered to stdout/--output (no hosting platform) ----
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
-        # The 'improve' tool calls this unconditionally; render the suggestions
+        # The 'improve' command calls this unconditionally; render the suggestions
         # as a single markdown document to stdout/--output instead of pushing
         # them to a (non-existent) hosting platform.
         if not code_suggestions:
@@ -205,8 +236,7 @@ class PlainDiffGitProvider(GitProvider):
             no_suggestions_message: str = "No code suggestions found for the PR.") -> bool:
         if not code_suggestions:
             content = f"{format_pr_code_suggestions_header()}\n\n{no_suggestions_message}{artifact_footer}"
-            if get_settings().get("config.output_run_details", False):
-                content += show_run_details(self.is_supported("gfm_markdown"))
+            content = append_run_details(content, self)
             self._write_output(content)
             return True
 

@@ -2,13 +2,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from pr_agent.algo.i18n import t
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_code_suggestions import (
+from pr_agent.commands.pr_code_suggestions import (
     PRCodeSuggestions,
     filter_suggestions_by_score_threshold,
     render_suggestions_markdown,
 )
+from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 TRUNCATION_SETTINGS = (
@@ -17,11 +18,11 @@ TRUNCATION_SETTINGS = (
 )
 
 
-def _make_tool(git_provider=None):
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = git_provider or MagicMock()
-    tool.progress_response = None
-    return tool
+def _make_command(git_provider=None):
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = git_provider or MagicMock()
+    command.progress_response = None
+    return command
 
 
 def _suggestion(**overrides):
@@ -129,42 +130,42 @@ def test_truncate_if_needed_noop_when_under_limit_or_disabled():
     ],
 )
 def test_is_suggestion_line_range_valid_rejects_unanchorable_ranges(suggestion_kwargs):
-    tool = _make_tool()
+    command = _make_command()
     bad = _suggestion(**suggestion_kwargs)
 
-    assert tool._is_suggestion_line_range_valid(bad) is False
+    assert command._is_suggestion_line_range_valid(bad) is False
 
 
 def test_is_suggestion_line_range_valid_normalizes_valid_range():
-    tool = _make_tool(_provider_with_diff_files("app.py"))
+    command = _make_command(_provider_with_diff_files("app.py"))
     good = _suggestion(relevant_lines_start="2", relevant_lines_end="4")
 
-    assert tool._is_suggestion_line_range_valid(good) is True
+    assert command._is_suggestion_line_range_valid(good) is True
     assert good["relevant_lines_start"] == 2
     assert good["relevant_lines_end"] == 4
 
 
 def test_is_suggestion_line_range_valid_rejects_missing_keys():
-    tool = _make_tool()
+    command = _make_command()
     suggestion = _suggestion()
     suggestion.pop("relevant_lines_start")
     suggestion.pop("relevant_lines_end")
 
-    assert tool._is_suggestion_line_range_valid(suggestion) is False
+    assert command._is_suggestion_line_range_valid(suggestion) is False
 
 
 def test_is_suggestion_line_range_valid_rejects_file_not_in_diff():
-    tool = _make_tool(_provider_with_diff_files("app.py"))
+    command = _make_command(_provider_with_diff_files("app.py"))
     suggestion = _suggestion(relevant_file="other.py")
 
-    assert tool._is_suggestion_line_range_valid(suggestion) is False
+    assert command._is_suggestion_line_range_valid(suggestion) is False
 
 
 def test_is_suggestion_line_range_valid_rejects_range_outside_diff():
-    tool = _make_tool(_provider_with_diff_files("app.py"))
+    command = _make_command(_provider_with_diff_files("app.py"))
     suggestion = _suggestion(relevant_lines_start=100, relevant_lines_end=100)
 
-    assert tool._is_suggestion_line_range_valid(suggestion) is False
+    assert command._is_suggestion_line_range_valid(suggestion) is False
 
 
 def test_is_suggestion_line_range_valid_follows_the_head_file_when_available():
@@ -172,14 +173,14 @@ def test_is_suggestion_line_range_valid_follows_the_head_file_when_available():
     diff_file = _diff_file()
     git_provider = MagicMock()
     git_provider.diff_files = [diff_file]
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _suggestion(relevant_lines_start=5, relevant_lines_end=9)
 
-    assert tool._is_suggestion_line_range_valid(suggestion) is False
+    assert command._is_suggestion_line_range_valid(suggestion) is False
 
     diff_file.head_file += "    trailing\n    context\n    lines\n"
 
-    assert tool._is_suggestion_line_range_valid(suggestion) is True
+    assert command._is_suggestion_line_range_valid(suggestion) is True
 
 
 @pytest.mark.parametrize("head_file", ["", "context\n" * 9])
@@ -189,11 +190,11 @@ def test_is_suggestion_line_range_valid_uses_hunk_without_complete_head_file(hea
     diff_file.head_file_is_complete = False
     git_provider = MagicMock()
     git_provider.diff_files = [diff_file]
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
 
-    assert tool._is_suggestion_line_range_valid(
+    assert command._is_suggestion_line_range_valid(
         _suggestion(relevant_lines_start=2, relevant_lines_end=6)) is True
-    assert tool._is_suggestion_line_range_valid(
+    assert command._is_suggestion_line_range_valid(
         _suggestion(relevant_lines_start=5, relevant_lines_end=9)) is False
 
 
@@ -219,7 +220,7 @@ def test_prepare_pr_code_suggestions_applies_truncation_inline():
     settings.set("pr_code_suggestions.max_code_suggestion_length", 5)
     settings.set("pr_code_suggestions.suggestion_truncation_message", "[cut]")
     try:
-        tool = _make_tool()
+        command = _make_command()
         prediction = """
 code_suggestions:
   - one_sentence_summary: Inline truncation
@@ -229,7 +230,7 @@ code_suggestions:
     existing_code: old()
     improved_code: aaaaaaaaaaaaaaaaaaaa
 """
-        data = tool._prepare_pr_code_suggestions(prediction)
+        data = command._prepare_pr_code_suggestions(prediction)
         assert len(data["code_suggestions"]) == 1
         improved = data["code_suggestions"][0]["improved_code"]
         assert improved.startswith("aaaaa")
@@ -254,10 +255,10 @@ async def test_push_inline_renders_body_with_score_and_label():
         )
     ]
     git_provider.publish_code_suggestions.return_value = True
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     data = {"code_suggestions": [_suggestion(score=8)]}
 
-    await tool.push_inline_code_suggestions(data)
+    await command.push_inline_code_suggestions(data)
 
     args = git_provider.publish_code_suggestions.call_args.args[0]
     assert len(args) == 1
@@ -292,11 +293,11 @@ async def test_push_inline_publishes_partial_coverage_notice():
     ]
     git_provider.publish_code_suggestions.return_value = True
     git_provider.supports_code_suggestions_artifact.return_value = False
-    tool = _make_tool(git_provider)
-    tool.failed_chunk_count = 1
-    tool.total_chunk_count = 2
+    command = _make_command(git_provider)
+    command.failed_chunk_count = 1
+    command.total_chunk_count = 2
 
-    await tool.push_inline_code_suggestions({"code_suggestions": [_suggestion()]})
+    await command.push_inline_code_suggestions({"code_suggestions": [_suggestion()]})
 
     git_provider.publish_code_suggestions.assert_called_once()
     coverage_comment = git_provider.publish_comment.call_args.args[0]
@@ -316,12 +317,12 @@ async def test_push_inline_renders_body_without_score_when_missing_or_zero():
         )
     ]
     git_provider.publish_code_suggestions.return_value = True
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _suggestion()
     suggestion.pop("score")
     data = {"code_suggestions": [suggestion]}
 
-    await tool.push_inline_code_suggestions(data)
+    await command.push_inline_code_suggestions(data)
 
     body = git_provider.publish_code_suggestions.call_args.args[0][0]["body"]
     assert "[maintainability]" in body
@@ -331,13 +332,13 @@ async def test_push_inline_renders_body_without_score_when_missing_or_zero():
 @pytest.mark.asyncio
 async def test_push_inline_publishes_no_suggestions_comment_when_empty():
     git_provider = MagicMock()
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
 
-    result = await tool.push_inline_code_suggestions({"code_suggestions": []})
+    result = await command.push_inline_code_suggestions({"code_suggestions": []})
 
     assert result is None
     git_provider.publish_comment.assert_called_once_with(
-        "No suggestions found to improve this PR."
+        f"**{t('improve.merge_notice')}**\n\nNo suggestions found to improve this PR."
     )
     git_provider.publish_code_suggestions.assert_not_called()
 
@@ -345,11 +346,11 @@ async def test_push_inline_publishes_no_suggestions_comment_when_empty():
 @pytest.mark.asyncio
 async def test_push_inline_qualifies_empty_partial_results():
     git_provider = MagicMock()
-    tool = _make_tool(git_provider)
-    tool.failed_chunk_count = 1
-    tool.total_chunk_count = 3
+    command = _make_command(git_provider)
+    command.failed_chunk_count = 1
+    command.total_chunk_count = 3
 
-    await tool.push_inline_code_suggestions({"code_suggestions": []})
+    await command.push_inline_code_suggestions({"code_suggestions": []})
 
     body = git_provider.publish_comment.call_args.args[0]
     assert "successfully analyzed chunks" in body
@@ -381,10 +382,10 @@ async def test_publish_no_suggestions_resolves_thread_instead_of_replacing_it():
         git_provider = MagicMock()
         git_provider.should_publish_improve_as_thread.return_value = True
         progress_comment = MagicMock(id=7)
-        tool = _make_tool(git_provider)
-        tool.progress_response = progress_comment
+        command = _make_command(git_provider)
+        command.progress_response = progress_comment
 
-        await tool.publish_no_suggestions()
+        await command.publish_no_suggestions()
 
         git_provider.edit_comment.assert_called_once()
         assert git_provider.edit_comment.call_args.args[0] is progress_comment
@@ -404,10 +405,10 @@ async def test_publish_no_suggestions_does_not_resolve_when_not_threaded():
 
         git_provider = MagicMock()
         git_provider.should_publish_improve_as_thread.return_value = False
-        tool = _make_tool(git_provider)
-        tool.progress_response = MagicMock(id=7)
+        command = _make_command(git_provider)
+        command.progress_response = MagicMock(id=7)
 
-        await tool.publish_no_suggestions()
+        await command.publish_no_suggestions()
 
         git_provider.edit_comment.assert_called_once()
         git_provider.resolve_comment_thread.assert_not_called()
@@ -428,14 +429,36 @@ async def test_publish_no_suggestions_resolves_freshly_published_thread():
         git_provider = MagicMock()
         git_provider.should_publish_improve_as_thread.return_value = True
         git_provider.publish_comment.return_value = MagicMock(id=11)
-        tool = _make_tool(git_provider)
-        tool.progress_response = None
+        command = _make_command(git_provider)
+        command.progress_response = None
 
-        await tool.publish_no_suggestions()
+        await command.publish_no_suggestions()
 
         git_provider.publish_comment.assert_called_once()
         assert git_provider.publish_comment.call_args.kwargs.get("as_thread") is True
         git_provider.resolve_comment_thread.assert_called_once_with(11)
+    finally:
+        restore_settings(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_shows_merge_notice_under_the_heading():
+    snapshot = snapshot_settings(NO_SUGGESTIONS_SETTINGS)
+    try:
+        get_settings().set("config.publish_output", True)
+        get_settings().pr_code_suggestions.publish_output_no_suggestions = True
+        get_settings().set("config.output_run_details", False)
+
+        git_provider = MagicMock()
+        git_provider.should_publish_improve_as_thread.return_value = False
+        command = _make_command(git_provider)
+        command.progress_response = None
+
+        await command.publish_no_suggestions()
+
+        body = git_provider.publish_comment.call_args.args[0]
+        visible_lines = [line for line in body.splitlines() if line and not line.startswith("<!--")]
+        assert visible_lines[:2] == ["## PR Code Suggestions ✨", t("improve.merge_notice")]
     finally:
         restore_settings(snapshot)
 
@@ -445,12 +468,21 @@ async def test_publish_no_suggestions_resolves_freshly_published_thread():
 # ---------------------------------------------------------------------------
 
 def test_generate_summarized_suggestions_empty_returns_placeholder():
-    tool = _make_tool()
-    out = tool.generate_summarized_suggestions({"code_suggestions": []})
+    command = _make_command()
+    out = command.generate_summarized_suggestions({"code_suggestions": []})
     assert "PR Code Suggestions" in out
     assert "No suggestions found to improve this PR." in out
     # No table is rendered when empty
     assert "<table>" not in out
+
+
+def test_generate_summarized_suggestions_shows_merge_notice_under_the_heading():
+    command = _make_command(_provider_with_diff_files("app.py"))
+    notice = t("improve.merge_notice")
+
+    for data in ({"code_suggestions": [_suggestion()]}, {"code_suggestions": []}):
+        out = command.generate_summarized_suggestions(data)
+        assert out.startswith(f"## PR Code Suggestions ✨\n\n{notice}\n\n")
 
 
 @pytest.mark.parametrize("labels", [
@@ -459,10 +491,10 @@ def test_generate_summarized_suggestions_empty_returns_placeholder():
     ["security", "maintainability"],
 ])
 def test_summarized_suggestion_table_closes_without_extra_row(labels):
-    tool = _make_tool(_provider_with_diff_files("app.py"))
+    command = _make_command(_provider_with_diff_files("app.py"))
     suggestions = [_suggestion(label=label) for label in labels]
 
-    body = tool.generate_summarized_suggestions({"code_suggestions": suggestions})
+    body = command.generate_summarized_suggestions({"code_suggestions": suggestions})
 
     assert body.endswith("</tbody></table>")
     assert body.count("<tr>") == body.count("</tr>")
@@ -471,7 +503,7 @@ def test_summarized_suggestion_table_closes_without_extra_row(labels):
 def test_generate_summarized_suggestions_renders_table_and_sorts_by_score():
     git_provider = _provider_with_diff_files("app.py", "auth.py")
     git_provider.get_line_link.return_value = "https://example.test/app.py#L2"
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     settings = get_settings()
     snapshot = snapshot_settings(["pr_code_suggestions.new_score_mechanism"])
     settings.set("pr_code_suggestions.new_score_mechanism", False)
@@ -483,7 +515,7 @@ def test_generate_summarized_suggestions_renders_table_and_sorts_by_score():
             label="security",
             relevant_file="auth.py",
         )
-        out = tool.generate_summarized_suggestions({"code_suggestions": [low, high]})
+        out = command.generate_summarized_suggestions({"code_suggestions": [low, high]})
 
         assert "<table>" in out and "</table>" in out
         assert "<thead>" in out
@@ -521,7 +553,7 @@ def test_generate_summarized_suggestions_uses_safe_diff_fences(source_fence, out
         filename="README.md",
     )]
     git_provider.get_line_link.return_value = ""
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _suggestion(
         relevant_file="README.md",
         relevant_lines_start=1,
@@ -530,7 +562,7 @@ def test_generate_summarized_suggestions_uses_safe_diff_fences(source_fence, out
         improved_code=improved_code,
     )
 
-    out = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
+    out = command.generate_summarized_suggestions({"code_suggestions": [suggestion]})
 
     assert f"{outer_fence}diff\n{expected_patch}\n{outer_fence}\n</details>" in out
 
@@ -548,7 +580,7 @@ def test_generate_summarized_suggestions_keeps_unicode_separator_within_diff_lin
         filename="app.py",
     )]
     git_provider.get_line_link.return_value = ""
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _suggestion(
         relevant_lines_start=1,
         relevant_lines_end=1,
@@ -556,19 +588,19 @@ def test_generate_summarized_suggestions_keeps_unicode_separator_within_diff_lin
         improved_code=improved,
     )
 
-    out = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
+    out = command.generate_summarized_suggestions({"code_suggestions": [suggestion]})
 
     assert f"-{original}\n+{improved}" in out
 
 
 def test_generate_summarized_suggestions_uses_score_string_when_new_mechanism_enabled():
     git_provider = _provider_with_diff_files("app.py")
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     settings = get_settings()
     snapshot = snapshot_settings(["pr_code_suggestions.new_score_mechanism"])
     settings.set("pr_code_suggestions.new_score_mechanism", True)
     try:
-        out = tool.generate_summarized_suggestions({
+        out = command.generate_summarized_suggestions({
             "code_suggestions": [_suggestion(score=9, one_sentence_summary="High one")]
         })
         # The new mechanism replaces numeric score with bucket label
@@ -581,9 +613,9 @@ def test_generate_summarized_suggestions_uses_score_string_when_new_mechanism_en
 
 def test_generate_summarized_suggestions_escapes_angle_bracket_strings_in_summary():
     git_provider = _provider_with_diff_files("app.py")
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _suggestion(one_sentence_summary="Replace '<old_name>' with new_name")
-    out = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
+    out = command.generate_summarized_suggestions({"code_suggestions": [suggestion]})
     # The "'<...>'" pattern is rewritten with backticks, which replace_code_tags
     # then turns into an HTML <code> span with escaped angle brackets so it isn't
     # parsed as an HTML tag.
@@ -593,9 +625,9 @@ def test_generate_summarized_suggestions_escapes_angle_bracket_strings_in_summar
 
 def test_generate_summarized_suggestions_includes_score_why_block_when_present():
     git_provider = _provider_with_diff_files("app.py")
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _suggestion(score_why="Catches a real bug.")
-    out = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
+    out = command.generate_summarized_suggestions({"code_suggestions": [suggestion]})
     assert "Suggestion importance[1-10]: 7" in out
     assert "Why: Catches a real bug." in out
 
@@ -603,13 +635,13 @@ def test_generate_summarized_suggestions_includes_score_why_block_when_present()
 def test_generate_summarized_suggestions_skips_anchorless_but_keeps_rest():
     """A suggestion without resolved line anchors is skipped instead of failing the whole table."""
     git_provider = _provider_with_diff_files("app.py")
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     anchored = _suggestion(one_sentence_summary="Keep me")
     anchorless = _suggestion(one_sentence_summary="Drop me", relevant_file="other.py")
     anchorless.pop("relevant_lines_start")
     anchorless.pop("relevant_lines_end")
 
-    out = tool.generate_summarized_suggestions({"code_suggestions": [anchorless, anchored]})
+    out = command.generate_summarized_suggestions({"code_suggestions": [anchorless, anchored]})
 
     assert "<table>" in out
     assert "Keep me" in out
@@ -619,7 +651,7 @@ def test_generate_summarized_suggestions_skips_anchorless_but_keeps_rest():
 def test_generate_summarized_suggestions_skips_positive_range_outside_diff():
     """A positive, ordered range outside the file's diff hunks is dropped per-suggestion."""
     git_provider = _provider_with_diff_files("app.py")
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     in_diff = _suggestion(one_sentence_summary="In diff")
     out_diff = _suggestion(
         one_sentence_summary="Hallucinated range",
@@ -627,7 +659,7 @@ def test_generate_summarized_suggestions_skips_positive_range_outside_diff():
         relevant_lines_end=100,
     )
 
-    out = tool.generate_summarized_suggestions({"code_suggestions": [in_diff, out_diff]})
+    out = command.generate_summarized_suggestions({"code_suggestions": [in_diff, out_diff]})
 
     assert "<table>" in out
     assert "In diff" in out
@@ -638,12 +670,12 @@ def test_generate_summarized_suggestions_all_anchorless_returns_placeholder():
     """When no suggestion has resolvable anchors, publish a truthful message instead of an empty table."""
     git_provider = MagicMock()
     git_provider.get_line_link.return_value = ""
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _suggestion()
     suggestion.pop("relevant_lines_start")
     suggestion.pop("relevant_lines_end")
 
-    out = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
+    out = command.generate_summarized_suggestions({"code_suggestions": [suggestion]})
 
     assert "No suggestions found to improve this PR." in out
     assert "<table>" not in out
@@ -661,11 +693,11 @@ def test_generate_summarized_suggestions_all_anchorless_returns_placeholder():
 def test_generate_summarized_suggestions_skips_invalid_line_ranges(start, end):
     """Unresolved sentinels, non-positive lines and reversed ranges are omitted per-suggestion."""
     git_provider = _provider_with_diff_files("app.py")
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     bad = _suggestion(one_sentence_summary="Bad range", relevant_lines_start=start, relevant_lines_end=end)
     good = _suggestion(one_sentence_summary="Good range")
 
-    out = tool.generate_summarized_suggestions({"code_suggestions": [bad, good]})
+    out = command.generate_summarized_suggestions({"code_suggestions": [bad, good]})
 
     assert "<table>" in out
     assert "Good range" in out
@@ -676,10 +708,10 @@ def test_generate_summarized_suggestions_skips_invalid_line_ranges(start, end):
 def test_generate_summarized_suggestions_all_invalid_ranges_returns_placeholder(start, end):
     git_provider = MagicMock()
     git_provider.get_line_link.return_value = ""
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     bad = _suggestion(relevant_lines_start=start, relevant_lines_end=end)
 
-    out = tool.generate_summarized_suggestions({"code_suggestions": [bad]})
+    out = command.generate_summarized_suggestions({"code_suggestions": [bad]})
 
     assert "No suggestions found to improve this PR." in out
     assert "<table>" not in out
@@ -688,13 +720,13 @@ def test_generate_summarized_suggestions_all_invalid_ranges_returns_placeholder(
 @pytest.mark.asyncio
 async def test_analyze_self_reflection_mismatched_count_does_not_crash():
     """Feedback covering a different suggestion count than generated leaves anchors unresolved."""
-    tool = _make_tool()
+    command = _make_command()
     suggestion = _suggestion()
     suggestion.pop("relevant_lines_start")
     suggestion.pop("relevant_lines_end")
     data = {"code_suggestions": [suggestion, _suggestion(one_sentence_summary="Second")]}
 
-    await tool.analyze_self_reflection_response(
+    await command.analyze_self_reflection_response(
         data, "code_suggestions:\n- suggestion_score: 8\n  why: fast\n"
     )
 
@@ -705,13 +737,13 @@ async def test_analyze_self_reflection_mismatched_count_does_not_crash():
 @pytest.mark.asyncio
 async def test_analyze_self_reflection_null_feedback_does_not_crash():
     """A non-null response with `code_suggestions: null` must not abort suggestions."""
-    tool = _make_tool()
+    command = _make_command()
     suggestion = _suggestion()
     suggestion.pop("relevant_lines_start")
     suggestion.pop("relevant_lines_end")
     data = {"code_suggestions": [suggestion]}
 
-    await tool.analyze_self_reflection_response(data, "code_suggestions: null")
+    await command.analyze_self_reflection_response(data, "code_suggestions: null")
 
     assert "relevant_lines_start" not in data["code_suggestions"][0]
 
@@ -719,13 +751,13 @@ async def test_analyze_self_reflection_null_feedback_does_not_crash():
 @pytest.mark.asyncio
 async def test_analyze_self_reflection_non_mapping_feedback_does_not_crash():
     """A top-level list (not a mapping) from reflection must not abort suggestions."""
-    tool = _make_tool()
+    command = _make_command()
     suggestion = _suggestion()
     suggestion.pop("relevant_lines_start")
     suggestion.pop("relevant_lines_end")
     data = {"code_suggestions": [suggestion]}
 
-    await tool.analyze_self_reflection_response(data, "- one\n- two")
+    await command.analyze_self_reflection_response(data, "- one\n- two")
 
     assert "relevant_lines_start" not in data["code_suggestions"][0]
 
@@ -744,10 +776,10 @@ def test_validate_one_liner_zeroes_score_when_change_already_applied():
             filename="app.py",
         )
     ]
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _suggestion(score=8, existing_code="return old()", improved_code="return new()")
 
-    out = tool.validate_one_liner_suggestion_not_repeating_code(suggestion)
+    out = command.validate_one_liner_suggestion_not_repeating_code(suggestion)
 
     assert out["score"] == 0
 
@@ -762,10 +794,10 @@ def test_validate_one_liner_keeps_score_when_existing_code_still_present():
             filename="app.py",
         )
     ]
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _suggestion(score=8, existing_code="return old()", improved_code="return new()")
 
-    out = tool.validate_one_liner_suggestion_not_repeating_code(suggestion)
+    out = command.validate_one_liner_suggestion_not_repeating_code(suggestion)
 
     assert out["score"] == 8
 
@@ -782,14 +814,14 @@ def test_validate_one_liner_skips_when_existing_code_contains_ellipsis():
             filename="app.py",
         )
     ]
-    tool = _make_tool(git_provider)
+    command = _make_command(git_provider)
     suggestion = _suggestion(
         score=8,
         existing_code="...\nreturn old()\n...",
         improved_code="return new()",
     )
 
-    out = tool.validate_one_liner_suggestion_not_repeating_code(suggestion)
+    out = command.validate_one_liner_suggestion_not_repeating_code(suggestion)
 
     # Score must remain untouched because the ellipsis early-return runs first.
     assert out["score"] == 8
@@ -813,8 +845,8 @@ def test_get_score_str_returns_bucket_for_integer_thresholds(high, medium, score
     settings.set("pr_code_suggestions.new_score_mechanism_th_high", high)
     settings.set("pr_code_suggestions.new_score_mechanism_th_medium", medium)
     try:
-        tool = _make_tool()
-        assert tool.get_score_str(score) == expected
+        command = _make_command()
+        assert command.get_score_str(score) == expected
     finally:
         restore_settings(snapshot)
 
@@ -839,7 +871,7 @@ def test_get_score_str_uses_existing_integer_threshold_coercion(high, medium, sc
     settings.set("pr_code_suggestions.new_score_mechanism_th_high", high)
     settings.set("pr_code_suggestions.new_score_mechanism_th_medium", medium)
     try:
-        assert _make_tool().get_score_str(score) == expected
+        assert _make_command().get_score_str(score) == expected
     finally:
         restore_settings(snapshot)
 
@@ -866,7 +898,7 @@ async def test_summary_renders_normalized_reflection_scores_with_quoted_threshol
         settings.set("pr_code_suggestions.suggestions_score_threshold", 1)
         git_provider = _provider_with_diff_files("app.py")
         git_provider.get_diff_files.return_value = git_provider.diff_files
-        tool = _make_tool(git_provider)
+        command = _make_command(git_provider)
         suggestions = [
             _suggestion(
                 one_sentence_summary=f"Score {score}",
@@ -881,14 +913,14 @@ async def test_summary_renders_normalized_reflection_scores_with_quoted_threshol
                 for score in (9, 8, 6)
             ]
         }
-        assert tool._has_usable_reflection_feedback(reflection, suggestions)
+        assert command._has_usable_reflection_feedback(reflection, suggestions)
         data = {"code_suggestions": suggestions}
-        await tool.analyze_self_reflection_response(data, reflection)
+        await command.analyze_self_reflection_response(data, reflection)
         data["code_suggestions"] = filter_suggestions_by_score_threshold(data["code_suggestions"])
         assert [suggestion["score"] for suggestion in data["code_suggestions"]] == [9, 8, 6]
         assert all(type(suggestion["score"]) is int for suggestion in data["code_suggestions"])
 
-        out = tool.generate_summarized_suggestions(data)
+        out = command.generate_summarized_suggestions(data)
 
         assert "<table>" in out and "</table>" in out
         expected = ("High", "Medium", "Low") if display_impact else ("9", "8", "6")
@@ -905,12 +937,12 @@ def test_get_score_str_does_not_coerce_unused_medium_threshold(monkeypatch):
         calls.append(setting_name)
         return default
 
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions._as_threshold", read_threshold)
-    tool = _make_tool()
-    assert tool.get_score_str(10) == "High"
+    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions._as_threshold", read_threshold)
+    command = _make_command()
+    assert command.get_score_str(10) == "High"
     assert calls == ["pr_code_suggestions.new_score_mechanism_th_high"]
 
-    assert tool.get_score_str(8) == "Medium"
+    assert command.get_score_str(8) == "Medium"
     assert calls == [
         "pr_code_suggestions.new_score_mechanism_th_high",
         "pr_code_suggestions.new_score_mechanism_th_high",
@@ -931,8 +963,8 @@ def test_get_score_str_does_not_coerce_unused_medium_threshold(monkeypatch):
 def test_suggestion_line_range_counts_git_lines_without_splitting(content, line_count):
     diff_file = _diff_file()
     diff_file.head_file = content
-    tool = _make_tool(_provider_with_diff_files("app.py"))
-    tool.git_provider.diff_files = [diff_file]
+    command = _make_command(_provider_with_diff_files("app.py"))
+    command.git_provider.diff_files = [diff_file]
 
-    assert tool._is_suggestion_line_range_in_diff("app.py", 1, line_count) is True
-    assert tool._is_suggestion_line_range_in_diff("app.py", 1, line_count + 1) is False
+    assert command._is_suggestion_line_range_in_diff("app.py", 1, line_count) is True
+    assert command._is_suggestion_line_range_in_diff("app.py", 1, line_count + 1) is False

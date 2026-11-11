@@ -19,6 +19,7 @@ LONG_DESCRIPTION_ALLOWLIST = {
     ("config", "repo_context_max_glob_matches"),
     ("config", "repo_context_sibling_repos"),
     ("config", "repo_context_max_sibling_files"),
+    ("config", "repo_context_sibling_namespaces"),
     ("config", "model_token_count_estimate_factor"),
     ("config", "persistent_inline_comments"),
     ("config", "bot_user_indicators"),
@@ -73,7 +74,7 @@ def _documented_keys(text: str) -> Counter:
 
 def test_config_reference_covers_every_active_key():
     keys = _toml_keys(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert sum(keys.values()) == 309
+    assert sum(keys.values()) == 321
 
     assert {
         "model",

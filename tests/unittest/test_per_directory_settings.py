@@ -603,6 +603,7 @@ num_max_findings = 4
         config = b"""
 [pr_update_changelog]
 push_changelog_changes = true
+changelog_path = "services/CHANGELOG.md"
 add_pr_link = true
 extra_instructions = "keep-me"
 
@@ -616,7 +617,7 @@ enable_help_text = true
         monkeypatch.setattr(
             "pr_agent.git_providers.utils.get_git_provider_with_context",
             lambda url: _provider(
-                root_settings=ROOT_TOML,
+                root_settings=ROOT_TOML + b'\n[pr_update_changelog]\nchangelog_path = "docs/HISTORY.md"\n',
                 tree_paths=["services/.pr_agent.toml"],
                 contents={"services/.pr_agent.toml": config},
                 files=["services/api.py"],
@@ -626,6 +627,7 @@ enable_help_text = true
         git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
 
         assert get_settings().pr_update_changelog.push_changelog_changes is False
+        assert get_settings().pr_update_changelog.changelog_path == "docs/HISTORY.md"
         assert get_settings().get("pr_help_docs.repo_url", "") == ""
         # Collection scope is root-/host-controlled: a nested file cannot point /help_docs
         # at arbitrary repository paths or file extensions to read into the model prompt.
@@ -641,6 +643,8 @@ enable_help_text = true
 num_max_findings = 4
 enable_large_pr_chunking = true
 max_number_of_calls = 9999
+per_commit_review = true
+max_commits_per_review = 2
 inline_key_issues = true
 enable_review_labels_security = false
 enable_review_labels_effort = false
@@ -662,6 +666,7 @@ async_ai_calls = false
 resolve_threads = true
 static_questions = ["default"]
 use_conversation_history = true
+use_ticket_context = true
 
 [pr_code_suggestions]
 committable_code_suggestions = true
@@ -734,6 +739,8 @@ dual_publishing_score_threshold = 7
         # not multiply AI calls on their own.
         assert get_settings().pr_reviewer.enable_large_pr_chunking is False
         assert get_settings().pr_reviewer.max_number_of_calls != 9999
+        assert get_settings().pr_reviewer.per_commit_review is False
+        assert get_settings().pr_reviewer.max_commits_per_review == 0
         assert get_settings().pr_description.enable_large_pr_handling != 999999
         assert get_settings().pr_description.max_ai_calls != 400
         assert get_settings().pr_description.async_ai_calls is True
@@ -746,10 +753,10 @@ dual_publishing_score_threshold = 7
         # /improve demand a self-review checklist.
         assert get_settings().pr_code_suggestions.demand_code_suggestions_self_review is False
 
-    def test_ask_conversation_history_stays_root_controlled(self, host_only_keys_applied):
-        # Thread-history collection for /ask is root-controlled: a nested file cannot
-        # re-enable sending private review-thread discussion bodies to the model.
+    def test_ask_context_collection_stays_root_controlled(self, host_only_keys_applied):
+        # A nested file cannot enable ticket reads or re-enable sending private thread bodies.
         assert get_settings().pr_questions.use_conversation_history is False
+        assert get_settings().pr_questions.use_ticket_context is False
 
     def test_ordinary_keys_in_the_same_sections_still_apply(self, host_only_keys_applied):
         assert get_settings().pr_reviewer.num_max_findings == 4
@@ -807,7 +814,7 @@ per_directory_settings_max_tree_pages = 999999
 
         git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
 
-        # Context-fetch knobs are root-/host-controlled; a nested file cannot make tools
+        # Context-fetch knobs are root-/host-controlled; a nested file cannot make commands
         # fetch arbitrary repo files in full when they build context for its directory.
         assert get_settings().get("config.repo_context_files", []) != [
             "huge.bin",

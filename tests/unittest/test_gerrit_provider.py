@@ -11,10 +11,10 @@ import urllib3.util
 
 from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.algo.types import EDIT_TYPE
+from pr_agent.commands.ticket_pr_compliance_check import add_jira_tickets
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import gerrit_provider
 from pr_agent.git_providers.gerrit_provider import GerritProvider
-from pr_agent.tools.ticket_pr_compliance_check import add_jira_tickets
 from tests.unittest import _settings_helpers as settings_helpers
 
 
@@ -257,8 +257,8 @@ def test_gerrit_consumers_keep_host_timeout_after_repo_overlay(
 
     from pr_agent import git_providers as providers
     from pr_agent.algo.cli_args import CliArgs
+    from pr_agent.commands import pr_questions
     from pr_agent.git_providers.utils import apply_repo_settings
-    from pr_agent.tools import pr_questions
 
     key = "project:refs/changes/01/1/1"
     snapshot = settings_helpers.snapshot_settings([
@@ -378,7 +378,7 @@ def test_detached_gerrit_branch_keeps_commit_message_in_jira_context(tmp_path, m
         contexts.append(context)
         return [{"ticket_url": "https://example.atlassian.net/browse/ABC-123"}]
 
-    monkeypatch.setattr("pr_agent.tools.ticket_pr_compliance_check.extract_jira_tickets", extract)
+    monkeypatch.setattr("pr_agent.commands.ticket_pr_compliance_check.extract_jira_tickets", extract)
     try:
         assert repo.head.is_detached
         assert provider.get_user_description() == "Implement ABC-123 from Gerrit change"
@@ -482,10 +482,11 @@ def test_get_diff_files_preserves_deleted_filename(tmp_path):
     deleted = [file for file in diff_files if file.edit_type == EDIT_TYPE.DELETED]
     assert len(deleted) == 1
     assert deleted[0].filename == "gone.py"
+    assert (deleted[0].num_plus_lines, deleted[0].num_minus_lines) == (0, 1)
 
 
 @pytest.mark.parametrize("change_type", ["added", "modified", "deleted"])
-def test_get_diff_files_skips_non_utf8_file_and_keeps_utf8_sibling(tmp_path, change_type):
+def test_get_diff_files_marks_non_utf8_file_unreadable_and_keeps_utf8_sibling(tmp_path, change_type):
     repo = git.Repo.init(tmp_path)
     good_file = tmp_path / "good.py"
     non_utf8_file = tmp_path / "non_utf8.py"
@@ -515,12 +516,26 @@ def test_get_diff_files_skips_non_utf8_file_and_keeps_utf8_sibling(tmp_path, cha
 
     diff_files = provider.get_diff_files()
 
-    assert [file.filename for file in diff_files] == ["good.py"]
-    assert diff_files[0].base_file == "before\n"
-    assert diff_files[0].head_file == "after\n"
-    assert "-before" in diff_files[0].patch
-    assert "+after" in diff_files[0].patch
-    assert diff_files[0].edit_type == EDIT_TYPE.MODIFIED
+    # The undecodable file stays in the inventory as unreadable (as CodeCommit reports it), so
+    # the shared diff renderer shows a manual-review notice instead of the review silently
+    # looking complete without that file. The UTF-8 sibling still gets a normal diff.
+    assert sorted(file.filename for file in diff_files) == ["good.py", "non_utf8.py"]
+    good = next(file for file in diff_files if file.filename == "good.py")
+    unreadable = next(file for file in diff_files if file.filename == "non_utf8.py")
+    assert unreadable.content_fetch_failed is True
+    assert unreadable.patch == ""
+    assert unreadable.base_file == unreadable.head_file == ""
+    # A deletion has no destination path, so the old path is reported as it is for readable files.
+    assert unreadable.old_filename == ("non_utf8.py" if change_type == "deleted" else None)
+    assert unreadable.edit_type == {
+        "added": EDIT_TYPE.ADDED, "modified": EDIT_TYPE.MODIFIED, "deleted": EDIT_TYPE.DELETED,
+    }[change_type]
+    assert good.content_fetch_failed is False
+    assert good.base_file == "before\n"
+    assert good.head_file == "after\n"
+    assert "-before" in good.patch
+    assert "+after" in good.patch
+    assert good.edit_type == EDIT_TYPE.MODIFIED
     assert provider.diff_files is diff_files
 
 
@@ -1106,9 +1121,9 @@ def test_get_files_applies_the_same_ignore_rules_as_the_diff(tmp_path):
     assert files == ["src/keep.py"]
 
 
-def test_get_files_includes_files_that_diff_files_skips_as_non_utf8(tmp_path):
-    # List undecodable files by name for language detection; omit their content from
-    # the model diff.
+def test_get_files_and_diff_files_agree_on_non_utf8_files(tmp_path):
+    # List undecodable files by name for language detection, and keep them in the diff
+    # inventory as unreadable so the two views of the change never disagree.
     repo = _make_repo(tmp_path, ["good.py", "bad.py"])
     (tmp_path / "bad.py").write_bytes(b"\xffbefore\n")
     repo.index.add(["good.py", "bad.py"])
@@ -1123,7 +1138,10 @@ def test_get_files_includes_files_that_diff_files_skips_as_non_utf8(tmp_path):
     provider.repo_path = None
 
     assert provider.get_files() == ["bad.py", "good.py"]
-    assert [file.filename for file in provider.get_diff_files()] == ["good.py"]
+    diff_files = {file.filename: file for file in provider.get_diff_files()}
+    assert sorted(diff_files) == ["bad.py", "good.py"]
+    assert diff_files["bad.py"].content_fetch_failed is True
+    assert diff_files["good.py"].content_fetch_failed is False
 
 
 def test_diff_files_attribute_refreshes_on_every_call(tmp_path):

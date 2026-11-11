@@ -16,12 +16,13 @@ from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
-from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.config_loader import get_bot_display_name, get_settings, global_settings
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers import lambda_handoff
 from pr_agent.servers.github_common import (
     _normalise_setting_list,
     _reformat_quote_ask_command,
@@ -32,6 +33,7 @@ from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     DefaultDictWithTimeout,
     auto_feedback_disabled,
+    get_include_pr_labels,
     get_pr_commands,
     is_ask_command_comment,
     push_trigger_slot,
@@ -72,12 +74,18 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
     context["installation_id"] = installation_id
     context["settings"] = copy.deepcopy(global_settings)
     context["git_provider"] = {}
-    background_tasks.add_task(
-        handle_request,
-        body,
-        event=request.headers.get("X-GitHub-Event", None),
-        delivery_id=request.headers.get("X-GitHub-Delivery", None),
-    )
+    handed_off = lambda_handoff.handoff_enabled() and await lambda_handoff.try_handoff(
+        "github", body, request.headers)
+    if not handed_off:
+        # Not a Lambda deployment, or the hand-off failed: process the webhook in a
+        # background task, after the response is sent. Under Lambda (Mangum) the
+        # hand-off above replaces this task with a second invocation (#4748).
+        background_tasks.add_task(
+            handle_request,
+            body,
+            event=request.headers.get("X-GitHub-Event", None),
+            delivery_id=request.headers.get("X-GitHub-Delivery", None),
+        )
     return {}
 
 
@@ -167,7 +175,7 @@ async def handle_comments_on_pr(body: dict[str, Any],
                 api_url, comment_body,
                 notify=lambda: provider.add_eyes_reaction(comment_id, disable_eyes=disable_eyes),
                 # Preserve compatibility mode while exposing failures to outcome reactions.
-                propagate_tool_errors=True)
+                propagate_command_errors=True)
             # Optional, and disabled by default: tell the author how the command ended without
             # adding another comment to the thread.
             if succeeded is RequestOutcome.SKIPPED:
@@ -211,7 +219,7 @@ def _check_run_provider(api_url: str):
 
 
 def _auto_command_check_run(command) -> tuple[str, str | None]:
-    """The command's leading token and the check run its tool publishes to, if any.
+    """The command's leading token and the check run its command publishes to, if any.
 
     The check run comes from the command registry, so aliases resolve to the
     same run as their canonical command (``/review_pr`` -> ``review``).
@@ -227,18 +235,19 @@ def _start_auto_command_check_run(provider, command) -> str | None:
     if provider is None or name is None:
         return None
     try:
-        provider.start_check_run(name, f"PR-Agent is running {action}")
+        provider.start_check_run(name, f"{get_bot_display_name()} is running {action}")
     except Exception as e:
         get_logger().warning(f"Failed to open the {name} check run: {e}")
     return name
 
 
 def _finish_auto_command_check_run(provider, name: str | None, command, succeeded: bool) -> None:
-    """Complete the command's check run when its tool did not, so it cannot stay in_progress."""
+    """Complete the command's check run when its command did not, so it cannot stay in_progress."""
     if provider is None or name is None:
         return
     action, _ = _auto_command_check_run(command)
-    summary = f"PR-Agent ran {action}" if succeeded else f"PR-Agent could not finish {action}"
+    bot_display_name = get_bot_display_name()
+    summary = f"{bot_display_name} ran {action}" if succeeded else f"{bot_display_name} could not finish {action}"
     try:
         provider.finish_check_run(name, "success" if succeeded else "failure", summary)
     except Exception as e:
@@ -404,7 +413,12 @@ async def _dispatch_request(body: dict[str, Any], event: str, action: str):
         get_logger().debug("Request ignored: bot user detected")
         return {}
     if action != 'created' and 'check_run' not in body:
-        if not should_process_pr_logic(body):
+        # Defer the opt-in label gate until repository settings have been applied.
+        prefilter_allowed = (
+            shared_should_process_pr_logic(body, provider="github", check_include_labels=False)
+            if get_include_pr_labels() else should_process_pr_logic(body)
+        )
+        if not prefilter_allowed:
             get_logger().debug("Request ignored: PR logic filtering")
             return {}
 
@@ -537,7 +551,7 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
                 nonlocal check_run
                 check_run = _start_auto_command_check_run(provider, new_command)
             # Install a fresh collector so `command_failed()` below cannot read a verdict left
-            # behind by the previous command; the tool replaces it with its own on entry.
+            # behind by the previous command; the command replaces it with its own on entry.
             init_run_details()
             result = await agent.handle_request(api_url, new_command, notify=notify_start)
             if result is RequestOutcome.SKIPPED:
@@ -545,7 +559,7 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
             if result is False:
                 command_succeeded = False
             elif command_failed():
-                # `propagate_tool_errors` is false by default, so a tool that failed internally
+                # `propagate_command_errors` is false by default, so a command that failed internally
                 # still returns normally. Reporting that as success would put a green tick on a
                 # pull request that never got its review.
                 get_logger().warning(f"Command '{command}' reported success but recorded a failure")

@@ -78,7 +78,7 @@ def test_cli_artifact_survives_effective_instructions(monkeypatch, tmp_path, com
             return '''
 [artifacts]
 artifact_path = "replacement.txt"
-target_tools = ["pr_description"]
+target_commands = ["pr_description"]
 [pr_reviewer]
 extra_instructions = "Repository instructions"
 '''
@@ -108,7 +108,7 @@ extra_instructions = "Repository instructions"
 
     with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
         settings = get_settings()
-        settings.set("ARTIFACTS.TARGET_TOOLS", ["pr_reviewer"])
+        settings.set("ARTIFACTS.TARGET_COMMANDS", ["pr_reviewer"])
         settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "")
         settings.set("PR_DESCRIPTION.EXTRA_INSTRUCTIONS", "")
         settings.set("CONFIG.RESPONSE_LANGUAGE", "es")

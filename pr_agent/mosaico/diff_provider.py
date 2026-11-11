@@ -1,7 +1,7 @@
 """DiffInputProvider — a GitProvider that feeds a SUPPLIED unified diff to pr-agent's
-tools (no host, no checkout). Used by the MOSAICO path (b): the inbound text is a
+commands (no host, no checkout). Used by the MOSAICO path (b): the inbound text is a
 pasted unified diff. INPUT methods are real; publish/label/comment/reaction methods
-are safe no-op stubs (with publish_output=False the tools render into
+are safe no-op stubs (with publish_output=False the commands render into
 get_settings().data rather than calling the publish path).
 
 The diff is parsed by parse_unified_diff(); per-request the parsed files/languages/title
@@ -13,7 +13,7 @@ from urllib.parse import unquote, urlsplit
 
 from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.file_filter import filter_ignored_with_status
-from pr_agent.algo.git_patch_processing import to_hunk_only_patch
+from pr_agent.algo.git_patch_processing import count_patch_lines, to_hunk_only_patch
 from pr_agent.algo.language_handler import partition_files_by_language_filter
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
@@ -21,7 +21,7 @@ from pr_agent.git_providers.git_provider import GitProvider
 
 
 class _PullRequestMimic:
-    """Mimics the PullRequest object the tools touch (.title, .diff_files)."""
+    """Mimics the PullRequest object the commands touch (.title, .diff_files)."""
 
     def __init__(self, title: str, diff_files: list[FilePatchInfo]):
         self.title = title
@@ -133,13 +133,17 @@ def parse_unified_diff(diff_text: str) -> list[FilePatchInfo]:
             # other lines (e.g. index/+++/---) are ignored for content reconstruction
 
         filename = b_path or a_path
+        patch = to_hunk_only_patch("".join(section))
+        num_plus_lines, num_minus_lines = count_patch_lines(patch)
         files.append(FilePatchInfo(
             base_file="".join(base_lines),
             head_file="".join(head_lines),
-            patch=to_hunk_only_patch("".join(section)),
+            patch=patch,
             filename=filename,
             edit_type=edit_type,
             old_filename=old_filename,
+            num_plus_lines=num_plus_lines,
+            num_minus_lines=num_minus_lines,
             head_file_is_complete=False,
         ))
     return files
@@ -172,7 +176,7 @@ class DiffInputProvider(GitProvider):
 
     # ---- INPUT methods (real) ----
     def is_supported(self, capability: str) -> bool:
-        # Steer tools to the simplest render branches (no gfm table, no inline comments, no labels).
+        # Steer commands to the simplest render branches (no gfm table, no inline comments, no labels).
         return False
 
     def get_diff_files(self) -> list[FilePatchInfo]:

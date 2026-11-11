@@ -212,7 +212,13 @@ class BitbucketServerProvider(GitProvider):
         get_logger().error(f"Bitbucket Server failed to publish code suggestion, error: {error}")
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ['get_labels', 'gfm_markdown']:
+        if capability in [
+            'get_labels',
+            'gfm_markdown',
+            'head_ci_status',
+            'head_staleness',
+            'author_human_check',
+        ]:
             return False
         return True
 
@@ -227,9 +233,10 @@ class BitbucketServerProvider(GitProvider):
     def get_file(self, path: str, commit_id: str, *, missing_is_error: bool = False):
         file_content = ""
         try:
+            # atlassian adds the path to the URL unescaped; quote it so "#", "?" and "%" stay part of the file name.
             file_content = self.bitbucket_client.get_content_of_file(self.workspace_slug,
                                                                      self.repo_slug,
-                                                                     path,
+                                                                     quote(path, safe="/"),
                                                                      commit_id)
         except HTTPError as e:
             if getattr(getattr(e, "response", None), "status_code", None) == 404:

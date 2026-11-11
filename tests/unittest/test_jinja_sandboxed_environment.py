@@ -131,8 +131,9 @@ def test_prompt_rendering_does_not_instantiate_plain_jinja_environment():
     unsafe_calls = []
     for source_path in sorted(package_root.rglob("*.py")):
         module = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
-        for line in _plain_environment_calls(module):
-            unsafe_calls.append(f"{source_path.relative_to(package_root.parent)}:{line}")
+        unsafe_calls.extend(
+            f"{source_path.relative_to(package_root.parent)}:{line}" for line in _plain_environment_calls(module)
+        )
     assert not unsafe_calls, (
         "Use jinja2.sandbox.SandboxedEnvironment for prompt templates; "
         "plain Environment calls remain at: " + ", ".join(unsafe_calls)

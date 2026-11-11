@@ -389,7 +389,7 @@ def test_estimate_is_zero_without_targeted_role(monkeypatch):
     assert handler._estimate_cached_prefix_tokens("pineapple", "banana", []) == 0
 
 
-# The review tools open their system prompt with an identical skills block, so the handler
+# The review commands open their system prompt with an identical skills block, so the handler
 # splits it into its own text block and marks it as a cache breakpoint (#4007). The blocks
 # concatenate back to the original prompt.
 _SKILLS_CONTROL = {"type": "ephemeral", "ttl": "1h"}

@@ -96,3 +96,16 @@ async def test_retryable_errors_keep_attempt_count_and_retryerror(handler_and_co
 
     assert raised.value.last_attempt.exception() is error
     assert completion.await_count == attempts
+
+
+@pytest.mark.asyncio
+async def test_unexpected_errors_surface_without_masking_or_retry(handler_and_completion):
+    handler, completion, _ = handler_and_completion
+    error = RuntimeError("unexpected inference failure")
+    completion.side_effect = error
+
+    with pytest.raises(RuntimeError) as raised:
+        await handler.chat_completion(model="gpt-test", system="sys", user="usr")
+
+    assert raised.value is error
+    assert completion.await_count == 1

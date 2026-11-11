@@ -18,6 +18,7 @@ from git import Repo
 
 from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.file_filter import filter_ignored, filter_ignored_with_status
+from pr_agent.algo.git_patch_processing import count_patch_lines
 from pr_agent.algo.language_handler import partition_files_by_language_filter
 from pr_agent.algo.token_budget import clip_tokens
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -430,6 +431,14 @@ class GerritProvider(GitProvider):
         diff_files = []
         for diff_item in diffs:
             filename = diff_item.b_path or diff_item.a_path
+            old_filename = None if diff_item.a_path == diff_item.b_path else diff_item.a_path
+            edit_type = EDIT_TYPE.MODIFIED
+            if diff_item.new_file:
+                edit_type = EDIT_TYPE.ADDED
+            elif diff_item.deleted_file:
+                edit_type = EDIT_TYPE.DELETED
+            elif diff_item.renamed_file:
+                edit_type = EDIT_TYPE.RENAMED
             try:
                 if diff_item.a_blob is not None:
                     original_file_content_str = diff_item.a_blob.data_stream.read().decode("utf-8")
@@ -441,25 +450,30 @@ class GerritProvider(GitProvider):
                     new_file_content_str = ""  # empty file
                 patch = diff_item.diff.decode("utf-8")
             except UnicodeDecodeError as e:
-                get_logger().warning(f"Skipping non-UTF-8 file in Gerrit diff: {filename!r} ({e})")
+                # Keep the file in the inventory: the shared diff renderer shows a manual-review
+                # notice for it. Dropping it would make the review look complete without it.
+                get_logger().warning(f"Could not decode non-UTF-8 file in Gerrit diff: {filename!r} ({e})")
+                diff_files.append(FilePatchInfo(
+                    base_file="",
+                    head_file="",
+                    patch="",
+                    filename=filename,
+                    edit_type=edit_type,
+                    old_filename=old_filename,
+                    content_fetch_failed=True,
+                ))
                 continue
-            edit_type = EDIT_TYPE.MODIFIED
-            if diff_item.new_file:
-                edit_type = EDIT_TYPE.ADDED
-            elif diff_item.deleted_file:
-                edit_type = EDIT_TYPE.DELETED
-            elif diff_item.renamed_file:
-                edit_type = EDIT_TYPE.RENAMED
+            num_plus_lines, num_minus_lines = count_patch_lines(patch)
             diff_files.append(
                 FilePatchInfo(
                     original_file_content_str,
                     new_file_content_str,
                     patch,
                     filename,
+                    num_plus_lines=num_plus_lines,
+                    num_minus_lines=num_minus_lines,
                     edit_type=edit_type,
-                    old_filename=None
-                    if diff_item.a_path == diff_item.b_path
-                    else diff_item.a_path
+                    old_filename=old_filename
                 )
             )
         self.diff_files = diff_files
@@ -495,7 +509,10 @@ class GerritProvider(GitProvider):
         if capability in [
             # 'get_issue_comments',
             'get_labels',
-            'gfm_markdown'
+            'gfm_markdown',
+            'head_ci_status',
+            'head_staleness',
+            'author_human_check',
         ]:
             return False
         return True

@@ -33,14 +33,17 @@ Additional aspects:
 
 
 class TestHandlePatchDeletions:
-    # Tests that handle_patch_deletions returns the original patch when new_file_content_str is not empty
+    # Returns the patch with ---/+++ file headers stripped: hunk-only output
+    # matches the downstream convention (line counting and extend_patch are
+    # hunk-only since #4651), and keeping the headers would let the counting
+    # bug resurface.
     def test_handle_patch_deletions_happy_path_new_file_content_exists(self):
         patch = '--- a/file.py\n+++ b/file.py\n@@ -1,2 +1,2 @@\n-foo\n-bar\n+baz\n'
         original_file_content_str = 'foo\nbar\n'
         new_file_content_str = 'foo\nbaz\n'
         file_name = 'file.py'
         assert handle_patch_deletions(patch, original_file_content_str, new_file_content_str,
-                                      file_name) == patch.rstrip()
+                                      file_name) == '@@ -1,2 +1,2 @@\n-foo\n-bar\n+baz'
 
     # Tests that handle_patch_deletions returns 'File was deleted' when new_file_content_str is empty
     def test_handle_patch_deletions_edge_case_new_file_content_empty(self):
@@ -51,14 +54,14 @@ class TestHandlePatchDeletions:
         assert handle_patch_deletions(patch, original_file_content_str, new_file_content_str,
                                       file_name) is None
 
-    # Tests that handle_patch_deletions returns the original patch when patch and patch_new are equal
+    # Tests that handle_patch_deletions returns the hunk-only form when patch and patch_new are equal
     def test_handle_patch_deletions_edge_case_patch_and_patch_new_are_equal(self):
         patch = '--- a/file.py\n+++ b/file.py\n@@ -1,2 +1,2 @@\n-foo\n-bar\n'
         original_file_content_str = 'foo\nbar\n'
         new_file_content_str = 'foo\nbar\n'
         file_name = 'file.py'
         assert handle_patch_deletions(patch, original_file_content_str, new_file_content_str,
-                                      file_name).rstrip() == patch.rstrip()
+                                      file_name).rstrip() == '@@ -1,2 +1,2 @@\n-foo\n-bar'
 
     # Tests that handle_patch_deletions returns the modified patch when patch and patch_new are not equal
     def test_handle_patch_deletions_edge_case_patch_and_patch_new_are_not_equal(self):
@@ -66,7 +69,7 @@ class TestHandlePatchDeletions:
         original_file_content_str = 'foo\nbar\n'
         new_file_content_str = 'foo\nbaz\n'
         file_name = 'file.py'
-        expected_patch = '--- a/file.py\n+++ b/file.py\n@@ -1,2 +1,2 @@\n-foo\n-bar'
+        expected_patch = '@@ -1,2 +1,2 @@\n-foo\n-bar'
         assert handle_patch_deletions(patch, original_file_content_str, new_file_content_str,
                                       file_name) == expected_patch
 
@@ -107,6 +110,26 @@ class TestDeletionOnlyPatchIsNotErased:
             "a\nb\nc\n", "ctx\nadded\n", "mixed.py", EDIT_TYPE.MODIFIED)
         assert "+added" in out
         assert "-a" not in out
+
+    def test_deletion_only_hunk_is_omitted_when_the_patch_carries_file_headers(self):
+        # GitLab's older diffs and Gitea's serialized diffs carry ---/+++ file
+        # headers. Counting "+++ b/file" as an addition marks the whole patch
+        # as having additions, so no deletion hunk is ever omitted and the
+        # headers leak into the prompt (#4651 family: header vs hunk-only
+        # input shapes).
+        out = handle_patch_deletions(
+            "--- a/file.py\n+++ b/file.py\n@@ -1,3 +1,1 @@\n-a\n-b\n-c\n@@ -10,2 +8,3 @@\n ctx\n+added",
+            "a\nb\nc\n", "ctx\nadded\n", "mixed.py", EDIT_TYPE.MODIFIED)
+        assert "+added" in out
+        assert "-a" not in out
+        assert "--- a/file.py" not in out
+        assert "+++ b/file.py" not in out
+
+    def test_a_fully_deleted_file_with_headers_still_reports_no_patch(self):
+        out = handle_patch_deletions(
+            "--- a/file.py\n+++ b/file.py\n@@ -1,2 +0,0 @@\n-a\n-b",
+            "a\nb\n", "", "gone.py", EDIT_TYPE.DELETED)
+        assert out is None
 
     def test_genuinely_deleted_file_still_reports_no_patch(self):
         # The real deletion path is untouched: a deleted file returns None.

@@ -162,7 +162,7 @@ _IMAGE_HEAD_TIMEOUT_SECONDS = 5
 _IMAGE_NOT_ALIVE_MESSAGE = (
     "The image link is not [alive](img_path).\n"
     "Please repost the original image as a comment, and send the question again with 'quote reply' "
-    "(see [instructions](https://docs.pr-agent.ai/tools/ask/#ask-on-images))."
+    "(see [instructions](https://docs.pr-agent.ai/commands/ask/#ask-on-images))."
 )
 OPENAI_DEFAULT_API_BASE = "https://api.openai.com/v1"
 
@@ -2684,7 +2684,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             return ""
         # Cap the individual values before serialization, so the result stays
         # valid JSON: slicing the serialized string could cut through closing
-        # quotes and braces. 30 chars cover every tool command; 200 chars of
+        # quotes and braces. 30 chars cover every command; 200 chars of
         # pr_url keep the total under 256 with the JSON overhead.
         for key, max_len in (("command", 30), ("pr_url", 200)):
             value = context.get(key)
@@ -2787,10 +2787,10 @@ class LiteLLMAIHandler(BaseAiHandler):
     def _split_system_prompt_for_skills_cache(self, messages: list[dict], model: str, injection_points) -> None:
         """Add a cache breakpoint at the end of the shared skills prefix (#4007).
 
-        The review tools open their system prompts with an identical skills block, so marking
+        The review commands open their system prompts with an identical skills block, so marking
         that block lets Anthropic read one cache entry across /review, /describe and /improve
-        instead of writing one per tool. The tool-specific remainder keeps its own breakpoint
-        rather than losing it, so a tool that repeats still reads its whole system prompt; the
+        instead of writing one per command. The command-specific remainder keeps its own breakpoint
+        rather than losing it, so a command that repeats still reads its whole system prompt; the
         price is a second breakpoint slot of the four Anthropic allows, not a smaller cache.
         Only applies to Anthropic Claude models when a configured injection point targets the
         system message and the rendered prefix matches; every other request keeps the plain

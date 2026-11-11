@@ -30,7 +30,7 @@ python -m pr_agent.cli --diff-file changes.diff --output review.md review
 | `--stdin` | Read a unified diff from stdin |
 | `--diff-file <path>` | Read a unified diff from a file |
 | `--output <path>` | Write Markdown produced by a compatible Plain Diff command to a file in addition to stdout |
-| `--json-output <path>` | Write parsed results and token usage to a JSON file for `review`, `describe`, or `improve` (including aliases; also available with `--pr_url`) |
+| `--json-output <path>` | Write structured results and token usage for `review`, `describe`, `improve`, or `generate_labels` (including aliases; also available with `--pr_url`) |
 
 `--stdin` and `--diff-file` are mutually exclusive. At least one must be provided to
 enter plain-diff mode; omitting both falls back to the normal `--pr_url` flow.
@@ -43,17 +43,22 @@ You can also save structured results from a local description or code-suggestion
 ```bash
 python -m pr_agent.cli --diff-file changes.diff --json-output description.json describe
 python -m pr_agent.cli --diff-file changes.diff --json-output suggestions.json improve
+python -m pr_agent.cli --diff-file changes.diff --json-output labels.json generate_labels
 ```
 
 These files contain the parsed model result and a `usage` object, while the normal
 Markdown output remains available on stdout. The `usage` object is empty when
 token usage is unavailable. When all files are excluded, `improve` writes an empty
 suggestions list; `describe` reports failure instead of claiming a description was generated.
+For `generate_labels`, JSON contains only allowlisted model-generated label suggestions,
+not existing human-applied PR labels.
 
 ### Supported commands
 
 `review`, `improve`, `describe`, and `ask` are supported, along with their
-`review_pr`, `improve_code`, `describe_pr`, and `ask_question` aliases. Because there is no hosting
+`review_pr`, `improve_code`, `describe_pr`, and `ask_question` aliases.
+`generate_labels` also works with raw diffs and can write its filtered labels as JSON.
+Because there is no hosting
 platform to push to, `improve` renders its code suggestions as a single markdown
 document to stdout (and to `--output`, if given) instead of as committable inline
 suggestions. Commands that require live platform interaction (such as
@@ -62,10 +67,26 @@ suggestions. Commands that require live platform interaction (such as
 By default, `describe` uses `Local diff review` as the title in stdout and `--output`;
 set `pr_description.generate_ai_title=true` to use an AI-generated title.
 
-Existing command variants that publish Markdown without additional platform
-state (`auto_review`, `config`, `settings`, and `help`) also honor `--output`.
-`answer` does not: it requires issue-comment history, which is unavailable when
-the input is a standalone diff.
+Existing commands that publish Markdown without additional platform state
+(`config`, `settings`, and `help`) also honor `--output`.
+
+### Optional PR context
+
+Provide a title and description when the diff needs context that is not apparent
+from the code, such as the intended behavior or acceptance criteria:
+
+```bash
+python -m pr_agent.cli --diff-file changes.diff review \
+  --plain_diff.title="Require approval for invoices" \
+  --plain_diff.description="Invoices above the limit need manager approval."
+```
+
+`ask` and `describe` also use the supplied title and description; `improve`
+uses the title, but its suggestion prompts do not use the description. These
+optional command arguments need no configuration file changes or enable flag.
+Without them, the title remains `Local diff review` and the description remains
+empty. Supplying a description may increase model input tokens for commands
+that use it, but does not add model requests.
 
 ## How it works
 
@@ -89,6 +110,8 @@ the input is a standalone diff.
    `describe`/`describe_pr` writes the parsed description and `usage`;
    `improve`/`improve_code` writes code suggestions and `usage` (an empty list
    if no files remain after filtering).
+   `generate_labels` writes the filtered `labels` list and `usage`; it never
+   combines existing user labels into that list.
 
 No platform token, no PR URL, and no internet access are required for the diff processing
 step itself. An LLM API key is still needed unless you configure a local model.

@@ -106,7 +106,7 @@ async def test_other_pr_commands_still_require_model_key(monkeypatch, pr_comment
     )
     pr_comment_env(body, event_name)
 
-    with pytest.raises(SystemExit, match="Stopping before any tool runs.*OPENAI_API_KEY"):
+    with pytest.raises(SystemExit, match="Stopping before any command runs.*OPENAI_API_KEY"):
         await github_action_runner.run_action()
 
 
@@ -119,7 +119,7 @@ async def test_static_pr_comments_still_require_github_token(monkeypatch, pr_com
         await github_action_runner.run_action()
 
 
-async def test_missing_key_stops_before_tools_naming_the_env_variable(
+async def test_missing_key_stops_before_commands_naming_the_env_variable(
     monkeypatch, action_env
 ):
     monkeypatch.setattr(
@@ -127,7 +127,7 @@ async def test_missing_key_stops_before_tools_naming_the_env_variable(
         lambda: ("openai", ("OPENAI_API_KEY",)),
     )
 
-    with pytest.raises(SystemExit, match="Stopping before any tool runs.*OPENAI_API_KEY"):
+    with pytest.raises(SystemExit, match="Stopping before any command runs.*OPENAI_API_KEY"):
         await github_action_runner.run_action()
 
 
@@ -365,7 +365,7 @@ async def test_watsonx_gate_names_the_override_that_must_be_corrected(
     secret = "synthetic-native-key-not-for-diagnostics"
     dispatches = []
 
-    async def run_tool(*args):
+    async def run_command(*args):
         dispatches.append(args)
 
     try:
@@ -387,7 +387,7 @@ async def test_watsonx_gate_names_the_override_that_must_be_corrected(
             monkeypatch.setenv(source, value)
         monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda url: None)
         monkeypatch.setattr(github_action_runner, "enforce_request_policy", lambda *args, **kwargs: True)
-        monkeypatch.setattr(github_action_runner, "_run_auto_tool", run_tool)
+        monkeypatch.setattr(github_action_runner, "_run_auto_command", run_command)
 
         # Use the real handler and shared gate; a valid native key cannot fix an overriding credential.
         assert doctor.missing_provider_key_env_vars() == (provider, (source,))
@@ -412,3 +412,47 @@ async def test_watsonx_gate_names_the_override_that_must_be_corrected(
         assert doctor.missing_provider_key_env_vars() is None
     finally:
         restore_settings(snapshot)
+
+
+@pytest.mark.parametrize("locale_encoding", ["cp1252", "ascii"])
+@pytest.mark.parametrize("text", ["café", "שלום", "你好 👋"])
+async def test_event_payload_is_read_as_utf8_on_non_utf8_locales(
+    monkeypatch, tmp_path, locale_encoding, text
+):
+    # GitHub writes the event file as raw UTF-8 (not \uXXXX escapes). Reading it with the
+    # runner's locale encoding turned a non-ASCII PR title into mojibake on cp1252 and raised
+    # UnicodeDecodeError on an ASCII locale. Emulate the locale through the module's file
+    # opener, as test_github_action_output.py does for GITHUB_OUTPUT, and stop at the first
+    # helper that receives the parsed payload.
+    event = {
+        "action": "opened",
+        "pull_request": {"title": text, "url": "https://api.github.com/repos/owner/repo/pulls/1"},
+    }
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(event, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    real_open = open
+
+    def locale_open(path, mode="r", **kwargs):
+        kwargs.setdefault("encoding", locale_encoding)
+        return real_open(path, mode, **kwargs)
+
+    monkeypatch.setattr(github_action_runner, "open", locale_open, raising=False)
+
+    class _Stop(Exception):
+        pass
+
+    received = {}
+
+    def capture(event_payload, event_name):
+        received["title"] = event_payload["pull_request"]["title"]
+        raise _Stop
+
+    monkeypatch.setattr(github_action_runner, "_settings_pr_url", capture)
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}), pytest.raises(_Stop):
+        await github_action_runner.run_action()
+
+    assert received["title"] == text

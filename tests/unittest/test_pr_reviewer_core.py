@@ -1,7 +1,9 @@
 import asyncio
 import copy
+import gc
 import json
 import threading
+import weakref
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,15 +22,16 @@ from pr_agent.algo.run_details import command_failed
 from pr_agent.algo.token_budget import FallbackEligibleError
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
+from pr_agent.commands.pr_reviewer import PRReviewer, _review_failure_comment
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.git_provider import (
+    GitProvider,
     IncompleteBitbucketPullRequestFilesError,
     IncompletePullRequestFilesError,
 )
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.tools.pr_reviewer import PRReviewer, _review_failure_comment
 
 _VALID_PREDICTION = "review:\n  summary: prediction"
 
@@ -51,7 +54,7 @@ def _make_prediction_reviewer(git_provider=None):
 
 @pytest.mark.asyncio
 async def test_pr_review_json_is_written_after_publication(monkeypatch, tmp_path):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     output = tmp_path / "review.json"
     provider = MagicMock()
@@ -139,6 +142,58 @@ def test_review_failure_comment_does_not_publish_unknown_exception_text():
     assert "user@example.com" not in comment
 
 
+def test_review_failure_comment_uses_configured_bot_display_name(monkeypatch):
+    settings = get_settings()
+    original = settings.pr_reviewer.get("publish_error_details", False)
+    monkeypatch.setitem(settings.config, "bot_display_name", "Acme Bot")
+    try:
+        settings.pr_reviewer.publish_error_details = True
+        comment = _review_failure_comment(RuntimeError("AuthenticationError: invalid api key"))
+        unknown_comment = _review_failure_comment(RuntimeError("opaque provider failure"))
+    finally:
+        settings.pr_reviewer.publish_error_details = original
+
+    assert "Acme Bot could not authenticate with the model provider" in comment
+    assert "PR-Agent" not in comment
+    assert unknown_comment == (
+        "Failed to review PR\n\n"
+        "**Reason:** Acme Bot encountered an unexpected internal error. "
+        "Check the Acme Bot service logs for details."
+    )
+
+
+def test_non_authoritative_review_uses_configured_bot_display_name(monkeypatch):
+    default_review = PRReviewer._as_non_authoritative_review("## Review\n\nBody")
+    assert (
+        "_PR-Agent could not safely update the persistent review. "
+        "This standalone result will not replace the canonical review._"
+    ) in default_review
+
+    monkeypatch.setitem(get_settings().config, "bot_display_name", "Acme Bot")
+
+    review = PRReviewer._as_non_authoritative_review("## Review\n\nBody")
+
+    assert "_Acme Bot could not safely update the persistent review." in review
+    assert "PR-Agent" not in review
+    assert review.startswith("## Standalone PR Review\n\n")
+    assert review.endswith("## Review\n\nBody")
+
+
+def test_auto_approve_disabled_comment_uses_configured_bot_display_name(monkeypatch):
+    published = []
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = SimpleNamespace(publish_comment=published.append)
+    monkeypatch.setitem(get_settings().config, "enable_auto_approval", False)
+    monkeypatch.setitem(get_settings().config, "bot_display_name", "Acme Bot")
+
+    reviewer.auto_approve_logic()
+
+    assert published == [
+        "Auto-approval option for Acme Bot is disabled. "
+        "You can enable it via a [configuration file](https://docs.pr-agent.ai/usage-guide/configuration_reference/#config)"
+    ]
+
+
 def test_review_failure_comment_treats_quoted_false_as_disabled():
     settings = get_settings()
     original = settings.pr_reviewer.get("publish_error_details", False)
@@ -157,7 +212,7 @@ async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_r
     reviewer._get_prediction = AsyncMock(return_value=_VALID_PREDICTION)
 
     with patch(
-        "pr_agent.tools.pr_reviewer.get_pr_diff",
+        "pr_agent.commands.pr_reviewer.get_pr_diff",
         return_value=("diff", ["src/one.py", "docs/two.md"]),
     ) as get_pr_diff:
         await reviewer._prepare_prediction("model")
@@ -189,7 +244,7 @@ async def test_prepare_prediction_offloads_diff_only_with_request_settings(reque
         return "diff", ["src/one.py"]
 
     scope = request_cycle_context({"settings": settings}) if request_scoped else nullcontext()
-    with scope, patch("pr_agent.tools.pr_reviewer.get_pr_diff", side_effect=get_diff) as get_pr_diff:
+    with scope, patch("pr_agent.commands.pr_reviewer.get_pr_diff", side_effect=get_diff) as get_pr_diff:
         await reviewer._prepare_prediction("model")
 
     get_pr_diff.assert_called_once()
@@ -206,7 +261,7 @@ async def test_prepare_prediction_accepts_full_diff_string_when_token_budget_is_
     reviewer = _make_prediction_reviewer()
     reviewer._get_prediction = AsyncMock(return_value=_VALID_PREDICTION)
 
-    with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value="diff"):
+    with patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value="diff"):
         await reviewer._prepare_prediction("model")
 
     assert reviewer.patches_diff == "diff"
@@ -220,7 +275,7 @@ async def test_prepare_prediction_keeps_incremental_review_compatible_with_tuple
     reviewer.incremental = SimpleNamespace(is_incremental=True)
     reviewer._get_prediction = AsyncMock(return_value=_VALID_PREDICTION)
 
-    with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["skipped.py"])):
+    with patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["skipped.py"])):
         await reviewer._prepare_prediction("model")
 
     assert reviewer.patches_diff == "diff"
@@ -233,7 +288,7 @@ async def test_prepare_prediction_skips_when_all_changed_files_are_filtered():
     reviewer = _make_prediction_reviewer()
     reviewer._get_prediction = AsyncMock(return_value=_VALID_PREDICTION)
 
-    with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("", [])):
+    with patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("", [])):
         await reviewer._prepare_prediction("model")
 
     assert reviewer.patches_diff == ""
@@ -246,7 +301,7 @@ async def test_prepare_prediction_keeps_fallback_when_filtered_files_remain():
     reviewer = _make_prediction_reviewer()
     reviewer._get_prediction = AsyncMock(return_value=_VALID_PREDICTION)
 
-    with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("", ["package-lock.json"])):
+    with patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("", ["package-lock.json"])):
         with pytest.raises(FallbackEligibleError, match="No PR diff fits the /review request"):
             await reviewer._prepare_prediction("model")
 
@@ -269,7 +324,7 @@ async def test_final_review_fit_rejects_untracked_diff_clipping():
             )
 
     with patch(
-        "pr_agent.tools.pr_reviewer.AttemptTokenBudget.for_attempt",
+        "pr_agent.commands.pr_reviewer.AttemptTokenBudget.for_attempt",
         return_value=ClippingBudget(),
     ):
         with pytest.raises(ValueError, match="complete packed review diff"):
@@ -286,9 +341,9 @@ def _render_review(reviewer, remaining_files, supports_gfm_markdown=False):
     reviewer.set_review_labels = MagicMock()
 
     with (
-        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"summary": "test"}}),
-        patch("pr_agent.tools.pr_reviewer.github_action_output"),
-        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
+        patch("pr_agent.commands.pr_reviewer.load_yaml", return_value={"review": {"summary": "test"}}),
+        patch("pr_agent.commands.pr_reviewer.github_action_output"),
+        patch("pr_agent.commands.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
     ):
         return reviewer._prepare_pr_review()
 
@@ -336,7 +391,7 @@ def test_prepare_pr_review_places_coverage_footer_before_help_text():
     try:
         settings.pr_reviewer.enable_review_coverage_footer = True
         settings.pr_reviewer.enable_help_text = True
-        with patch("pr_agent.tools.pr_reviewer.HelpMessage.get_review_usage_guide", return_value="help text"):
+        with patch("pr_agent.commands.pr_reviewer.HelpMessage.get_review_usage_guide", return_value="help text"):
             review = _render_review(reviewer, ["skipped.py"], supports_gfm_markdown=True)
     finally:
         settings.pr_reviewer.enable_review_coverage_footer = original_enable_review_coverage_footer
@@ -362,10 +417,10 @@ def test_prepare_pr_review_warns_on_invalid_model_output_without_changing_markdo
     reviewer.set_review_labels = MagicMock()
 
     with (
-        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"key_issues_to_review": "wrong"}}),
-        patch("pr_agent.tools.pr_reviewer.github_action_output"),
-        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
-        patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger,
+        patch("pr_agent.commands.pr_reviewer.load_yaml", return_value={"review": {"key_issues_to_review": "wrong"}}),
+        patch("pr_agent.commands.pr_reviewer.github_action_output"),
+        patch("pr_agent.commands.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
+        patch("pr_agent.commands.pr_reviewer.get_logger") as get_logger,
     ):
         review = reviewer._prepare_pr_review()
 
@@ -383,10 +438,10 @@ def test_prepare_pr_review_does_not_warn_for_valid_model_output():
     reviewer.set_review_labels = MagicMock()
 
     with (
-        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"key_issues_to_review": []}}),
-        patch("pr_agent.tools.pr_reviewer.github_action_output"),
-        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
-        patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger,
+        patch("pr_agent.commands.pr_reviewer.load_yaml", return_value={"review": {"key_issues_to_review": []}}),
+        patch("pr_agent.commands.pr_reviewer.github_action_output"),
+        patch("pr_agent.commands.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
+        patch("pr_agent.commands.pr_reviewer.get_logger") as get_logger,
     ):
         review = reviewer._prepare_pr_review()
 
@@ -397,7 +452,7 @@ def test_prepare_pr_review_does_not_warn_for_valid_model_output():
 def test_review_schema_requires_enabled_prompt_fields_only():
     reviewer = _make_prediction_reviewer()
     reviewer.vars = {"require_tests": True}
-    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+    with patch("pr_agent.commands.pr_reviewer.get_logger") as get_logger:
         assert reviewer._validate_review_schema({"review": {"key_issues_to_review": []}}) is False
 
     warning = get_logger.return_value.warning.call_args.kwargs
@@ -454,10 +509,10 @@ async def test_failure_modes_reach_output_consumers_only_when_enabled(enabled):
     reviewer.git_provider.is_supported.return_value = False
     reviewer.set_review_labels = MagicMock()
     with (
-        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value=data),
-        patch("pr_agent.tools.pr_reviewer.github_action_output") as action_output,
-        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="review") as render,
-        patch("pr_agent.tools.pr_reviewer.push_outputs_async") as push,
+        patch("pr_agent.commands.pr_reviewer.load_yaml", return_value=data),
+        patch("pr_agent.commands.pr_reviewer.github_action_output") as action_output,
+        patch("pr_agent.commands.pr_reviewer.convert_to_markdown_v2", return_value="review") as render,
+        patch("pr_agent.commands.pr_reviewer.push_outputs_async") as push,
     ):
         reviewer._prepare_pr_review()
         await reviewer._deliver_sink_output()
@@ -475,9 +530,36 @@ async def test_failure_modes_reach_output_consumers_only_when_enabled(enabled):
             assert push.call_args.kwargs["payload"]["failure_modes"] == expected
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_artifact_findings_reach_output_consumers_only_when_enabled(enabled):
+    reviewer = _make_prediction_reviewer()
+    reviewer.vars = {"require_artifact_findings": enabled,
+                     "artifact_context": {"content": "FAILED tests/test_a.py::test_save - KeyError"}}
+    quoted = {"kind": "test_failure", "fact": "test_save fails.", "evidence": "FAILED tests/test_a.py::test_save"}
+    invented = {**quoted, "evidence": "FAILED tests/test_b.py::test_load"}
+    reviewer.prediction = "unused prediction"
+    data = {"review": {"key_issues_to_review": [], "artifact_findings": [quoted, "bad", invented]}}
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.set_review_labels = MagicMock()
+    with (
+        patch("pr_agent.commands.pr_reviewer.load_yaml", return_value=data),
+        patch("pr_agent.commands.pr_reviewer.github_action_output") as action_output,
+        patch("pr_agent.commands.pr_reviewer.convert_to_markdown_v2", return_value="review") as render,
+        patch("pr_agent.commands.pr_reviewer.push_outputs_async"),
+    ):
+        reviewer._prepare_pr_review()
+        await reviewer._deliver_sink_output()
+    assert ("artifact_findings" in action_output.call_args.args[0]["review"]) is enabled
+    assert ("artifact_findings" in render.call_args.args[0]["review"]) is enabled
+    if enabled:
+        assert render.call_args.args[0]["review"]["artifact_findings"] == [
+            {**quoted, "quoted": True}, {**invented, "quoted": False}]
+
+
 def test_review_schema_allows_fields_requested_through_extra_instructions():
     reviewer = _make_prediction_reviewer()
-    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+    with patch("pr_agent.commands.pr_reviewer.get_logger") as get_logger:
         assert reviewer._validate_review_schema({
             "review": {"key_issues_to_review": [], "pipeline_status": [{"job": "unit", "status": "failed"}]},
         }) is True
@@ -487,7 +569,7 @@ def test_review_schema_allows_fields_requested_through_extra_instructions():
 
 def test_review_schema_reports_none_for_missing_fields():
     reviewer = _make_prediction_reviewer()
-    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+    with patch("pr_agent.commands.pr_reviewer.get_logger") as get_logger:
         assert reviewer._validate_review_schema({"review": {}}) is False
 
     warning = get_logger.return_value.warning.call_args.kwargs
@@ -497,7 +579,7 @@ def test_review_schema_reports_none_for_missing_fields():
 
 def test_review_schema_logs_all_pydantic_validation_errors():
     reviewer = _make_prediction_reviewer()
-    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+    with patch("pr_agent.commands.pr_reviewer.get_logger") as get_logger:
         assert reviewer._validate_review_schema({"review": {
             "key_issues_to_review": [],
             "risk_level": "critical",
@@ -513,7 +595,7 @@ def test_review_schema_logs_all_pydantic_validation_errors():
 def test_review_schema_runs_require_checks_when_pydantic_validation_fails():
     reviewer = _make_prediction_reviewer()
     reviewer.vars = {"require_score": True}
-    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+    with patch("pr_agent.commands.pr_reviewer.get_logger") as get_logger:
         assert reviewer._validate_review_schema({
             "review": {
                 "key_issues_to_review": [],
@@ -530,7 +612,7 @@ def test_review_schema_runs_require_checks_when_pydantic_validation_fails():
 def test_review_schema_logs_all_missing_required_fields():
     reviewer = _make_prediction_reviewer()
     reviewer.vars = {"require_score": True, "require_tests": True}
-    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+    with patch("pr_agent.commands.pr_reviewer.get_logger") as get_logger:
         assert reviewer._validate_review_schema({"review": {"key_issues_to_review": []}}) is False
 
     warnings = [call.kwargs for call in get_logger.return_value.warning.call_args_list]
@@ -938,17 +1020,28 @@ def test_should_publish_review_no_suggestions_respects_config():
 
 @pytest.mark.asyncio
 async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     started = threading.Event()
     release = threading.Event()
     fetch_thread_ids = []
+    prefetched_file_ref = None
+    retained_during_prediction = []
 
     def fetch_diff():
+        nonlocal prefetched_file_ref
         fetch_thread_ids.append(threading.get_ident())
         started.set()
         assert release.wait(10)
-        return []
+        file = FilePatchInfo(base_file="", head_file="", patch="", filename="app.py")
+        prefetched_file_ref = weakref.ref(file)
+        return [file]
+
+    async def predict(*args, **kwargs):
+        # Let the completed worker future release its result before checking ownership.
+        await asyncio.sleep(0)
+        gc.collect()
+        retained_during_prediction.append(prefetched_file_ref() is not None)
 
     git_provider = MagicMock()
     git_provider.get_files.return_value = ["app.py"]
@@ -959,7 +1052,7 @@ async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
     reviewer.prediction = None
 
     monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
-    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", predict)
     monkeypatch.setitem(get_settings().config, "publish_output", False)
 
     run = asyncio.create_task(reviewer.run())
@@ -973,6 +1066,7 @@ async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
     assert len(fetch_thread_ids) == 1
     assert fetch_thread_ids[0] != threading.get_ident()
     git_provider.get_diff_files.assert_called_once_with()
+    assert retained_during_prediction == [False]
 
 
 @pytest.mark.asyncio
@@ -982,11 +1076,14 @@ async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
     ids=["empty-incremental", "active-incremental", "fallback-full-review"],
 )
 async def test_run_extracts_tickets_only_when_incremental_review_proceeds(monkeypatch, has_new_files, valid_anchor):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     git_provider = MagicMock()
     # GitHub can return the full PR file list when its incremental file map is empty.
     git_provider.get_files.return_value = ["app.py"]
+    git_provider.get_diff_files.return_value = [
+        FilePatchInfo(base_file="", head_file="", patch="", filename="app.py")
+    ]
     git_provider.unreviewed_files_map = {"app.py": "patch"} if has_new_files else {}
     previous_review_url = "https://example/pr/1#previous-review"
     git_provider.previous_review = SimpleNamespace(html_url=previous_review_url)
@@ -994,7 +1091,6 @@ async def test_run_extracts_tickets_only_when_incremental_review_proceeds(monkey
     reviewer.incremental = SimpleNamespace(
         is_incremental=True, commits_range=[] if valid_anchor else None, last_seen_commit=None,
     )
-    reviewer.is_auto = False
     reviewer.vars = {}
     reviewer.prediction = None
     reviewer._load_previous_findings_context = MagicMock(return_value="Previous findings")
@@ -1017,7 +1113,7 @@ async def test_run_extracts_tickets_only_when_incremental_review_proceeds(monkey
     settings = get_settings()
     monkeypatch.setitem(settings.config, "publish_output", True)
     monkeypatch.setitem(settings.config, "is_auto_command", False)
-    monkeypatch.setitem(settings.config, "propagate_tool_errors", True)
+    monkeypatch.setitem(settings.config, "propagate_command_errors", True)
     monkeypatch.setitem(settings.pr_reviewer, "minimal_commits_for_incremental_review", 0)
 
     await reviewer.run()
@@ -1039,7 +1135,7 @@ async def test_run_extracts_tickets_only_when_incremental_review_proceeds(monkey
 
 @pytest.mark.asyncio
 async def test_run_removes_its_progress_comment_when_quiet_output_suppresses_review(monkeypatch):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
     git_provider = MagicMock()
@@ -1081,13 +1177,20 @@ async def test_run_removes_its_progress_comment_when_quiet_output_suppresses_rev
 
 
 @pytest.mark.asyncio
-async def test_run_skips_without_recording_failure_when_all_changed_files_are_filtered(monkeypatch):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+@pytest.mark.parametrize("provider_filters_files", [True, False], ids=["provider-filter", "shared-filter"])
+async def test_run_skips_without_recording_failure_when_all_changed_files_are_filtered(
+    monkeypatch, provider_filters_files,
+):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
     git_provider = MagicMock()
     # The no-files guard reads the unfiltered file list, so a lockfile-only PR still passes it.
     git_provider.get_files.return_value = ["package-lock.json"]
+    git_provider.get_diff_files.return_value = [] if provider_filters_files else [
+        FilePatchInfo(base_file="", head_file="", patch="", filename="package-lock.json")
+    ]
+    git_provider.diff_files = git_provider.get_diff_files.return_value
     git_provider.publish_comment.return_value = progress_comment
     reviewer = _make_reviewer(git_provider)
     reviewer.incremental = SimpleNamespace(is_incremental=False)
@@ -1097,7 +1200,8 @@ async def test_run_skips_without_recording_failure_when_all_changed_files_are_fi
     async def fake_retry(prepare_fn, model_type=None, git_provider=None):
         await prepare_fn("primary-model")
 
-    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    extract_tickets = AsyncMock()
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", extract_tickets)
     monkeypatch.setattr(
         pr_reviewer_module,
         "fit_related_tickets_to_prompt_budget",
@@ -1121,21 +1225,49 @@ async def test_run_skips_without_recording_failure_when_all_changed_files_are_fi
         settings.config.is_auto_command = original["is_auto_command"]
 
     assert command_failed() is False
+    extract_tickets.assert_not_awaited()
     git_provider.publish_comment.assert_called_once_with("Preparing review...", is_temporary=True)
     git_provider.remove_comment.assert_called_once_with(progress_comment)
     git_provider.publish_persistent_comment.assert_not_called()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+async def test_run_extracts_tickets_for_provisional_empty_diff(monkeypatch):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    provider = MagicMock()
+    provider.get_files.return_value = ["src/ready.py"]
+    provider.get_diff_files.return_value = []
+    # GitLab keeps this unset until an empty diff has a verified change count.
+    provider.diff_files = None
+    reviewer = _make_reviewer(provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    extract_tickets = AsyncMock()
+    retry = AsyncMock()
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", extract_tickets)
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", retry)
+    monkeypatch.setitem(get_settings().config, "publish_output", False)
+
+    await reviewer.run()
+
+    extract_tickets.assert_awaited_once_with(provider, reviewer.vars)
+    retry.assert_awaited_once()
+    provider.get_diff_files.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("propagate_command_errors", [False, True])
 @pytest.mark.parametrize(
     ("publish_review_failure_comment", "expect_failure_comment"),
     [(None, True), (False, False), ("false", False)],
     ids=["default", "disabled", "quoted-false"],
 )
 async def test_run_removes_its_progress_comment_when_review_generation_fails(
-        monkeypatch, propagate_tool_errors, publish_review_failure_comment, expect_failure_comment):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+        monkeypatch, propagate_command_errors, publish_review_failure_comment, expect_failure_comment):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
     git_provider = MagicMock()
@@ -1158,17 +1290,17 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
         "publish_review_failure_comment": settings.pr_reviewer.get("publish_review_failure_comment", True),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = propagate_tool_errors
+        settings.config.propagate_command_errors = propagate_command_errors
         if publish_review_failure_comment is not None:
             settings.pr_reviewer.publish_review_failure_comment = publish_review_failure_comment
 
-        if propagate_tool_errors:
+        if propagate_command_errors:
             with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
                 await reviewer.run()
             assert exc_info.value is review_error
@@ -1177,7 +1309,7 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
         settings.pr_reviewer.publish_review_failure_comment = original["publish_review_failure_comment"]
 
     expected_comments = [(("Preparing review...",), {"is_temporary": True})]
@@ -1194,7 +1326,7 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
     "incomplete_error_class", [IncompleteBitbucketPullRequestFilesError, IncompletePullRequestFilesError]
 )
 async def test_run_re_raises_incomplete_provider_diff_after_progress_cleanup(monkeypatch, incomplete_error_class):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
     git_provider = MagicMock()
@@ -1217,19 +1349,19 @@ async def test_run_re_raises_incomplete_provider_diff_after_progress_cleanup(mon
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = False
+        settings.config.propagate_command_errors = False
 
         with pytest.raises(incomplete_error_class) as exc_info:
             await reviewer.run()
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
 
     assert exc_info.value is incomplete_diff_error
     git_provider.remove_comment.assert_called_once_with(progress_comment)
@@ -1238,7 +1370,7 @@ async def test_run_re_raises_incomplete_provider_diff_after_progress_cleanup(mon
 
 @pytest.mark.asyncio
 async def test_run_publishes_sanitized_failure_reason_when_enabled(monkeypatch):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
     git_provider = MagicMock()
@@ -1263,20 +1395,20 @@ async def test_run_publishes_sanitized_failure_reason_when_enabled(monkeypatch):
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
         "publish_error_details": settings.pr_reviewer.get("publish_error_details", False),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = False
+        settings.config.propagate_command_errors = False
         settings.pr_reviewer.publish_error_details = True
 
         await reviewer.run()
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
         settings.pr_reviewer.publish_error_details = original["publish_error_details"]
 
     assert git_provider.publish_comment.call_args_list == [
@@ -1301,15 +1433,15 @@ async def test_run_publishes_sanitized_failure_reason_when_enabled(monkeypatch):
     ids=["unparseable", "empty-review", "invalid-review-shape"],
 )
 @pytest.mark.parametrize("persistent_comment", [False, True])
-@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+@pytest.mark.parametrize("propagate_command_errors", [False, True])
 async def test_run_does_not_publish_an_empty_review(
     monkeypatch,
     prediction,
     expected_action_data,
     persistent_comment,
-    propagate_tool_errors,
+    propagate_command_errors,
 ):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
     git_provider = MagicMock()
@@ -1335,16 +1467,16 @@ async def test_run_does_not_publish_an_empty_review(
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
         "persistent_comment": settings.pr_reviewer.persistent_comment,
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = propagate_tool_errors
+        settings.config.propagate_command_errors = propagate_command_errors
         settings.pr_reviewer.persistent_comment = persistent_comment
 
-        if propagate_tool_errors:
+        if propagate_command_errors:
             with pytest.raises(ValueError, match="Failed to prepare review output"):
                 await reviewer.run()
         else:
@@ -1352,7 +1484,7 @@ async def test_run_does_not_publish_an_empty_review(
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
         settings.pr_reviewer.persistent_comment = original["persistent_comment"]
 
     assert git_provider.publish_comment.call_args_list == [
@@ -1368,7 +1500,7 @@ async def test_run_does_not_publish_an_empty_review(
 
 @pytest.mark.asyncio
 async def test_run_publishes_failure_result_when_progress_comment_has_no_handle(monkeypatch):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     git_provider = MagicMock()
     git_provider.get_files.return_value = ["app.py"]
@@ -1389,18 +1521,18 @@ async def test_run_publishes_failure_result_when_progress_comment_has_no_handle(
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = False
+        settings.config.propagate_command_errors = False
 
         await reviewer.run()
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
 
     assert git_provider.publish_comment.call_args_list == [
         (("Preparing review...",), {"is_temporary": True}),
@@ -1421,18 +1553,18 @@ async def test_run_publishes_failure_result_when_review_fails_before_progress_co
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = False
+        settings.config.propagate_command_errors = False
 
         await reviewer.run()
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
 
     git_provider.publish_comment.assert_called_once_with("Failed to review PR")
     git_provider.remove_comment.assert_not_called()
@@ -1440,7 +1572,7 @@ async def test_run_publishes_failure_result_when_review_fails_before_progress_co
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("publish_output", "is_auto_command", "propagate_tool_errors"),
+    ("publish_output", "is_auto_command", "propagate_command_errors"),
     [
         (False, False, False),
         (False, False, True),
@@ -1449,8 +1581,8 @@ async def test_run_publishes_failure_result_when_review_fails_before_progress_co
     ],
 )
 async def test_run_does_not_publish_failure_result_when_output_disabled_or_auto(
-        monkeypatch, publish_output, is_auto_command, propagate_tool_errors):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+        monkeypatch, publish_output, is_auto_command, propagate_command_errors):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     git_provider = MagicMock()
     git_provider.get_files.return_value = ["app.py"]
@@ -1471,14 +1603,14 @@ async def test_run_does_not_publish_failure_result_when_output_disabled_or_auto(
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
     }
     try:
         settings.config.publish_output = publish_output
         settings.config.is_auto_command = is_auto_command
-        settings.config.propagate_tool_errors = propagate_tool_errors
+        settings.config.propagate_command_errors = propagate_command_errors
 
-        if propagate_tool_errors:
+        if propagate_command_errors:
             with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
                 await reviewer.run()
             assert exc_info.value is review_error
@@ -1487,7 +1619,7 @@ async def test_run_does_not_publish_failure_result_when_output_disabled_or_auto(
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
 
     git_provider.publish_comment.assert_not_called()
     git_provider.remove_comment.assert_not_called()
@@ -1496,7 +1628,7 @@ async def test_run_does_not_publish_failure_result_when_output_disabled_or_auto(
 
 @pytest.mark.asyncio
 async def test_run_publishes_failure_result_when_progress_cleanup_fails(monkeypatch):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
     git_provider = MagicMock()
@@ -1520,12 +1652,12 @@ async def test_run_publishes_failure_result_when_progress_cleanup_fails(monkeypa
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = True
+        settings.config.propagate_command_errors = True
 
         with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
             await reviewer.run()
@@ -1533,7 +1665,7 @@ async def test_run_publishes_failure_result_when_progress_cleanup_fails(monkeypa
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
 
     assert git_provider.publish_comment.call_args_list == [
         (("Preparing review...",), {"is_temporary": True}),
@@ -1543,10 +1675,10 @@ async def test_run_publishes_failure_result_when_progress_cleanup_fails(monkeypa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+@pytest.mark.parametrize("propagate_command_errors", [False, True])
 async def test_run_failure_result_publication_does_not_mask_review_error(
-        monkeypatch, propagate_tool_errors):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+        monkeypatch, propagate_command_errors):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
     publication_error = RuntimeError("comment unavailable")
@@ -1570,14 +1702,14 @@ async def test_run_failure_result_publication_does_not_mask_review_error(
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
-        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "propagate_command_errors": settings.config.get("propagate_command_errors", False),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
-        settings.config.propagate_tool_errors = propagate_tool_errors
+        settings.config.propagate_command_errors = propagate_command_errors
 
-        if propagate_tool_errors:
+        if propagate_command_errors:
             with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
                 await reviewer.run()
             assert exc_info.value is review_error
@@ -1586,7 +1718,7 @@ async def test_run_failure_result_publication_does_not_mask_review_error(
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
-        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.config.propagate_command_errors = original["propagate_command_errors"]
 
     assert git_provider.publish_comment.call_args_list == [
         (("Preparing review...",), {"is_temporary": True}),
@@ -1607,7 +1739,7 @@ def test_prepare_review_publishes_provider_neutral_structured_data(monkeypatch):
     reviewer.incremental = SimpleNamespace(is_incremental=False)
     reviewer.set_review_labels = MagicMock()
     monkeypatch.setattr(
-        "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+        "pr_agent.commands.pr_reviewer.convert_to_markdown_v2",
         lambda *args, **kwargs: "## Review",
     )
 
@@ -1624,7 +1756,10 @@ def test_prepare_review_publishes_provider_neutral_structured_data(monkeypatch):
             "security_concerns": False,
         },
         "usage": {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42},
-        "coverage": {"files_not_reviewed": [], "files_partially_reviewed": []},
+        "coverage": {
+            "total_chunks": 1, "failed_chunks": 0,
+            "files_not_reviewed": [], "files_partially_reviewed": [],
+        },
     })
     # Assert key order to prove the snapshot is isolated: _prepare_pr_review moves
     # key_issues_to_review to the end of its own dict after the hook fires, so an
@@ -1644,7 +1779,7 @@ def test_prepare_review_captures_json_without_provider_hook(monkeypatch, tmp_pat
     reviewer.vars = {}
     reviewer.set_review_labels = MagicMock()
     monkeypatch.setattr(
-        "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+        "pr_agent.commands.pr_reviewer.convert_to_markdown_v2",
         lambda *args, **kwargs: "## Review",
     )
 
@@ -1660,7 +1795,10 @@ def test_prepare_review_captures_json_without_provider_hook(monkeypatch, tmp_pat
     assert reviewer._structured_review_data == {
         "review": {"merge_recommendation": "needs_review", "key_issues_to_review": []},
         "usage": {},
-        "coverage": {"files_not_reviewed": [], "files_partially_reviewed": []},
+        "coverage": {
+            "total_chunks": 1, "failed_chunks": 0,
+            "files_not_reviewed": [], "files_partially_reviewed": [],
+        },
     }
 
 
@@ -1676,7 +1814,7 @@ def test_prepare_review_json_lists_files_left_out_by_the_token_budget(monkeypatc
     reviewer.remaining_files_list = ["src/large.py", "docs/guide.md"]
     reviewer.partial_files_list = ("src/clipped.py",)
     monkeypatch.setattr(
-        "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+        "pr_agent.commands.pr_reviewer.convert_to_markdown_v2",
         lambda *args, **kwargs: "## Review",
     )
 
@@ -1690,17 +1828,11 @@ def test_prepare_review_json_lists_files_left_out_by_the_token_budget(monkeypatc
         review_json_output_path.reset(token)
 
     assert reviewer._structured_review_data["coverage"] == {
+        "total_chunks": 1,
+        "failed_chunks": 0,
         "files_not_reviewed": ["src/large.py", "docs/guide.md"],
         "files_partially_reviewed": ["src/clipped.py"],
     }
-
-
-def test_can_run_incremental_review_skips_auto_mode_without_new_commit():
-    reviewer = _make_reviewer()
-    reviewer.is_auto = True
-    reviewer.incremental = SimpleNamespace(first_new_commit_sha=None)
-
-    assert reviewer._can_run_incremental_review() is False
 
 
 @pytest.fixture
@@ -1893,25 +2025,6 @@ def test_set_review_labels_skips_providers_without_label_support(review_label_se
     git_provider.publish_labels.assert_not_called()
 
 
-def test_get_user_answers_collects_question_and_answer_from_issue_comments():
-    git_provider = MagicMock()
-    git_provider.get_issue_comments.return_value = [
-        SimpleNamespace(body="Unrelated"),
-        SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
-        SimpleNamespace(body="/answer Because it fixes production."),
-    ]
-    git_provider.get_issue_comments_newest_first.return_value = list(
-        reversed(git_provider.get_issue_comments.return_value)
-    )
-    reviewer = _make_reviewer(git_provider)
-    reviewer.is_answer = True
-
-    question, answer = reviewer._get_user_answers()
-
-    assert question == "Questions to better understand the PR:\n- Why?"
-    assert answer == "/answer Because it fixes production."
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("persistent", [True, False])
 @pytest.mark.parametrize("thread_enabled", [True, False])
@@ -1920,7 +2033,7 @@ async def test_run_threads_only_the_final_review_comment(monkeypatch, persistent
     (should_publish_review_as_thread), and is omitted entirely otherwise - other providers'
     publish methods don't accept it. Status/progress comments are never threaded.
     """
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
     git_provider = MagicMock()
@@ -1997,7 +2110,7 @@ async def test_nonpersistent_review_adds_identity_for_incremental_capable_provid
     is_incremental,
     expected_identity,
 ):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
     git_provider = MagicMock()
@@ -2045,183 +2158,6 @@ async def test_nonpersistent_review_adds_identity_for_incremental_capable_provid
     assert expected_identity in published_review[0].args[0]
 
 
-def test_init_maps_user_question_and_answer_to_correct_prompt_vars(monkeypatch):
-    """Behavioral regression for the swapped-unpacking bug (#2496).
-
-    The bug lived in ``PRReviewer.__init__``: ``_get_user_answers()`` returns
-    ``(question, answer)`` but the tuple was unpacked as ``answer, question``,
-    so the review prompt rendered the user's answer under ``{{ question_str }}``
-    and the question under ``{{ answer_str }}``. This drives the real ``__init__``
-    (external collaborators stubbed) and asserts each value lands in ``self.vars``
-    under the correct key — so it fails if the unpack is ever swapped again,
-    regardless of how the line is formatted.
-    """
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
-
-    provider = MagicMock()
-    provider.is_supported.return_value = True
-    provider.get_languages.return_value = {}
-    provider.get_files.return_value = []
-    provider.get_issue_comments.return_value = [
-        SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
-        SimpleNamespace(body="/answer Because it fixes production."),
-    ]
-    provider.get_pr_description.return_value = ("desc", [])
-    provider.get_issue_comments_newest_first.return_value = list(reversed(provider.get_issue_comments.return_value))
-
-    monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
-    monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
-
-    reviewer = PRReviewer(
-        "https://example/pr/1",
-        is_answer=True,
-        ai_handler=lambda: SimpleNamespace(main_pr_language=None),
-    )
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Why?"
-    assert reviewer.vars["answer_str"] == "/answer Because it fixes production."
-
-
-def _build_answer_mode_reviewer(monkeypatch, issue_comments, *, newest_first=None):
-    """Drive the real ``PRReviewer.__init__`` in answer mode over ``issue_comments``."""
-    from pr_agent.git_providers.git_provider import GitProvider
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
-
-    provider = MagicMock()
-    provider.is_supported.return_value = True
-    provider.get_languages.return_value = {}
-    provider.get_files.return_value = []
-    provider.get_issue_comments.return_value = issue_comments
-    provider.get_pr_description.return_value = ("desc", [])
-    if newest_first is None:
-        provider.get_issue_comments_newest_first.side_effect = (
-            lambda: GitProvider.get_issue_comments_newest_first(provider)
-        )
-    else:
-        provider.get_issue_comments_newest_first.return_value = newest_first
-
-    monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
-    monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
-
-    return PRReviewer(
-        "https://example/pr/1",
-        is_answer=True,
-        ai_handler=lambda: SimpleNamespace(main_pr_language=None),
-    )
-
-
-def test_answer_mode_reads_comments_from_a_non_list_iterable(monkeypatch):
-    """GitHub hands back a PyGithub ``PaginatedList``, GitLab a plain list.
-
-    Answer mode used to reach for the PyGithub-only ``.reversed`` property, which meant
-    it could only ever consume the GitHub shape. Any lazily-paginated iterable must work.
-    """
-
-    class _Paginated:
-        def __init__(self, items):
-            self._items = items
-
-        def __iter__(self):
-            return iter(self._items)
-
-    reviewer = _build_answer_mode_reviewer(monkeypatch, _Paginated([
-        SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
-        SimpleNamespace(body="/answer Because it fixes production."),
-    ]))
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Why?"
-    assert reviewer.vars["answer_str"] == "/answer Because it fixes production."
-
-
-def test_answer_mode_uses_the_lazy_reversed_view_when_the_provider_offers_one(monkeypatch):
-    """PyGithub reverses a PaginatedList lazily, walking pages from the end.
-
-    Materialising it instead would page the whole thread just to read the last exchange,
-    so the lazy view must win when it exists.
-    """
-
-    class _LazyPaginated:
-        def __init__(self, items):
-            self._items = items
-
-        @property
-        def reversed(self):
-            return list(reversed(self._items))
-
-        def __iter__(self):
-            raise AssertionError("the lazy reversed view should have been used")
-
-    reviewer = _build_answer_mode_reviewer(monkeypatch, _LazyPaginated([
-        SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
-        SimpleNamespace(body="/answer Because it fixes production."),
-    ]))
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Why?"
-    assert reviewer.vars["answer_str"] == "/answer Because it fixes production."
-
-
-def test_answer_mode_prefers_the_newest_question_and_answer(monkeypatch):
-    """Comments arrive oldest-first, so the walk must run newest-first to pick the latest exchange."""
-    reviewer = _build_answer_mode_reviewer(monkeypatch, [
-        SimpleNamespace(body="Questions to better understand the PR:\n- Stale question?"),
-        SimpleNamespace(body="/answer Stale answer."),
-        SimpleNamespace(body="Questions to better understand the PR:\n- Current question?"),
-        SimpleNamespace(body="/answer Current answer."),
-    ])
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Current question?"
-    assert reviewer.vars["answer_str"] == "/answer Current answer."
-
-
-def test_answer_mode_keeps_newest_question_when_no_answer_has_been_posted(monkeypatch):
-    reviewer = _build_answer_mode_reviewer(monkeypatch, [
-        SimpleNamespace(body="Questions to better understand the PR:\n- Earlier question?"),
-        SimpleNamespace(body="Questions to better understand the PR:\n- Latest question?"),
-    ])
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Latest question?"
-    assert reviewer.vars["answer_str"] == ""
-
-
-@pytest.mark.parametrize("earlier_comments", [
-    [SimpleNamespace(body="Questions to better understand the PR:\n- Please use /answer for this question")],
-    [
-        SimpleNamespace(body="Questions to better understand the PR:\n- Earlier question?"),
-        SimpleNamespace(body="/answer Earlier answer."),
-    ],
-])
-def test_answer_mode_ignores_answers_older_than_newest_question(monkeypatch, earlier_comments):
-    reviewer = _build_answer_mode_reviewer(monkeypatch, [
-        *earlier_comments,
-        SimpleNamespace(body="Questions to better understand the PR:\n- Latest question?"),
-    ])
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Latest question?"
-    assert reviewer.vars["answer_str"] == ""
-
-
-def test_answer_mode_keeps_the_latest_correction_to_an_answer(monkeypatch):
-    reviewer = _build_answer_mode_reviewer(monkeypatch, [
-        SimpleNamespace(body="Questions to better understand the PR:\n- Timeout?"),
-        SimpleNamespace(body="/answer Use 30 seconds."),
-        SimpleNamespace(body="/answer Correction: use 60 seconds."),
-    ])
-
-    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Timeout?"
-    assert reviewer.vars["answer_str"] == "/answer Correction: use 60 seconds."
-
-
-def test_answer_mode_respects_provider_supplied_newest_first_order(monkeypatch):
-    comments = [
-        SimpleNamespace(body="/answer Correction: use 60 seconds."),
-        SimpleNamespace(body="/answer Use 30 seconds."),
-        SimpleNamespace(body="Questions to better understand the PR:\n- Timeout?"),
-    ]
-    reviewer = _build_answer_mode_reviewer(monkeypatch, comments, newest_first=comments)
-
-    assert reviewer.vars["answer_str"] == "/answer Correction: use 60 seconds."
-
-
 async def _render_review_capturing_push(reviewer, publish_output):
     reviewer.prediction = "review: {}"
     reviewer.remaining_files_list = []
@@ -2234,10 +2170,10 @@ async def _render_review_capturing_push(reviewer, publish_output):
     try:
         settings.config.publish_output = publish_output
         with (
-            patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"score": "1"}}),
-            patch("pr_agent.tools.pr_reviewer.github_action_output"),
-            patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
-            patch("pr_agent.tools.pr_reviewer.push_outputs_async") as push,
+            patch("pr_agent.commands.pr_reviewer.load_yaml", return_value={"review": {"score": "1"}}),
+            patch("pr_agent.commands.pr_reviewer.github_action_output"),
+            patch("pr_agent.commands.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
+            patch("pr_agent.commands.pr_reviewer.push_outputs_async") as push,
         ):
             reviewer._prepare_pr_review()
             await reviewer._deliver_sink_output()
@@ -2259,3 +2195,68 @@ async def test_prepare_pr_review_pushes_outputs_when_publishing():
     assert push.call_args.args[0] == "review"
     assert push.call_args.kwargs["payload"] == {"score": "1"}
     assert push.call_args.kwargs["markdown"] == "original review"
+
+
+def _make_git_provider_for_init(files=("a.py", "b.py")):
+    provider = MagicMock()
+    provider.is_supported.return_value = False
+    provider.get_languages.return_value = {"Python": 100}
+    provider.get_files.return_value = list(files)
+    provider.get_pr_description.return_value = ("desc", [])
+    provider.get_pr_branch.return_value = "feature"
+    provider.get_commit_messages.return_value = ""
+    provider.get_num_of_files.side_effect = lambda: GitProvider.get_num_of_files(provider)
+    return provider
+
+
+@pytest.mark.asyncio
+async def test_init_counts_files_without_fetching_diff_before_skipped_incremental_review(monkeypatch):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    provider = _make_git_provider_for_init(("a.py", "b.py"))
+    provider.is_supported.side_effect = lambda cap: cap == "get_Commit_Messages"
+    provider.unreviewed_files_map = {}
+    provider.previous_review = SimpleNamespace(html_url="https://gitlab.example/mr/1#note_1")
+    monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
+    monkeypatch.setitem(get_settings().config, "is_auto_command", False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "minimal_commits_for_incremental_review", 0)
+
+    reviewer = PRReviewer(
+        "https://gitlab.example/group/repo/-/merge_requests/1",
+        args=["-i"],
+        ai_handler=lambda: SimpleNamespace(main_pr_language=None),
+    )
+    reviewer.incremental.commits_range = []
+
+    assert reviewer.vars["num_pr_files"] == 2
+    provider.get_diff_files.assert_not_called()
+
+    await reviewer.run()
+
+    provider.get_diff_files.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_init_does_not_pre_invoke_failing_get_diff_files_before_run(monkeypatch):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    provider = _make_git_provider_for_init(("a.py",))
+    incomplete_error = IncompletePullRequestFilesError("diff not ready")
+    provider.get_diff_files.side_effect = incomplete_error
+    monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
+    monkeypatch.setitem(get_settings().config, "publish_output", False)
+
+    reviewer = PRReviewer(
+        "https://gitlab.example/group/repo/-/merge_requests/1",
+        ai_handler=lambda: SimpleNamespace(main_pr_language=None),
+    )
+
+    assert reviewer.vars["num_pr_files"] == 1
+    provider.get_diff_files.assert_not_called()
+
+    with pytest.raises(IncompletePullRequestFilesError) as exc_info:
+        await reviewer.run()
+
+    assert exc_info.value is incomplete_error
+    provider.get_diff_files.assert_called_once_with()

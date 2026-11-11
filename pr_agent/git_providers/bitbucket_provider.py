@@ -374,7 +374,13 @@ class BitbucketProvider(GitProvider):
         get_logger().error(f"Bitbucket failed to publish code suggestion, error: {error}")
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ['get_labels', 'gfm_markdown']:
+        if capability in [
+            'get_labels',
+            'gfm_markdown',
+            'head_ci_status',
+            'head_staleness',
+            'author_human_check',
+        ]:
             return False
         if capability == "push_code":
             return not get_settings().config.restricted_mode and self._pr_head_in_base_repo()
@@ -459,24 +465,15 @@ class BitbucketProvider(GitProvider):
 
         # get the pr patches
         try:
-            pr_patches = self.pr.diff()
+            diff_split = _split_raw_diff(self.pr.diff())
         except Exception as e:
-            # Try different encodings if UTF-8 fails
-            get_logger().warning(f"Failed to decode PR patch with utf-8, error: {e}")
-            encodings_to_try = ['iso-8859-1', 'latin-1', 'ascii', 'utf-16']
-            pr_patches = None
-            for encoding in encodings_to_try:
-                try:
-                    pr_patches = self.pr.diff(encoding=encoding)
-                    get_logger().info(f"Successfully decoded PR patch with encoding {encoding}")
-                    break
-                except UnicodeDecodeError:
-                    continue
+            # A file that is not UTF-8 fails the decode of the whole diff. Read it as ISO-8859-1, which maps every
+            # byte to one character, and decode each file on its own, so the other files keep their UTF-8 text.
+            get_logger().warning(
+                f"Failed to get the PR diff as UTF-8 ({type(e).__name__}: {e}), decoding each file on its own")
+            pr_patches = self.pr.diff(encoding='iso-8859-1')
+            diff_split = [decode_if_bytes(patch.encode('iso-8859-1')) for patch in _split_raw_diff(pr_patches)]
 
-            if pr_patches is None:
-                raise ValueError(f"Failed to decode PR patch with encodings {encodings_to_try}") from e
-
-        diff_split = _split_raw_diff(pr_patches)
         patches_by_path = {}
         for patch in diff_split:
             paths = _diff_header_paths(patch)

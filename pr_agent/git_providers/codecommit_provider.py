@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.file_filter import filter_ignored
+from pr_agent.algo.git_patch_processing import count_patch_lines
 from pr_agent.algo.language_handler import is_valid_file
 from pr_agent.algo.review_finding_state import split_review_state_marker
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -105,6 +106,9 @@ class CodeCommitProvider(GitProvider):
             "get_labels",
             "gfm_markdown",
             "markdown_backslash_escapes",
+            "head_ci_status",
+            "head_staleness",
+            "author_human_check",
         ]:
             return False
         return True
@@ -134,20 +138,20 @@ class CodeCommitProvider(GitProvider):
             differences = self.codecommit_client.get_differences(
                 target["repository_name"], target["comparison_base_commit"], target["source_commit"]
             )
-            for item in differences:
-                git_files.append(
-                    CodeCommitFile(
-                        item.before_blob_path,
-                        item.before_blob_id,
-                        item.after_blob_path,
-                        item.after_blob_id,
-                        CodeCommitProvider._get_edit_type(item.change_type),
-                        repository_name=target["repository_name"],
-                        source_commit=target["source_commit"],
-                        destination_commit=target["destination_commit"],
-                        comparison_base_commit=target["comparison_base_commit"],
-                    )
+            git_files.extend(
+                CodeCommitFile(
+                    item.before_blob_path,
+                    item.before_blob_id,
+                    item.after_blob_path,
+                    item.after_blob_id,
+                    CodeCommitProvider._get_edit_type(item.change_type),
+                    repository_name=target["repository_name"],
+                    source_commit=target["source_commit"],
+                    destination_commit=target["destination_commit"],
+                    comparison_base_commit=target["comparison_base_commit"],
                 )
+                for item in differences
+            )
         self.git_files = git_files
         return self.git_files
 
@@ -218,6 +222,7 @@ class CodeCommitProvider(GitProvider):
                 continue
 
             patch = load_large_diff(patch_filename, new_file_content_str, original_file_content_str)
+            num_plus_lines, num_minus_lines = count_patch_lines(patch)
 
             # Store the diffs as a list of FilePatchInfo objects
             info = FilePatchInfo(
@@ -225,6 +230,8 @@ class CodeCommitProvider(GitProvider):
                 new_file_content_str,
                 patch,
                 diff_item.filename,
+                num_plus_lines=num_plus_lines,
+                num_minus_lines=num_minus_lines,
                 edit_type=diff_item.edit_type,
                 old_filename=None
                 if diff_item.a_path == diff_item.b_path
@@ -274,9 +281,13 @@ class CodeCommitProvider(GitProvider):
         if as_thread:
             get_logger().debug("CodeCommit does not support threaded persistent comments; publishing as a PR comment")
 
-        if not identity_marker or require_agent_authorship:
+        legacy_header_update = (
+            not identity_marker and not update_header and bool(legacy_initial_header)
+        )
+        if (not identity_marker and not legacy_header_update) or require_agent_authorship:
             get_logger().debug(
-                "CodeCommit persistent comment updates require a stable identity marker; publishing a new comment"
+                "CodeCommit cannot safely update this persistent comment without a stable identity; "
+                "publishing a new comment"
             )
             return self.publish_comment(pr_comment)
 
@@ -289,7 +300,11 @@ class CodeCommitProvider(GitProvider):
             )
             return self.publish_comment(persistent_comment)
 
-        identifiers = [identity_marker, legacy_initial_header]
+        identifiers = (
+            [identity_marker, legacy_initial_header]
+            if identity_marker
+            else [initial_header, legacy_initial_header]
+        )
         used_comment_ids = set()
         published_comments = []
         target_contexts = self._get_target_contexts()
@@ -644,7 +659,7 @@ class CodeCommitProvider(GitProvider):
         comments: list,
         target: dict,
         identifiers: list,
-        identity_marker: str,
+        identity_marker: str | None,
         used_comment_ids: set,
         allow_destination_fallback: bool,
         allow_repository_fallback: bool,
@@ -671,7 +686,7 @@ class CodeCommitProvider(GitProvider):
     def _find_persistent_comment(
         comments: list,
         identifiers: list,
-        identity_marker: str,
+        identity_marker: str | None,
         used_comment_ids: set,
         target_matcher,
     ):

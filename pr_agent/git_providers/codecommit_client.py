@@ -113,10 +113,7 @@ class CodeCommitClient:
         except Exception as e:
             raise ValueError(f"CodeCommit cannot retrieve differences for {source_commit}..{destination_commit}") from e
 
-        output = []
-        for json in differences:
-            output.append(CodeCommitDifferencesResponse(json))
-        return output
+        return [CodeCommitDifferencesResponse(diff) for diff in differences]
 
     def get_file(self, repo_name: str, file_path: str, sha_hash: str, optional: bool = False):
         """

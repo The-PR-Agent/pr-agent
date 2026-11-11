@@ -2,7 +2,7 @@
 
 Rates a change Low, Moderate, High or Critical from the structural reach and sensitivity in an input
 file written by a build-graph tool. The row appears only when that file is present. No model call is
-involved. The rating rules are documented in docs/docs/tools/review.md.
+involved. The rating rules are documented in docs/docs/commands/review.md.
 """
 
 from __future__ import annotations
@@ -121,7 +121,7 @@ def driver(structure):
     return "contained reach"
 
 
-# Structural input file. See the schema in docs/docs/tools/review.md.
+# Structural input file. See the schema in docs/docs/commands/review.md.
 
 
 def load_structure(path, resolve_path):

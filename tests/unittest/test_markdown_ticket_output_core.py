@@ -28,12 +28,12 @@ from pr_agent.algo.utils import (
     process_can_be_split,
     ticket_markdown_logic,
 )
-from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_description import insert_br_after_x_chars
-from pr_agent.tools.ticket_pr_compliance_check import (
+from pr_agent.commands.pr_description import insert_br_after_x_chars
+from pr_agent.commands.ticket_pr_compliance_check import (
     extract_ticket_links_from_pr_description,
     find_jira_tickets,
 )
+from pr_agent.config_loader import get_settings
 
 # ---------------------------------------------------------------------------
 # is_value_no / emphasize_header
@@ -99,13 +99,21 @@ class TestConvertToMarkdownV2Branches:
         assert convert_to_markdown_v2({}).strip() == ""
         assert convert_to_markdown_v2({"review": None}).strip() == ""
 
-    def test_incremental_review_header_and_note(self):
+    def test_incremental_review_header_and_note(self, monkeypatch):
         out = convert_to_markdown_v2(
             {"review": {"security_concerns": "No"}},
             incremental_review="2 commits",
         )
         assert "Incremental PR Reviewer Guide" in out
         assert "Review for commits since previous PR-Agent review 2 commits" in out
+
+        monkeypatch.setitem(get_settings().config, "bot_display_name", "Acme Bot")
+        custom_out = convert_to_markdown_v2(
+            {"review": {"security_concerns": "No"}},
+            incremental_review="2 commits",
+        )
+        assert "Review for commits since previous Acme Bot review 2 commits" in custom_out
+        assert "PR-Agent" not in custom_out
 
     def test_relevant_tests_yes_branch_gfm(self):
         out = convert_to_markdown_v2(

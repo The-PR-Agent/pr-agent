@@ -16,7 +16,7 @@ This file is the shared source of repository guidance for coding agents. Tool-sp
 PR-Agent automates AI-assisted reviews for pull requests across multiple git providers.
 
 - `pr_agent/agent/` orchestrates commands (`review`, `describe`, `improve`, etc.) via `pr_agent/agent/pr_agent.py`.
-- `pr_agent/tools/` implements individual capabilities such as reviewers, code suggestions, docs updates, and label generation.
+- `pr_agent/commands/` implements individual capabilities such as reviewers, code suggestions, docs updates, and label generation.
 - `pr_agent/algo/` contains shared algorithms, model handlers, prompt/token handling, types, and utilities.
 - `pr_agent/git_providers/` handles integrations with GitHub, GitLab, Bitbucket (cloud and server), Azure DevOps, Gitea, Gerrit, CodeCommit, local checkouts, and plain diffs; `pr_agent/identity_providers/` handles identity and `pr_agent/secret_providers/` handles secrets.
 - `pr_agent/settings/` stores Dynaconf defaults (prompts, configuration templates, ignore lists) respected at runtime; `.pr_agent.toml` overrides repository-level behavior.
@@ -28,15 +28,15 @@ PR-Agent automates AI-assisted reviews for pull requests across multiple git pro
 
 ## Architecture and Request Flow
 
-PR-Agent is a CLI/server that runs AI-powered tools (`/review`, `/describe`, `/improve`, `/ask`, etc.) against pull requests on supported git providers or local input. The main dispatch flow is `pr_agent/agent/pr_agent.py` → `command2class` → a tool class under `pr_agent/tools/`.
+PR-Agent is a CLI/server that runs AI-powered commands (`/review`, `/describe`, `/improve`, `/ask`, etc.) against pull requests on supported git providers or local input. The main dispatch flow is `pr_agent/agent/pr_agent.py` → `command2class` → a command class under `pr_agent/commands/`.
 
-A tool generally obtains the appropriate git provider, gathers pull-request context, prepares prompt variables and templates, calls the configured model handler, and publishes or stores the result through the provider.
+A command generally obtains the appropriate git provider, gathers pull-request context, prepares prompt variables and templates, calls the configured model handler, and publishes or stores the result through the provider.
 
 ### Prompt Building
 
-Prompt-driven tools generally construct a `self.vars` dictionary and pass it with the system/user prompt strings to `TokenHandler`. Prompt rendering uses Jinja2 with `StrictUndefined`, so variables referenced by a template should be present in the corresponding vars dictionary; define optional values explicitly and guard optional sections with Jinja conditionals.
+Prompt-driven commands generally construct a `self.vars` dictionary and pass it with the system/user prompt strings to `TokenHandler`. Prompt rendering uses Jinja2 with `StrictUndefined`, so variables referenced by a template should be present in the corresponding vars dictionary; define optional values explicitly and guard optional sections with Jinja conditionals.
 
-System/user prompt strings live as TOML files under `pr_agent/settings/` and are loaded into `global_settings` by `pr_agent/config_loader.py`. Tool and prompt names normally correspond, for example:
+System/user prompt strings live as TOML files under `pr_agent/settings/` and are loaded into `global_settings` by `pr_agent/config_loader.py`. Command and prompt names normally correspond, for example:
 
 - `pr_reviewer.py` ↔ `pr_reviewer_prompts.toml`
 - `pr_description.py` ↔ `pr_description_prompts.toml`
@@ -81,7 +81,7 @@ Sensitive values should stay in environment variables or the gitignored `.secret
 Ruff is the single linting tool: `pyproject.toml` configures it and the pre-commit Ruff hook enforces it (Flake8 and the standalone isort hook have been removed).
 
 - Keep Python lines within the 120-character limit declared in `pyproject.toml`.
-- `pyproject.toml` configures Ruff rules `E`, `F`, `B`, `I`, `UP` and `FURB`. Within the files touched by the task, fix lint violations rather than adding ignore entries. Remove corresponding ignore entries only when they are no longer needed, and preserve intentional exceptions.
+- `pyproject.toml` configures Ruff rules `E`, `F`, `B`, `I`, `UP`, `FURB` and `PERF`. Within the files touched by the task, fix lint violations rather than adding ignore entries. Remove corresponding ignore entries only when they are no longer needed, and preserve intentional exceptions.
 - Before committing, run `uv run ruff check --fix <paths>` on the Python files you touched and fix every issue it reports. Keep fixes mechanical (rename, remove unused imports, sort imports); do not alter program logic while cleaning up — if a lint fix would change behavior, surface it instead of applying it silently.
 - `.pre-commit-config.yaml` is the source of truth for enabled pre-commit hooks. Run them on the files you touched with `uvx pre-commit run --files <paths>` and review the automatic edits so unrelated changes are not included. The pre-commit GitHub Actions workflow runs on pull requests, so the hooks are enforced in CI.
 - No general-purpose Python formatter is currently enforced (`ruff format` is deliberately not adopted yet). Preserve the surrounding file's formatting and avoid unrelated rewrites or repository-wide formatting.
@@ -94,7 +94,7 @@ Ruff is the single linting tool: `pyproject.toml` configures it and the pre-comm
 
 - Pytest is the standard framework; keep new tests under the closest matching directory (`tests/unittest/` for unit logic, `tests/e2e_tests/` for integration flows, `tests/health_test/` for smoke coverage).
 - Pytest configuration lives in `pyproject.toml`, including `asyncio_mode = "auto"` and `testpaths = ["tests/unittest"]`. The Docker test image keeps `pyproject.toml` at `/app` (uv installs from it), so CI inherits these settings as well. Plain `PYTHONPATH=. uv run pytest` therefore defaults to the unit suite; invoke end-to-end tests explicitly.
-- Prefer focused unit tests that isolate helpers in `pr_agent/algo/`, `pr_agent/tools/`, or provider adapters; use parameterized tests where existing files already do so.
+- Prefer focused unit tests that isolate helpers in `pr_agent/algo/`, `pr_agent/commands/`, or provider adapters; use parameterized tests where existing files already do so.
 - Set `PYTHONPATH=.` when invoking pytest from the repository root to avoid import errors.
 - End-to-end suites require provider credentials and may take several minutes; `TOKEN_GITHUB`, `TOKEN_GITLAB`, `BITBUCKET_USERNAME`, and `BITBUCKET_PASSWORD` are CI secret names, not runtime environment variables (see the mappings in `.github/workflows/e2e_tests.yaml`). These tests create remote branches and pull/merge requests and expect deployed apps/webhooks to process them; run them only when credentials and sandboxes are configured.
 - `tests/health_test/main.py` is a manual script for `/describe`, `/review`, and `/improve`; it asserts artifact headers inline, not checked-in artifact files. Update those inline assertions if prompts change meaningfully. CI provider smoke runs `tests/health_test/test_github_smoke.py` instead (`/describe` only, model stubbed, `GITHUB.USER_TOKEN`).

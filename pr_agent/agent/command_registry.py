@@ -1,6 +1,6 @@
 """One registry for every PR-Agent command and its aliases.
 
-Each entry maps one accepted command spelling to the tool
+Each entry maps one accepted command spelling to the command
 that runs it, and the per-command facts the entry points need, so no entry
 point keeps its own copy of the alias lists (see issue #4723). Before this
 module, the same names were repeated in ``command2class``
@@ -8,22 +8,14 @@ module, the same names were repeated in ``command2class``
 (``pr_agent/servers/github_app.py``), the plain-diff and JSON-output sets
 (``pr_agent/cli.py``), and the GitLab ``--comment_id`` rule
 (``pr_agent/servers/gitlab_webhook.py``) — and they had already drifted:
-``/review_pr``, ``/describe_pr`` and ``/improve_code`` dispatch a tool but
+``/review_pr``, ``/describe_pr`` and ``/improve_code`` dispatch a command but
 got no check run from the GitHub app. The Gerrit ``Action`` enum
-(``pr_agent/servers/gerrit_server.py``) is intentionally untouched: its
-five canonical actions are a pinned API contract
-(``tests/unittest/test_gerrit_ask_dispatch.py::test_openapi_does_not_advertise_reflect``),
-so accepting aliases there is a separate decision for the maintainers.
+(``pr_agent/servers/gerrit_server.py``) remains a separate provider-specific API.
 
 Facts, per spelling:
-- Dispatch still uses the raw spelling: ``auto_review`` runs the reviewer with
-  ``is_auto=True`` and ``answer`` runs it with ``is_answer=True``
-  (``pr_agent/agent/pr_agent.py``).
-- ``check_run`` is the name the tool passes to ``_publish_check_run`` when
+- ``check_run`` is the name the command passes to ``_publish_check_run`` when
   ``github.publish_as_check_run`` is on. ``None`` preserves the previous
-  behaviour for commands that never published one (``answer``,
-  ``auto_review`` — the dispatcher never calls ``notify`` for it — and the
-  rest).
+  behaviour for commands that never published one.
 - ``takes_comment_id`` marks the commands the GitLab webhook appends
   ``--comment_id=<discussion_id>`` to.
 - ``plain_diff_markdown`` / ``json_output`` carry the CLI's ``--output`` and
@@ -32,33 +24,31 @@ Facts, per spelling:
 
 from dataclasses import dataclass
 
-from pr_agent.tools.pr_add_docs import PRAddDocs
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from pr_agent.tools.pr_config import PRConfig
-from pr_agent.tools.pr_description import PRDescription
-from pr_agent.tools.pr_generate_labels import PRGenerateLabels
-from pr_agent.tools.pr_help_message import PRHelpMessage
-from pr_agent.tools.pr_line_questions import PR_LineQuestions
-from pr_agent.tools.pr_questions import PRQuestions
-from pr_agent.tools.pr_reviewer import PRReviewer
-from pr_agent.tools.pr_similar_issue import PRSimilarIssue
-from pr_agent.tools.pr_update_changelog import PRUpdateChangelog
+from pr_agent.commands.pr_add_docs import PRAddDocs
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.commands.pr_config import PRConfig
+from pr_agent.commands.pr_description import PRDescription
+from pr_agent.commands.pr_generate_labels import PRGenerateLabels
+from pr_agent.commands.pr_help_message import PRHelpMessage
+from pr_agent.commands.pr_line_questions import PR_LineQuestions
+from pr_agent.commands.pr_questions import PRQuestions
+from pr_agent.commands.pr_reviewer import PRReviewer
+from pr_agent.commands.pr_similar_issue import PRSimilarIssue
+from pr_agent.commands.pr_update_changelog import PRUpdateChangelog
 
 
 @dataclass(frozen=True)
 class CommandSpec:
     """Facts about one accepted command spelling."""
 
-    tool: type
+    command: type
     check_run: str | None = None
     takes_comment_id: bool = False
     plain_diff_markdown: bool = False
-    json_output: str | None = None  # "review" | "improve" | "describe"
+    json_output: str | None = None  # "review" | "improve" | "describe" | "labels"
 
 
 COMMAND_SPECS: dict[str, CommandSpec] = {
-    "auto_review": CommandSpec(PRReviewer, plain_diff_markdown=True),
-    "answer": CommandSpec(PRReviewer),
     "review": CommandSpec(
         PRReviewer, check_run="review", takes_comment_id=True,
         plain_diff_markdown=True, json_output="review",
@@ -83,8 +73,8 @@ COMMAND_SPECS: dict[str, CommandSpec] = {
         PRCodeSuggestions, check_run="suggestions", takes_comment_id=True,
         plain_diff_markdown=True, json_output="improve",
     ),
-    "ask": CommandSpec(PRQuestions, plain_diff_markdown=True),
-    "ask_question": CommandSpec(PRQuestions, plain_diff_markdown=True),
+    "ask": CommandSpec(PRQuestions, takes_comment_id=True, plain_diff_markdown=True),
+    "ask_question": CommandSpec(PRQuestions, takes_comment_id=True, plain_diff_markdown=True),
     "ask_line": CommandSpec(PR_LineQuestions),
     "update_changelog": CommandSpec(PRUpdateChangelog),
     "config": CommandSpec(PRConfig, plain_diff_markdown=True),
@@ -92,7 +82,7 @@ COMMAND_SPECS: dict[str, CommandSpec] = {
     "help": CommandSpec(PRHelpMessage, plain_diff_markdown=True),
     "similar_issue": CommandSpec(PRSimilarIssue),
     "add_docs": CommandSpec(PRAddDocs),
-    "generate_labels": CommandSpec(PRGenerateLabels),
+    "generate_labels": CommandSpec(PRGenerateLabels, json_output="labels"),
     # SECURITY: "/help_docs" is temporarily disabled while the clone-target validation
     # fix is reviewed (see issue #2445). Re-enable by restoring `"help_docs": PRHelpDocs`
     # and its import once the hardening PR is merged.

@@ -9,9 +9,9 @@ from pr_agent.algo.comment_identity import PRReviewHeader
 from pr_agent.algo.findings import Finding
 from pr_agent.algo.inline_comment_dedup import key_issue_body_with_markers
 from pr_agent.algo.review_finding_state import reconcile_review_findings, serialize_review_state
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 BOT = "11111111-1111-1111-1111-111111111111"
 BODY = "**Possible Issue**\n\nThe lock is never released."

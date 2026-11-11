@@ -10,6 +10,7 @@ never resolve anything. Each provider now resolves its own shape behind
 
 from types import SimpleNamespace
 
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
@@ -17,7 +18,6 @@ from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.gitea_provider import GiteaProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 HEAD_SHA = "a" * 40
 

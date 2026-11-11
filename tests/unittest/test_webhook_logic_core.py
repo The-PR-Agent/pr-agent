@@ -213,7 +213,7 @@ async def _post_gitlab_webhook(app, data):
         )
 
 
-async def _record_gitlab_note_request(gitlab_webhook_module, monkeypatch, note, note_type):
+async def _record_gitlab_note_request(gitlab_webhook_module, monkeypatch, note, note_type, position=None):
     calls = []
 
     async def record_request(url, body, log_context, sender_id, notify=None):
@@ -231,6 +231,8 @@ async def _record_gitlab_note_request(gitlab_webhook_module, monkeypatch, note, 
         lambda: SimpleNamespace(get_secret=lambda _: '{"gitlab_token": "token", "webhook_token": "webhook-token"}'),
     )
     data = _gitlab_payload(note=note, discussion_id="discussion-42", id=99, type=note_type)
+    if position is not None:
+        data["object_attributes"]["position"] = position
     data.update({"object_kind": "note", "event_type": "note",
                  "merge_request": {"url": "https://gitlab.com/org/repo/-/merge_requests/1"}})
 
@@ -241,13 +243,40 @@ async def _record_gitlab_note_request(gitlab_webhook_module, monkeypatch, note, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("command", ["/review", "/Review_pr", "/improve", "/improve_code"])
+@pytest.mark.parametrize("command", ["/review", "/Review_pr", "/improve", "/improve_code", "/ask", "/Ask_Question"])
 async def test_gitlab_note_command_passes_discussion_id_to_agent(gitlab_webhook_module, monkeypatch, command):
     calls = await _record_gitlab_note_request(gitlab_webhook_module, monkeypatch, f"{command} inspect this", None)
 
     assert calls == [(
         "https://gitlab.com/org/repo/-/merge_requests/1",
         f"{command} inspect this --comment_id=discussion-42",
+    )]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/ask", "/ask_question"])
+async def test_gitlab_ask_in_existing_discussion_keeps_reply_in_thread(gitlab_webhook_module, monkeypatch, command):
+    calls = await _record_gitlab_note_request(
+        gitlab_webhook_module, monkeypatch, f"{command} inspect this", "DiscussionNote"
+    )
+
+    assert calls == [(
+        "https://gitlab.com/org/repo/-/merge_requests/1",
+        f"{command} inspect this --comment_id=discussion-42",
+    )]
+
+
+@pytest.mark.asyncio
+async def test_gitlab_diff_note_ask_still_uses_ask_line(gitlab_webhook_module, monkeypatch):
+    calls = await _record_gitlab_note_request(
+        gitlab_webhook_module, monkeypatch, "/ask why this?", "DiffNote",
+        position={"new_path": "src/app.py", "new_line": 3},
+    )
+
+    assert calls == [(
+        "https://gitlab.com/org/repo/-/merge_requests/1",
+        ["/ask_line", "--line_start=3", "--line_end=3", "--side=RIGHT",
+         "--file_name=src/app.py", "--comment_id=discussion-42", "--origin_comment_id=99", "why this?"],
     )]
 
 

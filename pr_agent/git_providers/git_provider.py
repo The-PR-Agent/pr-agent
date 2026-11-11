@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import os
 import re
@@ -27,7 +28,7 @@ from pr_agent.algo.inline_comment_dedup import strip_markers
 from pr_agent.algo.language_handler import build_language_file_matcher, numeric_languages
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import process_description
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_bot_display_name, get_settings
 from pr_agent.log import get_logger
 
 
@@ -115,30 +116,39 @@ class IncompleteProviderPullRequestFilesError(RuntimeError):
 
     notice: str
     notice_marker: str
+    notice_template: str
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        notice_template = getattr(self, "notice_template", None)
+        if notice_template is not None:
+            self.notice = notice_template.format(bot_name=get_bot_display_name())
 
 
 class IncompletePullRequestFilesError(IncompleteProviderPullRequestFilesError):
     """Represent an incomplete or inconsistent GitHub pull-request file set."""
 
-    notice = (
-        "## PR-Agent command was not run\n\n"
-        "GitHub returned an incomplete or inconsistent changed-file set for this pull request, so PR-Agent stopped "
+    notice_template = (
+        "## {bot_name} command was not run\n\n"
+        "GitHub returned an incomplete or inconsistent changed-file set for this pull request, so {bot_name} stopped "
         "instead of analyzing only part of it.\n\n"
         "GitHub limits changed-file responses to 3,000 files. If this pull request changes more than 3,000 files, "
         "split it into smaller pull requests and run the command again. Otherwise, retry the command."
     )
+    notice = notice_template.format(bot_name="PR-Agent")
     notice_marker = "<!-- pr-agent:github-incomplete-files -->"
 
 
 class IncompleteBitbucketPullRequestFilesError(IncompleteProviderPullRequestFilesError):
     """Represent Bitbucket aggregate patches that cannot align with its changed-file inventory."""
 
-    notice = (
-        "## PR-Agent command was not run\n\n"
-        "Bitbucket returned an incomplete or inconsistent pull-request diff, so PR-Agent stopped "
+    notice_template = (
+        "## {bot_name} command was not run\n\n"
+        "Bitbucket returned an incomplete or inconsistent pull-request diff, so {bot_name} stopped "
         "instead of treating it as an empty change.\n\n"
         "Retry the command and check the pull request's diff in Bitbucket if the problem persists."
     )
+    notice = notice_template.format(bot_name="PR-Agent")
     notice_marker = PRCommandNoticeIdentity.INCOMPLETE_BITBUCKET_FILES.value
 
 
@@ -166,7 +176,7 @@ _CREDENTIAL_ASSIGNMENT_RE = re.compile(
     r"(?i)((?<![a-z0-9])(?:aws_secret_access_key|aws_session_token|aws_access_key_id|"
     r"secretaccesskey|sessiontoken|accesskeyid|github_token|gitlab_token|ci_job_token|openai_key|openai_api_key|"
     r"user_token|personal_access_token|bearer_token|basic_token|api_token|api_key|pat|client_secret|"
-    r"webhook_secret|shared_secret|webhook_password)\b[\"']?[ \t]*[:=][ \t]*)"
+    r"webhook_secret|shared_secret|webhook_password|password|passwd|secret|token)\b[\"']?[ \t]*[:=][ \t]*)"
     r"(\"(?:\\[^\r\n]|[^\"\\\r\n])*(?:\"|\\?(?=[\r\n]|\Z))|"
     r"'(?:\\[^\r\n]|[^'\\\r\n])*(?:'|\\?(?=[\r\n]|\Z))|[^\s\"']+)"
 )
@@ -377,8 +387,8 @@ def _is_line_number(value) -> bool:
 
 
 class GitProvider(ABC):
-    # Keep manual-tool reuse opt-in because providers can retain PR revision state.
-    reuse_for_manual_tool = False
+    # Keep manual-command reuse opt-in because providers can retain PR revision state.
+    reuse_for_manual_command = False
 
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         """Return policy fields; None means unknown, empty values mean not applicable.
@@ -404,7 +414,7 @@ class GitProvider(ABC):
         for GitHub; the semantics live here so every provider inherits them. Drop the
         latest commit URL too, so the next command can see newly pushed commits.
         """
-        self._tool_provider_stale = True
+        self._command_provider_stale = True
         self.diff_files = None
         self._latest_commit_url = None
         if getattr(self, "incremental", None) is not None:
@@ -415,7 +425,7 @@ class GitProvider(ABC):
     def supports_incremental_kind(self, kind: str) -> bool:
         """Whether `get_incremental_commits()` can scope an incremental run to `kind`
         (e.g. "suggestions" for `/improve -i`). Providers implementing kind-aware
-        incremental anchoring override this; the default is no support, so tools
+        incremental anchoring override this; the default is no support, so commands
         fall back to a full run."""
         return False
 
@@ -507,7 +517,7 @@ class GitProvider(ABC):
         """Whether a published comment renders command checkboxes as checkboxes.
 
         Providers that render `- [ ]` as a tickable box override this; the default is no
-        support, so tools render commands as text instead."""
+        support, so commands render commands as text instead."""
         return False
 
     def supports_pr_chat(self) -> bool:
@@ -518,10 +528,10 @@ class GitProvider(ABC):
     def supports_issue_indexing(cls) -> bool:
         """Whether `/similar_issue` can read and index this provider's issues.
 
-        Declared on the class rather than on an instance because the tool consults it before
+        Declared on the class rather than on an instance because the command consults it before
         constructing a provider: `PRSimilarIssue` needs to know whether to build one at all.
         The indexing path relies on issue listing, issue bodies and issue comments, so a
-        provider that exposes those overrides this; the default is no support, so the tool
+        provider that exposes those overrides this; the default is no support, so the command
         reports the command as unsupported instead of failing part-way through.
         """
         return False
@@ -547,7 +557,7 @@ class GitProvider(ABC):
     def supports_markdown_tables(self) -> bool:
         """Whether comments render pipe-table markdown.
 
-        Only consulted for providers without `gfm_markdown`, so that tools can degrade to
+        Only consulted for providers without `gfm_markdown`, so that commands can degrade to
         a plain table instead of refusing to render. Providers that render Markdown tables
         but not GitHub-flavored markdown override this."""
         return False
@@ -695,6 +705,12 @@ class GitProvider(ABC):
 
     def get_incremental_commits(self, is_incremental) -> None:
         return None
+
+    def get_pr_commits(self) -> list["PRCommit"] | None:
+        return None
+
+    def set_commit_review_scope(self, commit: "PRCommit", incremental: "IncrementalPR") -> str | None:
+        raise NotImplementedError
 
     @abstractmethod
     def publish_description(self, pr_title: str, pr_body: str) -> None:
@@ -872,7 +888,8 @@ class GitProvider(ABC):
                 "### **type**",
                 "### **description**",
                 "### **labels**",
-                "### 🤖 generated by pr agent")
+                "### 🤖 generated by pr agent",
+                f"### 🤖 generated by {get_bot_display_name().lower()}")
 
     def _iter_description_headers(self, description: str) -> Iterator[tuple[str, int, int]]:
         """Yield structural headers and original offsets outside bounded Markdown fences."""
@@ -895,8 +912,17 @@ class GitProvider(ABC):
                 continue
             if not fence_char:
                 comparison = line.lower()
+                generated_by_comparison = comparison.rstrip()
                 for header in self._possible_headers():
-                    if comparison.startswith(header):
+                    generated_by_header = header.startswith("### 🤖 generated by ")
+                    if generated_by_header:
+                        matches = (
+                            generated_by_comparison == header
+                            or generated_by_comparison.startswith(f"{header} at ")
+                        )
+                    else:
+                        matches = comparison.startswith(header)
+                    if matches:
                         yield header, offset, offset + len(header)
                         break
             offset += len(line) + 1
@@ -914,7 +940,10 @@ class GitProvider(ABC):
         # Keep the hidden marker as an unconditional anywhere fast path.
         if '<!-- pr-agent-generated -->' in description_lowercase:
             return True
-        return any(header in self._UNIQUE_PR_AGENT_HEADERS or start == 0
+        unique_headers = self._UNIQUE_PR_AGENT_HEADERS | {
+            f"### \U0001f916 generated by {get_bot_display_name().lower()}"
+        }
+        return any(header in unique_headers or start == 0
                    for header, start, _ in self._iter_description_headers(description_lowercase))
 
     @abstractmethod
@@ -1023,6 +1052,33 @@ class GitProvider(ABC):
             normalize(value.strip().strip("/")) for value in allowed if isinstance(value, str) and value.strip()
         }
 
+    def is_sibling_namespace_allowed(self, sibling_namespace: str, owning_namespace: str | None,
+                                     *, case_sensitive: bool = True) -> bool:
+        """Approve the namespace a sibling repository resolved into.
+
+        The reviewed repository's own org/group/workspace is always approved, which is the
+        only thing allowed by default: config.repo_context_sibling_namespaces is empty, so
+        this keeps the owning-namespace bound exactly as it was. A host that spreads one
+        project's dependencies over several groups (a submodule in a shared library group,
+        say) names the extra ones there.
+
+        This widens only which namespaces an already-approved repo_context_sibling_repos
+        entry may resolve into; it never makes a repository selectable on its own, and the
+        requester's read access is still checked separately. Host-only, like the repository
+        allowlist it accompanies: repository settings and comment arguments cannot set it.
+        """
+        if not sibling_namespace:
+            return False
+        normalize = (lambda value: value) if case_sensitive else str.casefold
+        if owning_namespace and normalize(sibling_namespace) == normalize(owning_namespace):
+            return True
+        allowed = get_settings().config.get("repo_context_sibling_namespaces", [])
+        if not isinstance(allowed, list):
+            return False
+        return normalize(sibling_namespace) in {
+            normalize(value.strip().strip("/")) for value in allowed if isinstance(value, str) and value.strip()
+        }
+
     def set_command_actor(self, actor) -> None:
         """Record the authenticated user who triggered the current command.
 
@@ -1068,8 +1124,8 @@ class GitProvider(ABC):
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         pass
 
-    def publish_tool_failure(self, tool: str, message: str):
-        """Report that `tool` ("describe", "improve") failed. Providers with per-tool outputs override this."""
+    def publish_command_failure(self, command: str, message: str):
+        """Report that `command` ("describe", "improve") failed. Providers with per-command outputs override this."""
         return self.publish_comment(message)
 
     def should_publish_review_as_thread(self) -> bool:
@@ -1192,7 +1248,7 @@ class GitProvider(ABC):
             identifiers = (
                 [identity_marker, legacy_initial_header]
                 if identity_marker
-                else [initial_header]
+                else [initial_header, legacy_initial_header]
             )
             comment_to_update = None
             for comment, _body in GitProvider._iter_persistent_comments(
@@ -1391,12 +1447,33 @@ class GitProvider(ABC):
     def auto_approve(self) -> bool:
         return False
 
+    def get_head_ci_status(self, sha: str | None = None) -> str | None:
+        """Return the head CI state for `sha` (or the PR head SHA if None).
+
+        Returns 'passed', 'failed', 'pending', 'none', or None if unsupported or on error.
+        """
+        return None
+
+    def is_head_stale_against_base(self) -> bool | None:
+        """Return whether any file in the PR changed on the base branch after the head's last CI run.
+
+        Returns True (stale), False (not stale), or None if unsupported or on error.
+        """
+        return None
+
+    def are_all_authors_human(self) -> bool | None:
+        """Return whether the PR author and every commit author are human (not bot accounts).
+
+        Returns True (all human), False (contains bot account), or None if unsupported or on error.
+        """
+        return None
+
     def calc_pr_statistics(self, pull_request_data: dict):
         return {}
 
     def get_num_of_files(self):
         try:
-            return len(self.get_diff_files())
+            return len(self.get_files())
         except Exception:
             return -1
 
@@ -1497,12 +1574,31 @@ def get_main_pr_language(languages, files) -> str:
 
 
 
+@dataclass(frozen=True)
+class PRCommit:
+    sha: str
+    message: str
+    url: str = ""
+    parents: tuple[str, ...] | None = None
+
+
+_HUNK_LINE_NUMBERS_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", re.MULTILINE)
+
+
+def commit_patch_fingerprint(files: Iterable[tuple[str, str]]) -> str:
+    digest = hashlib.sha256()
+    for name, patch in sorted((name, _HUNK_LINE_NUMBERS_RE.sub("@@", patch)) for name, patch in files):
+        digest.update(f"{name}\0{patch}\0".encode())
+    return digest.hexdigest()
+
+
 class IncrementalPR:
     def __init__(self, is_incremental: bool = False):
         self.is_incremental = is_incremental
         self.commits_range = None
         self.first_new_commit = None
         self.last_seen_commit = None
+        self.head_sha = None
 
     @property
     def first_new_commit_sha(self):

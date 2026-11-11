@@ -161,7 +161,6 @@ jobs:
           PR_AGENT_EVENT_NAME: ${{ steps.replay.outputs.event_name || github.event_name }}
           PR_AGENT_EVENT_PATH: ${{ steps.replay.outputs.event_path || '/github/workflow/event.json' }}
           OPENAI_KEY: ${{ secrets.QODO_SPONSORSHIP_LLM_KEY }}
-          OPENAI__API_BASE: https://ai-gateway.qodo.ai/v1
           CONFIG__MODEL: openai/gpt-6.1-sol
           CONFIG__MODEL_WEAK: openai/gpt-6.1-sol
           CONFIG__MODEL_REASONING: openai/gpt-6.1-sol
@@ -185,4 +184,4 @@ jobs:
           GITHUB_ACTION_CONFIG__AUTO_DESCRIBE: 'true'
           GITHUB_ACTION_CONFIG__AUTO_REVIEW: 'true'
           GITHUB_ACTION_CONFIG__AUTO_IMPROVE: 'true'
-          GITHUB_ACTION_CONFIG__FAIL_ON_TOOL_ERRORS: 'true'
+          GITHUB_ACTION_CONFIG__FAIL_ON_COMMAND_ERRORS: 'true'

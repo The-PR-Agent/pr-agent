@@ -108,6 +108,11 @@ def test_every_get_all_call_sets_per_page():
             get_all_calls.append(keywords)
 
     assert get_all_calls
+    page_sizes = []
     for keywords in get_all_calls:
         per_page = keywords.get("per_page")
-        assert isinstance(per_page, ast.Constant) and per_page.value == 100
+        assert isinstance(per_page, ast.Constant)
+        page_sizes.append(per_page.value)
+    # The MR diffs retry for GitLab before 17.11 (#4793) is the only call below the maximum.
+    assert page_sizes.count(20) == 1
+    assert all(size == 100 for size in page_sizes if size != 20)
