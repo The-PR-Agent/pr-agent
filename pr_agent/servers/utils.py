@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from pr_agent.agent.pr_agent import split_command_words
+from pr_agent.algo.command_words import split_command_words
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
