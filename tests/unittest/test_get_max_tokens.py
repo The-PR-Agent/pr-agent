@@ -522,16 +522,23 @@ class TestGetMaxTokens:
         assert get_max_tokens(model, ignore_max_model_tokens=True) == expected
 
     @pytest.mark.parametrize("model, input_limit", [
-        ("openrouter/anthropic/claude-sonnet-5", 1000000),
         ("openrouter/deepseek/deepseek-chat", 163840),
+        *[
+            (f"openrouter/anthropic/claude-{name}", 1000000)
+            for name in (
+                "sonnet-5", "sonnet-5.5", "sonnet-4.6", "sonnet-4.5",
+                "opus-5.5", "opus-5", "opus-4.8", "opus-4.7", "opus-4.6",
+                "haiku-5.5", "fable-5.2", "fable-5.1", "fable-5",
+            )
+        ],
     ])
     @pytest.mark.parametrize("cap", [0, 32000, 500000])
     def test_openrouter_input_budget_regression(self, monkeypatch, model, input_limit, cap):
         """Guard verified input budgets, including reductions hidden by the default cap.
 
         These are compatibility baselines, not immutable provider limits. LiteLLM 1.108
-        dropped deepseek-chat and understates claude-sonnet-5 (200000), so both are
-        pinned in MAX_TOKENS at the limits OpenRouter lists. Revalidate intentional
+        dropped deepseek-chat and reports 200000 for these Anthropic models, so they
+        are pinned in MAX_TOKENS at the limits OpenRouter lists. Revalidate intentional
         changes rather than deriving expected values from the SDK lookup.
         """
         assert MAX_TOKENS[model] == input_limit
