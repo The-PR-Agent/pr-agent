@@ -72,6 +72,24 @@ def matches_review_state(review_state: Any, configured_states: Any) -> bool:
     )
 
 
+def pushed_base_branch_merge(git_provider: Any, before_sha: Any, after_sha: Any) -> bool:
+    """Whether a synchronize event's push only merged the base branch into the PR, as "Update branch" does.
+
+    The pushed head (`after`) must be a merge commit whose first parent is the previous head (`before`) and
+    whose second parent is on the base branch, so the push brought no other commit. The event does not say
+    this: its `pull_request.merge_commit_sha` is GitHub's test merge of the head into the base, never the head
+    itself. Without both commits, or when the provider cannot tell, the push is handled as an ordinary one.
+    """
+    is_base_branch_merge = getattr(git_provider, "is_base_branch_merge", None)
+    if not callable(is_base_branch_merge) or not all(isinstance(sha, str) and sha for sha in (before_sha, after_sha)):
+        return False
+    try:
+        return bool(is_base_branch_merge(after_sha, before_sha))
+    except Exception as e:
+        get_logger().warning(f"Could not tell whether {after_sha} only merges the base branch; handling the push: {e}")
+        return False
+
+
 def _reformat_quote_ask_command(comment_body: str) -> str | None:
     """Move a /ask command buried in a quoted Golf/mobile reply to the front so it
     is dispatched, preserving the whole question text. Returns None when the

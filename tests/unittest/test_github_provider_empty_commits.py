@@ -6,17 +6,18 @@ from github.Commit import Commit
 from pr_agent.git_providers.github_provider import GithubProvider
 
 
-def _commit(sha: str) -> Commit:
-    return Commit(
-        requester=MagicMock(),
-        headers={},
-        attributes={
-            "sha": sha,
-            "url": f"https://api.github.com/repos/owner/repo/commits/{sha}",
-            "html_url": f"https://github.com/owner/repo/commit/{sha}",
-        },
-        completed=True,
-    )
+def _commit(sha: str, parents: tuple[str, ...] | None = None) -> Commit:
+    attributes = {
+        "sha": sha,
+        "url": f"https://api.github.com/repos/owner/repo/commits/{sha}",
+        "html_url": f"https://github.com/owner/repo/commit/{sha}",
+    }
+    if parents is not None:
+        # The PR commits endpoint lists each commit with its parents.
+        attributes["parents"] = [
+            {"sha": parent, "url": f"https://api.github.com/repos/owner/repo/commits/{parent}"} for parent in parents
+        ]
+    return Commit(requester=MagicMock(), headers={}, attributes=attributes, completed=True)
 
 
 def _provider(pr, repo) -> GithubProvider:
@@ -69,3 +70,78 @@ def test_commit_selection_and_check_run_use_the_pull_request_head(listed_count, 
     assert lookup.args == ("GET", f"https://api.github.com/repos/owner/repo/commits/{head_sha}/check-runs")
     assert create.args == ("POST", "https://api.github.com/repos/owner/repo/check-runs")
     assert create.kwargs["input"]["head_sha"] == head_sha
+
+
+OLD_BASE, BASE, FEATURE, FIX, OTHER, MERGE = (letter * 40 for letter in "dbfeca")
+
+
+def _provider_with_commits(commits, head_commit, repo=None):
+    pr = MagicMock()
+    pr.get_commits.return_value = commits
+    pr.head.sha = head_commit.sha
+    pr.base.sha, pr.base.ref = BASE, "main"
+    repo = repo or MagicMock()
+    repo.get_commit.return_value = head_commit
+    provider = _provider(pr, repo)
+    provider._get_repo = lambda: repo
+    repo.get_commit.reset_mock()
+    return provider, repo
+
+
+@pytest.mark.parametrize(
+    ("parents", "compare_status", "expected"),
+    [
+        ((FEATURE, BASE), None, True),
+        ((FEATURE, OLD_BASE), "ahead", True),
+        ((FIX, BASE), None, False),
+        ((FEATURE, OTHER), "diverged", False),
+        ((FEATURE, OTHER), "behind", False),
+        ((FEATURE,), None, False),
+        ((FEATURE, BASE, OTHER), None, False),
+    ],
+    ids=[
+        "update-branch",
+        "merge-of-older-base-commit",
+        "merge-after-new-commit",
+        "merge-of-other-branch",
+        "merge-of-branch-ahead-of-base",
+        "ordinary-commit",
+        "octopus-merge",
+    ],
+)
+def test_is_base_branch_merge(parents, compare_status, expected):
+    # The push moved the PR from FEATURE to MERGE. "Update branch" merges the base branch's head (the PR's
+    # base commit, BASE) into FEATURE; a `git pull` after committing FIX on FEATURE has FIX as first parent.
+    commits = [_commit(FEATURE, (OLD_BASE,))]
+    if FIX in parents:
+        commits.append(_commit(FIX, (FEATURE,)))
+    commits.append(_commit(MERGE, parents))
+    provider, repo = _provider_with_commits(commits, commits[-1])
+    repo.compare.return_value.status = compare_status
+
+    assert provider.is_base_branch_merge(MERGE, FEATURE) is expected
+    repo.get_commit.assert_not_called()
+    if compare_status is None:
+        repo.compare.assert_not_called()
+    else:
+        repo.compare.assert_called_once_with(parents[1], "main")
+
+
+def test_is_base_branch_merge_reads_head_beyond_commit_list():
+    commits = [_commit(f"{number:040x}", (f"{number - 1:040x}",)) for number in range(1, 251)]
+    head = _commit(MERGE, (commits[-1].sha, BASE))
+    provider, repo = _provider_with_commits(commits, head)
+
+    assert provider.last_commit_id is head
+    assert provider.is_base_branch_merge(MERGE, commits[-1].sha) is True
+    repo.get_commit.assert_not_called()
+    repo.compare.assert_not_called()
+
+
+def test_is_base_branch_merge_reads_unlisted_commit_from_repository():
+    commits = [_commit(FEATURE, (OLD_BASE,))]
+    provider, repo = _provider_with_commits(commits, commits[-1])
+    repo.get_commit.return_value = _commit(MERGE, (FEATURE, BASE))
+
+    assert provider.is_base_branch_merge(MERGE, FEATURE) is True
+    repo.get_commit.assert_called_once_with(MERGE)
