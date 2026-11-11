@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import get_artifact_context, prompt_boundary_markers, resolve_artifact_path
+from pr_agent.algo.chunk_runner import run_chunk_batch
 from pr_agent.algo.comment_identity import (
     PRCommandNoticeIdentity,
     PRReviewHeader,
@@ -1335,9 +1336,11 @@ class PRReviewer:
             len(patches_diff_list),
             completed=len(patches_diff_list) - len(pending_indices),
         )
-        predictions = await asyncio.gather(
-            *[self._review_chunk(model, prompt) for prompt in prompts],
-            return_exceptions=True)
+        predictions = await run_chunk_batch(
+            prompts,
+            lambda prompt: self._get_prediction(model, prompt),
+            reporter=self._chunk_progress,
+        )
 
         chunk_errors = []
         for chunk_index, prediction in zip(pending_indices, predictions, strict=True):
@@ -1346,8 +1349,6 @@ class PRReviewer:
                 get_logger().warning(f"Failed to review chunk {chunk_index + 1}; retaining successful chunks",
                                      artifact={"error": prediction})
                 continue
-            if isinstance(prediction, BaseException):
-                raise prediction
             try:
                 data = self._load_valid_review_yaml(prediction, source=f"review chunk {chunk_index + 1}")
             except Exception as error:
@@ -1476,15 +1477,6 @@ class PRReviewer:
             for model in models:
                 record_model_used(model, is_fallback=model != self._chunked_primary_model)
         return True
-
-    async def _review_chunk(self, model: str, prompt: str) -> str:
-        """Review one chunk, then advance the in-place progress comment it runs under."""
-        try:
-            return await self._get_prediction(model, prompt)
-        finally:
-            progress = getattr(self, "_chunk_progress", None)
-            if progress is not None:
-                await progress.record_settled()
 
     async def _get_prediction(self, model: str, patches_diff: str | None = None) -> str:
         """
