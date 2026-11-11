@@ -52,6 +52,27 @@ def _make_prediction_reviewer(git_provider=None):
     return reviewer
 
 
+def test_merge_recommendation_status_is_opt_in(monkeypatch):
+    settings = get_settings()
+    provider = MagicMock()
+    reviewer = _make_reviewer(provider)
+    reviewer._merge_recommendation_status = "needs_review"
+
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.pr_reviewer, "publish_merge_recommendation_status", False)
+    reviewer._publish_merge_recommendation_status()
+    provider.publish_merge_recommendation_status.assert_not_called()
+
+    monkeypatch.setitem(settings.pr_reviewer, "publish_merge_recommendation_status", True)
+    reviewer._publish_merge_recommendation_status()
+    provider.publish_merge_recommendation_status.assert_called_once_with("needs_review")
+
+    provider.publish_merge_recommendation_status.reset_mock()
+    monkeypatch.setitem(settings.config, "publish_output", False)
+    reviewer._publish_merge_recommendation_status()
+    provider.publish_merge_recommendation_status.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_pr_review_json_is_written_after_publication(monkeypatch, tmp_path):
     from pr_agent.commands import pr_reviewer as pr_reviewer_module

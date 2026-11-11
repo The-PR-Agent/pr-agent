@@ -613,6 +613,9 @@ class GithubProvider(GitProvider):
         """
         return self._get_complete_files()
 
+    def get_verdict_diff_files(self) -> list:
+        return list(self._get_complete_files())
+
     def get_num_of_files(self):
         if hasattr(self.git_files, "totalCount"):
             return self.git_files.totalCount
@@ -1136,6 +1139,34 @@ class GithubProvider(GitProvider):
             return True
         return False
 
+    def publish_merge_recommendation_status(self, recommendation: str) -> bool:
+        """Publish the computed verdict as the review check's conclusion."""
+        conclusions = {
+            "no_concerns_found": "success",
+            "needs_review": "neutral",
+            "changes_required": "failure",
+        }
+        conclusion = conclusions.get(recommendation)
+        if conclusion is None:
+            get_logger().warning(f"Cannot publish an unknown merge recommendation: {recommendation!r}")
+            return False
+
+        name = "review"
+        body = {
+            "status": "completed",
+            "conclusion": conclusion,
+            "output": {
+                "title": self._check_run_name(name),
+                "summary": f"Computed merge recommendation: {recommendation}",
+            },
+        }
+        if self._upsert_check_run(name, body, update_body={"status": "completed", "conclusion": conclusion}):
+            self._check_runs_in_progress.discard(name)
+            self._check_run_base_summaries.pop(name, None)
+            self._check_runs_progress_blocked.discard(name)
+            return True
+        return False
+
     def start_check_run(self, name: str, summary: str) -> bool:
         """Open the command's check run as in_progress before it has any output to publish.
 
@@ -1202,7 +1233,7 @@ class GithubProvider(GitProvider):
             return True
         return False
 
-    def _upsert_check_run(self, name: str, body: dict) -> bool:
+    def _upsert_check_run(self, name: str, body: dict, update_body: dict | None = None) -> bool:
         """Update the `PR Agent - {Name}` check run on the head commit, creating it if absent."""
         if not getattr(self, 'last_commit_id', None):
             get_logger().error("Cannot publish check run without a commit SHA")
@@ -1216,7 +1247,7 @@ class GithubProvider(GitProvider):
             # `github-actions`, shared with every other workflow, so the app
             # alone cannot identify it.
             create_body.setdefault("external_id", run_id)
-        update_body = body
+        update_body = body if update_body is None else update_body
         existing_id = self._check_run_ids.get(name)
         if not existing_id:
             existing_id = self._find_existing_check_run(check_run_name, self.last_commit_id.sha)

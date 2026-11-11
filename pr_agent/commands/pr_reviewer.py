@@ -39,6 +39,8 @@ from pr_agent.algo.inline_comment_dedup import (
     strip_markers,
 )
 from pr_agent.algo.language_handler import filter_bad_extensions
+from pr_agent.algo.markdown_span import _markdown_code_span
+from pr_agent.algo.merge_verdict import compute_merge_verdict
 from pr_agent.algo.output_models import PRReview, parse_artifact_findings, parse_failure_modes
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
@@ -87,7 +89,6 @@ from pr_agent.algo.utils import (
     is_value_no,
     load_yaml,
 )
-from pr_agent.commands.pr_code_suggestions import _markdown_code_span
 from pr_agent.commands.progress_comment import ChunkProgressReporter
 from pr_agent.commands.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
@@ -199,6 +200,37 @@ def _is_structural_reach_key(key) -> bool:
 def _is_risk_checks_key(key) -> bool:
     """Whether a review key would render like the deterministic risk checks row, whatever its separators."""
     return re.sub(r"[^a-z0-9]", "", str(key).lower()) in ("riskchecks", "deterministicrisk")
+
+
+def _is_merge_recommendation_key(key) -> bool:
+    """Whether a review key would render like the computed merge recommendation, whatever its separators."""
+    return re.sub(r"[^a-z0-9]", "", str(key).lower()) == "mergerecommendation"
+
+
+def _is_merge_recommendation_checks_key(key) -> bool:
+    """Whether a review key would render like the deterministic merge checks row."""
+    return re.sub(r"[^a-z0-9]", "", str(key).lower()) == "mergerecommendationchecks"
+
+
+def _with_merge_verdict(review: dict, verdict: dict) -> dict:
+    """Put the computed recommendation and its checks next to the model's answer."""
+    updated = {}
+    inserted = False
+    for key, value in review.items():
+        if _is_merge_recommendation_checks_key(key):
+            continue
+        if _is_merge_recommendation_key(key):
+            if inserted:
+                continue
+            updated["merge_recommendation"] = verdict["recommendation"]
+            updated["merge_recommendation_checks"] = verdict["checks"]
+            inserted = True
+        else:
+            updated[key] = value
+    if not inserted:
+        updated["merge_recommendation"] = verdict["recommendation"]
+        updated["merge_recommendation_checks"] = verdict["checks"]
+    return updated
 
 
 class PRReviewer:
@@ -667,6 +699,7 @@ class PRReviewer:
                     reason += ": no major issues detected."
                 get_logger().info(reason)
                 get_settings().data = {"artifact": pr_review}
+                self._publish_merge_recommendation_status()
                 self._review_done = True
                 return
 
@@ -788,6 +821,8 @@ class PRReviewer:
                     self.git_provider.remove_comment(progress_response)
                 except Exception as e:
                     get_logger().exception(f"Failed to remove review progress comment, error: {e}")
+            if not review_failed:
+                self._publish_merge_recommendation_status()
             if review_failed:
                 # Record the failure here, where `review_failed` is consumed: the branches above
                 # set it and go on to publish a failure comment instead of raising, so the run
@@ -880,6 +915,24 @@ class PRReviewer:
                 f"Failed to publish review check run, error: {error}"
             )
             return False
+
+    def _publish_merge_recommendation_status(self) -> None:
+        recommendation = getattr(self, "_merge_recommendation_status", None)
+        settings = get_settings()
+        if (
+            not recommendation
+            or not settings.config.publish_output
+            or not _as_bool(settings.pr_reviewer.get("publish_merge_recommendation_status", False))
+        ):
+            return
+
+        publisher = getattr(self.git_provider, "publish_merge_recommendation_status", None)
+        if not callable(publisher):
+            get_logger().warning(
+                f"Git provider does not support publishing merge recommendation status: {recommendation}"
+            )
+        elif not publisher(recommendation):
+            get_logger().warning(f"Failed to publish merge recommendation status: {recommendation}")
 
     def _review_finding_state_in_play(self) -> bool:
         if not get_settings().pr_reviewer.get("persistent_finding_state", True):
@@ -1586,13 +1639,17 @@ class PRReviewer:
         Prepare the PR review by processing the AI prediction and generating a markdown-formatted text that summarizes
         the feedback.
         """
+        self._merge_recommendation_status = None
         data = self.prediction_data if self.prediction_data is not None else self._load_review_yaml(self.prediction)
         if isinstance(data, dict) and isinstance(data.get("review"), dict):
             if not getattr(self, "vars", {}).get("require_failure_modes", False):
                 data["review"].pop("failure_modes", None)
             if not getattr(self, "vars", {}).get("require_artifact_findings", False):
                 data["review"].pop("artifact_findings", None)
-            for key in [k for k in data["review"] if _is_structural_reach_key(k) or _is_risk_checks_key(k)]:
+            for key in [k for k in data["review"]
+                        if _is_structural_reach_key(k)
+                        or _is_risk_checks_key(k)
+                        or _is_merge_recommendation_checks_key(k)]:
                 data["review"].pop(key)
         if self.prediction_data is None:
             self._validate_review_schema(data)
@@ -1616,7 +1673,20 @@ class PRReviewer:
         if structural_reach:
             data["review"] = {"structural_reach": structural_reach, **data["review"]}
 
+        diff_files = self.git_provider.get_diff_files()
+        require_merge_recommendation = getattr(self, "vars", {}).get("require_merge_recommendation", False)
         unfiltered_files = None
+        verdict_diff_files = None
+        if require_merge_recommendation:
+            get_verdict_diff_files = getattr(self.git_provider, "get_verdict_diff_files", None)
+            try:
+                verdict_diff_files = get_verdict_diff_files() if callable(get_verdict_diff_files) else None
+            except Exception as error:
+                get_logger().warning(f"Could not retrieve the complete PR diff for merge recommendation: {error}")
+                verdict_diff_files = None
+            risk_diff_files = verdict_diff_files
+        else:
+            risk_diff_files = diff_files
         if hasattr(self.git_provider, "get_pr_file_paths"):
             try:
                 unfiltered_files = self.git_provider.get_pr_file_paths()
@@ -1632,9 +1702,26 @@ class PRReviewer:
         if filtered_names:
             unfiltered_files = list(unfiltered_files or []) + list(filtered_names)
 
-        risk_checks = build_risk_checks(self.git_provider.get_diff_files(), unfiltered_files=unfiltered_files)
+        risk_checks = build_risk_checks(
+            risk_diff_files,
+            unfiltered_files=unfiltered_files,
+            include_clean=require_merge_recommendation,
+        )
+        if require_merge_recommendation and verdict_diff_files is None:
+            risk_checks = None
         if risk_checks and risk_checks.get("has_findings"):
             data["review"] = {"risk_checks": risk_checks, **data["review"]}
+
+        if require_merge_recommendation:
+            verdict = compute_merge_verdict(
+                self.git_provider,
+                verdict_diff_files,
+                model_recommendation=data["review"].get("merge_recommendation"),
+                model_risk_level=data["review"].get("risk_level"),
+                risk_checks=risk_checks,
+            )
+            self._merge_recommendation_status = verdict["recommendation"]
+            data["review"] = _with_merge_verdict(data["review"], verdict)
 
         structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
         if callable(structured_publisher) or review_json_output_path.get():
