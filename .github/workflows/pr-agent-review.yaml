@@ -364,7 +364,10 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           ARTIFACT_PATH: ${{ steps.context-artifact.outcome == 'success' && steps.context-artifact.outputs.path || '' }}
           ARTIFACT_INSTRUCTIONS: ${{ steps.context-artifact.outcome == 'success' && needs.prepare_review.outputs.instructions || '' }}
+          # The image follows the latest release: v0.50.0 reads TARGET_TOOLS, releases after #4838 read
+          # TARGET_COMMANDS. Drop TARGET_TOOLS once the image includes #4838.
           ARTIFACTS__TARGET_TOOLS: '["pr_reviewer"]'
+          ARTIFACTS__TARGET_COMMANDS: '["pr_reviewer"]'
           # The app token posts as `<app-slug>[bot]` and cannot call `GET /user`, so name that login
           # for the comment-authorship checks; empty keeps the `github-actions[bot]` fallback.
           GITHUB__AGENT_LOGIN: ${{ steps.app-token.outputs.app-slug && format('{0}[bot]', steps.app-token.outputs.app-slug) || '' }}

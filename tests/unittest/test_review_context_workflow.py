@@ -358,5 +358,6 @@ def test_workflow_preserves_trust_and_fallback_boundaries():
         "${{ steps.context-artifact.outcome == 'success' && needs.prepare_review.outputs.instructions || '' }}"
     )
     assert action["env"]["ARTIFACTS__TARGET_TOOLS"] == '["pr_reviewer"]'
+    assert action["env"]["ARTIFACTS__TARGET_COMMANDS"] == '["pr_reviewer"]'
     for tool in ("DESCRIBE", "REVIEW", "IMPROVE"):
         assert action["env"][f"GITHUB_ACTION_CONFIG__AUTO_{tool}"] == "true"

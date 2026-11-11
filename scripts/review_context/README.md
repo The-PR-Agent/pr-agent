@@ -36,6 +36,8 @@ Hand the bundle to pr-agent, here for `/review` only:
 ```bash
 export ARTIFACT_PATH=/tmp/review-context/pr$PR_NUMBER.G6.md
 export ARTIFACT_INSTRUCTIONS="$(cat scripts/review_context/instructions.txt)"
+export ARTIFACTS__TARGET_COMMANDS='["pr_reviewer"]'
+# pr-agent 0.50.0 and earlier read the old name
 export ARTIFACTS__TARGET_TOOLS='["pr_reviewer"]'
 ```
 
