@@ -530,7 +530,9 @@ def test_plain_diff_describe_fails_when_all_files_are_ignored(monkeypatch, tmp_p
     assert not output.exists()
 
 
-def test_plain_diff_json_command_failure_returns_nonzero_without_error_propagation(monkeypatch, tmp_path, cfg):
+@pytest.mark.parametrize("command", ["describe", "review", "improve"])
+def test_plain_diff_json_command_failure_returns_nonzero_without_error_propagation(
+        monkeypatch, tmp_path, cfg, command):
     from pr_agent.algo.run_details import record_command_failure
 
     class FailedAgent:
@@ -542,7 +544,7 @@ def test_plain_diff_json_command_failure_returns_nonzero_without_error_propagati
     monkeypatch.setattr("pr_agent.cli.PRAgent", FailedAgent)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
 
-    assert run(inargs=["--stdin", "--json-output", str(tmp_path / "result.json"), "describe"]) == 1
+    assert run(inargs=["--stdin", "--json-output", str(tmp_path / "result.json"), command]) == 1
 
 
 def test_plain_diff_ask_keeps_output_after_command_settings(monkeypatch, tmp_path, capsys):

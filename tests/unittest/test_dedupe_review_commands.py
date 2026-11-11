@@ -62,3 +62,25 @@ def test_dedupe_keeps_an_unterminated_quote_apart():
 
 def test_dedupe_treats_review_pr_as_review():
     assert dedupe_review_commands(["/review_pr", "/improve"]) == ["/review"]
+
+
+def test_dedupe_accepts_a_double_quote_inside_single_quotes():
+    review = "/review --pr_reviewer.extra_instructions='Check a literal \" character'"
+
+    assert dedupe_review_commands([review, "/improve"]) == [review]
+
+
+def test_dedupe_keeps_an_unterminated_single_quote_apart():
+    broken = "/review --pr_reviewer.extra_instructions='unfinished"
+
+    assert dedupe_review_commands([broken, "/improve"]) == [broken, "/review"]
+
+
+@pytest.mark.parametrize("override", [None, False, [], ""])
+def test_a_falsy_pr_commands_override_still_disables_the_automatic_commands(monkeypatch, override):
+    from pr_agent.config_loader import get_settings
+    from pr_agent.servers.utils import get_pr_commands
+
+    monkeypatch.setitem(get_settings().github_app, "pr_commands", override)
+
+    assert not get_pr_commands("github_app")

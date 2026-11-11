@@ -309,7 +309,7 @@ def run(inargs=None, args=None):
         )
         json_artifact_required = label_json_required or bool(
             diff_mode and getattr(args, "json_output", None) is not None
-            and command in _JSON_DESCRIBE_COMMANDS
+            and command in _JSON_REVIEW_COMMANDS | _JSON_DESCRIBE_COMMANDS
         )
         if (settings.config.get("propagate_command_errors", False) or json_artifact_required) and (
             result is False or recorded_failure

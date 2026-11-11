@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from pr_agent.agent.pr_agent import split_command_words
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -102,21 +103,21 @@ def auto_feedback_disabled() -> bool:
     )
 
 
-# A command token: bare characters, a quoted run, or a stray quote kept as is. The alternatives cannot
-# match the same character, so matching is linear.
-_COMMAND_TOKEN_RE = re.compile(r"""(?:[^\s"']+|"[^"]*"|'[^']*'|["'])+""")
 _REVIEW_COMMAND_NAMES = frozenset({"review", "review_pr", "improve", "improve_code"})
 
 
 def _review_command_tokens(command) -> list[str]:
-    """Tokens of a /review, /improve or /improve_code entry, or [] for anything else.
+    """Words of a /review, /improve or /improve_code entry, quoting kept, or [] for anything else.
 
-    An entry with an unterminated double quote fails to parse later, so it stays apart
+    An entry the command parser rejects (an unterminated quote, for instance) stays apart
     instead of swallowing a valid review entry.
     """
-    if not isinstance(command, str) or command.count('"') % 2:
+    if not isinstance(command, str):
         return []
-    tokens = _COMMAND_TOKEN_RE.findall(command)
+    try:
+        tokens = split_command_words(command)
+    except ValueError:
+        return []
     return tokens if tokens and tokens[0].lstrip("/").lower() in _REVIEW_COMMAND_NAMES else []
 
 
@@ -153,7 +154,7 @@ def get_pr_commands(provider: str) -> Sequence[str]:
     if configured is not _MISSING:
         if isinstance(configured, str):
             configured = normalize_setting_list(configured)
-        return dedupe_review_commands(configured)
+        return dedupe_review_commands(configured) if configured else configured
     return list(_DEFAULT_PR_COMMANDS_BY_PROVIDER[provider])
 
 

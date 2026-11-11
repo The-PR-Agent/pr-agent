@@ -107,7 +107,15 @@ def _publish_incomplete_files_comment(
     except Exception:
         get_logger().exception("Failed to publish the incomplete-files notice")
 
-def _split_command(command: str, *, single_quotes: bool = True) -> list[tuple[str, bool]]:
+def split_command_words(command: str) -> list[str]:
+    """Split a configured command on the boundaries ``parse_command`` uses, keeping each word's quoting.
+
+    Raises ValueError when ``parse_command`` would reject the command.
+    """
+    return _split_command(command, raw=True)
+
+
+def _split_command(command: str, *, single_quotes: bool = True, raw: bool = False):
     """Split an auto command and retain whether each token was quoted.
 
     ``shlex.split`` removes quote markers before setting overrides are handed to
@@ -128,19 +136,23 @@ def _split_command(command: str, *, single_quotes: bool = True) -> list[tuple[st
     value_was_quoted = False
     equals_seen = False
     token_started = False
+    raw_start = None
 
     def flush_token():
-        nonlocal equals_seen, token_started, token, value_was_quoted
+        nonlocal equals_seen, token_started, token, value_was_quoted, raw_start
         if token_started:
-            tokens.append(("".join(token), value_was_quoted))
+            tokens.append(command[raw_start:index] if raw else ("".join(token), value_was_quoted))
         token = []
         equals_seen = False
         token_started = False
         value_was_quoted = False
+        raw_start = None
 
     index = 0
     while index < len(command):
         character = command[index]
+        if raw_start is None and not character.isspace():
+            raw_start = index
         if quote is None:
             if character.isspace():
                 flush_token()
