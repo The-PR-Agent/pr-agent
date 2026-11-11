@@ -119,8 +119,8 @@ query($project: ID!, $ref: String!, $paths: [String!]!) {
 # GitLab matches references after an ASCII-only boundary (Ruby's \w), and decodes entities for @ first.
 _GITLAB_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_])(?:@|&#0{0,5}64;|&#[xX]0{0,4}40;|&commat;)(?=[\w-])")
 # Autolinked URLs render as links, which GitLab never scans for references. The span stops at Markdown
-# delimiters, so a mention right after a link, code span or quote is still neutralised.
-_GITLAB_AUTOLINK_RE = re.compile(r"(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{1,31}://[^\s<>`()\[\]\"']+")
+# delimiters, so a mention right after a link, code span, quote, emphasis, table cell or escape is still neutralised.
+_GITLAB_AUTOLINK_RE = re.compile(r"(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{1,31}://[^\s<>`()\[\]\"'*~|\\]+")
 _GITLAB_TICK_RUN_RE = re.compile(r"`+")
 _GITLAB_FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})")
 _GITLAB_ATX_RE = re.compile(r" {0,3}#{1,6}(?:\s|$)")

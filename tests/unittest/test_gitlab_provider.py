@@ -144,6 +144,10 @@ def test_neutralize_gitlab_mentions_resumes_after_an_autolinked_url():
     ("`https://example.com`/@user", "`https://example.com`/@\u200buser"),
     ("[https://example.com]@user", "[https://example.com]@\u200buser"),
     ("\"https://example.com\"@user", "\"https://example.com\"@\u200buser"),
+    ("**https://x.com**@all", "**https://x.com**@\u200ball"),
+    ("~~https://x.com~~@all", "~~https://x.com~~@\u200ball"),
+    ("|https://x.com|@all|", "|https://x.com|@\u200ball|"),
+    ("https://x.com\\@all", "https://x.com\\@\u200ball"),
 ])
 def test_neutralize_gitlab_mentions_ends_a_url_at_markdown_delimiters(text, expected):
     assert _neutralize_gitlab_mentions(text) == expected
