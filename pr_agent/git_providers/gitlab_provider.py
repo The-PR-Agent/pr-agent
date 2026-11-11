@@ -1109,6 +1109,12 @@ class GitLabProvider(GitProvider):
         "suggestions": _SUGGESTIONS_STABLE_ANCHORS + _SUGGESTIONS_LEGACY_ANCHORS,
     }
 
+    def reset_diff_cache_for_command(self) -> None:
+        super().reset_diff_cache_for_command()
+        # The provisional-empty retry lives at the command boundary now (#4860), so the
+        # MR changes cache re-polls together with the diff cache it feeds.
+        self._merge_request_changes_cache = None
+
     def get_incremental_commits(self, incremental: IncrementalPR | None = None, kind: str = "review"):
         """Populate state needed for an incremental run.
 
@@ -1807,11 +1813,10 @@ class GitLabProvider(GitProvider):
             get_logger().info(f"Filtered out files with invalid extensions: {invalid_files_names}")
 
         self.filtered_diff_file_names = invalid_files_names
-        # Retry provisional empty diffs until GitLab reports a verified change count.
-        if not diff_files and not incremental_active:
-            change_count = mr_changes.get("changes_count")
-            if not isinstance(change_count, str) or not change_count.isdecimal():
-                return diff_files
+        # A provisional empty diff (no verified change count yet) caches like any other
+        # result: consistent within a command, and re-polled at the next command boundary
+        # (reset_diff_cache_for_command, #4373) instead of on every get_diff_files() call,
+        # where two calls in one command could see different file sets.
         self.diff_files = diff_files
         self._diff_head_sha = head_sha_for_content
         return diff_files

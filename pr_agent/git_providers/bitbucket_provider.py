@@ -440,7 +440,9 @@ class BitbucketProvider(GitProvider):
             return self.git_files
 
     def get_diff_files(self) -> list[FilePatchInfo]:
-        if self.diff_files:
+        # `is not None`: an empty diff is a completed result and caches like any other,
+        # so repeated calls within a command make one diffstat + diff round trip.
+        if self.diff_files is not None:
             self._pending_diffstat = None
             return self.diff_files
 

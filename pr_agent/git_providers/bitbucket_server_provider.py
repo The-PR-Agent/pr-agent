@@ -277,7 +277,9 @@ class BitbucketServerProvider(GitProvider):
         return guaranteed_common_ancestor
 
     def get_diff_files(self) -> list[FilePatchInfo]:
-        if self.diff_files:
+        # `is not None`: an empty diff is a completed result and caches like any other,
+        # so repeated calls within a command make one round of API calls (#4860).
+        if self.diff_files is not None:
             return self.diff_files
 
         head_sha = self.pr.fromRef['latestCommit']

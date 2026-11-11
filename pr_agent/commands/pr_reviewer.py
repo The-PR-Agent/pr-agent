@@ -622,7 +622,9 @@ class PRReviewer:
 
             # PyGithub fetches diff files synchronously; keep large fetches off the webhook event loop.
             diff_files = await asyncio.to_thread(self.git_provider.get_diff_files)
-            # GitLab leaves its diff cache unset when an empty response is still provisional.
+            # Since #4861 every provider caches a completed empty diff, so an unconfirmed
+            # one — an empty result whose provider left the cache unset — is only possible
+            # for a provider that does not follow the contract yet.
             unconfirmed_empty_diff = not diff_files and getattr(self.git_provider, "diff_files", diff_files) is None
             if diff_files is None or unconfirmed_empty_diff or (diff_files and filter_bad_extensions(diff_files)):
                 await extract_and_cache_pr_tickets(self.git_provider, self.vars)
