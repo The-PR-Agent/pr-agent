@@ -7,8 +7,8 @@ from jinja2 import Environment, meta, nodes
 from jinja2.exceptions import SecurityError
 
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format, render_skills_prefix
+from pr_agent.commands import pr_add_docs, pr_code_suggestions, pr_reviewer
 from pr_agent.config_loader import get_settings
-from pr_agent.tools import pr_add_docs, pr_code_suggestions, pr_reviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
@@ -170,7 +170,7 @@ def test_fragment_renderer_sandboxes_host_overrides(restore_prompt_settings):
 
 
 @pytest.mark.parametrize("include_ai_metadata", [False, True])
-def test_tool_initializers_supply_the_fragment_before_token_counting(
+def test_command_initializers_supply_the_fragment_before_token_counting(
     monkeypatch,
     restore_prompt_settings,
     include_ai_metadata,
@@ -188,7 +188,7 @@ def test_tool_initializers_supply_the_fragment_before_token_counting(
     monkeypatch.setattr(pr_reviewer, "build_repo_context", lambda _provider: "")
     monkeypatch.setattr(pr_reviewer, "add_ai_metadata_to_diff_files", lambda _provider, _files: None)
 
-    monkeypatch.setattr(pr_add_docs, "get_git_provider_for_tool", lambda _url: provider)
+    monkeypatch.setattr(pr_add_docs, "get_git_provider_for_command", lambda _url: provider)
     monkeypatch.setattr(pr_add_docs, "get_main_pr_language", lambda _languages, _files: "Python")
 
     monkeypatch.setattr(pr_code_suggestions, "get_git_provider_with_context", lambda _url: provider)
@@ -255,11 +255,11 @@ async def test_reflection_supplies_the_numbered_fragment(
     settings = get_settings()
     settings.set("config.enable_ai_metadata", include_ai_metadata)
     ai_handler = SimpleNamespace(chat_completion=AsyncMock(return_value=("REFLECTION_OK", "stop")))
-    tool = pr_code_suggestions.PRCodeSuggestions.__new__(pr_code_suggestions.PRCodeSuggestions)
-    tool.ai_handler = ai_handler
+    command = pr_code_suggestions.PRCodeSuggestions.__new__(pr_code_suggestions.PRCodeSuggestions)
+    command.ai_handler = ai_handler
     diff = "WITH-LINES {{ must_stay_literal_2959 }}"
 
-    result = await tool.self_reflect_on_suggestions(
+    result = await command.self_reflect_on_suggestions(
         [{"one_sentence_summary": "Keep the shared prompt accurate"}],
         diff,
         settings.config.model,
@@ -303,9 +303,9 @@ def _skills_prelude(prompt_name):
     return get_settings().get(prompt_name).system.partition("You are PR-Reviewer")[0]
 
 
-def test_review_tools_share_an_identical_skills_prefix():
+def test_review_commands_share_an_identical_skills_prefix():
     """/review, /describe and /improve open the system prompt with the same
-    skills_context block, so prefix-based caches can reuse it across tools (#4007)."""
+    skills_context block, so prefix-based caches can reuse it across commands (#4007)."""
     rendered = [
         Environment(autoescape=True).from_string(_skills_prelude(name)).render({"skills_context": "sample skill"})
         for name in _SKILLS_PREFIX_TEMPLATES
@@ -316,7 +316,7 @@ def test_review_tools_share_an_identical_skills_prefix():
 
 
 @pytest.mark.parametrize("prompt_name", _SKILLS_PREFIX_TEMPLATES)
-def test_review_tools_open_with_the_shared_skills_prefix(prompt_name):
+def test_review_commands_open_with_the_shared_skills_prefix(prompt_name):
     fragment = get_settings().prompt_fragments.skills_prefix
     system = get_settings().get(prompt_name).system
 

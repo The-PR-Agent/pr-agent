@@ -26,7 +26,7 @@ const config = {
   tagline: 'AI-powered code review agent',
   url: 'https://docs.pr-agent.ai',
   baseUrl: '/',
-  // The MkDocs site published directory URLs, and pr_agent/tools/pr_help_message.py
+  // The MkDocs site published directory URLs, and pr_agent/commands/pr_help_message.py
   // emits them with a trailing slash into PR comments. Keep them byte-identical.
   trailingSlash: true,
   onBrokenLinks: 'throw',
@@ -144,8 +144,8 @@ const config = {
           },
           {
             type: 'docSidebar',
-            sidebarId: 'tools',
-            label: 'Tools',
+            sidebarId: 'commands',
+            label: 'Commands',
             position: 'left',
           },
           {

@@ -40,6 +40,7 @@ from pr_agent.algo.git_patch_processing import (
 )
 from pr_agent.algo.i18n import t
 from pr_agent.algo.language_handler import build_language_file_matcher
+from pr_agent.algo.merge_verdict import render_merge_recommendation_checks
 from pr_agent.algo.output_models import PRType, SubPR, parse_failure_modes
 from pr_agent.algo.structural_reach import render_structural_reach
 from pr_agent.algo.types import FilePatchInfo
@@ -210,7 +211,8 @@ def convert_to_markdown_v2(output_data: dict,
                            gfm_supported: bool = True,
                            incremental_review=None,
                            git_provider=None,
-                           files=None) -> str:
+                           files=None,
+                           commit_review=None) -> str:
     """
     Convert a dictionary of data into markdown format.
     Args:
@@ -241,8 +243,10 @@ def convert_to_markdown_v2(output_data: dict,
         "Review priority files": "📂",
     }
     markdown_text = ""
-    markdown_text += f"{_ci.format_pr_review_header(incremental=bool(incremental_review))}\n\n"
-    if incremental_review:
+    markdown_text += f"{_ci.format_pr_review_header(incremental=bool(incremental_review or commit_review))}\n\n"
+    if commit_review:
+        markdown_text += f"🔂 Review of commit {commit_review}.\n\n"
+    elif incremental_review:
         bot_display_name = get_bot_display_name()
         markdown_text += f"⏮️ Review for commits since previous {bot_display_name} review {incremental_review}.\n\n"
     if not output_data or not output_data.get('review', {}):
@@ -341,6 +345,8 @@ def convert_to_markdown_v2(output_data: dict,
             markdown_text += render_structural_reach(value, gfm_supported)
         elif key.lower() in ('risk_checks', 'deterministic_risk'):
             markdown_text += render_risk_checks(value, gfm_supported)
+        elif key.lower() == 'merge_recommendation_checks':
+            markdown_text += render_merge_recommendation_checks(value, gfm_supported)
         elif 'risk level' in key_nice.lower():
             risk_value = str(value).strip().lower().replace("_", " ")
             risk_display = risk_value.capitalize() if risk_value else "Unknown"

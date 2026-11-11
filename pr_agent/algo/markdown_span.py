@@ -1,7 +1,7 @@
 """Wrap repository-controlled filenames in a Markdown code span.
 
 A leaf module on purpose: pure text handling with no PR-Agent imports, so every layer
-(algo state, tools, risk rendering) can use it without forming an import cycle —
+(algo state, commands, risk rendering) can use it without forming an import cycle —
 CodeQL flagged exactly that when the helper lived next to its consumers.
 """
 

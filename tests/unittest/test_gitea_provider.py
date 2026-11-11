@@ -1158,7 +1158,8 @@ class TestGiteaProviderPRCommits:
             owner="owner",
             repo="repo",
             commit_sha="head-sha",
-            filepath="main.py"
+            filepath="main.py",
+            propagate_errors=True,
         )
 
 
@@ -2262,7 +2263,7 @@ class TestGiteaRepoIgnoreRules:
 class TestGiteaCommitMessages:
     """Commit messages must stay separable.
 
-    ``get_commit_messages`` feeds seven tools. Gitea previously joined the list with
+    ``get_commit_messages`` feeds seven commands. Gitea previously joined the list with
     ``""``, so two commits reached the prompt as one fused run of text. GitHub
     (``github_provider.py:1879``) and GitLab (``gitlab_provider.py:2286``) both
     number each message and join with newlines, and that is the format Gitea
@@ -2650,7 +2651,8 @@ class TestGiteaAddedFileBaseFetch:
         file = provider.get_diff_files()[0]
 
         repo_api.get_file_content.assert_called_once_with(
-            owner="owner", repo="repo", commit_sha="base-sha", filepath="gone.py"
+            owner="owner", repo="repo", commit_sha="base-sha", filepath="gone.py",
+            propagate_errors=True,
         )
         assert file.head_file == cached_content
         assert provider.file_contents == {"gone.py": cached_content}
@@ -2703,7 +2705,8 @@ class TestGiteaAddedFileBaseFetch:
         file = provider.get_diff_files()[0]
 
         repo_api.get_file_content.assert_called_once_with(
-            owner="owner", repo="repo", commit_sha="base-sha", filepath="gone.py"
+            owner="owner", repo="repo", commit_sha="base-sha", filepath="gone.py",
+            propagate_errors=True,
         )
         assert file.head_file == ""
         assert provider.file_contents == {}
@@ -2886,3 +2889,80 @@ class TestGiteaAddedFileBaseFetch:
             " ",
             " ",
         ]
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_failed_content_fetch_is_not_treated_as_an_empty_file(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        """A failed per-file fetch must not look like a legitimately empty file.
+
+        One modified file raises ApiException. A second modified file in the same
+        pull request is read normally, and a third is genuinely empty at head.
+        """
+        files = [
+            {"filename": "broken.py", "additions": 1, "deletions": 1, "status": "modified"},
+            {"filename": "ok.py", "additions": 1, "deletions": 1, "status": "modified"},
+            {"filename": "empty.py", "additions": 0, "deletions": 1, "status": "modified"},
+        ]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+        provider.logger = MagicMock()
+
+        def get_file_content(**kwargs):
+            filepath = kwargs["filepath"]
+            if filepath == "broken.py":
+                raise ApiException(status=503, reason="unavailable")
+            if filepath == "empty.py":
+                return "" if kwargs["commit_sha"] == "head-sha" else "was here\n"
+            if kwargs["commit_sha"] == "head-sha":
+                return "after\n"
+            return "before\n"
+
+        repo_api.get_file_content.side_effect = get_file_content
+        repo_api.get_pull_request_diff.return_value = (
+            "diff --git a/broken.py b/broken.py\n"
+            "@@ -1 +1 @@\n"
+            "-before\n"
+            "+after\n"
+            "diff --git a/ok.py b/ok.py\n"
+            "@@ -1 +1 @@\n"
+            "-before\n"
+            "+after\n"
+            "diff --git a/empty.py b/empty.py\n"
+            "@@ -1 +0,0 @@\n"
+            "-was here\n"
+        )
+
+        diff_files = provider.get_diff_files()
+        by_name = {diff_file.filename: diff_file for diff_file in diff_files}
+
+        assert set(by_name) == {"broken.py", "ok.py", "empty.py"}
+        broken = by_name["broken.py"]
+        assert broken.content_fetch_failed is True
+        assert broken.edit_type == EDIT_TYPE.MODIFIED
+        assert broken.patch == ""
+        assert broken.head_file == ""
+        assert broken.base_file == ""
+        assert "broken.py" not in provider.file_contents
+
+        ok = by_name["ok.py"]
+        assert ok.content_fetch_failed is False
+        assert ok.head_file == "after\n"
+        assert ok.base_file == "before\n"
+        assert ok.edit_type == EDIT_TYPE.MODIFIED
+        assert "-before" in ok.patch
+        assert "+after" in ok.patch
+
+        empty = by_name["empty.py"]
+        assert empty.content_fetch_failed is False
+        assert empty.head_file == ""
+        assert empty.base_file == "was here\n"
+        assert "-was here" in empty.patch
+        assert provider.file_contents["empty.py"] == ""
+        assert provider.file_contents["ok.py"] == "after\n"
+
+        warnings = " ".join(str(call) for call in provider.logger.warning.call_args_list)
+        assert "broken.py" in warnings
+        assert "ok.py" not in warnings
+        assert "empty.py" not in warnings

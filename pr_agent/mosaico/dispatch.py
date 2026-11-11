@@ -12,7 +12,7 @@ Three paths:
 Inbound text may be a whole forwarded conversation, one part per turn: "{role}: {content}".
 
 Capture is DEFENSIVE everywhere: get_settings().get("data", {}).get("artifact", "")
-(several tool paths never set it, and handle_request swallows exceptions -> False).
+(several command paths never set it, and handle_request swallows exceptions -> False).
 route_and_run_result NEVER raises; on failure/empty it returns an honest fallback string."""
 import asyncio
 import re
@@ -221,7 +221,7 @@ def _error_fallback(verb: str) -> str:
 
 def _ask_needs_context_fallback() -> str:
     """Honest guidance for a context-free input (no PR URL, no diff). Every verb needs a
-    PR/diff to act on, so we return guidance rather than invoking a tool that would fail."""
+    PR/diff to act on, so we return guidance rather than invoking a command that would fail."""
     return "PR-Agent requires a PR URL or a supplied diff."
 
 
@@ -279,19 +279,19 @@ def _pr_fetch_failed_fallback(pr_url: str) -> str:
 
 async def _run_pr_agent(target: str, verb: str) -> "RouteResult":
     """Run a review/improve/describe verb via PRAgent.handle_request, defensively.
-    publish_output=false makes the tools render into get_settings().data instead of the real PR;
-    propagate_tool_errors makes them re-raise, so a failure cannot read back as an empty run."""
+    publish_output=false makes the commands render into get_settings().data instead of the real PR;
+    propagate_command_errors makes them re-raise, so a failure cannot read back as an empty run."""
     from pr_agent.agent.pr_agent import PRAgent
     settings = get_settings()
-    propagate_before = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+    propagate_before = settings.get("CONFIG.PROPAGATE_COMMAND_ERRORS", False)
     try:
         ok = await PRAgent().handle_request(
             target,
             ["/" + verb, "--config.publish_output=false", "--config.publish_output_progress=false",
-             "--config.propagate_tool_errors=true"],
+             "--config.propagate_command_errors=true"],
         )
     finally:
-        settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_before)
+        settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", propagate_before)
     if ok is RequestOutcome.SKIPPED:
         return RouteResult("Request ignored by policy.", ok=True)
     if ok is False:
@@ -305,14 +305,14 @@ async def _run_ask(target: str, question: str) -> "RouteResult":
     from pr_agent.agent.pr_agent import PRAgent
     settings = get_settings()
     settings.set("data.answer", "")
-    propagate_before = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+    propagate_before = settings.get("CONFIG.PROPAGATE_COMMAND_ERRORS", False)
     try:
         ok = await PRAgent().handle_request(
             target, ["ask", encode_user_text_arg(question), "--config.publish_output=false",
-                     "--config.publish_output_progress=false", "--config.propagate_tool_errors=true"],
+                     "--config.publish_output_progress=false", "--config.propagate_command_errors=true"],
         )
     finally:
-        settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_before)
+        settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", propagate_before)
     if ok is RequestOutcome.SKIPPED:
         return RouteResult("Request ignored by policy.", ok=True)
     if ok is False:

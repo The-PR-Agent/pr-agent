@@ -1,7 +1,7 @@
 """A slow sink must not stall the event loop of a running server.
 
 A webhook, Slack or Telegram sink is an HTTP call with a five second timeout. When
-that call runs inline in a tool, the whole deployment waits for it: one slow
+that call runs inline in a command, the whole deployment waits for it: one slow
 collector stops every other pull request the server is handling.
 """
 import asyncio
@@ -12,8 +12,8 @@ import pytest
 
 from pr_agent.algo import output_sinks
 from pr_agent.algo.run_output import push_outputs_async
+from pr_agent.commands import pr_code_suggestions, pr_description, pr_reviewer
 from pr_agent.config_loader import get_settings
-from pr_agent.tools import pr_code_suggestions, pr_description, pr_reviewer
 
 SINK_URL = 'https://example.test/webhook'
 
@@ -46,7 +46,7 @@ def _enable_slow_webhook(monkeypatch, delay=0.3):
 
 
 async def test_a_slow_sink_does_not_block_the_event_loop(monkeypatch):
-    """The tools run inside an event loop, so the delivery has to leave it free."""
+    """The commands run inside an event loop, so the delivery has to leave it free."""
     _enable_slow_webhook(monkeypatch)
     ticks = 0
 
@@ -74,7 +74,7 @@ async def test_the_output_reaches_the_sink_before_the_caller_resumes(monkeypatch
     assert posted == [SINK_URL]
 
 
-def test_the_tools_do_not_import_the_blocking_delivery():
-    """The tools run in an event loop, so they must not call the blocking entry point."""
+def test_the_commands_do_not_import_the_blocking_delivery():
+    """The commands run in an event loop, so they must not call the blocking entry point."""
     for module in (pr_description, pr_code_suggestions, pr_reviewer):
         assert "push_outputs" not in vars(module), f"{module.__name__} imports the blocking delivery"

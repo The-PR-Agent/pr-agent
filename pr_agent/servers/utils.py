@@ -72,7 +72,7 @@ def is_command_comment(body) -> bool:
     A command comment must start with '/' after leading whitespace, matching the
     check the GitHub app and action already apply. Plain sentences that merely
     begin with a command word ("review looks good to me") must not dispatch a
-    tool, because the dispatcher strips an optional leading slash.
+    command, because the dispatcher strips an optional leading slash.
     """
     return isinstance(body, str) and body.lstrip().startswith("/")
 
@@ -85,14 +85,14 @@ def is_ask_command_comment(body) -> bool:
     dispatcher rejects the unknown "/asking" command, but prefix matching would
     instead rewrite the comment into an /ask_line question whose text is
     "ing about retries". "/ask_line" is the generated command name, so it is
-    accepted as well.
+    accepted as well. Recognize aliases and case as the dispatcher does.
     """
     if not isinstance(body, str):
         return False
     stripped = body.lstrip()
     if not stripped:
         return False
-    return stripped.split(maxsplit=1)[0] in ("/ask", "/ask_line")
+    return stripped.split(maxsplit=1)[0].lower() in ("/ask", "/ask_question", "/ask_line")
 
 
 def auto_feedback_disabled() -> bool:

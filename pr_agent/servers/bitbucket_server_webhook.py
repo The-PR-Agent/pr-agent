@@ -181,7 +181,7 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
         comment_text = data["comment"]["text"]
         if not is_command_comment(comment_text):
             # A plain comment whose first word happens to be a command name must not
-            # dispatch a tool: the dispatcher strips an optional leading slash.
+            # dispatch a command: the dispatcher strips an optional leading slash.
             get_logger().info("Ignoring comment not starting with /")
             return JSONResponse(
                 status_code=status.HTTP_200_OK,

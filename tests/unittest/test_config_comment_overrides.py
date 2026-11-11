@@ -22,7 +22,7 @@ CONFIG_TOML = ROOT / "pr_agent/settings/configuration.toml"
 COMMENT_OVERRIDABLE_KEYS = {
     "artifacts": frozenset({
         "artifact_instructions", "artifact_label", "artifact_path", "enable", "max_artifact_size",
-        "target_tools", "truncate_from",
+        "target_commands", "truncate_from",
     }),
     "asana": frozenset({
         "request_timeout",
@@ -54,7 +54,7 @@ COMMENT_OVERRIDABLE_KEYS = {
         "no_temperature_models", "output_run_cost", "output_run_details", "patch_extension_skip_types",
         "patch_extra_lines_after", "patch_extra_lines_before", "per_directory_settings_max_files",
         "per_directory_settings_max_tree_pages", "persistent_inline_comments", "progress_gif_url",
-        "progress_gif_width", "propagate_tool_errors", "publish_output", "publish_output_progress",
+        "progress_gif_width", "propagate_command_errors", "publish_output", "publish_output_progress",
         "reaction_on_failure", "reaction_on_start", "reaction_on_success", "reasoning_effort",
         "repo_context_from_default_branch", "repo_context_max_lines", "response_language", "restricted_mode",
         "retry_same_model_on_length", "retry_same_model_on_timeout", "seed", "temperature",

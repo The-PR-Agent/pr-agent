@@ -28,12 +28,12 @@ from pr_agent.algo.utils import (
     process_can_be_split,
     ticket_markdown_logic,
 )
-from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_description import insert_br_after_x_chars
-from pr_agent.tools.ticket_pr_compliance_check import (
+from pr_agent.commands.pr_description import insert_br_after_x_chars
+from pr_agent.commands.ticket_pr_compliance_check import (
     extract_ticket_links_from_pr_description,
     find_jira_tickets,
 )
+from pr_agent.config_loader import get_settings
 
 # ---------------------------------------------------------------------------
 # is_value_no / emphasize_header

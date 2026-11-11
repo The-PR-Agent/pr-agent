@@ -5,10 +5,10 @@ import pytest
 from git import Repo
 
 from pr_agent.algo.types import EDIT_TYPE
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import _GIT_PROVIDERS
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
 # Diff-mode settings keys these tests mutate on the process-wide singleton.
 _SETTINGS_KEYS = ["plain_diff.content", "plain_diff.output_path",
@@ -321,7 +321,7 @@ def test_publish_comment_strips_terminal_controls_from_stdout_and_file(cfg, caps
 
 
 def test_publish_comment_survives_stdout_that_cannot_encode(cfg, tmp_path, monkeypatch):
-    # Simulate a redirected Windows stdout (cp1252) and check that emoji in tool
+    # Simulate a redirected Windows stdout (cp1252) and check that emoji in command
     # output neither abort publishing nor skip the --output file.
     raw = io.BytesIO()
     monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="cp1252"))
@@ -430,7 +430,7 @@ def test_publish_code_suggestions_renders_to_stdout(cfg, capsys):
         {"body": "**Suggestion:** use a constant", "relevant_file": "foo.py",
          "relevant_lines_start": 2, "relevant_lines_end": 2},
     ]
-    # The 'improve' tool calls this unconditionally; it must not crash and must
+    # The 'improve' command calls this unconditionally; it must not crash and must
     # render the suggestions to stdout.
     assert provider.publish_code_suggestions(suggestions) is True
     out = capsys.readouterr().out
@@ -456,15 +456,15 @@ async def test_partial_improve_keeps_suggestions_and_coverage_in_one_output(cfg,
     cfg("plain_diff.output_path", str(output))
     provider = PlainDiffGitProvider(None)
     assert provider.supports_code_suggestions_artifact() is True
-    tool = object.__new__(PRCodeSuggestions)
-    tool.git_provider = provider
-    tool.failed_chunk_count = 1
-    tool.total_chunk_count = 2
-    tool.progress_response = None
-    tool._output_published = False
-    tool._validate_suggestion = lambda *args: (True, "", True)
+    command = object.__new__(PRCodeSuggestions)
+    command.git_provider = provider
+    command.failed_chunk_count = 1
+    command.total_chunk_count = 2
+    command.progress_response = None
+    command._output_published = False
+    command._validate_suggestion = lambda *args: (True, "", True)
 
-    await tool.push_inline_code_suggestions({"code_suggestions": [{
+    await command.push_inline_code_suggestions({"code_suggestions": [{
         "relevant_file": "foo.py",
         "relevant_lines_start": 2,
         "relevant_lines_end": 2,
@@ -490,12 +490,12 @@ async def test_partial_improve_without_suggestions_keeps_coverage_in_artifact(cf
     cfg("plain_diff.content", DIFF)
     cfg("plain_diff.output_path", str(output))
     provider = PlainDiffGitProvider(None)
-    tool = object.__new__(PRCodeSuggestions)
-    tool.git_provider = provider
-    tool.failed_chunk_count = 1
-    tool.total_chunk_count = 2
+    command = object.__new__(PRCodeSuggestions)
+    command.git_provider = provider
+    command.failed_chunk_count = 1
+    command.total_chunk_count = 2
 
-    await tool.publish_no_suggestions()
+    await command.publish_no_suggestions()
 
     content = output.read_text(encoding="utf-8")
     stdout = capsys.readouterr().out

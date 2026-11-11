@@ -1,7 +1,7 @@
 """The lancedb similar-issue query uses the same cosine metric and five-hit limit as the other backends."""
 from types import SimpleNamespace
 
-from pr_agent.tools.pr_similar_issue import _lancedb_similar_search
+from pr_agent.commands.pr_similar_issue import _lancedb_similar_search
 
 
 class _FakeBuilder:

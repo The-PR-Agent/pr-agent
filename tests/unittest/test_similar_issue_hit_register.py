@@ -1,5 +1,5 @@
 """The similar-issue hit register keeps the three result lists aligned per issue."""
-from pr_agent.tools.pr_similar_issue import PRSimilarIssue
+from pr_agent.commands.pr_similar_issue import PRSimilarIssue
 
 
 def _drive(records):

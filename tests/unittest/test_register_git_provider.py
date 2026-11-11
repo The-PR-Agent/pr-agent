@@ -114,7 +114,7 @@ def test_registered_provider_is_selected_through_settings(registry, monkeypatch)
 
 
 def test_registered_provider_is_built_for_a_pr_url(registry, monkeypatch):
-    """The path every tool takes: apply_repo_settings resolves the provider through
+    """The path every command takes: apply_repo_settings resolves the provider through
     get_git_provider_with_context, which instantiates the registered class."""
     register_git_provider("forge", _ForgeProvider)
     monkeypatch.setattr(git_providers, "get_settings", lambda: _settings_selecting("forge"))

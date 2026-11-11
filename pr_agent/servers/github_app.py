@@ -26,6 +26,7 @@ from pr_agent.servers import lambda_handoff
 from pr_agent.servers.github_common import (
     _normalise_setting_list,
     _reformat_quote_ask_command,
+    pushed_base_branch_merge,
 )
 from pr_agent.servers.github_common import handle_line_comments as handle_line_comments
 from pr_agent.servers.github_common import matches_review_state as matches_review_state
@@ -175,7 +176,7 @@ async def handle_comments_on_pr(body: dict[str, Any],
                 api_url, comment_body,
                 notify=lambda: provider.add_eyes_reaction(comment_id, disable_eyes=disable_eyes),
                 # Preserve compatibility mode while exposing failures to outcome reactions.
-                propagate_tool_errors=True)
+                propagate_command_errors=True)
             # Optional, and disabled by default: tell the author how the command ended without
             # adding another comment to the thread.
             if succeeded is RequestOutcome.SKIPPED:
@@ -219,7 +220,7 @@ def _check_run_provider(api_url: str):
 
 
 def _auto_command_check_run(command) -> tuple[str, str | None]:
-    """The command's leading token and the check run its tool publishes to, if any.
+    """The command's leading token and the check run its command publishes to, if any.
 
     The check run comes from the command registry, so aliases resolve to the
     same run as their canonical command (``/review_pr`` -> ``review``).
@@ -242,7 +243,7 @@ def _start_auto_command_check_run(provider, command) -> str | None:
 
 
 def _finish_auto_command_check_run(provider, name: str | None, command, succeeded: bool) -> None:
-    """Complete the command's check run when its tool did not, so it cannot stay in_progress."""
+    """Complete the command's check run when its command did not, so it cannot stay in_progress."""
     if provider is None or name is None:
         return
     action, _ = _auto_command_check_run(command)
@@ -315,7 +316,7 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
 
     # we need to apply the repo settings to get the correct settings for the PR.
     # This is quite expensive - a call to the git provider is made for each PR event.
-    apply_repo_settings(api_url)
+    git_provider = apply_repo_settings(api_url)
     if not _as_bool_setting(get_settings().github_app.handle_push_trigger):
         return {}
     if (_as_bool_setting(
@@ -329,7 +330,6 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
 
     before_sha = body.get("before")
     after_sha = body.get("after")
-    merge_commit_sha = pull_request.get("merge_commit_sha")
     if before_sha == after_sha:
         return {}
     if (_as_bool_setting(
@@ -337,7 +337,8 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
             default=True,
             setting_name="github_app.push_trigger_ignore_merge_commits",
         )
-            and after_sha == merge_commit_sha):
+            and pushed_base_branch_merge(git_provider, before_sha, after_sha)):
+        get_logger().info(f"Skipping {event}: the push only merged the base branch")
         return {}
 
     async with push_trigger_slot(
@@ -551,7 +552,7 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
                 nonlocal check_run
                 check_run = _start_auto_command_check_run(provider, new_command)
             # Install a fresh collector so `command_failed()` below cannot read a verdict left
-            # behind by the previous command; the tool replaces it with its own on entry.
+            # behind by the previous command; the command replaces it with its own on entry.
             init_run_details()
             result = await agent.handle_request(api_url, new_command, notify=notify_start)
             if result is RequestOutcome.SKIPPED:
@@ -559,7 +560,7 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
             if result is False:
                 command_succeeded = False
             elif command_failed():
-                # `propagate_tool_errors` is false by default, so a tool that failed internally
+                # `propagate_command_errors` is false by default, so a command that failed internally
                 # still returns normally. Reporting that as success would put a green tick on a
                 # pull request that never got its review.
                 get_logger().warning(f"Command '{command}' reported success but recorded a failure")

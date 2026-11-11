@@ -7,9 +7,9 @@ import pytest
 from pr_agent.algo import structural_reach as sr
 from pr_agent.algo.artifacts import resolve_artifact_path
 from pr_agent.algo.utils import convert_to_markdown_v2
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 from pr_agent.config_security import CLI_HOST_ONLY_KEYS_BY_SECTION
-from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _KEYS = ("pr_reviewer.structural_reach_input_file",)
@@ -293,7 +293,7 @@ def _prepare(reviewer, review_yaml, diff_files):
     reviewer.prediction = review_yaml
     reviewer.git_provider.get_diff_files.return_value = diff_files
     reviewer.git_provider.is_supported.return_value = True
-    with patch("pr_agent.tools.pr_reviewer.github_action_output"):
+    with patch("pr_agent.commands.pr_reviewer.github_action_output"):
         markdown = reviewer._prepare_pr_review()
     return markdown
 

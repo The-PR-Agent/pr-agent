@@ -61,3 +61,48 @@ def test_import_action_runner_without_github_app():
     result = subprocess.run([sys.executable, "-c", _IMPORT_WITHOUT_GITHUB_APP],
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, f"importing the action runner pulled in github_app:\n{result.stderr}"
+
+
+class _Provider:
+    def __init__(self, base_merges):
+        self.base_merges = base_merges
+        self.looked_up = []
+
+    def is_base_branch_merge(self, sha, previous_head):
+        self.looked_up.append((sha, previous_head))
+        if sha == "unreadable":
+            raise RuntimeError("commit unavailable")
+        return (sha, previous_head) in self.base_merges
+
+
+@pytest.mark.parametrize(
+    ("provider", "before_sha", "after_sha", "expected"),
+    [
+        (_Provider({("merge", "head")}), "head", "merge", True),
+        (_Provider({("merge", "head")}), "older", "merge", False),
+        (_Provider({("merge", "head")}), "head", "ordinary", False),
+        (_Provider(set()), "head", "unreadable", False),
+        (None, "head", "merge", False),
+        (object(), "head", "merge", False),
+        (_Provider({("merge", "head")}), None, "merge", False),
+        (_Provider({("merge", "head")}), "", "merge", False),
+        (_Provider({("merge", "head")}), "head", None, False),
+        (_Provider({("merge", "head")}), "head", "", False),
+    ],
+    ids=[
+        "base-branch-merge",
+        "other-previous-head",
+        "not-a-base-branch-merge",
+        "lookup-fails",
+        "no-provider",
+        "provider-without-lookup",
+        "no-before",
+        "empty-before",
+        "no-after",
+        "empty-after",
+    ],
+)
+def test_pushed_base_branch_merge(provider, before_sha, after_sha, expected):
+    assert github_common.pushed_base_branch_merge(provider, before_sha, after_sha) is expected
+    if isinstance(provider, _Provider):
+        assert provider.looked_up == ([(after_sha, before_sha)] if before_sha and after_sha else [])

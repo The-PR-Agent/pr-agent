@@ -33,7 +33,7 @@ Before running a command:
 
 ## Basic usage
 
-The CLI command names are `review`, `describe`, and `improve`; they correspond to the `/review`, `/describe`, and `/improve` tools.
+The CLI command names are `review`, `describe`, and `improve`; they correspond to the `/review`, `/describe`, and `/improve` commands.
 
 Run `/review` against a local `main` branch:
 

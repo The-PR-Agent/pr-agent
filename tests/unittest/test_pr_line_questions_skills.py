@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from jinja2 import Environment, StrictUndefined
 
-import pr_agent.tools.pr_line_questions as pr_line_questions
+import pr_agent.commands.pr_line_questions as pr_line_questions
 from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
@@ -29,7 +29,7 @@ class _FakeAIHandler:
 
 def _build_line_questions(monkeypatch):
     provider = _FakeProvider()
-    monkeypatch.setattr(pr_line_questions, "get_git_provider_for_tool", lambda _url: provider)
+    monkeypatch.setattr(pr_line_questions, "get_git_provider_for_command", lambda _url: provider)
     monkeypatch.setattr(
         pr_line_questions, "get_skills_context", lambda: "### Skill: security-review", raising=False,
     )
@@ -45,11 +45,11 @@ def test_line_ask_injects_skills_when_enabled(monkeypatch):
     saved = snapshot_settings(("skills.enabled",))
     try:
         settings.set("skills.enabled", True)
-        tool = _build_line_questions(monkeypatch)
+        command = _build_line_questions(monkeypatch)
     finally:
         restore_settings(saved)
 
-    assert tool.vars["skills_context"] == "### Skill: security-review"
+    assert command.vars["skills_context"] == "### Skill: security-review"
 
 
 def test_line_ask_does_not_load_skills_when_disabled(monkeypatch):
@@ -60,14 +60,14 @@ def test_line_ask_does_not_load_skills_when_disabled(monkeypatch):
         settings.set("skills.enabled", False)
         # Construct directly: _build_line_questions would overwrite the spy with its own stub.
         provider = _FakeProvider()
-        monkeypatch.setattr(pr_line_questions, "get_git_provider_for_tool", lambda _url: provider)
+        monkeypatch.setattr(pr_line_questions, "get_git_provider_for_command", lambda _url: provider)
         monkeypatch.setattr(
             pr_line_questions,
             "get_skills_context",
             lambda: calls.append("loaded") or "### Skill: should-not-load",
             raising=False,
         )
-        tool = pr_line_questions.PR_LineQuestions(
+        command = pr_line_questions.PR_LineQuestions(
             "https://github.com/example/repo/pull/1",
             args=["Does this line follow the security policy?"],
             ai_handler=_FakeAIHandler,
@@ -75,7 +75,7 @@ def test_line_ask_does_not_load_skills_when_disabled(monkeypatch):
     finally:
         restore_settings(saved)
 
-    assert tool.vars["skills_context"] == ""
+    assert command.vars["skills_context"] == ""
     assert calls == []
 
 
