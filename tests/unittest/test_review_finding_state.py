@@ -3,8 +3,10 @@ import json
 import pytest
 
 from pr_agent.algo import review_finding_state as state_module
+from pr_agent.algo.findings import Finding
 from pr_agent.algo.review_finding_state import (
     append_review_state,
+    normalize_finding,
     parse_review_state,
     reconcile_review_findings,
     serialize_review_state,
@@ -498,3 +500,19 @@ def test_append_duplicate_marker_uses_namespace_guard_before_substitution(monkey
     result = append_review_state(body, state)
 
     assert result.count(state_module._STATE_MARKER_NAMESPACE) == 1
+
+
+def test_finding_id_unchanged_by_fix():
+    issue = {
+        "relevant_file": "app.py",
+        "issue_header": "Possible Bug",
+        "issue_content": "The lock is never released.",
+        "start_line": 10,
+        "end_line": 10,
+    }
+    plain = normalize_finding(Finding.from_review_issue(issue))
+    with_fix = normalize_finding(
+        Finding.from_review_issue({**issue, "existing_code": "lock.acquire()", "improved_code": "with lock: ..."})
+    )
+
+    assert with_fix == plain

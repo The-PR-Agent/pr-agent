@@ -19,11 +19,10 @@ The format we will use to present the PR code diff:
 
 Determining what to flag:
 - For clear bugs and security issues, be thorough. Do not skip a genuine problem just because the trigger scenario is narrow.
-- For lower-severity concerns, be certain before flagging. If you cannot confidently explain why something is a problem with a concrete scenario, do not flag it.
 - Each issue must be discrete and actionable, not a vague concern about the codebase in general.
 - Do not speculate that a change might break other code unless you can identify the specific affected code path from the diff context.
 - Do not flag intentional design choices or stylistic preferences unless they introduce a clear defect.
-- When confidence is limited but the potential impact is high (e.g., data loss, security), report it with an explicit note on what remains uncertain. Otherwise, prefer not reporting over guessing.
+- Do not report missing docstrings, type hints, comments, unused imports or a narrower exception type, unless a broad handler hides a real failure.
 {%- if skills_context or repo_context %}
 - Standards compliance: check the new code against the rules in the organizational standards and repository context below (for example coding guidelines and ADRs). Flag a violation only when a rule there explicitly covers the changed code; name the rule and its source file in the issue. Never invent rules, and skip rules that the code explicitly waives (e.g., a lint-ignore comment).
 {%- endif %}
@@ -75,6 +74,8 @@ class KeyIssuesComponentLink(BaseModel):
     issue_content: str = Field(description="A short and concise description of the issue, why it matters, and the specific scenario or input that triggers it. Do not mention line numbers in this field.")
     start_line: int = Field(description="The start line that corresponds to this issue in the relevant file")
     end_line: int = Field(description="The end line that corresponds to this issue in the relevant file")
+    existing_code: Optional[str] = Field(default=None, description="Include whenever a concrete code change of at most 10 lines fixes this issue; omit both fix fields only when the fix is longer or not a code change. The exact lines from start_line to end_line that the change replaces, copied verbatim from the new code in the diff, without the line number prefix and without the leading '+' or '-'.")
+    improved_code: Optional[str] = Field(default=None, description="Optional. Include only together with existing_code. The complete replacement for those lines, with the same indentation, that fixes the issue.")
 
 {%- if require_todo_scan %}
 class TodoSection(BaseModel):
@@ -150,7 +151,7 @@ class Review(BaseModel):
 {%- if require_tests %}
     relevant_tests: Literal["Yes", "No"] = Field(description="Does this PR have relevant tests added or updated? Answer exactly Yes or No.")
 {%- endif %}
-    key_issues_to_review: List[KeyIssuesComponentLink] = Field("A concise list (0-{{ num_max_findings }} issues) of bugs, security vulnerabilities, or significant performance concerns introduced in this PR. Only include issues you are confident about. If confidence is limited but the potential impact is high (e.g., data loss, security), you may include it only if you explicitly note what remains uncertain. Each issue must identify a concrete problem with a realistic trigger scenario. An empty list is acceptable if no clear issues are found.")
+    key_issues_to_review: List[KeyIssuesComponentLink] = Field("A concise list (0-{{ num_max_findings }} issues) of bugs, security vulnerabilities, or significant performance concerns introduced in this PR. Each issue must identify a concrete problem with a realistic trigger scenario. An empty list is acceptable if no clear issues are found.")
 {%- if require_security_review %}
     security_concerns: str = Field(description="Does this PR code introduce vulnerabilities such as exposure of sensitive information (e.g., API keys, secrets, passwords), or security concerns like SQL injection, XSS, CSRF, and others? Answer 'No' (without explaining why) if there are no possible issues. Answer with the exact English literal 'No', and do not translate it into another language, even if extra instructions ask you to write your response in another language. If there are security concerns or issues, start your answer with a short header, such as: 'Sensitive information exposure: ...', 'SQL injection: ...', etc. Explain your answer. Be specific and give examples if possible")
 {%- endif %}
@@ -229,7 +230,11 @@ review:
       issue_content: |
         ...
       start_line: 12
-      end_line: 14
+      end_line: 12
+      existing_code: |
+        return cache.get(key)  # may be None
+      improved_code: |
+        return cache.get(key, default)  # fall back to the default
     - ...
   security_concerns: |
     No
@@ -434,6 +439,10 @@ review:
         ...
       start_line: ...
       end_line: ...
+      existing_code: |
+        ...
+      improved_code: |
+        ...
     - ...
   security_concerns: |
     No

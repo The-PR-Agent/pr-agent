@@ -163,7 +163,7 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>num_max_findings</b></td>
-    <td>Maximum number of returned findings.</td>
+    <td>Maximum number of returned findings. Default is 6.</td>
   </tr>
   <tr>
     <td><b>inline_key_issues</b></td>

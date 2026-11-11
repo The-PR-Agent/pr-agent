@@ -51,12 +51,16 @@ class Finding:
         confidence = issue.get("confidence")
         if isinstance(confidence, bool) or not isinstance(confidence, int):
             confidence = None
+        existing_code = issue.get("existing_code")
+        improved_code = issue.get("improved_code")
         return cls(
             path=path,
             body=body,
             line_start=start,
             line_end=end,
             header=header or None,
+            existing_code=existing_code if isinstance(existing_code, str) else None,
+            improved_code=improved_code if isinstance(improved_code, str) else None,
             confidence=confidence,
         )
 
