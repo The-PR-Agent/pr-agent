@@ -493,6 +493,7 @@ def test_prompt_schema_lists_fix_fields(monkeypatch):
     assert "    improved_code: Optional[str] = Field(" in system
     assert "      existing_code: |" in system
     assert "      improved_code: |" in system
+    assert "short, concrete code change (at most 10 lines)" in system
 
 
 def test_prompt_keeps_word_for_word_rule(monkeypatch):
