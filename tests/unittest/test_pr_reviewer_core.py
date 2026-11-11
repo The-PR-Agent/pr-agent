@@ -2404,6 +2404,18 @@ def test_fix_with_mismatched_existing_code_is_plain(committable_on):
     assert "original_suggestion" not in comment
 
 
+def test_fix_longer_than_ten_lines_is_not_committable(committable_on):
+    improved = "\n".join(f"line{i}" for i in range(11))
+    reviewer, data = _reviewer_with_findings(_key_issue(existing_code="two\nthree", improved_code=improved))
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion" not in comment["body"]
+    assert "line10" in comment["body"]
+    assert "original_suggestion" not in comment
+
+
 def test_fix_not_committable_when_setting_off(monkeypatch):
     monkeypatch.setitem(get_settings().pr_code_suggestions, "committable_code_suggestions", False)
     monkeypatch.setitem(get_settings().pr_code_suggestions, "commitable_code_suggestions", False)
