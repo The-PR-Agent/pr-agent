@@ -364,9 +364,9 @@ push_commands = [
 
 Note that to use the 'handle_push_trigger' feature, you need to give the gitlab webhook also the "Push events" scope.
 
-The GitLab webhook can also respond to the bot being assigned as a reviewer on an open MR.
+The GitLab webhook can also respond to the bot being assigned or explicitly re-requested as a reviewer on an open MR.
 The configuration toggle `handle_reviewer_assignment` can be used to enable this feature.
-The configuration parameter `reviewer_commands` defines the list of commands that will be **run automatically** when the bot is added to the MR's reviewers.
+The configuration parameter `reviewer_commands` defines the list of commands that will be **run automatically** for these events.
 
 ```toml
 [gitlab]
@@ -376,7 +376,8 @@ reviewer_commands = [
 ]
 ```
 
-The commands run only when the bot is newly added to the reviewer list, so re-saving an MR without changing its reviewers does not run them again.
+The commands run when the bot is newly added to the reviewer list or its review is explicitly re-requested, so re-saving an MR without either change does not run them again.
+Review re-request webhook events require [GitLab 18.6 or later](https://docs.gitlab.com/releases/18/gitlab-18-6-released/#webhook-notifications-for-merge-request-review-re-requests).
 The bot is identified by the user behind `gitlab.personal_access_token`, which must therefore be set for this feature to work.
 Draft MRs and MRs matching the [ignore settings](additional_configurations.md#ignoring-automatic-commands-in-prs) are skipped.
 

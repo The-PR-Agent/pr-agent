@@ -438,7 +438,7 @@ See [GitLab](../usage-guide/automations_and_usage.md#gitlab-webhook).
 | `auto_resolve_fixed_inline_threads` | false | Resolve the bot's own inline threads whose flagged line was modified after the comment was posted - i.e. the diff between the comment's head sha and the current head sha removes/replaces that line. Unlike resolve_outdated_inline_threads this is content-based: threads on lines nobody touched (or merely shifted by unrelated insertions) stay open. |
 | `handle_push_trigger` | false |  |
 | `push_commands` | ["/describe", "/review"] |  |
-| `handle_reviewer_assignment` | false | Auto-trigger commands when the bot is assigned as a reviewer on an MR |
+| `handle_reviewer_assignment` | false | Auto-trigger commands when the bot is assigned or explicitly re-requested as a reviewer on an MR |
 | `reviewer_commands` | ["/review"] |  |
 | `ignore_user_ids` | [] | Numeric GitLab user IDs whose merge request and note events are skipped, checked before the config.bot_user_indicators display-name match. IDs are stable, unlike display names. Host-only: the check runs before repository settings are loaded (e.g. `GITLAB__IGNORE_USER_IDS=123`). |
 
