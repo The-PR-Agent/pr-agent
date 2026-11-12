@@ -1943,6 +1943,7 @@ class PRCodeSuggestions:
             chunk_pairs,
             lambda pair: self._get_prediction(model, pair[0], pair[1]),
             parallel=get_settings().pr_code_suggestions.parallel_calls,
+            stagger_first=self.ai_handler.prompt_cache_active(model),
             reporter=getattr(self, "_chunk_progress", None),
         )
 
