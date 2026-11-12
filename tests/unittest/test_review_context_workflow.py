@@ -14,6 +14,9 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/pr-agent-review.yaml"
 JOBS = yaml.safe_load(WORKFLOW.read_text())["jobs"]
 STEPS = {step["id"]: step for job in JOBS.values() for step in job["steps"] if "id" in step}
+BUILD_WORKFLOW = yaml.safe_load((ROOT / ".github/workflows/build-and-test.yaml").read_text())
+HARDENING_JOB = BUILD_WORKFLOW["jobs"]["review-context-hardening"]
+HARDENING_STEPS = {step["id"]: step for step in HARDENING_JOB["steps"] if "id" in step}
 
 
 def git(repo, *args):
@@ -44,11 +47,11 @@ def outputs(path):
     return result
 
 
-def run_step(step, env, **extra):
+def run_step(step, env, *, steps=STEPS, **extra):
     output = Path(env["RUNNER_TEMP"]) / f"{step}-output"
     output.write_text("")
     result = subprocess.run(
-        ["bash", "-eo", "pipefail", "-c", STEPS[step]["run"]],
+        ["bash", "-eo", "pipefail", "-c", steps[step]["run"]],
         cwd=env["GITHUB_WORKSPACE"], env={**env, **extra, "GITHUB_OUTPUT": str(output)},
         capture_output=True, text=True, timeout=90,
     )
@@ -285,7 +288,11 @@ def test_parser_command_files_do_not_cross_job_boundary(replay, tmp_path):
     assert keyed_env.read_text() == ""
 
 
-def test_grammar_checksum_failure_prevents_extraction(replay):
+@pytest.mark.parametrize("step,steps,tooling_path", [
+    ("context-dependencies", STEPS, "tooling/scripts/review_context"),
+    ("hardening-dependencies", HARDENING_STEPS, "scripts/review_context"),
+])
+def test_grammar_checksum_failure_prevents_extraction(replay, step, steps, tooling_path):
     bin_dir = Path(replay["PATH"].split(os.pathsep)[0])
     for name, script in {
         "uv": "exit 0",
@@ -295,12 +302,38 @@ def test_grammar_checksum_failure_prevents_extraction(replay):
         tool = bin_dir / name
         tool.write_text("#!/bin/sh\n" + script + "\n")
         tool.chmod(0o755)
-    tooling = Path(replay["GITHUB_WORKSPACE"]) / "tooling/scripts/review_context"
+    tooling = Path(replay["GITHUB_WORKSPACE"]) / tooling_path
+    tooling.mkdir(parents=True, exist_ok=True)
     (tooling / "grammars.sha256").write_text((ROOT / "scripts/review_context/grammars.sha256").read_text())
-    result, _ = run_step("context-dependencies", replay)
+    result, _ = run_step(step, replay, steps=steps)
     assert result.returncode != 0
     assert "FAILED" in result.stdout
     assert not (Path(replay["RUNNER_TEMP"]) / "extracted").exists()
+
+
+def test_hardening_runs_on_pull_requests_with_verified_grammars():
+    # PyYAML interprets the workflow's unquoted "on" as True.
+    assert BUILD_WORKFLOW[True]["pull_request"]["branches"] == ["main"]
+    assert HARDENING_JOB["permissions"] == {"contents": "read"}
+    assert HARDENING_JOB["runs-on"] == "ubuntu-latest"
+    assert "secrets." not in json.dumps(HARDENING_JOB)
+    assert "if" not in HARDENING_JOB and "continue-on-error" not in HARDENING_JOB
+    for step in HARDENING_JOB["steps"]:
+        assert "if" not in step and "continue-on-error" not in step
+    checkout = HARDENING_JOB["steps"][0]
+    assert checkout["uses"].startswith("actions/checkout@")
+    assert checkout["with"] == {"persist-credentials": False}  # exercise the PR's code with no saved token
+    deps = HARDENING_STEPS["hardening-dependencies"]["run"]
+    assert "uv sync --frozen --python 3.12" in deps
+    assert "uv pip install --python .venv/bin/python" in deps
+    assert "--require-hashes --only-binary :all:" in deps
+    assert "/v1.22.1/parsers-linux-x86_64.tar.zst" in deps
+    assert deps.index("sha256sum --check") < deps.index("tar --zstd")
+    test = HARDENING_STEPS["hardening-test"]
+    assert test["env"] == {"GRAMMAR_CACHE": "${{ runner.temp }}/review-context-grammars", "PYTHONPATH": "."}
+    assert test["run"] == "uv run --frozen --python 3.12 pytest scripts/review_context -q"
+    steps = HARDENING_JOB["steps"]
+    assert steps.index(HARDENING_STEPS["hardening-dependencies"]) < steps.index(test)
 
 
 def test_workflow_preserves_trust_and_fallback_boundaries():

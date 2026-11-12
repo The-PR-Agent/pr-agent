@@ -6,11 +6,11 @@ show, module-level constants they read, 1-hop callees, 1-hop inbound callers (hu
 then return-value use), sibling implementations, sibling config/prompt/doc sections, sites still using shapes the
 PR removed, similar code, same-pattern sites, tests that exercise the change, importers and a circular-import check.
 
-Language-neutral core over a small IR built once per file from the tree-sitter tree; each language supplies a Lang
-class (definitions, references, calls, imports, parameters, bindings, builtins). Python and JavaScript are
-implemented. The retrieval scope (similar code, same-pattern sites, cycles) defaults to the top-level directories
-of the changed non-test code files instead of a hard-coded package. Never imports or executes code from the target
-repo: files are parsed with tree-sitter and read via git.
+Language-neutral core over a small IR built once per file from the tree-sitter tree; all languages use the Tags
+class (definitions, references, calls, imports, parameters, bindings, builtins). The retrieval scope (similar code,
+same-pattern sites, cycles) defaults to the top-level directories of the changed non-test code files instead of a
+hard-coded package. Never imports or executes code from the target repo: files are parsed with tree-sitter and
+read via git.
 
 Usage: graph_bundle_ts.py --repo ROOT --base BASE_SHA --head HEAD_SHA --pr N --out-dir DIR [--name NAME]
        [--scope DIR ...]
@@ -322,734 +322,9 @@ class Lang:
         return set()
 
 
-class Python(Lang):
-    name, fence, suffixes = "python", "python", (".py",)
-    self_names = {"self", "cls"}
-    attr_types = {"attribute": ("object", "attribute")}
-    call_types = {"call": "function"}
-    string_types = {"string", "concatenated_string"}
-    number_types = {"integer", "float"}
-    literal_kw = {"true": "True", "false": "False", "none": "None", "ellipsis": "Ellipsis"}
-    pattern_types = {"call", "boolean_operator", "comparison_operator", "subscript", "conditional_expression"}
-    transparent = {"argument_list", "parenthesized_expression", "expression_statement"}
-    await_types = {"await", "parenthesized_expression"}
-    attr_funcs = {"getattr", "hasattr", "setattr", "delattr"}
-    init_name = "__init__"
-    builtins = set(dir(__import__("builtins")))
-    common = set(dir(dict)) | set(dir(list)) | set(dir(str)) | set(dir(bytes)) | set(dir(set)) | {
-        "get", "load", "add", "debug", "info", "warning", "error", "exception", "critical", "update", "close", "read",
-        "write", "open", "format", "join", "split", "copy", "run", "main", "setup", "start", "stop", "send", "parse"}
-    keywords = set(__import__("keyword").kwlist) | {"self", "cls", "None", "True", "False"}
-    PARAM_CONTAINERS = {"parameters", "lambda_parameters"}
-
-    def string_value(self, n):
-        if n.type == "concatenated_string":
-            parts = [self.string_value(c) for c in n.named_children]
-            return None if any(p is None for p in parts) else "".join(parts)
-        if n.type != "string" or any(c.type == "interpolation" for c in n.children):
-            return None
-        return "".join(c.text for c in n.children if c.type in ("string_content", "escape_sequence"))
-
-    def defs(self, root):
-        """(node, kind hint, name, start line) per function/class definition, outermost first, in source order."""
-        out = []
-        for n in walk(root):
-            if n.type in ("function_definition", "class_definition"):
-                nm = n.field_child("name")
-                start = n.parent.sl if n.parent is not None and n.parent.type == "decorated_definition" else n.sl
-                out.append((n, "class" if n.type == "class_definition" else "function", nm.text, start))
-        return out
-
-    def owner_node(self, n):
-        """The node that switches ownership to a def when entered (decorators belong to their def)."""
-        if n.type == "decorated_definition":
-            return n.field_child("definition")
-        return n
-
-    def body(self, d):
-        return d.field_child("body")
-
-    def body_line(self, d):
-        b = self.body(d)
-        kids = b.named_children if b is not None else []
-        return kids[0].sl if kids else (b.sl if b is not None else d.el)
-
-    def docstring_end(self, d):
-        b = self.body(d)
-        kids = b.named_children if b is not None else []
-        if not kids:
-            return None
-        k = kids[0]
-        if k.type == "expression_statement" and len(k.named_children) == 1:
-            k = k.named_children[0]
-        return k.el if k.type in self.string_types and self.string_value(k) is not None else None
-
-    def is_ref(self, n):
-        """Identifier in an expression position (ast.Name or ast.Attribute.attr), not a def/param/keyword name."""
-        if n.type not in self.ident:
-            return False
-        p = n.parent
-        if p is None:
-            return False
-        if p.type in ("function_definition", "class_definition") and n.field == "name":
-            return False
-        if p.type == "keyword_argument" and n.field == "name":
-            return False
-        if p.type in ("import_statement", "import_from_statement", "aliased_import", "dotted_name",
-                      "global_statement", "nonlocal_statement", "relative_import"):
-            return False
-        x = p
-        while x is not None and x.type not in ("function_definition", "class_definition", "module", "block"):
-            if x.type in self.PARAM_CONTAINERS:
-                return self._under_default(n, x)
-            x = x.parent
-        return True
-
-    @staticmethod
-    def _under_default(n, container):
-        x = n
-        while x is not None and x is not container:
-            if x.field in ("value", "type"):
-                return True
-            x = x.parent
-        return False
-
-    def call_args(self, call):
-        """(positional nodes, [(keyword name or None, value)], has_star)"""
-        args = call.field_child("arguments")
-        pos, kws, star = [], [], False
-        if args is None:
-            return pos, kws, star
-        if args.type != "argument_list":
-            return [args], kws, star
-        for a in args.named_children:
-            if a.type == "keyword_argument":
-                kws.append((a.field_child("name").text, a.field_child("value")))
-            elif a.type == "dictionary_splat":
-                kws.append((None, a.named_children[0] if a.named_children else a))
-            elif a.type == "list_splat":
-                star = True
-                pos.append(a)
-            else:
-                pos.append(a)
-        return pos, kws, star
-
-    def string_refs(self, call):
-        _recv, nm = self.callee_name(call)
-        if nm in self.attr_funcs and _recv is None:
-            pos, _k, _s = self.call_args(call)
-            if len(pos) >= 2:
-                v = self.string_value(pos[1])
-                if v is not None:
-                    return [v]
-        return []
-
-    def top_statements(self, root, skip_type_checking=False):
-        out = []
-        for n in root.named_children:
-            if n.type == "if_statement":
-                cond = n.field_child("condition")
-                if skip_type_checking and cond is not None and cond.text.split(".")[-1] == "TYPE_CHECKING":
-                    continue
-                out.extend(self._blocks(n))
-            elif n.type == "try_statement":
-                out.extend(self._blocks(n))
-            else:
-                out.append(n)
-        return out
-
-    def _blocks(self, n):
-        out = []
-        for c in n.named_children:
-            if c.type == "block":
-                out.extend(c.named_children)
-            elif c.type in ("else_clause", "elif_clause", "except_clause", "finally_clause"):
-                for b in c.named_children:
-                    if b.type == "block":
-                        out.extend(b.named_children)
-        return out
-
-    def module_bindings(self, root):
-        consts, names = {}, set()
-        stmts = list(root.named_children) + [s for n in root.named_children
-                                             if n.type in ("if_statement", "try_statement") for s in self._blocks(n)]
-        for n in stmts:
-            inner = self.owner_node(n)
-            if inner.type in ("function_definition", "class_definition"):
-                names.add(inner.field_child("name").text)
-            elif n.type in ("import_statement", "import_from_statement"):
-                for nm in n.field_children("name"):
-                    if nm.type == "aliased_import":
-                        names.add(nm.field_child("alias").text)
-                    else:
-                        names.add(nm.text.split(".")[0])
-            elif n.type == "assignment" or (n.type == "expression_statement" and n.named_children
-                                             and n.named_children[0].type == "assignment"):
-                a = n if n.type == "assignment" else n.named_children[0]
-                left, right = a.field_child("left"), a.field_child("right")
-                for x in walk(left):
-                    if x.type in self.ident and self.is_ref(x) and not (x.parent.type == "attribute"
-                                                                        and x.field == "attribute"):
-                        names.add(x.text)
-                        if not x.text.startswith("__") and right is not None:
-                            consts.setdefault(x.text, (n, right.type == "call"))
-        return consts, names
-
-    def module_of(self, rel):
-        mod = rel[:-3].replace("/", ".")
-        return mod.removesuffix(".__init__")
-
-    def _from_module(self, rel, n):
-        pkg = rel.rsplit("/", 1)[0].replace("/", ".") if "/" in rel else ""
-        m = n.field_child("module_name")
-        if m is None:
-            return ""
-        if m.type == "relative_import":
-            prefix = next((c for c in m.children if c.type == "import_prefix"), None)
-            level = prefix.text.count(".") if prefix is not None else 0
-            dn = next((c for c in m.named_children if c.type == "dotted_name"), None)
-            mod = dn.text if dn is not None else ""
-            parts = pkg.split(".") if pkg else []
-            parts = parts[:len(parts) - (level - 1)] if level > 1 else parts
-            return ".".join(parts + ([mod] if mod else []))
-        return m.text
-
-    def _module_file(self, repo, dotted):
-        base = dotted.replace(".", "/")
-        for cand in (base + ".py", base + "/__init__.py"):
-            if cand in repo.trees or HEAD.is_file(cand):
-                return cand
-        return None
-
-    def import_map(self, repo, rel, root):
-        out = {}
-        for n in walk(root):
-            if n.type == "import_statement":
-                for nm in n.field_children("name"):
-                    if nm.type == "aliased_import":
-                        module = nm.field_child("name").text
-                        local = nm.field_child("alias").text
-                    else:
-                        module = nm.text.split(".")[0]
-                        local = module
-                    f = repo.module_file(self, module)
-                    if f:
-                        out[local] = ("module", f)
-            elif n.type == "import_from_statement":
-                mod = self._from_module(rel, n)
-                for nm in n.field_children("name"):
-                    name = nm.field_child("name").text if nm.type == "aliased_import" else nm.text
-                    local = nm.field_child("alias").text if nm.type == "aliased_import" else nm.text
-                    sub = repo.module_file(self, f"{mod}.{name}") if mod else None
-                    if sub:
-                        out[local] = ("module", sub)
-                        continue
-                    f = repo.module_file(self, mod) if mod else None
-                    if f:
-                        out[local] = ("symbol", f, name)
-        return out
-
-    def import_edges(self, repo, rel, root, top_only):
-        stmts = self.top_statements(root, skip_type_checking=True) if top_only else list(walk(root))
-        out = []
-        for n in stmts:
-            if n.type == "import_statement":
-                for nm in n.field_children("name"):
-                    dotted = nm.field_child("name").text if nm.type == "aliased_import" else nm.text
-                    f = repo.module_file(self, dotted)
-                    if f:
-                        out.append((f, n.sl, n.el))
-            elif n.type == "import_from_statement":
-                mod = self._from_module(rel, n)
-                for nm in n.field_children("name"):
-                    name = nm.field_child("name").text if nm.type == "aliased_import" else nm.text
-                    f = (repo.module_file(self, f"{mod}.{name}") or repo.module_file(self, mod)) if mod else None
-                    if f:
-                        out.append((f, n.sl, n.el))
-        return out
-
-    def import_lines(self, root):
-        return [(n.sl, n.el) for n in root.named_children if n.type in ("import_statement", "import_from_statement")]
-
-    def params(self, d):
-        ps = d.field_child("parameters")
-        pos, other, kwonly = [], [], False
-        for p in (ps.named_children if ps is not None else []):
-            if p.type == "identifier":
-                nm = p.text
-            elif p.type in ("typed_parameter", "list_splat_pattern", "dictionary_splat_pattern"):
-                ident = next((c for c in p.named_children if c.type == "identifier"), None)
-                nm = ident.text if ident is not None else None
-                if p.type == "typed_parameter" and p.named_children and p.named_children[0].type in (
-                        "list_splat_pattern", "dictionary_splat_pattern"):
-                    inner = p.named_children[0]
-                    nm = inner.named_children[0].text if inner.named_children else None
-                    other.append(nm)
-                    kwonly = kwonly or inner.type == "list_splat_pattern"
-                    continue
-                if p.type != "typed_parameter":
-                    other.append(nm)
-                    kwonly = kwonly or p.type == "list_splat_pattern"
-                    continue
-            elif p.type in ("default_parameter", "typed_default_parameter"):
-                nm = p.field_child("name").text
-            elif p.type == "keyword_separator":
-                kwonly = True
-                continue
-            else:
-                continue
-            if nm is None or nm in self.self_names:
-                continue
-            (other if kwonly else pos).append(nm)
-        return pos, pos + other
-
-    def bases(self, cls):
-        sc = cls.field_child("superclasses")
-        out = []
-        for b in (sc.named_children if sc is not None else []):
-            if b.type == "identifier":
-                out.append(b.text)
-            elif b.type == "attribute":
-                out.append(b.field_child("attribute").text)
-        return out
-
-    STORE_CONTAINERS = {"pattern_list", "tuple_pattern", "list_pattern", "list_splat_pattern", "tuple", "list"}
-
-    def _store_names(self, n, out):
-        if n is None:
-            return
-        if n.type in self.ident:
-            out.add(n.text)
-        elif n.type in self.STORE_CONTAINERS or n.type == "parenthesized_expression":
-            for c in n.named_children:
-                self._store_names(c, out)
-
-    def local_bindings(self, d):
-        out, glob = set(), set()
-        for n in walk(d):
-            t = n.type
-            if t in ("assignment", "augmented_assignment"):
-                self._store_names(n.field_child("left"), out)
-            elif t in ("for_statement", "for_in_clause"):
-                self._store_names(n.field_child("left"), out)
-            elif t == "named_expression":
-                self._store_names(n.field_child("name"), out)
-            elif t == "as_pattern":
-                al = n.field_child("alias")
-                if al is not None:
-                    for x in walk(al):
-                        if x.type in self.ident:
-                            out.add(x.text)
-            elif t == "delete_statement":
-                for c in n.named_children:
-                    self._store_names(c, out)
-            elif t in self.PARAM_CONTAINERS:
-                for p in n.named_children:
-                    if p.type == "identifier":
-                        out.add(p.text)
-                    else:
-                        nm = p.field_child("name")
-                        if nm is not None and nm.type in self.ident:
-                            out.add(nm.text)
-                        for c in p.named_children:
-                            if c.type in self.ident and c.field is None:
-                                out.add(c.text)
-                            elif c.type in ("list_splat_pattern", "dictionary_splat_pattern") and c.named_children:
-                                out.add(c.named_children[0].text)
-            elif t in ("global_statement", "nonlocal_statement"):
-                glob.update(c.text for c in n.named_children if c.type in self.ident)
-        return out - glob
-
-    def test_child(self, p, node):
-        """True when node is the condition tested by p."""
-        if p.type in ("if_statement", "elif_clause", "while_statement"):
-            return p.field_child("condition") is node
-        if p.type == "conditional_expression":
-            kids = p.named_children
-            return len(kids) >= 2 and kids[1] is node
-        if p.type == "assert_statement":
-            return bool(p.named_children) and p.named_children[0] is node
-        return False
-
-    def is_boolop(self, p):
-        return p.type in ("boolean_operator", "not_operator")
-
-    def subscript_value(self, p):
-        return p.field_child("value") if p.type == "subscript" else None
-
-    def assigned_names(self, p, node):
-        if p.type == "assignment" and p.field_child("right") is node:
-            left = p.field_child("left")
-            return [left.text] if left is not None and left.type in self.ident else [], False
-        if p.type == "named_expression" and p.field_child("value") is node:
-            return [p.field_child("name").text], True
-        return [], False
-
-    def keyword_name_position(self, n):
-        return n.parent is not None and n.parent.type == "keyword_argument" and n.field == "name"
-
-    def module_path_strings(self, rel):
-        mod = self.module_of(rel)
-        return [f'"{mod}"', f"'{mod}'"]
-
-
-class JavaScript(Lang):
-    name, fence, suffixes = "javascript", "javascript", (".js", ".mjs", ".cjs", ".jsx")
-    ident = {"identifier", "property_identifier", "shorthand_property_identifier"}
-    self_names = {"this"}
-    attr_types = {"member_expression": ("object", "property")}
-    call_types = {"call_expression": "function", "new_expression": "constructor"}
-    string_types = {"string", "template_string"}
-    number_types = {"number"}
-    literal_kw = {"true": "true", "false": "false", "null": "null", "undefined": "undefined"}
-    pattern_types = {"call_expression", "binary_expression", "subscript_expression", "ternary_expression"}
-    transparent = {"arguments", "parenthesized_expression", "expression_statement"}
-    await_types = {"await_expression", "parenthesized_expression"}
-    init_name = "constructor"
-    builtins = {"console", "Object", "Array", "JSON", "Math", "Promise", "process", "require", "module", "exports",
-                "window", "document", "setTimeout", "clearTimeout", "setInterval", "clearInterval", "Error",
-                "TypeError", "String", "Number", "Boolean", "Date", "RegExp", "Map", "Set", "WeakMap", "Symbol",
-                "Buffer", "globalThis", "navigator", "fetch", "URL", "parseInt", "parseFloat", "isNaN", "__dirname",
-                "__filename", "undefined", "NaN", "Infinity", "Reflect", "Proxy", "BigInt", "queueMicrotask"}
-    common = {"push", "pop", "shift", "unshift", "map", "filter", "forEach", "reduce", "find", "some", "every",
-              "includes", "indexOf", "slice", "splice", "concat", "join", "split", "replace", "trim", "toString",
-              "then", "catch", "finally", "log", "warn", "error", "info", "debug", "get", "set", "has", "delete",
-              "keys", "values", "entries", "assign", "on", "once", "off", "emit", "send", "close", "open", "start",
-              "stop", "run", "init", "apply", "call", "bind", "constructor", "length", "add", "remove", "clear",
-              "parse", "stringify", "resolve", "reject", "exec", "test", "match", "load", "read", "write",
-              "addEventListener", "removeEventListener", "invoke", "handle", "main", "setup", "handler", "callback",
-              "listener", "cb", "fn", "done", "next"}
-    TEST_CALLS = {"it", "test"}
-    keywords = {"break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete", "do",
-                "else", "export", "extends", "finally", "for", "function", "if", "import", "in", "instanceof",
-                "let", "new", "return", "super", "switch", "this", "throw", "try", "typeof", "var", "void", "while",
-                "with", "yield", "async", "await", "null", "true", "false", "undefined", "of"}
-    FUNC_VALUES = {"arrow_function", "function_expression", "function", "generator_function"}
-
-    def self_types(self):
-        return {"this"}
-
-    def string_value(self, n):
-        if n.type == "string":
-            return "".join(c.text for c in n.children if c.type in ("string_fragment", "escape_sequence"))
-        if n.type == "template_string" and not any(c.type == "template_substitution" for c in n.children):
-            return "".join(c.text for c in n.children if c.type in ("string_fragment", "escape_sequence"))
-        return None
-
-    def defs(self, root):
-        out = []
-        for n in walk(root):
-            if n.type in ("function_declaration", "generator_function_declaration"):
-                out.append((n, "function", n.field_child("name").text, self._start(n)))
-            elif n.type == "class_declaration":
-                out.append((n, "class", n.field_child("name").text, self._start(n)))
-            elif n.type == "method_definition":
-                out.append((n, "function", n.field_child("name").text, n.sl))
-            elif n.type == "call_expression" and n.field_child("function") is not None \
-                    and n.field_child("function").text in self.TEST_CALLS:
-                # jest/mocha `it("does x", () => {...})`: the callback is the test function
-                args = n.field_child("arguments")
-                kids = args.named_children if args is not None else []
-                fn = next((a for a in kids if a.type in self.FUNC_VALUES), None)
-                title = self.string_value(kids[0]) if kids else None
-                if fn is not None:
-                    out.append((fn, "function", f"test {title or n.sl}"[:80], n.sl))
-            elif n.type == "variable_declarator":
-                v, nm = n.field_child("value"), n.field_child("name")
-                if v is not None and nm is not None and nm.type == "identifier" and v.type in self.FUNC_VALUES:
-                    out.append((n, "function", nm.text, self._start(n)))
-                elif v is not None and nm is not None and nm.type == "identifier" and v.type == "class":
-                    out.append((n, "class", nm.text, self._start(n)))
-        return out
-
-    @staticmethod
-    def _start(n):
-        x = n
-        while x.parent is not None and x.parent.type in ("lexical_declaration", "variable_declaration",
-                                                         "export_statement"):
-            x = x.parent
-        return x.sl
-
-    def owner_node(self, n):
-        return n
-
-    def _fn(self, d):
-        if d.type == "variable_declarator":
-            return d.field_child("value")
-        return d
-
-    def body(self, d):
-        return self._fn(d).field_child("body")
-
-    def body_line(self, d):
-        b = self.body(d)
-        if b is None:
-            return d.el
-        if b.type in ("statement_block", "class_body"):
-            kids = b.named_children
-            return kids[0].sl if kids else b.sl
-        return b.sl
-
-    def docstring_end(self, d):
-        return None
-
-    def is_ref(self, n):
-        if n.type not in self.ident:
-            return False
-        p = n.parent
-        if p is None:
-            return False
-        if n.field == "name" and p.type in ("function_declaration", "generator_function_declaration",
-                                            "class_declaration", "method_definition", "class"):
-            return False
-        if n.type == "property_identifier" and not (p.type == "member_expression" and n.field == "property"):
-            return False  # object keys, method names
-        if p.type in ("import_specifier", "namespace_import", "import_clause", "export_specifier"):
-            return False
-        if p.type == "variable_declarator" and n.field == "name":
-            return False
-        x, prev = p, n
-        while x is not None and x.type not in ("statement_block", "program", "class_body"):
-            if x.type == "formal_parameters":
-                return prev.type == "assignment_pattern" and self._under(n, prev, "right")
-            prev, x = x, x.parent
-        return True
-
-    @staticmethod
-    def _under(n, top, field):
-        x = n
-        while x is not None and x is not top:
-            if x.parent is top and x.field == field:
-                return True
-            x = x.parent
-        return False
-
-    def call_args(self, call):
-        args = call.field_child("arguments")
-        pos, kws, star = [], [], False
-        for a in (args.named_children if args is not None and args.type == "arguments" else []):
-            if a.type == "spread_element":
-                star = True
-                pos.append(a)
-            elif a.type == "object":  # options object: its keys act as keyword arguments
-                pos.append(a)
-                for p in a.named_children:
-                    if p.type == "pair":
-                        k = p.field_child("key")
-                        kws.append((k.text.strip("'\""), p.field_child("value")))
-                    elif p.type == "shorthand_property_identifier":
-                        kws.append((p.text, p))
-                    elif p.type == "spread_element":
-                        kws.append((None, p))
-            else:
-                pos.append(a)
-        return pos, kws, star
-
-    def string_refs(self, call):
-        return []
-
-    def _decls(self, n):
-        if n.type == "export_statement":
-            d = n.field_child("declaration")
-            return [d] if d is not None else []
-        return [n]
-
-    def top_statements(self, root, skip_type_checking=False):
-        return [d for n in root.named_children for d in self._decls(n)]
-
-    def module_bindings(self, root):
-        consts, names = {}, set()
-        for n in self.top_statements(root):
-            if n.type in ("function_declaration", "generator_function_declaration", "class_declaration"):
-                names.add(n.field_child("name").text)
-            elif n.type == "import_statement":
-                for x in walk(n):
-                    if x.type == "identifier":
-                        names.add(x.text)
-            elif n.type in ("lexical_declaration", "variable_declaration"):
-                for dcl in n.named_children:
-                    if dcl.type != "variable_declarator":
-                        continue
-                    nm, v = dcl.field_child("name"), dcl.field_child("value")
-                    for x in walk(nm):
-                        if x.type in ("identifier", "shorthand_property_identifier_pattern"):
-                            names.add(x.text)
-                    if nm.type == "identifier" and v is not None and v.type not in self.FUNC_VALUES \
-                            and not self._is_require(v) and not nm.text.startswith("__"):
-                        consts.setdefault(nm.text, (n, v.type in self.call_types))
-        return consts, names
-
-    def _is_require(self, v):
-        if v is None or v.type != "call_expression":
-            return False
-        f = v.field_child("function")
-        return f is not None and f.type == "identifier" and f.text == "require"
-
-    def _spec(self, call):
-        args = call.field_child("arguments")
-        a = args.named_children[0] if args is not None and args.named_children else None
-        return self.string_value(a) if a is not None else None
-
-    def module_of(self, rel):
-        return os.path.splitext(rel)[0]
-
-    def _module_file(self, repo, spec_and_dir):
-        spec, here = spec_and_dir.split("\0")
-        if not spec.startswith("."):
-            return None
-        base = os.path.normpath(os.path.join(here, spec)).replace(os.sep, "/")
-        for cand in [base] + [base + s for s in self.suffixes] + [f"{base}/index{s}" for s in self.suffixes]:
-            if cand in repo.trees or (os.path.splitext(cand)[1] in self.suffixes
-                                      and HEAD.is_file(cand)):
-                return cand
-        return None
-
-    def _resolve(self, repo, rel, spec):
-        return repo.module_file(self, f"{spec}\0{os.path.dirname(rel)}") if spec else None
-
-    def import_map(self, repo, rel, root):
-        out = {}
-        for n in walk(root):
-            if n.type == "import_statement":
-                f = self._resolve(repo, rel, self.string_value(n.field_child("source")))
-                if not f:
-                    continue
-                for x in walk(n):
-                    if x.type == "import_specifier":
-                        nm, al = x.field_child("name"), x.field_child("alias")
-                        out[(al or nm).text] = ("symbol", f, nm.text)
-                    elif x.type == "namespace_import" or (x.type == "identifier" and x.parent.type == "import_clause"):
-                        ident = x if x.type == "identifier" else next(c for c in x.named_children)
-                        out[ident.text] = ("module", f)
-            elif n.type == "variable_declarator" and self._is_require(n.field_child("value")):
-                f = self._resolve(repo, rel, self._spec(n.field_child("value")))
-                nm = n.field_child("name")
-                if not f or nm is None:
-                    continue
-                if nm.type == "identifier":
-                    out[nm.text] = ("module", f)
-                elif nm.type == "object_pattern":
-                    for p in nm.named_children:
-                        if p.type == "shorthand_property_identifier_pattern":
-                            out[p.text] = ("symbol", f, p.text)
-                        elif p.type == "pair_pattern":
-                            out[p.field_child("value").text] = ("symbol", f, p.field_child("key").text)
-        return out
-
-    def import_edges(self, repo, rel, root, top_only):
-        out = []
-        nodes = self.top_statements(root) if top_only else list(walk(root))
-        for n in nodes:
-            if n.type == "import_statement":
-                f = self._resolve(repo, rel, self.string_value(n.field_child("source")))
-                if f:
-                    out.append((f, n.sl, n.el))
-            elif top_only and n.type in ("lexical_declaration", "variable_declaration"):
-                for dcl in n.named_children:
-                    if dcl.type == "variable_declarator" and self._is_require(dcl.field_child("value")):
-                        f = self._resolve(repo, rel, self._spec(dcl.field_child("value")))
-                        if f:
-                            out.append((f, n.sl, n.el))
-            elif not top_only and n.type == "call_expression" and (self._is_require(n) or (
-                    n.field_child("function") is not None and n.field_child("function").type == "import")):
-                f = self._resolve(repo, rel, self._spec(n))
-                if f:
-                    out.append((f, n.sl, n.el))
-        return out
-
-    def import_lines(self, root):
-        return [(n.sl, n.el) for n in root.named_children
-                if n.type == "import_statement" or (n.type in ("lexical_declaration", "variable_declaration") and any(
-                    d.type == "variable_declarator" and self._is_require(d.field_child("value"))
-                    for d in n.named_children))]
-
-    def params(self, d):
-        fn = self._fn(d)
-        ps = fn.field_child("parameters") or fn.field_child("parameter")
-        pos, other = [], []
-        if ps is not None and ps.type == "identifier":
-            return [ps.text], [ps.text]
-        for p in (ps.named_children if ps is not None else []):
-            if p.type == "identifier":
-                pos.append(p.text)
-            elif p.type == "assignment_pattern" and p.field_child("left").type == "identifier":
-                pos.append(p.field_child("left").text)
-            else:
-                other.extend(x.text for x in walk(p) if x.type in ("identifier",
-                                                                    "shorthand_property_identifier_pattern"))
-        return pos, pos + other
-
-    def bases(self, cls):
-        h = next((c for c in cls.named_children if c.type == "class_heritage"), None)
-        out = []
-        for b in (h.named_children if h is not None else []):
-            if b.type == "identifier":
-                out.append(b.text)
-            elif b.type == "member_expression":
-                out.append(b.field_child("property").text)
-        return out
-
-    def local_bindings(self, d):
-        out = set()
-        fn = self._fn(d)
-        for n in walk(fn):
-            if n.type == "variable_declarator":
-                for x in walk(n.field_child("name")):
-                    if x.type in ("identifier", "shorthand_property_identifier_pattern"):
-                        out.add(x.text)
-            elif n.type in ("assignment_expression", "augmented_assignment_expression"):
-                left = n.field_child("left")
-                if left is not None and left.type == "identifier":
-                    out.add(left.text)
-            elif n.type == "for_in_statement":
-                left = n.field_child("left")
-                for x in walk(left) if left is not None else []:
-                    if x.type == "identifier":
-                        out.add(x.text)
-            elif n.type == "formal_parameters":
-                for x in walk(n):
-                    if x.type in ("identifier", "shorthand_property_identifier_pattern") and not self.is_ref(x):
-                        out.add(x.text)
-            elif n.type == "catch_clause":
-                p = n.field_child("parameter")
-                for x in walk(p) if p is not None else []:
-                    if x.type == "identifier":
-                        out.add(x.text)
-        return out
-
-    def test_child(self, p, node):
-        if p.type in ("if_statement", "while_statement", "do_statement", "ternary_expression"):
-            return p.field_child("condition") is node
-        return False
-
-    def is_boolop(self, p):
-        if p.type == "binary_expression":
-            op = p.field_child("operator")
-            return op is not None and op.text in ("&&", "||", "??")
-        return p.type == "unary_expression" and any(c.text == "!" for c in p.children if not c.named)
-
-    def subscript_value(self, p):
-        return p.field_child("object") if p.type == "subscript_expression" else None
-
-    def assigned_names(self, p, node):
-        if p.type == "variable_declarator" and p.field_child("value") is node:
-            nm = p.field_child("name")
-            return ([nm.text] if nm is not None and nm.type == "identifier" else []), False
-        if p.type == "assignment_expression" and p.field_child("right") is node:
-            left = p.field_child("left")
-            return ([left.text] if left is not None and left.type == "identifier" else []), False
-        return [], False
-
-    def keyword_name_position(self, n):
-        return n.parent is not None and n.parent.type == "pair" and n.field == "key"
-
-    def module_path_strings(self, rel):
-        return []
-
-
 class Tags(Lang):
     """Any grammar that ships a tags query: definitions and calls come from the query, everything else from node-type
-    and field-name conventions shared across tree-sitter grammars. Coarser than a hand-written class."""
+    and field-name conventions shared across tree-sitter grammars."""
     CLASS_KINDS = {"class", "interface", "struct", "module", "trait", "enum", "type", "object", "impl", "union",
                    "record", "protocol", "namespace"}
     FUNC_KINDS = {"function", "method", "macro", "constructor"}
@@ -1454,54 +729,16 @@ class IdentTypes:
         return t.endswith("identifier") or t in self.OTHER
 
 
-class GraphifyCalls:
-    """Call edges from a Graphify graph (graphify extract --code-only), mapped onto this builder's defs by file and
-    start line. Replaces name-based caller search and call resolution for every def Graphify also has."""
-    RELS = ("calls", "indirect_call")
-
-    def __init__(self, gdir, repo):
-        g = json.load(open(os.path.join(gdir, "graph.json")))
-        by_loc = {(d.path, d.start): d for d in repo.defs}
-        self.node_def = {}
-        for n in g["nodes"]:
-            loc = n.get("source_location") or ""
-            if n.get("file_type") == "code" and loc.startswith("L") and loc[1:].isdigit():
-                d = by_loc.get((n.get("source_file"), int(loc[1:])))
-                if d is not None:
-                    self.node_def[n["id"]] = d
-        self.def_node = {d.key: nid for nid, d in self.node_def.items()}
-        self.out, self.inc = {}, {}
-        for e in g["links"]:
-            if e["relation"] in self.RELS and e["source"] in self.node_def and e["target"] in self.node_def:
-                self.out.setdefault(e["source"], set()).add(e["target"])
-                self.inc.setdefault(e["target"], set()).add(e["source"])
-        print(f"graphify: {len(self.def_node)} of {len(repo.defs)} defs mapped, "
-              f"{sum(map(len, self.out.values()))} call edges between them", file=sys.stderr)
-
-    def has(self, d):
-        return d.key in self.def_node
-
-    def callees(self, d, name):
-        out = sorted(self.out.get(self.def_node[d.key], ()))
-        hits = [self.node_def[t] for t in out if self.node_def[t].name == name]
-        return hits, ("local" if all(h.path == d.path for h in hits) else "import") if hits else None
-
-    def callers(self, d):
-        return [self.node_def[s] for s in sorted(self.inc.get(self.def_node[d.key], ()))]
-
-
-# extensions probed for a tags-query grammar when no hand-written class covers them
+# extensions probed for a tags-query grammar
 TAGS_EXTS = (".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".cs", ".go", ".java", ".kt", ".kts", ".scala", ".swift",
              ".rs", ".rb", ".php", ".ts", ".tsx", ".mts", ".cts", ".dart", ".ex", ".exs", ".lua", ".r", ".jl", ".ml",
              ".mli", ".hs", ".elm", ".gleam", ".nix", ".sol", ".proto", ".fs", ".fsi", ".d", ".zig", ".vue", ".svelte",
              ".py", ".pyi", ".js", ".mjs", ".cjs", ".jsx")
 
 
-def tags_langs(skip):
+def tags_langs():
     by_name = {}
     for ext in TAGS_EXTS:
-        if any(ext in lg.suffixes for lg in skip):
-            continue
         try:
             name = detect_language_from_extension(ext.lstrip("."))
             if name and (get_tags_query(name) or "").strip():
@@ -1511,7 +748,7 @@ def tags_langs(skip):
     return [Tags(name, tuple(exts)) for name, exts in sorted(by_name.items())]
 
 
-LANGS = [Python(), JavaScript()]
+LANGS = []  # initialized after the local grammar directory and timeout are set
 
 
 def lang_for(path):
@@ -2623,7 +1860,6 @@ def _build(args):
     mb, files = parse_diff(args.repo, args.base, args.head)
     changed_langs = [lg for lg in LANGS if any(p.endswith(lg.suffixes) for p in files)] or LANGS[:1]
     repo = Repo(args.repo, changed_langs)
-    gx = GraphifyCalls(args.graphify, repo) if args.graphify else None
     base = BaseSide(args.repo, mb, parse_deletions(args.repo, mb, args.head))
     by_path = {}
     for d in repo.defs:
@@ -2701,7 +1937,7 @@ def _build(args):
     callee_seen = set()
     for d in changed_defs:
         for recv, name in sorted(d.calls, key=lambda x: (x[0] or "", x[1])):
-            hits, via = gx.callees(d, name) if gx and gx.has(d) else repo.resolve_call(d, recv, name)
+            hits, via = repo.resolve_call(d, recv, name)
             for t in hits:
                 if t.key in changed_keys or t.key in callee_seen:
                     continue
@@ -2727,11 +1963,8 @@ def _build(args):
             skipped_names.add(name)
             continue
         from_test = is_test_path(d.path)
-        if gx and gx.has(d):
-            callers = [c for c in gx.callers(d) if c.key not in changed_keys and not is_test_path(c.path)]
-        else:
-            callers = [c for c in repo.defs if c.key not in changed_keys and not is_test_path(c.path)
-                       and (name in c.refs or name in c.strrefs)]
+        callers = [c for c in repo.defs if c.key not in changed_keys and not is_test_path(c.path)
+                   and (name in c.refs or name in c.strrefs)]
         hub = len(callers) > HUB_THRESHOLD
         cparams, positional = changed_params(repo, base, d, lines)
         argrel = {c.key: arg_relevance(c, name, cparams, positional) for c in callers}
@@ -3192,10 +2425,8 @@ if __name__ == "__main__":
     ap.add_argument("--scope", nargs="*", default=None,
                     help="directories for similar code, same-pattern sites and cycles (default: top-level dirs of "
                          "the changed non-test code files)")
-    ap.add_argument("--graphify", default=None,
-                    help="Graphify output dir (holding graph.json): take callers and callees from its call edges")
     ap.add_argument("--generic", action="store_true",
-                    help="use the generic tags-query class for every language, Python and JavaScript included")
+                    help="compatibility flag; every language always uses tags queries")
     ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_S,
                     help="wall-clock limit for grammar loading and the build in seconds")
     a = ap.parse_args()
@@ -3207,7 +2438,7 @@ if __name__ == "__main__":
     signal.signal(signal.SIGALRM, _timeout)
     signal.alarm(a.timeout)
     try:
-        LANGS[:] = tags_langs([]) if a.generic else LANGS + tags_langs(LANGS)
+        LANGS[:] = tags_langs()
         build(a)
     except Exception as e:  # one line and exit 2, no bundle: the caller runs a diff-only review instead
         print(f"review-context build failed: {type(e).__name__}: {str(e)[:300]}", file=sys.stderr)

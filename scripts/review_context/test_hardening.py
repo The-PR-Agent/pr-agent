@@ -39,7 +39,7 @@ def commit(repo, msg):
 
 def run_builder(repo, base, head, out, *extra):
     cmd = [sys.executable, str(BUILDER), "--repo", str(repo), "--base", base, "--head", head, "--pr", "1",
-           "--out-dir", str(out), "--generic", *extra]
+           "--out-dir", str(out), *extra]
     if os.environ.get("GRAMMAR_CACHE"):
         cmd += ["--grammar-cache", os.environ["GRAMMAR_CACHE"]]
     return subprocess.run(cmd, capture_output=True, text=True, timeout=300)
@@ -100,10 +100,11 @@ def test_head_tree_filters_unsafe_files(hostile, builder_module):
         tree.close()
 
 
-def test_hostile_repo_leaks_nothing_and_runs_nothing(hostile):
+@pytest.mark.parametrize("extra", [(), ("--generic",)])
+def test_hostile_repo_leaks_nothing_and_runs_nothing(hostile, extra):
     repo, base, head, tmp = hostile
     out = tmp / "out"
-    r = run_builder(repo, base, head, out)
+    r = run_builder(repo, base, head, out, *extra)
     assert r.returncode == 0, r.stderr
     bundle = (out / "pr1.G6.md").read_text()
     assert "helper" in bundle
@@ -183,31 +184,3 @@ def test_missing_grammars_fail_without_download(hostile, monkeypatch):
     assert not (tmp / "out/pr1.G6.md").exists()
     assert not list(empty.iterdir())
     assert not (tmp / "cache").exists()
-
-
-@pytest.mark.parametrize("source,local,target", [
-    ("import helpers", "helpers", "helpers.py"),
-    ("import helpers as h", "h", "helpers.py"),
-    ("import pkg.helpers", "pkg", "pkg/__init__.py"),
-    ("import pkg.helpers as h", "h", "pkg/helpers.py"),
-    ("import helpers, pkg.helpers as h", "helpers", "helpers.py"),
-])
-def test_python_import_map_resolves_module_calls(builder_module, tmp_path, source, local, target, monkeypatch):
-    repo = tmp_path / "repo"
-    (repo / "pkg").mkdir(parents=True)
-    sh(repo, "git", "init", "-q")
-    for name in ("helpers.py", "pkg/__init__.py", "pkg/helpers.py"):
-        (repo / name).write_text("def helper():\n    return 1\n")
-    (repo / "consumer.py").write_text(f"{source}\n\ndef use():\n    return {local}.helper()\n")
-    head = commit(repo, "imports")
-    tree = builder_module.HeadTree(str(repo), head)
-    monkeypatch.setattr(builder_module, "HEAD", tree)
-    try:
-        index = builder_module.Repo(str(repo), [builder_module.LANGS[0]])
-        assert index.importmap["consumer.py"][local] == ("module", target)
-        caller = index.top["consumer.py", "use"]
-        hits, via = index.resolve_call(caller, local, "helper")
-        assert via == "import"
-        assert [hit.key for hit in hits] == [f"{target}::helper"]
-    finally:
-        tree.close()
