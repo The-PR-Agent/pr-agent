@@ -2730,6 +2730,17 @@ class LiteLLMAIHandler(BaseAiHandler):
         """
         return get_settings().get("OPENAI.DEPLOYMENT_ID", None)
 
+    def prompt_cache_active(self, model: str) -> bool:
+        """Whether the shared-prefix prompt cache will apply to this model's calls.
+
+        The chunk runners stagger their first call when it is, so sibling chunks read
+        the cache entry the first one writes instead of each writing their own (#4876).
+        Uses the same gate as the request path: injection points configured, and a
+        model that honors them.
+        """
+        points = self._resolve_cache_control_injection_points()
+        return bool(points) and self._is_claude_model(model)
+
     @staticmethod
     def _resolve_cache_control_injection_points():
         """Read and validate LITELLM.CACHE_CONTROL_INJECTION_POINTS for Anthropic prompt caching

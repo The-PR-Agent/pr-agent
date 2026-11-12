@@ -1465,6 +1465,7 @@ class PRReviewer:
         predictions = await run_chunk_batch(
             prompts,
             lambda prompt: self._get_prediction(model, prompt),
+            stagger_first=self.ai_handler.prompt_cache_active(model),
             reporter=self._chunk_progress,
         )
 
