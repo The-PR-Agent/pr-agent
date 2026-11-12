@@ -326,6 +326,12 @@ class GiteaProvider(GitProvider):
                 parsed.setdefault(file.filename, []).append(file)
             if not parsed:
                 raise ValueError("Gitea raw diff is empty for a reviewable change")
+            # The raw diff endpoint is live, while file contents use the constructor's
+            # immutable head and merge base. Do not combine different PR revisions.
+            latest = self.repo_api.get_pull_request(owner=self.owner, repo=self.repo, pr_number=self.pr_number)
+            latest_base = getattr(latest, "merge_base", None) or latest.base.sha
+            if (latest.head.sha, latest_base) != (self.sha, self.merge_base or self.base_sha):
+                raise ValueError("Gitea PR diff revisions changed during acquisition")
             self.file_diffs = parsed
         except Exception as exc:
             self.file_diffs = None
@@ -333,7 +339,7 @@ class GiteaProvider(GitProvider):
             self.diff_files = None
             self.file_contents = {}
             raise IncompleteGiteaPullRequestFilesError(
-                "Gitea raw PR diff is unavailable or incomplete"
+                "Gitea raw PR diff is unavailable, incomplete, or stale"
             ) from exc
 
     @staticmethod
@@ -695,10 +701,13 @@ class GiteaProvider(GitProvider):
     def _get_file_content_from_base(self, filename: str) -> str:
         # Gitea and Forgejo diff a PR from its merge base, while base.sha is the current tip of
         # the target branch, so read the old side where the patch starts.
+        ref = self.merge_base or self.base_sha
+        if not ref:
+            raise IncompleteGiteaPullRequestFilesError("Gitea base content has no immutable revision")
         return self.repo_api.get_file_content(
             owner=self.owner,
             repo=self.repo,
-            commit_sha=self.merge_base or self.base_sha,
+            commit_sha=ref,
             filepath=filename,
             propagate_errors=True,
         )
