@@ -1462,10 +1462,14 @@ class PRReviewer:
             len(patches_diff_list),
             completed=len(patches_diff_list) - len(pending_indices),
         )
+        # Best-effort token count for the cache minimum: test budgets may not carry the
+        # handler, and a missing count only skips the length half of the check.
+        review_budget = self._review_attempt_budget(model)
+        budget_tokens = getattr(getattr(review_budget, "token_handler", None), "prompt_tokens", None)
         predictions = await run_chunk_batch(
             prompts,
             lambda prompt: self._get_prediction(model, prompt),
-            stagger_first=self.ai_handler.prompt_cache_active(model),
+            stagger_first=self.ai_handler.prompt_cache_active(model, prompt_tokens=budget_tokens),
             reporter=self._chunk_progress,
         )
 

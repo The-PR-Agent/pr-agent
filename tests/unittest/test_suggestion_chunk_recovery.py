@@ -87,7 +87,7 @@ def make_command(monkeypatch, failures):
 
     # The plain handler keeps the chunks on gather; these tests target recovery, not
     # the staggered first chunk (#4876).
-    command.ai_handler = SimpleNamespace(chat_completion=completion, prompt_cache_active=lambda model: False)
+    command.ai_handler = SimpleNamespace(chat_completion=completion, prompt_cache_active=lambda model, **_: False)
     command._self_reflect_with_fallback = reflect
     monkeypatch.setattr(module, "get_pr_multi_diffs", lambda *a, **k: PackedPRDiffs(["a", "b", "c"], [], []))
     return command, calls
@@ -339,7 +339,7 @@ async def test_recovery_reserves_handler_output_budget_for_fallback(configured, 
     command.ai_handler = SimpleNamespace(
         chat_completion=command.ai_handler.chat_completion,
         get_output_token_reserve=get_output_token_reserve,
-        prompt_cache_active=lambda model: False,
+        prompt_cache_active=lambda model, **_: False,
     )
     monkeypatch.setattr(module.TokenHandler, "count_tokens", lambda self, s: 1)
     monkeypatch.setattr(

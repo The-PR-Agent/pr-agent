@@ -2730,16 +2730,30 @@ class LiteLLMAIHandler(BaseAiHandler):
         """
         return get_settings().get("OPENAI.DEPLOYMENT_ID", None)
 
-    def prompt_cache_active(self, model: str) -> bool:
+    def prompt_cache_active(self, model: str, *, prompt_tokens: int | None = None) -> bool:
         """Whether the shared-prefix prompt cache will apply to this model's calls.
 
         The chunk runners stagger their first call when it is, so sibling chunks read
         the cache entry the first one writes instead of each writing their own (#4876).
-        Uses the same gate as the request path: injection points configured, and a
-        model that honors them.
+        Uses the same gates as the request path: injection points configured, a model
+        that honors them, and — when the caller knows the shared prompt's token count —
+        a prefix that clears the model's ``prompt_cache_min_tokens``. Below that
+        minimum Anthropic silently does not cache, so staggering would only add
+        latency. Best effort like the call-time warning: a missing token count or a
+        metadata gap skips the length check, never the call.
         """
         points = self._resolve_cache_control_injection_points()
-        return bool(points) and self._is_claude_model(model)
+        if not points or not self._is_claude_model(model):
+            return False
+        if prompt_tokens is not None:
+            try:
+                min_tokens = litellm.get_model_info(model).get("prompt_cache_min_tokens")
+            except Exception:
+                return True
+            if isinstance(min_tokens, int) and not isinstance(min_tokens, bool) and min_tokens > 0:
+                if prompt_tokens < min_tokens:
+                    return False
+        return True
 
     @staticmethod
     def _resolve_cache_control_injection_points():
