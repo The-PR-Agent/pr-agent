@@ -430,6 +430,49 @@ def test_github_staleness_skips_own_run_by_identity():
     assert provider.is_head_stale_against_base() is None
 
 
+def test_github_staleness_counts_completed_job_from_current_action_run(monkeypatch):
+    # When PR-Agent runs in an Action workflow that `needs: ci`, the completed
+    # sibling job belongs to the current GITHUB_RUN_ID. It must provide the
+    # reference timestamp rather than being skipped, so staleness is determined
+    # against base commits instead of falling back to push events.
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    now = datetime.now(UTC)
+    runs = [
+        # In-progress job from current run (e.g. PR-Agent itself) is skipped
+        SimpleNamespace(
+            status="in_progress",
+            conclusion=None,
+            app=None,
+            name="pr-agent",
+            details_url="https://github.com/org/repo/actions/runs/123/job/1",
+        ),
+        # Completed sibling CI job from current run sets the reference timestamp
+        SimpleNamespace(
+            status="completed",
+            conclusion="success",
+            app=None,
+            completed_at=now,
+            name="ci-tests",
+            details_url="https://github.com/org/repo/actions/runs/123/job/2",
+        ),
+    ]
+    provider = _make_github_provider(check_runs=runs)
+    provider.get_diff_files = lambda: [SimpleNamespace(filename="app/main.py")]
+    provider.pr.base = SimpleNamespace(ref="main")
+
+    # Base commit arrived AFTER the CI run completed and touches the PR file -> stale
+    base_commit = SimpleNamespace(
+        commit=SimpleNamespace(committer=SimpleNamespace(date=now + timedelta(minutes=5))),
+        files=[SimpleNamespace(filename="app/main.py")],
+    )
+    provider.repo_obj.get_commits.return_value = [base_commit]
+    assert provider.is_head_stale_against_base() is True
+
+    # When no base commits occurred after the CI run -> not stale (fresh)
+    provider.repo_obj.get_commits.return_value = []
+    assert provider.is_head_stale_against_base() is False
+
+
 def test_github_staleness_reads_push_time_from_fork_events():
     # Fork PR: the push event lives in the fork's stream, not the base
     # repo's, so the fork's events must be read.
