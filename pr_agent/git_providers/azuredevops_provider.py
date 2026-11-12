@@ -2031,6 +2031,7 @@ class AzureDevopsProvider(GitProvider):
             self.azure_devops_board_client.get_work_items(
                 project=self.workspace_slug,
                 ids=work_item_ids,
+                expand="Links",
                 error_policy="Fail",
             )
         )
@@ -2047,11 +2048,25 @@ class AzureDevopsProvider(GitProvider):
         ):
             raise ValueError("Azure work item response is incomplete")
 
+        def _get_work_item_url(item):
+            if hasattr(item, "_links") and item._links:
+                links = getattr(item._links, "links", item._links)
+                if isinstance(links, dict):
+                    html_link = links.get("html")
+                    if isinstance(html_link, dict) and html_link.get("href"):
+                        return html_link["href"]
+                    elif hasattr(html_link, "href") and html_link.href:
+                        return html_link.href
+            if getattr(self, "pr_url", None) and "/_git/" in self.pr_url:
+                base_project_url = self.pr_url.split("/_git/")[0]
+                return f"{base_project_url}/_workitems/edit/{item.id}"
+            return getattr(item, "url", "")
+
         work_items = [
             {
                 "id": item.id,
                 "title": item.fields.get("System.Title", ""),
-                "url": item.url,
+                "url": _get_work_item_url(item),
                 "body": item.fields.get("System.Description", ""),
                 "acceptance_criteria": item.fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", ""),
                 "tags": item.fields.get("System.Tags", "").split("; ") if item.fields.get("System.Tags") else [],
