@@ -156,7 +156,9 @@ def reconstruct_base_file_checked(head_file_str: str, patch_str: str) -> str | N
     # empty base (e.g. reversing an add-file patch) must stay "" so downstream
     # extend_patch() correctly treats it as having no original file.
     if base_ends_with_newline is None:
-        base_ends_with_newline = head_file_str.endswith("\n")
+        # An empty head has no final newline to inherit. Removed lines in a
+        # unified diff include their newline unless a marker already decided.
+        base_ends_with_newline = True if not head_file_str else head_file_str.endswith("\n")
     if base_lines and base_ends_with_newline:
         result += "\n"
     return result
