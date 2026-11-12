@@ -25,8 +25,11 @@ from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, stop
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 
 from ..algo.comment_identity import (
+    PRApprovalIdentity,
     comment_matches_any_identity,
+    comment_matches_identity,
     get_pr_review_comment_identifiers,
+    render_hidden_marker,
 )
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import count_patch_lines, extract_hunk_headers
@@ -2673,17 +2676,19 @@ class GithubProvider(GitProvider):
 
         return sub_issues
 
-    def auto_approve(self) -> bool:
+    def auto_approve(self, body: str = "") -> bool:
         """Approve the PR head that was reviewed, not whatever head exists now.
 
         The approval is pinned to the head SHA the provider snapshot was read for
         (``self._pr_revision_loaded``), and skipped when the PR has moved since, so a
         push made between the review and the approval cannot mark unreviewed commits
-        as approved.
+        as approved. An approval that cannot be attributed to PR-Agent is dismissed
+        straight away, since `revoke_auto_approval` would never find it again.
         """
-        reviewed_head_sha = self._pr_revision_loaded[0] if self._pr_revision_loaded else None
+        reviewed_head_sha, reviewed_base_sha = (self._pr_revision_loaded or (None, None))[:2]
         try:
-            current_head_sha = policy_value(self._get_pr(), "head", "sha")
+            current_pr = self._get_pr()
+            current_head_sha = policy_value(current_pr, "head", "sha")
             if reviewed_head_sha and current_head_sha and current_head_sha != reviewed_head_sha:
                 get_logger().info(
                     f"Skipping auto-approve: the PR head moved from {reviewed_head_sha} "
@@ -2692,15 +2697,71 @@ class GithubProvider(GitProvider):
                 return False
             if not reviewed_head_sha:
                 return False
+            # A retarget changes the reviewed diff without moving the head.
+            if not reviewed_base_sha or policy_value(current_pr, "base", "sha") != reviewed_base_sha:
+                get_logger().info("Skipping auto-approve: the PR base changed after it was read")
+                return False
+            marker = render_hidden_marker(PRApprovalIdentity.AUTO.value, self)
             res = self.pr.create_review(
-                event="APPROVE", commit=self._get_repo().get_commit(reviewed_head_sha)
+                event="APPROVE",
+                commit=self._get_repo().get_commit(reviewed_head_sha),
+                body=f"{marker}\n{body}" if body else marker,
             )
-            if res.state == "APPROVED":
-                return True
-            return False
+            if res.state != "APPROVED":
+                return False
+            try:
+                authored = self.is_comment_authored_by_pr_agent(res)
+            except RuntimeError as e:
+                get_logger().warning(f"Cannot attribute the approval to PR-Agent: {e}")
+                authored = False
+            if not authored:
+                try:
+                    res.dismiss("PR-Agent could not confirm this approval was its own")
+                except (GithubException, RequestException) as e:
+                    get_logger().error(f"An approval PR-Agent cannot attribute is still in place, error: {e}")
+                return False
+            # A push between the check above and the approval may have been revoked before this
+            # approval existed, so check again and withdraw it if the PR moved.
+            try:
+                moved_pr = self._get_pr()
+                moved = (policy_value(moved_pr, "head", "sha") != reviewed_head_sha
+                         or policy_value(moved_pr, "base", "sha") != reviewed_base_sha)
+            except (GithubException, RequestException) as e:
+                get_logger().warning(f"Cannot confirm the PR did not move during approval: {e}")
+                moved = True
+            if moved:
+                try:
+                    res.dismiss("The pull request changed while PR-Agent was approving it")
+                except (GithubException, RequestException) as e:
+                    get_logger().error(f"An approval of a moved pull request is still in place, error: {e}")
+                return False
+            return True
         except (GithubException, RequestException, AttributeError) as e:
             get_logger().exception(f"Failed to auto-approve, error: {e}")
             return False
+
+    def revoke_auto_approval(self, reason: str) -> bool:
+        """Dismiss the approvals PR-Agent gave automatically; True when none remains.
+
+        Only reviews carrying the auto-approval marker count: with a personal token or the
+        shared Actions identity, the same login also holds approvals PR-Agent did not create.
+        """
+        try:
+            reviews = list(self.pr.get_reviews())
+        except (GithubException, RequestException, AttributeError) as e:
+            get_logger().exception(f"Failed to list reviews to dismiss PR-Agent approvals, error: {e}")
+            return False
+        all_dismissed = True
+        for review in reviews:
+            try:
+                if (review.state == "APPROVED"
+                        and comment_matches_identity(review.body, PRApprovalIdentity.AUTO.value)
+                        and self.is_comment_authored_by_pr_agent(review)):
+                    review.dismiss(reason)
+            except (GithubException, RequestException, AttributeError, RuntimeError) as e:
+                get_logger().exception(f"Failed to dismiss a PR-Agent approval, error: {e}")
+                all_dismissed = False
+        return all_dismissed
 
     def _is_own_check_run(self, run, own_app_login: str) -> bool:
         """Return whether `run` was published by the running PR-Agent app.

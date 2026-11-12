@@ -43,6 +43,10 @@ class PRDescriptionIdentity(StrEnum):
     PERSISTENT = "<!-- pr-agent:describe:persistent -->"
 
 
+class PRApprovalIdentity(StrEnum):
+    AUTO = "<!-- pr-agent:review:auto-approval -->"
+
+
 _ALL_COMMENT_IDENTITIES = (
     PRReviewIdentity.REGULAR.value,
     PRReviewIdentity.INCREMENTAL.value,
@@ -52,6 +56,7 @@ _ALL_COMMENT_IDENTITIES = (
     PRCommandNoticeIdentity.INCOMPLETE_BITBUCKET_FILES.value,
     PRCommandNoticeIdentity.REVIEWED_COMMITS.value,
     PRDescriptionIdentity.PERSISTENT.value,
+    PRApprovalIdentity.AUTO.value,
 )
 _REVIEW_IDENTITY_HEADER_LINES = 5
 _REVIEWED_COMMIT_MARKER_RE = re.compile(r"<!-- pr-agent:reviewed-commit ([0-9a-f]{64}) ([0-9a-f]{40}|[0-9a-f]{64}) -->")

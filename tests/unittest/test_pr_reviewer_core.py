@@ -203,21 +203,6 @@ def test_non_authoritative_review_uses_configured_bot_display_name(monkeypatch):
     assert review.endswith("## Review\n\nBody")
 
 
-def test_auto_approve_disabled_comment_uses_configured_bot_display_name(monkeypatch):
-    published = []
-    reviewer = PRReviewer.__new__(PRReviewer)
-    reviewer.git_provider = SimpleNamespace(publish_comment=published.append)
-    monkeypatch.setitem(get_settings().config, "enable_auto_approval", False)
-    monkeypatch.setitem(get_settings().config, "bot_display_name", "Acme Bot")
-
-    reviewer.auto_approve_logic()
-
-    assert published == [
-        "Auto-approval option for Acme Bot is disabled. "
-        "You can enable it via a [configuration file](https://docs.pr-agent.ai/usage-guide/configuration_reference/#config)"
-    ]
-
-
 def test_review_failure_comment_treats_quoted_false_as_disabled():
     settings = get_settings()
     original = settings.pr_reviewer.get("publish_error_details", False)

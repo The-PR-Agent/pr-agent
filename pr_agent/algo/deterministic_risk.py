@@ -138,29 +138,30 @@ _CACHE_LOGIC_PATTERNS: list[tuple[str, str, re.Pattern]] = [
     ),
 ]
 
-# Function signature removal / rewrite (on '-' lines only)
+# Function signature removal / rewrite (on '-' lines only). Leading whitespace is allowed so methods
+# inside classes and impl blocks count too.
 _REMOVED_FUNCTION_PATTERNS: list[tuple[str, str, re.Pattern]] = [
     (
         "removed_function",
         "Removed Python function",
-        re.compile(r"^-(?:async\s+)?def\s+[A-Za-z_][A-Za-z0-9_]*\s*\("),
+        re.compile(r"^-\s*(?:async\s+)?def\s+[A-Za-z_][A-Za-z0-9_]*\s*\("),
     ),
     (
         "removed_function",
         "Removed JS/TS function",
         re.compile(
-            r"^-(?:export\s+)?(?:default\s+)?(?:async\s+)?function(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\("
+            r"^-\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?\s*\("
         ),
     ),
     (
         "removed_function",
         "Removed Go function",
-        re.compile(r"^-func\s+(?:\([^)]+\)\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\("),
+        re.compile(r"^-\s*func\s+(?:\([^)]+\)\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\("),
     ),
     (
         "removed_function",
         "Removed Rust function",
-        re.compile(r"^-(?:pub\s+)?(?:async\s+)?fn\s+[A-Za-z_][A-Za-z0-9_]*\s*[(<]"),
+        re.compile(r"^-\s*(?:pub\s+)?(?:async\s+)?fn\s+[A-Za-z_][A-Za-z0-9_]*\s*[(<]"),
     ),
 ]
 

@@ -39,6 +39,7 @@ from pr_agent.servers.github_common import (
     handle_line_comments,
     matches_review_state,
     pushed_base_branch_merge,
+    revoke_auto_approval_on_push,
 )
 from pr_agent.servers.utils import dedupe_review_commands, is_ask_command_comment
 
@@ -331,6 +332,9 @@ async def run_action():
         if pr_url or issue_url:
             raise SystemExit("GITHUB_TOKEN not set; provide it in this workflow's env before running PR-Agent.")
         return
+
+    if GITHUB_EVENT_NAME in ("pull_request", "pull_request_target"):
+        revoke_auto_approval_on_push(event_payload)
 
     settings_provider = None
     try:

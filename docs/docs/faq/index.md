@@ -17,7 +17,7 @@ However, PR-Agent has built-in safeguards to ensure the developer remains in the
 
 1. Preserves user's original PR header
 2. Places user's description above the AI-generated PR description
-3. Won't approve PRs; approval remains reviewer's responsibility
+3. Won't approve PRs by default. [Gated auto-approval](../commands/review.md#gated-auto-approval) is an opt-in the host must enable, and it never merges
 4. The code suggestions are optional, and aim to:
     - Encourage self-review and self-reflection
     - Highlight potential bugs or oversights
