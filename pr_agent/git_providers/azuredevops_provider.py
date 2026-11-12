@@ -15,7 +15,6 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.comment_identity import (
     PRCodeSuggestionsIdentity,
-    PRDescriptionHeader,
     add_comment_identity,
     comment_matches_any_identity,
     comment_matches_identity,
@@ -1327,23 +1326,7 @@ class AzureDevopsProvider(GitProvider):
         return any(value in stable_identities for value in values)
 
     def publish_description(self, pr_title: str, pr_body: str) -> None:
-        if len(pr_body) > MAX_PR_DESCRIPTION_AZURE_LENGTH:
-
-            usage_guide_text='<details> <summary><strong>✨ Describe command usage guide:</strong></summary><hr>'
-            ind = pr_body.find(usage_guide_text)
-            if ind != -1:
-                pr_body = pr_body[:ind]
-
-            if len(pr_body) > MAX_PR_DESCRIPTION_AZURE_LENGTH:
-                changes_walkthrough_text = PRDescriptionHeader.FILE_WALKTHROUGH.value
-                ind = pr_body.find(changes_walkthrough_text)
-                if ind != -1:
-                    pr_body = pr_body[:ind]
-
-            if len(pr_body) > MAX_PR_DESCRIPTION_AZURE_LENGTH:
-                trunction_message = " ... (description truncated due to length limit)"
-                pr_body = pr_body[:MAX_PR_DESCRIPTION_AZURE_LENGTH - len(trunction_message)] + trunction_message
-                get_logger().warning("PR description was truncated due to length limit")
+        pr_body = self.limit_description_characters(pr_body, MAX_PR_DESCRIPTION_AZURE_LENGTH)
         try:
             updated_pr = GitPullRequest()
             if pr_title is not None:
