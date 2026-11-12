@@ -12,6 +12,8 @@ from pr_agent.algo.i18n import t
 from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 
+get_settings().get("config")
+
 
 def _record_reviews(monkeypatch):
     created = []
@@ -40,7 +42,9 @@ async def test_improve_comment_runs_one_review_with_notice(monkeypatch, name):
 
     assert handled is True
     assert len(created) == 1
-    assert created[0]["kwargs"] == {"alias_notice": "/improve now runs /review."}
+    assert created[0]["kwargs"] == {
+        "alias_notice": "/improve has been merged into /review and will be removed in the next version."
+    }
 
 
 async def test_review_has_no_alias_notice(monkeypatch):
@@ -86,4 +90,4 @@ def test_review_renders_alias_notice_under_the_heading():
 
     lines = [line for line in review.splitlines() if line.strip()]
     assert lines[0] == "## PR Reviewer Guide"
-    assert lines[1] == "/improve now runs /review."
+    assert lines[1] == "/improve has been merged into /review and will be removed in the next version."
