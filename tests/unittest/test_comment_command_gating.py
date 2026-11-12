@@ -6,10 +6,11 @@ from unittest import mock
 
 import pytest
 from starlette.background import BackgroundTasks
-from starlette_context import request_cycle_context
+from starlette_context import context, request_cycle_context
 
 import pr_agent.servers.gitea_app as gitea_app
 import pr_agent.servers.gitlab_webhook as gitlab_webhook
+from pr_agent.algo.utils import decode_user_text_args
 from pr_agent.config_loader import global_settings
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.servers import bitbucket_app, bitbucket_server_webhook, github_app
@@ -248,6 +249,87 @@ async def test_github_line_comment_prefixing_ask_is_not_rewritten_to_ask_line(mo
         "https://api.github.com/repos/org/repo/pulls/1",
         "/asking about retries",
     )]
+
+
+@pytest.mark.parametrize(("command", "root_id"), [("/ask", None), ("/ask_question", 456)])
+async def test_github_app_file_level_ask_keeps_target_and_thread_context(monkeypatch, command, root_id):
+    question = 'Why is "--config.publish_output=false" used here?'
+    seen = []
+
+    class FakeAgent:
+        async def handle_request(self, api_url, body, notify=None, **_kwargs):
+            seen.append((api_url, body, {
+                key: context.get(key) for key in (
+                    "file_question_path", "file_question_comment_id", "file_question_origin_comment_id",
+                    "file_question_comment_url",
+                )
+            }))
+            return True
+
+    body = {
+        "action": "created",
+        "comment": {
+            "body": f"{command} {question}",
+            "id": 123,
+            "in_reply_to_id": root_id,
+            "pull_request_url": "https://api.github.com/repos/org/repo/pulls/1",
+            "html_url": "https://github.com/org/repo/pull/1#discussion_r123",
+            "subject_type": "file",
+            "start_line": None,
+            "line": 1,
+            "diff_hunk": "",
+            "path": "src/target file.py",
+        },
+    }
+    monkeypatch.setattr(github_app, "get_git_provider_with_context", lambda **_kwargs: mock.Mock())
+    monkeypatch.setattr(github_app, "get_identity_provider", lambda: mock.Mock(
+        verify_eligibility=lambda *_args: Eligibility.ELIGIBLE))
+
+    with request_cycle_context({}):
+        await github_app.handle_comments_on_pr(
+            body, "pull_request_review_comment", "human-user", "42", "created", {}, FakeAgent())
+
+    assert len(seen) == 1
+    url, args, metadata = seen[0]
+    assert url == "https://api.github.com/repos/org/repo/pulls/1"
+    assert args[0] == "/ask"
+    assert decode_user_text_args(args[1:]) == question
+    assert metadata == {
+        "file_question_path": "src/target file.py",
+        "file_question_comment_id": root_id or 123,
+        "file_question_origin_comment_id": 123,
+        "file_question_comment_url": "https://github.com/org/repo/pull/1#discussion_r123",
+    }
+
+
+@pytest.mark.parametrize(("field", "invalid_value"), [
+    ("path", None), ("path", ""), ("id", None), ("html_url", ""), ("in_reply_to_id", -1),
+    ("body", "/ask_line Why?"),
+])
+async def test_github_app_skips_unsupported_or_malformed_file_level_ask(monkeypatch, field, invalid_value):
+    class UnreachableAgent:
+        async def handle_request(self, *_args, **_kwargs):
+            pytest.fail("Unsupported or malformed file-level questions must not reach the agent")
+
+    comment = {
+        "body": "/ask Why?",
+        "pull_request_url": "https://api.github.com/repos/org/repo/pulls/1",
+        "subject_type": "file",
+        "path": "src/main.py",
+        "id": 123,
+        "html_url": "https://github.com/org/repo/pull/1#discussion_r123",
+    }
+    comment[field] = invalid_value
+    monkeypatch.setattr(github_app, "get_git_provider_with_context", lambda **_kwargs: mock.Mock())
+    monkeypatch.setattr(github_app, "get_identity_provider", lambda: mock.Mock(
+        verify_eligibility=lambda *_args: Eligibility.ELIGIBLE))
+
+    with request_cycle_context({}):
+        result = await github_app.handle_comments_on_pr(
+            {"comment": comment}, "pull_request_review_comment", "human-user", "42", "created", {},
+            UnreachableAgent())
+
+    assert result == {}
 
 
 async def _run_bitbucket_comment_webhook(

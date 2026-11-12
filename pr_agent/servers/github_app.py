@@ -16,6 +16,7 @@ from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
+from pr_agent.algo.utils import encode_user_text_arg
 from pr_agent.config_loader import get_bot_display_name, get_settings, global_settings
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
@@ -156,14 +157,34 @@ async def handle_comments_on_pr(body: dict[str, Any],
         api_url = body["issue"]["pull_request"]["url"]
     elif "comment" in body and "pull_request_url" in body["comment"]:
         api_url = body["comment"]["pull_request_url"]
+        comment = body["comment"]
         try:
-            if (is_ask_command_comment(comment_body) and
-                    'subject_type' in body["comment"] and body["comment"]["subject_type"] == "line"):
-                # comment on a code line in the "files changed" tab
+            is_ask = is_ask_command_comment(comment_body)
+            if is_ask and comment.get("subject_type") == "file":
+                if comment_body.split(maxsplit=1)[0].lower() not in ("/ask", "/ask_question"):
+                    return {}  # /ask_line requires a line selection, not a file-level comment
+                parts = comment_body.strip().split(maxsplit=1)
+                question = parts[1] if len(parts) > 1 else ""
+                path, origin_id, url = comment["path"], comment["id"], comment["html_url"]
+                thread_id = comment.get("in_reply_to_id") or origin_id
+                if not (isinstance(path, str) and path.strip()
+                        and isinstance(origin_id, int) and origin_id > 0
+                        and isinstance(thread_id, int) and thread_id > 0
+                        and isinstance(url, str) and url.strip()):
+                    raise ValueError("Invalid file-level review comment metadata")
+                context["file_question_path"] = path
+                context["file_question_comment_id"] = thread_id
+                context["file_question_origin_comment_id"] = origin_id
+                context["file_question_comment_url"] = url
+                comment_body = ["/ask", encode_user_text_arg(question)]
+                disable_eyes = True
+            elif is_ask and comment.get("subject_type") == "line":
                 comment_body = handle_line_comments(body, comment_body)
                 disable_eyes = True
         except Exception as e:
-            get_logger().error("Failed to get log context", artifact={'error': e})
+            get_logger().error("Failed to handle review comment context", artifact={'error': e})
+            if comment.get("subject_type") == "file":
+                return {}
     else:
         return {}
     log_context["api_url"] = api_url
