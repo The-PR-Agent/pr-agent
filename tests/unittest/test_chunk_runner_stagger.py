@@ -68,15 +68,13 @@ def test_prompt_cache_active_rejects_a_prefix_below_the_model_minimum(monkeypatc
     # Below prompt_cache_min_tokens Anthropic silently does not cache, so staggering
     # would only add latency; the predicate must say so (calibrated against the
     # call-time warning's rule).
-    import pr_agent.algo.ai_handlers.litellm_ai_handler as handler_module
-
     handler = LiteLLMAIHandler()
     points = [{"location": "message", "role": "system"}]
     monkeypatch.setattr(
         LiteLLMAIHandler, "_resolve_cache_control_injection_points", staticmethod(lambda: points)
     )
     monkeypatch.setattr(
-        handler_module.litellm, "get_model_info",
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.litellm.get_model_info",
         lambda model: {"prompt_cache_min_tokens": 1024},
     )
     assert handler.prompt_cache_active("claude-sonnet-5", prompt_tokens=500) is False
@@ -84,8 +82,6 @@ def test_prompt_cache_active_rejects_a_prefix_below_the_model_minimum(monkeypatc
 
 
 def test_prompt_cache_active_skips_the_length_check_without_metadata_or_tokens(monkeypatch):
-    import pr_agent.algo.ai_handlers.litellm_ai_handler as handler_module
-
     handler = LiteLLMAIHandler()
     points = [{"location": "message", "role": "system"}]
     monkeypatch.setattr(
@@ -95,10 +91,11 @@ def test_prompt_cache_active_skips_the_length_check_without_metadata_or_tokens(m
     def explode(model):
         raise KeyError(model)
 
-    monkeypatch.setattr(handler_module.litellm, "get_model_info", explode)
+    monkeypatch.setattr("pr_agent.algo.ai_handlers.litellm_ai_handler.litellm.get_model_info", explode)
     # A metadata gap or a missing token count never blocks the call-time behavior.
     assert handler.prompt_cache_active("claude-sonnet-5", prompt_tokens=500) is True
     monkeypatch.setattr(
-        handler_module.litellm, "get_model_info", lambda model: {"prompt_cache_min_tokens": 1024}
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.litellm.get_model_info",
+        lambda model: {"prompt_cache_min_tokens": 1024},
     )
     assert handler.prompt_cache_active("claude-sonnet-5") is True
