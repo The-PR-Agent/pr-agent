@@ -207,8 +207,27 @@ _EMPTIED_FILE_PATCH = """--- a/f.txt
 
 def test_reconstruct_base_file_emptied():
     # Every line removed but the file kept: `+0,0` must not be read as out of bounds.
-    # (Only the lines are checked; the trailing newline follows the EOF handling.)
-    assert reconstruct_base_file_checked("", _EMPTIED_FILE_PATCH).splitlines() == ["a", "b"]
+    # The removed lines are not marked with "\ No newline at end of file", so the
+    # base still ended with a newline even though the empty head does not.
+    assert reconstruct_base_file_checked("", _EMPTIED_FILE_PATCH) == "a\nb\n"
+
+
+def test_reconstruct_base_single_line_file_emptied():
+    patch = "--- a/f.txt\n+++ b/f.txt\n@@ -1 +0,0 @@\n-hello\n"
+    assert reconstruct_base_file_checked("", patch) == "hello\n"
+
+
+def test_reconstruct_base_newline_only_file_emptied():
+    patch = "--- a/f.txt\n+++ b/f.txt\n@@ -1 +0,0 @@\n-\n"
+    assert reconstruct_base_file_checked("", patch) == "\n"
+
+
+def test_reconstruct_base_file_emptied_without_a_trailing_newline():
+    patch = (
+        "--- a/f.txt\n+++ b/f.txt\n@@ -1 +0,0 @@\n"
+        "-hello\n\\ No newline at end of file\n"
+    )
+    assert reconstruct_base_file_checked("", patch) == "hello"
 
 
 @pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x85", "\f", "\v", "\x1c", "\r"])

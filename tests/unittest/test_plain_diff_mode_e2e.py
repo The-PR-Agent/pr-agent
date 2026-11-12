@@ -156,6 +156,19 @@ def test_added_file_with_empty_base_keeps_matching_head(cfg, tmp_path, monkeypat
     assert file.base_file == ""
 
 
+def test_emptied_working_tree_file_reconstructs_the_base(cfg, tmp_path, monkeypatch):
+    """An empty working-tree file was read successfully; do not treat it as missing."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "foo.py").write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    cfg("plain_diff.content", "--- a/foo.py\n+++ b/foo.py\n@@ -1,2 +0,0 @@\n-line1\n-line2\n")
+
+    file = PlainDiffGitProvider(None).get_diff_files()[0]
+
+    assert file.head_file == ""
+    assert file.base_file == "line1\nline2\n"
+
+
 def test_base_file_reconstructed_when_run_from_subdirectory(cfg, tmp_path, monkeypatch):
     """Regression for the CWD-vs-repo-root bug: enrichment must still find
     working-tree files when the CLI is run from a subdirectory of the repo."""

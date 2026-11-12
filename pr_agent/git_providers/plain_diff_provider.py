@@ -91,7 +91,9 @@ class PlainDiffGitProvider(GitProvider):
                 "(working-tree enrichment disabled)."
             )
         for f in files:
-            head = ""
+            # None: the working-tree file was not read (missing, unsafe, or
+            # unreadable). A successful read of an empty file is "".
+            head = None
             if root is not None and f.filename:
                 if os.path.isabs(f.filename):
                     get_logger().info(
@@ -109,9 +111,9 @@ class PlainDiffGitProvider(GitProvider):
                                 head = fh.read()
                         except (OSError, UnicodeDecodeError) as e:
                             get_logger().info(f"Could not read working-tree file {f.filename}: {e}")
-            base = reconstruct_base_file_checked(head, f.patch) if head else None
+            base = reconstruct_base_file_checked(head, f.patch) if head is not None else None
             if base is None:
-                if head:
+                if head is not None:
                     get_logger().info(f"Working-tree file does not match diff; using patch-only context: {f.filename}")
                 f.head_file = ""
                 f.base_file = ""
