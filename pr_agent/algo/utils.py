@@ -1688,6 +1688,10 @@ def is_value_no(value):
     return False
 
 
+FILE_WALKTHROUGH_ESCAPED_MARKER = "<!-- pr-agent:file-walkthrough-escaped -->"
+_WALKTHROUGH_BLANK_LINE = re.compile(r"\r?\n\r?\n")
+
+
 class _WalkthroughFileMatch:
     """Keep the capture offsets available to walkthrough readback consumers."""
 
@@ -1769,13 +1773,14 @@ def _match_walkthrough_file(file_data: str) -> _WalkthroughFileMatch | None:
         marker_end = marker + (len("<li>") if marker == li_start else len("•"))
         detail_start = marker_end
     else:
-        divider = file_data.find("\n\n", body_start, details_end) if paragraph_allowed else -1
-        if divider == -1 and paragraph_allowed:
+        divider = _WALKTHROUGH_BLANK_LINE.search(file_data, body_start, details_end) if paragraph_allowed else None
+        if divider is None and paragraph_allowed:
             # Recover the separator after <hr> when none follows the filename.
-            divider = file_data.rfind("\n\n", hr_end, body_start)
-        if divider != -1:
-            marker = divider
-            detail_start = divider + 2
+            for match in _WALKTHROUGH_BLANK_LINE.finditer(file_data, hr_end, body_start):
+                divider = match
+        if divider is not None:
+            marker = divider.start()
+            detail_start = divider.end()
         else:
             marker = file_data.find("-", body_start, details_end)
             if marker == -1:
@@ -1849,10 +1854,25 @@ def process_description(description_full: str) -> tuple[str, list]:
                         file_data = file_data[0]
                     res = _match_walkthrough_file(file_data)
                     if res and res.lastindex == 4:
-                        short_filename = res.group(1).strip()
-                        short_summary = res.group(2).strip()
-                        long_filename = res.group(3).strip()
-                        if long_filename.endswith('<ul>'):
+                        raw_filename = res.group(3)
+                        marker_match = re.match(
+                            re.escape(FILE_WALKTHROUGH_ESCAPED_MARKER) + r"[ \t]*\r?\n", raw_filename
+                        )
+                        escaped = marker_match is not None
+                        if escaped:
+                            short_filename = html.unescape(res.group(1))
+                            short_summary = html.unescape(res.group(2))
+                            # New rows encode filename line breaks, so only the first physical line is a path.
+                            filename_end = raw_filename.find("\n", marker_match.end())
+                            if filename_end == -1:
+                                filename_end = len(raw_filename)
+                            encoded_filename = raw_filename[marker_match.end():filename_end].removesuffix("\r")
+                            long_filename = html.unescape(encoded_filename)
+                        else:
+                            short_filename = res.group(1).strip()
+                            short_summary = res.group(2).strip()
+                            long_filename = raw_filename.strip()
+                        if not escaped and long_filename.endswith('<ul>'):
                             long_filename = long_filename[:-4].strip()
                         long_summary =  res.group(4).strip()
                         long_summary = long_summary.replace('<br> *', '\n*').replace('<br>','').replace('\n','<br>')

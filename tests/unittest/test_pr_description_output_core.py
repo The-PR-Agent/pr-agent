@@ -18,6 +18,7 @@ Coverage:
   walkthrough produced by ``process_pr_files_prediction``.
 """
 
+import html
 import re
 from time import perf_counter
 from types import SimpleNamespace
@@ -29,10 +30,12 @@ import yaml
 from jinja2 import Environment, StrictUndefined, select_autoescape
 
 from pr_agent.algo.comment_identity import PRDescriptionHeader
+from pr_agent.algo.pr_processing import add_ai_metadata_to_diff_files
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import process_description
 from pr_agent.commands.pr_description import PRDescription, sanitize_diagram
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
@@ -708,11 +711,10 @@ class TestProcessPRFilesPrediction:
         ("plus", "minus", "expected_stats"), [(5, 2, "+5/-2"), (0, 0, "[link]"), (10**12, 0, "[link]")],
     )
     @patch("pr_agent.commands.pr_description.get_settings")
-    def test_normalized_first_match_and_missing_file_stats(self, mock_get_settings, plus, minus, expected_stats):
+    def test_normalized_match_and_missing_file_stats(self, mock_get_settings, plus, minus, expected_stats):
         mock_get_settings.return_value = _settings()
         obj = self._obj(gfm=True, diff_files=[
             FilePatchInfo("", "", "", "/SRC/APP.py/", num_plus_lines=plus, num_minus_lines=minus),
-            FilePatchInfo("", "", "", "src/app.PY", num_plus_lines=99, num_minus_lines=88),
         ])
         value = {"backend": [("src/App.py", "", ""), ("missing.py", "", "")]}
 
@@ -720,9 +722,24 @@ class TestProcessPRFilesPrediction:
 
         app_body, missing_body = body.split("<strong>missing.py</strong>", 1)
         assert expected_stats in app_body
-        assert "+99/-88" not in body
         assert '<a href=""></a>' in missing_body
         obj.git_provider.get_diff_files.assert_called_once_with()
+
+    @patch("pr_agent.commands.pr_description.get_settings")
+    def test_exact_diff_path_wins_over_case_insensitive_collision(self, mock_get_settings):
+        mock_get_settings.return_value = _settings(collapsible_file_list=False)
+        obj = self._obj(gfm=True, diff_files=[
+            FilePatchInfo("", "", "", "src/app.py", num_plus_lines=1, num_minus_lines=0),
+            FilePatchInfo("", "", "", "src/App.py", num_plus_lines=7, num_minus_lines=3),
+        ])
+
+        body = obj.process_pr_files_prediction("", {
+            "backend": [("src/App.py", "Update", "- Details")],
+        })
+
+        assert "+7/-3" in body
+        assert "+1/-0" not in body
+        obj.git_provider.get_line_link.assert_called_once_with("src/App.py", relevant_line_start=-1)
 
     @patch("pr_agent.commands.pr_description.get_settings")
     def test_adaptive_collapsible_triggers_above_threshold(self, mock_get_settings):
@@ -756,14 +773,168 @@ class TestProcessPRFilesPrediction:
         row = obj.add_file_data("", "+1/-0", "", filename, "<strong>a.py</strong>", link, "")
 
         rendered_link = re.search(r'href="([^"]+)"', row).group(1)
-        assert rendered_link == link
-        assert unquote(urlsplit(rendered_link).path).endswith(f"/{filename}")
+        assert html.unescape(rendered_link) == link
+        assert unquote(urlsplit(html.unescape(rendered_link)).path).endswith(f"/{filename}")
+
+    @patch("pr_agent.commands.pr_description.get_settings")
+    def test_normalized_diff_match_uses_real_path_for_gitlab_link(self, mock_get_settings):
+        mock_get_settings.return_value = _settings(collapsible_file_list=False)
+        provider = GitLabProvider.__new__(GitLabProvider)
+        provider.gl = SimpleNamespace(url="https://gitlab.example")
+        provider.id_project = "owner/repo"
+        provider.mr = SimpleNamespace(
+            web_url="https://gitlab.example/owner/repo/-/merge_requests/7",
+            source_branch="feature/test",
+        )
+        real_filename = "src/a#b&c.py"
+        predicted_filename = f"/{real_filename}/"
+        obj = self._obj(gfm=True, diff_files=[
+            FilePatchInfo("", "", "", real_filename, num_plus_lines=2, num_minus_lines=1),
+        ])
+        obj.git_provider.get_line_link.side_effect = provider.get_line_link
+
+        body = obj.process_pr_files_prediction("", {
+            "backend": [(predicted_filename, "Update", "- Details")],
+        })
+
+        link = html.unescape(re.search(r'href="([^"]+)"', body).group(1))
+        assert link == provider.get_line_link(real_filename, -1)
+        assert "/src/a%23b%26c.py?" in link
+        assert "+2/-1" in body
+        obj.git_provider.get_line_link.assert_called_once_with(real_filename, relevant_line_start=-1)
+
+    @patch("pr_agent.commands.pr_description.get_settings")
+    def test_normalized_diff_match_uses_real_path_for_github_anchor(self, mock_get_settings):
+        mock_get_settings.return_value = _settings(collapsible_file_list=False)
+        provider = GithubProvider.__new__(GithubProvider)
+        provider.base_url_html = "https://github.com"
+        provider.repo = "owner/repo"
+        provider.pr_num = 7
+        real_filename = "src/App.py"
+        obj = self._obj(gfm=True, diff_files=[FilePatchInfo("", "", "", real_filename)])
+        obj.git_provider.get_line_link.side_effect = provider.get_line_link
+
+        body = obj.process_pr_files_prediction("", {
+            "backend": [("/src/app.py/", "Update", "- Details")],
+        })
+
+        link = html.unescape(re.search(r'href="([^"]+)"', body).group(1))
+        assert link == provider.get_line_link(real_filename, -1)
+        obj.git_provider.get_line_link.assert_called_once_with(real_filename, relevant_line_start=-1)
 
 
 # ---------------------------------------------------------------------------
 # Round-trip: process_description recovers structured files from rendering
 # ---------------------------------------------------------------------------
 class TestRoundTripWithProcessDescription:
+    @pytest.mark.parametrize("predicted", ["/src/app.py/", "src/APP.py"], ids=["slashes", "case"])
+    @patch("pr_agent.commands.pr_description.get_settings")
+    def test_normalized_diff_path_readback_attaches_ai_metadata(self, mock_get_settings, predicted):
+        mock_get_settings.return_value = _settings(collapsible_file_list=False)
+        obj = _make_instance()
+        actual = FilePatchInfo("", "", "", "src/app.py")
+        obj.git_provider = MagicMock()
+        obj.git_provider.is_supported.return_value = True
+        obj.git_provider.get_diff_files.return_value = [actual]
+        obj.git_provider.get_line_link.return_value = "https://example.test/src/app.py"
+        table = obj.process_pr_files_prediction("", {"backend": [(predicted, "Update", "- Details")]})
+        assert "<strong>app.py</strong>" in table
+        description = (
+            f"<details><summary><h3>{PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>"
+            f"{table}</details>"
+        )
+
+        _, files = process_description(description)
+
+        assert len(files) == 1
+        assert files[0]["full_file_name"] == actual.filename
+        add_ai_metadata_to_diff_files(obj.git_provider, files)
+        assert actual.ai_file_summary == files[0]
+
+    @patch("pr_agent.commands.pr_description.get_settings")
+    def test_ambiguous_normalized_paths_do_not_attach_metadata_to_wrong_file(self, mock_get_settings):
+        mock_get_settings.return_value = _settings(collapsible_file_list=False)
+        obj = _make_instance()
+        diff_files = [FilePatchInfo("", "", "", name) for name in ("src/Foo.py", "src/foo.py")]
+        obj.git_provider = MagicMock()
+        obj.git_provider.is_supported.return_value = True
+        obj.git_provider.get_diff_files.return_value = diff_files
+        obj.git_provider.get_line_link.return_value = "https://example.test/file"
+        table = obj.process_pr_files_prediction("", {"backend": [("src/FOO.py", "Update", "- Details")]})
+        description = (
+            f"<details><summary><h3>{PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>"
+            f"{table}</details>"
+        )
+
+        _, files = process_description(description)
+
+        assert files[0]["full_file_name"] == "src/FOO.py"
+        assert '<a href=""></a>' in table
+        assert "+" not in table and "-0" not in table
+        obj.git_provider.get_line_link.assert_not_called()
+        add_ai_metadata_to_diff_files(obj.git_provider, files)
+        assert all(file.ai_file_summary is None for file in diff_files)
+
+    @pytest.mark.parametrize("line_ending", ["\n", "\r\n"], ids=["lf", "crlf"])
+    @patch("pr_agent.commands.pr_description.get_settings")
+    def test_escaped_row_with_short_plain_text_list_keeps_path(self, mock_get_settings, line_ending):
+        mock_get_settings.return_value = _settings(collapsible_file_list=False)
+        obj = _make_instance()
+        filename = "src/ keep &copy;.py "
+        obj.git_provider = MagicMock()
+        obj.git_provider.is_supported.return_value = True
+        obj.git_provider.get_diff_files.return_value = [FilePatchInfo("", "", "", filename)]
+        obj.git_provider.get_line_link.return_value = "https://example.test/file"
+        table = obj.process_pr_files_prediction("", {
+            "backend": [(filename, "Keep path", "- Details")],
+        }).replace("\n", line_ending)
+        assert "<li>" not in table
+        description = (
+            f"<details><summary><h3>{PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>"
+            f"{table}</details>"
+        )
+
+        _, files = process_description(description)
+
+        assert len(files) == 1
+        assert files[0]["full_file_name"] == filename
+        assert files[0]["short_summary"] == "Keep path"
+
+    @pytest.mark.parametrize(
+        ("line_ending", "marker_suffix"),
+        [("\n", ""), ("\r\n", ""), ("\r\n", " \t")],
+        ids=["lf", "crlf", "crlf-and-marker-whitespace"],
+    )
+    @patch("pr_agent.commands.pr_description.get_settings")
+    def test_escaped_row_readback_keeps_filename_when_list_follows(
+        self, mock_get_settings, line_ending, marker_suffix,
+    ):
+        mock_get_settings.return_value = _settings(collapsible_file_list=False)
+        obj = _make_instance()
+        filename = "src/ preserve &copy;<ul>\npart.py  "
+        obj.git_provider = MagicMock()
+        obj.git_provider.is_supported.return_value = True
+        obj.git_provider.get_diff_files.return_value = [FilePatchInfo("", "", "", filename)]
+        obj.git_provider.get_line_link.return_value = "https://example.test/file"
+        table = obj.process_pr_files_prediction("", {
+            "backend": [(filename, "Keep path", "- " + "A detailed list entry. " * 12)],
+        })
+        assert "<ul>" in table and "<li>" in table
+        table = table.replace("\n", line_ending)
+        if marker_suffix:
+            marker = "<!-- pr-agent:file-walkthrough-escaped -->"
+            table = table.replace(marker + line_ending, marker + marker_suffix + line_ending)
+        description = (
+            f"<details><summary><h3>{PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>"
+            f"{table}</details>"
+        )
+
+        _, files = process_description(description)
+
+        assert len(files) == 1
+        assert files[0]["full_file_name"] == filename
+        assert files[0]["short_summary"] == "Keep path"
+
     @pytest.mark.parametrize("title_wrapper", ["<dd>{}</dd>", "<br><span>{}</span>"], ids=["legacy", "phrasing"])
     @pytest.mark.parametrize(
         "file_body,expected_path",
@@ -810,15 +981,16 @@ class TestRoundTripWithProcessDescription:
 
     @pytest.mark.parametrize("title_wrapper", ["<dd>{}</dd>", "<br><span>{}</span>"], ids=["legacy", "phrasing"])
     @pytest.mark.parametrize(
-        "file_body",
+        ("file_body", "expected_long_summary"),
         [
-            "src/a&amp;b.py\n<ul><li>Details</li></ul>",
-            "src/a&amp;b.py\n\nDetails",
-            "src/a&amp;b.py\n- Details",
+            ("src/a&amp;b.py\n<ul><li>Details</li></ul>", "* Details"),
+            ("src/a&amp;b.py\n\nDetails", "* Details"),
+            ("src/a&amp;b.py\n- Details", "* Details"),
+            ("src/a&amp;b.py\r\n\r\n- Details", "*  Details"),
         ],
-        ids=["list", "paragraph", "hyphen"],
+        ids=["list", "paragraph", "hyphen", "legacy-crlf"],
     )
-    def test_readback_accepts_legacy_and_phrasing_titles(self, title_wrapper, file_body):
+    def test_readback_accepts_legacy_and_phrasing_titles(self, title_wrapper, file_body, expected_long_summary):
         title_html = title_wrapper.format("<code>Keep &amp; names</code>")
         description = (
             f"Intro\n<details><summary><h3>{PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>\n"
@@ -833,8 +1005,99 @@ class TestRoundTripWithProcessDescription:
             "short_file_name": "a&amp;b.py",
             "full_file_name": "src/a&amp;b.py",
             "short_summary": "Keep &amp; names",
-            "long_summary": "* Details",
+            "long_summary": expected_long_summary,
         }]
+
+    @pytest.mark.parametrize("collapsible", [False, True], ids=["flat", "collapsible"])
+    @pytest.mark.parametrize("filename", [
+        'src/it\'s a "file"&copy;<tag>.py ',
+        'src/keep<ul>',
+        'src/embedded\n\nline.py',
+        'src/a•b.py',
+    ], ids=["quotes-and-entities", "literal-ul-suffix", "embedded-newlines", "literal-bullet"])
+    @pytest.mark.parametrize("title", [
+        'Fix "quoted" <table> &copy;',
+        "Fix " + "a & b " * 9,
+    ], ids=["quoted-markup", "entity-heavy-no-wrap"])
+    @pytest.mark.parametrize("detail", [
+        "- Updates the file",
+        "- " + "A normal detailed summary of the change. " * 4,
+    ], ids=["short-summary", "wrapped-markdown-list"])
+    @patch("pr_agent.commands.pr_description.get_settings")
+    def test_escaped_walkthrough_preserves_file_identity(
+        self, mock_get_settings, detail, title, filename, collapsible,
+    ):
+        mock_get_settings.return_value = _settings(collapsible_file_list=collapsible)
+        obj = _make_instance()
+        label = "back&<end>"
+        link = 'https://example.test/view?file=a&title="quoted"'
+        diff = FilePatchInfo("", "", "", filename, num_plus_lines=2, num_minus_lines=1)
+        obj.git_provider = MagicMock()
+        obj.git_provider.is_supported.side_effect = lambda cap: cap == "gfm_markdown"
+        obj.git_provider.get_diff_files.return_value = [diff]
+        obj.git_provider.get_line_link.return_value = link
+
+        table = obj.process_pr_files_prediction("", {
+            label: [(filename, title, detail)],
+        })
+
+        assert "<strong>Back&amp;&lt;end&gt;</strong>" in table
+        assert html.escape(filename.split("/")[-1]).replace("•", "&#8226;").replace("\n", "&#10;") in table
+        assert f"<code>{html.escape(title)}</code>" in table
+        assert f'href="{html.escape(link, quote=True)}"' in table
+        assert "<!-- pr-agent:file-walkthrough-escaped -->" in table
+        obj.git_provider.get_line_link.assert_called_once_with(filename, relevant_line_start=-1)
+
+        description = (
+            f"<details><summary><h3>{PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>\n\n"
+            f"{table}\n\n</details>"
+        )
+        _, files = process_description(description)
+        assert len(files) == 1
+        assert files[0]["full_file_name"] == filename
+        assert files[0]["short_file_name"] == filename.split("/")[-1]
+        assert files[0]["short_summary"] == title
+
+    @patch("pr_agent.commands.pr_description.get_settings")
+    def test_legacy_entities_stay_literal_beside_new_escaped_files(self, mock_get_settings):
+        mock_get_settings.return_value = _settings(collapsible_file_list=False)
+        obj = _make_instance()
+        obj.git_provider = MagicMock()
+        obj.git_provider.is_supported.return_value = True
+        obj.git_provider.get_diff_files.return_value = [FilePatchInfo("", "", "", "src/a&b.py")]
+        obj.git_provider.get_line_link.return_value = "https://example.test/file"
+        current = obj.process_pr_files_prediction("", {
+            "backend": [("src/a&b.py", "Keep & names", "- Summary")],
+        })
+        legacy = (
+            "<table><tr><td><details><summary><strong>report&copy;.py</strong>"
+            "<br><span><code>Legacy &copy;</code></span></summary><hr>\n"
+            "src/report&copy;.py\n\n- Original</details></td></tr></table>"
+        )
+        description = (
+            f"<details><summary><h3>{PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>\n\n"
+            f"{legacy}{current}\n\n</details>"
+        )
+        _, files = process_description(description)
+        assert [(f["full_file_name"], f["short_summary"]) for f in files] == [
+            ("src/report&copy;.py", "Legacy &copy;"),
+            ("src/a&b.py", "Keep & names"),
+        ]
+
+    @pytest.mark.parametrize("suffix", ["\n", "\n\n", "\n\n\n"])
+    @patch("pr_agent.commands.pr_description.get_settings")
+    def test_yaml_block_newlines_are_removed_only_for_known_paths(self, mock_get_settings, suffix):
+        mock_get_settings.return_value = _settings(collapsible_file_list=False)
+        obj = _make_instance()
+        obj.git_provider = MagicMock()
+        obj.git_provider.is_supported.return_value = True
+        obj.git_provider.get_diff_files.return_value = [FilePatchInfo("", "", "", "src/app.py")]
+        obj.git_provider.get_line_link.return_value = "https://example.test/app.py"
+        table = obj.process_pr_files_prediction("", {
+            "backend": [("src/app.py" + suffix, "Update", "Details.")],
+        })
+        assert "src/app.py\n\nDetails." in table
+        obj.git_provider.get_line_link.assert_called_once_with("src/app.py", relevant_line_start=-1)
 
     @patch("pr_agent.commands.pr_description.get_settings")
     def test_walkthrough_table_round_trips_through_process_description(self, mock_get_settings):
@@ -891,7 +1154,7 @@ class TestPrepareFileLabelsEdgeCases:
         obj.data = None
         assert obj._prepare_file_labels() == {}
 
-    def test_filename_quotes_are_normalized(self):
+    def test_filename_quotes_are_preserved(self):
         obj = _make_instance()
         obj.vars = {"include_file_summary_changes": True}
         obj.data = {
@@ -907,12 +1170,8 @@ class TestPrepareFileLabelsEdgeCases:
 
         labels = obj._prepare_file_labels()
 
-        # Single and double quotes in filenames are replaced with backticks;
-        # labels are lower-cased for grouping.
         assert list(labels.keys()) == ["backend"]
-        recovered_name = labels["backend"][0][0]
-        assert "'" not in recovered_name
-        assert '"' not in recovered_name
+        assert labels["backend"][0][0] == "src/it's a \"file\".py"
 
     def test_null_required_field_skips_only_that_file(self):
         # A null/empty required field passes the old key-presence check and
