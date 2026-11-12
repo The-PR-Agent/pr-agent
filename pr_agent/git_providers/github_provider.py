@@ -2995,7 +2995,8 @@ class GithubProvider(GitProvider):
                             # timestamp.
                             if self._is_own_check_run(run, own_app_login):
                                 continue
-                            if self._is_current_action_run(run):
+                            status = (getattr(run, "status", "") or "").lower()
+                            if self._is_current_action_run(run) and status != "completed":
                                 continue
 
                             run_dt = getattr(run, "completed_at", None) or getattr(run, "created_at", None)
