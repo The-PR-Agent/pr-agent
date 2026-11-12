@@ -19,6 +19,45 @@ permissions:
   contents: read
 
 jobs:
+  review-context-hardening:
+    name: Review context hardening (Python 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        run: pipx install uv==0.13.7
+
+      - name: Install test dependencies and verified grammars
+        id: hardening-dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv sync --frozen --python 3.12
+          tooling="$GITHUB_WORKSPACE/scripts/review_context"
+          uv pip install --python .venv/bin/python \
+            --require-hashes --only-binary :all: -r "$tooling/requirements.txt"
+          grammars="$RUNNER_TEMP/review-context-grammars"
+          mkdir -p "$grammars"
+          cd "$grammars"
+          curl --fail --silent --show-error --location --max-time 60 \
+            https://github.com/xberg-io/tree-sitter-language-pack/releases/download/v1.22.1/parsers-linux-x86_64.tar.zst \
+            --output parsers-linux-x86_64.tar.zst
+          sha256sum --check "$tooling/grammars.sha256"
+          tar --zstd --extract --file parsers-linux-x86_64.tar.zst --no-same-owner
+
+      - name: Test review context hardening
+        id: hardening-test
+        env:
+          GRAMMAR_CACHE: ${{ runner.temp }}/review-context-grammars
+          PYTHONPATH: .
+        run: uv run --frozen --python 3.12 pytest scripts/review_context -q
+
   build-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
