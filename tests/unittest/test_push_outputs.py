@@ -26,6 +26,7 @@ class TestOutputSinkPreflight:
 
     @pytest.mark.parametrize("commands, valid", [
         (["review", "ask"], True),
+        (["update_changelog"], True),
         ("review, ask", True),
         (["unknown"], False),
         ("not-ask", False),

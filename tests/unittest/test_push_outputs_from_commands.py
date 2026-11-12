@@ -13,6 +13,7 @@ from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions, render_sugg
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.commands.pr_questions import NO_ANALYZABLE_FILES_NOTE, PRQuestions
 from pr_agent.commands.pr_reviewer import PRReviewer
+from pr_agent.commands.pr_update_changelog import PRUpdateChangelog
 from pr_agent.config_loader import get_settings
 
 SUGGESTION = {
@@ -87,6 +88,49 @@ async def test_ask_emits_before_publishing_the_answer(monkeypatch, no_analyzable
     if show_help:
         assert "<details>" in events[1][1]
     assert sink["git_provider"] is command.git_provider
+
+
+@pytest.mark.parametrize("publish_output", [True, False])
+async def test_changelog_emits_only_the_new_entry_when_publishing(monkeypatch, publish_output):
+    command = PRUpdateChangelog.__new__(PRUpdateChangelog)
+    command.changelog_path = "docs/HISTORY.md"
+    command.changelog_file = "# Previous changelog\n\n- Earlier change"
+    command.changelog_read_error = None
+    command.commit_changelog = False
+    command.push_skipped_reason = None
+    command.prediction = None
+    command.git_provider = MagicMock()
+    events = []
+
+    async def prepare(_callback, model_type):
+        command.prediction = "```markdown\n### Added\n- New feature\n```"
+
+    async def record(message_type, **kwargs):
+        events.append(("sink", message_type, kwargs))
+
+    def publish(body, **kwargs):
+        if not kwargs.get("is_temporary"):
+            events.append(("comment", body))
+
+    command.git_provider.publish_comment.side_effect = publish
+    monkeypatch.setattr("pr_agent.commands.pr_update_changelog.retry_with_fallback_models", prepare)
+    monkeypatch.setattr("pr_agent.commands.pr_update_changelog.push_outputs_async", record)
+    monkeypatch.setitem(get_settings().config, "publish_output", publish_output)
+
+    await command.run()
+
+    if not publish_output:
+        assert events == []
+        return
+
+    assert [event[0] for event in events] == ["sink", "comment"]
+    _, message_type, sink = events[0]
+    assert message_type == "update_changelog"
+    assert sink["payload"] == {"path": "docs/HISTORY.md", "entry": "### Added\n- New feature"}
+    assert sink["markdown"] == "**Changelog draft:**\n\n### Added\n- New feature"
+    assert sink["git_provider"] is command.git_provider
+    assert "Previous changelog" not in sink["markdown"]
+    assert "to commit the new content" not in sink["markdown"]
 
 
 # --------------------------------------------------------------------------------------

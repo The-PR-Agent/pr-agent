@@ -211,7 +211,7 @@ def _selected_output_commands(cfg: dict) -> list[str] | None:
     if isinstance(commands, str):
         commands = normalize_setting_list(commands, split_commas=True)
     if (not isinstance(commands, (list, tuple)) or not commands
-            or any(not isinstance(name, str) or name not in ("review", "describe", "improve", "ask")
+            or any(not isinstance(name, str) or name not in ("review", "describe", "improve", "ask", "update_changelog")
                    for name in commands)):
         return None
     return list(commands)
