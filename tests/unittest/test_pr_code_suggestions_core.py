@@ -36,6 +36,9 @@ def _make_command(git_provider=None):
     command = PRCodeSuggestions.__new__(PRCodeSuggestions)
     command.git_provider = git_provider or MagicMock()
     command.ai_handler = MagicMock()
+    # A plain MagicMock would make prompt_cache_active truthy and turn on the staggered
+    # first chunk (#4876), which deadlocks the interlocked parallel-chunk tests below.
+    command.ai_handler.prompt_cache_active = MagicMock(return_value=False)
     command.vars = {"diff": "", "diff_no_line_numbers": ""}
     command.pr_code_suggestions_prompt_system = "Review the pull request"
     command.pr_code_suggestions_prompt_user = "{{ diff_no_line_numbers }}"

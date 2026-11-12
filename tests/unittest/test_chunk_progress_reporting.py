@@ -124,6 +124,9 @@ def _make_reviewer(provider, chunk_predictions):
     reviewer = PRReviewer.__new__(PRReviewer)
     reviewer.git_provider = provider
     reviewer.ai_handler = MagicMock()
+    # Keep the chunks on plain gather: these tests target progress reporting, and a
+    # truthy mock would turn on the staggered first chunk (#4876).
+    reviewer.ai_handler.prompt_cache_active = MagicMock(return_value=False)
     reviewer.token_handler = MagicMock()
     reviewer.token_handler.prompt_tokens = 0
     reviewer.token_handler.count_tokens.side_effect = len
@@ -410,6 +413,8 @@ def _make_suggestion_command(provider, chunk_predictions):
     command.pr_code_suggestions_prompt_system = "system"
     command.pr_code_suggestions_prompt_user = "user"
     command.ai_handler = MagicMock()
+    # Keep the chunks on plain gather; see the reviewer factory above (#4876).
+    command.ai_handler.prompt_cache_active = MagicMock(return_value=False)
     command._limit_suggestions_per_file = lambda suggestions: suggestions
 
     remaining = list(chunk_predictions)
@@ -541,6 +546,8 @@ def _make_describe_command(provider, chunk_predictions):
     command.pr_url = "https://example.invalid/pull/1"
     command.pr_id = 1
     command.ai_handler = MagicMock()
+    # Keep the chunks on plain gather; see the reviewer factory above (#4876).
+    command.ai_handler.prompt_cache_active = MagicMock(return_value=False)
     command.vars = {"title": "t", "diff": "", "include_file_summary_changes": True}
     command.user_description = ""
     command.keys_fix = []
