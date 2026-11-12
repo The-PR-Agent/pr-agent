@@ -67,7 +67,7 @@ def _provider(changed_paths):
 def settings(monkeypatch):
     monkeypatch.setitem(get_settings().pr_reviewer, "per_commit_review", True)
     monkeypatch.setitem(get_settings().config, "publish_output", True)
-    monkeypatch.setitem(get_settings().config, "propagate_tool_errors", False)
+    monkeypatch.setitem(get_settings().config, "propagate_command_errors", False)
     monkeypatch.setitem(get_settings().config, "is_auto_command", False)
     return get_settings()
 
@@ -95,7 +95,7 @@ async def test_each_commit_with_changes_is_reviewed_with_its_own_message(setting
 
 @pytest.mark.asyncio
 async def test_failing_commit_error_propagates_after_the_rest_when_configured(settings, monkeypatch):
-    monkeypatch.setitem(get_settings().config, "propagate_tool_errors", True)
+    monkeypatch.setitem(get_settings().config, "propagate_command_errors", True)
     provider = _provider({})
     provider.set_commit_review_scope.side_effect = _scope({}, failing={"a" * 40})
     reviewer = _reviewer(provider)
@@ -197,7 +197,7 @@ async def test_commit_listing_error_takes_the_review_failure_path(settings, fail
 
 @pytest.mark.asyncio
 async def test_commit_listing_error_propagates_when_configured(settings, monkeypatch):
-    monkeypatch.setitem(get_settings().config, "propagate_tool_errors", True)
+    monkeypatch.setitem(get_settings().config, "propagate_command_errors", True)
     provider = _provider({})
     provider.get_pr_commits.side_effect = RuntimeError("api down")
     reviewer = _reviewer(provider)
@@ -586,7 +586,7 @@ async def test_incomplete_files_error_propagates_after_restoring_state(settings,
 
 @pytest.mark.asyncio
 async def test_failing_scope_restore_does_not_mask_the_review_error(settings, monkeypatch):
-    monkeypatch.setitem(get_settings().config, "propagate_tool_errors", True)
+    monkeypatch.setitem(get_settings().config, "propagate_command_errors", True)
     provider = _provider({commit.sha: ["a.py"] for commit in COMMITS})
     provider.get_incremental_commits.side_effect = [None, RuntimeError("restore failed")]
     reviewer = _reviewer(provider)
