@@ -65,8 +65,8 @@ its webhook command names remain case-sensitive.
 
 If no matching diff hunk is found for the selected lines, the command explains this without calling a model.
 
-In GitHub Actions, a file comment whose first non-whitespace token is `/ask` or `/ask_question` uses that file's
-complete diff as context. These two command names are case-insensitive.
+In the GitHub App and GitHub Actions, a file comment whose first non-whitespace token is `/ask` or `/ask_question`
+uses that file's complete diff as context. These two command names are case-insensitive.
 The existing file filters and input budgets still apply. If the file has no analyzable diff, or the question cannot
 be prepared within the configured input budget, the command explains this without calling a model.
 The answer is posted in the original file-comment thread with a link to the question.
