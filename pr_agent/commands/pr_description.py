@@ -620,6 +620,11 @@ class PRDescription:
                 # inline code span.
                 prediction_headers = strip_wrapping_code_fence(prediction_headers.strip()).strip()
             self._require_usable_prediction(prediction_headers)
+            if not get_settings().pr_description.enable_semantic_files_types:
+                # Without semantic file types no file walkthrough is rendered, so keep only the headers, as the
+                # one-call path does: the chunks' file summaries serve only as input to the headers call above.
+                self.prediction = prediction_headers
+                return
 
             # extend the tables with the files not shown
             files_walkthrough_extended = await self.extend_uncovered_files(files_walkthrough)
