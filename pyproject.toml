@@ -167,7 +167,7 @@ dev = [
 
 [tool.uv]
 # Keep the floor aligned with the patched uv release used by Docker and CI.
-required-version = ">=0.13.7"
+required-version = ">=0.13.8"
 
 [tool.ruff]
 line-length = 120
