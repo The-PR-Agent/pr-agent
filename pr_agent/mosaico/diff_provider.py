@@ -82,6 +82,14 @@ def parse_unified_diff(diff_text: str) -> list[FilePatchInfo]:
         m = _DIFF_GIT_RE.match(header)
         a_path = _normalize_file_header_path(m.group("a")) if m else ""
         b_path = _normalize_file_header_path(m.group("b")) if m else ""
+        # Split at the midpoint instead of searching ambiguous " b/" substrings.
+        if header.startswith("diff --git a/"):
+            rest = header[len("diff --git a/"):]
+            path_length = (len(rest) - 3) // 2
+            if (path_length > 0 and len(rest) == 2 * path_length + 3
+                    and rest[path_length:path_length + 3] == " b/"
+                    and rest[:path_length] == rest[path_length + 3:]):
+                a_path = b_path = rest[:path_length]
 
         edit_type = EDIT_TYPE.MODIFIED
         old_filename = None
@@ -99,9 +107,11 @@ def parse_unified_diff(diff_text: str) -> list[FilePatchInfo]:
                 edit_type = EDIT_TYPE.DELETED
             elif s.startswith("rename from "):
                 edit_type = EDIT_TYPE.RENAMED
-                old_filename = _unquote_git_path(s[len("rename from "):].strip())
+                old_filename = _unquote_git_path(s[len("rename from "):])
             elif s.startswith("rename to "):
                 edit_type = EDIT_TYPE.RENAMED
+                # The diff header is ambiguous when paths contain " b/".
+                b_path = _unquote_git_path(s[len("rename to "):])
         if (
             edit_type not in (EDIT_TYPE.ADDED, EDIT_TYPE.DELETED)
             and a_path != b_path

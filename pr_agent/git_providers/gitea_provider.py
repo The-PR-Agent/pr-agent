@@ -1,5 +1,7 @@
 import functools
+import io
 import json
+from collections import Counter
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -9,7 +11,13 @@ from giteapy.rest import ApiException
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.file_filter import filter_ignored
-from pr_agent.algo.git_patch_processing import decode_if_bytes
+from pr_agent.algo.git_patch_processing import (
+    NO_NEWLINE_AT_EOF_MARKER,
+    RE_HUNK_HEADER,
+    count_patch_lines,
+    decode_if_bytes,
+    split_diff_lines,
+)
 from pr_agent.algo.language_handler import is_valid_file
 from pr_agent.algo.token_budget import clip_tokens
 from pr_agent.algo.types import EDIT_TYPE
@@ -33,6 +41,53 @@ from pr_agent.mosaico.diff_provider import parse_unified_diff
 # URL: the default is always present in production, so a bare truthiness check
 # on GITEA.URL would make the pr.html_url derivation unreachable.
 DEFAULT_GITEA_URL = "https://gitea.com"
+
+
+def _has_complete_raw_hunks(patch: str) -> bool:
+    """Check each unified hunk against its declared old/new line counts."""
+    if not patch:
+        return True  # Binary and metadata-only changes have no text hunks.
+    if not patch.endswith("\n"):
+        return False  # Git terminates diff lines even when source content lacks a final newline.
+    expected_old = expected_new = used_old = used_new = 0
+    seen_hunk = False
+    for line in split_diff_lines(patch):
+        if line.startswith("@@"):
+            if seen_hunk and (used_old != expected_old or used_new != expected_new):
+                return False
+            header = RE_HUNK_HEADER.fullmatch(line)
+            if header is None:
+                return False
+            expected_old = int(header.group(2)) if header.group(2) is not None else 1
+            expected_new = int(header.group(4)) if header.group(4) is not None else 1
+            used_old = used_new = 0
+            seen_hunk = True
+        elif not seen_hunk:
+            return False
+        elif line.startswith(" "):
+            used_old += 1
+            used_new += 1
+        elif line.startswith("-"):
+            used_old += 1
+        elif line.startswith("+"):
+            used_new += 1
+        elif line != NO_NEWLINE_AT_EOF_MARKER:
+            return False
+        if used_old > expected_old or used_new > expected_new:
+            return False
+    return seen_hunk and used_old == expected_old and used_new == expected_new
+
+
+def _has_nonempty_raw_sections(raw_diff: str) -> bool:
+    """Require a line after each Git file header, including metadata-only changes."""
+    if not raw_diff.endswith("\n"):
+        return False
+    expecting_content = False
+    for line in io.StringIO(raw_diff):
+        if expecting_content and (not line.strip() or line.startswith("diff --git ")):
+            return False
+        expecting_content = line.startswith("diff --git ")
+    return not expecting_content
 
 
 class IncompleteGiteaPullRequestFilesError(IncompleteProviderPullRequestFilesError):
@@ -263,9 +318,23 @@ class GiteaProvider(GitProvider):
                     pr_number=self.pr_number
             )
 
-            self.file_diffs = {f.filename: f.patch for f in parse_unified_diff(diff_contents)}
-        except Exception as e:
-            self.logger.error(f"Error getting diff content: {str(e)}")
+            if not isinstance(diff_contents, str) or not _has_nonempty_raw_sections(diff_contents):
+                raise ValueError("Gitea returned an invalid raw diff")
+            parsed = {}
+            for file in parse_unified_diff(diff_contents):
+                # Retain change types and multiple sections for same-path type changes.
+                parsed.setdefault(file.filename, []).append(file)
+            if not parsed:
+                raise ValueError("Gitea raw diff is empty for a reviewable change")
+            self.file_diffs = parsed
+        except Exception as exc:
+            self.file_diffs = None
+            self.git_files = None
+            self.diff_files = None
+            self.file_contents = {}
+            raise IncompleteGiteaPullRequestFilesError(
+                "Gitea raw PR diff is unavailable or incomplete"
+            ) from exc
 
     @staticmethod
     def _url_path_parts(url: str) -> list[str]:
@@ -653,6 +722,8 @@ class GiteaProvider(GitProvider):
         # those settings exist). This matches the other providers, which filter
         # lazily inside their diff fetch. See #2620.
         diff_git_files = filter_ignored(list(self._get_changed_files()), platform="gitea")
+        file_counts = Counter(file.get("filename") for file in diff_git_files)
+        matched_sections = set()
 
         invalid_files_names = []
         counter_valid = 0
@@ -667,15 +738,62 @@ class GiteaProvider(GitProvider):
                 continue
 
             counter_valid += 1
-            # Fetch once, only after a reviewable file can consume the raw diff.
-            if counter_valid == 1 and getattr(self, "file_diffs", None) is None:
-                self.__add_file_diff()
+            # Fetch once, then verify that the diff and inventory cover the same reviewable paths.
+            if counter_valid == 1:
+                if getattr(self, "file_diffs", None) is None:
+                    self.__add_file_diff()
+                raw_paths = filter_ignored(
+                    [{"filename": path} for path in self.file_diffs if is_valid_file(path)], platform="gitea"
+                )
+                if {item["filename"] for item in raw_paths} != {
+                    item["filename"] for item in diff_git_files if is_valid_file(item.get("filename"))
+                }:
+                    self.file_diffs = None
+                    self.git_files = None
+                    self.diff_files = None
+                    self.file_contents = {}
+                    raise IncompleteGiteaPullRequestFilesError("Gitea raw diff and changed-file inventory disagree")
+            # Reject a truncated diff without changing valid empty file patches.
+            if filename not in (self.file_diffs or {}):
+                self.file_diffs = None
+                self.git_files = None
+                self.diff_files = None
+                self.file_contents = {}
+                raise IncompleteGiteaPullRequestFilesError(
+                    f"Gitea raw diff is missing a changed file: {filename}"
+                )
+            status = file.get("status", "")
+            expected_type = {
+                "added": EDIT_TYPE.ADDED,
+                "deleted": EDIT_TYPE.DELETED,
+                "removed": EDIT_TYPE.DELETED,
+                "renamed": EDIT_TYPE.RENAMED,
+                "modified": EDIT_TYPE.MODIFIED,
+                "changed": EDIT_TYPE.MODIFIED,
+            }.get(status)
+            stored = self.file_diffs[filename]
+            matches = [item.patch for item in stored if expected_type is None or item.edit_type == expected_type]
+            section_key = (filename, expected_type)
+            if (len(stored) != file_counts[filename] or len(matches) != 1 or section_key in matched_sections):
+                patch = None
+            else:
+                patch = matches[0]
+                matched_sections.add(section_key)
+            additions, deletions = file.get("additions"), file.get("deletions")
+            if (patch is None or not _has_complete_raw_hunks(patch)
+                    or (type(additions) is int and type(deletions) is int
+                        and count_patch_lines(patch) != (additions, deletions))):
+                self.file_diffs = None
+                self.git_files = None
+                self.diff_files = None
+                self.file_contents = {}
+                raise IncompleteGiteaPullRequestFilesError(
+                    f"Gitea raw diff has an incomplete file patch: {filename}"
+                )
             avoid_load = False
-            patch = (self.file_diffs or {}).get(filename, "")
             head_file = ""
             base_file = ""
             content_fetch_failed = False
-            status = file.get("status", "")
             previous_filename = file.get("previous_filename") if status == "renamed" else None
             old_filename = previous_filename if isinstance(previous_filename, str) and previous_filename else None
 
