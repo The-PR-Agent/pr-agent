@@ -1978,6 +1978,78 @@ class GitLabProvider(GitProvider):
             get_logger().exception(f"Could not get head SHA: {e}")
             return ""
 
+    def _live_merge_request_head_sha(self) -> str:
+        get_merge_request = getattr(self, "_get_merge_request", None)
+        if callable(get_merge_request):
+            mr = get_merge_request()
+        else:
+            mr = self.mr
+            refresh = getattr(mr, "refresh", None)
+            if callable(refresh):
+                refresh()
+        diff_refs = getattr(mr, "diff_refs", None)
+        head_sha = diff_refs.get("head_sha") if isinstance(diff_refs, dict) else None
+        return head_sha if isinstance(head_sha, str) else ""
+
+    def _own_approval_present(self) -> bool | None:
+        """Return whether this account approved the MR, or None when that cannot be read."""
+        try:
+            approvals = self.mr.approvals.get()
+            approved_by = getattr(approvals, "approved_by", None)
+            own_user_id = self._get_own_user_id()
+            if not isinstance(approved_by, list) or own_user_id is None:
+                return None
+            for entry in approved_by:
+                user = entry.get("user") if isinstance(entry, dict) else getattr(entry, "user", None)
+                user_id = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
+                if user_id is not None and str(user_id) == str(own_user_id):
+                    return True
+            return False
+        except (GitlabError, RequestException, AttributeError):
+            return None
+
+    def auto_approve(self, body: str = "") -> bool:
+        """Approve the merge request at the exact head SHA this run reviewed.
+
+        GitLab moves an approval with the branch, so pin the approval to the reviewed
+        SHA and verify after approving that the branch did not move in between.
+        """
+        reviewed_head_sha = getattr(self, "_diff_head_sha", None)
+        if not isinstance(reviewed_head_sha, str) or not reviewed_head_sha:
+            get_logger().info("Skipping auto-approval: no reviewed head SHA to pin")
+            return False
+        approved = False
+        try:
+            if self._live_merge_request_head_sha() != reviewed_head_sha:
+                get_logger().info("Skipping auto-approval: the merge request head moved since the review")
+                return False
+            self.mr.approve(sha=reviewed_head_sha)
+            approved = True
+            if self._live_merge_request_head_sha() != reviewed_head_sha:
+                self.mr.unapprove()
+                get_logger().info("Withdrew auto-approval: the merge request head moved during approval")
+                return False
+            return True
+        except (GitlabError, RequestException, AttributeError) as e:
+            get_logger().exception(f"Failed to auto-approve merge request: {e}")
+            if approved:
+                try:
+                    self.mr.unapprove()
+                except (GitlabError, RequestException, AttributeError) as unapprove_error:
+                    get_logger().exception(f"Failed to withdraw auto-approval: {unapprove_error}")
+            return False
+
+    def revoke_auto_approval(self, reason: str) -> bool:
+        """Withdraw PR-Agent's approval from the merge request."""
+        try:
+            if self._own_approval_present() is False:
+                return True
+            self.mr.unapprove()
+            return True
+        except (GitlabError, RequestException, AttributeError) as e:
+            get_logger().exception(f"Failed to revoke auto-approval: {e}")
+            return False
+
     def publish_merge_recommendation_status(self, recommendation: str) -> bool:
         """Publish the computed verdict as a GitLab commit status on the reviewed head SHA."""
         states = {

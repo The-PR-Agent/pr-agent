@@ -715,7 +715,7 @@ automated approval of small, clean changes is acceptable. PR-Agent never merges.
 :::
 
 When the host sets `config.enable_auto_approval` (for example `CONFIG__ENABLE_AUTO_APPROVAL=true`), `/review` on
-GitHub approves the exact commit it reviewed when all of these hold:
+GitHub and GitLab approves the exact commit it reviewed when all of these hold:
 
 - the computed merge recommendation is `no_concerns_found`;
 - the model returned both a merge recommendation and a risk level, so `require_merge_recommendation` and
@@ -725,20 +725,25 @@ GitHub approves the exact commit it reviewed when all of these hold:
 - the review completed and its finding state could be updated.
 
 Each `/review` run withdraws the approval PR-Agent gave when it starts, and approves again only when it ends with all
-of these holding, so a run that fails or finds a concern leaves no approval behind. On a push, a change of base branch or a reopen, the GitHub App and the GitHub Action dismiss it
-before any other event filter runs. PR-Agent only dismisses approvals it gave automatically; manual approvals from
-the same account are left alone. With `publish_output` off, nothing is approved or dismissed.
+of these holding, so a run that fails or finds a concern leaves no approval behind. On a push, the GitHub App, the
+GitHub Action, and the GitLab webhook dismiss it before any other event filter runs. GitHub also dismisses it when
+the base branch changes or the pull request is reopened. On GitHub, PR-Agent only dismisses approvals it gave
+automatically; manual approvals from the same account are left alone. On GitLab, an approval belongs to the token's
+account, so use an account reserved for PR-Agent. With `publish_output` off, nothing is approved or dismissed.
 
 `enable_auto_approval` is host-only: a repository `.pr_agent.toml` or a comment argument cannot turn it on.
 
 **Required repository settings.**
 
-- Turn on "Dismiss stale pull request approvals when new commits are pushed" in the branch protection rule or
-  ruleset. PR-Agent can miss a push (a failed webhook delivery, a polling deployment, or a workflow that does not
-  listen to `synchronize`), and GitHub only removes a stale approval itself when this is on.
+- On GitHub, turn on "Dismiss stale pull request approvals when new commits are pushed" in the branch protection
+  rule or ruleset. PR-Agent can miss a push (a failed webhook delivery, a polling deployment, or a workflow that
+  does not listen to `synchronize`), and GitHub only removes a stale approval itself when this is on.
+- On GitLab, enable merge request approvals for the project and keep approvals reset on push in the project's
+  approval settings, so a missed webhook does not leave a stale approval behind.
 - For the GitHub Action, allow "GitHub Actions to create and approve pull requests" in the repository's Actions
   settings. Pull requests from forks get a read-only token, so they cannot be approved.
 - If the rule restricts who can dismiss reviews, include PR-Agent's account; otherwise it cannot withdraw its own
   approval, and only logs an error.
 
-GitHub does not let an account approve a pull request it opened. Other git providers are not supported yet.
+GitHub does not let an account approve a pull request it opened. GitLab can also reject approval by the merge
+request author according to the project's approval settings. Other git providers are not supported yet.
