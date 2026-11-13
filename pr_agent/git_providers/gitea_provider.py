@@ -44,6 +44,15 @@ from pr_agent.mosaico.diff_provider import parse_unified_diff
 DEFAULT_GITEA_URL = "https://gitea.com"
 
 
+def _strip_non_bmp_characters(text: str) -> str:
+    """Keep comments compatible with Gitea installations using MySQL's 3-byte utf8."""
+    return "".join(
+        character
+        for character in text
+        if ord(character) <= 0xFFFF and not 0xD800 <= ord(character) <= 0xDFFF
+    )
+
+
 def _has_complete_raw_hunks(patch: str) -> bool:
     """Check each unified hunk against its declared old/new line counts."""
     if not patch:
@@ -499,6 +508,7 @@ class GiteaProvider(GitProvider):
             self.logger.error("Neither PR nor issue URL provided.")
             return None
 
+        comment = _strip_non_bmp_characters(comment)
         comment = self.limit_output_characters(comment, self.max_comment_chars)
         response = self.repo_api.create_comment(
             owner=self.owner,
@@ -524,6 +534,7 @@ class GiteaProvider(GitProvider):
         return comment_obj
 
     def edit_comment(self, comment, body : str):
+        body = _strip_non_bmp_characters(body)
         body = self.limit_output_characters(body, self.max_comment_chars)
         if isinstance(comment, dict):
             comment_id = comment.get("comment_id") or comment.get("id")
