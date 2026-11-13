@@ -168,7 +168,14 @@ def set_parser():
     - generate_labels
 
     Configuration:
-    To edit any configuration parameter from 'configuration.toml', just add -config_path=<value>.
+    To edit a configuration parameter from 'configuration.toml', just add --<section>.<key>=<value>.
+    Host-only settings (provider credentials and other deployment-critical keys) are rejected; set them
+    in a host configuration file or through environment variables.
+    Some settings are rejected as command arguments but accepted in repository configuration; set those
+    in the repository's .pr_agent.toml instead. The local git provider and plain-diff mode read no
+    repository configuration, so set those in host configuration there.
+    For doctor, overrides after the command are ignored and those before it are rejected;
+    use a host configuration file or environment variables instead.
     For example: 'python cli.py --pr_url=... review --pr_reviewer.extra_instructions="focus on the file: ..."'
     """)
     parser.add_argument('--version', action='version', version=f'pr-agent {get_version()}')
