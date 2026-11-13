@@ -40,7 +40,7 @@ dependencies = [
   "GitPython>=3.1.62,<4",
   "starlette>=1.6.0,<2",
   "Jinja2==3.1.6",
-  "litellm==1.108.5",
+  "litellm==1.109.1",
   # filelock arrives through litellm and huggingface-hub, whose ranges still allow releases
   # before 4.2.1. Declare the floor so pip installs get the patched lock as well; it follows
   # the >=patched,<next-major convention above.
