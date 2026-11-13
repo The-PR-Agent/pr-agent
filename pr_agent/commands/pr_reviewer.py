@@ -457,7 +457,7 @@ class PRReviewer:
         except Exception as e:
             get_logger().error(f"Failed to list the PR commits or the commits already reviewed: {e}")
             self._publish_per_commit_failure(e)
-            if get_settings().config.get("propagate_tool_errors", False):
+            if get_settings().config.get("propagate_command_errors", False):
                 raise
             return
         if commits is None:
@@ -588,7 +588,7 @@ class PRReviewer:
                     get_logger().exception(f"Failed to publish the per commit review notice, error: {e}")
         if failed:
             record_command_failure()
-        if first_error is not None and get_settings().config.get("propagate_tool_errors", False):
+        if first_error is not None and get_settings().config.get("propagate_command_errors", False):
             raise first_error
 
     def _restore_full_scope(self) -> None:
