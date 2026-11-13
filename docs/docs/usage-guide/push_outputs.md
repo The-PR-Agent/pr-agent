@@ -20,6 +20,7 @@ The commands that currently emit are:
 | `/review` (and `/improve`, which runs it) | `review` |
 | `/describe` | `describe` |
 | `/ask` | `ask` (opt-in with `commands`) |
+| `/update_changelog` | `update_changelog` (opt-in with `commands`) |
 
 A record is a JSON object:
 
@@ -59,6 +60,11 @@ For `/ask`, `payload.question` is the user's question and `payload.answer` is th
 the note explaining that no changed files could be analyzed). Its Markdown contains the question
 and answer without the PR-only help guide or run-details footer. Inline `/ask_line` replies are not emitted.
 
+For `/update_changelog`, `payload.path` is the selected changelog path and `payload.entry` contains
+only the newly generated Markdown entry, not the full changelog or PR-only commit instructions.
+The sink Markdown labels it as a draft. Delivery precedes publishing to the git provider, so a
+received record does not confirm that a changelog file was committed successfully.
+
 ## Configuration
 
 The defaults are defined at the end of the
@@ -68,7 +74,7 @@ The defaults are defined at the end of the
 [push_outputs]
 enable = false
 channels = []                          # any of: "stdout", "file", "webhook", "slack", "telegram", "teams"
-commands = ["review", "describe"] # command types to deliver; opt in to "ask" explicitly
+commands = ["review", "describe"] # opt in to "ask" or "update_changelog" explicitly
 file_path = "pr-agent-outputs/reviews.jsonl"
 webhook_url = ""                       # must be an absolute https:// URL
 slack_webhook_url = ""                 # Slack Incoming Webhook; must be an absolute https:// URL
@@ -79,7 +85,7 @@ teams_webhook_url = ""                 # Teams Workflows webhook URL; must be an
 
 - `enable` — master switch (default `false`). When `false`, nothing is emitted.
 - `channels` — which sinks to use. Use exact registered names as a list/tuple or a comma-separated string; surrounding whitespace is ignored. Nothing is emitted until at least one channel is listed here.
-- `commands` — which command results to send to those sinks. Defaults to `review` and `describe`; `/improve` now runs `/review`, so its output arrives as `review`. Use a list/tuple or comma-separated string of exact names. Add `ask` to receive answers, or select only the commands of interest. This does not change which commands PR-Agent runs.
+- `commands` — which command results to send to those sinks. Defaults to `review` and `describe`; `/improve` now runs `/review`, so its output arrives as `review`. Use a list/tuple or comma-separated string of exact names. Add `ask` or `update_changelog` to opt in to those results. This does not change which commands PR-Agent runs.
 - `file_path` — the file the `file` channel appends to.
 - `webhook_url` — the endpoint the `webhook` channel POSTs the generic record to.
 - `slack_webhook_url` — a Slack Incoming Webhook URL that the `slack` channel posts a `{"text": ...}` payload to.
@@ -90,6 +96,9 @@ teams_webhook_url = ""                 # Teams Workflows webhook URL; must be an
 For example, a host can set `commands = ["review", "ask"]` to receive reviews and interactive answers
 without sending description or suggestion results. Ask questions and answers may contain private
 information; only enable their delivery to trusted, operator-controlled destinations.
+
+When rolling out `update_changelog` to workers sharing host settings, upgrade all workers before
+adding it to `commands`. Older versions reject unknown command names and skip all sink delivery.
 
 :::danger[Host-only configuration]
 The whole `[push_outputs]` section is **host-only**. A repository cannot set these keys:

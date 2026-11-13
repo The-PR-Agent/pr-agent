@@ -15,6 +15,10 @@ It can be invoked manually by commenting on any PR:
 
 Empty or fence-only model responses are retried with the configured fallback models. If no model returns usable content, the command stops without writing to the changelog or publishing an update comment.
 
+Host operators can also opt in to forwarding the newly generated entry to the existing
+[push outputs](../usage-guide/push_outputs.md) destinations by selecting `update_changelog` in
+`push_outputs.commands`. These notifications contain a draft, not confirmation of a repository write.
+
 ## Example usage
 
 <img src="/img/update_changelog_comment.png" alt="update_changelog_comment" width="768" />

@@ -16,7 +16,7 @@ from pr_agent.algo.pr_processing import (
     run_diff_preparation,
 )
 from pr_agent.algo.run_details import init_run_details
-from pr_agent.algo.run_output import append_run_details, show_relevant_configurations
+from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import ModelType
@@ -163,6 +163,13 @@ class PRUpdateChangelog:
             get_logger().debug("PR output", artifact=answer)
 
             if get_settings().config.publish_output:
+                entry = strip_wrapping_code_fence(self.prediction.strip()).strip()
+                await push_outputs_async(
+                    "update_changelog",
+                    payload={"path": self.changelog_path, "entry": entry},
+                    markdown=f"**Changelog draft:**\n\n{entry}",
+                    git_provider=self.git_provider,
+                )
                 if self.commit_changelog:
                     await self._push_changelog_update(new_file_content, answer)
                 else:
