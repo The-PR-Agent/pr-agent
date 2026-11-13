@@ -25,19 +25,20 @@ class IssueTransport(BaseAdapter):
         outcome = next(self.outcomes, 200)
         if isinstance(outcome, BaseException):
             raise outcome
-        # A project metadata request must never reach the transport.
-        assert request.method == "GET" and "/issues/" in request.url
-        iid = int(urlparse(request.url).path.rsplit("/", 1)[-1])
-        payload = {
-            "id": iid + 100,
-            "iid": iid,
-            "web_url": f"https://gitlab.example/group/repo/-/issues/{iid}",
-            "title": f"Issue {iid}",
-            "description": "x" * (tickets.MAX_TICKET_CHARACTERS + 1),
-            "labels": ["bug", "backend"],
-        } if outcome == 200 else {"message": "unavailable"}
         if isinstance(outcome, tuple):
             outcome, payload = outcome
+        else:
+            # A project metadata request must never reach the transport unscripted.
+            assert request.method == "GET" and "/issues/" in request.url
+            iid = int(urlparse(request.url).path.rsplit("/", 1)[-1])
+            payload = {
+                "id": iid + 100,
+                "iid": iid,
+                "web_url": f"https://gitlab.example/group/repo/-/issues/{iid}",
+                "title": f"Issue {iid}",
+                "description": "x" * (tickets.MAX_TICKET_CHARACTERS + 1),
+                "labels": ["bug", "backend"],
+            } if outcome == 200 else {"message": "unavailable"}
         response = requests.Response()
         response.status_code = outcome
         response._content = json.dumps(payload).encode()
@@ -200,6 +201,28 @@ async def test_other_ticket_integrations_remain_outside_gitlab_success_limit(pro
     result = await tickets.extract_tickets(provider)
     assert [ticket["ticket_id"] for ticket in result] == [2, 3, 4, "asana-1", "jira-1"]
     assert len(transport.requests) == 4
+
+
+def _confidential_issue(iid):
+    return 200, {"iid": iid, "web_url": f"https://gitlab.example/group/repo/-/issues/{iid}", "title": "Secret",
+                 "description": "customer details", "labels": [], "confidential": True}
+
+
+@pytest.mark.parametrize("visibility, expected", [("public", [3]), ("internal", [3]), ("private", [1, 2, 3])])
+async def test_confidential_issue_is_used_only_where_every_mr_reader_can_read_it(
+    provider_factory, visibility, expected
+):
+    project = 200, {"id": 7, "path_with_namespace": "group/repo", "visibility": visibility}
+    provider, transport = provider_factory(
+        "Fixes #1 #2 #3", [_confidential_issue(1), project, _confidential_issue(2), 200]
+    )
+
+    result = await tickets.extract_tickets(provider)
+
+    assert [ticket["ticket_id"] for ticket in result] == expected
+    assert [urlparse(request.url).path.removeprefix("/gitlab/api/v4/projects/") for request in transport.requests] == [
+        "group%2Frepo/issues/1", "group%2Frepo", "group%2Frepo/issues/2", "group%2Frepo/issues/3",
+    ]
 
 
 def _sibling_project(path="group/sub/project", visibility="public", confidential=False):

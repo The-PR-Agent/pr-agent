@@ -161,6 +161,7 @@ def _make_gitlab_provider(user_description):
         title="GitLab issue",
         description="Issue body",
         labels=["bug", "backend"],
+        confidential=False,
     )
     project = MagicMock()
     project.issues.get.return_value = issue
@@ -247,7 +248,6 @@ async def test_ticket_reads_use_workers_and_request_settings(monkeypatch, scoped
         provider, project = _make_gitlab_provider(f"Fixes {reference} PROJ-9")
         provider.get_pr_branch = lambda: "main"
         issue = project.issues.get.return_value
-        issue.confidential = False
         project.issues.get.side_effect = record("issue", lambda number: issue)
         if kind == "gitlab-sibling":
             provider.get_sibling_repo = record("sibling", lambda name: project)
