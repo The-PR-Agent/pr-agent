@@ -19,6 +19,7 @@ from pr_agent.algo.git_patch_processing import (
     split_diff_lines,
 )
 from pr_agent.algo.language_handler import is_valid_file
+from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.token_budget import clip_tokens
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.algo.utils import find_line_number_of_relevant_line_in_file
@@ -162,7 +163,7 @@ class GiteaProvider(GitProvider):
         configuration.host = f"{self.base_url}/api/v1"
         configuration.api_key['Authorization'] = f'token {self.gitea_access_token}'
 
-        if get_settings().get("GITEA.SKIP_SSL_VERIFICATION", False):
+        if _as_bool_setting(get_settings().get("GITEA.SKIP_SSL_VERIFICATION", False)):
             configuration.verify_ssl = False
 
         # Use custom cert (self-signed)
