@@ -241,7 +241,7 @@ async def _assert_native_azure_ad_auth(
         })
 
     monkeypatch.setattr(azure_common, "get_secret_str", assertion)
-    monkeypatch.setattr(litellm.module_level_client, "post", exchange)
+    monkeypatch.setattr(azure_common.HTTPHandler, "post", staticmethod(exchange))
     handler = LiteLLMAIHandler()
     second_handler = None
     if concurrent_handlers:
@@ -430,10 +430,12 @@ async def test_azure_header_adapter_does_not_touch_other_transports(model):
 
 @pytest.mark.asyncio
 async def test_azure_oidc_exchange_failure_cannot_use_guard_key(monkeypatch, native_azure_oidc):
+    from litellm.llms.azure import common_utils as azure_common
+
     state = native_azure_oidc
     handler = LiteLLMAIHandler()
     exchange = MagicMock(side_effect=RuntimeError("exchange failed"))
-    monkeypatch.setattr(litellm.module_level_client, "post", exchange)
+    monkeypatch.setattr(azure_common.HTTPHandler, "post", staticmethod(exchange))
     with pytest.raises(litellm.APIError, match="exchange failed"):
         await state.invoke(handler)
     exchange.assert_called_once()
@@ -546,7 +548,7 @@ async def native_azure_oidc(monkeypatch):
         return state.sent[-1].headers.get("Authorization")
 
     state.invoke = invoke
-    monkeypatch.setattr(litellm.module_level_client, "post", exchange)
+    monkeypatch.setattr(azure_common.HTTPHandler, "post", staticmethod(exchange))
     monkeypatch.setattr(httpx.AsyncClient, "send", send)
     worker = logging_worker.LoggingWorker()
     atexit.unregister(worker._flush_on_exit)
@@ -707,7 +709,8 @@ async def test_native_azure_oidc_scope_cache(monkeypatch, native_azure_oidc, ide
         monkeypatch.delenv("AZURE_SCOPE")
     native_key = json.dumps({
         "azure_client_id": "owned-client", "azure_tenant_id": "owned-tenant",
-        "azure_authority_host": "https://owned-authority.example", "oidc_token": "owned-assertion",
+        "azure_authority_host": "https://owned-authority.example", "scope": state.inputs["AZURE_SCOPE"],
+        "oidc_token": "owned-assertion",
     })
     if identity == "legacy":
         state.cache.set_cache(native_key, "old-unnamespaced-token", ttl=3600)
@@ -1076,6 +1079,7 @@ async def native_companion_auth(monkeypatch, native_azure_oidc):
 
     caches = [litellm.in_memory_llm_clients_cache]
     common_utils._cached_entra_id_token_provider.cache_clear()
+    common_utils._cached_username_password_token_provider.cache_clear()
 
     def deny_auth_http(*args, **kwargs):
         raise AssertionError("Unexpected authentication HTTP")
@@ -1086,6 +1090,7 @@ async def native_companion_auth(monkeypatch, native_azure_oidc):
         yield caches
     finally:
         common_utils._cached_entra_id_token_provider.cache_clear()
+        common_utils._cached_username_password_token_provider.cache_clear()
         clients = {id(value): value for cache in caches for value in cache.cache_dict.values()}
         for client in clients.values():
             result = client.close()
