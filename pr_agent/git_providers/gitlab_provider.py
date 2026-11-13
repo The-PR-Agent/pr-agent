@@ -9,6 +9,7 @@ from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from http.client import HTTPException
+from itertools import repeat, tee
 from socket import SHUT_RDWR
 from threading import Event, Lock, Timer
 from time import monotonic
@@ -3119,6 +3120,18 @@ class GitLabProvider(GitProvider):
 
     def get_issue_comments_newest_first(self):
         return list(reversed(self.get_issue_comments()))
+
+    def _get_persistent_comment_iterators(self, count):
+        if (
+            not hasattr(self, "mr")
+            or getattr(self.get_issue_comments, "__func__", None) is not GitLabProvider.get_issue_comments
+            or getattr(
+                self.get_issue_comments_newest_first, "__func__", None
+            ) is not GitLabProvider.get_issue_comments_newest_first
+        ):
+            return repeat(self.get_issue_comments_newest_first(), count)
+        # Preserve marker-before-legacy precedence without refetching earlier pages.
+        return tee(self.mr.notes.list(iterator=True, per_page=100), count)
 
     def get_repo_settings(self):
         # A real acquisition starts before global work, which can itself fail.

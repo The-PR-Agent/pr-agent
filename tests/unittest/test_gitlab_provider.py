@@ -1774,7 +1774,7 @@ class TestGitLabProvider:
         # persistent_comment=true, no existing review yet: the fallback create must open a thread.
         gitlab_provider.mr = MagicMock()
         gitlab_provider.mr.discussions.create.return_value.attributes = {'notes': [{'id': 5}]}
-        gitlab_provider.get_issue_comments = MagicMock(return_value=[])
+        gitlab_provider.mr.notes.list = MagicMock(return_value=[])
         gitlab_provider.publish_persistent_comment("## PR Review\n\nbody",
                                                    initial_header="## PR Review",
                                                    update_header=True,
@@ -1791,7 +1791,7 @@ class TestGitLabProvider:
         existing = MagicMock()
         existing.body = f"{header}\n\nprevious review"
         gitlab_provider.mr = MagicMock()
-        gitlab_provider.get_issue_comments = MagicMock(return_value=[existing])
+        gitlab_provider.mr.notes.list = MagicMock(return_value=[existing])
         gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
         gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/1")
         gitlab_provider.unresolve_comment_thread = MagicMock()
@@ -1812,7 +1812,7 @@ class TestGitLabProvider:
         existing = MagicMock()
         existing.body = f"{header}\n\nprevious review"
         gitlab_provider.mr = MagicMock()
-        gitlab_provider.get_issue_comments = MagicMock(return_value=[existing])
+        gitlab_provider.mr.notes.list = MagicMock(return_value=[existing])
         gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
         gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/1")
         gitlab_provider.unresolve_comment_thread = MagicMock()
@@ -1833,7 +1833,7 @@ class TestGitLabProvider:
         existing = MagicMock()
         existing.body = f"{header}\n\nprevious review"
         gitlab_provider.mr = MagicMock()
-        gitlab_provider.get_issue_comments = MagicMock(return_value=[existing])
+        gitlab_provider.mr.notes.list = MagicMock(return_value=[existing])
         gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
         gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/1")
         gitlab_provider.unresolve_comment_thread = MagicMock(side_effect=Exception("reopen failed"))
@@ -1854,7 +1854,7 @@ class TestGitLabProvider:
         existing = MagicMock()
         existing.body = f"{header}\n\nprevious review"
         gitlab_provider.mr = MagicMock()
-        gitlab_provider.get_issue_comments = MagicMock(return_value=[existing])
+        gitlab_provider.mr.notes.list = MagicMock(return_value=[existing])
         gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
         gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/1")
         gitlab_provider.unresolve_comment_thread = MagicMock()
@@ -1883,7 +1883,7 @@ class TestGitLabProvider:
         existing.body = f"{header}\n\nprevious review"
         gitlab_provider.mr = MagicMock()
         gitlab_provider.mr.discussions.create.return_value.attributes = {"notes": [{"id": 42}]}
-        gitlab_provider.get_issue_comments = MagicMock(return_value=[existing])
+        gitlab_provider.mr.notes.list = MagicMock(return_value=[existing])
         gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
         gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/1")
         gitlab_provider.edit_comment = MagicMock(side_effect=Exception("edit failed"))
@@ -1904,7 +1904,7 @@ class TestGitLabProvider:
         existing = MagicMock()
         existing.body = f"{header}\n\nprevious review"
         gitlab_provider.mr = MagicMock()
-        gitlab_provider.get_issue_comments = MagicMock(return_value=[existing])
+        gitlab_provider.mr.notes.list = MagicMock(return_value=[existing])
         gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
         gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/1")
         gitlab_provider.unresolve_comment_thread = MagicMock()
@@ -1920,7 +1920,7 @@ class TestGitLabProvider:
         legacy = MagicMock(id=7)
         legacy.body = "## PR Reviewer Guide 🔍\n\nprevious review"
         gitlab_provider.mr = MagicMock()
-        gitlab_provider.get_issue_comments = MagicMock(return_value=[legacy])
+        gitlab_provider.mr.notes.list = MagicMock(return_value=[legacy])
         gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
         gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/7")
 
@@ -1948,7 +1948,7 @@ class TestGitLabProvider:
             f"{PRReviewIdentity.REGULAR.value}\n\nmarked review"
         )
         gitlab_provider.mr = MagicMock()
-        gitlab_provider.get_issue_comments = MagicMock(return_value=[legacy, marked])
+        gitlab_provider.mr.notes.list = MagicMock(return_value=[legacy, marked])
         gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
         gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/2")
 
@@ -1968,7 +1968,7 @@ class TestGitLabProvider:
         human_comment = MagicMock(id=3)
         human_comment.body = "## PR Reviewer Guide for maintainers\n\nhuman notes"
         gitlab_provider.mr = MagicMock()
-        gitlab_provider.get_issue_comments = MagicMock(return_value=[human_comment])
+        gitlab_provider.mr.notes.list = MagicMock(return_value=[human_comment])
 
         gitlab_provider.publish_persistent_comment(
             "## New Custom Heading 🔍\n\nnew review",

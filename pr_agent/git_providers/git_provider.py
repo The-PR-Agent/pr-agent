@@ -11,6 +11,7 @@ from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from functools import wraps
+from itertools import repeat
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -1233,8 +1234,17 @@ class GitProvider(ABC):
         require_agent_authorship: bool = False,
     ):
         """Yield matching comments in identity-priority and newest-first order."""
-        comments = self.get_issue_comments_newest_first()
-        for identifier in identifiers:
+        identifiers = tuple(identifiers)
+        # Fall back to the existing list for duck-typed providers without the optional hook.
+        iterator_factory = getattr(type(self), "_get_persistent_comment_iterators", None)
+        if "_get_persistent_comment_iterators" in getattr(self, "__dict__", {}):
+            comment_iterators = self._get_persistent_comment_iterators(len(identifiers))
+        elif iterator_factory is not None:
+            comment_iterators = iterator_factory(self, len(identifiers))
+        else:
+            comments = self.get_issue_comments_newest_first()
+            comment_iterators = repeat(comments, len(identifiers))
+        for identifier, comments in zip(identifiers, comment_iterators, strict=True):
             if not identifier:
                 continue
             for comment in comments:
