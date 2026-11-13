@@ -500,14 +500,12 @@ By default, PR-Agent includes the `AGENTS.md` file at the repository root:
 repo_context_files = ["AGENTS.md"]
 ```
 
-A nested list is a group of alternatives: only the first one that yields content is used. This is opt-in, for repositories that keep the same instructions under several conventions (or symlink them) and want them sent once:
+A nested list is a group of repository-relative path alternatives: only the first one that yields content is used. This is opt-in, for repositories that keep the same instructions under several conventions (or symlink them) and want them sent once:
 
 ```toml
 [config]
 repo_context_files = [["AGENTS.md", "CLAUDE.md", ".kiro/steering/*.md"]]
 ```
-
-A nested list is a group of alternatives: only the first one that yields content is used, so a repository that keeps the same instructions under several conventions (or symlinks one file to another) sends them once. Alternatives must be repository-relative paths.
 
 You can list any repository-relative paths. By default the files are read from the repository's **default branch**, so only trusted, already-merged content is used and a PR cannot influence the guidance used to review it. A file that is missing is silently skipped. For example, to include several files:
 

@@ -59,7 +59,7 @@ For a quick preflight that needs no token and no PR, run:
 pr-agent doctor
 ```
 
-It checks that `config.model` is set and that a completion against the configured model succeeds. Where required, it also checks for a real static API key. Azure AD, Bedrock IAM, Anthropic bearer tokens without captured API keys, keyless local endpoints, and custom endpoints defer authentication validation to the completion. For Watsonx, an API URL alone is insufficient: configure an API key, `WATSONX_TOKEN`, `WATSONX_ZENAPIKEY`, or an explicit `Authorization` header. Watsonx checks these credentials in header, bearer-token, Zen-key, then API-key order; placeholder credentials are not accepted. An Anthropic bearer token must also be non-placeholder. Keyless local providers and eligible OpenRouter gateway fallbacks defer placeholder-key validation to the model completion. Native providers that require a real key still reject placeholders. The exit code is `0` only when every check passes, so CI setups can gate on it. It ships with the package, unlike the fuller health check below, which exercises real commands on a real PR.
+It checks that `config.model` is set and that a completion against the configured model succeeds. Where required, it also checks for a real static API key. The check reads the host configuration files and environment variables only: overrides such as `--config.model=...` are ignored after `doctor` and rejected before it, and neither the repository's `.pr_agent.toml` nor `--extra_config_url` is loaded. It can therefore validate a different model than a PR command would use, so set the model and the other options in a host configuration file or through environment variables. Azure AD, Bedrock IAM, Anthropic bearer tokens without captured API keys, keyless local endpoints, and custom endpoints defer authentication validation to the completion. For Watsonx, an API URL alone is insufficient: configure an API key, `WATSONX_TOKEN`, `WATSONX_ZENAPIKEY`, or an explicit `Authorization` header. Watsonx checks these credentials in header, bearer-token, Zen-key, then API-key order; placeholder credentials are not accepted. An Anthropic bearer token must also be non-placeholder. Keyless local providers and eligible OpenRouter gateway fallbacks defer placeholder-key validation to the model completion. Native providers that require a real key still reject placeholders. The exit code is `0` only when every check passes, so CI setups can gate on it. It ships with the package, unlike the fuller health check below, which exercises real commands on a real PR.
 
 In Docker, run it from the CLI image (`pragent/pr-agent:<version>` or `pragent/pr-agent:latest`), whose entrypoint takes the command directly:
 
@@ -107,7 +107,7 @@ Commands for invoking the different commands via comments:
 - **Ask**:          `/ask "..."`
 - **Update Changelog**:      `/update_changelog`
 
-To edit a specific configuration value, just add `--config_path=<value>` to any command.
+To edit a specific configuration value, just add `--<section>.<key>=<value>` to any command.
 For example, if you want to edit the `review` command configurations, you can run:
 
 ```
@@ -177,8 +177,11 @@ Every time you run the `describe` command (including automatic runs) the PR titl
 
 **Parameters for automated runs:**
 
-You can customize configurations specifically for automated runs by using the `--config_path=<value>` parameter.
-These command parameters apply before repository loading, so they can control that loading, and again afterward so command values take precedence over repository settings.
+You can customize configurations specifically for automated runs by using the `--<section>.<key>=<value>` parameter.
+For App and webhook automatic commands, accepted parameters can affect the command's later repository-settings load and take precedence for command execution. GitHub Actions apply command parameters after loading repository settings.
+Some repository-configurable settings cannot be set this way: `pr_reviewer.enable_risk_checks`, for example, is rejected as a command argument, while a repository's `.pr_agent.toml` can still set it.
+App and webhook deployments load repository settings for the event before preparing the automatic command, so parameters cannot change that first load. Set options needed before repository files are read in host configuration.
+The root `.pr_agent.toml` can override `config.enable_per_directory_settings` before nested files are read, including during the later command load; set it in the root file when it must control that load.
 For instance, to modify the `review` command settings only for newly opened PRs, use:
 
 ```toml

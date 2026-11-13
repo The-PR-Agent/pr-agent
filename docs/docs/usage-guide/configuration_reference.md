@@ -334,7 +334,7 @@ See [Add Docs](../commands/add_docs.md#configuration-options).
 | Key | Default | Description |
 | --- | --- | --- |
 | `extra_instructions` | "" |  |
-| `docs_style` | "Sphinx" | "Google Style with Args, Returns, Attributes...etc", "Numpy Style", "Sphinx Style", "PEP257", "reStructuredText" |
+| `docs_style` | "Sphinx" | Docstring style: Google Style with Args, Returns, Attributes...etc; Numpy Style; Sphinx; PEP257; reStructuredText. See docs/docs/commands/add_docs.md. |
 
 
 ## `[pr_update_changelog]` — /update_changelog {#pr_update_changelog-update_changelog}
