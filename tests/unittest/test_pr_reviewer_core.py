@@ -689,7 +689,9 @@ def _key_issue(**overrides):
     return issue
 
 
-def _reviewer_with_findings(*issues, head_file="one\ntwo\nthree\nfour\n"):
+def _reviewer_with_findings(
+    *issues, head_file="one\ntwo\nthree\nfour\n", patch="", head_file_is_complete=True
+):
     git_provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
     git_provider.azure_devops_client = MagicMock()
     git_provider.azure_devops_client.get_threads.return_value = []
@@ -698,7 +700,13 @@ def _reviewer_with_findings(*issues, head_file="one\ntwo\nthree\nfour\n"):
     git_provider.pr_num = 1
     git_provider.get_diff_files = MagicMock()
     git_provider.get_diff_files.return_value = [
-        FilePatchInfo(base_file="", head_file=head_file, patch="", filename="app.py")
+        FilePatchInfo(
+            base_file="",
+            head_file=head_file,
+            patch=patch,
+            filename="app.py",
+            head_file_is_complete=head_file_is_complete,
+        )
     ]
     git_provider.publish_code_suggestions = MagicMock(return_value=True)
     git_provider.max_comment_chars = None
@@ -2463,6 +2471,70 @@ def test_numbered_existing_code_is_stripped(committable_on):
     comment = _published_comment(reviewer.git_provider)
     assert "```suggestion\nTWO\nTHREE\n```" in comment["body"]
     assert comment["original_suggestion"]["existing_code"] == "two\nthree"
+
+
+def test_numbered_existing_code_with_unicode_line_separator_is_stripped(committable_on):
+    head_file = "one\ns = 'a\u2028b'\nthree\n"
+    issue = _key_issue(existing_code="2  s = 'a\u2028b'\n3  three", improved_code="s = 'ab'\nthree")
+    reviewer, data = _reviewer_with_findings(issue, head_file=head_file)
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion\ns = 'ab'\nthree\n```" in comment["body"]
+    assert comment["original_suggestion"]["existing_code"] == "s = 'a\u2028b'\nthree"
+
+
+@pytest.mark.parametrize(
+    "head_file,head_file_is_complete,patch,start_line,end_line",
+    [
+        ("", True, "@@ -1,3 +1,3 @@\n one\n-    old_two\n+    two\n     three\n", 2, 3),
+        (
+            "    two\n    three\n",
+            False,
+            "@@ -19,3 +19,3 @@\n one\n-    old_two\n+    two\n     three\n",
+            20,
+            21,
+        ),
+    ],
+)
+def test_patch_only_file_finding_and_committable_fix_are_published(
+    committable_on, head_file, head_file_is_complete, patch, start_line, end_line
+):
+    issue = _key_issue(
+        start_line=start_line, end_line=end_line, existing_code="two\nthree", improved_code="TWO\nTHREE"
+    )
+    reviewer, data = _reviewer_with_findings(
+        issue, head_file=head_file, patch=patch, head_file_is_complete=head_file_is_complete
+    )
+    reviewer.git_provider.publish_code_suggestions = (
+        AzureDevopsProvider.publish_code_suggestions.__get__(reviewer.git_provider)
+    )
+    reviewer._published_inline_key_issue_fingerprints = (
+        PRReviewer._published_inline_key_issue_fingerprints.__get__(reviewer)
+    )
+
+    result = reviewer._publish_key_issues_as_inline_comments(data)
+
+    reviewer.git_provider.azure_devops_client.create_thread.assert_called_once()
+    thread = reviewer.git_provider.azure_devops_client.create_thread.call_args.kwargs["comment_thread"]
+    assert thread.thread_context.right_file_start.line == start_line
+    assert thread.thread_context.right_file_end.line == end_line
+    assert thread.thread_context.right_file_end.offset == len("    three") + 1
+    assert "```suggestion\n    TWO\n    THREE\n```" in thread.comments[0].content
+    assert "key_issues_to_review" not in result["review"]
+
+
+def test_patch_only_file_finding_outside_hunk_stays_in_summary(committable_on):
+    patch = "@@ -2,2 +2,2 @@\n-old_two\n+two\n three\n"
+    issue = _key_issue(start_line=1, end_line=2, **_FIX_ISSUE)
+    reviewer, data = _reviewer_with_findings(issue, head_file="", patch=patch)
+
+    result = reviewer._publish_key_issues_as_inline_comments(data)
+
+    reviewer.git_provider.publish_code_suggestions.assert_not_called()
+    assert result["review"]["key_issues_to_review"] == [issue]
+    assert reviewer.git_provider._get_suggestion_end_offset("app.py", 2, 1) is None
 
 
 def test_fix_with_backticks_gets_longer_fence(committable_on):

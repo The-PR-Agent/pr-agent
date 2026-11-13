@@ -33,6 +33,7 @@ from ..algo.inline_comment_dedup import (
     has_marker,
 )
 from ..algo.language_handler import is_valid_file
+from ..algo.suggestion_checks import get_patch_range_lines
 from ..algo.utils import (
     find_line_number_of_relevant_line_in_file,
     load_large_diff,
@@ -265,14 +266,26 @@ class AzureDevopsProvider(GitProvider):
                 self._diff_path_map = path_map
         return path_map.get(relevant_file) or path_map.get(relevant_file.lstrip("/"))
 
-    def _get_suggestion_end_offset(self, relevant_file: str, relevant_lines_end: int) -> int | None:
-        for file in self.diff_files or []:
-            if file.filename != relevant_file or not isinstance(file.head_file, str):
+    def _get_suggestion_end_offset(
+        self, relevant_file: str, relevant_lines_end: int, relevant_lines_start: int | None = None
+    ) -> int | None:
+        start_line = relevant_lines_end if relevant_lines_start is None else relevant_lines_start
+        if start_line < 1 or relevant_lines_end < start_line:
+            return None
+        diff_files = self.diff_files if getattr(self, "diff_files", None) is not None else self.get_diff_files()
+        for file in diff_files or []:
+            if file.filename != relevant_file:
                 continue
-            lines = split_diff_lines(file.head_file)
-            if relevant_lines_end > len(lines):
-                return None
-            line = lines[relevant_lines_end - 1]
+            if isinstance(file.head_file, str) and file.head_file and getattr(file, "head_file_is_complete", True):
+                lines = split_diff_lines(file.head_file)
+                if relevant_lines_end > len(lines):
+                    return None
+                line = lines[relevant_lines_end - 1]
+            else:
+                patch_lines = get_patch_range_lines(file.patch, start_line, relevant_lines_end)
+                if patch_lines is None:
+                    return None
+                line = patch_lines[-1]
             return len(line.encode("utf-16-le")) // 2 + 1
         return None
 
@@ -432,7 +445,9 @@ class AzureDevopsProvider(GitProvider):
 
             end_offset = 1
             if has_suggestion_fence:
-                end_offset = self._get_suggestion_end_offset(resolved_file, relevant_lines_end)
+                end_offset = self._get_suggestion_end_offset(
+                    resolved_file, relevant_lines_end, relevant_lines_start
+                )
                 if end_offset is None:
                     if fallback_to_pr_comment:
                         if should_mark:
