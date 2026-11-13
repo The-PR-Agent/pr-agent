@@ -2845,11 +2845,13 @@ class GitLabProvider(GitProvider):
                     new_code_snippet = original_suggestion['improved_code']
                     content = original_suggestion['suggestion_content']
                     label = original_suggestion['label']
-                    score = original_suggestion.get('score', 7)
+                    score = original_suggestion.get('score')
 
                 score_why = str(original_suggestion.get('score_why') or "").strip()
                 link = self.get_line_link(relevant_file, line_start, line_end)
-                body_fallback =f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
+                # /review findings carry no importance score; do not invent one
+                tag = f"[{label}, importance: {score}]" if score is not None else f"[{label}]"
+                body_fallback =f"**Suggestion:** {content} {tag}\n\n"
                 if score_why:
                     body_fallback += f"Why: {score_why}\n\n"
                 body_fallback += (f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):"

@@ -258,6 +258,47 @@ def test_live_note_fallback_repeats_the_score_why_disclosure():
     assert "Why: Self-reflection unavailable; score not model-assigned" in fallback_body
 
 
+def test_rejected_position_fallback_keeps_review_markers_and_invents_no_score():
+    # /review key issues carry no score, and the reviewer finds its published findings by the
+    # location marker embedded in the body; the file-level fallback note must keep both intact.
+    p = _gl_provider()
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    location_marker = "<!-- pr-agent-key-issue-location: 0123456789ab -->"
+    body = ("**Possible Issue** The lock is never released.\n\n```suggestion\nx = 2\n```\n\n"
+            f"<!-- pr-agent-dedup: ba9876543210 -->\n{location_marker}")
+    suggestion = {'body': body, 'relevant_file': 'a.py', 'relevant_lines_start': 2, 'relevant_lines_end': 2,
+                  'original_suggestion': {'relevant_lines_start': 2, 'relevant_lines_end': 2,
+                                          'existing_code': 'x = 1', 'improved_code': 'x = 2',
+                                          'suggestion_content': 'The lock is never released.',
+                                          'label': 'Possible Issue'}}
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([suggestion]) is True
+    finally:
+        gs.stop()
+
+    note = p.mr.notes.create.call_args.args[0]['body']
+    assert "[Possible Issue]" in note
+    assert "importance" not in note
+    assert location_marker in note
+    assert note.count("pr-agent-dedup: ba9876543210") == 1
+
+
+def test_rejected_position_fallback_keeps_improve_score():
+    p = _gl_provider()
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion(score=9)]) is True
+    finally:
+        gs.stop()
+
+    assert "[possible issue, importance: 9]" in p.mr.notes.create.call_args.args[0]['body']
+
+
+@pytest.fixture(params=[False, True], ids=["no-persistence", "persistence"])
+
+
 def test_bulk_publish_failure_is_caught_and_does_not_propagate():
     p = _gl_provider()
     p.mr.draft_notes.bulk_publish.side_effect = RequestException("network error")
