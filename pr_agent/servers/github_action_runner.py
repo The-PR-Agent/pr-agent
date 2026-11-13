@@ -485,7 +485,7 @@ async def run_action():
                 if auto_describe is None or is_true(auto_describe):
                     await _run_auto_command(PRDescription, pr_url)
                 # /improve runs /review, so either flag runs the one review.
-                if auto_review is None or is_true(auto_review) or auto_improve is None or is_true(auto_improve):
+                if auto_review is None or is_true(auto_review) or is_true(auto_improve):
                     await _run_auto_command(PRReviewer, pr_url)
         else:
             get_logger().info(f"Skipping action: {action}")
@@ -606,7 +606,7 @@ async def run_action():
         if auto_describe is None or is_true(auto_describe):
             await _run_auto_command(PRDescription, pr_url)
         # /improve runs /review, so either flag runs the one review.
-        if auto_review is None or is_true(auto_review) or auto_improve is None or is_true(auto_improve):
+        if auto_review is None or is_true(auto_review) or is_true(auto_improve):
             await _run_auto_command(PRReviewer, pr_url)
 
 

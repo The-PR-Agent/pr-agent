@@ -325,17 +325,34 @@ async def test_first_open_review_request_stream(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("event_name", ["pull_request", "workflow_run"])
 @pytest.mark.parametrize(
     ("auto_review", "auto_improve", "expected_reviews"),
-    [(True, True, 1), (False, True, 1), (True, False, 1), (None, None, 1), (False, False, 0)],
+    [
+        (True, True, 1),
+        (False, True, 1),
+        (True, False, 1),
+        (None, None, 1),
+        (None, False, 1),
+        (True, None, 1),
+        (None, True, 1),
+        (False, None, 0),
+        (False, False, 0),
+    ],
 )
 async def test_action_auto_review_and_auto_improve_run_one_review(
-    monkeypatch, tmp_path, restore_github_settings, auto_review, auto_improve, expected_reviews
+    monkeypatch, tmp_path, restore_github_settings, event_name, auto_review, auto_improve, expected_reviews
 ):
     pr_url = "https://api.github.com/repos/org/repo/pulls/1"
     event_path = tmp_path / "event.json"
-    event_path.write_text(json.dumps({"action": "opened", "pull_request": {"url": pr_url}}))
-    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    if event_name == "workflow_run":
+        payload = {
+            "workflow_run": {"event": "pull_request", "conclusion": "success", "pull_requests": [{"url": pr_url}]}
+        }
+    else:
+        payload = {"action": "opened", "pull_request": {"url": pr_url}}
+    event_path.write_text(json.dumps(payload))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
     monkeypatch.setenv("GITHUB_TOKEN", "unit-test-token")
     monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda _url: None)
