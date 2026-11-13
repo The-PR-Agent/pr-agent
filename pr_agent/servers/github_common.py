@@ -8,7 +8,10 @@ JSON and overrides GITHUB.DEPLOYMENT_TYPE to "app".
 
 from typing import Any
 
+from starlette_context import context
+
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
+from pr_agent.algo.utils import encode_user_text_arg
 from pr_agent.config_loader import get_bot_display_name, get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_host_settings
@@ -133,3 +136,22 @@ def handle_line_comments(body: dict, comment_body: [str, Any]):
             cmd.append(question)
         return cmd
     return comment_body
+
+
+def handle_file_question_comment(body: dict, comment_body: str) -> list[str] | None:
+    """Turn /ask or /ask_question on a whole file into a question about that file's diff.
+
+    The file and the comment's thread go into the request context, where PRQuestions reads them to
+    answer in that thread. Returns None for any other comment.
+    """
+    comment = body["comment"]
+    if (comment.get("subject_type") == "file"
+            and comment_body.split(maxsplit=1)[0].lower() in ("/ask", "/ask_question")):
+        parts = comment_body.strip().split(maxsplit=1)
+        question = parts[1] if len(parts) > 1 else ""
+        context["file_question_path"] = comment["path"]
+        context["file_question_comment_id"] = comment.get("in_reply_to_id") or comment["id"]
+        context["file_question_origin_comment_id"] = comment["id"]
+        context["file_question_comment_url"] = comment["html_url"]
+        return ["/ask", encode_user_text_arg(question)]
+    return None

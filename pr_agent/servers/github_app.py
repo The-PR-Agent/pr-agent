@@ -26,6 +26,7 @@ from pr_agent.servers import lambda_handoff
 from pr_agent.servers.github_common import (
     _normalise_setting_list,
     _reformat_quote_ask_command,
+    handle_file_question_comment,
     pushed_base_branch_merge,
     revoke_auto_approval_on_push,
 )
@@ -158,9 +159,10 @@ async def handle_comments_on_pr(body: dict[str, Any],
         api_url = body["comment"]["pull_request_url"]
         try:
             if (is_ask_command_comment(comment_body) and
-                    'subject_type' in body["comment"] and body["comment"]["subject_type"] == "line"):
-                # comment on a code line in the "files changed" tab
-                comment_body = handle_line_comments(body, comment_body)
+                    body["comment"].get("subject_type") in ("line", "file")):
+                # comment on code lines or on a whole file in the "files changed" tab
+                comment_body = (handle_file_question_comment(body, comment_body)
+                                or handle_line_comments(body, comment_body))
                 disable_eyes = True
         except Exception as e:
             get_logger().error("Failed to get log context", artifact={'error': e})
