@@ -20,7 +20,7 @@ It can be invoked manually by commenting on any PR:
 
 ## Repository instructions
 
-Top-level `/ask` can use the same repository instruction files as `/review`, `/describe`, and `/improve`.
+Both top-level `/ask` and inline `/ask_line` can use the same repository instruction files as `/review`, `/describe`, and `/improve`.
 For example, ask whether a migration follows the rollback rules in an existing architecture decision record:
 
 ```toml
@@ -32,19 +32,20 @@ repo_context_files = ["AGENTS.md", "docs/adr/database-migrations.md"]
 /ask "Does this migration follow our rollback and compatibility rules?"
 ```
 
-Like `/review`, `/describe`, and `/improve`, top-level `/ask` reads `AGENTS.md` from the repository root by default.
+Like `/review`, `/describe`, and `/improve`, both Ask modes read `AGENTS.md` from the repository root by default.
 Set `config.repo_context_files = []` in the root repository settings to disable repository instructions for all commands.
 Comment arguments cannot change the configured file list.
 
 The existing [repository context settings](../usage-guide/additional_configurations.md#bringing-per-repo-context-files-to-pr-agent)
 control file selection, source branches, imports, and line limits. Files come from the repository's default branch unless
 configured otherwise. Providers without repository file access skip this context; missing or empty files are also skipped.
-This behavior does not affect `/ask_line`.
 
 The question, selected discussion history, and packed diff keep their existing token budget. The instruction block,
 already bounded by `repo_context_max_lines`, is included only if it fits in the remaining model context in full.
-Otherwise, `/ask` keeps its original prompt and adds a short omission notice to the answer. It does not retry another model
+Otherwise, the corresponding Ask mode keeps its original prompt and adds a short omission notice to the answer. It does not retry another model
 just to fit instructions. Normal model retries reconsider the original instruction block without reading the files again.
+For `/ask_line`, the selected lines, complete diff hunk, and fitted thread history likewise take precedence over
+repository instructions. No instruction files are read when the requested diff hunk is unavailable.
 Including repository instructions can add repository API reads and input tokens, but does not add a separate model request.
 
 ## Ask lines

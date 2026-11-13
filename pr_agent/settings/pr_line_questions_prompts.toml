@@ -24,6 +24,14 @@ Extra instructions from the user:
 Follow the extra instructions above; they take precedence over any conflicting guidance in this prompt.
 {%- endif %}
 
+{%- if repo_context is defined and repo_context %}
+
+Repository instructions (apply the relevant guidance to this question and PR):
+======
+{{ repo_context }}
+======
+{%- endif %}
+
 Additional guidelines:
 - When quoting variables or names from the code, use backticks (`) instead of single quote (').
 - If relevant, use bullet points.

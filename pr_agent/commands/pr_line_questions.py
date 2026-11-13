@@ -1,4 +1,5 @@
 import copy
+from dataclasses import replace
 from functools import partial
 from urllib.parse import unquote
 
@@ -15,12 +16,13 @@ from pr_agent.algo.pr_processing import (
     retry_with_fallback_models,
     run_diff_preparation,
 )
+from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.run_output import append_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import ModelType, decode_user_text_args
-from pr_agent.commands.pr_questions import _sanitize_slash_commands
+from pr_agent.commands.pr_questions import REPO_CONTEXT_OMITTED_NOTE, _sanitize_slash_commands
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider_for_command
 from pr_agent.log import get_logger
@@ -59,6 +61,7 @@ class PR_LineQuestions:
             "resolve_threads": self.resolve_threads,
             "is_azure_devops": self.git_provider.supports_threaded_pr_questions(),
             "extra_instructions": get_settings().pr_questions.extra_instructions,
+            "repo_context": "",
             "skills_context": (
                 get_skills_context()
                 if get_settings().skills.get("enabled", False)
@@ -67,6 +70,7 @@ class PR_LineQuestions:
         }
         self.patches_diff = None
         self.prediction = None
+        self._repo_context = None
 
     def _ensure_ai_handler(self):
         if self.ai_handler is None:
@@ -125,6 +129,7 @@ class PR_LineQuestions:
         # requested line outside the shortened body with the hunk itself still present.
         hunk_found = any(line.startswith('@@') for line in self.patch_with_lines.splitlines())
         if hunk_found:
+            self._repo_context = await run_diff_preparation(build_repo_context, self.git_provider)
             self._ensure_ai_handler()
             model_answer = await retry_with_fallback_models(self._get_prediction, model_type=ModelType.WEAK)
 
@@ -136,6 +141,8 @@ class PR_LineQuestions:
 
             # sanitize the answer so that no line will start with "/"
             model_answer_sanitized = _sanitize_slash_commands(model_answer.strip())
+            if getattr(self, "_repo_context_omitted", False):
+                model_answer_sanitized += f"\n\n> {REPO_CONTEXT_OMITTED_NOTE}"
 
             get_logger().info('Preparing answer...')
             if not get_settings().config.publish_output:
@@ -224,6 +231,7 @@ class PR_LineQuestions:
         variables = copy.deepcopy(self.vars)
         variables["full_hunk"] = self.patch_with_lines  # update diff
         variables["selected_lines"] = self.selected_lines
+        self._repo_context_omitted = False
         fitted = self._fit_conversation_history(variables, model)
         variables["conversation_history"] = fitted.optional_text
         system_prompt, user_prompt = fitted.system_prompt, fitted.user_prompt
@@ -284,4 +292,20 @@ class PR_LineQuestions:
             get_logger().warning(
                 f"Conversation history was clipped for /ask_line to fit the token limit for {model}"
             )
+        if self._repo_context:
+            variables["conversation_history"] = fitted.optional_text
+            try:
+                with_repo = budget.fit_prompt_variable(
+                    variables,
+                    "repo_context",
+                    self._repo_context,
+                    ai_handler=self.ai_handler,
+                    default_output_tokens=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+                    require_full_text=True,
+                )
+            except FallbackEligibleError:
+                self._repo_context_omitted = True
+                get_logger().warning("Repository instructions do not fit; keeping the existing line question context")
+            else:
+                fitted = replace(with_repo, optional_text=fitted.optional_text)
         return fitted
