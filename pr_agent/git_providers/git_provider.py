@@ -546,6 +546,13 @@ class GitProvider(ABC):
         """
         return False
 
+    def supports_ticket_comments(self) -> bool:
+        return False
+
+    def get_ticket_comments(self, ticket_url: str, maximum: int) -> list[dict]:
+        """Return bounded ticket comments, newest first, where supported."""
+        return []
+
     def supports_inline_help_footer(self) -> bool:
         """Whether the `/describe` help footer is rendered as an inline `<li>` list.
 

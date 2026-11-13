@@ -32,6 +32,29 @@ This integration enriches the review process by automatically surfacing relevant
 
 Image attachments are not fetched or sent to the model as images by the ticket integration.
 
+### Ticket comments
+
+To include recent GitHub issue or Azure DevOps work-item comments, opt in with:
+
+```toml
+[config]
+ticket_comments_max = 5
+ticket_comments_max_characters = 2000
+```
+
+`ticket_comments_max` defaults to `0` (disabled) and is capped at `100` comments per ticket.
+`ticket_comments_max_characters` is capped at `10000` characters per comment; `0` disables comment context.
+The existing ticket lookup limits still apply. Each supported ticket adds at most one API call and no model calls.
+The newest page is fetched once, without backfilling comments excluded by filtering.
+
+Comments appear after the ticket description as untrusted user content in `/review`, `/describe` and
+ticket-enabled `/ask`. Deleted comments and system entries are excluded. GitHub also excludes comments by
+the authenticated PR-Agent identity; if that identity cannot be established, its comments are omitted entirely.
+Image markup becomes a text placeholder such as `[image: screenshot.png]`, without the image URL.
+When fitting the prompt budget, the oldest comments are removed before complete tickets are omitted.
+Other ticket integrations keep their current behavior. With the setting disabled, no comment requests are made
+and the prompts retain their previous contents.
+
 ## Affected Commands
 
 Ticket Recognition Requirements:

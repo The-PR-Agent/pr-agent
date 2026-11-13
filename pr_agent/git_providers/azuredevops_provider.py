@@ -11,6 +11,7 @@ from uuid import UUID
 from requests.exceptions import RequestException
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
+from pr_agent.algo.ticket_comments import normalize_ticket_comments, ticket_comment_limits
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.comment_identity import (
@@ -617,6 +618,9 @@ class AzureDevopsProvider(GitProvider):
         return True
 
     def supports_linked_work_item_tickets(self) -> bool:
+        return True
+
+    def supports_ticket_comments(self) -> bool:
         return True
 
     def set_pr(self, pr_url: str):
@@ -2056,4 +2060,28 @@ class AzureDevopsProvider(GitProvider):
             }
             for item in raw_work_items
         ]
+        maximum, _ = ticket_comment_limits()
+        if maximum and self.supports_ticket_comments():
+            for item in work_items:
+                item["comments"] = self.get_ticket_comments(item["url"], maximum)
         return work_items
+
+    def get_ticket_comments(self, ticket_url: str, maximum: int) -> list[dict]:
+        _, characters = ticket_comment_limits()
+        if maximum <= 0 or characters <= 0:
+            return []
+        try:
+            response = self.azure_devops_board_client.get_comments(
+                project=self.workspace_slug, work_item_id=int(ticket_url.rstrip("/").rsplit("/", 1)[-1]),
+                top=maximum, order="desc", include_deleted=False,
+            )
+            comments = [{
+                "body": self._value(comment, "text"),
+                "created_at": self._value(comment, "created_date", "createdDate"),
+                "is_deleted": self._value(comment, "is_deleted", "isDeleted"),
+                "is_system": str(self._value(comment, "comment_type", "commentType") or "").lower() == "system",
+            } for comment in response.comments or []]
+            return normalize_ticket_comments(comments, maximum, characters)
+        except Exception:
+            get_logger().warning("Failed to fetch work item comments; retaining the ticket context")
+            return []

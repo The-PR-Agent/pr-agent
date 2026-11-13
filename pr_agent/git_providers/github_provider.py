@@ -43,6 +43,7 @@ from ..algo.inline_comment_dedup import (
     has_marker,
 )
 from ..algo.language_handler import is_valid_file
+from ..algo.ticket_comments import normalize_ticket_comments, ticket_comment_limits
 from ..algo.token_budget import clip_tokens
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (
@@ -2612,6 +2613,45 @@ class GithubProvider(GitProvider):
             return pr_id
         except AttributeError:
             return ""
+
+    def supports_ticket_comments(self) -> bool:
+        return True
+
+    def get_ticket_comments(self, ticket_url: str, maximum: int) -> list[dict]:
+        _, characters = ticket_comment_limits()
+        if maximum <= 0 or characters <= 0:
+            return []
+        query = """
+        query TicketComments($owner: String!, $repo: String!, $number: Int!, $count: Int!) {
+            viewer { login }
+            repository(owner: $owner, name: $repo) {
+                issue(number: $number) {
+                    comments(last: $count) { nodes { body createdAt author { login } } }
+                }
+            }
+        }
+        """
+        try:
+            repo, number = self._parse_issue_url(ticket_url)
+            owner, name = repo.split("/", 1)
+            status, _, body = self._post_graphql(query, {
+                "owner": owner, "repo": name, "number": number, "count": min(maximum, 100),
+            })
+            response = json.loads(body)
+            if status != 200 or response.get("errors"):
+                return []
+            data = response.get("data") or {}
+            agent_login = (data.get("viewer") or {}).get("login")
+            if not isinstance(agent_login, str) or not agent_login:
+                return []
+            nodes = (((data.get("repository") or {}).get("issue") or {}).get("comments") or {}).get("nodes") or []
+            comments = [{"body": node.get("body"), "created_at": node.get("createdAt")}
+                        for node in reversed(nodes) if node and (node.get("author") or {}).get("login")
+                        and node["author"]["login"].casefold() != agent_login.casefold()]
+            return normalize_ticket_comments(comments, maximum, characters)
+        except (GithubException, RequestException, ValueError, AttributeError, KeyError, TypeError):
+            get_logger().warning("Failed to fetch issue comments; retaining the ticket context")
+            return []
 
     def fetch_sub_issues(self, issue_url):
         """

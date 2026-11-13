@@ -39,6 +39,18 @@ _INDIRECT_DECORATORS = ("property", "setter", "deleter", "validator", "abstractm
 # documents what calls it.
 _ALLOWLIST = {
     (
+        "pr_agent/algo/ticket_comments.py",
+        "handle_starttag",
+    ): "html.parser.HTMLParser callback, dispatched by HTMLParser.feed",
+    (
+        "pr_agent/algo/ticket_comments.py",
+        "handle_endtag",
+    ): "html.parser.HTMLParser callback, dispatched by HTMLParser.feed",
+    (
+        "pr_agent/algo/ticket_comments.py",
+        "handle_data",
+    ): "html.parser.HTMLParser callback, dispatched by HTMLParser.feed",
+    (
         "pr_agent/servers/github_lambda_webhook.py",
         "lambda_handler",
     ): "AWS Lambda entry point, named in docker/Dockerfile.lambda",

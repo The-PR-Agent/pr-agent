@@ -24,6 +24,8 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 
 | Key | Default | Description |
 | --- | --- | --- |
+| `ticket_comments_max` | 0 | Newest comments per GitHub/Azure ticket (0 disables, maximum 100); see fetching_ticket_context.md. |
+| `ticket_comments_max_characters` | 2000 | Maximum characters per ticket comment (0 disables, maximum 10000); see fetching_ticket_context.md. |
 | `max_webhook_request_body_bytes` | 5242880 | maximum request body accepted by webhook servers (5 MiB) |
 | `bot_display_name` | "PR-Agent" | product name shown in user-visible PR comments; host-only, repo settings and comment args cannot set it |
 **models**
