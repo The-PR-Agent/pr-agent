@@ -59,7 +59,7 @@ from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.suggestion_checks import (
     dedent_code_for_file,
-    get_patch_range_lines,
+    is_line_range_in_diff,
     python_syntax_is_valid,
     validate_suggestion,
 )
@@ -1528,13 +1528,7 @@ class PRCodeSuggestions:
                                            'relevant_lines_start': relevant_lines_start,
                                            'relevant_lines_end': relevant_lines_end})
             return False
-        if diff_file.head_file and getattr(diff_file, "head_file_is_complete", True):
-            line_count = diff_file.head_file.count("\n") + (not diff_file.head_file.endswith("\n"))
-            range_resolvable = relevant_lines_end <= line_count
-        else:
-            range_resolvable = self._get_patch_range_lines(
-                diff_file.patch, relevant_lines_start, relevant_lines_end) is not None
-        if not range_resolvable:
+        if not is_line_range_in_diff(diff_file, relevant_lines_start, relevant_lines_end):
             get_logger().warning("Skipping a suggestion whose line range is not within the file",
                                  artifact={'relevant_file': relevant_file.strip(),
                                            'relevant_lines_start': relevant_lines_start,
@@ -1869,10 +1863,6 @@ class PRCodeSuggestions:
         """Return False only when a verified replacement makes valid Python fail compilation."""
         return python_syntax_is_valid(relevant_file, self._get_diff_file(relevant_file), relevant_lines_start,
                                       relevant_lines_end, new_code_snippet)
-
-    @staticmethod
-    def _get_patch_range_lines(patch, relevant_lines_start, relevant_lines_end) -> list[str] | None:
-        return get_patch_range_lines(patch, relevant_lines_start, relevant_lines_end)
 
     def _validate_suggestion(self, relevant_file, relevant_lines_start, relevant_lines_end,
                              existing_code) -> tuple[bool, str, bool]:

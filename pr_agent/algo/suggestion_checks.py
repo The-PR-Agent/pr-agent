@@ -32,6 +32,16 @@ def get_patch_range_lines(patch, relevant_lines_start, relevant_lines_end) -> li
             for line_number in range(relevant_lines_start, relevant_lines_end + 1)]
 
 
+def is_line_range_in_diff(diff_file, relevant_lines_start: int, relevant_lines_end: int) -> bool:
+    """Return True when the 1-based inclusive line range can be resolved from head_file or patch."""
+    if diff_file is None or relevant_lines_start < 1 or relevant_lines_end < relevant_lines_start:
+        return False
+    if diff_file.head_file and getattr(diff_file, "head_file_is_complete", True):
+        line_count = diff_file.head_file.count("\n") + (not diff_file.head_file.endswith("\n"))
+        return relevant_lines_end <= line_count
+    return get_patch_range_lines(diff_file.patch, relevant_lines_start, relevant_lines_end) is not None
+
+
 def validate_suggestion(diff_file, relevant_lines_start, relevant_lines_end,
                         existing_code) -> tuple[bool, str, bool]:
     """Return (is_applicable, reason_if_not, has_valid_anchor) for a fix against the changed file."""
