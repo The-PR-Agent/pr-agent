@@ -18,6 +18,7 @@ from starlette_context import context
 
 from pr_agent.algo.comment_identity import (
     PRCommandNoticeIdentity,
+    PRDescriptionHeader,
     add_pr_review_identity,
     comment_carries_other_identity,
     comment_matches_identity,
@@ -77,6 +78,15 @@ DEFAULT_DISCUSSION_CONTEXT_CHARS = 24000
 DISCUSSION_CONTEXT_MAX_REPLIES = 10
 DISCUSSION_CONTEXT_MAX_THREADS = 50
 DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS = 750
+
+# The /describe sections GitProvider.limit_description_characters drops, in this order, and the note it ends a
+# body with when it still has to cut the text.
+_DESCRIBE_USAGE_GUIDE = "<details> <summary><strong>✨ Describe command usage guide:</strong></summary><hr>"
+_FILE_WALKTHROUGH_OPENERS = tuple(
+    f"<details{status}> <summary><h3> {PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>"
+    for status in ("", " open")
+)
+_DESCRIPTION_TRUNCATED = " ... (description truncated due to length limit)"
 
 
 @dataclass
@@ -1493,6 +1503,28 @@ class GitProvider(ABC):
         suffix = "..."
         suffix = suffix[:max_chars]
         return output[:max_chars - len(suffix)] + suffix
+
+    def limit_description_characters(self, pr_body: str, max_chars: int) -> str:
+        """Fit a /describe body into the platform's description limit of max_chars characters.
+
+        Drop the usage guide first, then the file walkthrough and what follows it, and cut the text
+        only when it is still too long.
+        """
+        if len(pr_body) <= max_chars:
+            return pr_body
+        full_length = len(pr_body)
+        usage_guide_start = pr_body.rfind(_DESCRIBE_USAGE_GUIDE)
+        if usage_guide_start != -1:
+            pr_body = pr_body[:usage_guide_start]
+        if len(pr_body) > max_chars:
+            walkthrough_start = max(pr_body.rfind(opener) for opener in _FILE_WALKTHROUGH_OPENERS)
+            if walkthrough_start != -1:
+                pr_body = pr_body[:walkthrough_start]
+        if len(pr_body) > max_chars:
+            pr_body = pr_body[:max_chars - len(_DESCRIPTION_TRUNCATED)] + _DESCRIPTION_TRUNCATED
+        get_logger().warning(f"PR description of {full_length} characters is over the limit of {max_chars}; "
+                             f"publishing {len(pr_body)}")
+        return pr_body
 
 
 def get_main_pr_language(languages, files) -> str:

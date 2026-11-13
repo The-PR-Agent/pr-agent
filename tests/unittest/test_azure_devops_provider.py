@@ -63,6 +63,25 @@ def test_publish_description_propagates_update_failure():
         provider.publish_description("AI title", "Updated description")
 
 
+def test_publish_description_drops_the_whole_file_walkthrough_over_the_limit():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.workspace_slug = "my-project"
+    provider.repo_slug = "my-repo"
+    provider.pr_num = 1
+    provider.azure_devops_client = MagicMock()
+    summary = ("<!-- pr-agent-generated -->\n### **PR Type**\nEnhancement\n\n\n___\n\n"
+               "### **Description**\n- Rename the billing modules\n\n\n")
+    walkthrough = ("<details> <summary><h3> File Walkthrough</h3></summary>\n\n<table>"
+                   + "<tr><td><strong>InvoiceRule.java</strong></td></tr>" * 100 + "</table>\n\n</details>\n\n___\n\n")
+
+    provider.publish_description("AI title", summary + walkthrough)
+
+    published = provider.azure_devops_client.update_pull_request.call_args.kwargs["git_pull_request_to_update"]
+    assert published.title == "AI title"
+    # Cut at the walkthrough's <details> tag, not inside its summary, so no unclosed tag is left behind.
+    assert published.description == summary
+
+
 class TestAzureDevopsProviderLabels:
     @pytest.fixture
     def provider(self):
