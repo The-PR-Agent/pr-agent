@@ -1,8 +1,7 @@
 import re
 from datetime import UTC, datetime
+from html.parser import HTMLParser
 from urllib.parse import unquote, urlsplit
-
-from bs4 import BeautifulSoup
 
 from pr_agent.config_loader import get_settings
 
@@ -46,14 +45,39 @@ def _closing_delimiter(text, start, opening, closing):
     return len(text)
 
 
+class _CommentHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.hidden_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style"):
+            self.hidden_depth += 1
+        elif not self.hidden_depth:
+            if tag == "img":
+                attrs = dict(attrs)
+                self.parts.append(_image_placeholder(attrs.get("alt") or "", attrs.get("src") or ""))
+            elif tag in ("p", "div", "br", "li"):
+                self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style") and self.hidden_depth:
+            self.hidden_depth -= 1
+        elif not self.hidden_depth and tag in ("p", "div", "li"):
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self.hidden_depth:
+            self.parts.append(data)
+
+
 def _comment_text(text: str) -> str:
     # Remove image destinations before stripping HTML or truncating the text.
-    soup = BeautifulSoup(text, "html.parser")
-    for image in soup.find_all("img"):
-        image.replace_with(_image_placeholder(image.get("alt", ""), image.get("src", "")))
-    for hidden in soup.find_all(["script", "style"]):
-        hidden.decompose()
-    text = soup.get_text()
+    parser = _CommentHTMLParser()
+    parser.feed(text)
+    parser.close()
+    text = "".join(parser.parts)
     parts = []
     references = set()
     position = 0

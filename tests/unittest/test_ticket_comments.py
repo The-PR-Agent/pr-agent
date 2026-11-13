@@ -1,13 +1,16 @@
 import copy
 import json
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 from github import Auth, Github
-from jinja2 import Environment
+from jinja2 import Environment, meta
 
 from pr_agent.algo.ticket_comments import normalize_ticket_comments, ticket_comment_limits
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.commands.ticket_pr_compliance_check import extract_tickets, fit_related_tickets_to_prompt_budget
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
@@ -120,6 +123,18 @@ def test_comment_limits_are_bounded_and_timestamps_are_normalized():
     assert normalized[0]["created_at"] == "2026-11-13T00:00:00+00:00"
 
 
+def test_comment_normalization_does_not_require_bitbucket_dependencies():
+    script = """
+import sys
+sys.modules['bs4'] = None
+sys.modules['atlassian'] = None
+from pr_agent.algo.ticket_comments import normalize_ticket_comments
+assert normalize_ticket_comments([{'body': '<p>Use ISO dates</p>'}], 1, 2000)[0]['body'] == 'Use ISO dates'
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_github_fetches_newest_comments_in_one_call_and_excludes_own_identity(monkeypatch):
     provider = GithubProvider.__new__(GithubProvider)
     provider.github_client = Github(auth=Auth.Token("test-token"))
@@ -156,6 +171,40 @@ def test_budget_removes_oldest_comments_before_ticket_bodies():
     assert len(fitted["related_tickets"]) == 1
     assert [c["body"] for c in fitted["related_tickets"][0]["comments"]] == ["new requirement"]
     assert raw == before
+
+
+def test_budget_trims_flattened_sub_issue_comments_with_real_review_prompt():
+    template = get_settings().get("pr_review_prompt").user
+    environment = Environment(autoescape=True)
+    variables = {name: "" for name in meta.find_undeclared_variables(environment.parse(template))}
+    child = {
+        "ticket_url": "child", "title": "Child", "body": "Keep child requirements",
+        "comments": [{"body": "old discussion " * 1000, "created_at": "2026-11-12T00:00:00+00:00"}],
+    }
+    parent = {
+        "ticket_url": "parent", "title": "Parent", "body": "Keep parent requirements",
+        "comments": [{"body": "new requirement", "created_at": "2026-11-13T00:00:00+00:00"}],
+        "sub_issues": [child],
+    }
+    # extract_and_cache_pr_tickets keeps the nested records and appends shallow copies for rendering.
+    variables["related_tickets"] = [parent, {**child, "parent_ticket_url": "parent"}]
+    before = copy.deepcopy(variables)
+    minimal = copy.deepcopy(variables)
+    minimal["related_tickets"][1]["comments"] = []
+    budget = AttemptTokenBudget.for_prompt_attempt("gpt-4o-mini", None, minimal, "", template, ai_handler=None)
+    get_settings().set("config.max_model_tokens", budget.prompt_tokens + 50)
+
+    fitted, _ = fit_related_tickets_to_prompt_budget(
+        None, variables, "", template, "gpt-4o-mini", default_output_tokens=0, additional_input_reserve=0,
+    )
+    assert len(fitted["related_tickets"]) == 2
+    assert fitted["related_tickets"][1]["comments"] == []
+    rendered = environment.from_string(template).render(**fitted)
+    assert "Keep child requirements" in rendered
+    assert "Keep parent requirements" in rendered
+    assert "new requirement" in rendered
+    assert "old discussion" not in rendered
+    assert variables == before
 
 
 @pytest.mark.parametrize("prompt_name", [
