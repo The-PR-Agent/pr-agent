@@ -196,6 +196,7 @@ PROVIDER_SETTING_PATHS = {
     "mistral": {"api_key": "MISTRAL.KEY"},
     "moonshot": {"api_key": "MOONSHOT.KEY", "api_base": "MOONSHOT.API_BASE"},
     "ollama": {"api_key": "OLLAMA.API_KEY", "api_base": "OLLAMA.API_BASE"},
+    "opencode_go": {"api_key": "OPENCODE_GO.KEY"},
     "openrouter": {"api_key": "OPENROUTER.KEY", "api_base": "OPENROUTER.API_BASE"},
     "replicate": {"api_key": "REPLICATE.KEY"},
     "sambanova": {"api_key": "SAMBANOVA.KEY"},

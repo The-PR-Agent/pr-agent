@@ -721,6 +721,25 @@ key = ...
 
 (you can obtain a Xiaomi MiMo API key from [here](https://platform.xiaomimimo.com/#/docs))
 
+### OpenCode Go
+
+To use models from an [OpenCode Go](https://opencode.ai/docs/console/go/) subscription, for example, set:
+
+```toml
+[config] # in configuration.toml
+model = "opencode_go/deepseek-v4.1-flash"
+fallback_models=[]
+```
+
+and fill up your key
+
+```toml
+[opencode_go] # in .secrets.toml
+key = ...
+```
+
+You can also set the `OPENCODE_API_KEY` (or `OPENCODE_GO_API_KEY`) environment variable instead.
+
 ### DeepInfra
 
 To use DeepSeek model with DeepInfra, for example, set:

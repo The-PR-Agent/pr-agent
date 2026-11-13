@@ -2987,6 +2987,8 @@ async def test_openai_like_blocks_unrelated_openai_fallback(monkeypatch, fallbac
     ("lemonade/model", "LEMONADE_API_KEY"),
     ("ollama/model", "OLLAMA_API_KEY"),
     ("openai/gpt-4o", "OPENAI_API_KEY"),
+    ("opencode_go/deepseek-v4.1-flash", "OPENCODE_API_KEY"),
+    ("opencode_go/deepseek-v4.1-flash", "OPENCODE_GO_API_KEY"),
     ("openrouter/model", "OPENROUTER_API_KEY"),
     ("predibase/model", "PREDIBASE_API_KEY"),
     ("replicate/model", "REPLICATE_API_TOKEN"),
@@ -6368,6 +6370,16 @@ async def test_json_provider_blocks_unrelated_openai_environment(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_opencode_go_key_is_not_replaced_by_openai_guard(monkeypatch):
+    monkeypatch.setenv("OPENCODE_API_KEY", "native-opencode-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "unrelated-openai-key")
+
+    kwargs = await _call(LiteLLMAIHandler(), "opencode_go/deepseek-v4.1-flash")
+
+    assert kwargs["api_key"] == "native-opencode-key"
+
+
+@pytest.mark.asyncio
 async def test_native_compatible_provider_environment_ignores_openai_gateway(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "native-deepseek-key")
     overrides = {
@@ -6544,6 +6556,7 @@ async def test_azure_deployment_id_is_not_used_for_non_azure_probe(monkeypatch):
     ("ZAI.KEY", "zai/glm-4.5", "zai-key"),
     ("DASHSCOPE.KEY", "dashscope/qwen3.8-max", "dashscope-key"),
     ("XIAOMI_MIMO.KEY", "xiaomi_mimo/mimo-v2-flash", "xiaomi-key"),
+    ("OPENCODE_GO.KEY", "opencode_go/deepseek-v4.1-flash", "opencode-go-key"),
     ("DEEPINFRA.KEY", "deepinfra/meta-llama/model", "deepinfra-key"),
     ("MISTRAL.KEY", "mistral/mistral-large-latest", "mistral-key"),
     ("CODESTRAL.KEY", "codestral/codestral-latest", "codestral-key"),
