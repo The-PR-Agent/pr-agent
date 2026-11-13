@@ -995,6 +995,37 @@ description: |
         assert [f["filename"].strip() for f in obj.data["pr_files"]] == ["src/file1.py", "src/file2.py"]
 
     @pytest.mark.asyncio
+    async def test_large_pr_without_semantic_file_types_publishes_no_walkthrough(self, monkeypatch):
+        """Without semantic file types, as on every provider without GFM, nothing renders the file walkthrough:
+        the chunked path keeps it out of the description, as the one-call path does, instead of printing None."""
+        obj = _make_large_pr_instance()
+        obj.file_label_dict = None  # run() fills it only with semantic file types
+        monkeypatch.setitem(get_settings().pr_description, "enable_semantic_files_types", False)
+
+        async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
+            if prompt == "pr_description_only_description_prompts":
+                return _header_prediction()
+            return _file_prediction("src/file1.py" if "file1" in patches_diff else "src/file2.py")
+
+        obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
+        with patch("pr_agent.commands.pr_description.get_pr_diff", return_value=""), patch(
+            "pr_agent.commands.pr_description.get_pr_diff_multiple_patchs",
+            return_value=_large_pr_chunks(),
+        ):
+            await obj._prepare_prediction("gpt-4o")
+        obj._prepare_data()
+        _, pr_body, changes_walkthrough = obj._prepare_pr_answer()
+
+        assert pr_body == ("### **PR Type**\nEnhancement\n\n\n___\n\n"
+                           "### **Description**\nSummarizes the successfully described files.\n")
+        assert changes_walkthrough == ""
+        # The chunks' file summaries are still the input of the summary call.
+        header_call = obj._get_prediction.await_args_list[-1]
+        assert header_call.kwargs["prompt"] == "pr_description_only_description_prompts"
+        assert "Describe src/file1.py" in header_call.kwargs["patches_diff"]
+        assert "Describe src/file2.py" in header_call.kwargs["patches_diff"]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(("prefix", "suffix"), [
         ("```yml\n", "\n```"),
         ("```YAML\n", "\n```"),
