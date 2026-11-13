@@ -224,6 +224,16 @@ def test_disabled_flag_is_noop() -> None:
     assert discussion.resolved is False
 
 
+@pytest.mark.parametrize("configured", ["false", "FALSE", "0"])
+def test_string_false_disables_fixed_thread_resolution(configured) -> None:
+    get_settings().set("gitlab.auto_resolve_fixed_inline_threads", configured)
+    discussion = _discussion(line=2)
+    provider = _provider([discussion], [{"old_path": "app.py", "diff": PATCH}])
+    provider.reconcile_code_suggestion_threads()
+    provider.mr.discussions.list.assert_not_called()
+    assert discussion.resolved is False
+
+
 def test_non_agent_and_other_author_threads_stay_open() -> None:
     foreign = _discussion(line=2, body="a human comment")
     other_author = _discussion(line=2, author_id=999)

@@ -617,6 +617,21 @@ class _GitLabIncrementalNote:
 # internal project's repository source requires at least Reporter-level access.
 _GITLAB_ACCESS_LEVEL_REPORTER = 20
 
+def _coerce_ssl_verify(value, default=True):
+    """Interpret GITLAB.SSL_VERIFY, leaving a custom CA path unchanged.
+
+    Env and TOML often deliver ``"false"`` as a string. requests treats any
+    non-empty string as a CA bundle path, so that value would not disable
+    verification. The GitLab webhook already special-cases true/false; the
+    provider must do the same.
+    """
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    if value is None:
+        return default
+    return value
+
+
 class GitLabProvider(GitProvider):
     reuse_for_manual_command = True
 
@@ -631,7 +646,7 @@ class GitLabProvider(GitProvider):
         if not gitlab_url:
             raise ValueError("GitLab URL is not set in the config file")
         self.gitlab_url = gitlab_url
-        ssl_verify = get_settings().get("GITLAB.SSL_VERIFY", True)
+        ssl_verify = _coerce_ssl_verify(get_settings().get("GITLAB.SSL_VERIFY", True))
         gitlab_access_token = get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
         if not gitlab_access_token:
             raise ValueError("GitLab personal access token is not set in the config file")
@@ -2450,7 +2465,7 @@ class GitLabProvider(GitProvider):
         return head_sha if isinstance(head_sha, str) and head_sha else None
 
     def resolve_outdated_inline_threads(self):
-        if (not get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False)
+        if (not _as_bool_setting(get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False))
                 or getattr(self, "_commit_diff_refs", None) is not None):
             return
         own_user_id = self._get_own_user_id()
@@ -2546,7 +2561,7 @@ class GitLabProvider(GitProvider):
         return removed
 
     def reconcile_code_suggestion_threads(self) -> int:
-        if not get_settings().get("GITLAB.AUTO_RESOLVE_FIXED_INLINE_THREADS", False):
+        if not _as_bool_setting(get_settings().get("GITLAB.AUTO_RESOLVE_FIXED_INLINE_THREADS", False)):
             return 0
         own_user_id = self._get_own_user_id()
         current_head_sha = self._cleanup_command_head()
