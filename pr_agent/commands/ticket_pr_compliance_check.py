@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+from pr_agent.algo.ticket_comments import ticket_comment_limits
 from pr_agent.algo.token_budget import AttemptTokenBudget, FallbackEligibleError
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.config_loader import get_settings
@@ -511,7 +512,7 @@ def fit_related_tickets_to_prompt_budget(
     default_output_tokens: int = OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
     additional_input_reserve: int = OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
 ) -> tuple[dict, TokenHandler]:
-    """Fit complete related-ticket records while preserving room for the PR diff."""
+    """Drop oldest comments before whole tickets while preserving room for the PR diff."""
     prompt_vars = copy.deepcopy(raw_vars)
     raw_tickets = prompt_vars.get("related_tickets")
     if not isinstance(raw_tickets, list):
@@ -538,6 +539,43 @@ def fit_related_tickets_to_prompt_budget(
             preserve_minimum=True,
         )
         return prompt_vars, full_budget.token_handler
+
+    comment_order = sorted(
+        (comment.get("created_at", ""), -comment_index, ticket_index, comment_index)
+        for ticket_index, ticket in enumerate(raw_tickets)
+        for comment_index, comment in enumerate(ticket.get("comments", []))
+    )
+    if comment_order:
+        def without_oldest_comments(count):
+            candidate = copy.deepcopy(prompt_vars)
+            removed = {(ticket_index, comment_index)
+                       for _, _, ticket_index, comment_index in comment_order[:count]}
+            for ticket_index, ticket in enumerate(candidate["related_tickets"]):
+                if "comments" in ticket:
+                    ticket["comments"] = [comment for index, comment in enumerate(ticket["comments"])
+                                          if (ticket_index, index) not in removed]
+            budget = AttemptTokenBudget.for_prompt_attempt(
+                model, pr, candidate, system_prompt, user_prompt, ai_handler=ai_handler,
+                image_path=image_path, output_token_reserve=output_token_reserve,
+            )
+            return candidate, budget
+
+        stripped_vars, stripped_budget = without_oldest_comments(len(comment_order))
+        if stripped_budget.prompt_tokens <= prompt_token_limit:
+            best_vars, best_budget = stripped_vars, stripped_budget
+            lower_bound, upper_bound = 1, len(comment_order) - 1
+            while lower_bound <= upper_bound:
+                removed_count = (lower_bound + upper_bound) // 2
+                candidate_vars, candidate_budget = without_oldest_comments(removed_count)
+                if candidate_budget.prompt_tokens > prompt_token_limit:
+                    lower_bound = removed_count + 1
+                else:
+                    best_vars, best_budget = candidate_vars, candidate_budget
+                    upper_bound = removed_count - 1
+            best_budget.require_input_capacity(default_output_tokens, preserve_minimum=True)
+            return best_vars, best_budget.token_handler
+        prompt_vars = stripped_vars
+        raw_tickets = prompt_vars["related_tickets"]
 
     best_vars = None
     best_budget = None
@@ -1194,6 +1232,24 @@ async def _run_ticket_io(function, *args):
 
 async def extract_tickets(git_provider):
     try:
+        comments_maximum, comments_characters = ticket_comment_limits()
+        include_comments = bool(comments_maximum and comments_characters
+                                and _provider_supports(git_provider, "supports_ticket_comments"))
+        comments_cache = {}
+
+        async def ticket_comments(ticket_url):
+            if not include_comments:
+                return {}
+            identity = _github_issue_identity(ticket_url)
+            if identity not in comments_cache:
+                try:
+                    comments_cache[identity] = await _run_ticket_io(
+                        git_provider.get_ticket_comments, ticket_url, comments_maximum)
+                except Exception:
+                    get_logger().warning("Failed to fetch ticket comments; retaining the ticket context")
+                    comments_cache[identity] = []
+            return {"comments": comments_cache[identity]}
+
         user_description = _get_user_description_for_asana(git_provider)
         linear_ticket_urls = find_linear_tickets(user_description)
         try:
@@ -1320,7 +1376,8 @@ async def extract_tickets(git_provider):
                                     'ticket_url': sub_issue_url,
                                     'title': sub_issue.title,
                                     'body': sub_body,
-                                    'labels': ", ".join(sub_labels)
+                                    'labels': ", ".join(sub_labels),
+                                    **await ticket_comments(sub_issue_url),
                                 })
                             except Exception as e:
                                 get_logger().warning(f"Failed to fetch sub-issue content for {sub_issue_url}: {e}")
@@ -1342,7 +1399,8 @@ async def extract_tickets(git_provider):
                         'title': issue_main.title,
                         'body': issue_body_str,
                         'labels': ", ".join(labels),
-                        'sub_issues': sub_issues_content  # Store sub-issues content
+                        'sub_issues': sub_issues_content,  # Store sub-issues content
+                        **await ticket_comments(ticket),
                     })
 
             tickets_content.extend(asana_tickets_content)
@@ -1447,6 +1505,7 @@ async def extract_tickets(git_provider):
                             "body": ticket_body_str,
                             "requirements": requirements_str,
                             "labels": ", ".join(ticket.get("labels", [])),
+                            **({"comments": ticket.get("comments", [])} if include_comments else {}),
                         }
                     )
                 except Exception as e:
