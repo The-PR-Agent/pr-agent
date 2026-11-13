@@ -317,13 +317,12 @@ async def is_valid_notification(
                         if not comment_body:
                             get_logger().debug("no comment_body")
                             check_prev_comments = True
+                        elif user_tag not in comment_body:
+                            get_logger().debug("user_tag not in comment_body")
+                            check_prev_comments = True
                         else:
-                            if user_tag not in comment_body:
-                                get_logger().debug("user_tag not in comment_body")
-                                check_prev_comments = True
-                            else:
-                                get_logger().info(f"Polling, pr_url: {pr_url}",
-                                                  artifact={"comment": comment_body})
+                            get_logger().info(f"Polling, pr_url: {pr_url}",
+                                              artifact={"comment": comment_body})
 
                         if not check_prev_comments:
                             return True, handled_ids, comment, comment_body, pr_url, user_tag

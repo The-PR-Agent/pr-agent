@@ -3,8 +3,7 @@ from pathlib import Path
 
 import pytest
 
-import pr_agent.algo.pr_processing as pr_processing
-import pr_agent.algo.token_budget as token_budget
+from pr_agent.algo import pr_processing, token_budget
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings

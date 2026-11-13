@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import pr_agent.git_providers.gitlab_provider as gitlab_provider
+from pr_agent.git_providers import gitlab_provider
 
 
 @pytest.mark.parametrize(

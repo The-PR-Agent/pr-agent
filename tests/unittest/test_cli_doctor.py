@@ -7,8 +7,7 @@ import sys
 
 import pytest
 
-import pr_agent.cli as cli
-import pr_agent.doctor as doctor
+from pr_agent import cli, doctor
 from pr_agent.algo.ai_handlers.cloud_auth import DUMMY_LITELLM_API_KEY
 from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings

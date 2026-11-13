@@ -7,7 +7,7 @@ import openai
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
-import pr_agent.algo.instruction_context as instruction_context
+from pr_agent.algo import instruction_context
 
 
 @pytest.fixture(autouse=True)
@@ -1048,7 +1048,7 @@ async def test_chat_completion_streaming_empty_without_length_still_retries(monk
 
 @pytest.mark.asyncio
 async def test_length_truncation_reaches_the_fallback_model(monkeypatch):
-    import pr_agent.algo.pr_processing as pr_processing
+    from pr_agent.algo import pr_processing
 
     monkeypatch.setattr(pr_processing, "_get_all_models", lambda model_type: ["primary", "fallback"])
     monkeypatch.setattr(pr_processing, "_get_all_deployments", lambda models: [None, None])

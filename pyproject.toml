@@ -162,7 +162,7 @@ dev = [
   "pytest-asyncio>=1.4.1",
   "pytest-cov==7.1.0",
   "httpx==0.28.1",
-  "ruff==0.17.4",
+  "ruff==0.17.5",
 ]
 
 [tool.uv]
@@ -183,6 +183,7 @@ lint.select = [
   "UP",     # pyupgrade
   "FURB",   # refurb
   "PERF",   # perflint
+  "PLE",    # pylint (error)
 ]
 
 lint.exclude = ["api/code_completions"]
