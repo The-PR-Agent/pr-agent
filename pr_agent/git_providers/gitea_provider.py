@@ -219,6 +219,38 @@ class GiteaProvider(GitProvider):
             self.__set_repo_and_owner_from_issue()
             self.enabled_issue = True
 
+    def reset_diff_cache_for_command(self) -> None:
+        """Refresh the PR and discard revision-bound state before another automatic command."""
+        super().reset_diff_cache_for_command()
+        if not self.enabled_pr:
+            return
+        try:
+            pr = self.repo_api.get_pull_request(owner=self.owner, repo=self.repo, pr_number=self.pr_number)
+        except ApiException as exc:
+            if exc.status not in (500, 502, 503, 504):
+                raise
+            # Retry one read-only request, never fall back to a stale PR revision.
+            pr = self.repo_api.get_pull_request(owner=self.owner, repo=self.repo, pr_number=self.pr_number)
+        head, base = getattr(pr, "head", None), getattr(pr, "base", None)
+        if head is None or base is None:
+            raise ValueError("Gitea PR refresh returned incomplete head/base metadata")
+        head_sha, base_sha, base_ref = head.sha or "", base.sha or "", base.ref or ""
+        if not (head_sha and base_sha and base_ref):
+            raise ValueError("Gitea PR refresh returned incomplete revision metadata")
+        merge_base = getattr(pr, "merge_base", None) or ""
+        # Read all metadata first so a failed refresh cannot leave mixed revisions.
+        self.pr, self.sha = pr, head_sha
+        self.base_sha, self.base_ref, self.merge_base = base_sha, base_ref, merge_base
+        self.git_files = None
+        self.file_diffs = None
+        self.filtered_diff_file_names = []
+        self.file_contents = {}
+        self.pr_commits = None
+        self.last_commit = _GiteaCommitAdapter({"sha": self.sha})
+        self.last_commit_id = self.last_commit
+        self.user_description = None
+        self._base_url_html = None
+
     @property
     def base_url_html(self) -> str:
         """User-facing base URL, resolved on first use rather than in the constructor:
