@@ -773,9 +773,6 @@ class GithubProvider(GitProvider):
                             f"Cannot reconstruct GitHub patch for {file.filename}: content read failed")
                     else:
                         patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
-                    if incremental_active:
-                        self.unreviewed_files_map[file.filename] = patch
-
 
                 if file.status == 'added':
                     edit_type = EDIT_TYPE.ADDED

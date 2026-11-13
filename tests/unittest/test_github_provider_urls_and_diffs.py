@@ -847,6 +847,30 @@ class TestGetDiffFilesRename:
         original_content_call = spy.call_args_list[-1]
         assert original_content_call.args[1] == "prev-sha"
         assert original_content_call.kwargs.get("path") == "old_dir/module.py"
+        assert p.get_files() == [f]
+
+    def test_incremental_diff_retry_preserves_unreviewed_file_objects(self, patched_helpers, monkeypatch):
+        f1 = _make_file("a.py", "modified")
+        f2 = _make_file("b.py", "modified")
+        p = _make_provider_for_diff([f1, f2])
+        p.incremental = SimpleNamespace(is_incremental=True, last_seen_commit_sha="prev-sha")
+        p.unreviewed_files_map = {"a.py": f1, "b.py": f2}
+        monkeypatch.setattr("pr_agent.git_providers.github_provider.time.sleep", lambda _s: None)
+        calls = {"b": 0}
+
+        def get_content(file, sha, path=None, **kwargs):
+            if file.filename == "b.py" and calls["b"] == 0:
+                calls["b"] += 1
+                raise GithubException(502, {"message": "bad gateway"}, {})
+            return f"{file.filename}@{sha}\n"
+
+        p._get_pr_file_content = get_content
+
+        diffs = p.get_diff_files()
+
+        assert calls["b"] == 1
+        assert [d.filename for d in diffs] == ["a.py", "b.py"]
+        assert p.get_files() == [f1, f2]
 
 
 # ---------------------------------------------------------------------------
