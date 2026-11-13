@@ -5,9 +5,10 @@ sidebar_position: 5
 
 `Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps, Gitea`
 
-:::note[Branch-name linking: Jira keys on all providers; numeric GitHub issues on GitHub only]
+:::note[Branch-name linking: Jira keys on all providers; numeric issues on GitHub and GitLab]
 **Jira** ticket keys (e.g. `ABC-123`) are extracted from the branch name on **every git provider**.
-Extracting **numeric GitHub issue** links from the branch name (and the optional `branch_issue_regex` setting) is currently implemented for **GitHub only**; support for other providers is planned for a later release.
+**GitHub** extracts numeric issue references from branch names, with optional `branch_issue_regex` customization.
+**GitLab** also recognizes same-project MR branches prefixed with an issue number and hyphen (e.g. `123-fix-bug`).
 :::
 
 ## Overview
@@ -36,7 +37,7 @@ Image attachments are not fetched or sent to the model as images by the ticket i
 
 Ticket Recognition Requirements:
 
-- GitHub/GitLab issue references can appear in the PR/MR title or description. GitHub also recognizes numeric issue references in the branch name.
+- GitHub/GitLab issue references can appear in the PR/MR title or description. Both platforms also recognize their supported numeric issue branch patterns.
 - For Jira tickets, you should follow the instructions in [Jira Integration](#jira-integration) in order to authenticate with Jira.
 - For Asana tickets, see [Asana Integration](#asana-integration).
 
@@ -93,8 +94,8 @@ Full GitHub issue URLs are recognized on the configured instance's HTTPS web ori
 Full GitHub issue URLs on other origins are ignored.
 
 GitHub processes references from the description first, then the branch name, then the title. GitLab processes
-description references before title references. Repeated identical references do not add lookups, and title references use
-the existing ticket lookup and result limits without displacing earlier sources.
+description references first, then title references, then eligible branch references. Repeated identical references do
+not add lookups, and branch references use the existing ticket lookup and result limits without displacing earlier sources.
 
 The optional `config.description_issue_regex` setting applies only to the GitHub PR description. Built-in matching on
 GitHub and GitLab recognizes local `#<ISSUE_NUMBER>` references of up to six digits.
@@ -102,7 +103,17 @@ GitHub and GitLab recognizes local `#<ISSUE_NUMBER>` references of up to six dig
 Branch names can also be used to link issues, for example:
 - `123-fix-bug` (where `123` is the issue number)
 
-This branch-name detection applies **only when the git provider is GitHub**. Support for other platforms is planned for later.
+On **GitHub**, matching also supports `feature/123-fix-bug` and the optional `config.branch_issue_regex` setting.
+The custom regex must have a capturing group for the issue number; an invalid regex disables branch detection,
+while a regex without a capturing group falls back to the default pattern (up to six digits after a slash or at the start).
+On **GitLab**, only branches starting with an issue number of up to six digits followed by a hyphen are recognized.
+The source and target projects must be the same; fork MRs and patterns such as `feature/123-fix-bug` are not inferred.
+GitLab uses its native prefix rule rather than the GitHub-only `branch_issue_regex` setting. Set
+`config.extract_issue_from_branch=false` to disable branch-based issue recognition on either platform.
+Confidential GitLab issues are not included when inferred only from the branch name.
+For branch-only issues, PR-Agent also checks the GitLab project's Issues and Merge Requests access levels before
+reading the issue, requiring one project metadata request. If issue visibility is narrower than MR visibility, or
+the access levels cannot be determined, the branch-only reference is skipped; explicit MR references are unchanged.
 
 By default, GitHub and GitLab ticket context is limited to the PR's or MR's own repository. Issues and
 sub-issues in another repository require explicit host approval through `config.repo_context_sibling_repos`:
