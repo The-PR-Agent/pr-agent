@@ -1192,6 +1192,22 @@ async def _run_ticket_io(function, *args):
     return await asyncio.to_thread(function, *args)
 
 
+def _gitlab_issue_covers_mr_audience(project, mr_project, is_own_project):
+    """Require known issue access that covers everyone who can read the MR."""
+    visibility = getattr(project, "visibility", None)
+    mr_visibility = getattr(mr_project, "visibility", None)
+    access = getattr(project, "issues_access_level", None)
+    if visibility not in ("public", "internal", "private") or mr_visibility not in ("public", "internal", "private"):
+        return False
+    if is_own_project:
+        return access == "enabled" or (access == "private" and visibility == "private")
+    # Membership in separate private projects is not an audience guarantee. Internal
+    # projects also exclude external users who may be members of a private MR project.
+    return access == "enabled" and (
+        visibility == "public" or (visibility == "internal" and mr_visibility == "internal")
+    )
+
+
 async def extract_tickets(git_provider):
     try:
         user_description = _get_user_description_for_asana(git_provider)
@@ -1372,16 +1388,31 @@ async def extract_tickets(git_provider):
                     references.append((project_path, issue_iid))
             tickets_content = []
             own_project = str(getattr(git_provider, "id_project", "") or "")
+            project_cache = {}
+
+            async def get_ticket_project(project_path):
+                key = project_path.casefold()
+                if key not in project_cache:
+                    # Cache failures too, but only for this extraction.
+                    project_cache[key] = None
+                    if key == own_project.casefold():
+                        project_cache[key] = await _run_ticket_io(git_provider.gl.projects.get, project_path)
+                    else:
+                        project_cache[key] = await _run_ticket_io(git_provider.get_sibling_repo, project_path)
+                return project_cache[key]
+
             for project_path, issue_iid in references[:MAX_GITLAB_TICKET_LOOKUPS]:
                 try:
                     is_own_project = project_path.casefold() == own_project.casefold()
-                    if is_own_project:
-                        # Only the issue manager is needed; avoid fetching unused project metadata.
-                        project = git_provider.gl.projects.get(project_path, lazy=True)
-                    else:
-                        project = await _run_ticket_io(git_provider.get_sibling_repo, project_path)
-                        if project is None:
-                            continue
+                    project = await get_ticket_project(project_path)
+                    if project is None:
+                        continue
+                    mr_project = project if is_own_project else await get_ticket_project(own_project)
+                    if not _gitlab_issue_covers_mr_audience(project, mr_project, is_own_project):
+                        get_logger().warning(
+                            f"Ignoring GitLab issues with insufficient or unknown visibility: {project_path}"
+                        )
+                        continue
                     issue = await _run_ticket_io(project.issues.get, issue_iid)
                     if not is_own_project and getattr(issue, "confidential", False):
                         get_logger().warning(
