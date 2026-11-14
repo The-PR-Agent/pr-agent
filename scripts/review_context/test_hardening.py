@@ -6,6 +6,7 @@ GRAMMAR_CACHE=/path/to/grammars PYTHONPATH=. uv run pytest scripts/review_contex
 import importlib.util
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -129,9 +130,32 @@ def test_timeout_exits_cleanly_without_a_bundle(hostile, monkeypatch):
     (slow / "git").write_text(f"#!/bin/sh\nsleep 5\nexec {shutil.which('git')} \"$@\"\n")
     (slow / "git").chmod(0o755)
     monkeypatch.setenv("PATH", f"{slow}{os.pathsep}{os.environ['PATH']}")
-    r = run_builder(repo, base, head, tmp / "out", "--timeout", "1")
+    # Subprocesses inherit the parent's blocked signal mask.
+    original_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+    try:
+        r = run_builder(repo, base, head, tmp / "out", "--timeout", "1")
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, original_mask)
     assert r.returncode == 2
     assert "TimeoutError" in r.stderr
+    assert not (tmp / "out" / "pr1.G6.md").exists()
+
+
+def test_pending_sigalrm_exits_cleanly_without_a_bundle(hostile):
+    repo, base, head, tmp = hostile
+    exec_builder = (
+        "import os, signal, sys\n"
+        "signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})\n"
+        "signal.raise_signal(signal.SIGALRM)\n"
+        "os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
+    )
+    cmd = [sys.executable, "-c", exec_builder, str(BUILDER), "--repo", str(repo), "--base", base,
+           "--head", head, "--pr", "1", "--out-dir", str(tmp / "out"), "--timeout", "1",
+           "--grammar-cache", os.environ["GRAMMAR_CACHE"]]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    assert r.returncode == 2
+    assert "TimeoutError" in r.stderr
+    assert len(r.stderr.strip().splitlines()) == 1
     assert not (tmp / "out" / "pr1.G6.md").exists()
 
 
