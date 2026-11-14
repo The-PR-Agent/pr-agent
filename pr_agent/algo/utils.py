@@ -1100,6 +1100,7 @@ def _extract_labelled_yaml_block(response_text: str) -> str | None:
         offset += len(line) + 1
     stream = StringIO(response_text)
     i = 0
+    last_candidate = None
     n = len(lines)
     while i < n:
         line = lines[i]
