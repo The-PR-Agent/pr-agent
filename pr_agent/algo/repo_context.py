@@ -7,6 +7,7 @@ from html import escape
 from itertools import islice
 from threading import Lock
 
+from pr_agent.algo.prompt_log_guard import prompt_logs_withheld, sanitized_exception_summary
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
@@ -420,7 +421,12 @@ def _expand_glob_entries(git_provider, context_files: list, from_default_branch:
             listed = git_provider.list_repo_directory(dir_path, from_default_branch=from_default_branch)
         except Exception as e:
             state.had_fetch_error = True
-            get_logger().warning(f"Failed to list repo context directory: {dir_path}", artifact={"error": str(e)})
+            if prompt_logs_withheld():
+                get_logger().warning(
+                    f"Failed to list repo context directory ({sanitized_exception_summary(e)})"
+                )
+            else:
+                get_logger().warning(f"Failed to list repo context directory: {dir_path}", artifact={"error": str(e)})
             continue
         if listed is None:
             get_logger().warning(
@@ -483,12 +489,20 @@ def _iter_repo_context_imports(
             )
         except Exception as e:
             state.had_fetch_error = True
-            get_logger().warning(
-                f"Failed to load repo context import: {import_path}", artifact={"error": str(e)}
-            )
+            if prompt_logs_withheld():
+                get_logger().warning(
+                    f"Failed to load repo context import ({sanitized_exception_summary(e)})"
+                )
+            else:
+                get_logger().warning(
+                    f"Failed to load repo context import: {import_path}", artifact={"error": str(e)}
+                )
             continue
         if not imported_content:
-            get_logger().debug(f"Repo context import is empty or missing: {import_path}")
+            if prompt_logs_withheld():
+                get_logger().debug("Repo context import is empty or missing (details withheld)")
+            else:
+                get_logger().debug(f"Repo context import is empty or missing: {import_path}")
             continue
         if isinstance(imported_content, bytes):
             imported_content = imported_content.decode("utf-8", errors="replace")
@@ -581,13 +595,17 @@ def _iter_repo_context_files(
             sibling_fetch_attempts += 1
             try:
                 content = git_provider.get_sibling_repo_file_content(repo_id, file_path)
-            except Exception:
+            except Exception as e:
                 state.had_fetch_error = True
-                # A sibling fetch can fail after the provider resolved ids, so keep the full
-                # traceback; a flat warning hides which request failed and why.
-                get_logger().exception(
-                    f"Failed to load sibling repo context file: {repo_id}:{file_path}"
-                )
+                if prompt_logs_withheld():
+                    get_logger().warning(
+                        f"Failed to load sibling repo context file ({sanitized_exception_summary(e)})"
+                    )
+                else:
+                    # Preserve traceback diagnostics for ordinary, unguarded callers.
+                    get_logger().exception(
+                        f"Failed to load sibling repo context file: {repo_id}:{file_path}"
+                    )
                 continue
             # Render the file under its sibling path so the model sees where it came from.
             label = f"{repo_id}/{file_path}"
@@ -611,12 +629,20 @@ def _iter_repo_context_files(
                 content = git_provider.get_repo_file_content(file_path, from_default_branch=from_default_branch)
             except Exception as e:
                 state.had_fetch_error = True
-                get_logger().warning(f"Failed to load repo context file: {file_path}", artifact={"error": str(e)})
+                if prompt_logs_withheld():
+                    get_logger().warning(
+                        f"Failed to load repo context file ({sanitized_exception_summary(e)})"
+                    )
+                else:
+                    get_logger().warning(f"Failed to load repo context file: {file_path}", artifact={"error": str(e)})
                 continue
             label = file_path
 
         if not content:
-            get_logger().debug(f"Repo context file is empty or missing: {label}")
+            if prompt_logs_withheld():
+                get_logger().debug("Repo context file is empty or missing (details withheld)")
+            else:
+                get_logger().debug(f"Repo context file is empty or missing: {label}")
             continue
 
         if isinstance(content, bytes):
@@ -709,14 +735,15 @@ def render_instruction_files_with_line_budget(
     return "\n".join(parts).strip()
 
 
-def build_repo_context(git_provider) -> str:
+def build_repo_context(git_provider, *, return_status: bool = False) -> str | tuple[str, bool]:
+    """Optionally report whether all attempted instruction fetches succeeded."""
     repo_context_config = _get_repo_context_config()
     if repo_context_config is None:
-        return ""
+        return ("", True) if return_status else ""
 
     context_files, max_lines = repo_context_config
     if not _provider_supports_repo_context(git_provider):
-        return ""
+        return ("", True) if return_status else ""
 
     # Sibling repositories change independently of the requesting repo, so the current-repo
     # revision cannot reconstruct their default-branch content. Bypass the revision-keyed cache
@@ -745,16 +772,21 @@ def build_repo_context(git_provider) -> str:
             # The revision only keys the cache. Without it the content is read without the
             # revision pinning, which is a weaker guarantee, not a missing one. Repo context
             # is an optional extra, so a provider failure here must not abort the command.
-            get_logger().warning(
-                "Failed to resolve the repo context revision; continuing without it",
-                artifact={"error": str(e)},
-            )
+            if prompt_logs_withheld():
+                get_logger().warning(
+                    f"Failed to resolve the repo context revision ({sanitized_exception_summary(e)})"
+                )
+            else:
+                get_logger().warning(
+                    "Failed to resolve the repo context revision; continuing without it",
+                    artifact={"error": str(e)},
+                )
             context_ref = None
         cached_repo_context = _get_cached_repo_context(
             git_provider, context_files, max_lines, context_ref, expand_imports
         )
         if cached_repo_context is not _REPO_CONTEXT_CACHE_MISS:
-            return cached_repo_context
+            return (cached_repo_context, True) if return_status else cached_repo_context
 
     load_state = _RepoContextLoadState()
     files = _iter_repo_context_files(
@@ -770,4 +802,4 @@ def build_repo_context(git_provider) -> str:
         _store_repo_context(
             git_provider, context_files, max_lines, context_ref, repo_context, expand_imports
         )
-    return repo_context
+    return (repo_context, not load_state.had_fetch_error) if return_status else repo_context

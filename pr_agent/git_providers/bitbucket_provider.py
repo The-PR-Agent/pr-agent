@@ -11,6 +11,7 @@ from atlassian.bitbucket import Cloud
 from starlette_context import context
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
+from pr_agent.algo.prompt_log_guard import prompt_logs_withheld, sanitized_exception_summary
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import count_patch_lines, decode_if_bytes
@@ -346,7 +347,10 @@ class BitbucketProvider(GitProvider):
                 diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
                 body = replace_suggestion_blocks(body, diff_code)
             except Exception as e:
-                get_logger().exception(f"Bitbucket failed to get diff code for publishing, error: {e}")
+                if prompt_logs_withheld():
+                    get_logger().error(f"Bitbucket diff suggestion failed ({sanitized_exception_summary(e)})")
+                else:
+                    get_logger().exception(f"Bitbucket failed to get diff code for publishing, error: {e}")
                 return None
             return {**suggestion, "body": body}
         return suggestion
@@ -371,7 +375,10 @@ class BitbucketProvider(GitProvider):
         }
 
     def _log_code_suggestion_publish_error(self, error: Exception) -> None:
-        get_logger().error(f"Bitbucket failed to publish code suggestion, error: {error}")
+        if prompt_logs_withheld():
+            get_logger().error(f"Bitbucket failed to publish code suggestion ({sanitized_exception_summary(error)})")
+        else:
+            get_logger().error(f"Bitbucket failed to publish code suggestion, error: {error}")
 
     def is_supported(self, capability: str) -> bool:
         if capability in [
@@ -714,8 +721,11 @@ class BitbucketProvider(GitProvider):
             )
             response.raise_for_status()
         except Exception as e:
-            get_logger().error(
-                f"Failed to publish inline comment to '{relevant_file}' at {location}, error: {e}")
+            if prompt_logs_withheld():
+                get_logger().error(f"Bitbucket inline publication failed ({sanitized_exception_summary(e)})")
+            else:
+                get_logger().error(
+                    f"Failed to publish inline comment to '{relevant_file}' at {location}, error: {e}")
             return False
         recent_bodies = getattr(self, "_published_inline_comment_bodies", None)
         if recent_bodies is None:
@@ -746,7 +756,10 @@ class BitbucketProvider(GitProvider):
             elif 'line' in comment:  # single-line comment
                 from_line = comment['line']
             else:
-                get_logger().error(f"Could not publish inline comment {comment}")
+                if prompt_logs_withheld():
+                    get_logger().error("Could not publish inline comment (details withheld)")
+                else:
+                    get_logger().error(f"Could not publish inline comment {comment}")
                 continue
 
             publishable_count += 1

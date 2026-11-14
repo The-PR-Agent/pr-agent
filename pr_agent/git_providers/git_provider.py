@@ -27,6 +27,7 @@ from pr_agent.algo.comment_identity import (
 from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import strip_markers
 from pr_agent.algo.language_handler import build_language_file_matcher, numeric_languages
+from pr_agent.algo.prompt_log_guard import prompt_logs_withheld, sanitized_exception_summary
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import process_description
 from pr_agent.config_loader import get_bot_display_name, get_settings
@@ -790,10 +791,16 @@ class GitProvider(ABC):
         raise NotImplementedError
 
     def _log_invalid_code_suggestion(self, message: str) -> None:
-        get_logger().exception(message)
+        if prompt_logs_withheld():
+            get_logger().error("Skipped invalid code suggestion (details withheld)")
+        else:
+            get_logger().exception(message)
 
     def _log_code_suggestion_publish_error(self, error: Exception) -> None:
-        get_logger().error(f"Failed to publish code suggestion, error: {error}")
+        if prompt_logs_withheld():
+            get_logger().error(f"Failed to publish code suggestion ({sanitized_exception_summary(error)})")
+        else:
+            get_logger().error(f"Failed to publish code suggestion, error: {error}")
 
     @abstractmethod
     def get_languages(self):

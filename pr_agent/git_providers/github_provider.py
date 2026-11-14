@@ -23,6 +23,7 @@ from starlette_context.errors import ContextDoesNotExistError
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, stop_never
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
+from pr_agent.algo.prompt_log_guard import prompt_logs_withheld, sanitized_exception_summary
 
 from ..algo.comment_identity import (
     PRApprovalIdentity,
@@ -1433,7 +1434,12 @@ class GithubProvider(GitProvider):
                 published_count = self._publish_inline_comments_fallback_with_verification(comments)
                 return bool(published_count)
             except Exception as e:
-                get_logger().error(f"Failed to publish inline code comments fallback, error: {e}")
+                if prompt_logs_withheld():
+                    get_logger().error(
+                        f"Failed to publish inline code comments fallback ({sanitized_exception_summary(e)})"
+                    )
+                else:
+                    get_logger().error(f"Failed to publish inline code comments fallback, error: {e}")
                 raise
 
     def get_review_thread_comments(self, comment_id: int) -> list[dict]:
@@ -1681,11 +1687,19 @@ class GithubProvider(GitProvider):
                 try:
                     if self.publish_inline_comments([comment], disable_fallback=True):
                         published_count += 1
-                        get_logger().info(f"Published invalid comment as a single line comment: {comment}")
+                        if prompt_logs_withheld():
+                            get_logger().info("Published invalid comment as a single line comment (details withheld)")
+                        else:
+                            get_logger().info(f"Published invalid comment as a single line comment: {comment}")
                 except (GithubException, RequestException) as e:
-                    get_logger().error(
-                        f"Failed to publish invalid comment as a single line comment: {comment}, error: {e}"
-                    )
+                    if prompt_logs_withheld():
+                        get_logger().error(
+                            f"Failed to publish invalid comment ({type(e).__name__}; details withheld)"
+                        )
+                    else:
+                        get_logger().error(
+                            f"Failed to publish invalid comment as a single line comment: {comment}, error: {e}"
+                        )
 
             dropped_count = len(invalid_comments) - len(fixed_comments_as_one_liner)
             if dropped_count > 0:
@@ -1694,15 +1708,21 @@ class GithubProvider(GitProvider):
                     fixed_path = fixed_c.get("path")
                     if fixed_path in dropped_paths:
                         dropped_paths.remove(fixed_path)
-                get_logger().warning(
-                    f"Dropped {dropped_count} invalid comments that could not be fixed. Paths: {dropped_paths}"
-                )
+                if prompt_logs_withheld():
+                    get_logger().warning(f"Dropped {dropped_count} invalid comments (paths withheld)")
+                else:
+                    get_logger().warning(
+                        f"Dropped {dropped_count} invalid comments that could not be fixed. Paths: {dropped_paths}"
+                    )
         elif invalid_comments:
             dropped_paths = [c.get("path") for c, _ in invalid_comments]
-            get_logger().warning(
-                f"Dropped {len(invalid_comments)} invalid comments "
-                f"(try_fix_invalid_inline_comments is off). Paths: {dropped_paths}"
-            )
+            if prompt_logs_withheld():
+                get_logger().warning(f"Dropped {len(invalid_comments)} invalid comments (paths withheld)")
+            else:
+                get_logger().warning(
+                    f"Dropped {len(invalid_comments)} invalid comments "
+                    f"(try_fix_invalid_inline_comments is off). Paths: {dropped_paths}"
+                )
         return published_count
 
     def _verify_code_comment(self, comment: dict):

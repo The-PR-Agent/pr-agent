@@ -8,6 +8,7 @@ import httpx
 import litellm
 import openai
 
+from pr_agent.algo.prompt_log_guard import prompt_logs_withheld, sanitized_provider_error
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -154,7 +155,12 @@ async def _handle_streaming_response(response, model=None, stream_cleanup=None):
                 if choice.finish_reason:
                     finish_reason = choice.finish_reason
     except Exception as e:
-        get_logger().error(f"Error handling streaming response: {e}")
+        if prompt_logs_withheld():
+            get_logger().error(
+                f"Error handling streaming response: {sanitized_provider_error(e)} (details withheld)"
+            )
+        else:
+            get_logger().error(f"Error handling streaming response: {e}")
         raise
     finally:
         if stream_cleanup is None:

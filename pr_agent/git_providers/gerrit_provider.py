@@ -20,6 +20,7 @@ from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.file_filter import filter_ignored, filter_ignored_with_status
 from pr_agent.algo.git_patch_processing import count_patch_lines
 from pr_agent.algo.language_handler import partition_files_by_language_filter
+from pr_agent.algo.prompt_log_guard import prompt_logs_withheld, sanitized_exception_summary
 from pr_agent.algo.token_budget import clip_tokens
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
@@ -563,7 +564,10 @@ class GerritProvider(GitProvider):
                 if unresolved.is_symlink() or ".git" in inside:
                     raise ValueError("refuses to write through a symlink or into git metadata")
             except ValueError:
-                get_logger().warning(f"Skipping suggestion with path traversal: {suggestion['relevant_file']}")
+                if prompt_logs_withheld():
+                    get_logger().warning("Skipping suggestion with path traversal (details withheld)")
+                else:
+                    get_logger().warning(f"Skipping suggestion with path traversal: {suggestion['relevant_file']}")
                 continue
             # add_suggestion keeps lines[end:], so an inverted range would repeat lines.
             # Gerrit, unlike Gitea and CodeCommit, needs the end line: without it the
@@ -592,10 +596,16 @@ class GerritProvider(GitProvider):
                 except Exception as cleanup_error:
                     if uploaded:
                         raise
-                    get_logger().warning(
-                        "Failed to reset Gerrit edits after upload failed in {}: {}; stderr: {!r}",
-                        self.repo_path, cleanup_error, getattr(cleanup_error, "stderr", None),
-                    )
+                    if prompt_logs_withheld():
+                        get_logger().warning(
+                            "Failed to reset Gerrit edits after upload failed: {}",
+                            sanitized_exception_summary(cleanup_error),
+                        )
+                    else:
+                        get_logger().warning(
+                            "Failed to reset Gerrit edits after upload failed in {}: {}; stderr: {!r}",
+                            self.repo_path, cleanup_error, getattr(cleanup_error, "stderr", None),
+                        )
             msg.append(f'* {description}\n{full_path}')
 
         if msg:
@@ -603,7 +613,13 @@ class GerritProvider(GitProvider):
                 add_comment(self.parsed_url, self.refspec, "\n".join(msg))
                 published_count += 1
             except Exception as e:
-                get_logger().exception("Failed to publish Gerrit code suggestions: {}", e)
+                if prompt_logs_withheld():
+                    get_logger().error(
+                        "Failed to publish Gerrit code suggestions: {}",
+                        sanitized_exception_summary(e),
+                    )
+                else:
+                    get_logger().exception("Failed to publish Gerrit code suggestions: {}", e)
 
         return published_count > 0 or publishable_count == 0
 

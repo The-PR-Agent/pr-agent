@@ -1133,7 +1133,7 @@ def _load_yaml_initial(response_text: str) -> Any:
 
 
 def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_key="", last_key="",
-              *, preserve_null: bool = False) -> Any:
+              *, preserve_null: bool = False, log_prediction: bool = True) -> Any:
     """Parse model output, normalizing YAML null to {} unless preservation is requested."""
     if keys_fix_yaml is None:
         keys_fix_yaml = []
@@ -1165,18 +1165,27 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
             raise ValueError("Preprocessing/sanitization removed all content from a non-empty AI prediction")
         data = _load_yaml_initial(response_text)
     except Exception as e:
-        get_logger().warning(f"Initial failure to parse AI prediction: {e}")
+        if log_prediction:
+            get_logger().warning(f"Initial failure to parse AI prediction: {e}")
+        else:
+            get_logger().warning("Initial failure to parse AI prediction (details withheld)")
         separators = str.maketrans({"\u2028": " ", "\u2029": " "})
         response_text = response_text.translate(separators)
         response_text_original_sanitized = response_text_original_sanitized.translate(separators)
         data = try_fix_yaml(response_text, keys_fix_yaml=keys_fix_yaml, first_key=first_key, last_key=last_key,
-                            response_text_original=response_text_original_sanitized)
+                            response_text_original=response_text_original_sanitized, log_prediction=log_prediction)
         if not data:
-            get_logger().error("Failed to parse AI prediction after fallbacks",
-                               artifact={'response_text': response_text})
+            if log_prediction:
+                get_logger().error("Failed to parse AI prediction after fallbacks",
+                                   artifact={'response_text': response_text})
+            else:
+                get_logger().error("Failed to parse AI prediction after fallbacks")
         else:
-            get_logger().info("Successfully parsed AI prediction after fallbacks",
-                              artifact={'response_text': response_text})
+            if log_prediction:
+                get_logger().info("Successfully parsed AI prediction after fallbacks",
+                                  artifact={'response_text': response_text})
+            else:
+                get_logger().info("Successfully parsed AI prediction after fallbacks")
     if data is None and not preserve_null:
         return {}
     return data
@@ -1187,7 +1196,7 @@ def try_fix_yaml(response_text: str,
                  keys_fix_yaml: list[str] | None = None,
                  first_key="",
                  last_key="",
-                 response_text_original="") -> dict:
+                 response_text_original="", *, log_prediction: bool = True) -> dict:
     if keys_fix_yaml is None:
         keys_fix_yaml = []
     response_text_lines = response_text.split('\n')
@@ -1282,7 +1291,10 @@ def try_fix_yaml(response_text: str,
                 get_logger().info("Successfully parsed AI prediction after extracting yaml snippet")
                 return data
         except Exception as e:
-            get_logger().debug(f"Failed to parse AI prediction after extracting yaml snippet: {e}")
+            if log_prediction:
+                get_logger().debug(f"Failed to parse AI prediction after extracting yaml snippet: {e}")
+            else:
+                get_logger().debug("Failed to parse AI prediction after extracting yaml snippet")
 
 
     # third fallback - try to remove leading and trailing curly brackets

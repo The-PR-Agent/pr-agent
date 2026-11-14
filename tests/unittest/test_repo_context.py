@@ -8,6 +8,7 @@ from jinja2 import Environment, StrictUndefined, select_autoescape
 
 from pr_agent.algo import repo_context
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
+from pr_agent.algo.prompt_log_guard import _PROMPT_LOGS_WITHHELD
 from pr_agent.algo.repo_context import (
     TRUNCATION_MARKER,
     build_repo_context,
@@ -2719,3 +2720,48 @@ def test_build_repo_context_retries_reached_glob_listing_errors(repo_context_set
     assert "ADR instructions" in second_context
     assert provider.requested_paths == ["AGENTS.md", "AGENTS.md", "docs/adr/0001.md"]
     assert provider.list_repo_directory.call_count == 2
+
+
+@pytest.mark.parametrize("failure", ["file", "import", "glob", "sibling", "revision"])
+def test_guarded_repo_context_errors_keep_safe_failure_diagnostics(repo_context_settings, failure):
+    secret_path = "internal/private-instructions.md"
+    secret = f"provider rejected {secret_path}: sensitive prompt data"
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    provider = FakeProvider({"AGENTS.md": "Use concise documentation."})
+
+    if failure == "file":
+        repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", [secret_path])
+        provider.get_repo_file_content = Mock(side_effect=RuntimeError(secret))
+    elif failure == "import":
+        repo_context_settings.set("CONFIG.REPO_CONTEXT_EXPAND_IMPORTS", True)
+
+        def fetch(path, from_default_branch=False):
+            if path == "AGENTS.md":
+                return f"Use concise documentation.\n@{secret_path}"
+            raise RuntimeError(secret)
+
+        provider.get_repo_file_content = Mock(side_effect=fetch)
+    elif failure == "glob":
+        repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["internal/*.md"])
+        provider.list_repo_directory = Mock(side_effect=RuntimeError(secret))
+    elif failure == "sibling":
+        repo_context_settings.set(
+            "CONFIG.REPO_CONTEXT_FILES", [{"repo_id": "org/internal", "file_path": secret_path}]
+        )
+        provider = SiblingFakeProvider({})
+        provider.get_sibling_repo_file_content = Mock(side_effect=RuntimeError(secret))
+    else:
+        provider.get_repo_context_ref = Mock(side_effect=RuntimeError(secret))
+
+    token = _PROMPT_LOGS_WITHHELD.set(True)
+    try:
+        with patch("pr_agent.algo.repo_context.get_logger") as mock_logger:
+            build_repo_context(provider)
+    finally:
+        _PROMPT_LOGS_WITHHELD.reset(token)
+
+    warnings = str(mock_logger.return_value.warning.call_args_list)
+    assert "RuntimeError at " in warnings
+    assert "(details withheld)" in warnings
+    assert secret_path not in warnings
+    assert secret not in warnings

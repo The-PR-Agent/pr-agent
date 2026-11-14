@@ -488,10 +488,12 @@ Notes:
 
 `Platforms supported: GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, Local`
 
-To give PR-Agent's commands additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/) or [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices) — in the prompts for the `/review`, `/describe`, `/improve`, `/ask`, and `/ask_line` commands.
+To give PR-Agent's commands additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/) or [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices) — in the prompts for the `/review`, `/describe`, `/improve`, `/ask`, `/ask_line`, and `/add_docs` commands.
 
 Both Ask modes add instructions only after fitting their existing question, diff, and history context, and report when the instruction block does not fit.
 See [Ask: Repository instructions](../commands/ask.md#repository-instructions).
+
+The `/add_docs` command uses the same files by default; set `pr_add_docs.use_repo_context = false` to opt out for that command.
 
 By default, PR-Agent includes the `AGENTS.md` file at the repository root:
 

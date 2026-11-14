@@ -11,6 +11,7 @@ from uuid import UUID
 from requests.exceptions import RequestException
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
+from pr_agent.algo.prompt_log_guard import prompt_logs_withheld, sanitized_exception_summary
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.comment_identity import (
@@ -308,7 +309,10 @@ class AzureDevopsProvider(GitProvider):
             diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
             return replace_suggestion_blocks(body, diff_code)
         except Exception as e:
-            get_logger().exception(f"Azure failed to render a code suggestion as a diff, error: {e}")
+            if prompt_logs_withheld():
+                get_logger().error(f"Azure failed to render code suggestion ({sanitized_exception_summary(e)})")
+            else:
+                get_logger().exception(f"Azure failed to render a code suggestion as a diff, error: {e}")
             return body
 
     @staticmethod
@@ -334,7 +338,12 @@ class AzureDevopsProvider(GitProvider):
                     suggestion["body"], suggestion.get("original_suggestion"))}
                 prepared.append((suggestion, self._fallback_suggestion_section(suggestion, reason)))
             except (KeyError, TypeError) as e:
-                get_logger().warning(f"Could not format Azure code suggestion fallback, error: {e}")
+                if prompt_logs_withheld():
+                    get_logger().warning(
+                        f"Could not format Azure code suggestion fallback ({sanitized_exception_summary(e)})"
+                    )
+                else:
+                    get_logger().warning(f"Could not format Azure code suggestion fallback, error: {e}")
         if not prepared:
             return []
         header = add_comment_identity(
@@ -348,14 +357,22 @@ class AzureDevopsProvider(GitProvider):
                 )
             )
         except Exception as e:
-            get_logger().exception(f"Azure failed to publish code suggestion fallback, error: {e}")
+            if prompt_logs_withheld():
+                get_logger().error(f"Azure code suggestion fallback failed ({sanitized_exception_summary(e)})")
+            else:
+                get_logger().exception(f"Azure failed to publish code suggestion fallback, error: {e}")
             published = []
             for suggestion, section in prepared:
                 try:
                     self.publish_comment(f"{header}\n\n{section}")
                 except Exception as fallback_error:
-                    get_logger().exception(
-                        f"Azure failed to publish code suggestion fallback, error: {fallback_error}")
+                    if prompt_logs_withheld():
+                        get_logger().error(
+                            f"Azure code suggestion fallback failed ({sanitized_exception_summary(fallback_error)})"
+                        )
+                    else:
+                        get_logger().exception(
+                            f"Azure failed to publish code suggestion fallback, error: {fallback_error}")
                 else:
                     published.append(suggestion)
             return published
@@ -380,7 +397,10 @@ class AzureDevopsProvider(GitProvider):
                 relevant_lines_start = suggestion["relevant_lines_start"]
                 relevant_lines_end = suggestion["relevant_lines_end"]
             except (KeyError, TypeError) as e:
-                get_logger().warning(f"Could not parse Azure code suggestion, error: {e}")
+                if prompt_logs_withheld():
+                    get_logger().warning(f"Could not parse Azure code suggestion ({sanitized_exception_summary(e)})")
+                else:
+                    get_logger().warning(f"Could not parse Azure code suggestion, error: {e}")
                 continue
 
             if (not isinstance(body, str) or not isinstance(relevant_file, str)
@@ -432,15 +452,21 @@ class AzureDevopsProvider(GitProvider):
                     published_body = body_with_markers(body, body_fp, code_fp)
                 if fallback_to_pr_comment:
                     local_fingerprints.update(fingerprints)
-                    get_logger().warning(f"Could not match '{relevant_file}' to a file in the PR diff, "
-                                         f"publishing the suggestion as a PR-level comment")
+                    if prompt_logs_withheld():
+                        get_logger().warning("Could not match suggestion file to PR diff (details withheld)")
+                    else:
+                        get_logger().warning(f"Could not match '{relevant_file}' to a file in the PR diff, "
+                                             f"publishing the suggestion as a PR-level comment")
                     fallback_suggestion = dict(suggestion)
                     fallback_suggestion["body"] = published_body
                     fallback_suggestions.append(
                         (fallback_suggestion, "could not be anchored to a file in the PR diff")
                     )
                 else:
-                    get_logger().warning(f"Could not match '{relevant_file}' to a file in the PR diff")
+                    if prompt_logs_withheld():
+                        get_logger().warning("Could not match suggestion file to PR diff (details withheld)")
+                    else:
+                        get_logger().warning(f"Could not match '{relevant_file}' to a file in the PR diff")
                 continue
 
             end_offset = 1
@@ -453,16 +479,22 @@ class AzureDevopsProvider(GitProvider):
                         if should_mark:
                             published_body = body_with_markers(body, body_fp, code_fp)
                             local_fingerprints.update(fingerprints)
-                        get_logger().warning(
-                            f"Could not resolve the full suggestion range in '{resolved_file}', "
-                            f"publishing the suggestion as a PR-level comment")
+                        if prompt_logs_withheld():
+                            get_logger().warning("Could not resolve suggestion range (details withheld)")
+                        else:
+                            get_logger().warning(
+                                f"Could not resolve the full suggestion range in '{resolved_file}', "
+                                f"publishing the suggestion as a PR-level comment")
                         fallback_suggestion = dict(suggestion)
                         fallback_suggestion["body"] = published_body
                         fallback_suggestions.append(
                             (fallback_suggestion, "could not resolve the complete line range in the PR diff"))
                     else:
-                        get_logger().warning(
-                            f"Could not resolve the full suggestion range in '{resolved_file}'")
+                        if prompt_logs_withheld():
+                            get_logger().warning("Could not resolve suggestion range (details withheld)")
+                        else:
+                            get_logger().warning(
+                                f"Could not resolve the full suggestion range in '{resolved_file}'")
                     continue
 
             if should_mark:
@@ -483,11 +515,14 @@ class AzureDevopsProvider(GitProvider):
                     pull_request_id=self.pr_num
                 )
             except Exception as e:
-                get_logger().exception(
-                    "Azure failed to publish code suggestion, error: {error}",
-                    error=e,
-                    suggestion=suggestion,
-                )
+                if prompt_logs_withheld():
+                    get_logger().error(f"Azure failed to publish code suggestion ({sanitized_exception_summary(e)})")
+                else:
+                    get_logger().exception(
+                        "Azure failed to publish code suggestion, error: {error}",
+                        error=e,
+                        suggestion=suggestion,
+                    )
                 if fallback_to_pr_comment:
                     fallback_suggestion = dict(suggestion)
                     fallback_suggestion["body"] = published_body
@@ -887,7 +922,10 @@ class AzureDevopsProvider(GitProvider):
             return item.content or ""
         except Exception as e:
             if get_verbosity_level() >= 2:
-                get_logger().warning(f"Failed to load repo file: {file_path}, error: {e}")
+                if prompt_logs_withheld():
+                    get_logger().warning("Failed to load repo file (details withheld)")
+                else:
+                    get_logger().warning(f"Failed to load repo file: {file_path}, error: {e}")
             if _is_not_found_error(e):
                 return ""
             raise
@@ -1429,9 +1467,15 @@ class AzureDevopsProvider(GitProvider):
                             f"Published code suggestion on {self.pr_num} at {relevant_file}"
                         )
                 except Exception as e:
-                    get_logger().error(
-                        f"Azure DevOps failed to publish code suggestion on {self.pr_num} at "
-                        f"{relevant_file}, error: {e}")
+                    if prompt_logs_withheld():
+                        get_logger().error(
+                            f"Azure DevOps failed to publish code suggestion on {self.pr_num} "
+                            f"({sanitized_exception_summary(e)})"
+                        )
+                    else:
+                        get_logger().error(
+                            f"Azure DevOps failed to publish code suggestion on {self.pr_num} at "
+                            f"{relevant_file}, error: {e}")
                     overall_success = False
             return overall_success
 

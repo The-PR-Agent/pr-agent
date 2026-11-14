@@ -5,6 +5,7 @@ from openai import AsyncOpenAI
 from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+from pr_agent.algo.prompt_log_guard import prompt_logs_withheld, sanitized_provider_error
 from pr_agent.algo.run_details import record_ai_call
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -49,9 +50,17 @@ class OpenAIHandler(BaseAiHandler):
     async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
         try:
             if img_path:
-                get_logger().warning(f"Image path is not supported for OpenAIHandler. Ignoring image path: {img_path}")
-            get_logger().info("System: ", system)
-            get_logger().info("User: ", user)
+                if prompt_logs_withheld():
+                    get_logger().warning("Image path is not supported for OpenAIHandler (details withheld)")
+                else:
+                    get_logger().warning(
+                        f"Image path is not supported for OpenAIHandler. Ignoring image path: {img_path}"
+                    )
+            if prompt_logs_withheld():
+                get_logger().info("OpenAI request prompts withheld")
+            else:
+                get_logger().info("System: ", system)
+                get_logger().info("User: ", user)
             messages = self.build_request_messages(model, system, user)
             client = AsyncOpenAI()
             chat_completion = await client.chat.completions.create(
@@ -62,8 +71,11 @@ class OpenAIHandler(BaseAiHandler):
             resp = chat_completion.choices[0].message.content
             finish_reason = chat_completion.choices[0].finish_reason
             usage = chat_completion.usage
-            get_logger().info("AI response", response=resp, messages=messages, finish_reason=finish_reason,
-                              model=model, usage=usage)
+            if prompt_logs_withheld():
+                get_logger().info("OpenAI response withheld")
+            else:
+                get_logger().info("AI response", response=resp, messages=messages, finish_reason=finish_reason,
+                                  model=model, usage=usage)
             # Count the call and its tokens but no cost: this handler has no pricing
             # source wired up, so with output_run_cost enabled its calls render as
             # unpriced. Left as-is while the path stays cold — no setting selects
@@ -71,11 +83,20 @@ class OpenAIHandler(BaseAiHandler):
             record_ai_call(usage)
             return resp, finish_reason
         except openai.RateLimitError as e:
-            get_logger().error(f"Rate limit error during LLM inference: {e}")
+            if prompt_logs_withheld():
+                get_logger().error(f"Rate limit during LLM inference ({sanitized_provider_error(e)}; details withheld)")
+            else:
+                get_logger().error(f"Rate limit error during LLM inference: {e}")
             raise
         except openai.APIError as e:
-            get_logger().warning(f"Error during LLM inference: {e}")
+            if prompt_logs_withheld():
+                get_logger().warning(f"Error during LLM inference ({sanitized_provider_error(e)}; details withheld)")
+            else:
+                get_logger().warning(f"Error during LLM inference: {e}")
             raise
         except Exception as e:
-            get_logger().warning(f"Unknown error during LLM inference: {e}")
+            if prompt_logs_withheld():
+                get_logger().warning(f"Unknown error during LLM inference ({type(e).__name__}; details withheld)")
+            else:
+                get_logger().warning(f"Unknown error during LLM inference: {e}")
             raise

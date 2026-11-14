@@ -143,6 +143,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
 )
 from pr_agent.algo.instruction_context import append_protected_system_instructions
 from pr_agent.algo.prompt_fragments import render_skills_prefix
+from pr_agent.algo.prompt_log_guard import _PROMPT_LOGS_WITHHELD, sanitized_provider_error
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.run_output import get_version
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
@@ -387,6 +388,16 @@ def _log_anthropic_cache_warning(model: str, reason: str) -> None:
     get_logger().warning(
         f"cache_control_injection_points may not take effect for {model}: {reason}"
     )
+
+
+@contextlib.contextmanager
+def withhold_prompt_logging(enabled: bool):
+    """Suppress prompt and response logs only for this asynchronous request."""
+    token = _PROMPT_LOGS_WITHHELD.set(enabled or _PROMPT_LOGS_WITHHELD.get())
+    try:
+        yield
+    finally:
+        _PROMPT_LOGS_WITHHELD.reset(token)
 
 
 class LiteLLMAIHandler(BaseAiHandler):
@@ -3140,6 +3151,8 @@ class LiteLLMAIHandler(BaseAiHandler):
                 if deployment_id:
                     kwargs["deployment_id"] = deployment_id
                 kwargs.update(provider_request_params)
+                if _PROMPT_LOGS_WITHHELD.get():
+                    kwargs["turn_off_message_logging"] = True
 
                 # The completion client's own retries (LiteLLM's and the OpenAI SDK's) would multiply
                 # this handler's attempts, so they are always off; config.num_retries applies here.
@@ -3372,11 +3385,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                         openrouter_reasoning_effort,
                     )
 
-                get_logger().debug("Prompts", artifact={"system": system, "user": user})
-
-                if get_verbosity_level() >= 2:
-                    get_logger().info(f"\nSystem prompt:\n{system}")
-                    get_logger().info(f"\nUser prompt:\n{user}")
+                if not _PROMPT_LOGS_WITHHELD.get():
+                    get_logger().debug("Prompts", artifact={"system": system, "user": user})
+                    if get_verbosity_level() >= 2:
+                        get_logger().info(f"\nSystem prompt:\n{system}")
+                        get_logger().info(f"\nUser prompt:\n{user}")
 
                 # Optional fixed provider override, so a raw hosted model id reaches the
                 # provider unchanged instead of being rewritten by LiteLLM's prefix inference.
@@ -3389,7 +3402,12 @@ class LiteLLMAIHandler(BaseAiHandler):
                 )
 
             except openai.RateLimitError as e:
-                get_logger().error(f"Rate limit error during LLM inference: {e}")
+                if _PROMPT_LOGS_WITHHELD.get():
+                    get_logger().error(
+                        f"Rate limit during LLM inference ({sanitized_provider_error(e)}; details withheld)"
+                    )
+                else:
+                    get_logger().error(f"Rate limit error during LLM inference: {e}")
                 raise
             except openai.APIError as e:
                 if aws_can_fallback and isinstance(
@@ -3412,10 +3430,26 @@ class LiteLLMAIHandler(BaseAiHandler):
                         kwargs["aws_region_name"] = request_region
                     fallback_kwargs = kwargs
                 else:
-                    get_logger().warning(f"Error during LLM inference: {e}")
+                    if _PROMPT_LOGS_WITHHELD.get():
+                        get_logger().warning(
+                            f"Error during LLM inference ({sanitized_provider_error(e)}; details withheld)"
+                        )
+                    else:
+                        get_logger().warning(f"Error during LLM inference: {e}")
                     raise
             except Exception as e:
+                if _PROMPT_LOGS_WITHHELD.get():
+                    get_logger().warning(f"Unknown error during LLM inference: {type(e).__name__} (details withheld)")
+                    if isinstance(e, asyncio.TimeoutError):
+                        raise openai.APITimeoutError(request=httpx.Request("POST", model)) from None
+                    raise openai.APIError(
+                        "LLM inference failed (details withheld)",
+                        request=httpx.Request("POST", model),
+                        body=None,
+                    ) from None
                 get_logger().warning(f"Unknown error during LLM inference: {e}")
+                if isinstance(e, asyncio.TimeoutError):
+                    raise openai.APITimeoutError(request=httpx.Request("POST", model)) from e
                 raise openai.APIError(
                     str(e),
                     request=httpx.Request("POST", model),
@@ -3442,15 +3476,13 @@ class LiteLLMAIHandler(BaseAiHandler):
         # touches no os.environ credentials, and in IMDS mode the lock serializes
         # every concurrent call, so holding it through logging and cost pricing
         # would make each waiting coroutine pay for them serially.
-        get_logger().debug(f"\nAI response:\n{resp}")
-
-        # log the full response for debugging
-        response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
-        get_logger().debug("Full_response", artifact=response_log)
-
-        # for CLI debugging
-        if get_verbosity_level() >= 2:
-            get_logger().info(f"\nAI response:\n{resp}")
+        if not _PROMPT_LOGS_WITHHELD.get():
+            get_logger().debug(f"\nAI response:\n{resp}")
+            # Include the system and user prompts in this artifact only when logging is allowed.
+            response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
+            get_logger().debug("Full_response", artifact=response_log)
+            if get_verbosity_level() >= 2:
+                get_logger().info(f"\nAI response:\n{resp}")
 
         self._record_completion_metadata(response_obj, model=model, display_model=user_model)
 

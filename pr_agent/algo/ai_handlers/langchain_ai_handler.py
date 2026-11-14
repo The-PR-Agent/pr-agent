@@ -1,10 +1,12 @@
 import os
 import re
+from contextlib import nullcontext
 
 import openai
 from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+from pr_agent.algo.prompt_log_guard import prompt_logs_withheld, sanitized_provider_error
 from pr_agent.algo.run_details import record_ai_call
 from pr_agent.algo.token_budget import _as_int, get_max_input_tokens, get_max_tokens
 from pr_agent.config_loader import get_settings
@@ -19,6 +21,13 @@ try:
     _LANGCHAIN_INSTALLED = True
 except ImportError:  # we don't enforce langchain as a dependency, so if it's not installed, just move on
     pass
+
+try:
+    from langsmith import tracing_context
+except ImportError:
+    # LangSmith is optional; without it there is no LangSmith tracing to suppress.
+    def tracing_context(*, enabled):
+        return nullcontext()
 
 OPENAI_RETRIES = 5
 
@@ -104,8 +113,12 @@ class LangChainOpenAIHandler(BaseAiHandler):
     async def chat_completion(
             self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str|None = None):
         if img_path:
-            get_logger().warning(
-                f"Image path is not supported for LangChainOpenAIHandler. Ignoring image path: {img_path}")
+            if prompt_logs_withheld():
+                get_logger().warning("Image path is not supported for LangChainOpenAIHandler (details withheld)")
+            else:
+                get_logger().warning(
+                    f"Image path is not supported for LangChainOpenAIHandler. Ignoring image path: {img_path}"
+                )
         try:
             request_messages = self.build_request_messages(model, system, user)
             messages = [
@@ -124,18 +137,22 @@ class LangChainOpenAIHandler(BaseAiHandler):
                 get_logger().error(error_message)
                 raise NotImplementedError(error_message)
 
-            # Handle parameters based on LLM type
-            if isinstance(llm, (ChatOpenAI, AzureChatOpenAI)):
-                # OpenAI models support all parameters
-                resp = await llm.ainvoke(
-                    input=messages,
-                    model=model,
-                    temperature=temperature
-                )
-            else:
-                # Other LLMs (like Gemini) only support input parameter
-                get_logger().info(f"Using simplified ainvoke for {type(llm)}")
-                resp = await llm.ainvoke(input=messages)
+            # LangSmith may trace inputs and outputs independently of PR-Agent's logs.
+            # Restrict tracing suppression to this request, without affecting concurrent calls.
+            trace_scope = tracing_context(enabled=False) if prompt_logs_withheld() else nullcontext()
+            with trace_scope:
+                # Handle parameters based on LLM type
+                if isinstance(llm, (ChatOpenAI, AzureChatOpenAI)):
+                    # OpenAI models support all parameters
+                    resp = await llm.ainvoke(
+                        input=messages,
+                        model=model,
+                        temperature=temperature
+                    )
+                else:
+                    # Other LLMs (like Gemini) only support input parameter
+                    get_logger().info(f"Using simplified ainvoke for {type(llm)}")
+                    resp = await llm.ainvoke(input=messages)
 
             metadata = getattr(resp, "response_metadata", None)
             if isinstance(metadata, dict):
@@ -156,11 +173,20 @@ class LangChainOpenAIHandler(BaseAiHandler):
             return resp.content, finish_reason
 
         except openai.RateLimitError as e:
-            get_logger().error(f"Rate limit error during LLM inference: {e}")
+            if prompt_logs_withheld():
+                get_logger().error(f"Rate limit during LLM inference ({sanitized_provider_error(e)}; details withheld)")
+            else:
+                get_logger().error(f"Rate limit error during LLM inference: {e}")
             raise
         except openai.APIError as e:
-            get_logger().warning(f"Error during LLM inference: {e}")
+            if prompt_logs_withheld():
+                get_logger().warning(f"Error during LLM inference ({sanitized_provider_error(e)}; details withheld)")
+            else:
+                get_logger().warning(f"Error during LLM inference: {e}")
             raise
         except Exception as e:
-            get_logger().warning(f"Unknown error during LLM inference: {e}")
+            if prompt_logs_withheld():
+                get_logger().warning(f"Unknown error during LLM inference ({type(e).__name__}; details withheld)")
+            else:
+                get_logger().warning(f"Unknown error during LLM inference: {e}")
             raise

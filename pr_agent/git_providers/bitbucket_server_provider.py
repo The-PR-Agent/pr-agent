@@ -8,6 +8,7 @@ from packaging.version import parse as parse_version
 from requests.exceptions import HTTPError
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
+from pr_agent.algo.prompt_log_guard import prompt_logs_withheld, sanitized_exception_summary
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import count_patch_lines, decode_if_bytes
@@ -178,7 +179,10 @@ class BitbucketServerProvider(GitProvider):
                 diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
                 body = replace_suggestion_blocks(body, diff_code)
             except Exception as e:
-                get_logger().exception(f"Bitbucket failed to get diff code for publishing, error: {e}")
+                if prompt_logs_withheld():
+                    get_logger().error(f"Bitbucket diff suggestion failed ({sanitized_exception_summary(e)})")
+                else:
+                    get_logger().exception(f"Bitbucket failed to get diff code for publishing, error: {e}")
                 return None
             return {**suggestion, "body": body}
         return suggestion
@@ -209,7 +213,12 @@ class BitbucketServerProvider(GitProvider):
         get_logger().warning(message)
 
     def _log_code_suggestion_publish_error(self, error: Exception) -> None:
-        get_logger().error(f"Bitbucket Server failed to publish code suggestion, error: {error}")
+        if prompt_logs_withheld():
+            get_logger().error(
+                f"Bitbucket Server failed to publish code suggestion ({sanitized_exception_summary(error)})"
+            )
+        else:
+            get_logger().error(f"Bitbucket Server failed to publish code suggestion, error: {error}")
 
     def is_supported(self, capability: str) -> bool:
         if capability in [
@@ -242,7 +251,10 @@ class BitbucketServerProvider(GitProvider):
             if getattr(getattr(e, "response", None), "status_code", None) == 404:
                 if missing_is_error:
                     raise
-                get_logger().debug(f"File {path} not found at commit id: {commit_id}")
+                if prompt_logs_withheld():
+                    get_logger().debug("Repository file not found (details withheld)")
+                else:
+                    get_logger().debug(f"File {path} not found at commit id: {commit_id}")
                 return file_content
             raise
         return file_content
@@ -518,10 +530,13 @@ class BitbucketServerProvider(GitProvider):
         try:
             self.bitbucket_client.post(self._get_pr_comments_path(), data=payload)
         except Exception as e:
-            get_logger().error(
-                f"Failed to publish inline comment to '{relevant_file}' at line "
-                f"{relevant_line_in_file}, error: {e}"
-            )
+            if prompt_logs_withheld():
+                get_logger().error(f"Bitbucket Server inline publication failed ({sanitized_exception_summary(e)})")
+            else:
+                get_logger().error(
+                    f"Failed to publish inline comment to '{relevant_file}' at line "
+                    f"{relevant_line_in_file}, error: {e}"
+                )
             return False
         return True
 
@@ -546,7 +561,10 @@ class BitbucketServerProvider(GitProvider):
             elif 'line' in comment: # single-line comment
                 from_line = comment['line']
             else:
-                get_logger().error(f"Could not publish inline comment: {comment}")
+                if prompt_logs_withheld():
+                    get_logger().error("Could not publish inline comment (details withheld)")
+                else:
+                    get_logger().error(f"Could not publish inline comment: {comment}")
                 continue
 
             publishable_count += 1
