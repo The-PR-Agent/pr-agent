@@ -121,6 +121,13 @@ description. Ticket lookup limits are separate from the sibling-file limit. PyGi
 but results from a different repository are discarded before prompt use. Reference a transferred issue by its
 current repository and number.
 
+For GitLab, ticket extraction checks project visibility and `issues_access_level` once per project per run.
+Member-only issues in the MR's own project are included when the project is private or the MR itself is member-only;
+they are skipped for broadly visible MRs in public and internal projects. Disabled, unknown, or unreadable issue
+access settings are skipped. Approved sibling issues must have
+Issues enabled for everyone with project access and be public, or internal when the MR project is also internal.
+Private sibling projects cannot guarantee that every MR reader can see their issues and are skipped.
+
 For GitHub, PR-Agent skips sub-issue lookup only when the parent issue's fetched summary explicitly reports zero
 sub-issues; nonzero, missing, or invalid totals use the usual lookup.
 This uses the parent response as a snapshot, so a stale zero count or sub-issues added after that read may leave
