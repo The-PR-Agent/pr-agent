@@ -1,7 +1,8 @@
 """Tests for the GitLab auto-approval path (issue #4698).
 
-The approval is pinned to the reviewed head SHA, skipped when the merge request
-moved after it was read, and withdrawn through the merge request unapprove endpoint.
+The approval is pinned to the reviewed head and target revision, skipped when the
+merge request moved after it was read, and withdrawn through the merge request
+unapprove endpoint.
 """
 
 from types import SimpleNamespace
@@ -10,15 +11,19 @@ from unittest.mock import Mock
 import pr_agent.git_providers.gitlab_provider as gp
 
 
-def _mr(head_sha):
-    return SimpleNamespace(diff_refs={"head_sha": head_sha})
+def _mr(head_sha="aaa111", start_sha="start111", target_branch="main"):
+    return Mock(
+        diff_refs={"head_sha": head_sha, "start_sha": start_sha},
+        target_branch=target_branch,
+    )
 
 
-def make_provider(reviewed_sha="aaa111", current_sha="aaa111"):
+def make_provider(reviewed_sha="aaa111", current_sha="aaa111",
+                  start_sha="start111", target_branch="main"):
     provider = gp.GitLabProvider.__new__(gp.GitLabProvider)
     provider._diff_head_sha = reviewed_sha
-    provider.mr = Mock()
-    provider._get_merge_request = Mock(return_value=_mr(current_sha))
+    provider.mr = _mr(reviewed_sha, start_sha, target_branch)
+    provider._get_merge_request = Mock(return_value=_mr(current_sha, start_sha, target_branch))
     return provider
 
 
@@ -46,9 +51,35 @@ def test_auto_approve_skips_when_head_moved():
     provider.mr.approve.assert_not_called()
 
 
+def test_auto_approve_skips_when_the_target_branch_moved():
+    provider = make_provider()
+    provider._get_merge_request = Mock(return_value=_mr("aaa111", target_branch="release"))
+
+    assert provider.auto_approve() is False
+    provider.mr.approve.assert_not_called()
+
+
+def test_auto_approve_skips_when_the_target_advanced():
+    provider = make_provider()
+    provider._get_merge_request = Mock(return_value=_mr("aaa111", start_sha="start999"))
+
+    assert provider.auto_approve() is False
+    provider.mr.approve.assert_not_called()
+
+
 def test_auto_approve_withdraws_when_a_push_lands_during_approval():
     provider = make_provider()
     provider._get_merge_request = Mock(side_effect=[_mr("aaa111"), _mr("bbb222")])
+
+    assert provider.auto_approve() is False
+    provider.mr.approve.assert_called_once_with(sha="aaa111")
+    provider.mr.unapprove.assert_called_once()
+
+
+def test_auto_approve_withdraws_when_a_retarget_lands_during_approval():
+    provider = make_provider()
+    provider._get_merge_request = Mock(
+        side_effect=[_mr("aaa111"), _mr("aaa111", target_branch="release")])
 
     assert provider.auto_approve() is False
     provider.mr.approve.assert_called_once_with(sha="aaa111")
