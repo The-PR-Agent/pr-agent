@@ -304,11 +304,10 @@ def convert_to_markdown_v2(output_data: dict,
                 else:
                     markdown_text += f"{emoji}&nbsp;<strong>{t('review.contains_tests')}</strong>"
                 markdown_text += "</td></tr>\n"
+            elif is_value_no(value):
+                markdown_text += f"### {emoji} {t('review.no_relevant_tests')}\n\n"
             else:
-                if is_value_no(value):
-                    markdown_text += f"### {emoji} {t('review.no_relevant_tests')}\n\n"
-                else:
-                    markdown_text += f"### {emoji} {t('review.contains_tests')}\n\n"
+                markdown_text += f"### {emoji} {t('review.contains_tests')}\n\n"
         elif 'ticket compliance check' in key_nice.lower():
             markdown_text = ticket_markdown_logic(emoji, markdown_text, value, gfm_supported)
         elif 'contribution time cost estimate' in key_nice.lower():
@@ -342,14 +341,13 @@ def convert_to_markdown_v2(output_data: dict,
                     value = _ci.emphasize_header(value.strip()) if isinstance(value, str) else _ci.as_review_text(value)
                     markdown_text += f"{value}"
                 markdown_text += "</td></tr>\n"
+            elif is_value_no(value):
+                markdown_text += f"### {emoji} {t('review.no_security_concerns')}\n\n"
             else:
-                if is_value_no(value):
-                    markdown_text += f"### {emoji} {t('review.no_security_concerns')}\n\n"
-                else:
-                    markdown_text += f"### {emoji} {t('review.security_concerns')}\n\n"
-                    value = _ci.emphasize_header(
-                        value.strip(), only_markdown=True) if isinstance(value, str) else _ci.as_review_text(value)
-                    markdown_text += f"{value}\n\n"
+                markdown_text += f"### {emoji} {t('review.security_concerns')}\n\n"
+                value = _ci.emphasize_header(
+                    value.strip(), only_markdown=True) if isinstance(value, str) else _ci.as_review_text(value)
+                markdown_text += f"{value}\n\n"
         elif key.lower() == 'structural_reach':
             markdown_text += render_structural_reach(value, gfm_supported)
         elif key.lower() in ('risk_checks', 'deterministic_risk'):
@@ -440,14 +438,13 @@ def convert_to_markdown_v2(output_data: dict,
                         markdown_text += f"<li>{priority_file}</li>\n"
                     markdown_text += "</ul>\n"
                 markdown_text += "</td></tr>\n"
+            elif not priority_files:
+                markdown_text += f"### {emoji} Priority files: None\n\n"
             else:
-                if not priority_files:
-                    markdown_text += f"### {emoji} Priority files: None\n\n"
-                else:
-                    markdown_text += f"### {emoji} Priority files\n\n"
-                    for priority_file in priority_files:
-                        markdown_text += f"- {priority_file}\n"
-                    markdown_text += "\n"
+                markdown_text += f"### {emoji} Priority files\n\n"
+                for priority_file in priority_files:
+                    markdown_text += f"- {priority_file}\n"
+                markdown_text += "\n"
         elif 'todo sections' in key_nice.lower():
             if gfm_supported:
                 markdown_text += "<tr><td>"
@@ -458,13 +455,12 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"{emoji}&nbsp;<strong>TODO sections</strong>\n<br><br>\n"
                     markdown_text += markdown_todo_items
                 markdown_text += "</td></tr>\n"
+            elif is_value_no(value):
+                markdown_text += "### ✅ No TODO sections\n\n"
             else:
-                if is_value_no(value):
-                    markdown_text += "### ✅ No TODO sections\n\n"
-                else:
-                    markdown_todo_items = format_todo_items(value, git_provider, gfm_supported)
-                    markdown_text += f"### {emoji} TODO sections\n\n"
-                    markdown_text += markdown_todo_items
+                markdown_todo_items = format_todo_items(value, git_provider, gfm_supported)
+                markdown_text += f"### {emoji} TODO sections\n\n"
+                markdown_text += markdown_todo_items
         elif 'can be split' in key_nice.lower():
             if gfm_supported:
                 markdown_text += "<tr><td>"
@@ -507,7 +503,7 @@ def convert_to_markdown_v2(output_data: dict,
                             issue_header = f"{issue_header} (confidence: {confidence:g})"
                         start_line = _as_line(issue.get('start_line')) or 0
                         end_line = _as_line(issue.get('end_line')) or start_line
-                        valid_lines = start_line > 0 and end_line >= start_line
+                        valid_lines = 0 < start_line <= end_line
                         if git_provider and valid_lines:
                             reference_link = git_provider.get_line_link(relevant_file, start_line, end_line)
                         else:
@@ -531,11 +527,10 @@ def convert_to_markdown_v2(output_data: dict,
                                     )
                             else:
                                 issue_str = f"<strong>{issue_header}</strong><br>{issue_content}"
+                        elif reference_link is not None and len(reference_link) > 0:
+                            issue_str = f"[**{issue_header}**]({reference_link})\n\n{issue_content}\n\n"
                         else:
-                            if reference_link is not None and len(reference_link) > 0:
-                                issue_str = f"[**{issue_header}**]({reference_link})\n\n{issue_content}\n\n"
-                            else:
-                                issue_str = f"**{issue_header}**\n\n{issue_content}\n\n"
+                            issue_str = f"**{issue_header}**\n\n{issue_content}\n\n"
                         improved_code = issue.get('improved_code')
                         if isinstance(improved_code, str) and improved_code.strip():
                             fix = improved_code.rstrip()
@@ -671,16 +666,15 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
                 # Calculate individual ticket compliance level
                 if fully_compliant_str:
                     if not_compliant_str:
-                        ticket_compliance_level = 'Partially compliant'
+                        ticket_compliance_level = "Partially compliant"
+                    elif not requires_further_human_verification:
+                        ticket_compliance_level = "Fully compliant"
                     else:
-                        if not requires_further_human_verification:
-                            ticket_compliance_level = 'Fully compliant'
-                        else:
-                            ticket_compliance_level = 'PR Code Verified'
+                        ticket_compliance_level = "PR Code Verified"
                 elif not_compliant_str:
-                    ticket_compliance_level = 'Not compliant'
+                    ticket_compliance_level = "Not compliant"
                 elif requires_further_human_verification:
-                    ticket_compliance_level = 'PR Code Verified'
+                    ticket_compliance_level = "PR Code Verified"
 
                 # Store the compliance level for aggregation
                 if ticket_compliance_level:
@@ -1900,11 +1894,10 @@ def process_description(description_full: str) -> tuple[str, list]:
                             'short_summary': short_summary,
                             'long_summary': long_summary
                         })
+                    elif '<code>...</code>' in file_data:
+                        pass # PR with many files. some did not get analyzed
                     else:
-                        if '<code>...</code>' in file_data:
-                            pass # PR with many files. some did not get analyzed
-                        else:
-                            get_logger().warning("Failed to parse description", artifact={'description': file_data})
+                        get_logger().warning("Failed to parse description", artifact={'description': file_data})
                 except Exception as e:
                     get_logger().exception(f"Failed to process description: {e}", artifact={'description': file_data})
 

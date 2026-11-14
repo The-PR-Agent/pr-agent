@@ -15,8 +15,7 @@ import pytest
 from botocore.exceptions import ClientError, CredentialRetrievalError, ProfileNotFound
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
-import pr_agent.algo.ai_handlers.litellm_helpers as litellm_helpers
-from pr_agent.algo.ai_handlers import cloud_auth
+from pr_agent.algo.ai_handlers import cloud_auth, litellm_helpers
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 
 

@@ -176,7 +176,6 @@ class _RecordingCommand:
             },
             model="recording-model",
         )
-        return None
 
 
 class _FirstUsageCommand(_RecordingCommand):

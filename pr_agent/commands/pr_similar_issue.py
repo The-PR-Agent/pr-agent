@@ -273,17 +273,16 @@ class PRSimilarIssue:
             if not self.pc.has_index(index_name):
                 run_from_scratch = True
                 upsert = False
+            elif get_settings().pr_similar_issue.force_update_dataset:
+                upsert = True
             else:
-                if get_settings().pr_similar_issue.force_update_dataset:
-                    upsert = True
-                else:
-                    self.pinecone_index = self.pc.Index(name=index_name)
-                    res = self.pinecone_index.fetch(
-                        ids=[f"example_issue_{repo_name_for_index}"],
-                        namespace=self.pinecone_namespace,
-                    ).to_dict()
-                    if res["vectors"]:
-                        upsert = False
+                self.pinecone_index = self.pc.Index(name=index_name)
+                res = self.pinecone_index.fetch(
+                    ids=[f"example_issue_{repo_name_for_index}"],
+                    namespace=self.pinecone_namespace,
+                ).to_dict()
+                if res["vectors"]:
+                    upsert = False
 
             if run_from_scratch or upsert:  # index the entire repo
                 get_logger().info('Indexing the entire repo...')
@@ -338,16 +337,15 @@ class PRSimilarIssue:
             if not self._table_exists_in_db(index_name):
                 run_from_scratch = True
                 ingest = False
+            elif get_settings().pr_similar_issue.force_update_dataset:
+                force_refresh = True
+                ingest = True
             else:
-                if get_settings().pr_similar_issue.force_update_dataset:
-                    force_refresh = True
-                    ingest = True
+                self.table = self.db[index_name]
+                if self._lancedb_repo_already_indexed(repo_name_for_index):
+                    ingest = False
                 else:
-                    self.table = self.db[index_name]
-                    if self._lancedb_repo_already_indexed(repo_name_for_index):
-                        ingest = False
-                    else:
-                        force_refresh = True
+                    force_refresh = True
 
             if run_from_scratch or ingest:  # indexing the entire repo
                 get_logger().info('Indexing the entire repo...')
@@ -417,18 +415,17 @@ class PRSimilarIssue:
                     collection_name=self.qdrant_collection_name,
                     vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
                 )
+            elif get_settings().pr_similar_issue.force_update_dataset:
+                ingest = True
             else:
-                if get_settings().pr_similar_issue.force_update_dataset:
-                    ingest = True
-                else:
-                    response = self.qdrant.count(
-                        collection_name=self.qdrant_collection_name,
-                        count_filter=Filter(must=[
-                            FieldCondition(key="metadata.repo", match=MatchValue(value=repo_name_for_index)),
-                            FieldCondition(key="id", match=MatchValue(value=f"example_issue_{repo_name_for_index}")),
-                        ]),
-                    )
-                    ingest = True if response.count == 0 else False
+                response = self.qdrant.count(
+                    collection_name=self.qdrant_collection_name,
+                    count_filter=Filter(must=[
+                        FieldCondition(key="metadata.repo", match=MatchValue(value=repo_name_for_index)),
+                        FieldCondition(key="id", match=MatchValue(value=f"example_issue_{repo_name_for_index}")),
+                    ]),
+                )
+                ingest = True if response.count == 0 else False
 
             if run_from_scratch or ingest:
                 get_logger().info('Indexing the entire repo...')

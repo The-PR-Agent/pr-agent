@@ -3,8 +3,7 @@ import sys
 
 import pytest
 
-import pr_agent.servers.github_app as github_app
-import pr_agent.servers.github_common as github_common
+from pr_agent.servers import github_app, github_common
 
 QUOTE_REPLY_WITH_DOUBLE_ASK = (
     "> ![image][image-1]\n\n/review please\n\n/ask why does /ask appear twice here?"

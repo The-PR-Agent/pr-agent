@@ -373,7 +373,7 @@ def _shipped_providers():
     import pkgutil
     from importlib import import_module
 
-    import pr_agent.git_providers as git_providers
+    from pr_agent import git_providers
     from pr_agent.git_providers.git_provider import GitProvider
 
     modules = ["pr_agent.git_providers"]

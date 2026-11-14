@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 os.environ.setdefault("GITLAB__URL", "https://gitlab.example.com")
-import pr_agent.servers.gitlab_webhook as gitlab_webhook
+from pr_agent.servers import gitlab_webhook
 
 
 class FakeSecretProvider:
@@ -77,7 +77,6 @@ def test_caches_none_when_no_provider_is_configured(monkeypatch):
 
     def _build():
         calls.append(True)
-        return None
 
     monkeypatch.setattr(gitlab_webhook, "get_secret_provider", _build)
 

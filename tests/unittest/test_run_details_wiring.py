@@ -66,7 +66,6 @@ def _seed_run_details():
 
 def _seeded_init_run_details():
     _seed_run_details()
-    return None
 
 
 async def _noop_async(*_args, **_kwargs):

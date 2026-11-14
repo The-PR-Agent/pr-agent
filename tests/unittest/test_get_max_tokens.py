@@ -3,13 +3,13 @@ from types import SimpleNamespace
 import litellm
 import pytest
 
-import pr_agent.algo.token_budget as token_budget
 from pr_agent.algo import (
     _CLAUDE_MODEL_FAMILIES,
     CLAUDE_EXTENDED_THINKING_MODELS,
     MAX_TOKENS,
     _generate_claude_registries,
     _validate_claude_model_family,
+    token_budget,
 )
 from pr_agent.algo.token_budget import get_max_tokens
 

@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-import pr_agent.algo.pr_processing as pr_processing
+from pr_agent.algo import pr_processing
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 

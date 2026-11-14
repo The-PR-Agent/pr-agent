@@ -5,7 +5,7 @@ from starlette.middleware import Middleware
 from starlette.testclient import TestClient
 from starlette_context.middleware import RawContextMiddleware
 
-import pr_agent.servers.gerrit_server as gerrit_server
+from pr_agent.servers import gerrit_server
 
 PAYLOAD = {"refspec": "refs/changes/1", "project": "p", "msg": "review"}
 

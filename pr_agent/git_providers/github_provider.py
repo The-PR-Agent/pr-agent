@@ -756,14 +756,13 @@ class GithubProvider(GitProvider):
                     if self.incremental.is_incremental and self.unreviewed_files_map:
                         original_file_content_str = self._get_pr_file_content(
                             file, self.incremental.last_seen_commit_sha, path=old_filename, **read_options)
+                    elif avoid_load or file.status == "added":
+                        original_file_content_str = ""
                     else:
-                        if avoid_load or file.status == "added":
-                            original_file_content_str = ""
-                        else:
-                            if merge_base_commit is None:
-                                merge_base_commit = self._get_merge_base_commit()
-                            original_file_content_str = self._get_pr_file_content(
-                                file, merge_base_commit.sha, path=old_filename, **read_options)
+                        if merge_base_commit is None:
+                            merge_base_commit = self._get_merge_base_commit()
+                        original_file_content_str = self._get_pr_file_content(
+                            file, merge_base_commit.sha, path=old_filename, **read_options)
 
                 if reconstruct_patch:
                     if original_file_content_str is None or new_file_content_str is None:

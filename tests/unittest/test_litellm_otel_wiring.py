@@ -10,7 +10,7 @@ import os
 import litellm
 import pytest
 
-import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_ai_handler
+from pr_agent.algo.ai_handlers import litellm_ai_handler
 
 REQUEST_SPAN_ENV = "USE_OTEL_LITELLM_REQUEST_SPAN"
 

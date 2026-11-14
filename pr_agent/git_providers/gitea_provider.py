@@ -866,19 +866,18 @@ class GiteaProvider(GitProvider):
                         self.logger.error(f"Error getting file content for {filename}: {str(e)}")
                         base_file = ""
                         content_fetch_failed = True
+            # An added file cannot exist at the merge base, so fetching it there only costs a
+            # request and logs an error. Matches GithubProvider.get_diff_files().
+            elif avoid_load or status == 'added' or content_fetch_failed:
+                base_file = ""
             else:
-                # An added file cannot exist at the merge base, so fetching it there only costs a
-                # request and logs an error. Matches GithubProvider.get_diff_files().
-                if avoid_load or status == 'added' or content_fetch_failed:
+                try:
+                    base_file = self._get_file_content_from_base(old_filename or filename)
+                except Exception as e:
+                    base_name = old_filename or filename
+                    self.logger.error(f"Error getting file content for {base_name}: {str(e)}")
                     base_file = ""
-                else:
-                    try:
-                        base_file = self._get_file_content_from_base(old_filename or filename)
-                    except Exception as e:
-                        base_name = old_filename or filename
-                        self.logger.error(f"Error getting file content for {base_name}: {str(e)}")
-                        base_file = ""
-                        content_fetch_failed = True
+                    content_fetch_failed = True
 
             if content_fetch_failed:
                 # An empty side is a real empty file only when the read succeeded. Drop the patch
@@ -897,13 +896,13 @@ class GiteaProvider(GitProvider):
             num_plus_lines = file.get("additions",0)
             num_minus_lines = file.get("deletions",0)
 
-            if status == 'added':
+            if status == "added":
                 edit_type = EDIT_TYPE.ADDED
-            elif status == 'removed' or status == 'deleted':
+            elif status  in ("removed", "deleted"):
                 edit_type = EDIT_TYPE.DELETED
-            elif status == 'renamed':
+            elif status == "renamed":
                 edit_type = EDIT_TYPE.RENAMED
-            elif status == 'modified' or status == 'changed':
+            elif status in ("modified", "changed"):
                 edit_type = EDIT_TYPE.MODIFIED
             else:
                 self.logger.error(f"Unknown edit type: {status}")
