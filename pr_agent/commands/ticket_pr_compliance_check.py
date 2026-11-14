@@ -1061,6 +1061,13 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
     return github_tickets
 
 
+def _branch_issue_extraction_enabled(settings):
+    enabled = settings.get("extract_issue_from_branch", settings.get("config.extract_issue_from_branch", True))
+    if isinstance(enabled, str):
+        return enabled.strip().casefold() in ("true", "1", "yes", "on")
+    return bool(enabled)
+
+
 def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html="https://github.com"):
     """
     Extract GitHub issue URLs from branch name. Numbers are matched at start of branch or after /,
@@ -1072,7 +1079,7 @@ def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html=
     if not isinstance(branch_name, str):
         return []
     settings = get_settings()
-    if not settings.get("extract_issue_from_branch", settings.get("config.extract_issue_from_branch", True)):
+    if not _branch_issue_extraction_enabled(settings):
         return []
     seen = set()
     github_tickets = []
@@ -1352,38 +1359,106 @@ async def extract_tickets(git_provider):
             return tickets_content
 
         elif _provider_supports(git_provider, "supports_issue_reference_tickets"):
+            own_project = str(getattr(git_provider, "id_project", "") or "")
             description_references = extract_gitlab_ticket_references(
                 user_description,
-                git_provider.id_project,
+                own_project,
                 git_provider.gitlab_url,
                 max_tickets=MAX_GITLAB_TICKET_LOOKUPS,
             )
             title = _get_pr_title(git_provider)
             title_references = extract_gitlab_ticket_references(
-                title if isinstance(title, str) else "", git_provider.id_project, git_provider.gitlab_url,
+                title if isinstance(title, str) else "", own_project, git_provider.gitlab_url,
                 max_tickets=MAX_GITLAB_TICKET_LOOKUPS, source="title",
             )
+            branch_references = []
+            settings = get_settings()
+            if _branch_issue_extraction_enabled(settings):
+                mr = getattr(git_provider, "mr", None)
+                source_project_id = getattr(mr, "source_project_id", None)
+                target_project_id = getattr(mr, "target_project_id", None)
+                if source_project_id is not None and target_project_id is not None \
+                        and str(source_project_id) == str(target_project_id):
+                    try:
+                        branch_name = git_provider.get_pr_branch()
+                    except Exception as e:
+                        get_logger().warning(f"Skipping GitLab branch issue inference: {e}")
+                        branch_name = None
+                    match = re.match(r"^([1-9][0-9]{0,5})-", branch_name) if isinstance(branch_name, str) else None
+                    if match and own_project:
+                        branch_references.append((own_project, int(match.group(1))))
+            own_aliases = {own_project.casefold()}
+            if branch_references and own_project.isascii() and own_project.isdigit():
+                try:
+                    gitlab_base = urlparse(git_provider.gitlab_url)
+                    gitlab_origin = _gitlab_web_origin(gitlab_base)
+                    mr_url = urlparse(getattr(getattr(git_provider, "mr", None), "web_url", ""))
+                    if gitlab_origin and _gitlab_web_origin(mr_url) == gitlab_origin:
+                        normalized_mr_url = mr_url._replace(netloc=gitlab_base.netloc).geturl()
+                        canonical_project, _ = git_provider._parse_merge_request_url(normalized_mr_url)
+                        if "/" in canonical_project:
+                            own_aliases.add(canonical_project.casefold())
+                except (AttributeError, TypeError, ValueError):
+                    # Keep the numeric project ID when the MR URL cannot provide a canonical path.
+                    pass
+
+            def reference_key(project_path, issue_iid):
+                path = project_path.casefold()
+                return (own_project.casefold() if path in own_aliases else path, issue_iid)
+
+            explicit_references = description_references + title_references
+            explicit_keys = {
+                reference_key(project_path, issue_iid)
+                for project_path, issue_iid in explicit_references
+            }
+            explicit_local_iids = {
+                issue_iid for project_path, issue_iid in explicit_references
+                if project_path.casefold() == own_project.casefold()
+            }
             references = []
             seen = set()
-            for project_path, issue_iid in description_references + title_references:
-                key = (project_path.casefold(), issue_iid)
+            branch_only_keys = set()
+            for project_path, issue_iid in explicit_references + branch_references:
+                key = reference_key(project_path, issue_iid)
                 if key not in seen:
                     seen.add(key)
+                    # Prefer an explicitly referenced local issue over its project-path alias when deduplicating.
+                    if issue_iid in explicit_local_iids and project_path.casefold() in own_aliases:
+                        project_path = own_project
                     references.append((project_path, issue_iid))
+                    if key not in explicit_keys:
+                        branch_only_keys.add(key)
             tickets_content = []
-            own_project = str(getattr(git_provider, "id_project", "") or "")
             for project_path, issue_iid in references[:MAX_GITLAB_TICKET_LOOKUPS]:
                 try:
-                    is_own_project = project_path.casefold() == own_project.casefold()
+                    is_own_project = project_path.casefold() in own_aliases
                     if is_own_project:
-                        # Only the issue manager is needed; avoid fetching unused project metadata.
-                        project = git_provider.gl.projects.get(project_path, lazy=True)
+                        if reference_key(project_path, issue_iid) in branch_only_keys:
+                            # Check branch-only issue visibility before exposing it to the MR audience.
+                            project = await _run_ticket_io(git_provider.gl.projects.get, project_path)
+                            issues_access = getattr(project, "issues_access_level", None)
+                            mr_access = getattr(project, "merge_requests_access_level", None)
+                            if not (
+                                (issues_access == "enabled" and mr_access in ("enabled", "private"))
+                                or issues_access == mr_access == "private"
+                            ):
+                                get_logger().info(
+                                    "Skipping branch-only GitLab issue with restricted or unknown visibility"
+                                )
+                                continue
+                        else:
+                            # Keep the existing lazy project lookup for explicit references.
+                            project = git_provider.gl.projects.get(project_path, lazy=True)
                     else:
                         project = await _run_ticket_io(git_provider.get_sibling_repo, project_path)
                         if project is None:
                             continue
                     issue = await _run_ticket_io(project.issues.get, issue_iid)
-                    if not is_own_project and getattr(issue, "confidential", False):
+                    confidential = getattr(issue, "confidential", False)
+                    if reference_key(project_path, issue_iid) in branch_only_keys and confidential:
+                        continue
+                    # Preserve cross-project confidentiality checks when deduplicating aliases.
+                    if project_path.casefold() != own_project.casefold() and confidential:
                         get_logger().warning(
                             f"Ignoring confidential cross-project GitLab issue: {project_path}#{issue_iid}"
                         )
