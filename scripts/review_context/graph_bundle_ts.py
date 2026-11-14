@@ -2440,8 +2440,9 @@ if __name__ == "__main__":
         raise TimeoutError(f"build exceeded {a.timeout} s")
 
     signal.signal(signal.SIGALRM, _timeout)
-    signal.alarm(a.timeout)
     try:
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
+        signal.alarm(a.timeout)
         LANGS[:] = tags_langs()
         build(a)
     except Exception as e:  # one line and exit 2, no bundle: the caller runs a diff-only review instead
