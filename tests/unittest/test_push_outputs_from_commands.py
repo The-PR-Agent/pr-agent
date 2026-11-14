@@ -5,10 +5,11 @@ automatic commands received one of the three results. The two questions worth pi
 whether each command emits at all, and what it sends: a sink is not a git provider, so the GFM
 table `/improve` publishes to GitHub is not what should arrive in Slack.
 """
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from pr_agent.algo.review_json_output import hosted_markdown_export
 from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions, render_suggestions_markdown
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.commands.pr_questions import NO_ANALYZABLE_FILES_NOTE, PRQuestions
@@ -30,6 +31,31 @@ SUGGESTION = {
 # --------------------------------------------------------------------------------------
 # Which commands emit
 # --------------------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("export", [False, True])
+async def test_review_sinks_are_disabled_for_hosted_markdown_export(monkeypatch, export):
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = MagicMock()
+    reviewer._pending_sink_output = ("review", {}, "# Review")
+    sink = AsyncMock()
+    monkeypatch.setattr("pr_agent.commands.pr_reviewer.push_outputs_async", sink)
+
+    token = hosted_markdown_export.set(export)
+    try:
+        await reviewer._deliver_sink_output()
+    finally:
+        hosted_markdown_export.reset(token)
+
+    if export:
+        sink.assert_not_awaited()
+    else:
+        sink.assert_awaited_once_with(
+            "review", payload={}, markdown="# Review", git_provider=reviewer.git_provider,
+        )
+    assert reviewer._pending_sink_output is None
+
+
 def test_review_still_emits():
     """Control: the command that already emitted keeps doing so."""
     assert "push_outputs_async" in PRReviewer._deliver_sink_output.__code__.co_names
