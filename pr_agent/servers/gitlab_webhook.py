@@ -20,7 +20,7 @@ from pr_agent.agent.command_registry import command_takes_comment_id
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
-from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
+from pr_agent.algo.setting_utils import _as_bool_setting, _as_ssl_verify_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.request_timeout import get_http_request_timeout, refresh_session_request_timeout
@@ -221,9 +221,7 @@ async def _get_bot_user_id():
     def _resolve_sync():
         import gitlab
 
-        ssl_verify = get_settings().get("GITLAB.SSL_VERIFY", True)
-        if isinstance(ssl_verify, str) and ssl_verify.lower() in ("true", "false"):
-            ssl_verify = ssl_verify.lower() == "true"
+        ssl_verify = _as_ssl_verify_setting(get_settings().get("GITLAB.SSL_VERIFY", True))
 
         auth_method = get_settings().get("GITLAB.AUTH_TYPE", "oauth_token")
         if auth_method not in ("oauth_token", "private_token"):

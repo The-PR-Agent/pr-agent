@@ -44,3 +44,20 @@ def _built_gitlab_client(monkeypatch, auth_type="oauth_token", ssl_verify=True):
 def test_gitlab_client_honors_ssl_verify_setting(monkeypatch, auth_type, configured, expected):
     built = _built_gitlab_client(monkeypatch, auth_type, ssl_verify=configured)
     assert built.kwargs["ssl_verify"] == expected
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (True, True),
+        (False, False),
+        ("true", True),
+        (" False ", False),
+        ("/custom/ca.pem", "/custom/ca.pem"),
+        (None, True),
+    ],
+)
+def test_as_ssl_verify_setting(configured, expected):
+    from pr_agent.algo.setting_utils import _as_ssl_verify_setting
+
+    assert _as_ssl_verify_setting(configured) == expected

@@ -27,7 +27,7 @@ from requests.exceptions import RequestException
 from urllib3.exceptions import HTTPError
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
-from pr_agent.algo.setting_utils import _as_bool_setting
+from pr_agent.algo.setting_utils import _as_bool_setting, _as_ssl_verify_setting
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.diff_parsing import to_hunk_only_patch
 
@@ -617,21 +617,6 @@ class _GitLabIncrementalNote:
 # internal project's repository source requires at least Reporter-level access.
 _GITLAB_ACCESS_LEVEL_REPORTER = 20
 
-def _coerce_ssl_verify(value, default=True):
-    """Interpret GITLAB.SSL_VERIFY, leaving a custom CA path unchanged.
-
-    Env and TOML often deliver ``"false"`` as a string. requests treats any
-    non-empty string as a CA bundle path, so that value would not disable
-    verification. The GitLab webhook already special-cases true/false; the
-    provider must do the same.
-    """
-    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
-        return value.strip().lower() == "true"
-    if value is None:
-        return default
-    return value
-
-
 class GitLabProvider(GitProvider):
     reuse_for_manual_command = True
 
@@ -646,7 +631,7 @@ class GitLabProvider(GitProvider):
         if not gitlab_url:
             raise ValueError("GitLab URL is not set in the config file")
         self.gitlab_url = gitlab_url
-        ssl_verify = _coerce_ssl_verify(get_settings().get("GITLAB.SSL_VERIFY", True))
+        ssl_verify = _as_ssl_verify_setting(get_settings().get("GITLAB.SSL_VERIFY", True))
         gitlab_access_token = get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
         if not gitlab_access_token:
             raise ValueError("GitLab personal access token is not set in the config file")
