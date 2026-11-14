@@ -2400,6 +2400,21 @@ class TestGitLabProvider:
         gitlab_provider.mr.discussions.list.assert_not_called()
         outdated.save.assert_not_called()
 
+    @pytest.mark.parametrize("configured", ["false", "FALSE", "0"])
+    def test_string_false_does_not_resolve_outdated_inline_threads(self, gitlab_provider, configured):
+        # Env/TOML often delivers "false" as a string. Truthiness would enable
+        # the opt-in cleanup; parse it the same way as the other GitLab flags.
+        outdated = _thread([_thread_note()])
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated])
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {
+            "GITLAB.RESOLVE_OUTDATED_INLINE_THREADS": configured,
+        }.get(key, default)
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
+            gitlab_provider.resolve_outdated_inline_threads()
+        gitlab_provider.mr.discussions.list.assert_not_called()
+        outdated.save.assert_not_called()
+
     def test_resolve_outdated_inline_threads_resolves_only_the_bots_outdated_threads(self, gitlab_provider):
         outdated = _thread([_thread_note()], discussion_id='outdated')
         current = _thread([_thread_note(head_sha=_CURRENT_HEAD_SHA)], discussion_id='current')
