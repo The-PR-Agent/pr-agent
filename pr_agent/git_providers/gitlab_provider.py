@@ -1419,10 +1419,19 @@ class GitLabProvider(GitProvider):
         self._commit_diff_refs = None
         loaded = vars(self).setdefault("_loaded_commits", {})
         if commit.sha not in loaded:
-            gl_commit = self.gl.projects.get(self.id_project, lazy=True).commits.get(commit.sha)
-            parent_ids = list(getattr(gl_commit, "parent_ids", None) or [])
-            loaded[commit.sha] = parent_ids, (list(gl_commit.diff(get_all=True, per_page=100))
-                                              if len(parent_ids) == 1 else [])
+            project = self.gl.projects.get(self.id_project, lazy=True)
+            if commit.parents is not None:
+                parent_ids = list(commit.parents)
+                diffs = (
+                    list(project.commits.get(commit.sha, lazy=True).diff(get_all=True, per_page=100))
+                    if len(parent_ids) == 1
+                    else []
+                )
+            else:
+                gl_commit = project.commits.get(commit.sha)
+                parent_ids = list(getattr(gl_commit, "parent_ids", None) or [])
+                diffs = list(gl_commit.diff(get_all=True, per_page=100)) if len(parent_ids) == 1 else []
+            loaded[commit.sha] = parent_ids, diffs
         parent_ids, diffs = loaded[commit.sha]
         if len(parent_ids) != 1:
             get_logger().info(f"Skipping commit {commit.sha} with {len(parent_ids)} parents in per commit review")
