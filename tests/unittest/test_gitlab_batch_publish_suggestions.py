@@ -1,11 +1,17 @@
 import asyncio
 import re
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlparse
 
+import gitlab
 import pytest
-from gitlab import GitlabCreateError
-from requests.exceptions import RequestException
+from gitlab import GitlabCreateError, GitlabParsingError
+from requests import Response
+from requests.exceptions import ConnectionError, ConnectTimeout, InvalidURL, ReadTimeout, RequestException, SSLError
 from starlette_context import request_cycle_context
+from urllib3.connectionpool import HTTPSConnectionPool
+from urllib3.exceptions import ConnectTimeoutError, MaxRetryError, NewConnectionError
+from urllib3.exceptions import ProxyError as Urllib3ProxyError
 
 import pr_agent.git_providers as providers
 from pr_agent.algo import inline_comment_dedup as dedup
@@ -208,7 +214,7 @@ def test_flag_on_fallback_uses_draft_note_not_live_note():
     def _create_first_call_rejected(payload):
         calls.append(payload)
         if len(calls) == 1:
-            raise GitlabCreateError("position rejected")
+            raise GitlabCreateError("position rejected", response_code=400)
         return original_create(payload)
 
     p.mr.draft_notes.create.side_effect = _create_first_call_rejected
@@ -231,7 +237,7 @@ def test_draft_totally_unavailable_falls_back_to_a_live_comment_not_a_dropped_su
     # draft-notes endpoint is unsupported/erroring for this MR. The suggestion must still be
     # posted, just live instead of batched - not silently dropped.
     p = _gl_provider()
-    p.mr.draft_notes.create.side_effect = GitlabCreateError("draft notes unavailable")
+    p.mr.draft_notes.create.side_effect = GitlabCreateError("draft notes unavailable", response_code=400)
     gs = _settings(as_review=True)
     try:
         assert p.publish_code_suggestions([_suggestion()]) is True
@@ -245,7 +251,7 @@ def test_draft_totally_unavailable_falls_back_to_a_live_comment_not_a_dropped_su
 
 def test_live_note_fallback_repeats_the_score_why_disclosure():
     p = _gl_provider()
-    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
     gs = _settings(as_review=False)
     try:
         assert p.publish_code_suggestions([
@@ -256,6 +262,166 @@ def test_live_note_fallback_repeats_the_score_why_disclosure():
     fallback_body = p.mr.notes.create.call_args.args[0]['body']
     assert "importance: 7" in fallback_body
     assert "Why: Self-reflection unavailable; score not model-assigned" in fallback_body
+
+
+@pytest.mark.parametrize("as_review", [False, True])
+@pytest.mark.parametrize("error", [
+    ReadTimeout("response lost after write"),
+    SSLError("connection failed after request was sent"),
+    GitlabCreateError("service unavailable", response_code=503),
+    GitlabCreateError("request timed out", response_code=408),
+    GitlabParsingError("unreadable success body", response_code=201),
+])
+def test_unconfirmed_suggestion_create_is_not_retried_or_fallen_back(as_review, error):
+    p = _gl_provider()
+    create = p.mr.draft_notes.create if as_review else p.mr.discussions.create
+    create.side_effect = error
+    gs = _settings(as_review=as_review, persistent_inline_comments=True)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is True
+    finally:
+        gs.stop()
+
+    create.assert_called_once()
+    p.mr.notes.create.assert_not_called()
+    if as_review:
+        p.mr.discussions.create.assert_not_called()
+        assert p._code_suggestion_draft_queued is True
+    else:
+        p.mr.draft_notes.create.assert_not_called()
+    if as_review:
+        assert p.get_recent_inline_comment_bodies() == []
+    else:
+        [body] = p.get_recent_inline_comment_bodies()
+        assert "fix it" in body
+        assert "pr-agent-dedup" in body
+
+
+def test_unconfirmed_general_note_fallback_is_not_retried():
+    p = _gl_provider()
+    p.mr.discussions.create.side_effect = GitlabCreateError("invalid position", response_code=400)
+    p.mr.notes.create.side_effect = GitlabCreateError("server error after write", response_code=503)
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is True
+    finally:
+        gs.stop()
+
+    p.mr.discussions.create.assert_called_once()
+    p.mr.notes.create.assert_called_once()
+    assert "fix it" in p.get_recent_inline_comment_bodies()[0]
+
+
+@pytest.mark.parametrize("error", [
+    ConnectTimeout("connection was not established"),
+    InvalidURL("invalid URL before sending"),
+    ConnectionError(MaxRetryError(
+        HTTPSConnectionPool("gitlab.test"), "/api/v4/merge_requests/1/discussions",
+        NewConnectionError(None, "connection refused"))),
+    ConnectionError(MaxRetryError(
+        HTTPSConnectionPool("gitlab.test"), "/api/v4/merge_requests/1/discussions",
+        Urllib3ProxyError("proxy refused connection", NewConnectionError(None, "connection refused")))),
+    ConnectionError(MaxRetryError(
+        HTTPSConnectionPool("gitlab.test"), "/api/v4/merge_requests/1/discussions",
+        ConnectTimeoutError(None, "TLS connection never established"))),
+])
+def test_pre_write_connection_failure_can_use_general_note_fallback(error):
+    p = _gl_provider()
+    p.mr.discussions.create.side_effect = error
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is True
+    finally:
+        gs.stop()
+
+    p.mr.discussions.create.assert_called_once()
+    p.mr.notes.create.assert_called_once()
+    assert "fix it" in p.get_recent_inline_comment_bodies()[0]
+
+
+def test_failure_while_preparing_general_note_does_not_look_like_an_unconfirmed_write():
+    p = _gl_provider()
+    p.mr.discussions.create.side_effect = GitlabCreateError("invalid position", response_code=400)
+    p.get_line_link.side_effect = RequestException("failed before fallback create")
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is False
+    finally:
+        gs.stop()
+
+    p.mr.notes.create.assert_not_called()
+    assert p.get_recent_inline_comment_bodies() == []
+
+
+def test_accepted_draft_with_lost_response_is_published_only_once():
+    p = _gl_provider()
+    create = p.mr.draft_notes.create.side_effect
+
+    def accept_then_timeout(payload):
+        create(payload)
+        raise ReadTimeout("response lost after GitLab queued the draft")
+
+    p.mr.draft_notes.create.side_effect = accept_then_timeout
+    gs = _settings(as_review=True)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is True
+    finally:
+        gs.stop()
+
+    p.mr.draft_notes.create.assert_called_once()
+    p.mr.draft_notes.bulk_publish.assert_called_once()
+    assert p.mr.draft_notes.list() == []
+    assert "fix it" in p.get_recent_inline_comment_bodies()[0]
+
+
+def test_unconfirmed_draft_is_not_tracked_as_published_if_bulk_publish_fails():
+    p = _gl_provider()
+    create = p.mr.draft_notes.create.side_effect
+
+    def accept_then_timeout(payload):
+        create(payload)
+        raise ReadTimeout("response lost after GitLab queued the draft")
+
+    p.mr.draft_notes.create.side_effect = accept_then_timeout
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("bulk publication unavailable")
+    gs = _settings(as_review=True)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is False
+    finally:
+        gs.stop()
+
+    p.mr.draft_notes.create.assert_called_once()
+    assert len(p.mr.draft_notes.list()) == 1
+    assert p.get_recent_inline_comment_bodies() == []
+
+
+def test_real_gitlab_client_invalid_success_response_does_not_retry():
+    p = _gl_provider()
+    client = gitlab.Gitlab("https://gitlab.test", private_token="test-token", retry_transient_errors=False)
+    p.mr = client.projects.get(1, lazy=True).mergerequests.get(1, lazy=True)
+    p.resolve_outdated_inline_threads = MagicMock()
+    p.reconcile_code_suggestion_threads = MagicMock()
+    posted_paths = []
+
+    def send(request, **kwargs):
+        response = Response()
+        response.request = request
+        response.headers["Content-Type"] = "application/json"
+        response.status_code = 201
+        posted_paths.append(urlparse(request.url).path)
+        response._content = b"invalid JSON after accepting write"
+        return response
+
+    client.session.send = MagicMock(side_effect=send)
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is True
+    finally:
+        gs.stop()
+
+    assert len(posted_paths) == 1
+    assert posted_paths[0].endswith("/discussions")
+    assert "fix it" in p.get_recent_inline_comment_bodies()[0]
 
 
 def test_bulk_publish_failure_is_caught_and_does_not_propagate():
@@ -415,12 +581,12 @@ def test_failed_creation_in_failed_batch_is_created_on_retry(publication_provide
 
     def create_or_reject(payload):
         if reject and "unqueued" in payload["note"]:
-            raise GitlabCreateError("cannot create draft")
+            raise GitlabCreateError("cannot create draft", response_code=400)
         return create(payload)
 
     manager.create.side_effect = create_or_reject
-    p.mr.discussions.create.side_effect = GitlabCreateError("cannot create live discussion")
-    p.mr.notes.create.side_effect = GitlabCreateError("cannot create live note")
+    p.mr.discussions.create.side_effect = GitlabCreateError("cannot create live discussion", response_code=400)
+    p.mr.notes.create.side_effect = GitlabCreateError("cannot create live note", response_code=400)
     manager.bulk_publish.side_effect = RequestException("cannot publish batch")
     queued = _suggestion(body="queued", improved_code="x = 3")
     unqueued = _suggestion(body="unqueued", suggestion_content="unqueued", improved_code="x = 4")
@@ -449,12 +615,12 @@ def test_retry_publication_failure_keeps_settled_inputs(publication_provider, un
 
     def create_or_reject(payload):
         if reject and "unqueued" in payload["note"]:
-            raise GitlabCreateError("cannot create draft")
+            raise GitlabCreateError("cannot create draft", response_code=400)
         return create(payload)
 
     manager.create.side_effect = create_or_reject
-    p.mr.discussions.create.side_effect = GitlabCreateError("cannot create live discussion")
-    p.mr.notes.create.side_effect = GitlabCreateError("cannot create live note")
+    p.mr.discussions.create.side_effect = GitlabCreateError("cannot create live discussion", response_code=400)
+    p.mr.notes.create.side_effect = GitlabCreateError("cannot create live note", response_code=400)
     manager.bulk_publish.side_effect = RequestException("cannot publish batch")
     queued = _suggestion(body="queued", improved_code="x = 3")
     unqueued = _suggestion(body="unqueued", suggestion_content="unqueued", improved_code="x = 4")
@@ -491,7 +657,7 @@ def test_invalid_new_batch_after_successful_retry_does_not_report_success(public
 
 def test_live_fallback_survives_unavailable_draft_listing(publication_provider):
     p = publication_provider
-    p.mr.draft_notes.create.side_effect = GitlabCreateError("drafts unsupported")
+    p.mr.draft_notes.create.side_effect = GitlabCreateError("drafts unsupported", response_code=400)
     p.mr.draft_notes.list.side_effect = RequestException("drafts unsupported")
     assert p.publish_code_suggestions([_suggestion()]) is True
     assert p.mr.discussions.create.call_count == 1
@@ -505,7 +671,7 @@ def test_mixed_live_and_queued_failure_still_requests_retry(publication_provider
 
     def queue_or_fallback(payload):
         if "live fallback" in payload["note"]:
-            raise GitlabCreateError("cannot draft this suggestion")
+            raise GitlabCreateError("cannot draft this suggestion", response_code=400)
         return create(payload)
 
     p.mr.draft_notes.create.side_effect = queue_or_fallback
@@ -535,15 +701,15 @@ def test_total_and_partial_live_failures(partial):
     p = _gl_provider()
     create = p.mr.discussions.create
     def fail_create(payload):
-        raise GitlabCreateError("cannot create")
+        raise GitlabCreateError("cannot create", response_code=400)
     create.side_effect = fail_create
-    p.mr.notes.create.side_effect = GitlabCreateError("cannot fallback")
+    p.mr.notes.create.side_effect = GitlabCreateError("cannot fallback", response_code=400)
     suggestions = [_suggestion()]
     if partial:
         def fail_or_create(payload):
             if "working" in payload["body"]:
                 return MagicMock()
-            raise GitlabCreateError("cannot create")
+            raise GitlabCreateError("cannot create", response_code=400)
         create.side_effect = fail_or_create
         suggestions.append(_suggestion(body="working"))
     settings = _settings()
@@ -580,7 +746,7 @@ def test_general_file_draft_is_tracked_for_list_failure(publication_provider):
 
     def general_file_only(payload):
         if "new_line" in payload["position"]:
-            raise GitlabCreateError("anchor rejected")
+            raise GitlabCreateError("anchor rejected", response_code=400)
         return create(payload)
 
     def fail_after_queue(*args, **kwargs):
@@ -613,7 +779,7 @@ def test_empty_draft_body_is_not_recorded_as_a_published_finding(publication_pro
 def test_improve_caller_retries_queued_batch_but_not_live_fallback(publication_provider, failure, count):
     p = publication_provider
     if failure == "drafts-unsupported":
-        p.mr.draft_notes.create.side_effect = GitlabCreateError("drafts unsupported")
+        p.mr.draft_notes.create.side_effect = GitlabCreateError("drafts unsupported", response_code=400)
         p.mr.draft_notes.list.side_effect = RequestException("cannot list")
     else:
         operation = p.mr.draft_notes.bulk_publish if failure == "bulk" else p.mr.draft_notes.list
@@ -662,7 +828,7 @@ def test_improve_caller_retries_unsettled_suggestion(publication_provider, unque
 
     def create_or_reject(payload):
         if reject and "unqueued" in payload["note"]:
-            raise GitlabCreateError("cannot create draft")
+            raise GitlabCreateError("cannot create draft", response_code=400)
         return create(payload)
 
     def fail_first_publish(*args, **kwargs):
@@ -675,8 +841,8 @@ def test_improve_caller_retries_unsettled_suggestion(publication_provider, unque
 
     manager.create.side_effect = create_or_reject
     manager.bulk_publish.side_effect = fail_first_publish
-    p.mr.discussions.create.side_effect = GitlabCreateError("cannot create live discussion")
-    p.mr.notes.create.side_effect = GitlabCreateError("cannot create live note")
+    p.mr.discussions.create.side_effect = GitlabCreateError("cannot create live discussion", response_code=400)
+    p.mr.notes.create.side_effect = GitlabCreateError("cannot create live note", response_code=400)
     command = PRCodeSuggestions.__new__(PRCodeSuggestions)
     command.git_provider = p
     command.progress_response = None

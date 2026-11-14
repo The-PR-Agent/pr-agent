@@ -23,8 +23,17 @@ from gitlab import (
     GitlabGetError,
     GitlabUpdateError,
 )
-from requests.exceptions import RequestException
-from urllib3.exceptions import HTTPError
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import (
+    ConnectTimeout,
+    InvalidHeader,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    RequestException,
+)
+from urllib3.exceptions import ConnectTimeoutError, HTTPError, MaxRetryError, NewConnectionError
+from urllib3.exceptions import ProxyError as Urllib3ProxyError
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.setting_utils import _as_bool_setting
@@ -2757,6 +2766,34 @@ class GitLabProvider(GitProvider):
         if body and body not in recent:
             recent.append(body)
 
+    def _record_if_unconfirmed_suggestion_write(self, error, body, store, body_fp, code_fp, as_draft) -> bool:
+        if isinstance(error, (ConnectTimeout, InvalidHeader, InvalidSchema, InvalidURL, MissingSchema)):
+            return False  # The request never reached GitLab.
+        if isinstance(error, RequestsConnectionError):
+            reason = error.args[0] if error.args else None
+            if isinstance(reason, MaxRetryError):
+                reason = reason.reason
+            if isinstance(reason, Urllib3ProxyError):
+                reason = reason.original_error
+            if isinstance(reason, (ConnectTimeoutError, NewConnectionError)):
+                return False
+        status = getattr(error, "response_code", None)
+        if status is None:
+            status = getattr(getattr(error, "response", None), "status_code", None)
+        if isinstance(status, int) and 400 <= status < 500 and status != 408:
+            return False
+        get_logger().warning(
+            f"GitLab did not confirm suggestion creation for MR {self.id_mr}; "
+            f"avoiding a possibly duplicate write: {error}")
+        if not as_draft:
+            self._remember_published_inline_comment_body(body)
+        if store is not None:
+            store.add(body_fp)
+            store.add(code_fp)
+        if as_draft:
+            self._code_suggestion_draft_queued = True
+        return True
+
     def send_inline_comment(self, body: str, edit_type: str, found: bool, relevant_file: str,
                             relevant_line_in_file: str,
                             source_line_no: int, target_file: str, target_line_no: int,
@@ -2834,7 +2871,10 @@ class GitLabProvider(GitProvider):
                 store.add(body_fp)
                 store.add(code_fp)
             return True
-        except (GitlabError, RequestException):
+        except (GitlabError, RequestException) as error:
+            if self._record_if_unconfirmed_suggestion_write(error, body, store, body_fp, code_fp, as_draft):
+                return True
+            fallback_create_attempted = False
             try:
                 # fallback - create a general note on the file in the MR
                 if 'suggestion_orig_location' in original_suggestion:
@@ -2889,6 +2929,7 @@ class GitLabProvider(GitProvider):
                     'position_type': 'text',
                     'file_path': f'{target_file.filename}',
                 }
+                fallback_create_attempted = True
                 if as_draft:
                     self.mr.draft_notes.create({'note': body_fallback, 'position': fallback_position})
                     self._code_suggestion_draft_queued = True
@@ -2901,7 +2942,11 @@ class GitLabProvider(GitProvider):
                     store.add(code_fp)
                 return True
 
-            except (GitlabError, RequestException, KeyError, TypeError):
+            except (GitlabError, RequestException, KeyError, TypeError) as error:
+                if (fallback_create_attempted and isinstance(error, (GitlabError, RequestException))
+                        and self._record_if_unconfirmed_suggestion_write(
+                            error, body_fallback, store, body_fp, code_fp, as_draft)):
+                    return True
                 get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
                 return False
 

@@ -1669,7 +1669,7 @@ class TestGitLabProvider:
     def test_inline_fallback_note_neutralizes_mentions(self, gitlab_provider, as_draft):
         gitlab_provider.mr = MagicMock()
         create = gitlab_provider.mr.draft_notes.create if as_draft else gitlab_provider.mr.discussions.create
-        create.side_effect = GitlabCreateError("position rejected")
+        create.side_effect = GitlabCreateError("position rejected", response_code=400)
         gitlab_provider.get_relevant_diff = MagicMock(return_value=SimpleNamespace(
             base_commit_sha="base", start_commit_sha="start", head_commit_sha="head"
         ))

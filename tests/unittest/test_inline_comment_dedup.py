@@ -409,8 +409,8 @@ def test_gitlab_recent_inline_bodies_include_marked_posts():
 
 def test_gitlab_failed_create_does_not_record_a_recent_body():
     p = _gl_provider([])
-    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
-    p.mr.notes.create.side_effect = GitlabCreateError("note rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
+    p.mr.notes.create.side_effect = GitlabCreateError("note rejected", response_code=400)
     p.get_line_link = MagicMock(return_value="http://link")
     original = {
         "relevant_lines_start": 10, "relevant_lines_end": 11,
@@ -545,7 +545,7 @@ def test_gitlab_persistent_bodies_survive_draft_listing_failure():
 
 def test_gitlab_fallback_leaves_reduced_key_issue_in_summary():
     p = _gl_provider([])
-    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
     p.get_line_link = MagicMock(return_value="http://link")
     body = "**Possible Issue**\n\nfinding text"
     fingerprint = d.key_issue_fingerprint("a.py", body)
@@ -701,7 +701,7 @@ def test_gitlab_skips_when_existing_discussion_has_marker():
 
 def test_gitlab_fallback_note_carries_marker_and_records():
     p = _gl_provider([])
-    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
     p.get_line_link = MagicMock(return_value="http://link")
     original = {
         "relevant_lines_start": 10, "relevant_lines_end": 11,
