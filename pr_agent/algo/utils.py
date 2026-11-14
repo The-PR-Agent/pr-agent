@@ -1083,15 +1083,20 @@ def _has_yaml_c_loader_risk(response_text: str) -> bool:
     return False
 
 
-def _extract_labelled_yaml_block(response_text: str) -> str | None:
-    """Extract the content of a labelled ```yaml/```yml fence that sits mid-text.
+class _YamlScanWindow:
+    """Expose a bounded portion of a shared seekable stream to the YAML scanner."""
 
-    Returns the block's inner lines joined, or None when no fenced block is
-    labelled as YAML. Used only from the load_yaml exception path, after the
-    leading-fence stripping and the trailing-fence retry have both failed:
-    when the response opens with prose, no leading strip happens and the
-    labelled block embedded later is otherwise unreachable.
-    """
+    def __init__(self, stream, end):
+        self.stream = stream
+        self.end = end
+
+    def read(self, size=-1):
+        remaining = max(0, self.end - self.stream.tell())
+        return self.stream.read(remaining if size < 0 else min(size, remaining))
+
+
+def _extract_labelled_yaml_block(response_text: str) -> str | None:
+    """Extract the last nonempty mapping in a labelled YAML fence amid prose."""
     lines = response_text.split('\n')
     offsets = []
     offset = 0
@@ -1099,6 +1104,7 @@ def _extract_labelled_yaml_block(response_text: str) -> str | None:
         offsets.append(offset)
         offset += len(line) + 1
     stream = StringIO(response_text)
+    text_end = len(response_text)
     i = 0
     last_candidate = None
     n = len(lines)
@@ -1109,44 +1115,61 @@ def _extract_labelled_yaml_block(response_text: str) -> str | None:
             i += 1
             continue
 
-        # YAML's own scanner identifies block and quoted scalar spans without
-        # treating their indented bare Markdown fences as outer delimiters.
-        scan_offset = min(len(response_text), offsets[i] + len(line) + 1)
-        stream.seek(scan_offset)
-        scalar_spans = []
-        try:
-            scalar_spans.extend(
-                (scan_offset + token.start_mark.index, scan_offset + token.end_mark.index)
-                for token in yaml.scan(stream, Loader=yaml.SafeLoader)
-                if isinstance(token, ScalarToken) and token.style in ('|', '>', "'", '"')
-            )
-        except yaml.YAMLError:
-            # The outer Markdown fence itself is not YAML; prior spans remain usable.
-            get_logger().debug("YAML scan ended at non-YAML content; keeping preceding scalar spans")
+        scan_offset = min(text_end, offsets[i] + len(line) + 1)
+        first_fence = i + 1
+        while first_fence < n and lines[first_fence].strip() != '```':
+            first_fence += 1
+        if first_fence < n:
+            window_end = min(text_end, offsets[first_fence] + len(lines[first_fence]) + 1)
+        else:
+            window_end = text_end
 
-        j = i + 1
-        block_lines = []
-        fence_depth = 1
-        span_index = 0
-        while j < n:
-            line = lines[j]
-            j_stripped = line.strip()
-            while span_index < len(scalar_spans) and offsets[j] >= scalar_spans[span_index][1]:
-                span_index += 1
-            in_scalar = (span_index < len(scalar_spans)
-                         and scalar_spans[span_index][0] < offsets[j] < scalar_spans[span_index][1])
-            if j_stripped.startswith('```') and j_stripped != '```':
-                fence_depth += 1
-                block_lines.append(line)
+        while True:
+            stream.seek(scan_offset)
+            scalar_spans = []
+            try:
+                scalar_spans.extend(
+                    (scan_offset + token.start_mark.index, scan_offset + token.end_mark.index)
+                    for token in yaml.scan(_YamlScanWindow(stream, window_end), Loader=yaml.SafeLoader)
+                    if isinstance(token, ScalarToken) and token.style in ('|', '>', "'", '"')
+                )
+            except yaml.YAMLError as error:
+                # An unfinished quoted scalar may contain the candidate fence. At a
+                # temporary boundary, keep it open until a wider scan decides it.
+                if (window_end < text_end and getattr(error, 'context', None) == 'while scanning a quoted scalar'
+                        and getattr(error, 'problem', None) == 'found unexpected end of stream'
+                        and getattr(error, 'context_mark', None) is not None):
+                    scalar_spans.append((scan_offset + error.context_mark.index, window_end + 1))
+                else:
+                    get_logger().debug("YAML scan ended at non-YAML content; keeping preceding scalar spans")
+
+            j = i + 1
+            fence_depth = 1
+            span_index = 0
+            while j < n and (offsets[j] < window_end or window_end == text_end):
+                j_stripped = lines[j].strip()
+                while span_index < len(scalar_spans) and offsets[j] >= scalar_spans[span_index][1]:
+                    span_index += 1
+                in_scalar = (span_index < len(scalar_spans)
+                             and scalar_spans[span_index][0] < offsets[j] < scalar_spans[span_index][1])
+                if j_stripped.startswith('```') and j_stripped != '```':
+                    fence_depth += 1
+                elif j_stripped == '```' and (fence_depth > 1 or not in_scalar):
+                    fence_depth -= 1
+                    if fence_depth == 0:
+                        break
                 j += 1
-                continue
-            if j_stripped == '```' and (fence_depth > 1 or not in_scalar):
-                fence_depth -= 1
-                if fence_depth == 0:
-                    break
-            block_lines.append(line)
-            j += 1
-        candidate = '\n'.join(block_lines)
+            if j < n and offsets[j] < window_end and fence_depth == 0:
+                break
+            if window_end == text_end:
+                break
+            # Geometric growth keeps repeated scans linear even when thousands
+            # of fences are inside one long quoted or block scalar.
+            target = min(text_end, max(window_end + 1, scan_offset + 2 * (window_end - scan_offset)))
+            newline = response_text.find('\n', target)
+            window_end = text_end if newline < 0 else newline + 1
+
+        candidate = '\n'.join(lines[i + 1:j])
         try:
             parsed = yaml.safe_load(candidate)
             if isinstance(parsed, dict) and parsed:

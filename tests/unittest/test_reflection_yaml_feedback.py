@@ -369,3 +369,46 @@ def test_labelled_yaml_parse_failure_does_not_log_input(monkeypatch):
     assert _extract_labelled_yaml_block(reply) == 'result: ok'
     assert logger.debug.called
     assert all('private-canary' not in str(call) for call in logger.debug.call_args_list)
+
+
+def test_indented_scalar_candidates_do_not_scan_remaining_suffix(monkeypatch):
+    from io import StringIO
+
+    class CountingStream(StringIO):
+        bytes_read = 0
+
+        def read(self, size=-1):
+            result = super().read(size)
+            type(self).bytes_read += len(result)
+            return result
+
+    monkeypatch.setattr("pr_agent.algo.utils.StringIO", CountingStream)
+    input_text = "prose\n" + "  ```yaml\n  z\n  ```\n" * 600
+    assert _extract_labelled_yaml_block(input_text) is None
+    assert CountingStream.bytes_read <= 8 * len(input_text) + 4096
+
+
+def test_long_scalar_with_many_fences_has_linear_scanner_reads(monkeypatch):
+    from io import StringIO
+
+    class CountingStream(StringIO):
+        bytes_read = 0
+
+        def read(self, size=-1):
+            result = super().read(size)
+            type(self).bytes_read += len(result)
+            return result
+
+    monkeypatch.setattr("pr_agent.algo.utils.StringIO", CountingStream)
+    for opener, closer in [('value: |\n', ''), ('value: "start\n', '  end"\n')]:
+        CountingStream.bytes_read = 0
+        input_text = ('Lead\n```yaml\n' + opener + ('  ```\n  content\n' * 1600)
+                      + closer + 'other: 1\n```\n')
+        candidate = _extract_labelled_yaml_block(input_text)
+        assert candidate is not None
+        assert 'other: 1' in candidate
+        assert CountingStream.bytes_read <= 8 * len(input_text) + 4096
+
+
+def test_unclosed_labelled_block_preserves_terminal_newline():
+    assert _extract_labelled_yaml_block('Prose\n```yaml\nanswer: 1\n') == 'answer: 1\n'
