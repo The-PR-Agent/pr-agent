@@ -1146,17 +1146,15 @@ def _extract_labelled_yaml_block(response_text: str) -> str | None:
                     break
             block_lines.append(line)
             j += 1
-        if fence_depth != 0:
-            break
         candidate = '\n'.join(block_lines)
         try:
             parsed = yaml.safe_load(candidate)
             if isinstance(parsed, dict) and parsed:
-                return candidate
+                last_candidate = candidate
         except Exception as e:
             get_logger().debug(f"Labelled YAML block parse failed: {e}")
         i = j + 1
-    return None
+    return last_candidate
 
 
 def _load_yaml_initial(response_text: str) -> Any:
