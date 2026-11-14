@@ -662,7 +662,8 @@ not match the schema, or anything fails while computing the row, the review is p
 :::tip
 
 When `enable_risk_checks` is enabled (the default), PR-Agent scans changed files and diff hunks for known risk patterns
-without making model calls. Findings are rendered as a dedicated row in the review table:
+without making model calls. Incremental and per-commit reviews scope unfiltered path checks to the active incremental
+file set unless `require_merge_recommendation` is enabled. Findings are rendered as a dedicated row in the review table:
 
 ```
 ⚠️ Risk checks: 3 finding(s) detected

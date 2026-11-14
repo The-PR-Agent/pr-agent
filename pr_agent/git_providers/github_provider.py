@@ -219,6 +219,7 @@ class GithubProvider(GitProvider):
         if context.exists():
             context.pop("diff_files", None)
         self.incremental = incremental if incremental is not None else IncrementalPR(False)
+        self.unreviewed_rename_sources = []
         if getattr(self, "_pr_head_commit", None) is not None:
             self.last_commit_id, self._pr_head_commit = self._pr_head_commit, None
         if self.incremental.is_incremental:
@@ -448,9 +449,11 @@ class GithubProvider(GitProvider):
                 if is_merge_commit:
                     get_logger().info(f"Skipping merge commit {commit.commit.message}")
                     continue
-                self.unreviewed_files_map.update({
-                    file.filename: file for file in commit.get_files(commit_files_per_page=300)
-                })
+                for file in commit.get_files(commit_files_per_page=300):
+                    prev = getattr(file, "previous_filename", None)
+                    if prev and prev not in self.unreviewed_rename_sources:
+                        self.unreviewed_rename_sources.append(prev)
+                    self.unreviewed_files_map[file.filename] = file
         else:
             get_logger().info("No previous review found, will review the entire PR")
             self.incremental.is_incremental = False
@@ -501,6 +504,7 @@ class GithubProvider(GitProvider):
 
     def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> str | None:
         self.incremental = incremental
+        self.unreviewed_rename_sources = []
         self.diff_files = None
         if context.exists():
             context.pop("diff_files", None)

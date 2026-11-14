@@ -154,7 +154,7 @@ def _get_azure_change_path(change):
 
 
 def _get_azure_change_old_path(change):
-    additional = getattr(change, "additional_properties", None)
+    additional = change if isinstance(change, dict) else getattr(change, "additional_properties", None)
     if not isinstance(additional, dict):
         additional = {}
 
@@ -175,7 +175,7 @@ def _get_azure_change_old_path(change):
 
 
 def _get_azure_change_type(change):
-    additional = getattr(change, "additional_properties", None)
+    additional = change if isinstance(change, dict) else getattr(change, "additional_properties", None)
     if not isinstance(additional, dict):
         additional = {}
 
@@ -242,6 +242,7 @@ class AzureDevopsProvider(GitProvider):
         self.temp_comments = []
         self.incremental = incremental
         self.unreviewed_files_map = {}
+        self._incremental_unfiltered_files = None
         self.pr_commits = None
         self.previous_review = None
         self._published_inline_comment_bodies = []
@@ -628,6 +629,7 @@ class AzureDevopsProvider(GitProvider):
         self.pr_commits = None
         self.previous_review = None
         self.unreviewed_files_map = {}
+        self._incremental_unfiltered_files = None
         self.temp_comments = []
         self._published_inline_comment_bodies = []
         self._inline_comment_store = None
@@ -639,12 +641,19 @@ class AzureDevopsProvider(GitProvider):
     def get_incremental_commits(self, incremental=None, kind: str = "review"):
         if incremental is None:
             incremental = IncrementalPR(False)
+        was_incremental = (
+            bool(getattr(getattr(self, "incremental", None), "is_incremental", False))
+            or bool(getattr(self, "unreviewed_files_map", None))
+            or getattr(self, "_incremental_unfiltered_files", None) is not None
+        )
         self.incremental = incremental
-        if self.incremental.is_incremental:
+        self._incremental_unfiltered_files = None
+        if self.incremental.is_incremental or was_incremental:
             # Recompute a diff cached for a different incremental scope.
             self.diff_files = None
             self._diff_path_map = None
             self.unreviewed_files_map = {}
+        if self.incremental.is_incremental:
             self._incremental_kind = kind
             self._get_incremental_commits()
 
@@ -671,6 +680,7 @@ class AzureDevopsProvider(GitProvider):
         if self.incremental.commits_range is None:
             return
         candidate_paths = []
+        unfiltered_paths = []
         had_errors = False
         non_merge_seen = False
         for commit in self.incremental.commits_range:
@@ -692,6 +702,11 @@ class AzureDevopsProvider(GitProvider):
                 path = _get_azure_change_path(change)
                 if path:
                     candidate_paths.append(path)
+                    unfiltered_paths.append(path)
+                if "rename" in _get_azure_change_type(change).lower():
+                    old_path = _get_azure_change_old_path(change)
+                    if old_path:
+                        unfiltered_paths.append(old_path)
 
         if had_errors:
             get_logger().warning(
@@ -711,6 +726,9 @@ class AzureDevopsProvider(GitProvider):
                 "Incremental range only contains merge commits; falling back to full review."
             )
             self.incremental.is_incremental = False
+            return
+
+        self._incremental_unfiltered_files = list(dict.fromkeys(unfiltered_paths))
 
     def _get_commit_range(self):
         last_review_time = _to_naive_utc(getattr(self.previous_review, "created_at", None))

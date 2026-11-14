@@ -1742,6 +1742,19 @@ class PRReviewer:
             raise FallbackEligibleError(f"{source} did not contain a non-empty review mapping")
         return data
 
+    def _incremental_unfiltered_files(self) -> list | None:
+        expanded_incremental = getattr(self.git_provider, "_incremental_unfiltered_files", None)
+        if isinstance(expanded_incremental, list):
+            return list(expanded_incremental)
+        unreviewed_files = getattr(self.git_provider, "unreviewed_files_map", None)
+        if not isinstance(unreviewed_files, dict):
+            return None
+        paths = [path if isinstance(item, str) else item for path, item in unreviewed_files.items()]
+        rename_sources = getattr(self.git_provider, "unreviewed_rename_sources", None)
+        if isinstance(rename_sources, list) and rename_sources:
+            paths.extend(rename_sources)
+        return paths
+
     def _prepare_pr_review(self) -> str:
         """
         Prepare the PR review by processing the AI prediction and generating a markdown-formatted text that summarizes
@@ -1796,18 +1809,33 @@ class PRReviewer:
             risk_diff_files = verdict_diff_files
         else:
             risk_diff_files = diff_files
-        if hasattr(self.git_provider, "get_pr_file_paths"):
+        incremental_scope = bool(
+            getattr(self.incremental, "is_incremental", False) and not require_merge_recommendation
+        )
+        empty_incremental_diff = False
+        if incremental_scope:
+            unfiltered_files = self._incremental_unfiltered_files()
+            empty_incremental_diff = (
+                unfiltered_files == [] or getattr(self.git_provider, "unreviewed_files_map", None) == {}
+            )
+            if empty_incremental_diff:
+                risk_diff_files = []
+        elif hasattr(self.git_provider, "get_pr_file_paths"):
             try:
                 unfiltered_files = self.git_provider.get_pr_file_paths()
             except Exception:
                 unfiltered_files = None
-        if not unfiltered_files and hasattr(self.git_provider, "get_files"):
+        if not incremental_scope and not unfiltered_files and hasattr(self.git_provider, "get_files"):
             try:
                 unfiltered_files = self.git_provider.get_files()
             except Exception:
                 unfiltered_files = None
 
-        filtered_names = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
+        filtered_names = (
+            []
+            if empty_incremental_diff
+            else getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
+        )
         if filtered_names:
             unfiltered_files = list(unfiltered_files or []) + list(filtered_names)
 
