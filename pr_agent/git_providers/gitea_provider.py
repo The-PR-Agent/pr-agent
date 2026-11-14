@@ -44,6 +44,17 @@ from pr_agent.mosaico.diff_provider import parse_unified_diff
 DEFAULT_GITEA_URL = "https://gitea.com"
 
 
+def _replace_non_bmp_characters(text: str) -> str:
+    """Replace characters unsupported by MySQL's 3-byte utf8 without joining neighbors."""
+    replacements = {"🔵": "⚫"}
+    return "".join(
+        character
+        if ord(character) <= 0xFFFF and not 0xD800 <= ord(character) <= 0xDFFF
+        else replacements.get(character, "�")
+        for character in text
+    )
+
+
 def _has_complete_raw_hunks(patch: str) -> bool:
     """Check each unified hunk against its declared old/new line counts."""
     if not patch:
@@ -1347,26 +1358,37 @@ class RepoApi(giteapy.RepositoryApi):
         )
 
     def create_comment(self, owner: str, repo: str, index: int, comment: str):
-        body = {
-            "body": comment
-        }
-        return self.issue.issue_create_comment(
-            owner=owner,
-            repo=repo,
-            index=index,
-            body=body
-        )
+        def send(body: str):
+            return self.issue.issue_create_comment(
+                owner=owner,
+                repo=repo,
+                index=index,
+                body={"body": body},
+            )
+
+        return self._send_comment_with_fallback(send, comment)
 
     def edit_comment(self, owner: str, repo: str, comment_id: int, comment: str):
-        body = {
-            "body": comment
-        }
-        return self.issue.issue_edit_comment(
-            owner=owner,
-            repo=repo,
-            id=comment_id,
-            body=body
-        )
+        def send(body: str):
+            return self.issue.issue_edit_comment(
+                owner=owner,
+                repo=repo,
+                id=comment_id,
+                body={"body": body},
+            )
+
+        return self._send_comment_with_fallback(send, comment)
+
+    def _send_comment_with_fallback(self, send, comment: str):
+        try:
+            return send(comment)
+        except ApiException as error:
+            if error.status != 500:
+                raise
+            fallback = _replace_non_bmp_characters(comment)
+            if fallback == comment:
+                raise
+            return send(fallback)
 
     def remove_comment(self, owner: str, repo: str, comment_id: int):
         return self.issue.issue_delete_comment(
