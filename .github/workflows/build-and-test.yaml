@@ -19,6 +19,31 @@ permissions:
   contents: read
 
 jobs:
+  classify_changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.docs.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - id: docs
+        shell: bash
+        run: |
+          # For PR merge commits, only changes outside the safe docs paths matter.
+          if git rev-parse -q --verify 'HEAD^2' > /dev/null &&
+             git diff --no-renames --quiet HEAD^1 HEAD -- . \
+               ':(top,exclude,glob)docs/docs/**/*.md' \
+               ':(top,exclude,glob)docs/docs/**/*.mdx' \
+               ':(top,exclude)README.md' \
+               ':(top,exclude)CONTRIBUTING.md' \
+               ':(top,exclude)SECURITY.md'; then
+            echo 'docs_only=true' >> "$GITHUB_OUTPUT"
+          fi
+
   review-context-hardening:
     name: Review context hardening (Python 3.12)
     runs-on: ubuntu-latest
@@ -153,6 +178,8 @@ jobs:
   # layer and re-run the smoke test and coverage upload for no extra signal.
   unit-tests-native:
     name: Unit tests (Python ${{ matrix.python-version }})
+    needs: classify_changes
+    if: ${{ always() && !cancelled() && needs.classify_changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
