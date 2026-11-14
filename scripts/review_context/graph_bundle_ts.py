@@ -353,6 +353,8 @@ class Tags(Lang):
         for extra in self.INHERITS.get(name, ()):
             try:
                 self.queries.append(Query(get_language(name), get_tags_query(extra)))
+            except TimeoutError:
+                raise
             except Exception:
                 pass  # a parent pattern naming a node type this grammar lacks
         self.ident, self.drop = IdentTypes(), CommentTypes()
@@ -743,6 +745,8 @@ def tags_langs():
             name = detect_language_from_extension(ext.lstrip("."))
             if name and (get_tags_query(name) or "").strip():
                 by_name.setdefault(name, []).append(ext)
+        except TimeoutError:
+            raise
         except Exception:
             continue
     return [Tags(name, tuple(exts)) for name, exts in sorted(by_name.items())]

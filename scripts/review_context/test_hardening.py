@@ -135,6 +135,20 @@ def test_timeout_exits_cleanly_without_a_bundle(hostile, monkeypatch):
     assert not (tmp / "out" / "pr1.G6.md").exists()
 
 
+def test_grammar_loading_does_not_swallow_the_timeout(builder_module, monkeypatch):
+    def alarm(*_args):
+        raise TimeoutError("build exceeded 1 s")
+
+    with monkeypatch.context() as m:
+        m.setattr(builder_module, "detect_language_from_extension", alarm)
+        with pytest.raises(TimeoutError):
+            builder_module.tags_langs()
+    tags_query = builder_module.get_tags_query
+    monkeypatch.setattr(builder_module, "get_tags_query", lambda n: alarm() if n == "javascript" else tags_query(n))
+    with pytest.raises(TimeoutError):
+        builder_module.Tags("typescript", (".ts",))
+
+
 def test_failure_exits_cleanly_without_a_bundle(hostile):
     repo, base, _head, tmp = hostile
     r = run_builder(repo, base, "0" * 40, tmp / "out")
