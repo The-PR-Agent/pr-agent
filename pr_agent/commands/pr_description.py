@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import html
 import re
 import traceback
 from functools import partial
@@ -30,6 +31,7 @@ from pr_agent.algo.run_output import append_run_details, push_outputs_async, sho
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import (
+    FILE_WALKTHROUGH_ESCAPED_MARKER,
     ModelType,
     filter_generated_labels,
     get_user_labels,
@@ -1091,7 +1093,7 @@ class PRDescription:
                     get_logger().warning(f"Missing required fields in file label dict {self.pr_id}, skipping file",
                                          artifact={"file": file})
                     continue
-                filename = file['filename'].replace("'", "`").replace('"', "`")
+                filename = file['filename']
                 summary = file.get("changes_summary")
                 changes_summary = summary.strip() if isinstance(summary, str) else ""
                 changes_title = file['changes_title'].strip()
@@ -1124,9 +1126,11 @@ class PRDescription:
             pr_body += f"""<thead><tr><th></th><th align="left">{header}</th></tr></thead>"""
             pr_body += """<tbody>"""
             diff_files_by_name = None
+            diff_filenames = {}
+            ambiguous_diff_paths = set()
             for semantic_label in value.keys():
                 s_label = semantic_label.strip("'").strip('"')
-                pr_body += f"""<tr><td><strong>{s_label.capitalize()}</strong></td>"""
+                pr_body += f"""<tr><td><strong>{html.escape(s_label.capitalize())}</strong></td>"""
                 list_tuples = value[semantic_label]
 
                 if use_collapsible_file_list:
@@ -1134,15 +1138,41 @@ class PRDescription:
                 else:
                     pr_body += """<td><table>"""
                 for filename, file_changes_title, file_change_description in list_tuples:
-                    filename = filename.replace("'", "`").rstrip()
-                    filename_publish = filename.split("/")[-1]
+                    if diff_files_by_name is None:
+                        diff_files_by_name = {}
+                        for diff_file in self.git_provider.get_diff_files():
+                            diff_filenames.setdefault(diff_file.filename, diff_file)
+                            normalized_name = diff_file.filename.lower().strip('/')
+                            if (normalized_name in diff_files_by_name and
+                                    diff_files_by_name[normalized_name].filename != diff_file.filename):
+                                ambiguous_diff_paths.add(normalized_name)
+                            diff_files_by_name.setdefault(normalized_name, diff_file)
+                    # YAML block scalars sometimes add trailing newlines; retain real filenames.
+                    if filename.endswith("\n") and filename not in diff_filenames:
+                        filename_without_newline = filename.rstrip("\n")
+                        if (filename_without_newline in diff_filenames or
+                                (filename.lower().strip('/') not in diff_files_by_name
+                                 and filename_without_newline.lower().strip('/') in diff_files_by_name)):
+                            filename = filename_without_newline
+                    normalized_filename = filename.lower().strip('/')
+                    f = diff_filenames.get(filename)
+                    if f is None and normalized_filename not in ambiguous_diff_paths:
+                        f = diff_files_by_name.get(normalized_filename)
+                    # A unique diff match is authoritative for both serialized paths and links.
+                    if f is not None:
+                        filename = f.filename
+                    filename_publish = html.escape(filename.split("/")[-1])
+                    filename_publish = filename_publish.replace("\r", "&#13;").replace("\n", "&#10;")
                     if file_changes_title and file_changes_title.strip() != "...":
-                        file_changes_title_code = f"<code>{file_changes_title}</code>"
+                        file_changes_title_code = f"<code>{html.escape(file_changes_title)}</code>"
                         file_changes_title_code_br = (
-                        insert_br_after_x_chars(file_changes_title_code, x=(delta - 5)).strip()
+                        insert_br_after_x_chars(
+                            file_changes_title_code, x=(delta - 5), entity_aware=True
+                        ).strip()
                     )
-                        if len(file_changes_title_code_br) < (delta - 5):
-                            file_changes_title_code_br += "&nbsp; " * ((delta - 5) - len(file_changes_title_code_br))
+                        title_length = len(html.unescape(file_changes_title_code_br))
+                        if title_length < (delta - 5):
+                            file_changes_title_code_br += "&nbsp; " * ((delta - 5) - title_length)
                         filename_publish = (
                             f"<strong>{filename_publish}</strong><br><span>{file_changes_title_code_br}</span>"
                         )
@@ -1150,12 +1180,6 @@ class PRDescription:
                         filename_publish = f"<strong>{filename_publish}</strong>"
                     diff_plus_minus = ""
                     delta_nbsp = ""
-                    if diff_files_by_name is None:
-                        diff_files_by_name = {}
-                        for diff_file in self.git_provider.get_diff_files():
-                            # Preserve the first match when normalized paths collide.
-                            diff_files_by_name.setdefault(diff_file.filename.lower().strip('/'), diff_file)
-                    f = diff_files_by_name.get(filename.lower().strip('/'))
                     if f is not None:
                         num_plus_lines = f.num_plus_lines
                         num_minus_lines = f.num_minus_lines
@@ -1166,9 +1190,12 @@ class PRDescription:
 
                     # try to add line numbers link to code suggestions
                     link = ""
-                    if hasattr(self.git_provider, 'get_line_link'):
-                        filename = filename.strip()
-                        link = self.git_provider.get_line_link(filename, relevant_line_start=-1)
+                    if hasattr(self.git_provider, 'get_line_link') and (
+                        f is not None or normalized_filename not in ambiguous_diff_paths
+                    ):
+                        link = self.git_provider.get_line_link(
+                            f.filename if f is not None else filename, relevant_line_start=-1
+                        )
                     if (not link or not diff_plus_minus) and ('additional files' not in filename.lower()):
                         # get_logger().warning(f"Error getting line link for '{filename}'")
                         link = ""
@@ -1194,11 +1221,13 @@ class PRDescription:
     def add_file_data(self, delta_nbsp, diff_plus_minus, file_change_description_br, filename, filename_publish, link,
                       pr_body) -> str:
 
+        escaped_link = html.escape(link or "", quote=True)
+        escaped_filename = html.escape(filename).replace("•", "&#8226;").replace("\r", "&#13;").replace("\n", "&#10;")
         if not file_change_description_br:
             pr_body += f"""
 <tr>
   <td>{filename_publish}</td>
-  <td><a href="{link}">{diff_plus_minus}</a>{delta_nbsp}</td>
+  <td><a href="{escaped_link}">{diff_plus_minus}</a>{delta_nbsp}</td>
 
 </tr>
 """
@@ -1209,8 +1238,8 @@ class PRDescription:
     <details>
       <summary>{filename_publish}</summary>
 <hr>
-
-{filename}
+{FILE_WALKTHROUGH_ESCAPED_MARKER}
+{escaped_filename}
 
 {file_change_description_br}
 
@@ -1219,7 +1248,7 @@ class PRDescription:
 
 
   </td>
-  <td><a href="{link}">{diff_plus_minus}</a>{delta_nbsp}</td>
+  <td><a href="{escaped_link}">{diff_plus_minus}</a>{delta_nbsp}</td>
 
 </tr>
 """
@@ -1412,7 +1441,7 @@ def count_chars_without_html(string):
     return len(no_html_string)
 
 
-def insert_br_after_x_chars(text: str, x=70):
+def insert_br_after_x_chars(text: str, x=70, *, entity_aware=False):
     """
     Insert <br> into a string after a word that increases its length above x characters.
     Use proper HTML tags for code and new lines.
@@ -1420,7 +1449,13 @@ def insert_br_after_x_chars(text: str, x=70):
 
     if not text:
         return ""
-    if count_chars_without_html(text) < x:
+
+    def display_length(value: str) -> int:
+        if entity_aware:
+            return len(html.unescape(re.sub("<[^>]+>", "", value)))
+        return count_chars_without_html(value)
+
+    if display_length(text) < x:
         return text
 
     is_list = text.lstrip().startswith(("- ", "* "))
@@ -1458,7 +1493,7 @@ def insert_br_after_x_chars(text: str, x=70):
         if word == "<code>" or word == "</code>" or word == "<li>" or word == "<br>":
             is_saved_word = True
 
-        len_word = count_chars_without_html(word)
+        len_word = display_length(word)
         if not is_saved_word and (current_length + len_word > x):
             if is_inside_code:
                 new_text.append("</code><br><code>")
