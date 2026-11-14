@@ -1200,7 +1200,8 @@ def _gitlab_issue_covers_mr_audience(project, mr_project, is_own_project):
     if visibility not in ("public", "internal", "private") or mr_visibility not in ("public", "internal", "private"):
         return False
     if is_own_project:
-        return access == "enabled" or (access == "private" and visibility == "private")
+        members_only = visibility == "private" or getattr(project, "merge_requests_access_level", None) == "private"
+        return access == "enabled" or (access == "private" and members_only)
     # Membership in separate private projects is not an audience guarantee. Internal
     # projects also exclude external users who may be members of a private MR project.
     return access == "enabled" and (

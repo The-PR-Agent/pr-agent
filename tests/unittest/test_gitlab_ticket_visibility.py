@@ -41,21 +41,29 @@ class VisibilityTransport(BaseAdapter):
         pass
 
 
-@pytest.mark.parametrize("visibility,issues_access_level,expected", [
-    ("public", "private", []),
-    ("internal", "private", []),
-    ("public", "disabled", []),
-    ("public", None, []),
-    ("public", "unknown", []),
-    (None, "enabled", []),
-    ("public", "enabled", [1, 2]),
-    ("internal", "enabled", [1, 2]),
-    ("private", "enabled", [1, 2]),
-    ("private", "private", [1, 2]),
+@pytest.mark.parametrize("visibility,issues_access_level,merge_requests_access_level,expected", [
+    ("public", "private", None, []),
+    ("internal", "private", None, []),
+    ("public", "private", "enabled", []),
+    ("public", "private", "private", [1, 2]),
+    ("internal", "private", "private", [1, 2]),
+    ("public", "disabled", "private", []),
+    ("public", None, None, []),
+    ("public", "unknown", None, []),
+    (None, "enabled", None, []),
+    ("public", "enabled", None, [1, 2]),
+    ("internal", "enabled", None, [1, 2]),
+    ("private", "enabled", None, [1, 2]),
+    ("private", "private", None, [1, 2]),
 ])
-async def test_issue_context_respects_project_visibility(monkeypatch, visibility, issues_access_level, expected):
+async def test_issue_context_respects_project_visibility(
+    monkeypatch, visibility, issues_access_level, merge_requests_access_level, expected
+):
     monkeypatch.setattr(tickets, "add_jira_tickets", lambda provider, content: content)
-    metadata = {"id": 1, "visibility": visibility, "issues_access_level": issues_access_level}
+    metadata = {
+        "id": 1, "visibility": visibility, "issues_access_level": issues_access_level,
+        "merge_requests_access_level": merge_requests_access_level,
+    }
     transport = VisibilityTransport(metadata)
     with requests.Session() as session:
         session.mount("https://", transport)

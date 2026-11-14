@@ -122,8 +122,9 @@ but results from a different repository are discarded before prompt use. Referen
 current repository and number.
 
 For GitLab, ticket extraction checks project visibility and `issues_access_level` once per project per run.
-Member-only issues are included only for the MR's own private project; they are skipped for public and internal
-projects. Disabled, unknown, or unreadable issue access settings are skipped. Approved sibling issues must have
+Member-only issues in the MR's own project are included when the project is private or the MR itself is member-only;
+they are skipped for broadly visible MRs in public and internal projects. Disabled, unknown, or unreadable issue
+access settings are skipped. Approved sibling issues must have
 Issues enabled for everyone with project access and be public, or internal when the MR project is also internal.
 Private sibling projects cannot guarantee that every MR reader can see their issues and are skipped.
 
