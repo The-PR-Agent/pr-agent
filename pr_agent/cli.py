@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from urllib.parse import urlsplit
 
 import yaml
-from starlette_context import context, request_cycle_context
+from starlette_context import context
 
 from pr_agent.agent.command_registry import COMMAND_SPECS
 from pr_agent.agent.pr_agent import PRAgent, commands, parse_command
@@ -29,7 +29,7 @@ from pr_agent.algo.review_json_output import (
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.run_output import get_version
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, safe_request_cycle_context
 from pr_agent.doctor import DOCTOR_COMMANDS, run_doctor_checks
 from pr_agent.log import get_logger, setup_logger
 
@@ -71,13 +71,8 @@ def _cli_settings_scope():
     for cache_key in _CLI_CONTEXT_CACHES:
         scope_data.pop(cache_key, None)
 
-    cm = request_cycle_context(scope_data)
-    cm.__enter__()
-    try:
+    with safe_request_cycle_context(scope_data):
         yield
-    finally:
-        # Reset the context even when BaseException would skip the bare generator's cleanup.
-        cm.__exit__(None, None, None)
 
 
 def _resolve_output_option(parser, arg):
