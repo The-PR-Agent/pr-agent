@@ -384,6 +384,8 @@ def test_workflow_preserves_trust_and_fallback_boundaries():
         assert not any(step.get("uses", "").startswith("actions/cache@") for step in job["steps"])
     assert not any("graph_bundle_ts.py" in step.get("run", "") for step in keyed["steps"])
     action = next(step for step in keyed["steps"] if step["name"] == "Run sponsored PR-Agent")
+    assert action["env"]["CONFIG__CUSTOM_MODEL_MAX_TOKENS"] == "256000"
+    assert action["env"]["CONFIG__MAX_MODEL_TOKENS"] == "256000"
     assert action["env"]["ARTIFACT_PATH"] == (
         "${{ steps.context-artifact.outcome == 'success' && steps.context-artifact.outputs.path || '' }}"
     )
