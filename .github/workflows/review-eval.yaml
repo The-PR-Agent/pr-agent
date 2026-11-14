@@ -1,0 +1,95 @@
+name: Review-quality eval
+
+# Replays /review on frozen PR commits and fails when it catches clearly fewer known findings than the baseline
+# (scripts/review_eval). It spends model tokens (about 330 calls on two repeats), so it never runs on every PR:
+# only by manual dispatch, or on a same-repository PR that touches review prompts or model handling and carries
+# the `review-eval` label. Fork PRs never get the key.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Model under test (provider/model); empty uses the REVIEW_EVAL_MODEL repository variable
+        required: false
+        type: string
+      repeats:
+        description: Runs per case (2 detects a catch drop of about 6 of 44 known findings, 3 about 5)
+        required: false
+        default: "2"
+        type: choice
+        options: ["1", "2", "3"]
+  pull_request:
+    # No synchronize: a push does not re-spend tokens; re-apply the label to run again.
+    types: [opened, reopened, labeled]
+    paths:
+      - "pr_agent/settings/**/*prompts*.toml"
+      - "pr_agent/commands/pr_reviewer.py"
+      - "pr_agent/algo/ai_handlers/**"
+      - "pr_agent/algo/pr_processing.py"
+      - "pr_agent/algo/utils.py"
+      - "scripts/review_eval/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: review-eval-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review-eval:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        contains(github.event.pull_request.labels.*.name, 'review-eval')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # Holds the key secrets; give it required reviewers so every run needs a maintainer's approval.
+    environment: review-eval
+    env:
+      REVIEW_EVAL_MODEL: ${{ inputs.model || vars.REVIEW_EVAL_MODEL }}
+      REVIEW_EVAL_JUDGE_MODEL: ${{ vars.REVIEW_EVAL_JUDGE_MODEL }}
+      REVIEW_EVAL_REPEATS: ${{ inputs.repeats || '2' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Check configuration
+        run: |
+          if [ -z "$REVIEW_EVAL_MODEL" ] || [ -z "$REVIEW_EVAL_JUDGE_MODEL" ]; then
+            echo "::error::Set the REVIEW_EVAL_MODEL and REVIEW_EVAL_JUDGE_MODEL repository variables."
+            exit 1
+          fi
+
+      - name: Run the eval
+        env:
+          OPENAI__KEY: ${{ secrets.REVIEW_EVAL_OPENAI_KEY }}
+          ANTHROPIC__KEY: ${{ secrets.REVIEW_EVAL_ANTHROPIC_KEY }}
+        run: >-
+          uv run python scripts/review_eval/run_eval.py
+          --model "$REVIEW_EVAL_MODEL" --judge-model "$REVIEW_EVAL_JUDGE_MODEL"
+          --repeats "$REVIEW_EVAL_REPEATS" --jobs 4 --out "$RUNNER_TEMP/review-eval"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: review-eval
+          path: |
+            ${{ runner.temp }}/review-eval/metrics.json
+            ${{ runner.temp }}/review-eval/summary.md
+            ${{ runner.temp }}/review-eval/runs/**/final.md
+            ${{ runner.temp }}/review-eval/runs/**/judged.json
+            ${{ runner.temp }}/review-eval/runs/**/status.json
+          if-no-files-found: ignore
