@@ -1328,7 +1328,7 @@ def try_fix_yaml(response_text: str,
             get_logger().info("Successfully parsed AI prediction after replacing | with |2 and adding spaces")
             return data
     except Exception:
-        pass
+        get_logger().debug("YAML spacing fallback failed; trying the next recovery method")
 
     # second fallback - try to extract only range from first ```yaml to the last ```
     snippet_pattern = r'```[ \t]*(?:(?i:yaml|yml)[ \t]*)?\r?\n([\s\S]*?)```(?=\s*$|")'
