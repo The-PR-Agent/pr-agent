@@ -44,12 +44,14 @@ from pr_agent.mosaico.diff_provider import parse_unified_diff
 DEFAULT_GITEA_URL = "https://gitea.com"
 
 
-def _strip_non_bmp_characters(text: str) -> str:
-    """Keep comments compatible with Gitea installations using MySQL's 3-byte utf8."""
+def _replace_non_bmp_characters(text: str) -> str:
+    """Replace characters unsupported by MySQL's 3-byte utf8 without joining neighbors."""
+    replacements = {"🔵": "⚫"}
     return "".join(
         character
-        for character in text
         if ord(character) <= 0xFFFF and not 0xD800 <= ord(character) <= 0xDFFF
+        else replacements.get(character, "�")
+        for character in text
     )
 
 
@@ -508,7 +510,6 @@ class GiteaProvider(GitProvider):
             self.logger.error("Neither PR nor issue URL provided.")
             return None
 
-        comment = _strip_non_bmp_characters(comment)
         comment = self.limit_output_characters(comment, self.max_comment_chars)
         response = self.repo_api.create_comment(
             owner=self.owner,
@@ -534,7 +535,6 @@ class GiteaProvider(GitProvider):
         return comment_obj
 
     def edit_comment(self, comment, body : str):
-        body = _strip_non_bmp_characters(body)
         body = self.limit_output_characters(body, self.max_comment_chars)
         if isinstance(comment, dict):
             comment_id = comment.get("comment_id") or comment.get("id")
@@ -1358,26 +1358,37 @@ class RepoApi(giteapy.RepositoryApi):
         )
 
     def create_comment(self, owner: str, repo: str, index: int, comment: str):
-        body = {
-            "body": comment
-        }
-        return self.issue.issue_create_comment(
-            owner=owner,
-            repo=repo,
-            index=index,
-            body=body
-        )
+        def send(body: str):
+            return self.issue.issue_create_comment(
+                owner=owner,
+                repo=repo,
+                index=index,
+                body={"body": body},
+            )
+
+        return self._send_comment_with_fallback(send, comment)
 
     def edit_comment(self, owner: str, repo: str, comment_id: int, comment: str):
-        body = {
-            "body": comment
-        }
-        return self.issue.issue_edit_comment(
-            owner=owner,
-            repo=repo,
-            id=comment_id,
-            body=body
-        )
+        def send(body: str):
+            return self.issue.issue_edit_comment(
+                owner=owner,
+                repo=repo,
+                id=comment_id,
+                body={"body": body},
+            )
+
+        return self._send_comment_with_fallback(send, comment)
+
+    def _send_comment_with_fallback(self, send, comment: str):
+        try:
+            return send(comment)
+        except ApiException as error:
+            if error.status != 500:
+                raise
+            fallback = _replace_non_bmp_characters(comment)
+            if fallback == comment:
+                raise
+            return send(fallback)
 
     def remove_comment(self, owner: str, repo: str, comment_id: int):
         return self.issue.issue_delete_comment(
