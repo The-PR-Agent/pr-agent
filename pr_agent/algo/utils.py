@@ -1151,8 +1151,8 @@ def _extract_labelled_yaml_block(response_text: str) -> str | None:
             parsed = yaml.safe_load(candidate)
             if isinstance(parsed, dict) and parsed:
                 last_candidate = candidate
-        except Exception as e:
-            get_logger().debug(f"Labelled YAML block parse failed: {e}")
+        except Exception:
+            get_logger().debug("Labelled YAML block parse failed")
         i = j + 1
     return last_candidate
 

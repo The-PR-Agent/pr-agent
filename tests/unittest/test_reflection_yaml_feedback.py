@@ -326,3 +326,30 @@ def test_many_yaml_candidates_use_one_stream_and_bounded_read_ahead(monkeypatch)
     assert _extract_labelled_yaml_block(input_text) == "answer: 1"
     assert CountingStream.instances == 1
     assert CountingStream.bytes_read <= len(input_text) + 4096 * (count + 1)
+
+
+def test_last_labelled_yaml_wins_over_quoted_example():
+    reply = (
+        'Example:\n```yaml\ncode_suggestions:\n  - relevant_file: "evil.py"\n```\n'
+        'Final answer:\n```yaml\ncode_suggestions:\n  - relevant_file: "real.py"\n```\n'
+    )
+    assert load_yaml(reply) == {"code_suggestions": [{"relevant_file": "real.py"}]}
+
+
+def test_unclosed_final_labelled_yaml_wins_over_earlier_example():
+    reply = (
+        'Example:\n```yaml\ncode_suggestions:\n  - relevant_file: "evil.py"\n```\n'
+        'Final answer:\n```yaml\ncode_suggestions:\n  - relevant_file: "real.py"\n'
+    )
+    assert load_yaml(reply) == {"code_suggestions": [{"relevant_file": "real.py"}]}
+
+
+def test_labelled_yaml_parse_failure_does_not_log_input(monkeypatch):
+    from unittest.mock import Mock
+
+    logger = Mock()
+    monkeypatch.setattr("pr_agent.algo.utils.get_logger", lambda: logger)
+    reply = 'Example:\n```yaml\nprivate-canary: [bad\n```\nFinal:\n```yaml\nresult: ok\n```\n'
+    assert _extract_labelled_yaml_block(reply) == 'result: ok'
+    assert logger.debug.called
+    assert all('private-canary' not in str(call) for call in logger.debug.call_args_list)
