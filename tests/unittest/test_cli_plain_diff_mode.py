@@ -8,6 +8,7 @@ import pytest
 from git import Repo
 
 from pr_agent import git_providers
+from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.artifacts import get_artifact_context
 from pr_agent.algo.review_json_output import (
     hosted_markdown_artifact,
@@ -203,6 +204,7 @@ def test_missing_diff_file_fails_fast(tmp_path, monkeypatch, capsys):
 
 @pytest.mark.parametrize("command", [
     "review", "review_pr", "improve", "improve_code", "describe", "describe_pr", "generate_labels",
+    "ask", "ask_question",
 ])
 def test_json_output_accepts_pr_review(command, monkeypatch, tmp_path):
     from pr_agent.algo.review_json_output import review_json_output_path
@@ -222,7 +224,7 @@ def test_json_output_accepts_pr_review(command, monkeypatch, tmp_path):
     assert review_json_output_path.get() is None
 
 
-@pytest.mark.parametrize("command", ["describe", "describe_pr"])
+@pytest.mark.parametrize("command", ["describe", "describe_pr", "ask", "ask_question"])
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])
 def test_json_output_accepts_plain_diff_command_aliases(command, input_mode, monkeypatch, tmp_path):
     from pr_agent.algo.review_json_output import review_json_output_path
@@ -254,12 +256,25 @@ def test_json_output_requires_pr_or_diff(target_args, capsys):
 def test_json_output_rejects_non_review_pr_command(monkeypatch, capsys):
     _fail_if_agent_constructed(monkeypatch)
     with pytest.raises(SystemExit, match="2"):
-        run(inargs=["--pr_url", "https://example/pr/1", "--json-output", "out.json", "ask"])
+        run(inargs=["--pr_url", "https://example/pr/1", "--json-output", "out.json", "config"])
     error = capsys.readouterr().err
-    assert "--json-output is only supported for review, improve, describe, or generate_labels commands" in error
+    assert "--json-output is only supported for review, improve, describe, generate_labels, or ask commands" in error
 
 
-@pytest.mark.parametrize("command", ["review", "review_pr", "describe", "improve"])
+@pytest.mark.parametrize("result", [False, RequestOutcome.SKIPPED])
+def test_ask_json_output_propagates_failed_or_skipped_command(result, monkeypatch, tmp_path):
+    class FakeAgent:
+        async def handle_request(self, target, request, notify=None):
+            return result
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
+    output = tmp_path / "answer.json"
+
+    assert run(inargs=["--pr_url", "https://example/pr/1", "--json-output", str(output), "ask"]) == 1
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("command", ["review", "review_pr", "describe", "improve", "ask", "ask_question"])
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])
 def test_plain_diff_rejects_shared_markdown_and_json_path_before_read(
     command, input_mode, monkeypatch, capsys,
@@ -273,7 +288,7 @@ def test_plain_diff_rejects_shared_markdown_and_json_path_before_read(
     assert "--output and --json-output must use different files" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("command", ["review", "describe", "improve"])
+@pytest.mark.parametrize("command", ["review", "describe", "improve", "ask"])
 def test_plain_diff_rejects_hardlinked_markdown_and_json_paths(command, monkeypatch, tmp_path, capsys):
     _fail_if_agent_constructed(monkeypatch)
     markdown_output = tmp_path / "result.md"
@@ -841,11 +856,33 @@ def test_plain_diff_ask_keeps_output_after_command_settings(monkeypatch, tmp_pat
     )
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     output = tmp_path / "answer.md"
+    json_output = tmp_path / "answer.json"
 
-    run(inargs=["--stdin", "--output", str(output), "ask", "Explain.", "--config.publish_output=false"])
+    run(inargs=["--stdin", "--output", str(output), "--json-output", str(json_output),
+                "ask", "Explain.", "--config.publish_output=false"])
 
     assert "The changed line is correct." in output.read_text(encoding="utf-8")
     assert "The changed line is correct." in capsys.readouterr().out
+    assert json.loads(json_output.read_text(encoding="utf-8")) == {
+        "question": "Explain.", "answer": "The changed line is correct.", "usage": {},
+    }
+
+
+def test_plain_diff_ask_keeps_markdown_if_json_output_fails(monkeypatch, tmp_path):
+    async def answer(self, model, system, user, temperature=0.2, **kwargs):
+        return "The change is correct.", "stop"
+
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion", answer,
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+    markdown = tmp_path / "answer.md"
+    missing_json = tmp_path / "missing" / "answer.json"
+
+    assert run(inargs=["--stdin", "--output", str(markdown), "--json-output", str(missing_json),
+                       "ask", "Explain."]) == 1
+    assert "The change is correct." in markdown.read_text(encoding="utf-8")
+    assert not missing_json.exists()
 
 
 @pytest.mark.parametrize(("title", "description"), [
@@ -998,7 +1035,7 @@ def test_json_output_accepts_review_aliases(command, input_mode, monkeypatch, tm
 
 @pytest.mark.parametrize("command", [
     *(name for name in _NON_MARKDOWN_COMMANDS if name != "generate_labels"),
-    "ask", "ask_question", "config", "settings", "help",
+    "config", "settings", "help",
 ])
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])
 def test_json_output_rejects_non_review_commands_before_read(
@@ -1011,7 +1048,7 @@ def test_json_output_rejects_non_review_commands_before_read(
 
     assert exc_info.value.code == 2
     error = capsys.readouterr().err
-    assert "--json-output is only supported for review, improve, describe, or generate_labels commands" in error
+    assert "--json-output is only supported for review, improve, describe, generate_labels, or ask commands" in error
 
 
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])

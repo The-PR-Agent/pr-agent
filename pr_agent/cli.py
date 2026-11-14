@@ -50,6 +50,9 @@ _JSON_DESCRIBE_COMMANDS = frozenset(
 _JSON_LABEL_COMMANDS = frozenset(
     name for name, spec in COMMAND_SPECS.items() if spec.json_output == "labels"
 )
+_JSON_ASK_COMMANDS = frozenset(
+    name for name, spec in COMMAND_SPECS.items() if spec.json_output == "ask"
+)
 _OUTPUT_OPTIONS = ("--output", "--json-output")
 _CLI_CONTEXT_CACHES = (
     "git_provider", "repo_settings", "git_files", "diff_files", "authenticated_provider_settings",
@@ -124,9 +127,11 @@ def _validate_output_options(parser, args, diff_mode):
                 parser.error(f"--output with --pr_url is not supported for command '{command}'")
 
     if json_output is not None:
-        pr_commands = _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS
+        pr_commands = _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS | _JSON_ASK_COMMANDS
         if command not in _JSON_REVIEW_COMMANDS | pr_commands:
-            parser.error("--json-output is only supported for review, improve, describe, or generate_labels commands")
+            parser.error(
+                "--json-output is only supported for review, improve, describe, generate_labels, or ask commands"
+            )
         if not diff_mode and (not args.pr_url or args.issue_url):
             parser.error("--json-output requires --pr_url, --stdin, or --diff-file")
     if output is not None and json_output is not None:
@@ -292,10 +297,10 @@ def run(inargs=None, args=None):
         get_settings().set("CONFIG.CONFIG_BRANCH", cli_branch or env_branch or None)
         get_settings().set("CONFIG.EXTRA_CONFIG_URL", getattr(args, "extra_config_url", None))
         async def inner():
-            # Plain-diff reviews (and /improve, which runs /review) write through their provider; describe
-            # and labels already use the shared JSON writer, as they do with --pr_url.
+            # Plain-diff reviews (and /improve, which runs /review) write through their provider;
+            # describe, labels, and ask use the shared JSON writer in both modes.
             command_json_output = getattr(args, "json_output", None) if (
-                not diff_mode or command in _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS
+                not diff_mode or command in _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS | _JSON_ASK_COMMANDS
             ) else None
             output_token = review_json_output_path.set(command_json_output)
             hosted_token = hosted_markdown_export.set(hosted_markdown_output)
@@ -350,13 +355,16 @@ def run(inargs=None, args=None):
         label_json_required = bool(
             getattr(args, "json_output", None) is not None and command in _JSON_LABEL_COMMANDS
         )
-        json_artifact_required = label_json_required or bool(
+        ask_json_required = bool(
+            getattr(args, "json_output", None) is not None and command in _JSON_ASK_COMMANDS
+        )
+        json_artifact_required = label_json_required or ask_json_required or bool(
             diff_mode and getattr(args, "json_output", None) is not None
             and command in _JSON_REVIEW_COMMANDS | _JSON_DESCRIBE_COMMANDS
         )
         if (settings.config.get("propagate_command_errors", False) or json_artifact_required) and (
             result is False or recorded_failure
-            or (label_json_required and result is RequestOutcome.SKIPPED)
+            or ((label_json_required or ask_json_required) and result is RequestOutcome.SKIPPED)
         ):
             if result is not False and recorded_failure:
                 get_logger().warning("Command reported success but recorded a failure; exiting with an error")
