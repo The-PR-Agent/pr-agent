@@ -2697,3 +2697,55 @@ def test_github_publish_gets_full_original_suggestion(committable_on):
     assert len(validated) == 1
     assert "```suggestion" not in validated[0]["body"]
     assert "-line8" in validated[0]["body"] and "+LINE8" in validated[0]["body"]
+
+
+@pytest.mark.parametrize(
+    "threshold,expected_contents,expected_dropped",
+    [
+        (0, ["high", "low", "none", "string", "garbage", "float", "float-string", "out-of-range"], 0),
+        (6, ["high", "none", "string", "garbage", "float-string", "out-of-range"], 2),
+        (8, ["high", "none", "garbage", "float-string", "out-of-range"], 3),
+        ("not-a-number", ["high", "low", "none", "string", "garbage", "float", "float-string", "out-of-range"], 0),
+        (70, ["high", "low", "none", "string", "garbage", "float", "float-string", "out-of-range"], 0),
+        (-3, ["high", "low", "none", "string", "garbage", "float", "float-string", "out-of-range"], 0),
+        ("inf", ["high", "low", "none", "string", "garbage", "float", "float-string", "out-of-range"], 0),
+        ("nan", ["high", "low", "none", "string", "garbage", "float", "float-string", "out-of-range"], 0),
+    ],
+)
+def test_filter_low_confidence_findings(monkeypatch, threshold, expected_contents, expected_dropped):
+    monkeypatch.setitem(get_settings().pr_reviewer, "min_finding_confidence", threshold)
+    reviewer = _make_reviewer()
+    data = {"review": {"key_issues_to_review": [
+        _key_issue(issue_content="high", confidence=9),
+        _key_issue(issue_content="low", confidence=4),
+        _key_issue(issue_content="none"),
+        _key_issue(issue_content="string", confidence=" 7 "),
+        _key_issue(issue_content="garbage", confidence="very"),
+        _key_issue(issue_content="float", confidence=5.9),
+        _key_issue(issue_content="float-string", confidence="8.5"),
+        _key_issue(issue_content="out-of-range", confidence=15),
+    ]}}
+
+    reviewer._filter_low_confidence_findings(data)
+
+    assert [issue["issue_content"] for issue in data["review"]["key_issues_to_review"]] == expected_contents
+    assert reviewer.low_confidence_filtered_count == expected_dropped
+
+
+@pytest.mark.parametrize("threshold,rendered", [(5, True), (0, False)])
+def test_convert_to_markdown_renders_the_confidence_the_filter_compares(monkeypatch, threshold, rendered):
+    monkeypatch.setitem(get_settings().pr_reviewer, "min_finding_confidence", threshold)
+    output = {"review": {"key_issues_to_review": [
+        _key_issue(issue_content="whole", confidence=8),
+        _key_issue(issue_content="fractional", confidence=8.5),
+        _key_issue(issue_content="string", confidence="7"),
+        _key_issue(issue_content="garbage", confidence="high"),
+        _key_issue(issue_content="out-of-range", confidence=15),
+    ]}}
+
+    markdown = convert_to_markdown_v2(output, gfm_supported=True)
+
+    assert ("Possible Issue (confidence: 8)" in markdown) is rendered
+    assert ("Possible Issue (confidence: 8.5)" in markdown) is rendered
+    assert ("Possible Issue (confidence: 7)" in markdown) is rendered
+    assert markdown.count("confidence:") == (3 if rendered else 0)
