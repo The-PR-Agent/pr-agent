@@ -1,8 +1,9 @@
+from contextlib import contextmanager
 from os.path import abspath, dirname, join
 from pathlib import Path
 
 from dynaconf import Dynaconf
-from starlette_context import context
+from starlette_context import context, request_cycle_context
 
 current_dir = dirname(abspath(__file__))
 
@@ -69,6 +70,18 @@ def get_settings(use_context=True):
         except Exception:
             pass
     return global_settings
+
+
+@contextmanager
+def safe_request_cycle_context(initial_data: dict | None = None):
+    """Enter request_cycle_context and guarantee its ContextVar reset on any exit."""
+    cm = request_cycle_context(initial_data)
+    cm.__enter__()
+    try:
+        yield
+    finally:
+        # starlette-context's bare yield skips reset() when an exception crosses the block.
+        cm.__exit__(None, None, None)
 
 
 DEFAULT_BOT_DISPLAY_NAME = "PR-Agent"
