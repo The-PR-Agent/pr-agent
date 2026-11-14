@@ -78,6 +78,7 @@ def test_otel_callback_with_pr_agent_telemetry_requests_its_own_span(monkeypatch
 @pytest.mark.parametrize("values", [
     {"LITELLM.SUCCESS_CALLBACK": ["otel"]},  # pr-agent telemetry off
     {"OTEL.IS_ENABLED": True},               # litellm otel callback off
+    {"LITELLM.SUCCESS_CALLBACK": ["otel"], "OTEL.IS_ENABLED": "FALSE"},  # string false is off
 ])
 def test_request_span_env_untouched_unless_both_layers_on(monkeypatch, values):
     _build(monkeypatch, **values)

@@ -135,6 +135,14 @@ def test_prometheus_metrics_enabled_reads_settings(monkeypatch):
         {"OTEL.IS_ENABLED": True, "OTEL.EXPORTER_TYPE": "otlp"}))
     assert prometheus_metrics_enabled() is False
 
+    monkeypatch.setattr(prometheus_module, "get_settings", lambda: FakeSettings(
+        {"OTEL.IS_ENABLED": "FALSE", "OTEL.EXPORTER_TYPE": "prometheus"}))
+    assert prometheus_metrics_enabled() is False
+
+    monkeypatch.setattr(prometheus_module, "get_settings", lambda: FakeSettings(
+        {"OTEL.IS_ENABLED": "true", "OTEL.EXPORTER_TYPE": "prometheus"}))
+    assert prometheus_metrics_enabled() is True
+
 
 def test_importing_prometheus_bridge_does_not_import_prometheus_client():
     """The module must never import prometheus_client at import time — a gunicorn

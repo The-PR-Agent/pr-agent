@@ -1,6 +1,7 @@
 import os
 
 from pr_agent.algo.run_output import get_version
+from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 from pr_agent.telemetry.prometheus_multiproc import ensure_prometheus_multiproc_dir
@@ -13,7 +14,7 @@ VALID_OTLP_PROTOCOLS = {OtlpProtocol.HTTP, OtlpProtocol.GRPC}
 def get_otel_config() -> TelemetryConfig:
     """Read and validate telemetry configuration from settings"""
     settings = get_settings()
-    if not settings.get("OTEL.IS_ENABLED", False):
+    if not _as_bool_setting(settings.get("OTEL.IS_ENABLED", False), setting_name="OTEL.IS_ENABLED"):
         return TelemetryConfig()
 
     exporter_type = settings.get("OTEL.EXPORTER_TYPE", None)
