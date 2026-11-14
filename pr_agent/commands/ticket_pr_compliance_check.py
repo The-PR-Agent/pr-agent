@@ -1372,6 +1372,7 @@ async def extract_tickets(git_provider):
                     references.append((project_path, issue_iid))
             tickets_content = []
             own_project = str(getattr(git_provider, "id_project", "") or "")
+            own_visibility = None
             for project_path, issue_iid in references[:MAX_GITLAB_TICKET_LOOKUPS]:
                 try:
                     is_own_project = project_path.casefold() == own_project.casefold()
@@ -1383,11 +1384,23 @@ async def extract_tickets(git_provider):
                         if project is None:
                             continue
                     issue = await _run_ticket_io(project.issues.get, issue_iid)
-                    if not is_own_project and getattr(issue, "confidential", False):
-                        get_logger().warning(
-                            f"Ignoring confidential cross-project GitLab issue: {project_path}#{issue_iid}"
-                        )
-                        continue
+                    if getattr(issue, "confidential", False):
+                        if not is_own_project:
+                            get_logger().warning(
+                                f"Ignoring confidential cross-project GitLab issue: {project_path}#{issue_iid}"
+                            )
+                            continue
+                        # Only a private project restricts its merge requests to members who can also
+                        # read its confidential issues.
+                        if own_visibility is None:
+                            own_project_info = await _run_ticket_io(git_provider.gl.projects.get, project_path)
+                            own_visibility = own_project_info.visibility
+                        if own_visibility != "private":
+                            get_logger().warning(
+                                f"Ignoring confidential GitLab issue in a {own_visibility} project: "
+                                f"{project_path}#{issue_iid}"
+                            )
+                            continue
 
                     issue_body = issue.description or ""
                     if len(issue_body) > MAX_TICKET_CHARACTERS:

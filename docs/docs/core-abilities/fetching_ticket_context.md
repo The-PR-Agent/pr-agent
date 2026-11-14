@@ -117,7 +117,9 @@ project must share the MR project's top-level namespace. For private or internal
 requester must also have read access; CLI runs use the PR author when no command actor is available. Repository
 settings and comment arguments cannot change this allowlist. An empty list disables cross-repository ticket
 reads, including public repositories. Approve only content that may be included in the consuming PR's review or
-description. Ticket lookup limits are separate from the sibling-file limit. PyGithub may follow an issue transfer,
+description. On GitLab, a confidential issue is used only when it belongs to the MR's own private project, where
+every MR reader can also read it; in public and internal projects, and in other projects, it is skipped. Ticket
+lookup limits are separate from the sibling-file limit. PyGithub may follow an issue transfer,
 but results from a different repository are discarded before prompt use. Reference a transferred issue by its
 current repository and number.
 
