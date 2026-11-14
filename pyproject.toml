@@ -184,6 +184,10 @@ lint.select = [
   "FURB",   # refurb
   "PERF",   # perflint
   "PLE",    # pylint (error)
+  "PLR0402",  # manual-from-import
+  "PLR1711",  # useless-return
+  "PLR1716",  # boolean-chained-comparison
+  "PLR5501",  # collapsible-else-if
 ]
 
 lint.exclude = ["api/code_completions"]
