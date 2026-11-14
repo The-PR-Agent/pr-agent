@@ -5,11 +5,13 @@ automatic commands received one of the three results. The two questions worth pi
 whether each command emits at all, and what it sends: a sink is not a git provider, so the GFM
 table `/improve` publishes to GitHub is not what should arrive in Slack.
 """
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pr_agent.algo.review_json_output import hosted_markdown_export
+from pr_agent.algo.review_json_output import hosted_markdown_export, review_json_output_path
+from pr_agent.algo.run_details import add_token_usage
 from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions, render_suggestions_markdown
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.commands.pr_questions import NO_ANALYZABLE_FILES_NOTE, PRQuestions
@@ -114,6 +116,43 @@ async def test_ask_emits_before_publishing_the_answer(monkeypatch, no_analyzable
     if show_help:
         assert "<details>" in events[1][1]
     assert sink["git_provider"] is command.git_provider
+
+
+@pytest.mark.parametrize("no_analyzable_files", [False, True])
+async def test_ask_writes_json_without_publishing_or_sinks(monkeypatch, tmp_path, no_analyzable_files):
+    command = PRQuestions.__new__(PRQuestions)
+    command.pr_url = "https://github.com/org/repo/pull/1"
+    command.question_str = "What changed?"
+    command.prediction = None
+    command.git_provider = MagicMock()
+    command.git_provider.is_supported.return_value = False
+
+    async def prepare(_model):
+        command.no_analyzable_files = no_analyzable_files
+        command.prediction = " The return value changed. "
+        if not no_analyzable_files:
+            add_token_usage({"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25})
+
+    command._prepare_prediction = prepare
+    sinks = AsyncMock()
+    monkeypatch.setattr("pr_agent.commands.pr_questions.retry_with_fallback_models",
+                        lambda fn, model_type: fn("fake-model"))
+    monkeypatch.setattr("pr_agent.commands.pr_questions.push_outputs_async", sinks)
+    monkeypatch.setitem(get_settings().config, "publish_output", False)
+    output = tmp_path / "answer.json"
+    token = review_json_output_path.set(str(output))
+    try:
+        await command.run()
+    finally:
+        review_json_output_path.reset(token)
+
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        "question": "What changed?",
+        "answer": NO_ANALYZABLE_FILES_NOTE if no_analyzable_files else "The return value changed.",
+        "usage": {} if no_analyzable_files else {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
+    }
+    command.git_provider.publish_comment.assert_not_called()
+    sinks.assert_not_awaited()
 
 
 @pytest.mark.parametrize("publish_output", [True, False])

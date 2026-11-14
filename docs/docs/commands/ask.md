@@ -12,6 +12,30 @@ It can be invoked manually by commenting on any PR:
 /ask "..."
 ```
 
+## CLI JSON output
+
+The CLI can write a single JSON file containing the question, answer, and available token usage:
+
+```bash
+python -m pr_agent.cli --pr_url https://github.com/org/repo/pull/123 \
+    --json-output answer.json ask "What changed?"
+```
+
+This also works with `ask_question` and in [Plain Diff mode](../usage-guide/plain_diff_mode.md):
+
+```bash
+git diff | python -m pr_agent.cli --stdin --json-output answer.json ask "What changed?"
+```
+
+Place `--json-output` before the command. The file is overwritten for each invocation and has
+`question`, `answer`, and `usage` fields. `usage` is an empty object when token counts are unavailable,
+including when the command explains that no changed files could be analyzed without calling a model.
+
+For PR URLs, setting `config.publish_output = false` in the host configuration suppresses PR
+comments without suppressing the requested JSON file. The existing
+[push outputs](../usage-guide/push_outputs.md) feature serves a different purpose: it delivers
+opt-in Ask records to operator-configured sinks and requires publishing to be enabled.
+
 ## Example usage
 
 <img src="/img/ask_comment.png" alt="Ask Comment" width="512" />
