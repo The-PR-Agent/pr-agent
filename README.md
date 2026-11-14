@@ -93,10 +93,16 @@ Add automated PR reviews to your repository with a simple workflow file:
 name: PR Agent
 on:
   pull_request:
+    # PR-Agent skips synchronize by default. Include it in github_action_config.pr_actions
+    # for auto commands, or enable github_action_config.handle_push_trigger for push_commands (takes precedence).
     types: [opened, synchronize]
 jobs:
   pr_agent_job:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
     - name: PR Agent action step
       uses: the-pr-agent/pr-agent@main
