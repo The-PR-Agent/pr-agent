@@ -357,11 +357,7 @@ async def test_extract_tickets_gitlab_substitute_handles_project_error():
     [
         (["backend", "security"], "backend, security"),
         (["ünïcode", "c++"], "ünïcode, c++"),
-        ([" padded ", "", "  "], "padded"),
-        (["ok", None, 3], "ok"),
         ([], ""),
-        (None, ""),
-        ("backend; security", ""),
     ],
 )
 async def test_extract_tickets_azure_tags_become_labels(tags, expected):

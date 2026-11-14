@@ -1439,11 +1439,7 @@ async def extract_tickets(git_provider):
                     if len(requirements_str) > MAX_TICKET_CHARACTERS:
                         requirements_str = requirements_str[:MAX_TICKET_CHARACTERS] + "..."
 
-                    # The provider returns the work item's System.Tags under "tags".
-                    tags = ticket.get("tags") or []
-                    if not isinstance(tags, list):
-                        tags = []
-                    labels_str = ", ".join(tag.strip() for tag in tags if isinstance(tag, str) and tag.strip())
+                    labels_str = ", ".join(ticket.get("tags", []))
 
                     tickets_content.append(
                         {
