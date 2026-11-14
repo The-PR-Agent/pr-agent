@@ -1439,6 +1439,8 @@ async def extract_tickets(git_provider):
                     if len(requirements_str) > MAX_TICKET_CHARACTERS:
                         requirements_str = requirements_str[:MAX_TICKET_CHARACTERS] + "..."
 
+                    labels_str = ", ".join(ticket.get("tags", []))
+
                     tickets_content.append(
                         {
                             "ticket_id": ticket.get("id"),
@@ -1446,7 +1448,7 @@ async def extract_tickets(git_provider):
                             "title": ticket.get("title"),
                             "body": ticket_body_str,
                             "requirements": requirements_str,
-                            "labels": ", ".join(ticket.get("labels", [])),
+                            "labels": labels_str,
                         }
                     )
                 except Exception as e:

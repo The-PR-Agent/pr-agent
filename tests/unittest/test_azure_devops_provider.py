@@ -384,6 +384,21 @@ def test_get_work_items_propagates_request_and_field_mapping_failures():
         provider.get_linked_work_items()
 
 
+@pytest.mark.asyncio
+async def test_extract_tickets_passes_work_item_tags_as_labels():
+    from pr_agent.commands.ticket_pr_compliance_check import extract_tickets
+
+    raw_items = [_work_item(7, **{"System.Title": "Tagged", "System.Tags": "backend; security"})]
+    provider = _linked_work_item_provider([SimpleNamespace(id="7")], raw_items)
+    provider.get_user_description = MagicMock(return_value="")
+
+    with patch("pr_agent.commands.ticket_pr_compliance_check.add_jira_tickets",
+               side_effect=lambda gp, tc: tc):
+        tickets = await extract_tickets(provider)
+
+    assert tickets[0]["labels"] == "backend, security"
+
+
 def _language_provider(items):
     provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
     provider.workspace_slug = "proj"

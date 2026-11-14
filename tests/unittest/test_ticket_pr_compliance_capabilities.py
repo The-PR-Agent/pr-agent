@@ -158,7 +158,7 @@ class _CustomAzureSubstitute(_BaseStubProvider):
                     "title": "Work Item 999",
                     "body": "Work item body 999",
                     "acceptance_criteria": "AC 999",
-                    "labels": ["azure-label"],
+                    "tags": ["azure-label"],
                 }
             ]
         )
@@ -349,6 +349,22 @@ async def test_extract_tickets_gitlab_substitute_handles_project_error():
     provider.gl.projects.get.side_effect = RuntimeError("GitLab API error")
     tickets = await extract_tickets(provider)
     assert tickets == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tags", "expected"),
+    [
+        (["backend", "security"], "backend, security"),
+        (["ünïcode", "c++"], "ünïcode, c++"),
+        ([], ""),
+    ],
+)
+async def test_extract_tickets_azure_tags_become_labels(tags, expected):
+    work_item = {"id": 1, "url": "u", "title": "t", "body": "b", "tags": tags}
+    provider = _CustomAzureSubstitute(work_items=[work_item])
+    tickets = await extract_tickets(provider)
+    assert tickets[0]["labels"] == expected
 
 
 @pytest.mark.asyncio

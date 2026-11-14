@@ -1480,7 +1480,7 @@ class TestAzureDevopsExtraction:
                 "title": "WI 1",
                 "body": long_body,
                 "acceptance_criteria": "AC1",
-                "labels": ["a", "b"],
+                "tags": ["a", "b"],
             },
             {
                 "id": 2,
