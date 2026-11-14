@@ -235,12 +235,29 @@ class PRAddDocs:
                     if new_code_snippet is None:
                         continue
 
+                    existing_code = (
+                        new_code_snippet.split("\n", 1)[0]
+                        if doc_placement == "after"
+                        else new_code_snippet.rsplit("\n", 1)[-1]
+                    )
                     fence = get_suggestion_fence(new_code_snippet)
                     body = (f"**Suggestion:** Proposed documentation\n{fence}suggestion\n"
                             + new_code_snippet + f"\n{fence}")
-                    docs.append({'body': body, 'relevant_file': relevant_file,
-                                 "relevant_lines_start": relevant_line,
-                                 "relevant_lines_end": relevant_line})
+                    docs.append({
+                        'body': body,
+                        'relevant_file': relevant_file,
+                        "relevant_lines_start": relevant_line,
+                        "relevant_lines_end": relevant_line,
+                        "original_suggestion": {
+                            "existing_code": existing_code,
+                            "improved_code": new_code_snippet,
+                            "relevant_file": relevant_file,
+                            "relevant_lines_start": relevant_line,
+                            "relevant_lines_end": relevant_line,
+                            "suggestion_content": "Proposed documentation",
+                            "label": "documentation",
+                        },
+                    })
             except Exception:
                 if get_verbosity_level() >= 2:
                     get_logger().info(f"Could not parse code docs: {d}")
