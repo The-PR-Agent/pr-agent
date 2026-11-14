@@ -73,6 +73,20 @@ def test_disabled_by_default_returns_inert_config(monkeypatch):
     assert config.otlp_headers is None
 
 
+@pytest.mark.parametrize("value", ["FALSE", "False ", "no", "off", "0"])
+def test_string_false_is_enabled_keeps_telemetry_off(monkeypatch, value):
+    _use_settings(monkeypatch, {**VALID_ENABLED_SETTINGS, "OTEL.IS_ENABLED": value})
+
+    assert get_otel_config().is_enabled is False
+
+
+@pytest.mark.parametrize("value", ["true", "TRUE", "yes", "on"])
+def test_string_true_is_enabled_turns_telemetry_on(monkeypatch, value):
+    _use_settings(monkeypatch, {**VALID_ENABLED_SETTINGS, "OTEL.IS_ENABLED": value})
+
+    assert get_otel_config().is_enabled is True
+
+
 def test_enabled_with_valid_console_settings(monkeypatch):
     _use_settings(monkeypatch, dict(VALID_ENABLED_SETTINGS))
 

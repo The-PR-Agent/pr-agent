@@ -593,7 +593,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         if settings.get("LITELLM.TURN_OFF_MESSAGE_LOGGING", False):
             litellm.turn_off_message_logging = True
         # Keep LiteLLM request spans separate from pr-agent command spans when both OTEL layers are enabled.
-        if self._litellm_otel_callback_enabled() and settings.get("OTEL.IS_ENABLED", False):
+        if self._litellm_otel_callback_enabled() and _as_bool_setting(
+            settings.get("OTEL.IS_ENABLED", False), setting_name="OTEL.IS_ENABLED"
+        ):
             os.environ.setdefault("USE_OTEL_LITELLM_REQUEST_SPAN", "true")
         repetition_penalty = get_repetition_penalty()
         if repetition_penalty is not None:

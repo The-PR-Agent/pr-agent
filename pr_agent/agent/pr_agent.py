@@ -348,13 +348,15 @@ class PRAgent:
         # Exceptions raised inside are caught below, but a BaseException (e.g. the
         # CancelledError a webhook timeout raises) still escapes the span, and the SDK
         # would auto-record its message and stacktrace — request content, so opt-in.
-        record_details = bool(get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False))
+        record_details = _as_bool_setting(
+            get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False), setting_name="OTEL.INCLUDE_ERROR_DETAILS"
+        )
         with get_tracer().start_as_current_span(
             "pr_agent.command",
             record_exception=record_details,
             set_status_on_exception=record_details,
         ) as span:
-            if get_settings().get("OTEL.INCLUDE_PR_URL", False):
+            if _as_bool_setting(get_settings().get("OTEL.INCLUDE_PR_URL", False), setting_name="OTEL.INCLUDE_PR_URL"):
                 span.set_attribute("pr_agent.pr_url", pr_url)
             try:
                 if propagate_command_errors is None:
@@ -441,7 +443,9 @@ class PRAgent:
                 get_logger().warning(f"Unknown command: {action}")
                 span.set_status(StatusCode.ERROR)
                 span.set_attribute("error.type", "unknown_command")
-                if get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False):
+                if _as_bool_setting(
+                    get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False), setting_name="OTEL.INCLUDE_ERROR_DETAILS"
+                ):
                     span.set_attribute("error.message", f"Unknown command: {action}")
                 if language_overridden:
                     settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)
