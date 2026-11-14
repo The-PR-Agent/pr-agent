@@ -1738,11 +1738,15 @@ def test_summarized_suggestions_use_the_target_file_indentation():
     assert "+\t}" in summary
 
 
-@pytest.mark.parametrize(("language", "labels", "impact"), [
-    ("es-AR", ("Categoría", "Sugerencia", "Impacto", "Importancia de la sugerencia", "Motivo"), "Alto"),
-    ("en-US", ("Category", "Suggestion", "Impact", "Suggestion importance", "Why"), "High"),
+@pytest.mark.parametrize(("language", "labels", "intro", "high", "medium", "low"), [
+    ("es-AR", ("Categoría", "Sugerencia", "Impacto", "Importancia de la sugerencia", "Motivo"),
+     "Explora estas sugerencias de código opcionales:", "Alto", "Medio", "Bajo"),
+    ("en-US", ("Category", "Suggestion", "Impact", "Suggestion importance", "Why"),
+     "Explore these optional code suggestions:", "High", "Medium", "Low"),
+    ("zh-TW", ("分類", "建議", "影響", "建議重要程度", "理由"),
+     "以下程式碼建議可視需要採用：", "高", "中", "低"),
 ])
-def test_improve_summary_localizes_fixed_labels_not_content_or_identity(language, labels, impact):
+def test_improve_summary_localizes_fixed_labels_not_content_or_identity(language, labels, intro, high, medium, low):
     saved = snapshot_settings(["config.response_language", "config.is_auto_command",
                                "pr_code_suggestions.new_score_mechanism"])
     try:
@@ -1759,11 +1763,10 @@ def test_improve_summary_localizes_fixed_labels_not_content_or_identity(language
         assert "Avoid duplicated work" in summary
         assert "Avoid repeated work" in summary
         assert all(label in summary for label in labels)
-        assert f">{impact}\n\n</td>" in summary
-        assert ("Explora estas sugerencias" if language.startswith("es") else
-                "Explore these optional") in summary
-        assert command.get_score_str(8) == ("Medio" if language.startswith("es") else "Medium")
-        assert command.get_score_str(6) == ("Bajo" if language.startswith("es") else "Low")
+        assert f">{high}\n\n</td>" in summary
+        assert intro in summary
+        assert command.get_score_str(8) == medium
+        assert command.get_score_str(6) == low
     finally:
         restore_settings(saved)
 
