@@ -31,7 +31,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        run: pipx install uv==0.13.7
+        run: pipx install uv==0.13.8
 
       - name: Install test dependencies and verified grammars
         id: hardening-dependencies
@@ -169,7 +169,7 @@ jobs:
       # itself, so setup-python is not needed either.
       - id: uv
         name: Install uv
-        run: pipx install uv==0.13.7
+        run: pipx install uv==0.13.8
 
       - id: test
         name: Test on Python ${{ matrix.python-version }}
