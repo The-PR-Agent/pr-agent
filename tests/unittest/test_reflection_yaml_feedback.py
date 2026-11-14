@@ -328,6 +328,22 @@ def test_many_yaml_candidates_use_one_stream_and_bounded_read_ahead(monkeypatch)
     assert CountingStream.bytes_read <= len(input_text) + 4096 * (count + 1)
 
 
+def test_quoted_yaml_sample_before_answer_keeps_final_block():
+    input_text = """A sample from the diff:
+```yaml
+code_suggestions:
+  - relevant_file: sample.py
+```
+Final answer:
+```yaml
+code_suggestions:
+  - relevant_file: real.py
+```
+"""
+    result = load_yaml(input_text)
+    assert result['code_suggestions'][0]['relevant_file'] == 'real.py'
+
+
 def test_last_labelled_yaml_wins_over_quoted_example():
     reply = (
         'Example:\n```yaml\ncode_suggestions:\n  - relevant_file: "evil.py"\n```\n'
