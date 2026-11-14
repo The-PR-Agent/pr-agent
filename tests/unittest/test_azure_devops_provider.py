@@ -286,7 +286,7 @@ def test_get_linked_work_items_canonicalizes_ids_and_preserves_response_mapping_
         },
     ]
     provider.azure_devops_board_client.get_work_items.assert_called_once_with(
-        project="my-project", ids=[1, 2], error_policy="Fail"
+        project="my-project", ids=[1, 2], expand="Links", error_policy="Fail"
     )
 
 
@@ -333,7 +333,7 @@ def test_get_linked_work_items_deduplicates_before_enforcing_batch_limit():
 
     assert len(provider.get_linked_work_items()) == 200
     provider.azure_devops_board_client.get_work_items.assert_called_once_with(
-        project="my-project", ids=list(range(1, 201)), error_policy="Fail"
+        project="my-project", ids=list(range(1, 201)), expand="Links", error_policy="Fail"
     )
 
 
@@ -382,6 +382,52 @@ def test_get_work_items_propagates_request_and_field_mapping_failures():
     ]
     with pytest.raises(AttributeError):
         provider.get_linked_work_items()
+
+
+def test_get_work_items_resolves_html_url_from_links_and_fallback():
+    provider = _linked_work_item_provider([])
+    provider.pr_url = "https://dev.azure.com/my-org/my-project/_git/my-repo/pullrequest/17"
+
+    item_with_links_dict = SimpleNamespace(
+        id=10,
+        url="https://dev.azure.com/my-org/proj-guid/_apis/wit/workItems/10",
+        fields={"System.Title": "With links dict"},
+        _links={"html": {"href": "https://dev.azure.com/my-org/my-project/_workitems/edit/10"}},
+    )
+    item_with_reference_links = SimpleNamespace(
+        id=20,
+        url="https://dev.azure.com/my-org/proj-guid/_apis/wit/workItems/20",
+        fields={"System.Title": "With reference links"},
+        _links=SimpleNamespace(links={"html": {"href": "https://dev.azure.com/my-org/my-project/_workitems/edit/20"}}),
+    )
+    item_without_links = SimpleNamespace(
+        id=30,
+        url="https://dev.azure.com/my-org/proj-guid/_apis/wit/workItems/30",
+        fields={"System.Title": "Without links"},
+        _links=None,
+    )
+    item_fallback_to_url = SimpleNamespace(
+        id=40,
+        url="https://dev.azure.com/my-org/proj-guid/_apis/wit/workItems/40",
+        fields={"System.Title": "No pr_url fallback"},
+        _links=None,
+    )
+
+    provider.azure_devops_board_client.get_work_items.return_value = [
+        item_with_links_dict,
+        item_with_reference_links,
+        item_without_links,
+    ]
+    items = provider.get_work_items([10, 20, 30])
+    assert items[0]["url"] == "https://dev.azure.com/my-org/my-project/_workitems/edit/10"
+    assert items[1]["url"] == "https://dev.azure.com/my-org/my-project/_workitems/edit/20"
+    assert items[2]["url"] == "https://dev.azure.com/my-org/my-project/_workitems/edit/30"
+
+    # Fallback to item.url when pr_url is unset or does not contain '/_git/'
+    provider.pr_url = None
+    provider.azure_devops_board_client.get_work_items.return_value = [item_fallback_to_url]
+    items_fallback = provider.get_work_items([40])
+    assert items_fallback[0]["url"] == "https://dev.azure.com/my-org/proj-guid/_apis/wit/workItems/40"
 
 
 def _language_provider(items):
