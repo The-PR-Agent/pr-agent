@@ -1939,10 +1939,19 @@ class PRCodeSuggestions:
         the runner after its siblings settle. Kept as a method because the
         recovery step re-enters it for each fallback model.
         """
+        # On the first attempt the budget is not built yet, so the length half of the
+        # check is skipped; a fallback model re-entering here has it and gates on it.
+        attempt_budget = getattr(self, "_suggestion_attempt_budget", None)
         return await run_chunk_batch(
             chunk_pairs,
             lambda pair: self._get_prediction(model, pair[0], pair[1]),
             parallel=get_settings().pr_code_suggestions.parallel_calls,
+            stagger_first=self.ai_handler.prompt_cache_active(
+                model,
+                prompt_tokens=(
+                    attempt_budget.token_handler.prompt_tokens if attempt_budget is not None else None
+                ),
+            ),
             reporter=getattr(self, "_chunk_progress", None),
         )
 
