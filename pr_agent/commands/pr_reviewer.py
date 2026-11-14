@@ -72,7 +72,12 @@ from pr_agent.algo.review_finding_state import (
     render_lifecycle_summary,
     render_previous_findings,
 )
-from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
+from pr_agent.algo.review_json_output import (
+    hosted_markdown_artifact,
+    hosted_markdown_export,
+    review_json_output_path,
+    write_review_json_output,
+)
 from pr_agent.algo.review_merge import all_key_issues, chunk_hit_findings_limit, merge_review_chunks
 from pr_agent.algo.run_details import (
     command_failed,
@@ -428,13 +433,16 @@ class PRReviewer:
         is_incremental = False
         if args and len(args) >= 1:
             arg = args[0]
-            if arg == "-i":
+            if arg == "-i" and not hosted_markdown_export.get():
                 is_incremental = True
         incremental = IncrementalPR(is_incremental)
         return incremental
 
     async def run(self) -> None:
-        if _as_bool_setting(get_settings().pr_reviewer.get("per_commit_review", False)):
+        if (
+            _as_bool_setting(get_settings().pr_reviewer.get("per_commit_review", False))
+            and not hosted_markdown_export.get()
+        ):
             await self._run_per_commit()
         else:
             await self._run_review()
@@ -779,6 +787,12 @@ class PRReviewer:
                     reason += ": no major issues detected."
                 get_logger().info(reason)
                 get_settings().data = {"artifact": pr_review}
+                if (
+                    hosted_markdown_export.get()
+                    and partial_review_error is None
+                    and not self.review_failed_chunk_count
+                ):
+                    hosted_markdown_artifact.set(pr_review)
                 self._publish_merge_recommendation_status()
                 review_completed = True
                 self._review_done = True
@@ -2014,6 +2028,9 @@ class PRReviewer:
         thread. Awaiting it keeps the event loop responsive and still delivers the
         output before the command returns.
         """
+        if hosted_markdown_export.get():
+            self._pending_sink_output = None
+            return
         pending = getattr(self, "_pending_sink_output", None)
         if pending is None:
             return

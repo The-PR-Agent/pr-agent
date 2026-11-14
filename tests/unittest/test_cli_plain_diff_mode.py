@@ -1,6 +1,7 @@
 import builtins
 import io
 import json
+import os
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,6 +9,11 @@ from git import Repo
 
 from pr_agent import git_providers
 from pr_agent.algo.artifacts import get_artifact_context
+from pr_agent.algo.review_json_output import (
+    hosted_markdown_artifact,
+    hosted_markdown_config_error,
+    hosted_markdown_export,
+)
 from pr_agent.cli import _resolve_output_option, commands, run, set_parser
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
@@ -26,6 +32,8 @@ _SETTINGS_KEYS = [
     "config.cli_mode",
     "config.config_branch",
     "config.extra_config_url",
+    "data.artifact",
+    "pr_reviewer.per_commit_review",
 ]
 
 _DIFF = (
@@ -279,14 +287,7 @@ def test_plain_diff_rejects_hardlinked_markdown_and_json_paths(command, monkeypa
     assert "--output and --json-output must use different files" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(
-    "target_args",
-    [
-        ["--pr_url", "https://example/pr/1"],
-        ["--issue_url", "https://example/issue/1"],
-        [],
-    ],
-)
+@pytest.mark.parametrize("target_args", [["--issue_url", "https://example/issue/1"], []])
 def test_markdown_output_outside_plain_diff_fails_before_dispatch(target_args, monkeypatch, capsys):
     _fail_if_agent_constructed(monkeypatch)
 
@@ -294,7 +295,7 @@ def test_markdown_output_outside_plain_diff_fails_before_dispatch(target_args, m
         run(inargs=[*target_args, "--output", "out.md", "review"])
 
     assert exc_info.value.code == 2
-    assert "--output is only supported in plain-diff mode" in capsys.readouterr().err
+    assert "--output requires plain-diff mode or a hosted --pr_url" in capsys.readouterr().err
 
 
 def test_markdown_output_rejects_local_git_mode_before_dispatch(monkeypatch, capsys):
@@ -309,7 +310,291 @@ def test_markdown_output_rejects_local_git_mode_before_dispatch(monkeypatch, cap
         ])
 
     assert exc_info.value.code == 2
-    assert "--output is only supported in plain-diff mode" in capsys.readouterr().err
+    assert "--output requires plain-diff mode or a hosted --pr_url" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("command", ["review", "review_pr", "improve", "improve_code"])
+def test_hosted_review_writes_markdown_without_publishing(command, monkeypatch, tmp_path, cfg):
+    """Exercise real command argument handling, including repo settings overrides."""
+    captured = {}
+
+    def repo_settings_override(_):
+        get_settings().set("config.publish_output", True)
+        get_settings().set("pr_reviewer.per_commit_review", True)
+
+    class FakeReview:
+        async def run(self):
+            captured["publish_output"] = get_settings().config.publish_output
+            captured["per_commit_review"] = get_settings().pr_reviewer.per_commit_review
+            captured["hosted_markdown_export"] = hosted_markdown_export.get()
+            hosted_markdown_artifact.set("# Review\n\nNo issues found.\n")
+
+    async def make_command(self, command_cls, pr_url, args=None, **kwargs):
+        captured["pr_url"] = pr_url
+        return FakeReview()
+
+    cfg("config.publish_output", True)
+    cfg("pr_reviewer.per_commit_review", True)
+    monkeypatch.setattr("pr_agent.agent.pr_agent.apply_repo_settings", repo_settings_override)
+    monkeypatch.setattr("pr_agent.agent.pr_agent.enforce_request_policy", lambda _: True)
+    monkeypatch.setattr("pr_agent.agent.pr_agent.PRAgent._create_command", make_command)
+    output = tmp_path / "review.md"
+
+    assert run(inargs=[
+        "--pr_url", "https://github.com/example/repo/pull/1",
+        "--output", str(output), command, "--config.publish_output=true",
+    ]) is None
+
+    assert captured == {
+        "publish_output": False,
+        "per_commit_review": True,
+        "hosted_markdown_export": True,
+        "pr_url": "https://github.com/example/repo/pull/1",
+    }
+    assert output.read_text(encoding="utf-8") == "# Review\n\nNo issues found.\n"
+    assert get_settings().config.publish_output is True
+
+
+@pytest.mark.parametrize("command", ["ask", "describe", "generate_labels"])
+def test_hosted_markdown_rejects_other_commands(command, monkeypatch, capsys):
+    _fail_if_agent_constructed(monkeypatch)
+
+    with pytest.raises(SystemExit, match="2"):
+        run(inargs=["--pr_url", "https://example.com/pr/1", "--output", "out.md", command])
+
+    assert "--output with --pr_url is not supported" in capsys.readouterr().err
+
+
+def test_hosted_markdown_rejects_malformed_url(monkeypatch, capsys):
+    _fail_if_agent_constructed(monkeypatch)
+
+    with pytest.raises(SystemExit) as exc_info:
+        run(inargs=["--pr_url", "http://[::1", "--output", "review.md", "review"])
+
+    assert exc_info.value.code == 2
+    assert "--output requires plain-diff mode or a hosted --pr_url" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("outcome,artifact,failed", [
+    (False, "# Incomplete review", False),
+    (True, None, False),
+    (True, "# Recorded failure", True),
+])
+def test_hosted_review_failure_preserves_existing_file(
+    outcome, artifact, failed, monkeypatch, tmp_path,
+):
+    from pr_agent.algo.run_details import record_command_failure
+
+    class FakeAgent:
+        async def handle_request(self, target, request, notify=None):
+            if artifact is not None:
+                hosted_markdown_artifact.set(artifact)
+            if failed:
+                record_command_failure()
+            return outcome
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
+    output = tmp_path / "review.md"
+    output.write_text("previous review", encoding="utf-8")
+
+    assert run(inargs=["--pr_url", "https://example.com/pr/1", "--output", str(output), "review"]) == 1
+    assert output.read_text(encoding="utf-8") == "previous review"
+
+
+@pytest.mark.asyncio
+async def test_hosted_markdown_export_uses_full_review_with_per_commit_enabled(monkeypatch, cfg):
+    from unittest.mock import AsyncMock
+
+    from pr_agent.commands.pr_reviewer import PRReviewer
+
+    cfg("pr_reviewer.per_commit_review", True)
+    reviewer = object.__new__(PRReviewer)
+    full_review = AsyncMock()
+    per_commit = AsyncMock()
+    monkeypatch.setattr(reviewer, "_run_review", full_review)
+    monkeypatch.setattr(reviewer, "_run_per_commit", per_commit)
+    assert reviewer.parse_incremental(["-i"]).is_incremental
+    token = hosted_markdown_export.set(True)
+    try:
+        assert not reviewer.parse_incremental(["-i"]).is_incremental
+        await reviewer.run()
+    finally:
+        hosted_markdown_export.reset(token)
+
+    assert reviewer.parse_incremental(["-i"]).is_incremental
+    full_review.assert_awaited_once()
+    per_commit.assert_not_awaited()
+
+
+
+def test_hosted_review_with_invalid_repo_settings_preserves_output(monkeypatch, tmp_path):
+    class FakeAgent:
+        async def handle_request(self, target, request, notify=None):
+            hosted_markdown_config_error.set(True)
+            hosted_markdown_artifact.set("# Review using fallback settings")
+            return True
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
+    output = tmp_path / "review.md"
+    output.write_text("# Existing review", encoding="utf-8")
+
+    assert run(inargs=[
+        "--pr_url", "https://example.com/pr/1",
+        "--output", str(output), "review",
+    ]) == 1
+    assert output.read_text(encoding="utf-8") == "# Existing review"
+
+
+def test_hosted_review_rejects_caller_supplied_artifact(monkeypatch, tmp_path):
+    """A request with no generated review must not export configurable artifact text."""
+
+    class FakeAgent:
+        async def handle_request(self, target, request, notify=None):
+            # Simulate configuration or CLI arguments that populate unrelated settings data.
+            get_settings().data = {"artifact": "# Not a real review"}
+            return True
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
+    output = tmp_path / "review.md"
+
+    assert run(inargs=[
+        "--pr_url", "https://example.com/pr/1", "--output", str(output),
+        "review", "--data.artifact=# Not a real review",
+    ]) == 1
+    assert not output.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink and mode semantics differ on Windows")
+def test_hosted_review_preserves_symlink_and_existing_mode(monkeypatch, tmp_path):
+    class FakeAgent:
+        async def handle_request(self, target, request, notify=None):
+            hosted_markdown_artifact.set("# New review")
+            return True
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
+    target = tmp_path / "review.md"
+    target.write_text("# Old review", encoding="utf-8")
+    target.chmod(0o640)
+    link = tmp_path / "linked.md"
+    link.symlink_to(target.name)
+
+    assert run(inargs=["--pr_url", "https://example.com/pr/1", "--output", str(link), "review"]) is None
+    assert link.is_symlink()
+    assert target.read_text(encoding="utf-8") == "# New review"
+    assert target.stat().st_mode & 0o777 == 0o640
+
+
+def test_hosted_review_ignores_previous_settings_artifact(monkeypatch, tmp_path, cfg):
+    """A successful command that never creates a review must not export old data."""
+    cfg("data.artifact", "# Stale review")
+
+    class FakeAgent:
+        async def handle_request(self, target, request, notify=None):
+            return True
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
+    output = tmp_path / "review.md"
+
+    assert run(inargs=["--pr_url", "https://example.com/pr/1", "--output", str(output), "review"]) == 1
+    assert not output.exists()
+
+
+def test_hosted_review_failed_replace_preserves_existing_output(monkeypatch, tmp_path):
+    class FakeAgent:
+        async def handle_request(self, target, request, notify=None):
+            hosted_markdown_artifact.set("# New review")
+            return True
+
+    def fail_replace(src, dst):
+        raise OSError("simulated replacement failure")
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
+    output = tmp_path / "review.md"
+    output.write_text("# Existing review", encoding="utf-8")
+    monkeypatch.setattr("pr_agent.cli.os.replace", fail_replace)
+
+    assert run(inargs=["--pr_url", "https://example.com/pr/1", "--output", str(output), "review"]) == 1
+    assert output.read_text(encoding="utf-8") == "# Existing review"
+    assert sorted(tmp_path.iterdir()) == [output]
+
+
+def test_hosted_review_encoding_failure_preserves_existing_output(monkeypatch, tmp_path):
+    class FakeAgent:
+        async def handle_request(self, target, request, notify=None):
+            hosted_markdown_artifact.set("# Invalid UTF-8 surrogate: " + chr(0xD800))
+            return True
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
+    output = tmp_path / "review.md"
+    output.write_text("# Existing review", encoding="utf-8")
+
+    assert run(inargs=["--pr_url", "https://example.com/pr/1", "--output", str(output), "review"]) == 1
+    assert output.read_text(encoding="utf-8") == "# Existing review"
+    assert sorted(tmp_path.iterdir()) == [output]
+
+
+def test_hosted_review_policy_skip_leaves_no_markdown(monkeypatch, tmp_path):
+    from pr_agent.agent.request_policy import RequestOutcome
+
+    class FakeAgent:
+        async def handle_request(self, target, request, notify=None):
+            return RequestOutcome.SKIPPED
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
+    output = tmp_path / "review.md"
+
+    assert run(inargs=["--pr_url", "https://example.com/pr/1", "--output", str(output), "review"]) == 1
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("output_name", ["missing/review.md", "invalid\0review.md"])
+def test_hosted_review_unwritable_output_returns_failure(monkeypatch, tmp_path, output_name):
+    class FakeAgent:
+        async def handle_request(self, target, request, notify=None):
+            hosted_markdown_artifact.set("# Review")
+            return True
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
+    output = tmp_path / output_name
+
+    args = ["--pr_url", "https://example.com/pr/1", "--output", str(output)]
+    if chr(0) in output_name:
+        args.extend(["--json-output", str(tmp_path / "review.json")])
+    assert run(inargs=[*args, "review"]) == 1
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_hosted_review_rejects_shared_markdown_and_json_destination(monkeypatch, tmp_path, capsys):
+    _fail_if_agent_constructed(monkeypatch)
+    output = tmp_path / "review.md"
+
+    with pytest.raises(SystemExit, match="2"):
+        run(inargs=[
+            "--pr_url", "https://example.com/pr/1",
+            "--output", str(output), "--json-output", str(output), "review",
+        ])
+
+    assert "--output and --json-output must use different files" in capsys.readouterr().err
+
+
+def test_hosted_review_preserves_late_json_alias(monkeypatch, tmp_path):
+    markdown = tmp_path / "review.md"
+    json_path = tmp_path / "review.json"
+
+    class FakeAgent:
+        async def handle_request(self, target, request, notify=None):
+            json_path.write_text('{"ok": true}', encoding="utf-8")
+            markdown.hardlink_to(json_path)
+            hosted_markdown_artifact.set("# Review")
+            return True
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
+    assert run(inargs=[
+        "--pr_url", "https://example.com/pr/1",
+        "--output", str(markdown), "--json-output", str(json_path), "review",
+    ]) == 1
+    assert json_path.read_text(encoding="utf-8") == '{"ok": true}'
+    assert markdown.samefile(json_path)
 
 
 @pytest.mark.parametrize("option", ["--output", "--json-output"])

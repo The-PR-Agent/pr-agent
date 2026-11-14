@@ -2,6 +2,7 @@ import copy
 
 import pytest
 
+from pr_agent.algo.review_json_output import hosted_markdown_config_error, hosted_markdown_export
 from pr_agent.config_loader import (
     DEFAULT_BOT_DISPLAY_NAME,
     MAX_BOT_DISPLAY_NAME_LENGTH,
@@ -114,6 +115,22 @@ def test_apply_repo_settings_attributes_global_error_and_still_applies_local(mon
         assert "unclosed_section" not in provider.comments[0]
     finally:
         settings.pr_reviewer.extra_instructions = original_extra_instructions
+
+
+def test_hosted_markdown_export_does_not_publish_invalid_repo_settings(monkeypatch):
+    provider = FakeErrorReportingProvider([("local", b"[unclosed_section\n")])
+    monkeypatch.setattr(utils, "get_git_provider_with_context", lambda _url: provider)
+
+    token = hosted_markdown_export.set(True)
+    error_token = hosted_markdown_config_error.set(False)
+    try:
+        apply_repo_settings("https://github.example.com/org/service/pull/1")
+        assert hosted_markdown_config_error.get() is True
+    finally:
+        hosted_markdown_config_error.reset(error_token)
+        hosted_markdown_export.reset(token)
+
+    assert provider.comments == []
 
 
 def test_handle_configurations_errors_uses_persistent_comment_when_supported():

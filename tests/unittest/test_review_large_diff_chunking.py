@@ -12,6 +12,7 @@ import pytest
 
 from pr_agent.algo.pr_processing import PackedPRDiffs, PreparedPRDiff, _pack_pr_multi_diffs
 from pr_agent.algo.review_finding_state import ParsedReviewState, reconcile_review_findings
+from pr_agent.algo.review_json_output import hosted_markdown_artifact, hosted_markdown_export
 from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
@@ -427,9 +428,48 @@ async def test_a_malformed_chunk_is_retried_without_repeating_successful_chunks(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("has_successful_chunks", [True, False])
+async def test_hosted_export_captures_completed_review_from_reviewer():
+    reviewer = _make_reviewer()
+    reviewer.vars = {}
+    reviewer._get_prediction = AsyncMock(return_value=CHUNK_A)
+    settings_values = {
+        "config.model": "primary",
+        "config.fallback_models": [],
+        "config.publish_output": False,
+        "pr_reviewer.enable_large_pr_chunking": False,
+    }
+    snapshot = snapshot_settings(settings_values)
+    try:
+        for key, value in settings_values.items():
+            get_settings().set(key, value)
+        with (
+            patch("pr_agent.commands.pr_reviewer.extract_and_cache_pr_tickets", new_callable=AsyncMock),
+            patch("pr_agent.commands.pr_reviewer.fit_related_tickets_to_prompt_budget",
+                  return_value=({}, reviewer.token_handler)),
+            patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", [])),
+            patch.object(reviewer, "_prepare_pr_review", return_value="# Complete review"),
+        ):
+            export_token = hosted_markdown_export.set(True)
+            artifact_token = hosted_markdown_artifact.set(None)
+            try:
+                await reviewer._run_review()
+                assert hosted_markdown_artifact.get() == "# Complete review"
+            finally:
+                hosted_markdown_artifact.reset(artifact_token)
+                hosted_markdown_export.reset(export_token)
+    finally:
+        restore_settings(snapshot)
+
+    assert reviewer.review_failed_chunk_count == 0
+    reviewer.git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_successful_chunks,hosted_export", [
+    (True, False), (False, False), (True, True),
+])
 async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succeeded(
-    chunking_enabled, has_successful_chunks,
+    chunking_enabled, has_successful_chunks, hosted_export,
 ):
     reviewer = _make_reviewer()
     reviewer.vars = {}
@@ -442,7 +482,7 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
     settings_values = {
         "config.model": "primary",
         "config.fallback_models": ["fallback"],
-        "config.publish_output": True,
+        "config.publish_output": not hosted_export,
         "config.is_auto_command": False,
         "config.propagate_command_errors": False,
         "pr_reviewer.persistent_comment": False,
@@ -464,13 +504,24 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
             patch.object(reviewer, "_prepare_pr_review", side_effect=lambda: _render_review(reviewer)) as render,
         ):
             # Exercise the real fallback chain and run()'s terminal publication path.
-            await reviewer.run()
+            export_token = hosted_markdown_export.set(hosted_export)
+            artifact_token = hosted_markdown_artifact.set(None)
+            try:
+                await reviewer.run()
+                captured_export = hosted_markdown_artifact.get()
+            finally:
+                hosted_markdown_artifact.reset(artifact_token)
+                hosted_markdown_export.reset(export_token)
     finally:
         restore_settings(snapshot)
 
     calls = [call.args for call in reviewer._get_prediction.await_args_list]
     assert calls[:3] == [("primary", "chunk-a"), ("primary", "chunk-b"), ("primary", "chunk-c")]
-    published = reviewer.git_provider.publish_comment.call_args.args[0]
+    if hosted_export:
+        reviewer.git_provider.publish_comment.assert_not_called()
+        assert captured_export is None
+    else:
+        published = reviewer.git_provider.publish_comment.call_args.args[0]
     if not has_successful_chunks:
         render.assert_not_called()
         assert reviewer._structured_review_data is None
@@ -489,7 +540,8 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
         "files_not_reviewed": [],
         "files_partially_reviewed": [],
     }
-    assert "1 chunk(s) failed and are not covered by this review." in published
+    if not hosted_export:
+        assert "1 chunk(s) failed and are not covered by this review." in published
     issues = reviewer.prediction_data["review"]["key_issues_to_review"]
     assert [issue["relevant_file"].strip() for issue in issues] == ["a.py", "c.py"]
 
