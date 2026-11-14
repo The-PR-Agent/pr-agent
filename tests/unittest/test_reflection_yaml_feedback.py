@@ -142,3 +142,191 @@ def test_python_fence_inside_why_preserves_all_suggestions():
     result = load_yaml(input_text)
     assert isinstance(result, dict)
     assert len(result["code_suggestions"]) == 2
+
+
+def test_bare_fence_inside_why_preserves_all_suggestions():
+    input_text = (
+        "Lead\n"
+        "```yaml\n"
+        "code_suggestions:\n"
+        "  - suggestion_score: 8\n"
+        "    why: |\n"
+        "      ```\n"
+        "      x = 1\n"
+        "      ```\n"
+        "      more prose\n"
+        "    relevant_line: 1\n"
+        "  - suggestion_score: 9\n"
+        "    why: Second suggestion\n"
+        "    relevant_line: 2\n"
+        "```\n"
+    )
+    result = load_yaml(input_text)
+    assert isinstance(result, dict)
+    assert len(result["code_suggestions"]) == 2
+
+
+def test_indented_outer_yaml_fence_with_bare_fences_inside_scalar():
+    input_text = (
+        "Lead\n"
+        "  ```yaml\n"
+        "  code_suggestions:\n"
+        "    - suggestion_score: 8\n"
+        "      why: |\n"
+        "        ```\n"
+        "        x = 1\n"
+        "        ```\n"
+        "    - suggestion_score: 9\n"
+        "      why: Second suggestion\n"
+        "  ```\n"
+        "After\n"
+    )
+    result = load_yaml(input_text)
+    assert isinstance(result, dict)
+    assert [item["suggestion_score"] for item in result["code_suggestions"]] == [8, 9]
+    assert "x = 1" in result["code_suggestions"][0]["why"]
+
+
+def test_indented_outer_close_retains_legacy_recovery():
+    input_text = (
+        "Lead\n"
+        "```yaml\n"
+        "code_suggestions:\n"
+        "  - suggestion_score: 8\n"
+        "    why: First\n"
+        "  - suggestion_score: 9\n"
+        "    why: Second\n"
+        "  ```\n"
+        "After\n"
+    )
+    result = load_yaml(input_text)
+    assert isinstance(result, dict)
+    assert [item["suggestion_score"] for item in result["code_suggestions"]] == [8, 9]
+
+
+def test_block_scalar_chomping_and_indent_indicators_keep_bare_fences():
+    for indicator in ("|-", ">-", "|2-"):
+        input_text = (
+            "Lead\n"
+            "```yaml\n"
+            "code_suggestions:\n"
+            "  - suggestion_score: 8\n"
+            f"    why: {indicator}\n"
+            "      ```\n"
+            "      example\n"
+            "      ```\n"
+            "  - suggestion_score: 9\n"
+            "    why: Second\n"
+            "```\n"
+        )
+        result = load_yaml(input_text)
+        assert [item["suggestion_score"] for item in result["code_suggestions"]] == [8, 9]
+        assert "example" in result["code_suggestions"][0]["why"]
+
+
+def test_comment_containing_scalar_marker_is_not_block_scalar():
+    input_text = "Lead\n```yaml\nvalue: 1 # note: |\n  ```\nAfter\n"
+    assert load_yaml(input_text) == {"value": 1}
+
+
+def test_indented_close_below_block_scalar_content_indent():
+    input_text = "Lead\n```yaml\ncode_suggestions:\n  - why: |\n      text\n   ```\nAfter\n"
+    assert load_yaml(input_text)["code_suggestions"][0]["why"] == "text"
+
+
+def test_multiline_quoted_scalar_does_not_start_block_scalar():
+    input_text = 'Lead\n```yaml\nvalue: "something\n  note: |\n   text"\n   ```\nAfter\n'
+    assert load_yaml(input_text)["value"] == "something note: | text"
+
+
+def test_scalar_scan_does_not_copy_and_rescan_suffixes(monkeypatch):
+    from io import StringIO
+
+    import pr_agent.algo.utils as utils
+
+    class CountingStream(StringIO):
+        bytes_read = 0
+
+        def read(self, size=-1):
+            result = super().read(size)
+            self.bytes_read += len(result)
+            assert self.bytes_read <= len(input_text) + 4096
+            return result
+
+    monkeypatch.setattr(utils, "StringIO", CountingStream)
+    input_text = "Lead\n```yaml\nvalue: " + " " * 50000 + "1\n```\n"
+    assert _extract_labelled_yaml_block(input_text) is not None
+
+
+def test_quoted_key_with_hash_and_explicit_scalar_indent():
+    input_text = (
+        "Lead\n```yaml\n"
+        "'why # literal': |2-\n"
+        "    deeply indented\n"
+        "  ```\n"
+        "  example\n"
+        "  ```\n"
+        "other: 1\n"
+        "```\n"
+    )
+    result = load_yaml(input_text)
+    assert "example" in result["why # literal"]
+    assert result["other"] == 1
+
+
+def test_list_block_scalar_with_commented_colon_and_explicit_indent():
+    input_text = (
+        "Lead\n```yaml\nitems:\n"
+        "  - |2 # note: literal\n"
+        "      more-indented\n"
+        "    ```\n"
+        "    example\n"
+        "    ```\n"
+        "other: 1\n```\n"
+    )
+    result = load_yaml(input_text)
+    assert "example" in result["items"][0]
+    assert result["other"] == 1
+
+
+def test_quote_inside_plain_scalar_does_not_hide_later_block_scalar():
+    input_text = (
+        'Lead\n```yaml\ncode_suggestions:\n'
+        '  - why: say "hello\n'
+        '  - why: |\n'
+        '      ```\n'
+        '      code\n'
+        '      ```\n'
+        '  - why: last\n'
+        '```\nAfter\n'
+    )
+    result = load_yaml(input_text)
+    assert len(result['code_suggestions']) == 3
+    assert 'code' in result['code_suggestions'][1]['why']
+    assert result['code_suggestions'][2]['why'] == 'last'
+
+
+def test_many_yaml_candidates_use_one_stream_and_bounded_read_ahead(monkeypatch):
+    from io import StringIO
+
+    import pr_agent.algo.utils as utils
+
+    class CountingStream(StringIO):
+        instances = 0
+        bytes_read = 0
+
+        def __init__(self, value):
+            super().__init__(value)
+            type(self).instances += 1
+
+        def read(self, size=-1):
+            result = super().read(size)
+            type(self).bytes_read += len(result)
+            return result
+
+    monkeypatch.setattr(utils, "StringIO", CountingStream)
+    count = 300
+    input_text = "Lead\n" + ("```yaml\n- a\n```\n" * count) + "```yaml\nanswer: 1\n```\n"
+    assert _extract_labelled_yaml_block(input_text) == "answer: 1"
+    assert CountingStream.instances == 1
+    assert CountingStream.bytes_read <= len(input_text) + 4096 * (count + 1)

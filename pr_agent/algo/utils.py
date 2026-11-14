@@ -1093,28 +1093,57 @@ def _extract_labelled_yaml_block(response_text: str) -> str | None:
     labelled block embedded later is otherwise unreachable.
     """
     lines = response_text.split('\n')
+    offsets = []
+    offset = 0
+    for line in lines:
+        offsets.append(offset)
+        offset += len(line) + 1
+    stream = StringIO(response_text)
     i = 0
     n = len(lines)
     while i < n:
-        stripped = lines[i].strip()
+        line = lines[i]
+        stripped = line.strip()
         if not (stripped.startswith('```yaml') or stripped.startswith('```yml')):
             i += 1
             continue
+
+        # YAML's own scanner identifies block and quoted scalar spans without
+        # treating their indented bare Markdown fences as outer delimiters.
+        scan_offset = min(len(response_text), offsets[i] + len(line) + 1)
+        stream.seek(scan_offset)
+        scalar_spans = []
+        try:
+            scalar_spans.extend(
+                (scan_offset + token.start_mark.index, scan_offset + token.end_mark.index)
+                for token in yaml.scan(stream, Loader=yaml.SafeLoader)
+                if isinstance(token, ScalarToken) and token.style in ('|', '>', "'", '"')
+            )
+        except yaml.YAMLError:
+            # The outer Markdown fence itself is not YAML; prior spans remain usable.
+            pass
+
         j = i + 1
         block_lines = []
         fence_depth = 1
+        span_index = 0
         while j < n:
-            j_stripped = lines[j].strip()
+            line = lines[j]
+            j_stripped = line.strip()
+            while span_index < len(scalar_spans) and offsets[j] >= scalar_spans[span_index][1]:
+                span_index += 1
+            in_scalar = (span_index < len(scalar_spans)
+                         and scalar_spans[span_index][0] < offsets[j] < scalar_spans[span_index][1])
             if j_stripped.startswith('```') and j_stripped != '```':
                 fence_depth += 1
-                block_lines.append(lines[j])
+                block_lines.append(line)
                 j += 1
                 continue
-            if j_stripped == '```':
+            if j_stripped == '```' and (fence_depth > 1 or not in_scalar):
                 fence_depth -= 1
                 if fence_depth == 0:
                     break
-            block_lines.append(lines[j])
+            block_lines.append(line)
             j += 1
         if fence_depth != 0:
             break
