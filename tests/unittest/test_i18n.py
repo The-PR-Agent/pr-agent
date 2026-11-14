@@ -63,7 +63,10 @@ def _flatten(path):
 def test_shipped_catalog_matches_english_keys_and_placeholders(path):
     english = _flatten(i18n.CATALOG_DIR / "en.toml")
     catalog = _flatten(path)
-    assert set(catalog) <= set(english), f"keys missing from en.toml: {set(catalog) - set(english)}"
+    if path.stem in {"en", "es"}:
+        assert set(catalog) <= set(english), f"keys missing from en.toml: {set(catalog) - set(english)}"
+    else:
+        assert set(catalog) == set(english), f"{path.name}: catalog keys differ from en.toml"
     for key, text in catalog.items():
         assert _placeholders(text) == _placeholders(english[key]), key
 
@@ -73,7 +76,12 @@ def test_shipped_catalog_matches_english_keys_and_placeholders(path):
     ("es-AR", ["es", "en"]),
     ("ES_ar", ["es", "en"]),
     (" es ", ["es", "en"]),
-    ("pt-BR", ["en"]),
+    ("pt-BR", ["pt-br", "en"]),
+    ("PT_br", ["pt-br", "en"]),
+    ("pt-PT-x-private", ["pt-pt", "en"]),
+    ("zh_TW", ["zh-tw", "en"]),
+    ("AR_sa", ["ar", "en"]),
+    ("xx-YY", ["en"]),
     ("Spanish", ["en"]),
     ("../es", ["en"]),
     ("", ["en"]),
@@ -114,15 +122,20 @@ def _review(**fields):
 
 
 @pytest.mark.parametrize("gfm_supported", [True, False])
-def test_review_summary_renders_labels_in_the_response_language(language, gfm_supported):
-    language("es-AR")
+@pytest.mark.parametrize(("locale", "labels"), [
+    ("es-AR", ("Esfuerzo estimado de revisión", "Sin pruebas relevantes",
+               "No se identificaron problemas de seguridad", "Áreas recomendadas para revisar", "Posible problema")),
+    ("zh-TW", ("預估審查工作量", "未找到相關測試", "未發現資安疑慮", "建議優先審查的部分", "可能的問題")),
+    ("ar", ("الجهد المقدر للمراجعة", "لا توجد اختبارات ذات صلة", "لم تُكتشف مخاوف أمنية",
+            "مجالات التركيز الموصى بها للمراجعة", "مشكلة محتملة")),
+])
+def test_review_summary_renders_labels_in_the_response_language(language, gfm_supported, locale, labels):
+    language(locale)
     issue = {"relevant_file": "a.py", "issue_header": "Possible bug", "issue_content": "Leak.",
              "start_line": 1, "end_line": 1}
     output = convert_to_markdown_v2(_review(key_issues_to_review=[issue]), gfm_supported=gfm_supported)
 
-    for label in ("Esfuerzo estimado de revisión", "Sin pruebas relevantes",
-                  "No se identificaron problemas de seguridad", "Áreas recomendadas para revisar",
-                  "Posible problema"):
+    for label in labels:
         assert label in output
     for label in ("Estimated effort", "No relevant tests", "No security concerns", "Recommended focus",
                   "Possible Issue", "key observations"):

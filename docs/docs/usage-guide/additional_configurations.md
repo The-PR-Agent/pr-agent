@@ -158,7 +158,49 @@ Generated language guidance applies only while the command runs. Earlier generat
 
 Some text in PR-Agent comments is written by PR-Agent, not by the model: labels, table headers and status lines. PR-Agent translates this text when it ships a catalog for the language of `response_language`. The tag is matched without regard to case or to `-` versus `_`, and region subtags are dropped until a catalog matches: `es-AR` uses the `es` catalog. When no catalog matches, or a catalog has no translation for a text, that text stays in U.S. English.
 
-Catalogs ship for English (`en`) and Spanish (`es`). In the `/review` comment, the intro line, the effort, tests, security and key-issue labels, the resolved-findings section, the persistent-review update lines and the "Preparing review..." message are translated. The agent run details section is translated for every command. Everything else stays in U.S. English: the review heading (set it with `pr_reviewer.review_heading`), the other `/review` fields (ticket compliance, risk level, failure modes and the other opt-in fields), the review coverage footer, chunk progress, the comments of the other commands and the labels added to the PR. Numbers keep the U.S. format.
+Catalogs ship for the following languages and regional variants:
+
+| Language | Catalog code |
+| --- | --- |
+| Arabic | `ar` |
+| Bengali | `bn` |
+| Chinese, Simplified (China) | `zh-cn` |
+| Chinese, Traditional (Taiwan) | `zh-tw` |
+| Czech | `cs` |
+| Danish | `da` |
+| Dutch | `nl` |
+| English | `en` |
+| Finnish | `fi` |
+| French | `fr` |
+| German | `de` |
+| Hebrew | `he` |
+| Hindi | `hi` |
+| Hungarian | `hu` |
+| Indonesian | `id` |
+| Italian | `it` |
+| Japanese | `ja` |
+| Korean | `ko` |
+| Persian | `fa` |
+| Polish | `pl` |
+| Portuguese (Brazil) | `pt-br` |
+| Portuguese (Portugal) | `pt-pt` |
+| Romanian | `ro` |
+| Russian | `ru` |
+| Spanish | `es` |
+| Swedish | `sv` |
+| Thai | `th` |
+| Turkish | `tr` |
+| Ukrainian | `uk` |
+| Vietnamese | `vi` |
+
+The 28 new catalogs were drafted and cross-checked with multiple frontier LLMs and an automated code-review
+harness. The Chinese catalogs (`zh-cn` and `zh-tw`) also received human review by the contributor.
+The other 26 catalogs were machine-drafted and AI-reviewed, but have not undergone native-speaker human review.
+Corrections from native speakers are welcome.
+
+Use `zh-CN` or `zh-TW` for Chinese, and `pt-BR` or `pt-PT` for Portuguese. There is no shared `zh` or `pt` catalog, and script tags such as `zh-Hant` are not mapped to a regional catalog.
+
+In the `/review` comment, the intro line, the effort, tests, security and key-issue labels, the resolved-findings section, the finding lifecycle summary, the suggested-fix label, the persistent-review update lines and the "Preparing review..." message are translated. `/improve` and `/improve_code` now run `/review`; their one-line notice is also translated. The agent run details section is translated for every command. Other fixed text stays in U.S. English: the review heading (set it with `pr_reviewer.review_heading`), the other `/review` fields (ticket compliance, risk level, failure modes and the other opt-in fields), the review coverage footer, chunk progress, other commands' comments outside their run details, and the labels added to the PR. Numbers keep the U.S. format.
 
 To add a language, copy `pr_agent/settings/i18n/en.toml` to a file named after the language code, such as `pt.toml` or `pt-br.toml`, and translate its values. Keep each `{placeholder}` unchanged.
 
