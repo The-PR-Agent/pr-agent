@@ -14,6 +14,7 @@ from pr_agent.algo.utils import decode_user_text_args
 from pr_agent.config_loader import global_settings
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.servers import bitbucket_app, bitbucket_server_webhook, github_app
+from pr_agent.servers.github_common import handle_file_question_comment
 from pr_agent.servers.utils import is_ask_command_comment, is_command_comment
 
 
@@ -329,6 +330,76 @@ async def test_github_review_comment_question_routes_as_in_the_action(
         assert file_question == dict.fromkeys(FILE_QUESTION_CONTEXT_KEYS)
     # No eyes reaction: the provider adds it through the issue comment endpoint, which has no review comments.
     assert reactions == [(123, True)]
+
+
+@pytest.mark.parametrize(("overrides", "missing_field"), [
+    ({"path": None}, None),
+    ({"path": ""}, None),
+    ({"path": "   "}, None),
+    ({"path": 123}, None),
+    ({}, "path"),
+])
+async def test_github_file_question_rejects_invalid_path(monkeypatch, overrides, missing_field):
+    comment = {
+        "body": "/ask Why this file?",
+        "subject_type": "file",
+        "path": "src/app.py",
+        "id": 123,
+        "in_reply_to_id": 456,
+        "html_url": "https://github.com/org/repo/pull/1#discussion_r123",
+        "pull_request_url": "https://api.github.com/repos/org/repo/pulls/1",
+    }
+    comment.update(overrides)
+    if missing_field:
+        comment.pop(missing_field)
+
+    def unexpected_provider(**_kwargs):
+        pytest.fail("Invalid file questions must not reach the agent")
+
+    monkeypatch.setattr(github_app, "get_git_provider_with_context", unexpected_provider)
+
+    with request_cycle_context({}):
+        # The Action calls this same helper and stops processing when it raises.
+        with pytest.raises(ValueError, match="Invalid file-level review comment metadata"):
+            handle_file_question_comment({"comment": comment}, comment["body"])
+        assert all(context.get(key) is None for key in FILE_QUESTION_CONTEXT_KEYS)
+
+        # The App must not continue with an unscoped /ask after catching the error.
+        await github_app.handle_comments_on_pr(
+            {"action": "created", "comment": comment}, "pull_request_review_comment", "human-user", "42",
+            "created", {}, mock.AsyncMock(),
+        )
+        assert all(context.get(key) is None for key in FILE_QUESTION_CONTEXT_KEYS)
+
+
+@pytest.mark.parametrize(("subject_type", "command"), [
+    ("file", "/ask_line"),
+    ("line", "/ask"),
+    ("line", "/ask_line"),
+])
+async def test_github_review_comment_context_error_does_not_dispatch(monkeypatch, subject_type, command):
+    comment = {
+        "body": f"{command} Why this line?",
+        "subject_type": subject_type,
+        "id": 123,
+        "start_line": None,
+        "line": 1,
+        "diff_hunk": "",
+        "side": "RIGHT",
+        "pull_request_url": "https://api.github.com/repos/org/repo/pulls/1",
+        # Missing path causes handle_line_comments to fail.
+    }
+
+    def unexpected_provider(**_kwargs):
+        pytest.fail("Malformed review comment must not be dispatched")
+
+    monkeypatch.setattr(github_app, "get_git_provider_with_context", unexpected_provider)
+    with request_cycle_context({"settings": copy.deepcopy(global_settings)}):
+        await github_app.handle_comments_on_pr(
+            {"action": "created", "comment": comment}, "pull_request_review_comment", "human-user", "42",
+            "created", {}, mock.AsyncMock(),
+        )
+        assert all(context.get(key) is None for key in FILE_QUESTION_CONTEXT_KEYS)
 
 
 async def _run_bitbucket_comment_webhook(

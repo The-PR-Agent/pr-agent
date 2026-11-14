@@ -165,7 +165,9 @@ async def handle_comments_on_pr(body: dict[str, Any],
                                 or handle_line_comments(body, comment_body))
                 disable_eyes = True
         except Exception as e:
-            get_logger().error("Failed to get log context", artifact={'error': e})
+            get_logger().error("Failed to handle review comment context", artifact={'error': e})
+            if body["comment"].get("subject_type") in ("line", "file") and is_ask_command_comment(comment_body):
+                return {}
     else:
         return {}
     log_context["api_url"] = api_url

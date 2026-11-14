@@ -149,6 +149,8 @@ def handle_file_question_comment(body: dict, comment_body: str) -> list[str] | N
             and comment_body.split(maxsplit=1)[0].lower() in ("/ask", "/ask_question")):
         parts = comment_body.strip().split(maxsplit=1)
         question = parts[1] if len(parts) > 1 else ""
+        if not isinstance(comment.get("path"), str) or not comment["path"].strip():
+            raise ValueError("Invalid file-level review comment metadata")
         context["file_question_path"] = comment["path"]
         context["file_question_comment_id"] = comment.get("in_reply_to_id") or comment["id"]
         context["file_question_origin_comment_id"] = comment["id"]
