@@ -112,7 +112,8 @@ Run PR-Agent locally on your repository:
 
 ```bash
 pip install "pr-agent[github]"
-export OPENAI_KEY=your_key_here
+export OPENAI__KEY=your_openai_key
+export GITHUB__USER_TOKEN=your_github_token
 pr-agent --pr_url https://github.com/owner/repo/pull/123 review
 ```
 Git provider SDKs are optional extras: install the one for your provider ([list](https://docs.pr-agent.ai/installation/locally/#using-pip-package)), or `pr-agent[all]` for every integration.
