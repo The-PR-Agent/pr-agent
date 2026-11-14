@@ -362,7 +362,7 @@ push_commands = [
 ]
 ```
 
-Note that to use the 'handle_push_trigger' feature, you need to give the gitlab webhook also the "Push events" scope.
+To use `handle_push_trigger`, enable GitLab `Merge request events`. New commits trigger a merge request `update` event with `oldrev`; the separate `Push events` trigger is not required.
 
 The GitLab webhook can also respond to the bot being assigned or explicitly re-requested as a reviewer on an open MR.
 The configuration toggle `handle_reviewer_assignment` can be used to enable this feature.
