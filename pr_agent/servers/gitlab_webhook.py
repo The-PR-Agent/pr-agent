@@ -21,7 +21,7 @@ from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
-from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.config_loader import get_bot_display_name, get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.request_timeout import get_http_request_timeout, refresh_session_request_timeout
 from pr_agent.git_providers.utils import apply_host_settings, apply_repo_settings
@@ -427,6 +427,39 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
     return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"}))
 
 
+def revoke_auto_approval_on_push(data: dict) -> None:
+    """Dismiss PR-Agent's approval when a push changes the merge request code it approved.
+
+    Call this before any filter that may skip the event: an approval must not outlive
+    what it was given for just because the push came from a bot or the MR is ignored.
+    """
+    if data.get("object_kind") != "merge_request":
+        return
+    object_attributes = data.get("object_attributes") or {}
+    if object_attributes.get("action") != "update" or not object_attributes.get("oldrev"):
+        return
+    mr_url = object_attributes.get("url")
+    # The gates are host-only, so read them after the trusted host layer and before any repository override.
+    try:
+        apply_host_settings()
+    except Exception as e:
+        get_logger().warning(f"Could not apply host settings before approval revocation: {type(e).__name__}")
+    config = get_settings().config
+    if not mr_url or not _as_bool_setting(
+            config.get("enable_auto_approval", False), setting_name="config.enable_auto_approval"):
+        return
+    # A dry run writes nothing, dismissals included.
+    if not _as_bool_setting(config.get("publish_output", True), default=True):
+        return
+    try:
+        if not get_git_provider_with_context(mr_url).revoke_auto_approval(
+            f"{get_bot_display_name()} withdrew its approval: new commits were pushed."
+        ):
+            get_logger().error("Could not confirm that PR-Agent's approvals were dismissed after a push")
+    except Exception as e:
+        get_logger().exception(f"Failed to dismiss PR-Agent approvals after a push, error: {e}")
+
+
 async def process_gitlab_event(data: dict, log_context: dict):
     """Process a verified GitLab webhook payload to completion.
 
@@ -434,6 +467,7 @@ async def process_gitlab_event(data: dict, log_context: dict):
     directly in the second Lambda invocation when the webhook was handed off.
     """
     get_logger().info("GitLab data", artifact=payload_log_summary(data, ("object_kind",)))
+    revoke_auto_approval_on_push(data)
     sender = data.get("user", {}).get("username", "unknown")
     sender_id = data.get("user", {}).get("id", "unknown")
 
