@@ -444,6 +444,11 @@ def _exchange_azure_oidc_token(selector, environment, native=None):
     # and refresh/TTL behavior. Only the outer exchange's inputs are request-owned.
     native_globals["os"] = SimpleNamespace(getenv=captured_getenv)
     native_globals["azure_ad_cache"] = SimpleNamespace(get_cache=get_cache, set_cache=set_cache)
+    # The native exchange reads and fills the cache in module-level helpers.
+    for name in ("_cached_oidc_token", "_exchange_oidc_token"):
+        if not isinstance(native_globals.get(name), FunctionType):
+            raise RuntimeError("LiteLLM's Azure OIDC exchange interface is incompatible")
+        native_globals[name] = _rebind_to_globals(native_globals[name], native_globals)
     exchange = _rebind_to_globals(native, native_globals)
     return exchange(
         selector,
