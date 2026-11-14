@@ -1247,6 +1247,8 @@ class GitLabProvider(GitProvider):
         if not getattr(self, 'mr_commits', None):
             # gitlab returns commits newest-first; reverse to match PyGithub's oldest-first ordering
             self.mr_commits = list(self.mr.commits(per_page=100))[::-1]
+            if self.mr_commits:
+                self._cache_latest_commit_url(self.mr_commits[-1])
 
         self.incremental.commits_range = self.get_commit_range()
         if not self.incremental.commits_range:
@@ -1390,8 +1392,11 @@ class GitLabProvider(GitProvider):
         return self.mr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
 
     def get_pr_commits(self) -> list[PRCommit]:
+        raw_commits = list(self.mr.commits(per_page=100))[::-1]
+        if raw_commits:
+            self._cache_latest_commit_url(raw_commits[-1])
         commits = []
-        for commit in list(self.mr.commits(per_page=100))[::-1]:
+        for commit in raw_commits:
             parent_ids = getattr(commit, "parent_ids", None)
             commits.append(PRCommit(sha=commit.id, message=commit.message or "",
                                     url=getattr(commit, "web_url", "") or "",
@@ -1957,6 +1962,11 @@ class GitLabProvider(GitProvider):
         except (GitlabError, RequestException) as e:
             get_logger().exception(f"Could not update merge request {self.id_mr} description: {e}")
             raise
+
+    def _cache_latest_commit_url(self, commit) -> None:
+        url = commit.get("web_url") if isinstance(commit, dict) else getattr(commit, "web_url", None)
+        if isinstance(url, str) and url:
+            self._latest_commit_url = url
 
     def get_latest_commit_url(self):
         if (cached_url := getattr(self, "_latest_commit_url", None)) is not None:
@@ -3660,8 +3670,11 @@ class GitLabProvider(GitProvider):
         """
         max_tokens = get_settings().get("CONFIG.MAX_COMMITS_TOKENS", None)
         try:
-            commit_messages_list = [commit['message'] for commit in self.mr.commits(per_page=100)._list]
+            commits = list(self.mr.commits(per_page=100)._list)
+            commit_messages_list = [commit['message'] for commit in commits]
             commit_messages_str = "\n".join([f"{i + 1}. {message}" for i, message in enumerate(commit_messages_list)])
+            if commits:
+                self._cache_latest_commit_url(commits[0])
         except (GitlabError, RequestException, KeyError, TypeError, AttributeError):
             commit_messages_str = ""
         if max_tokens:
