@@ -160,7 +160,8 @@ def map_documentation_files_to_contents(base_path: str, doc_files: list[str],
                             f"{max_allowed_file_len}, so it will be trimmed."
                         )
                         content = content[:max_allowed_file_len]
-                    file_path = str(file).replace(str(base_path), '')
+                    # The key names the file in the prompt and becomes its source link, so keep "/" on Windows.
+                    file_path = str(file).replace(str(base_path), '').replace(os.sep, '/')
                     returned_dict[file_path] = content.strip()
             except Exception as e:
                 get_logger().warning(f"Error while reading the file {file}: {e}")
