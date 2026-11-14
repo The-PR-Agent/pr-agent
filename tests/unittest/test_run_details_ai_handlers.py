@@ -96,6 +96,8 @@ async def test_langchain_handler_records_successful_call_without_usage(monkeypat
     langchain_openai.ChatOpenAI = type("ChatOpenAI", (), {})
     langchain_openai.AzureChatOpenAI = type("AzureChatOpenAI", (), {})
     monkeypatch.setitem(sys.modules, "langchain_openai", langchain_openai)
+    # LangSmith is optional; its absence must not disable a usable LangChain handler.
+    monkeypatch.setitem(sys.modules, "langsmith", None)
 
     # delitem (not pop) so teardown evicts the copy that was built against the fake langchain modules
     monkeypatch.delitem(sys.modules, "pr_agent.algo.ai_handlers.langchain_ai_handler", raising=False)

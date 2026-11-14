@@ -19,6 +19,7 @@ from pr_agent.algo.git_patch_processing import (
     split_diff_lines,
 )
 from pr_agent.algo.language_handler import is_valid_file
+from pr_agent.algo.prompt_log_guard import prompt_logs_withheld, sanitized_exception_summary
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.token_budget import clip_tokens
 from pr_agent.algo.types import EDIT_TYPE
@@ -576,10 +577,16 @@ class GiteaProvider(GitProvider):
                 comments=comments
             )
         except ApiException as e:
-            self.logger.error(f"Error publishing inline comment: {e}")
+            if prompt_logs_withheld():
+                self.logger.error(f"Error publishing inline comment ({sanitized_exception_summary(e)})")
+            else:
+                self.logger.error(f"Error publishing inline comment: {e}")
             return False
         except Exception as e:
-            self.logger.error(f"Unexpected error publishing inline comment: {e}")
+            if prompt_logs_withheld():
+                self.logger.error(f"Unexpected inline comment error ({sanitized_exception_summary(e)})")
+            else:
+                self.logger.error(f"Unexpected error publishing inline comment: {e}")
             return False
 
         if not response:

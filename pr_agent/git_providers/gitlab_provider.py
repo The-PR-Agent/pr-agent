@@ -27,6 +27,7 @@ from requests.exceptions import RequestException
 from urllib3.exceptions import HTTPError
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
+from pr_agent.algo.prompt_log_guard import prompt_logs_withheld, sanitized_exception_location
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.diff_parsing import to_hunk_only_patch
@@ -2803,7 +2804,10 @@ class GitLabProvider(GitProvider):
             else:
                 pos_obj["new_line"] = target_line_no - 1
                 pos_obj["old_line"] = source_line_no - 1
-            get_logger().debug(f"Creating comment in MR {self.id_mr} with body {body} and position {pos_obj}")
+            if prompt_logs_withheld():
+                get_logger().debug(f"Creating comment in MR {self.id_mr} (body withheld)")
+            else:
+                get_logger().debug(f"Creating comment in MR {self.id_mr} with body {body} and position {pos_obj}")
             created = self._create_suggestion_note(as_draft, body, pos_obj, diff, target_file, relevant_file,
                                                     original_suggestion, store, body_fp, code_fp)
             if not created and as_draft:
@@ -2901,8 +2905,14 @@ class GitLabProvider(GitProvider):
                     store.add(code_fp)
                 return True
 
-            except (GitlabError, RequestException, KeyError, TypeError):
-                get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
+            except (GitlabError, RequestException, KeyError, TypeError) as e:
+                if prompt_logs_withheld():
+                    get_logger().error(
+                        f"Failed to create comment in MR {self.id_mr} "
+                        f"({type(e).__name__} at {sanitized_exception_location(e)}; details withheld)"
+                    )
+                else:
+                    get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
                 return False
 
     def get_relevant_diff(self, relevant_file: str, relevant_line_in_file: str) -> dict | None:
@@ -2950,7 +2960,12 @@ class GitLabProvider(GitProvider):
                     self._publish_suggestion_drafts(self.mr.draft_notes.list(get_all=True, per_page=100))
                     self._failed_draft_batch = True
                 except (GitlabError, RequestException) as e:
-                    get_logger().warning(f"Retrying draft publication for MR {self.id_mr} failed: {e}")
+                    if prompt_logs_withheld():
+                        get_logger().warning(
+                            f"Retrying draft publication for MR {self.id_mr} failed (details withheld)"
+                        )
+                    else:
+                        get_logger().warning(f"Retrying draft publication for MR {self.id_mr} failed: {e}")
             return self._failed_draft_batch
         if not retry:
             self._failed_draft_batch = None
@@ -2978,22 +2993,31 @@ class GitLabProvider(GitProvider):
                         target_file = file
                         break
                 if target_file is None:
-                    get_logger().warning(f"Skipping suggestion: file '{relevant_file}' not found in diff")
+                    if prompt_logs_withheld():
+                        get_logger().warning("Skipping suggestion: file not found in diff (details withheld)")
+                    else:
+                        get_logger().warning(f"Skipping suggestion: file '{relevant_file}' not found in diff")
                     continue
                 if relevant_lines_start < 1 or relevant_lines_end < relevant_lines_start:
-                    get_logger().warning(
-                        f"Skipping suggestion: invalid line range "
-                        f"{relevant_lines_start}-{relevant_lines_end} for '{relevant_file}'"
-                    )
+                    if prompt_logs_withheld():
+                        get_logger().warning("Skipping suggestion: invalid line range (details withheld)")
+                    else:
+                        get_logger().warning(
+                            f"Skipping suggestion: invalid line range "
+                            f"{relevant_lines_start}-{relevant_lines_end} for '{relevant_file}'"
+                        )
                     continue
                 range = relevant_lines_end - relevant_lines_start # no need to add 1
                 body = body.replace('```suggestion', f'```suggestion:-0+{range}')
                 lines = split_diff_lines(target_file.head_file) if target_file.head_file else []
                 if target_file.head_file and not 0 < relevant_lines_start <= len(lines):
-                    get_logger().warning(
-                        f"Skipping suggestion: line {relevant_lines_start} out of range "
-                        f"for '{relevant_file}' (head content has {len(lines)} lines)"
-                    )
+                    if prompt_logs_withheld():
+                        get_logger().warning("Skipping suggestion: line out of range (details withheld)")
+                    else:
+                        get_logger().warning(
+                            f"Skipping suggestion: line {relevant_lines_start} out of range "
+                            f"for '{relevant_file}' (head content has {len(lines)} lines)"
+                        )
                     continue
                 relevant_line_in_file = lines[relevant_lines_start - 1] if lines else None
 
@@ -3027,7 +3051,10 @@ class GitLabProvider(GitProvider):
 
                 if not found:
                     if relevant_line_in_file is None:
-                        get_logger().warning(f"Skipping suggestion: no source line for '{relevant_file}'")
+                        if prompt_logs_withheld():
+                            get_logger().warning("Skipping suggestion: no source line (details withheld)")
+                        else:
+                            get_logger().warning(f"Skipping suggestion: no source line for '{relevant_file}'")
                         continue
                     # Keep the existing fallback path for anchors outside the diff. GitLab will
                     # reject the optimistic addition position and _create_suggestion_note will
@@ -3046,7 +3073,13 @@ class GitLabProvider(GitProvider):
             except Exception as e:
                 # Deliberately broad: suggestions are published one by one, so the loop has to
                 # survive a single bad one - whatever went wrong with it - and still land the rest.
-                get_logger().exception(f"Could not publish code suggestion:\nsuggestion: {suggestion}\nerror: {e}")
+                if prompt_logs_withheld():
+                    get_logger().error(
+                        f"Could not publish code suggestion "
+                        f"({type(e).__name__} at {sanitized_exception_location(e)}; details withheld)"
+                    )
+                else:
+                    get_logger().exception(f"Could not publish code suggestion:\nsuggestion: {suggestion}\nerror: {e}")
 
         if as_review:
             try:
@@ -3057,7 +3090,10 @@ class GitLabProvider(GitProvider):
                     if self._code_suggestion_draft_queued:
                         raise
                     # Draft-unsupported instances already fell back to live comments.
-                    get_logger().warning(f"Could not list draft notes for MR {self.id_mr}: {e}")
+                    if prompt_logs_withheld():
+                        get_logger().warning(f"Could not list draft notes for MR {self.id_mr} (details withheld)")
+                    else:
+                        get_logger().warning(f"Could not list draft notes for MR {self.id_mr}: {e}")
                     pending = []
                 if settled:
                     self._publish_suggestion_drafts(pending)
@@ -3067,10 +3103,16 @@ class GitLabProvider(GitProvider):
                 # pending drafts on the MR, so a manual publish from the GitLab UI, or the next
                 # successful run of this method (which also ends in a bulk_publish call), will surface
                 # them - but that won't happen automatically, so this needs to be visible in logs/alerts.
-                get_logger().exception(
-                    f"Failed to bulk-publish draft code-suggestion notes for MR {self.id_mr}; they remain "
-                    f"as pending drafts, visible only to the posting user, until published manually from "
-                    f"the GitLab UI or by a subsequent successful run: {e}")
+                if prompt_logs_withheld():
+                    get_logger().error(
+                        f"Failed to bulk-publish draft code-suggestion notes for MR {self.id_mr}; "
+                        "they remain pending (details withheld)"
+                    )
+                else:
+                    get_logger().exception(
+                        f"Failed to bulk-publish draft code-suggestion notes for MR {self.id_mr}; they remain "
+                        f"as pending drafts, visible only to the posting user, until published manually from "
+                        f"the GitLab UI or by a subsequent successful run: {e}")
                 self._failed_draft_batch = False
                 if not retry:
                     self._failed_draft_inputs, self._failed_draft_settled = code_suggestions, []

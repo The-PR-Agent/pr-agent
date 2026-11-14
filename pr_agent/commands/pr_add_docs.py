@@ -1,8 +1,13 @@
+import asyncio
 import copy
 from functools import partial
 
+import openai
+from jinja2 import meta
+from jinja2.sandbox import SandboxedEnvironment
+
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
-from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler, withhold_prompt_logging
 from pr_agent.algo.git_patch_processing import split_diff_lines
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
@@ -12,13 +17,47 @@ from pr_agent.algo.pr_processing import (
     run_diff_preparation,
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
+from pr_agent.algo.prompt_log_guard import sanitized_exception_summary, sanitized_provider_error
+from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import record_command_failure
+from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import _as_line, get_suggestion_fence, load_yaml
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider_for_command
 from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError, get_main_pr_language
 from pr_agent.log import get_logger
+
+_REPO_CONTEXT_FALLBACK_TEMPLATE = (
+    "{% if repo_context %}"
+    "Repository instructions (apply relevant documentation conventions to this PR; "
+    "explicit extra instructions and the selected documentation style take precedence):\n"
+    "======\n"
+    "{{ repo_context }}\n"
+    "======\n\n"
+    "{% endif %}"
+)
+
+
+def _ensure_repo_context_slot(system_template: str, user_template: str) -> tuple[str, str]:
+    """Add a budgeted instruction slot only when custom templates omit it."""
+    environment = SandboxedEnvironment()
+    referenced = (
+        meta.find_undeclared_variables(environment.parse(system_template))
+        | meta.find_undeclared_variables(environment.parse(user_template))
+    )
+    if "repo_context" in referenced:
+        return system_template, user_template
+    return _REPO_CONTEXT_FALLBACK_TEMPLATE + system_template, user_template
+
+
+def _redacted_error(error: Exception) -> Exception:
+    """Preserve an exception's type where possible while withholding its original message."""
+    message = f"{type(error).__name__} (details withheld)"
+    try:
+        return type(error)(message)
+    except Exception:
+        return RuntimeError(message)
 
 
 class PRAddDocs:
@@ -43,6 +82,7 @@ class PRAddDocs:
             "language": self.main_language,
             "diff": "",  # empty diff for initial calculation
             "extra_instructions": get_settings().pr_add_docs.extra_instructions,
+            "repo_context": "",
             "commit_messages_str": self.git_provider.get_commit_messages(),
             "diff_hunk_format": render_diff_hunk_format(
                 include_line_numbers=True,
@@ -74,7 +114,15 @@ class PRAddDocs:
                             "add_docs", "Failed to generate code documentation for this PR."
                         )
                     except Exception as comment_error:
-                        get_logger().warning(f"Failed to publish the documentation failure comment: {comment_error}")
+                        if getattr(self, "_attempt_uses_repo_context", False):
+                            get_logger().warning(
+                                f"Failed to publish documentation failure comment ({type(comment_error).__name__}; "
+                                "details withheld)"
+                            )
+                        else:
+                            get_logger().warning(
+                                f"Failed to publish the documentation failure comment: {comment_error}"
+                            )
                 raise
             if self.prediction is None:
                 return
@@ -87,7 +135,8 @@ class PRAddDocs:
                 self.git_provider.remove_initial_comment()
                 temporary_comment_published = False
                 get_logger().info('Pushing inline code documentation...')
-                publication_result = self.push_inline_docs(data)
+                with withhold_prompt_logging(getattr(self, "_attempt_uses_repo_context", False)):
+                    publication_result = self.push_inline_docs(data)
                 if publication_result is False:
                     publication_failed = True
                     self.git_provider.publish_command_failure(
@@ -95,12 +144,17 @@ class PRAddDocs:
                     )
                     raise RuntimeError("Failed to publish code documentation after individual retries")
         except Exception as e:
-            get_logger().error(f"Failed to generate code documentation for PR, error: {e}")
+            sensitive = getattr(self, "_attempt_uses_repo_context", False)
+            if sensitive:
+                get_logger().error(f"Documentation command failed ({type(e).__name__}; details withheld)")
+            else:
+                get_logger().error(f"Failed to generate code documentation for PR, error: {e}")
             record_command_failure()
-            if (
-                isinstance(e, IncompleteProviderPullRequestFilesError)
-                or get_settings().config.get("propagate_command_errors", False)
-            ):
+            if isinstance(e, IncompleteProviderPullRequestFilesError):
+                raise
+            if get_settings().config.get("propagate_command_errors", False):
+                if sensitive:
+                    raise _redacted_error(e) from None
                 raise
             if publication_failed:
                 return False
@@ -109,22 +163,41 @@ class PRAddDocs:
                 try:
                     self.git_provider.remove_initial_comment()
                 except Exception as cleanup_error:
-                    get_logger().warning(
-                        f"Failed to remove the temporary documentation comment: {cleanup_error}"
-                    )
+                    if getattr(self, "_attempt_uses_repo_context", False):
+                        get_logger().warning(
+                            f"Failed to remove the temporary documentation comment "
+                            f"({sanitized_exception_summary(cleanup_error)})"
+                        )
+                    else:
+                        get_logger().warning(
+                            f"Failed to remove the temporary documentation comment: {cleanup_error}"
+                        )
 
     async def _prepare_prediction(self, model: str):
         self.prediction = None
         get_logger().info('Getting PR diff...')
 
         variables = copy.deepcopy(self.vars)
+        variables.setdefault("repo_context", "")
+        repo_context_enabled = (
+            _as_bool_setting(
+                get_settings().pr_add_docs.get("use_repo_context", True),
+                default=True,
+                setting_name="pr_add_docs.use_repo_context",
+            )
+            and bool(get_settings().config.get("repo_context_files", []))
+        )
+        system_template = get_settings().pr_add_docs_prompt.system
+        user_template = get_settings().pr_add_docs_prompt.user
+        if repo_context_enabled:
+            system_template, user_template = _ensure_repo_context_slot(system_template, user_template)
         output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
         budget = AttemptTokenBudget.for_prompt_attempt(
             model,
             getattr(self.git_provider, "pr", None),
             variables,
-            get_settings().pr_add_docs_prompt.system,
-            get_settings().pr_add_docs_prompt.user,
+            system_template,
+            user_template,
             ai_handler=self.ai_handler,
             output_token_reserve=output_token_reserve,
         )
@@ -146,6 +219,10 @@ class PRAddDocs:
             return
         if not patches_diff:
             raise FallbackEligibleError("No PR diff fits the /add_docs request")
+
+        if repo_context_enabled:
+            await self._load_and_fit_repo_context(variables, patches_diff, budget)
+
         fitted = budget.fit_prompt_variable(
             variables,
             "diff",
@@ -162,19 +239,62 @@ class PRAddDocs:
         self.patches_diff = fitted.optional_text
         self._attempt_system_prompt = fitted.system_prompt
         self._attempt_user_prompt = fitted.user_prompt
+        self._attempt_uses_repo_context = bool(variables["repo_context"])
 
         get_logger().info('Getting AI prediction...')
         self.prediction = await self._get_prediction(model)
         return self._prepare_pr_code_docs()
 
+    async def _load_and_fit_repo_context(self, variables: dict, patches_diff: str, budget: AttemptTokenBudget) -> None:
+        """Load request guidance and include it only when the whole diff still fits."""
+        repo_context = getattr(self, "_repo_context", None)
+        if repo_context is None:
+            # Imported @paths originate in instruction files, so protect fetch diagnostics too.
+            with withhold_prompt_logging(True):
+                repo_context, complete = await run_diff_preparation(
+                    build_repo_context, self.git_provider, return_status=True
+                )
+            if complete:
+                self._repo_context = repo_context
+        if repo_context:
+            # Reserve the complete diff before considering optional repository guidance.
+            variables["diff"] = patches_diff
+            try:
+                budget.fit_prompt_variable(
+                    variables,
+                    "repo_context",
+                    repo_context,
+                    ai_handler=self.ai_handler,
+                    default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+                    preserve_minimum=True,
+                    require_full_text=True,
+                )
+            except FallbackEligibleError:
+                get_logger().info("Repository instructions do not fit; generating docs without them")
+            else:
+                variables["repo_context"] = repo_context
+
     async def _get_prediction(self, model: str):
         system_prompt = self._attempt_system_prompt
         user_prompt = self._attempt_user_prompt
+        uses_repo_context = getattr(self, "_attempt_uses_repo_context", False)
         if get_verbosity_level() >= 2:
-            get_logger().info(f"\nSystem prompt:\n{system_prompt}")
-            get_logger().info(f"\nUser prompt:\n{user_prompt}")
-        response, finish_reason = await self.ai_handler.chat_completion(
-            model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+            if uses_repo_context:
+                get_logger().info("Prompts withheld from logs because they contain repository instructions")
+            else:
+                get_logger().info(f"\nSystem prompt:\n{system_prompt}")
+                get_logger().info(f"\nUser prompt:\n{user_prompt}")
+        with withhold_prompt_logging(uses_repo_context):
+            try:
+                response, finish_reason = await self.ai_handler.chat_completion(
+                    model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+            except Exception as e:
+                if not uses_repo_context:
+                    raise
+                message = f"LLM inference failed ({sanitized_provider_error(e)}; details withheld)"
+                if isinstance(e, (openai.APIError, asyncio.TimeoutError, FallbackEligibleError)):
+                    raise FallbackEligibleError(message) from None
+                raise _redacted_error(e) from None
         if finish_reason == "length":
             raise FallbackEligibleError(f"Code documentation response was truncated by {model}")
 
@@ -184,14 +304,17 @@ class PRAddDocs:
         if not isinstance(self.prediction, str):
             raise FallbackEligibleError("The model did not return a Code Documentation string")
         docs = self.prediction.strip()
-        data = load_yaml(docs)
+        data = load_yaml(docs, log_prediction=not getattr(self, "_attempt_uses_repo_context", False))
         if isinstance(data, list):
             data = {'Code Documentation': data}
         if isinstance(data, dict) and 'Code Documentation' in data and data['Code Documentation'] is None:
             data['Code Documentation'] = []
         if not isinstance(data, dict) or not isinstance(data.get('Code Documentation'), list):
-            get_logger().warning("The model did not return a Code Documentation list",
-                                 artifact={'prediction': docs})
+            if getattr(self, "_attempt_uses_repo_context", False):
+                get_logger().warning("The model did not return a Code Documentation list")
+            else:
+                get_logger().warning("The model did not return a Code Documentation list",
+                                     artifact={'prediction': docs})
             raise FallbackEligibleError("The model did not return a Code Documentation list")
         required_fields = {'relevant file', 'relevant line', 'doc placement', 'documentation'}
 
@@ -219,7 +342,7 @@ class PRAddDocs:
 
         for d in data['Code Documentation']:
             try:
-                if get_verbosity_level() >= 2:
+                if get_verbosity_level() >= 2 and not getattr(self, "_attempt_uses_repo_context", False):
                     get_logger().info(f"add_docs: {d}")
                 relevant_file = d['relevant file'].strip()
                 relevant_line = _as_line(d['relevant line'])  # absolute position
@@ -242,7 +365,7 @@ class PRAddDocs:
                                  "relevant_lines_start": relevant_line,
                                  "relevant_lines_end": relevant_line})
             except Exception:
-                if get_verbosity_level() >= 2:
+                if get_verbosity_level() >= 2 and not getattr(self, "_attempt_uses_repo_context", False):
                     get_logger().info(f"Could not parse code docs: {d}")
 
         if not docs:
@@ -308,7 +431,10 @@ class PRAddDocs:
                 return None if add_original_line else new_code_snippet
         except Exception as e:
             if get_verbosity_level() >= 2:
-                get_logger().info(f"Could not dedent code snippet for file {relevant_file}, error: {e}")
+                if getattr(self, "_attempt_uses_repo_context", False):
+                    get_logger().info("Could not dedent code snippet (details withheld)")
+                else:
+                    get_logger().info(f"Could not dedent code snippet for file {relevant_file}, error: {e}")
             return None if add_original_line else new_code_snippet
 
         try:

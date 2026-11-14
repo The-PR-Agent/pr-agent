@@ -23,6 +23,14 @@ Extra instructions from the user:
 ======
 {%- endif %}
 
+{%- if repo_context is defined and repo_context %}
+
+Repository instructions (apply relevant documentation conventions to this PR; explicit extra instructions and the selected documentation style take precedence):
+======
+{{ repo_context }}
+======
+{%- endif %}
+
 
 You must use the following YAML schema to format your answer:
 ```yaml

@@ -336,6 +336,7 @@ See [Add Docs](../commands/add_docs.md#configuration-options).
 | --- | --- | --- |
 | `extra_instructions` | "" |  |
 | `docs_style` | "Sphinx" | Docstring style: Google Style with Args, Returns, Attributes...etc; Numpy Style; Sphinx; PEP257; reStructuredText. See docs/docs/commands/add_docs.md. |
+| `use_repo_context` | true | Include repository instructions in /add_docs when they fit (true/false); see commands/add_docs.md. |
 
 
 ## `[pr_update_changelog]` — /update_changelog {#pr_update_changelog-update_changelog}

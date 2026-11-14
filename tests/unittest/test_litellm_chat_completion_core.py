@@ -7,7 +7,9 @@ import openai
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
+import pr_agent.algo.ai_handlers.litellm_helpers as litellm_helpers
 import pr_agent.algo.instruction_context as instruction_context
+from pr_agent.algo.prompt_log_guard import sanitized_provider_error
 
 
 @pytest.fixture(autouse=True)
@@ -114,6 +116,118 @@ def _install_fake_image_probe(monkeypatch, status):
         lambda *a, **k: [(2, 1, 6, "", ("140.82.121.4", 0))],
     )
     return observed
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_withheld_repository_guidance_is_not_logged(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    monkeypatch.setattr(litellm_handler, "get_verbosity_level", lambda: 2)
+    logger = MagicMock()
+    monkeypatch.setattr(litellm_handler, "get_logger", lambda: logger)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as completion:
+        completion.return_value = _mock_response(content="Repository guidance echoed in response")
+        handler = litellm_handler.LiteLLMAIHandler()
+        with litellm_handler.withhold_prompt_logging(True):
+            await handler.chat_completion(
+                model="gpt-4o", system="Repository guidance", user="User template: Repository guidance"
+            )
+
+        # Keep the original instructions in the request; suppress only diagnostic logs.
+        assert "Repository guidance" in str(completion.call_args.kwargs["messages"])
+        assert completion.call_args.kwargs["turn_off_message_logging"] is True
+        logs = str(logger.info.call_args_list) + str(logger.debug.call_args_list)
+        assert "Repository guidance" not in logs
+        assert "Full_response" not in logs
+
+        logger.reset_mock()
+        await handler.chat_completion(model="gpt-4o", system="normal system", user="normal user")
+        assert any("normal system" in str(call) for call in logger.info.call_args_list)
+        assert any("Full_response" in str(call) for call in logger.debug.call_args_list)
+        assert "turn_off_message_logging" not in completion.call_args.kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unexpected", [False, True])
+async def test_chat_completion_withheld_provider_errors_do_not_log_prompt_contents(monkeypatch, unexpected):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    logger = MagicMock()
+    monkeypatch.setattr(litellm_handler, "get_logger", lambda: logger)
+    secret = "Repository guidance in rejected prompt"
+    error = (
+        RuntimeError(secret)
+        if unexpected
+        else openai.APIError(secret, request=httpx.Request("POST", "https://example.test/llm"), body=None)
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as completion:
+        completion.side_effect = error
+        handler = litellm_handler.LiteLLMAIHandler()
+        with litellm_handler.withhold_prompt_logging(True):
+            with pytest.raises(openai.APIError) as exc:
+                await handler.chat_completion(model="gpt-4o", system=secret, user="normal prompt")
+
+    assert secret not in str(logger.mock_calls)
+    if unexpected:
+        assert secret not in str(exc.value)
+        assert exc.value.__suppress_context__
+
+
+def test_sanitized_provider_error_allows_only_known_error_codes():
+    error = RuntimeError("sensitive provider detail")
+    error.status_code = 400
+    error.code = "sensitive provider detail"
+    assert sanitized_provider_error(error) == "RuntimeError, HTTP 400"
+    error.code = "model_not_found"
+    assert sanitized_provider_error(error) == "RuntimeError, HTTP 400, code=model_not_found"
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_withheld_api_error_retains_safe_diagnostics(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    logger = MagicMock()
+    monkeypatch.setattr(litellm_handler, "get_logger", lambda: logger)
+    secret = "sensitive repository guidance"
+    request = httpx.Request("POST", "https://example.test/llm")
+    error = openai.BadRequestError(
+        secret,
+        response=httpx.Response(400, request=request),
+        body={"code": "context_length_exceeded"},
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as completion:
+        completion.side_effect = error
+        handler = litellm_handler.LiteLLMAIHandler()
+        with litellm_handler.withhold_prompt_logging(True):
+            with pytest.raises(openai.BadRequestError):
+                await handler.chat_completion(model="gpt-4o", system=secret, user="normal prompt")
+
+    logs = str(logger.mock_calls)
+    assert "BadRequestError, HTTP 400, code=context_length_exceeded" in logs
+    assert secret not in logs
+
+
+@pytest.mark.asyncio
+async def test_streaming_error_withheld_logging_does_not_expose_instruction_text(monkeypatch):
+    secret = "private repository instructions in a stream error"
+    logger = MagicMock()
+    monkeypatch.setattr(litellm_helpers, "get_logger", lambda: logger)
+
+    async def failing_stream():
+        raise RuntimeError(secret)
+        yield None
+
+    with litellm_handler.withhold_prompt_logging(True):
+        with pytest.raises(RuntimeError, match=secret):
+            await litellm_helpers._handle_streaming_response(failing_stream(), model="gpt-4o")
+
+    assert "RuntimeError" in str(logger.error.call_args)
+    assert secret not in str(logger.mock_calls)
+
+    logger.reset_mock()
+    with pytest.raises(RuntimeError, match=secret):
+        await litellm_helpers._handle_streaming_response(failing_stream(), model="gpt-4o")
+    assert secret in str(logger.error.call_args)
 
 
 @pytest.mark.asyncio
@@ -926,6 +1040,32 @@ async def test_chat_completion_timeout_retries_same_model_by_default(monkeypatch
             await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
 
     assert mock_call.call_count == litellm_handler.MODEL_RETRIES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("withheld", [False, True])
+async def test_chat_completion_raw_timeout_respects_retry_policy_in_both_modes(monkeypatch, withheld):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: FakeSettings(config_values={"retry_same_model_on_timeout": False}),
+    )
+    logger = MagicMock()
+    monkeypatch.setattr(litellm_handler, "get_logger", lambda: logger)
+    secret = "Sensitive repository instructions in provider timeout"
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as completion:
+        completion.side_effect = TimeoutError(secret)
+        handler = litellm_handler.LiteLLMAIHandler()
+        with litellm_handler.withhold_prompt_logging(withheld):
+            with pytest.raises(openai.APITimeoutError) as raised:
+                await handler.chat_completion(model="gpt-4o", system=secret, user="normal prompt")
+
+    assert completion.await_count == 1
+    if withheld:
+        assert raised.value.__suppress_context__
+        assert secret not in str(raised.value)
+        assert secret not in str(logger.mock_calls)
 
 
 @pytest.mark.asyncio

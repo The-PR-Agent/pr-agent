@@ -8,6 +8,7 @@ from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.git_patch_processing import count_patch_lines
 from pr_agent.algo.language_handler import is_valid_file
+from pr_agent.algo.prompt_log_guard import prompt_logs_withheld, sanitized_exception_summary
 from pr_agent.algo.review_finding_state import split_review_state_marker
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.codecommit_client import CodeCommitClient
@@ -369,10 +370,13 @@ class CodeCommitProvider(GitProvider):
             target_contexts = self._get_target_contexts_for_file(suggestion["relevant_file"])
             for target in target_contexts:
                 try:
-                    get_logger().debug(
-                        f"Code Suggestion #{counter} in file: {suggestion['relevant_file']}: "
-                        f"{suggestion['relevant_lines_start']} for repository: {target['repository_name']}"
-                    )
+                    if prompt_logs_withheld():
+                        get_logger().debug(f"Publishing CodeCommit suggestion #{counter} (details withheld)")
+                    else:
+                        get_logger().debug(
+                            f"Code Suggestion #{counter} in file: {suggestion['relevant_file']}: "
+                            f"{suggestion['relevant_lines_start']} for repository: {target['repository_name']}"
+                        )
                     self.codecommit_client.publish_comment(
                         repo_name=target["repository_name"],
                         pr_number=self.pr_num,
@@ -384,8 +388,13 @@ class CodeCommitProvider(GitProvider):
                     )
                     published_count += 1
                 except Exception as e:
-                    get_logger().warning(
-                        f"Could not publish code suggestion #{counter} for PR {self.pr_num}: {e}")
+                    if prompt_logs_withheld():
+                        get_logger().warning(
+                            f"CodeCommit suggestion #{counter} failed ({sanitized_exception_summary(e)})"
+                        )
+                    else:
+                        get_logger().warning(
+                            f"Could not publish code suggestion #{counter} for PR {self.pr_num}: {e}")
 
             counter += 1
 
