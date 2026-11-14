@@ -1,9 +1,9 @@
 name: Review-quality eval
 
 # Replays /review on frozen PR commits and fails when it catches clearly fewer known findings than the baseline
-# (scripts/review_eval). It spends model tokens (about 330 calls on two repeats), so it never runs on every PR:
-# only by manual dispatch, or on a same-repository PR that touches review prompts or model handling and carries
-# the `review-eval` label. Fork PRs never get the key.
+# (scripts/review_eval). It spends model tokens, so it never runs on every PR: a labelled same-repository PR that
+# touches review prompts or model handling runs the fast tier (6 cases, about $1 on Sonnet), and a manual dispatch
+# can run the full tier (55 cases, about $8.50) for model changes and releases. Fork PRs never get the key.
 
 on:
   workflow_dispatch:
@@ -12,8 +12,14 @@ on:
         description: Model under test (provider/model); empty uses the REVIEW_EVAL_MODEL repository variable
         required: false
         type: string
+      tier:
+        description: fast (6 always-caught cases, a breakage canary) or full (55 cases, quality decisions)
+        required: false
+        default: fast
+        type: choice
+        options: [fast, full]
       repeats:
-        description: Runs per case (2 detects a catch drop of about 6 of 44 known findings, 3 about 5)
+        description: Runs per case (2 on the full tier detects a catch drop of about 6 of 44 known findings)
         required: false
         default: "2"
         type: choice
@@ -52,6 +58,7 @@ jobs:
       REVIEW_EVAL_MODEL: ${{ inputs.model || vars.REVIEW_EVAL_MODEL }}
       REVIEW_EVAL_JUDGE_MODEL: ${{ vars.REVIEW_EVAL_JUDGE_MODEL }}
       REVIEW_EVAL_REPEATS: ${{ inputs.repeats || '2' }}
+      REVIEW_EVAL_TIER: ${{ inputs.tier || 'fast' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -79,7 +86,7 @@ jobs:
         run: >-
           uv run python scripts/review_eval/run_eval.py
           --model "$REVIEW_EVAL_MODEL" --judge-model "$REVIEW_EVAL_JUDGE_MODEL"
-          --repeats "$REVIEW_EVAL_REPEATS" --jobs 4 --out "$RUNNER_TEMP/review-eval"
+          --repeats "$REVIEW_EVAL_REPEATS" --tier "$REVIEW_EVAL_TIER" --jobs 4 --out "$RUNNER_TEMP/review-eval"
           --remote https://github.com/The-PR-Agent/pr-agent.git
 
       - name: Upload results

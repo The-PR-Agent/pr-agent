@@ -151,7 +151,7 @@ def judge_run(case, run, wt, judge_model):
 
 
 def metrics(cases, out, repeats, judge_model):
-    runs = failed = capped = posted = valid = 0
+    runs = failed = capped = posted = valid = found = 0
     catch_by_rep = [0.0] * repeats
     per_case = {}
     tokens = {"review_in": 0, "review_out": 0, "judge_in": 0, "judge_out": 0}
@@ -161,6 +161,7 @@ def metrics(cases, out, repeats, judge_model):
             st = json.loads((run / "status.json").read_text())
             jd = json.loads((run / "judged.json").read_text())
             runs += 1
+            found += jd["findings"]
             failed += not st["ok"]
             capped += "length" in st.get("finish", [])
             tokens["review_in"] += sum(u["input"] for u in st["usage"])
@@ -175,12 +176,11 @@ def metrics(cases, out, repeats, judge_model):
                 posted += jd["findings"]
                 valid += sum(v == "yes" for v in jd["valid"])
     n_findings = sum(len(c["known_findings"]) for c in cases if c["kind"] == "catch")
-    n_precision = sum(c["kind"] == "precision" for c in cases)
     return {"runs": runs, "failed_runs": failed, "capped_runs": capped, "known_findings": n_findings,
             "catch": sum(catch_by_rep) / repeats, "catch_by_repeat": catch_by_rep,
             "catch_per_case": {k: sum(v) / len(v) for k, v in per_case.items()},
             "posted": posted / repeats, "valid": valid / repeats,
-            "findings_per_run": posted / max(n_precision * repeats, 1), "judge_model": judge_model, "tokens": tokens}
+            "findings_per_run": found / max(runs, 1), "judge_model": judge_model, "tokens": tokens}
 
 
 def summary(m, failures, notes, args):
@@ -188,12 +188,13 @@ def summary(m, failures, notes, args):
     if m["posted"]:
         precision = f"{m['valid']:.1f} of {m['posted']:.1f} ({m['valid'] / m['posted']:.0%})"
     lines = [f"## Review-quality eval: {'FAIL' if failures else 'pass'}", "",
-             f"Model `{args.model}`, judge `{args.judge_model}`, {args.repeats} repeats, {m['runs']} runs.", "",
+             f"Model `{args.model}`, judge `{args.judge_model}`, {args.tier} tier, {args.repeats} repeats, "
+             f"{m['runs']} runs.", "",
              "| Metric | Value |", "|---|---|",
              f"| Known findings caught | {m['catch']:.2f} of {m['known_findings']} (per repeat: "
              f"{', '.join(f'{x:.2f}' for x in m['catch_by_repeat'])}) |",
              f"| Valid of posted findings, recent PRs (per repeat) | {precision} |",
-             f"| Findings per recent PR | {m['findings_per_run']:.2f} |",
+             f"| Findings per review | {m['findings_per_run']:.2f} |",
              f"| Failed runs / output-cap hits | {m['failed_runs']} / {m['capped_runs']} |",
              f"| Review tokens in / out | {m['tokens']['review_in']:,} / {m['tokens']['review_out']:,} |",
              f"| Judge tokens in / out | {m['tokens']['judge_in']:,} / {m['tokens']['judge_out']:,} |", ""]
@@ -208,7 +209,10 @@ def main():
     ap.add_argument("--repeats", type=int, default=2)
     ap.add_argument("--out", required=True, type=pathlib.Path)
     ap.add_argument("--cases", type=pathlib.Path, default=HERE / "cases.json")
-    ap.add_argument("--baseline", type=pathlib.Path, default=HERE / "baseline.json")
+    ap.add_argument("--tier", choices=("fast", "full"), default="full",
+                    help="fast: the six always-caught catch cases, a breakage canary (about $1 on Sonnet with two "
+                         "repeats); full: all 55 cases (about $8.50)")
+    ap.add_argument("--baseline", type=pathlib.Path, help="default: baseline_<tier>.json next to this script")
     ap.add_argument("--write-baseline", type=pathlib.Path)
     ap.add_argument("--limit", type=int, help="first N cases of each kind only (smoke test)")
     ap.add_argument("--jobs", type=int, default=1, help="parallel runs")
@@ -219,6 +223,9 @@ def main():
     args = ap.parse_args()
 
     cases = json.loads(args.cases.read_text())["cases"]
+    if args.tier == "fast":
+        cases = [c for c in cases if c.get("fast")]
+    args.baseline = args.baseline or HERE / f"baseline_{args.tier}.json"
     if args.limit:
         cases = [c for c in cases if c["kind"] == "catch"][:args.limit] + \
                 [c for c in cases if c["kind"] == "precision"][:args.limit]
@@ -250,7 +257,8 @@ def main():
             f.write(text)
     print(text)
     if args.write_baseline:
-        args.write_baseline.write_text(json.dumps({**m, "model": args.model, "repeats": args.repeats}, indent=1) + "\n")
+        args.write_baseline.write_text(json.dumps({**m, "model": args.model, "tier": args.tier,
+                                                   "repeats": args.repeats}, indent=1) + "\n")
     sys.exit(1 if failures else 0)
 
 

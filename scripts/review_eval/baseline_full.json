@@ -37,7 +37,7 @@
  },
  "posted": 18.5,
  "valid": 3.5,
- "findings_per_run": 0.6166666666666667,
+ "findings_per_run": 0.8181818181818182,
  "judge_model": "anthropic/claude-sonnet-5-5",
  "tokens": {
   "review_in": 1490692,
@@ -46,5 +46,6 @@
   "judge_out": 26726
  },
  "model": "anthropic/claude-sonnet-5-5",
+ "tier": "full",
  "repeats": 2
 }

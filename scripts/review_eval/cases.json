@@ -409,7 +409,8 @@
      "finding": "The fix keeps local config contents out of the log artifact but has no test, so a small one in test_git_provider_utils.py should pin it.",
      "fact_needed": "tests/unittest/test_git_provider_utils.py at the reviewed commit only has test_handle_configurations_errors_uses_persistent_comment_when_supported and ..._keeps_markdown_details_when_persistent_comment_is_missing; none asserts that a secret inside the local settings bytes is absent from the artifact body passed to get_logger().warning in handle_configurations_errors."
     }
-   ]
+   ],
+   "fast": true
   },
   {
    "key": "4220-ba2e5b75",
@@ -447,7 +448,8 @@
      "finding": "The dropped sentence describes the ADR-aware review from #4221, which is not in this PR.",
      "fact_needed": "The PR's addition to docs/docs/usage-guide/additional_configurations.md ends with 'When ADRs or standards files are present, `/review` checks the PR against the rules they state and cites the rule it applies', but nothing in this PR changes pr_reviewer_prompts.toml or PRReviewer; that ADR-aware review is #4221."
     }
-   ]
+   ],
+   "fast": true
   },
   {
    "key": "4222-9a6d4df5",
@@ -550,7 +552,8 @@
      "finding": "A regression test for the site requirement in gateway mode; it fails without the first suggestion.",
      "fact_needed": "tests/unittest/test_jira_ticket_extraction.py covers gateway mode only with an invalid cloud_id (test_invalid_cloud_id_skips_lookup) and a valid site (test_cloud_builds_url_from_site_and_pins_v2), never a valid cloud_id with a missing or invalid jira_site, which is the case _jira_cloud_base_url lets through."
     }
-   ]
+   ],
+   "fast": true
   },
   {
    "key": "4254-78e2aebc",
@@ -683,7 +686,8 @@
      "finding": "Closing, since reversing an in-memory list costs next to nothing.",
      "fact_needed": "GitLabProvider.get_issue_comments_newest_first (gitlab_provider.py) reverses an in-memory list of MR notes already fetched by get_issue_comments, so removing the reversal saves no API call and next to no time."
     }
-   ]
+   ],
+   "fast": true
   },
   {
    "key": "4333-155d8b41",
@@ -770,7 +774,8 @@
      "finding": "let a shared `artifact_label` fall back to file names when there are several",
      "fact_needed": "In artifacts.py the per-entry label falls back to the section-level artifacts.artifact_label for every entry (entry.get(\"artifact_label\", entry.get(\"label\", artifacts_settings.get(\"artifact_label\", \"\")))), so with several files they all get the same label."
     }
-   ]
+   ],
+   "fast": true
   },
   {
    "key": "4377-028acd87",
@@ -899,7 +904,8 @@
      "finding": "Reverting config_security.py leaves every test green, so add a test that `num_retries` is on the repository host-only list.",
      "fact_needed": "The PR adds 'num_retries' to the config section of REPO_HOST_ONLY_KEYS_BY_SECTION (pr_agent/config_security.py:103) but tests/unittest/test_litellm_retry_config.py only tests the retry predicate and the clamp, so no test fails if that entry is removed."
     }
-   ]
+   ],
+   "fast": true
   },
   {
    "key": "4499-c31e91ea",
@@ -1072,5 +1078,6 @@
    "description": "## Motivation\n\nGitLab inline `/ask` replies are posted in the selected diff discussion, but follow-up questions currently lack earlier messages from that thread. GitHub and Azure DevOps already provide same-thread context for line questions.\n\n## Changes\n\n- Read earlier notes from the selected GitLab discussion using the existing line-question history path.\n- Pass the triggering note ID separately from the discussion ID used for replies. Exclude the current question, later replies, system notes, and empty notes.\n- When the origin note is missing or discussion history cannot be read, answer the current question independently.\n- Reuse the existing `pr_questions.use_conversation_history` option, shared input-token budget, and untrusted-discussion guidance.\n- Update the Ask documentation.\n\n## Scope and compatibility\n\n- Applies only to GitLab inline `/ask` on diff lines; top-level `/ask`, reply placement, and thread resolution are unchanged.\n- With history enabled (the default), each eligible question adds one GitLab discussion API read and may consume additional input tokens, without another model request.\n- Set `pr_questions.use_conversation_history=false` to disable the additional read.\n- No new dependencies or configuration keys.",
    "tickets": []
   }
- ]
+ ],
+ "fast_note": "fast tier: the catch cases caught in every one of 4 Sonnet runs (local and fork CI, 14 Nov 2026); a canary for breakage, not a quality measure"
 }

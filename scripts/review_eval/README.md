@@ -12,7 +12,13 @@ review prompts, the model or the model handling shows its effect on review quali
 - `score.py`: scoring and the gate. A run fails on any failed review, on output-cap hits in more than 10% of runs, or
   on a catch drop beyond the noise floor (20% of the known findings divided by the square root of the repeats, about
   6 of 44 with two repeats). Precision and volume are reported, not gated, because their counts are small.
-- `baseline.json`: the metrics of the last accepted run. A comparison is only meaningful with the same judge model.
+- `baseline_fast.json` and `baseline_full.json`: the metrics of the last accepted run of each tier. A comparison is
+  only meaningful with the same judge model.
+
+Two tiers. `--tier fast` (the default in CI) runs only the six catch cases that every Sonnet run caught (18 known
+findings), with two repeats: about 12 review calls and $1 on Sonnet. It is a canary that a prompt or handler change
+broke the review, not a measure of quality, because the cases were picked for being caught. `--tier full` runs all
+55 cases, about $8.50 with two repeats, for model changes, releases and decisions.
 
 Run it from the repository root with the model provider's key in the environment (`ANTHROPIC__KEY` or `OPENAI__KEY`):
 
@@ -21,9 +27,9 @@ uv run python scripts/review_eval/run_eval.py --model anthropic/claude-sonnet-5-
     --judge-model anthropic/claude-sonnet-5-5 --repeats 2 --out /tmp/review-eval
 ```
 
-Two repeats make about 110 review calls and 220 judge calls. Runs and verdicts are cached under `--out`, so an
+The full tier with two repeats makes about 110 review calls and 220 judge calls. Runs and verdicts are cached under `--out`, so an
 interrupted eval resumes. `--limit 1` runs one case of each kind as a smoke test, `--set SECTION__KEY=VALUE` tries a
-setting, and `--write-baseline scripts/review_eval/baseline.json` records an accepted run.
+setting, and `--write-baseline scripts/review_eval/baseline_<tier>.json` records an accepted run.
 
 In CI, `.github/workflows/review-eval.yaml` runs it on manual dispatch, or on a same-repository PR that touches the
 review prompts or model handling and carries the `review-eval` label (re-apply the label to run it again after a
