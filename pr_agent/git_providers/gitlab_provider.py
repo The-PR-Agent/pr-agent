@@ -1978,19 +1978,6 @@ class GitLabProvider(GitProvider):
             get_logger().exception(f"Could not get head SHA: {e}")
             return ""
 
-    def _live_merge_request_head_sha(self) -> str:
-        get_merge_request = getattr(self, "_get_merge_request", None)
-        if callable(get_merge_request):
-            mr = get_merge_request()
-        else:
-            mr = self.mr
-            refresh = getattr(mr, "refresh", None)
-            if callable(refresh):
-                refresh()
-        diff_refs = getattr(mr, "diff_refs", None)
-        head_sha = diff_refs.get("head_sha") if isinstance(diff_refs, dict) else None
-        return head_sha if isinstance(head_sha, str) else ""
-
     def _own_approval_present(self) -> bool | None:
         """Return whether this account approved the MR, or None when that cannot be read."""
         try:
@@ -2009,10 +1996,10 @@ class GitLabProvider(GitProvider):
             return None
 
     def auto_approve(self, body: str = "") -> bool:
-        """Approve the merge request at the exact head SHA this run reviewed.
+        """Approve the merge request at the exact revision this run reviewed.
 
         GitLab moves an approval with the branch, so pin the approval to the reviewed
-        SHA and verify after approving that the branch did not move in between.
+        head and target, and verify after approving that neither moved.
         """
         reviewed_head_sha = getattr(self, "_diff_head_sha", None)
         if not isinstance(reviewed_head_sha, str) or not reviewed_head_sha:
@@ -2020,14 +2007,14 @@ class GitLabProvider(GitProvider):
             return False
         approved = False
         try:
-            if self._live_merge_request_head_sha() != reviewed_head_sha:
-                get_logger().info("Skipping auto-approval: the merge request head moved since the review")
+            if not self._cleanup_revision_is_current(reviewed_head_sha):
+                get_logger().info("Skipping auto-approval: the merge request revision changed since the review")
                 return False
             self.mr.approve(sha=reviewed_head_sha)
             approved = True
-            if self._live_merge_request_head_sha() != reviewed_head_sha:
+            if not self._cleanup_revision_is_current(reviewed_head_sha):
                 self.mr.unapprove()
-                get_logger().info("Withdrew auto-approval: the merge request head moved during approval")
+                get_logger().info("Withdrew auto-approval: the merge request revision changed during approval")
                 return False
             return True
         except (GitlabError, RequestException, AttributeError) as e:
