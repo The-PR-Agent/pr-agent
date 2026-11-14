@@ -80,6 +80,7 @@ jobs:
           uv run python scripts/review_eval/run_eval.py
           --model "$REVIEW_EVAL_MODEL" --judge-model "$REVIEW_EVAL_JUDGE_MODEL"
           --repeats "$REVIEW_EVAL_REPEATS" --jobs 4 --out "$RUNNER_TEMP/review-eval"
+          --remote https://github.com/The-PR-Agent/pr-agent.git
 
       - name: Upload results
         if: always()
