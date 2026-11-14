@@ -1121,7 +1121,7 @@ def _extract_labelled_yaml_block(response_text: str) -> str | None:
             )
         except yaml.YAMLError:
             # The outer Markdown fence itself is not YAML; prior spans remain usable.
-            pass
+            get_logger().debug("YAML scan ended at non-YAML content; keeping preceding scalar spans")
 
         j = i + 1
         block_lines = []

@@ -242,8 +242,6 @@ def test_multiline_quoted_scalar_does_not_start_block_scalar():
 def test_scalar_scan_does_not_copy_and_rescan_suffixes(monkeypatch):
     from io import StringIO
 
-    import pr_agent.algo.utils as utils
-
     class CountingStream(StringIO):
         bytes_read = 0
 
@@ -253,7 +251,7 @@ def test_scalar_scan_does_not_copy_and_rescan_suffixes(monkeypatch):
             assert self.bytes_read <= len(input_text) + 4096
             return result
 
-    monkeypatch.setattr(utils, "StringIO", CountingStream)
+    monkeypatch.setattr("pr_agent.algo.utils.StringIO", CountingStream)
     input_text = "Lead\n```yaml\nvalue: " + " " * 50000 + "1\n```\n"
     assert _extract_labelled_yaml_block(input_text) is not None
 
@@ -309,8 +307,6 @@ def test_quote_inside_plain_scalar_does_not_hide_later_block_scalar():
 def test_many_yaml_candidates_use_one_stream_and_bounded_read_ahead(monkeypatch):
     from io import StringIO
 
-    import pr_agent.algo.utils as utils
-
     class CountingStream(StringIO):
         instances = 0
         bytes_read = 0
@@ -324,7 +320,7 @@ def test_many_yaml_candidates_use_one_stream_and_bounded_read_ahead(monkeypatch)
             type(self).bytes_read += len(result)
             return result
 
-    monkeypatch.setattr(utils, "StringIO", CountingStream)
+    monkeypatch.setattr("pr_agent.algo.utils.StringIO", CountingStream)
     count = 300
     input_text = "Lead\n" + ("```yaml\n- a\n```\n" * count) + "```yaml\nanswer: 1\n```\n"
     assert _extract_labelled_yaml_block(input_text) == "answer: 1"
