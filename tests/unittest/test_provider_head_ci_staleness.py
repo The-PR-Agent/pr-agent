@@ -294,6 +294,35 @@ def test_github_staleness_returns_false_when_no_base_commits_since_ci():
     assert provider.is_head_stale_against_base() is False
 
 
+def test_github_staleness_uses_completed_sibling_job_in_current_workflow(monkeypatch):
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    completed_at = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    runs = [
+        SimpleNamespace(
+            status="completed",
+            completed_at=completed_at,
+            app=None,
+            details_url="https://github.com/owner/repo/actions/runs/123/job/1",
+        ),
+        SimpleNamespace(
+            status="in_progress",
+            completed_at=None,
+            created_at=completed_at + timedelta(minutes=1),
+            app=None,
+            details_url="https://github.com/owner/repo/actions/runs/123/job/2",
+        ),
+    ]
+    provider = _make_github_provider(check_runs=runs)
+    provider.get_diff_files = lambda: [SimpleNamespace(filename="app/main.py")]
+    provider.pr.base = SimpleNamespace(ref="main")
+    provider.repo_obj.get_events.return_value = []
+    provider.repo_obj.get_commits.return_value = []
+
+    assert provider.is_head_stale_against_base() is False
+    provider.repo_obj.get_commits.assert_called_once_with(sha="main", since=completed_at)
+    provider.repo_obj.get_events.assert_not_called()
+
+
 def test_github_staleness_returns_false_when_base_commits_touch_unrelated_files():
     now = datetime.now(UTC)
     runs = [SimpleNamespace(status="completed", conclusion="success", app=None, completed_at=now, name="test")]
