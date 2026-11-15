@@ -2746,7 +2746,12 @@ class LiteLLMAIHandler(BaseAiHandler):
         metadata gap skips the length check, never the call.
         """
         points = self._resolve_cache_control_injection_points()
-        if not points or not self._is_claude_model(model):
+        # A role: user or index: -1 point caches through the chunk's own diff, so
+        # siblings can never read it and the stagger only adds latency; gate on a
+        # system point to keep it to the shared prefix.
+        if not any(isinstance(point, dict) and point.get("role") == "system" for point in points or []):
+            return False
+        if not self._is_claude_model(model):
             return False
         if prompt_tokens is not None:
             try:

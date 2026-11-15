@@ -65,6 +65,24 @@ def test_prompt_cache_active_requires_points_and_a_claude_model(monkeypatch):
     assert handler.prompt_cache_active("claude-sonnet-5") is False
 
 
+def test_prompt_cache_active_requires_a_system_injection_point(monkeypatch):
+    # A role: user or index: -1 breakpoint caches through the chunk's own diff, which
+    # siblings can never read, so the stagger would only add latency.
+    handler = LiteLLMAIHandler()
+    monkeypatch.setattr(
+        LiteLLMAIHandler,
+        "_resolve_cache_control_injection_points",
+        staticmethod(lambda: [{"location": "message", "role": "user"}, {"location": "message", "index": -1}]),
+    )
+    assert handler.prompt_cache_active("claude-sonnet-5", prompt_tokens=5000) is False
+    monkeypatch.setattr(
+        LiteLLMAIHandler,
+        "_resolve_cache_control_injection_points",
+        staticmethod(lambda: [{"location": "message", "role": "user"}, {"location": "message", "role": "system"}]),
+    )
+    assert handler.prompt_cache_active("claude-sonnet-5", prompt_tokens=5000) is True
+
+
 def test_prompt_cache_active_rejects_a_prefix_below_the_model_minimum(monkeypatch):
     # Below prompt_cache_min_tokens Anthropic silently does not cache, so staggering
     # would only add latency; the predicate must say so (calibrated against the
