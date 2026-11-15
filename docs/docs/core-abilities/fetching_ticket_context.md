@@ -126,6 +126,7 @@ Member-only issues in the MR's own project are included when the project is priv
 they are skipped for broadly visible MRs in public and internal projects. Disabled, unknown, or unreadable issue
 access settings are skipped. Approved sibling issues must have Issues enabled and be public.
 Internal and private sibling projects cannot guarantee that every MR reader can see their issues and are skipped.
+Confidential issues are skipped in every project.
 
 For GitHub, PR-Agent skips sub-issue lookup only when the parent issue's fetched summary explicitly reports zero
 sub-issues; nonzero, missing, or invalid totals use the usual lookup.
