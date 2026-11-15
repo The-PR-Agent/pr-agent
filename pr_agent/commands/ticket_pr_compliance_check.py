@@ -90,8 +90,9 @@ def _github_ticket_pattern(base_url_html):
         r"|((?<![\w./-])([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/([A-Za-z0-9._-]+)#(\d+)\b)"
         r"|(#\d+)"
     )
-# Option A: issue number at start of branch or after /, followed by - or end (e.g. feature/1-test-issue, 123-fix)
-BRANCH_ISSUE_PATTERN = re.compile(r"(?:^|/)(\d{1,6})(?=-|$)")
+# Option A: issue number at start of branch or after /, followed by - or end (e.g. feature/1-test-issue, 123-fix).
+# A year followed by a month (release/2026-11-15, deploy/2025-03) is a date, not an issue number.
+BRANCH_ISSUE_PATTERN = re.compile(r"(?:^|/)(?!(?:19|20)\d\d-(?:0[1-9]|1[0-2])(?:[-/._]|$))(\d{1,6})(?=-|$)")
 # A bare "#12345" is as likely to be an error code as an issue, so a shorthand reference is
 # only followed up to this many digits. The bound matches BRANCH_ISSUE_PATTERN above: the same
 # number written in a branch name and in the description should resolve the same way.
@@ -1064,7 +1065,8 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
 def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html="https://github.com"):
     """
     Extract GitHub issue URLs from branch name. Numbers are matched at start of branch or after /,
-    followed by - or end (e.g. feature/1-test-issue -> #1). Respects extract_issue_from_branch
+    followed by - or end (e.g. feature/1-test-issue -> #1); a date prefix such as release/2026-11-15
+    is skipped. Respects extract_issue_from_branch
     and optional branch_issue_regex (may be under [config] in TOML).
     """
     if not branch_name or not repo_path:
