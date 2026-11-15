@@ -1212,6 +1212,7 @@ class GitLabProvider(GitProvider):
         # MR changes cache re-polls together with the diff cache it feeds.
         self._merge_request_changes_cache = None
         self._diff_mr_refs = None
+        self._incremental_unfiltered_files = None
 
     def get_incremental_commits(self, incremental: IncrementalPR | None = None, kind: str = "review"):
         """Populate state needed for an incremental run.
@@ -1229,6 +1230,7 @@ class GitLabProvider(GitProvider):
         # next get_diff_files() call reflects the scope configured here.
         self.diff_files = None
         self._diff_mr_refs = None
+        self._incremental_unfiltered_files = None
         self._merge_request_changes_cache = None
         self.mr_commits = None
         self._commit_diff_refs = None
@@ -1415,6 +1417,7 @@ class GitLabProvider(GitProvider):
     def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> str | None:
         self.incremental = incremental
         self.diff_files = None
+        self._incremental_unfiltered_files = None
         self.unreviewed_files_map = {}
         self._commit_diff_refs = None
         loaded = vars(self).setdefault("_loaded_commits", {})
@@ -1818,6 +1821,11 @@ class GitLabProvider(GitProvider):
             head_sha_for_content = diff_refs.get('head_sha')
         raw_changes = self._expand_submodule_changes(raw_changes, diff_refs)
         diffs_original = raw_changes
+        self._incremental_unfiltered_files = (
+            [c for c in diffs_original if c.get('new_path') or c.get('old_path')]
+            if incremental_active
+            else None
+        )
         diffs = filter_ignored(diffs_original, 'gitlab')
         if diffs != diffs_original:
             try:
