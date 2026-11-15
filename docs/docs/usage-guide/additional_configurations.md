@@ -348,6 +348,10 @@ The value is derived from the PR URL and normalized to the character set LiteLLM
 for example `pr-agent-github-com-owner-repo-pull-123-b065a0b1d1c7b721`. A header set explicitly through
 `LITELLM.EXTRA_HEADERS` takes precedence, and the setting is disabled by default.
 
+The same value is passed to LiteLLM as `litellm_session_id`, which LiteLLM forwards as the
+provider's session header where one exists, such as OpenCode Go's required `x-opencode-session`.
+The value includes the PR's host and repository path, so enabling the setting sends them to that provider.
+
 ## Integrating with Logging Observability Platforms
 
 Various logging observability tools can be used out-of-the box when using the default LiteLLM AI Handler. Simply configure the LiteLLM callback settings in `configuration.toml` and set environment variables according to the LiteLLM [documentation](https://docs.litellm.ai/docs/).

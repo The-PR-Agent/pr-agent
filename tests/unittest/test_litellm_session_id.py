@@ -112,9 +112,22 @@ class TestSessionIdHeader:
         assert first["headers"]["x-litellm-session-id"] != second["headers"]["x-litellm-session-id"]
 
     @pytest.mark.asyncio
+    async def test_disabled_does_not_pass_litellm_session_id(self, monkeypatch):
+        kwargs = await _run(monkeypatch, False, log_context={"command": "improve", "pr_url": PR_URL})
+        assert "litellm_session_id" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_enabled_passes_litellm_session_id(self, monkeypatch):
+        # LiteLLM turns litellm_session_id into provider affinity headers such as
+        # OpenCode Go's required x-opencode-session; the proxy header alone does not.
+        kwargs = await _run(monkeypatch, True, log_context={"command": "improve", "pr_url": PR_URL})
+        assert kwargs["litellm_session_id"] == kwargs["headers"]["x-litellm-session-id"]
+
+    @pytest.mark.asyncio
     async def test_enabled_without_context_is_noop(self, monkeypatch):
         kwargs = await _run(monkeypatch, True)
         assert "x-litellm-session-id" not in (kwargs.get("headers") or {})
+        assert "litellm_session_id" not in kwargs
 
     @pytest.mark.asyncio
     async def test_value_uses_litellm_allowed_characters(self, monkeypatch):

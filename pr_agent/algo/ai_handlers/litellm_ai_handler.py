@@ -3326,6 +3326,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                 if get_settings().litellm.get("add_session_id_to_requests", False):
                     session_id = self._get_request_session_id()
                     if session_id:
+                        # The SDK derives provider session headers, such as OpenCode Go's
+                        # required x-opencode-session, from this parameter, not the proxy header.
+                        kwargs["litellm_session_id"] = session_id
                         headers = dict(kwargs.get("headers") or {})
                         if not any(name.lower() == "x-litellm-session-id" for name in headers):
                             headers["x-litellm-session-id"] = session_id
