@@ -139,3 +139,12 @@ Examples of ways to increase feedback include:
 </details>
 
 ___
+
+<details>
+<summary>Q: Why do Git diff parsers need to preserve physical line boundaries?</summary>
+
+Python's generic string line splitting treats some Unicode separators as line breaks. If one occurs inside a source line, splitting the supplied diff at that character can put subsequent content on the wrong line. Git delimits the physical lines of the diff with newline characters.
+
+PR-Agent 0.50.0 includes the supplied-diff parsing fix in [#4668](https://github.com/The-PR-Agent/pr-agent/pull/4668). The [offline before/after replay](https://rudycelekli.github.io/engineering/git-physical-line-boundaries.html#reproduce) shows the affected inputs, expected outputs, and regression checks.
+
+</details>
