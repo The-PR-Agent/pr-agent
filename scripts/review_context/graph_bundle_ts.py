@@ -105,6 +105,8 @@ PUNCT = set("()[]{},;:.")
 # submodule or untracked file cannot reach the bundle; oversized and secret-looking files are left out too.
 MAX_FILE_BYTES = 1_000_000
 DEFAULT_TIMEOUT_S = 120
+# What open(path, "w") requests; the umask and any default ACL narrow it.
+_ORDINARY_FILE_MODE = (stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
 SECRET_NAMES = (".env", ".env.*", "*.env", ".netrc", ".npmrc", ".pypirc", ".git-credentials", ".secrets.toml",
                 "secrets.toml", "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore", "id_rsa*", "id_dsa*",
                 "id_ecdsa*", "id_ed25519*", "*.tfstate", "*.tfstate.*", "credentials", "credentials.*")
@@ -2117,11 +2119,11 @@ def _publish_bundle(args, out_path, text, before_publish):
             break
         else:
             raise FileExistsError("could not reserve a unique bundle staging directory")
-        # A private directory shields unfinished bytes; the bundle itself is
-        # created owner-only (further narrowed by umask) and keeps that mode.
+        # A private directory shields unfinished bytes while a normal 0666
+        # creation inherits the output directory's default ACL and umask.
         # Use dir_fd throughout so a swapped pathname cannot redirect writes.
         tmp_name = "bundle.tmp"
-        fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=staging_fd)
+        fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _ORDINARY_FILE_MODE, dir_fd=staging_fd)
         fh = os.fdopen(fd, "w", encoding="utf-8")
         fd = None
         with fh:
