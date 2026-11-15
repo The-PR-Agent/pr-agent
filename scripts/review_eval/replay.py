@@ -63,7 +63,17 @@ LocalGitProvider.get_pr_description_full = lambda self: CASE["description"]
 ticket_pr_compliance_check.extract_tickets = tickets
 
 
+ENDPOINT_SETTINGS = ("openai.api_base", "anthropic.api_base", "litellm.api_base", "litellm.base_url",
+                     "azure_ad.api_base", "openai.api_type")
+
+
 async def main():
+    from pr_agent.config_loader import get_settings
+    settings = get_settings()
+    # The key must only reach the provider's default endpoint, whatever a replayed or overlaid file contains.
+    redirect = [k for k in ENDPOINT_SETTINGS if settings.get(k)]
+    if redirect:
+        return f"refusing to run: endpoint settings are set ({', '.join(redirect)})"
     try:
         await PRReviewer(os.environ["REVIEW_EVAL_TARGET_BRANCH"]).run()
         return None

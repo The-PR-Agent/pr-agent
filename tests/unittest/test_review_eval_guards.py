@@ -51,3 +51,24 @@ def test_lookup_stays_inside_the_checkout(tmp_path):
         assert judge.lookup(root, {"kind": "read", "path": path}).endswith("not found")
     (root / "ok.py").write_text("a\nb\n")
     assert judge.lookup(root, {"kind": "read", "path": "ok.py", "start": 2, "end": 2}) == "read ok.py [2-2]\n2: b"
+
+
+overlay = _load("overlay_pr")
+
+
+@pytest.mark.parametrize("path,ok", [("pr_agent/settings/pr_reviewer_prompts.toml", True),
+                                     ("pr_agent/settings/code_suggestions/pr_code_suggestions_prompts.toml", True),
+                                     ("pr_agent/settings/configuration.toml", False),
+                                     ("pr_agent/settings/../settings/pr_reviewer_prompts.toml", False),
+                                     ("pr_agent/settings/a/b/x_prompts.toml", False),
+                                     ("pr_agent/commands/pr_reviewer.py", False)])
+def test_overlay_only_takes_prompt_files(path, ok):
+    assert overlay.is_prompt_file(path) is ok
+
+
+def test_overlay_refuses_new_tables_keys_and_non_strings():
+    old = {"pr_review_prompt": {"system": "a", "user": "b"}}
+    assert overlay.same_shape({"pr_review_prompt": {"system": "changed"}}, old)
+    assert not overlay.same_shape({"pr_review_prompt": {"system": "a"}, "openai": {"api_base": "http://x"}}, old)
+    assert not overlay.same_shape({"pr_review_prompt": {"system": "a", "api_base": "http://x"}}, old)
+    assert not overlay.same_shape({"pr_review_prompt": {"system": 1}}, old)

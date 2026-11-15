@@ -31,9 +31,12 @@ The full tier with two repeats makes about 110 review calls and 220 judge calls.
 interrupted eval resumes. `--limit 1` runs one case of each kind as a smoke test, `--set SECTION__KEY=VALUE` tries a
 setting, and `--write-baseline scripts/review_eval/baseline_<tier>.json` records an accepted run.
 
-In CI, `.github/workflows/review-eval.yaml` runs it on manual dispatch, or on a same-repository PR that touches the
-review prompts or model handling and carries the `review-eval` label (re-apply the label to run it again after a
-push). It needs the `REVIEW_EVAL_MODEL` and `REVIEW_EVAL_JUDGE_MODEL` repository variables, and the matching
+In CI, `.github/workflows/review-eval.yaml` runs it only on demand and never blocks a merge (it is not a required
+check). A maintainer runs it from the Actions tab with a pull request number: `overlay_pr.py` applies that PR's prompt
+files onto the default branch, refusing any file that adds tables, keys or non-string values (Dynaconf would merge
+them into the settings), and the result is posted on the PR. No code from the PR runs, so a change to
+`pr_reviewer.py` is evaluated locally on the branch instead. On a same-repository PR that changes the review prompt or
+the reviewer, the `review-eval` label runs it too (re-apply the label to run it again after a push). It needs the `REVIEW_EVAL_MODEL` and `REVIEW_EVAL_JUDGE_MODEL` repository variables, and the matching
 `REVIEW_EVAL_OPENAI_KEY` or `REVIEW_EVAL_ANTHROPIC_KEY` secret in a `review-eval` environment; give that environment
 required reviewers so each run waits for a maintainer's approval. `--set` accepts only `CONFIG__*` and
 `PR_REVIEWER__*` settings and refuses anything naming a key, token, endpoint or model.

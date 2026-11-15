@@ -1,23 +1,30 @@
 name: Review-quality eval
 
-# Replays /review on frozen PR commits and fails when it catches clearly fewer known findings than the baseline
-# (scripts/review_eval). It spends model tokens, so it never runs on every PR: a labelled same-repository PR that
-# touches review prompts or model handling runs the fast tier (6 cases, about $1 on Sonnet), and a manual dispatch
-# can run the full tier (55 cases, about $8.50) for model changes and releases. Fork PRs never get the key.
+# Replays /review on frozen PR commits and compares what it finds with a baseline (scripts/review_eval). It spends
+# model tokens, so it only runs on demand and never blocks a merge (it is not a required check):
+#   - manual dispatch, optionally with a pull request number: the PR's prompt files are applied onto the default
+#     branch (no code from the PR runs) and the result is posted on the PR;
+#   - the `review-eval` label on a same-repository PR that changes the review prompt or the reviewer.
+# Tiers: fast (6 cases, about $1 on Sonnet, a breakage canary) or full (55 cases, about $8.50, for model changes and
+# releases). Fork PRs never get the key.
 
 on:
   workflow_dispatch:
     inputs:
-      model:
-        description: Model under test (provider/model); empty uses the REVIEW_EVAL_MODEL repository variable
+      pr_number:
+        description: Pull request whose prompt-file changes to evaluate (empty evaluates the selected branch)
         required: false
         type: string
       tier:
-        description: fast (6 always-caught cases, a breakage canary) or full (55 cases, quality decisions)
+        description: fast (6 always-caught cases, about $1) or full (55 cases, about $8.50)
         required: false
         default: fast
         type: choice
         options: [fast, full]
+      model:
+        description: Model under test (provider/model); empty uses the REVIEW_EVAL_MODEL repository variable
+        required: false
+        type: string
       repeats:
         description: Runs per case (2 on the full tier detects a catch drop of about 6 of 44 known findings)
         required: false
@@ -28,18 +35,15 @@ on:
     # No synchronize: a push does not re-spend tokens; re-apply the label to run again.
     types: [opened, reopened, labeled]
     paths:
-      - "pr_agent/settings/**/*prompts*.toml"
+      - "pr_agent/settings/pr_reviewer_prompts.toml"
       - "pr_agent/commands/pr_reviewer.py"
-      - "pr_agent/algo/ai_handlers/**"
-      - "pr_agent/algo/pr_processing.py"
-      - "pr_agent/algo/utils.py"
       - "scripts/review_eval/**"
 
 permissions:
   contents: read
 
 concurrency:
-  group: review-eval-${{ github.event.pull_request.number || github.ref }}
+  group: review-eval-${{ inputs.pr_number || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -52,6 +56,9 @@ jobs:
       )
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
+      pull-requests: write
     # Holds the key secrets; give it required reviewers so every run needs a maintainer's approval.
     environment: review-eval
     env:
@@ -59,6 +66,7 @@ jobs:
       REVIEW_EVAL_JUDGE_MODEL: ${{ vars.REVIEW_EVAL_JUDGE_MODEL }}
       REVIEW_EVAL_REPEATS: ${{ inputs.repeats || '2' }}
       REVIEW_EVAL_TIER: ${{ inputs.tier || 'fast' }}
+      PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -78,6 +86,16 @@ jobs:
             echo "::error::Set the REVIEW_EVAL_MODEL and REVIEW_EVAL_JUDGE_MODEL repository variables."
             exit 1
           fi
+          case "$PR_NUMBER" in
+            ""|*[!0-9]*) [ -z "$PR_NUMBER" ] || { echo "::error::pr_number must be digits"; exit 1; } ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/review-eval"
+
+      - name: Apply the pull request's prompt files
+        if: github.event_name == 'workflow_dispatch' && env.PR_NUMBER != ''
+        run: >-
+          uv run python scripts/review_eval/overlay_pr.py "$PR_NUMBER"
+          --remote "https://github.com/$GITHUB_REPOSITORY.git" | tee "$RUNNER_TEMP/review-eval/overlay.md"
 
       - name: Run the eval
         env:
@@ -89,6 +107,21 @@ jobs:
           --repeats "$REVIEW_EVAL_REPEATS" --tier "$REVIEW_EVAL_TIER" --jobs 4 --out "$RUNNER_TEMP/review-eval"
           --remote https://github.com/The-PR-Agent/pr-agent.git
 
+      - name: Post the result on the pull request
+        if: always() && env.PR_NUMBER != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          d="$RUNNER_TEMP/review-eval"
+          {
+            if [ -f "$d/overlay.md" ]; then cat "$d/overlay.md"; echo; fi
+            if [ -f "$d/summary.md" ]; then cat "$d/summary.md"; else echo "The eval did not finish."; fi
+            echo
+            echo "[Run details]($RUN_URL). On demand and not a required check."
+          } > "$d/comment.md"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$d/comment.md"
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
@@ -97,6 +130,7 @@ jobs:
           path: |
             ${{ runner.temp }}/review-eval/metrics.json
             ${{ runner.temp }}/review-eval/summary.md
+            ${{ runner.temp }}/review-eval/overlay.md
             ${{ runner.temp }}/review-eval/runs/**/final.md
             ${{ runner.temp }}/review-eval/runs/**/judged.json
             ${{ runner.temp }}/review-eval/runs/**/status.json
