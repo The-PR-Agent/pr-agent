@@ -215,6 +215,20 @@ async def test_other_ticket_integrations_remain_outside_gitlab_success_limit(pro
     assert len(transport.requests) == 4
 
 
+def _confidential_issue(iid):
+    return 200, {"iid": iid, "web_url": f"https://gitlab.example/group/repo/-/issues/{iid}", "title": "Secret",
+                 "description": "customer details", "labels": [], "confidential": True}
+
+
+async def test_confidential_own_project_issue_is_skipped(provider_factory):
+    provider, transport = provider_factory("Fixes #1 #2", [_confidential_issue(1), 200])
+
+    result = await tickets.extract_tickets(provider)
+
+    assert [ticket["ticket_id"] for ticket in result] == [2]
+    assert len(transport.requests) == 2
+
+
 def _sibling_project(path="group/sub/project", visibility="public", confidential=False):
     project = Mock()
     project.path_with_namespace = path
@@ -259,7 +273,7 @@ async def test_confidential_sibling_issue_is_skipped(provider_factory, monkeypat
     assert transport.requests == []
     project.issues.get.assert_called_once_with(3)
     logger.return_value.warning.assert_called_once_with(
-        "Ignoring confidential cross-project GitLab issue: other/sub/project#3"
+        "Ignoring confidential GitLab issue: other/sub/project#3"
     )
 
 
