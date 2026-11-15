@@ -45,6 +45,29 @@ def test_findings_keeps_fix_subheading_inside_its_finding():
     assert "cache.clear()" in found[0][1]
 
 
+def test_findings_ignore_bold_lines_inside_fenced_fixes():
+    md = ("### ⚡ Recommended focus areas for review\n\n**Wrong Header**\n\nThe docs table is wrong.\n\n"
+          "**Suggested fix**\n\n```markdown\n**Configuration**\n| key | value |\n```\n\n**Second**\n\nBody.\n")
+    found = score.findings(md)
+    assert [t for t, _ in found] == ["Wrong Header", "Second"]
+    assert "**Configuration**" in found[0][1]
+
+
+def test_findings_from_review_export_carry_location_and_fix():
+    review = {"review": {"key_issues_to_review": [
+        {"relevant_file": "a.py", "issue_header": "Missing Guard", "issue_content": "x can be None",
+         "start_line": 3, "end_line": 4, "existing_code": "x.y", "improved_code": "x and x.y"}, "junk"]}}
+    assert score.findings_from_review(review) == [
+        ("Missing Guard", "a.py lines 3-4\nx can be None\nSuggested fix:\nx.y\n->\nx and x.y")]
+    assert score.findings_from_review({}) == []
+
+
+def test_gate_skips_a_baseline_from_another_case_set_or_tier():
+    failures, notes = score.gate(metrics(catch=0.0, cases_hash="a", tier="fast"),
+                                 metrics(cases_hash="b", tier="fast"), 2)
+    assert failures == [] and notes == ["baseline was made on a different case set or tier: not compared"]
+
+
 def test_findings_empty_without_focus_section():
     assert score.findings("## PR Reviewer Guide\n\nNo key issues.") == []
 

@@ -11,12 +11,37 @@ FINDINGS_START = "Recommended focus areas"
 FINDINGS_END = "Agent run details"
 
 
+def findings_from_review(review):
+    """[(title, body)] from the structured review pr-agent exports (review.json): the key issues in order, each body
+    carrying its location and any suggested fix, independent of the comment's language and markdown."""
+    issues = (review or {}).get("review", {}).get("key_issues_to_review") or []
+    out = []
+    for issue in issues if isinstance(issues, list) else []:
+        if not isinstance(issue, dict):
+            continue
+        body = f"{str(issue.get('relevant_file', '')).strip()} lines {issue.get('start_line')}-" \
+               f"{issue.get('end_line')}\n{str(issue.get('issue_content', '')).strip()}"
+        if issue.get("improved_code"):
+            body += f"\nSuggested fix:\n{issue.get('existing_code') or ''}\n->\n{issue['improved_code']}"
+        out.append((str(issue.get("issue_header", "")).strip(), body.strip()))
+    return out
+
+
 def findings(review_md):
-    """[(title, body)] of the findings in a /review comment, in order; fix sub-headings stay in their finding."""
+    """[(title, body)] of the findings in a /review comment, in order (fallback when no review.json exists). Fix
+    sub-headings and bold lines inside code fences stay in their finding."""
     if FINDINGS_START not in review_md:
         return []
     text = review_md.split(FINDINGS_START, 1)[1].split(FINDINGS_END, 1)[0]
-    ms = [m for m in TITLE.finditer(text) if not m.group(1).strip().lower().startswith(("suggested fix", "⚙️"))]
+    fences = [i for i, line in enumerate(text.splitlines(keepends=True)) if line.lstrip().startswith("```")]
+    offsets = [0]
+    for line in text.splitlines(keepends=True):
+        offsets.append(offsets[-1] + len(line))
+    # An unclosed trailing fence has no pair and is ignored.
+    fenced = [(offsets[a], offsets[b + 1]) for a, b in zip(fences[::2], fences[1::2], strict=False)]
+    ms = [m for m in TITLE.finditer(text)
+          if not m.group(1).strip().lower().startswith(("suggested fix", "⚙️"))
+          and not any(a <= m.start() < b for a, b in fenced)]
     return [(m.group(1).strip(), text[m.end():ms[i + 1].start() if i + 1 < len(ms) else len(text)].strip())
             for i, m in enumerate(ms)]
 
@@ -42,6 +67,9 @@ def gate(current, baseline, repeats):
         failures.append(f"{current['capped_runs']} of {current['runs']} runs hit the output-token cap")
     if not baseline:
         notes.append("no baseline: nothing to compare with")
+        return failures, notes
+    if baseline.get("cases_hash") != current.get("cases_hash") or baseline.get("tier") != current.get("tier"):
+        notes.append("baseline was made on a different case set or tier: not compared")
         return failures, notes
     floor = noise_floor(current["known_findings"], repeats)
     delta = current["catch"] - baseline["catch"]

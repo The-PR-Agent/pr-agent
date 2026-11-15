@@ -4,7 +4,8 @@ name: Review-quality eval
 # model tokens, so it only runs on demand and never blocks a merge (it is not a required check):
 #   - manual dispatch, optionally with a pull request number: the PR's prompt files are applied onto the default
 #     branch (no code from the PR runs) and the result is posted on the PR;
-#   - the `review-eval` label on a same-repository PR that changes the review prompt or the reviewer.
+#   - the `review-eval` label on a same-repository PR that changes the review prompt or the reviewer. This runs the
+#     PR's own code with the key, so approving it in the `review-eval` environment trusts the whole PR.
 # Tiers: fast (6 cases, about $1 in the fork trial, a breakage canary) or full (55 cases, about $8.50, for model
 # changes and releases). Fork PRs never get the key.
 
@@ -42,10 +43,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: review-eval-${{ inputs.pr_number || github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
   review-eval:
     if: >-
@@ -57,6 +54,10 @@ jobs:
       )
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # Job-level, so an event whose job is skipped (another label) never joins the group and cancels a running eval.
+    concurrency:
+      group: review-eval-${{ inputs.pr_number || github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
     permissions:
       contents: read
       pull-requests: write
@@ -118,6 +119,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           d="$RUNNER_TEMP/review-eval"
+          mkdir -p "$d"  # setup can fail before any earlier step created it
           {
             if [ -f "$d/overlay.md" ]; then cat "$d/overlay.md"; echo; fi
             if [ -f "$d/summary.md" ]; then cat "$d/summary.md"; else echo "The eval did not finish."; fi

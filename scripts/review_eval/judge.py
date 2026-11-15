@@ -9,6 +9,9 @@ import time
 import litellm
 
 KEY_ENV = {"openai": ("OPENAI__KEY", "OPENAI_KEY", "OPENAI_API_KEY")}
+API_BASE = {"openai": "https://api.openai.com/v1"}
+VERDICTS = {"caught", "partial", "missed"}
+CATCH_ATTEMPTS = 3
 MAX_LOOKUPS, READ_LINES, GREP_LINES, MAX_TEXT = 8, 120, 40, 200
 
 CATCH_SYSTEM = """You judge whether an automated code review raised known problems. Each known finding is a real \
@@ -48,9 +51,12 @@ Reply with JSON only: {{"verdicts": [{{"id": <n>, "valid": "yes|no|unsure", "rea
 finding."""
 
 
+def provider(model):
+    return model.split("/", 1)[0] if "/" in model else "openai"
+
+
 def api_key(model):
-    provider = model.split("/", 1)[0] if "/" in model else "openai"
-    for name in KEY_ENV.get(provider, ()):
+    for name in KEY_ENV.get(provider(model), ()):
         if os.environ.get(name):
             return os.environ[name]
     raise SystemExit(f"no API key in the environment for judge model {model!r}")
@@ -76,8 +82,9 @@ def complete(model, system, messages, max_tokens=4096):
 
 
 def _complete_once(model, system, messages, max_tokens):
-    r = litellm.completion(model=model, api_key=api_key(model), max_tokens=max_tokens,
-                           messages=[{"role": "system", "content": system}, *messages])
+    # The endpoint is pinned so environment variables such as OPENAI_BASE_URL cannot send the key elsewhere.
+    r = litellm.completion(model=model, api_key=api_key(model), api_base=API_BASE[provider(model)],
+                           max_tokens=max_tokens, messages=[{"role": "system", "content": system}, *messages])
     u = r.usage
     return r.choices[0].message.content or "", {"input": u.prompt_tokens, "output": u.completion_tokens}
 
@@ -95,10 +102,16 @@ def judge_catch(model, known, review, reverse=False):
     order = list(reversed(known)) if reverse else known
     text = "\n".join(f"- [{k['label']}] {k['finding']}"
                      + (f"\n  Supporting facts: {k['fact_needed']}" if k.get("fact_needed") else "") for k in order)
-    out, usage = complete(model, CATCH_SYSTEM, [{"role": "user", "content": CATCH_USER.format(known=text,
-                                                                                                review=review)}])
-    got = {v.get("label"): v.get("verdict") for v in parse_json(out).get("verdicts", []) if isinstance(v, dict)}
-    return {k["label"]: got.get(k["label"], "missed") for k in known}, [usage]
+    msgs = [{"role": "user", "content": CATCH_USER.format(known=text, review=review)}]
+    usage = []
+    for _ in range(CATCH_ATTEMPTS):  # an unusable reply must never be cached as "missed"
+        out, u = complete(model, CATCH_SYSTEM, msgs)
+        usage.append(u)
+        got = {v.get("label"): str(v.get("verdict", "")).lower()
+               for v in parse_json(out).get("verdicts", []) if isinstance(v, dict)}
+        if all(got.get(k["label"]) in VERDICTS for k in known):
+            return {k["label"]: got[k["label"]] for k in known}, usage
+    raise RuntimeError(f"catch judge gave no usable verdict for every known finding after {CATCH_ATTEMPTS} tries")
 
 
 def lookup(worktree, lk):

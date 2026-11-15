@@ -56,16 +56,19 @@ def prepare(case, out, remote):
     return wt
 
 
-def fingerprints(model, judge_model, overrides):
-    """(review inputs, judge inputs) hashes: cached reviews are only valid for the same model, settings, pr-agent
-    code (committed tree plus uncommitted edits such as an overlay) and replay script; cached verdicts also for the
-    same judge model and judge code."""
-    def digest(*parts):
-        return hashlib.sha256("\0".join(parts).encode()).hexdigest()[:16]
+def digest(*parts):
+    return hashlib.sha256("\0".join(parts).encode()).hexdigest()[:16]
 
+
+def fingerprints(model, judge_model, overrides, cases_file):
+    """(review inputs, judge inputs) hashes: cached reviews are only valid for the same model, settings, cases,
+    pr-agent code (committed tree plus uncommitted edits such as an overlay), lockfile and replay script; cached
+    verdicts also for the same judge model and the code that builds and scores judge inputs."""
     code = git("rev-parse", "HEAD:pr_agent").strip() + git("diff", "HEAD", "--", "pr_agent")
-    review_fp = digest(model, json.dumps(overrides, sort_keys=True), code, REPLAY.read_text())
-    return review_fp, digest(review_fp, judge_model, (HERE / "judge.py").read_text())
+    review_fp = digest(model, json.dumps(overrides, sort_keys=True), cases_file.read_text(), code,
+                       (REPO / "uv.lock").read_text(), REPLAY.read_text())
+    judge_code = "".join((HERE / f).read_text() for f in ("judge.py", "score.py", "run_eval.py"))
+    return review_fp, digest(review_fp, judge_model, judge_code)
 
 
 def check_cache(out, review_fp, judge_fp):
@@ -124,7 +127,7 @@ def review(case, rep, out, wt, env):
     if status.exists() and json.loads(status.read_text())["ok"]:
         return run
     run.mkdir(parents=True, exist_ok=True)
-    for stale in ("final.md", "judged.json"):  # a rerun must never keep the failed attempt's verdicts
+    for stale in ("final.md", "review.json", "judged.json"):  # a rerun never keeps the failed attempt's output
         (run / stale).unlink(missing_ok=True)
     (run / "case.json").write_text(json.dumps({k: case[k] for k in ("title", "branch", "description", "tickets")}))
     env = {**env, "REVIEW_EVAL_RUN_DIR": str(run), "REVIEW_EVAL_CASE": str(run / "case.json"),
@@ -151,18 +154,26 @@ def context(case, wt):
 def judge_run(case, run, wt, judge_model):
     """Cached judge verdicts for one run: catch verdicts by two judges, or a precision verdict per finding."""
     f = run / "judged.json"
-    if f.exists():
+    if f.exists() and not json.loads(f.read_text()).get("judge_error"):
         return json.loads(f.read_text())
     status = json.loads((run / "status.json").read_text())
-    text = (run / "final.md").read_text(errors="replace") if status["ok"] else ""
-    text = text.split(score.FINDINGS_END, 1)[0]
-    found = score.findings(text)
+    found = []
+    if status["ok"] and (run / "review.json").exists():
+        found = score.findings_from_review(json.loads((run / "review.json").read_text()))
+    elif status["ok"]:
+        found = score.findings((run / "final.md").read_text(errors="replace"))
+    text = "\n\n".join(f"[{i}] {t}\n{b}" for i, (t, b) in enumerate(found))
     res = {"findings": len(found), "usage": []}
     if case["kind"] == "catch":
         known = case["known_findings"]
-        if text:
-            a, ua = judge.judge_catch(judge_model, known, text)
-            b, ub = judge.judge_catch(judge_model, known, text, reverse=True)
+        if found:
+            try:
+                a, ua = judge.judge_catch(judge_model, known, text)
+                b, ub = judge.judge_catch(judge_model, known, text, reverse=True)
+            except RuntimeError as e:  # counted as a failed run and redone on the next invocation
+                res.update({"judge_error": str(e), "catch": {k["label"]: ["missed", "missed"] for k in known}})
+                f.write_text(json.dumps(res, indent=1))
+                return res
             res["usage"] += ua + ub
         else:
             a = b = {k["label"]: "missed" for k in known}
@@ -188,7 +199,7 @@ def metrics(cases, out, repeats, judge_model):
             jd = json.loads((run / "judged.json").read_text())
             runs += 1
             found += jd["findings"]
-            failed += not st["ok"]
+            failed += not st["ok"] or bool(jd.get("judge_error"))
             capped += "length" in st.get("finish", [])
             tokens["review_in"] += sum(u["input"] for u in st["usage"])
             tokens["review_out"] += sum(u["output"] for u in st["usage"])
@@ -260,7 +271,7 @@ def main():
     judge.warm_up(args.judge_model)
     args.out = args.out.resolve()  # the replay runs inside each case's worktree
     args.out.mkdir(parents=True, exist_ok=True)
-    check_cache(args.out, *fingerprints(args.model, args.judge_model, overrides))
+    check_cache(args.out, *fingerprints(args.model, args.judge_model, overrides, args.cases))
     try:
         wts = {c["key"]: prepare(c, args.out, args.remote) for c in cases}
         jobs = [(c, r) for c in cases for r in range(1, args.repeats + 1)]
@@ -275,10 +286,12 @@ def main():
     finally:
         if not args.keep_worktrees:
             cleanup(args.out, cases)
+    # A baseline is only compared with a run of the same cases and tier.
+    m.update({"model": args.model, "tier": args.tier, "repeats": args.repeats,
+              "cases_hash": digest(json.dumps(cases, sort_keys=True))})
     baseline = json.loads(args.baseline.read_text()) if args.baseline.exists() and not args.limit else None
     failures, notes = score.gate(m, baseline, args.repeats)
     text = summary(m, failures, notes, args)
-    m.update({"model": args.model, "tier": args.tier, "repeats": args.repeats})
     (args.out / "metrics.json").write_text(json.dumps(m, indent=1) + "\n")  # commit it as baseline_<tier>.json
     (args.out / "summary.md").write_text(text)
     if os.environ.get("GITHUB_STEP_SUMMARY"):

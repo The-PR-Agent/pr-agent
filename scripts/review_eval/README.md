@@ -41,7 +41,8 @@ the environment, which holds the key), and the result is posted on the PR. This 
 in Jinja's `SandboxedEnvironment` and on the pinned Dynaconf's token rules: re-check both when either changes. No
 code from the PR runs, so a change to `pr_reviewer.py` is evaluated locally on the branch instead. On a
 same-repository PR that changes the review prompt or the reviewer, the `review-eval` label runs it too (re-apply the
-label to run it again after a push).
+label to run it again after a push). That path runs the PR's own code with the key, so approving a label run trusts
+the whole PR; the no-PR-code guarantee covers only dispatches with a PR number.
 
 It needs the `REVIEW_EVAL_MODEL` and `REVIEW_EVAL_JUDGE_MODEL` repository variables and a `REVIEW_EVAL_OPENAI_KEY`
 secret in a `review-eval` environment; give that environment required reviewers so each run waits for a maintainer's

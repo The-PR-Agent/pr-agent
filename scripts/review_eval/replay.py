@@ -24,6 +24,8 @@ os.environ.update({
 })
 
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler  # noqa: E402
+from pr_agent.algo.review_json_output import review_json_output_path  # noqa: E402
+from pr_agent.algo.run_details import command_failed, init_run_details  # noqa: E402
 from pr_agent.commands import ticket_pr_compliance_check  # noqa: E402
 from pr_agent.commands.pr_reviewer import PRReviewer  # noqa: E402
 from pr_agent.git_providers.local_git_provider import LocalGitProvider  # noqa: E402
@@ -74,9 +76,11 @@ async def main():
     redirect = [k for k in ENDPOINT_SETTINGS if settings.get(k)]
     if redirect:
         return f"refusing to run: endpoint settings are set ({', '.join(redirect)})"
+    init_run_details()  # PRReviewer swallows model errors and records them here, as the CLI expects
+    review_json_output_path.set(str(RUN / "review.json"))  # the parsed findings, with file and lines
     try:
         await PRReviewer(os.environ["REVIEW_EVAL_TARGET_BRANCH"]).run()
-        return None
+        return "the review recorded a failure (see stderr.log)" if command_failed() else None
     except Exception:  # noqa: BLE001  recorded in status.json so the run counts as failed
         text = traceback.format_exc()[-4000:]
         for name, value in os.environ.items():  # status.json is uploaded: never let a provider error echo a key
@@ -85,9 +89,11 @@ async def main():
         return text
 
 
+for stale in ("final.md", "review.json"):
+    (RUN / stale).unlink(missing_ok=True)
 error = asyncio.run(main())
 final = RUN / "final.md"
 (RUN / "status.json").write_text(json.dumps({
-    "ok": error is None and final.exists() and final.stat().st_size > 0,
+    "ok": error is None and final.exists() and final.stat().st_size > 0 and (RUN / "review.json").exists(),
     "error": error, "usage": usage, "finish": finish}))
 sys.exit(0)

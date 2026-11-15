@@ -56,10 +56,15 @@ def main():
     git("fetch", "-q", args.remote, f"+refs/pull/{args.pr}/head:{ref}")
     base = git("merge-base", "HEAD", ref).strip()
     changed = [p for p in git("diff", "--name-only", "-z", base, ref).split("\0") if p]
-    applied, refused, skipped = [], [], []
+    applied, refused, skipped, stale = [], [], [], []
     for path in changed:
         if not is_prompt_file(path) or not (REPO / path).is_file():
             skipped.append(path)
+            continue
+        # Copying the PR's whole file would also revert anything merged into this file since the PR branched.
+        moved = subprocess.run(["git", "diff", "--quiet", base, "HEAD", "--", path], cwd=REPO).returncode
+        if moved:
+            stale.append(path)
             continue
         try:
             text = git("show", f"{ref}:{path}")
@@ -74,6 +79,8 @@ def main():
     lines = [f"Pull request #{args.pr}: applied {len(applied)} prompt file(s) onto the default branch."]
     lines += [f"- applied `{p}`" for p in applied]
     lines += [f"- refused `{p}` (adds tables or keys, a non-string value, or an @ token)" for p in refused]
+    lines += [f"- refused `{p}` (changed on the default branch since the PR branched; rebase the PR first)"
+              for p in stale]
     if skipped:
         shown = [p for p in skipped if PLAIN_PATH.fullmatch(p)][:10]  # paths come from the PR and go into a comment
         lines.append(f"- not applied, {len(skipped)} other changed file(s) (code is never run from a pull request; "
@@ -81,7 +88,7 @@ def main():
                      + (": " + ", ".join(f"`{p}`" for p in shown) if shown else "")
                      + (" ..." if len(skipped) > len(shown) else ""))
     print("\n".join(lines))
-    if refused or not applied:
+    if refused or stale or not applied:
         sys.exit(2)
 
 

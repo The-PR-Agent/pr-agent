@@ -53,6 +53,23 @@ def test_lookup_stays_inside_the_checkout(tmp_path):
     assert judge.lookup(root, {"kind": "read", "path": "ok.py", "start": 2, "end": 2}) == "read ok.py [2-2]\n2: b"
 
 
+KNOWN = [{"label": "a", "finding": "f"}, {"label": "b", "finding": "g"}]
+
+
+def test_catch_judge_retries_an_incomplete_reply(monkeypatch):
+    replies = iter(['{"verdicts": [{"label": "a", "verdict": "caught"}]}',
+                    '{"verdicts": [{"label": "a", "verdict": "Caught"}, {"label": "b", "verdict": "missed"}]}'])
+    monkeypatch.setattr(judge, "complete", lambda *a, **k: (next(replies), {"input": 1, "output": 1}))
+    verdicts, usage = judge.judge_catch("openai/m", KNOWN, "review")
+    assert verdicts == {"a": "caught", "b": "missed"} and len(usage) == 2
+
+
+def test_catch_judge_fails_instead_of_caching_missed(monkeypatch):
+    monkeypatch.setattr(judge, "complete", lambda *a, **k: ("not json", {"input": 1, "output": 1}))
+    with pytest.raises(RuntimeError):
+        judge.judge_catch("openai/m", KNOWN, "review")
+
+
 def test_cache_refuses_other_review_inputs_and_drops_verdicts_of_another_judge(tmp_path):
     verdict = tmp_path / "runs" / "k" / "r1" / "judged.json"
     verdict.parent.mkdir(parents=True)
