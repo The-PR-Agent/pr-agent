@@ -612,7 +612,7 @@ in PR-Agent's registry or the installed LiteLLM metadata.
 CompactifAI's public model pages do not currently specify those limits.
 
 PR-Agent also caps the effective budget with `config.max_model_tokens`, which
-defaults to 32,000. To use a larger verified budget, raise both
+defaults to 256,000. To use a larger verified budget, raise both
 `config.custom_model_max_tokens` and `config.max_model_tokens`; the effective limit
 is the smaller of the two values.
 
@@ -857,7 +857,7 @@ model = "github_copilot/gpt-4o"
 fallback_models = ["github_copilot/gpt-4.1"]
 ```
 
-The GitHub identity behind the model needs an active Copilot subscription. The token budgets for these models are resolved automatically from litellm's model metadata, so `custom_model_max_tokens` is not required. However, `get_max_tokens` clamps the effective window to `config.max_model_tokens`, which defaults to 32000. To use the input limits recorded for these Copilot routes (e.g., 64000 for gpt-4o, 128000 for gpt-4.1), raise `config.max_model_tokens` accordingly.
+The GitHub identity behind the model needs an active Copilot subscription. The token budgets for these models are resolved automatically from litellm's model metadata, so `custom_model_max_tokens` is not required. However, `get_max_tokens` clamps the effective window to `config.max_model_tokens`, which defaults to 256000 — above the input limits recorded for these Copilot routes (e.g., 64000 for gpt-4o, 128000 for gpt-4.1) — so those limits apply in full without changing it.
 
 Authentication uses the [GitHub Copilot provider](https://docs.litellm.ai/docs/providers/github_copilot) flow:
 
