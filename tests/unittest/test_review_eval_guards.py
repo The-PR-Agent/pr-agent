@@ -53,6 +53,19 @@ def test_lookup_stays_inside_the_checkout(tmp_path):
     assert judge.lookup(root, {"kind": "read", "path": "ok.py", "start": 2, "end": 2}) == "read ok.py [2-2]\n2: b"
 
 
+def test_cache_refuses_other_review_inputs_and_drops_verdicts_of_another_judge(tmp_path):
+    verdict = tmp_path / "runs" / "k" / "r1" / "judged.json"
+    verdict.parent.mkdir(parents=True)
+    verdict.write_text("{}")
+    run_eval.check_cache(tmp_path, "rev1", "judge1")
+    run_eval.check_cache(tmp_path, "rev1", "judge1")
+    assert verdict.exists()
+    run_eval.check_cache(tmp_path, "rev1", "judge2")
+    assert not verdict.exists()
+    with pytest.raises(SystemExit):
+        run_eval.check_cache(tmp_path, "rev2", "judge2")
+
+
 overlay = _load("overlay_pr")
 
 

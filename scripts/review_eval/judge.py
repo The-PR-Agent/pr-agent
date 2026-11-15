@@ -66,17 +66,21 @@ def warm_up(model):
 
 def complete(model, system, messages, max_tokens=4096):
     """Text of one completion; retries rate limits and server errors."""
-    for attempt in range(6):
+    retryable = (litellm.RateLimitError, litellm.InternalServerError, litellm.ServiceUnavailableError,
+                 litellm.APIConnectionError, litellm.Timeout)
+    for attempt in range(5):
         try:
-            r = litellm.completion(model=model, api_key=api_key(model), max_tokens=max_tokens,
-                                   messages=[{"role": "system", "content": system}, *messages])
-            u = r.usage
-            return r.choices[0].message.content or "", {"input": u.prompt_tokens, "output": u.completion_tokens}
-        except (litellm.RateLimitError, litellm.InternalServerError, litellm.ServiceUnavailableError,
-                litellm.APIConnectionError, litellm.Timeout):
-            if attempt == 5:
-                raise
+            return _complete_once(model, system, messages, max_tokens)
+        except retryable:
             time.sleep(10 * (attempt + 1))
+    return _complete_once(model, system, messages, max_tokens)
+
+
+def _complete_once(model, system, messages, max_tokens):
+    r = litellm.completion(model=model, api_key=api_key(model), max_tokens=max_tokens,
+                           messages=[{"role": "system", "content": system}, *messages])
+    u = r.usage
+    return r.choices[0].message.content or "", {"input": u.prompt_tokens, "output": u.completion_tokens}
 
 
 def parse_json(text):
@@ -90,7 +94,8 @@ def parse_json(text):
 def judge_catch(model, known, review, reverse=False):
     """{label: verdict} for one review against its case's known findings."""
     order = list(reversed(known)) if reverse else known
-    text = "\n".join(f"- [{k['label']}] {k['finding']}" for k in order)
+    text = "\n".join(f"- [{k['label']}] {k['finding']}"
+                     + (f"\n  Supporting facts: {k['fact_needed']}" if k.get("fact_needed") else "") for k in order)
     out, usage = complete(model, CATCH_SYSTEM, [{"role": "user", "content": CATCH_USER.format(known=text,
                                                                                                 review=review)}])
     got = {v.get("label"): v.get("verdict") for v in parse_json(out).get("verdicts", []) if isinstance(v, dict)}

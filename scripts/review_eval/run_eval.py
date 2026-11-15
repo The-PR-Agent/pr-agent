@@ -12,6 +12,7 @@ Runs are cached in --out, so an interrupted eval resumes. Use --write-baseline t
 """
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import os
 import pathlib
@@ -53,6 +54,30 @@ def prepare(case, out, remote):
         git("worktree", "add", "-q", "--detach", str(wt), case["reviewed_sha"])
     git("branch", "-f", BRANCH_PREFIX + case["key"], case["merge_base"])
     return wt
+
+
+def fingerprints(model, judge_model, overrides):
+    """(review inputs, judge inputs) hashes: cached reviews are only valid for the same model, settings, pr-agent
+    code (committed tree plus uncommitted edits such as an overlay) and replay script; cached verdicts also for the
+    same judge model and judge code."""
+    def digest(*parts):
+        return hashlib.sha256("\0".join(parts).encode()).hexdigest()[:16]
+
+    code = git("rev-parse", "HEAD:pr_agent").strip() + git("diff", "HEAD", "--", "pr_agent")
+    review_fp = digest(model, json.dumps(overrides, sort_keys=True), code, REPLAY.read_text())
+    return review_fp, digest(review_fp, judge_model, (HERE / "judge.py").read_text())
+
+
+def check_cache(out, review_fp, judge_fp):
+    """Refuse an --out holding reviews from other inputs; drop verdicts made by another judge."""
+    f = out / "inputs.json"
+    old = json.loads(f.read_text()) if f.exists() else None
+    if old and old["review"] != review_fp:
+        raise SystemExit(f"{out} holds reviews from different inputs (model, settings or code); use a new --out")
+    if old and old["judge"] != judge_fp:
+        for stale in out.glob("runs/*/r*/judged.json"):
+            stale.unlink()
+    f.write_text(json.dumps({"review": review_fp, "judge": judge_fp}))
 
 
 def cleanup(out, cases):
@@ -99,7 +124,8 @@ def review(case, rep, out, wt, env):
     if status.exists() and json.loads(status.read_text())["ok"]:
         return run
     run.mkdir(parents=True, exist_ok=True)
-    (run / "final.md").unlink(missing_ok=True)
+    for stale in ("final.md", "judged.json"):  # a rerun must never keep the failed attempt's verdicts
+        (run / stale).unlink(missing_ok=True)
     (run / "case.json").write_text(json.dumps({k: case[k] for k in ("title", "branch", "description", "tickets")}))
     env = {**env, "REVIEW_EVAL_RUN_DIR": str(run), "REVIEW_EVAL_CASE": str(run / "case.json"),
            "REVIEW_EVAL_TARGET_BRANCH": BRANCH_PREFIX + case["key"]}
@@ -232,7 +258,9 @@ def main():
     overrides = parse_overrides(args.set)
     env = child_env(args.model, overrides)
     judge.warm_up(args.judge_model)
+    args.out = args.out.resolve()  # the replay runs inside each case's worktree
     args.out.mkdir(parents=True, exist_ok=True)
+    check_cache(args.out, *fingerprints(args.model, args.judge_model, overrides))
     try:
         wts = {c["key"]: prepare(c, args.out, args.remote) for c in cases}
         jobs = [(c, r) for c in cases for r in range(1, args.repeats + 1)]

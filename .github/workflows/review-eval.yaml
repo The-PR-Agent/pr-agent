@@ -52,7 +52,8 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (
         github.event.pull_request.head.repo.full_name == github.repository &&
-        contains(github.event.pull_request.labels.*.name, 'review-eval')
+        contains(github.event.pull_request.labels.*.name, 'review-eval') &&
+        (github.event.action != 'labeled' || github.event.label.name == 'review-eval')
       )
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -71,6 +72,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          # A pull request's prompts are always measured against the default branch.
+          ref: ${{ inputs.pr_number && github.event.repository.default_branch || '' }}
           fetch-depth: 0
           persist-credentials: false
 

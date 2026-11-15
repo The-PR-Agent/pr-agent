@@ -3,17 +3,17 @@
  "failed_runs": 0,
  "capped_runs": 0,
  "known_findings": 18,
- "catch": 7.0,
+ "catch": 7.125,
  "catch_by_repeat": [
-  5.25,
-  8.75
+  5.75,
+  8.5
  ],
  "catch_per_case": {
-  "4197-de281487": 0.75,
-  "4220-ba2e5b75": 1.625,
+  "4197-de281487": 1.0,
+  "4220-ba2e5b75": 1.5,
   "4250-cde20c26": 1.0,
-  "4322-74d322cb": 1.875,
-  "4338-aa1fe390": 0.75,
+  "4322-74d322cb": 2.0,
+  "4338-aa1fe390": 0.625,
   "4475-337129db": 1.0
  },
  "posted": 0.0,
@@ -23,8 +23,8 @@
  "tokens": {
   "review_in": 189758,
   "review_out": 25072,
-  "judge_in": 22184,
-  "judge_out": 2776
+  "judge_in": 30756,
+  "judge_out": 1704
  },
  "model": "anthropic/claude-sonnet-5-5",
  "tier": "fast",
