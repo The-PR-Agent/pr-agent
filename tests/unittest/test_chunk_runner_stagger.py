@@ -2,6 +2,7 @@
 
 import asyncio
 
+from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.chunk_runner import run_chunk_batch
 
@@ -99,3 +100,23 @@ def test_prompt_cache_active_skips_the_length_check_without_metadata_or_tokens(m
         lambda model: {"prompt_cache_min_tokens": 1024},
     )
     assert handler.prompt_cache_active("claude-sonnet-5") is True
+
+
+def test_prompt_cache_active_defaults_to_false_on_a_plain_base_handler():
+    # OpenAIHandler and LangChainOpenAIHandler only inherit the interface, so the
+    # /review and /improve call sites must not AttributeError on them; the default
+    # keeps their chunk dispatch on the plain parallel path.
+    class PlainHandler(BaseAiHandler):
+        def __init__(self):
+            pass
+
+        @property
+        def deployment_id(self):
+            return None
+
+        async def chat_completion(self, model, system, user, temperature=0.2, img_path=None):
+            raise AssertionError("not called")
+
+    handler = PlainHandler()
+    assert handler.prompt_cache_active("gpt-4o") is False
+    assert handler.prompt_cache_active("claude-sonnet-5", prompt_tokens=5000) is False
