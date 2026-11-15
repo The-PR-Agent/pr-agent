@@ -1,4 +1,6 @@
 
+import pytest
+
 from pr_agent.commands import ticket_pr_compliance_check as tpc
 
 # The PR-description extractor caps results at 3 (hardcoded in the function).
@@ -47,6 +49,28 @@ class TestExtractTicketsLinkFromBranchName:
             "123-fix", "org/repo", "https://github.com"
         )
         assert result == ["https://github.com/org/repo/issues/123"]
+
+    @pytest.mark.parametrize(
+        "branch",
+        ["release/2026-11-15", "2026-11-15-hotfix", "deploy/2025-03", "deploy/2025-03/eu", "backup/1999-12-31-db"],
+    )
+    def test_date_prefix_is_not_an_issue_number(self, branch):
+        """release/2026-11-15 is a date, not issue #2026"""
+        assert tpc.extract_ticket_links_from_branch_name(branch, "org/repo", "https://github.com") == []
+
+    @pytest.mark.parametrize(
+        ("branch", "issue"),
+        [
+            ("2024-upgrade-deps", 2024),
+            ("fix/2026-13-overflow", 2026),
+            ("feature/42-2026-11-15", 42),
+            ("2026-11/123-fix", 123),
+        ],
+    )
+    def test_number_next_to_non_date_text_stays_an_issue(self, branch, issue):
+        """Only a year followed by a month is skipped; other numbers keep the documented rule."""
+        result = tpc.extract_ticket_links_from_branch_name(branch, "org/repo", "https://github.com")
+        assert result == [f"https://github.com/org/repo/issues/{issue}"]
 
     def test_empty_branch_returns_empty(self):
         """Empty branch name -> []"""

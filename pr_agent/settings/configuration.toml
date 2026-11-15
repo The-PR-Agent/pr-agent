@@ -164,7 +164,8 @@ extract_issue_from_branch = true
 # Optional: custom regex with one or more capturing groups for the issue number (validated at runtime); only the
 # first group is used. If the regex has no capturing group, the default pattern is used; if it does not compile,
 # no branch tickets are extracted. If empty, uses default pattern: first 1-6 digits at start of branch or after a
-# slash, followed by hyphen or end (e.g. feature/1-test, 123-fix). GitHub only; other providers planned for later.
+# slash, followed by hyphen or end (e.g. feature/1-test, 123-fix), skipping date prefixes such as release/2026-11-15.
+# GitHub only; other providers planned for later.
 branch_issue_regex = ""
 # Configure a regex replacing bare #N references, with exactly one capturing group for an ASCII issue number.
 # Leave empty for default matching (up to six digits); fall back with a warning on invalid patterns.
