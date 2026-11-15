@@ -80,6 +80,7 @@ COPY tests tests
 # Config the unit suite asserts against, copied file by file so an unrelated
 # workflow edit does not invalidate this layer.
 COPY .github/workflows/publish.yml .github/workflows/publish.yml
+COPY .github/workflows/publish-main-image.yml .github/workflows/publish-main-image.yml
 COPY .github/workflows/build-and-test.yaml .github/workflows/build-and-test.yaml
 COPY .github/workflows/pr-agent-review.yaml .github/workflows/pr-agent-review.yaml
 COPY docker/Dockerfile docker/Dockerfile
