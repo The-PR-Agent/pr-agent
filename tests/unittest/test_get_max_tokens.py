@@ -1424,6 +1424,28 @@ class TestGetMaxTokens:
         assert get_max_tokens(model) == 32000
         assert get_max_tokens(model, ignore_max_model_tokens=True) == expected
 
+    def test_shipped_default_max_model_tokens_clamps_large_windows(self, monkeypatch):
+        """Issue #4948: the shipped config.max_model_tokens default is 256000, so a
+        model with a far larger window is clamped to it instead of the old 32000."""
+        import tomllib
+        from pathlib import Path
+
+        toml_path = (
+            Path(token_budget.__file__).resolve().parents[2]
+            / "pr_agent"
+            / "settings"
+            / "configuration.toml"
+        )
+        with open(toml_path, "rb") as f:
+            shipped_default = tomllib.load(f)["config"]["max_model_tokens"]
+        assert shipped_default == 256000
+
+        fake_settings = SimpleNamespace(
+            config=SimpleNamespace(custom_model_max_tokens=0, max_model_tokens=shipped_default)
+        )
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+        assert get_max_tokens("openrouter/auto") == 256000
+
 
 class TestCorrectedClaudeWindows:
 
