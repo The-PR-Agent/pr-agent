@@ -910,6 +910,24 @@ class TestGetMaxTokens:
 
         assert get_max_tokens(model) == 1000000
 
+    @pytest.mark.parametrize("model", [
+        "claude-fable-5-2",
+        "anthropic/claude-fable-5-2",
+        "vertex_ai/claude-fable-5-2",
+        "bedrock/anthropic.claude-fable-5-2",
+        "bedrock/global.anthropic.claude-fable-5-2",
+        "bedrock/us.anthropic.claude-fable-5-2",
+        "azure_ai/claude-fable-5-2",
+        "bedrock/claude_platform/claude-fable-5-2",
+    ])
+    def test_claude_fable_5_2_uses_official_context_window(self, monkeypatch, model):
+        settings = type("Settings", (), {
+            "config": type("Config", (), {"custom_model_max_tokens": 0, "max_model_tokens": 0})(),
+        })()
+        monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
+
+        assert get_max_tokens(model) == 1000000
+
     @pytest.mark.parametrize(
         "model",
         [
