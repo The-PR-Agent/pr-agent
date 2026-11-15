@@ -93,9 +93,11 @@ jobs:
 
       - name: Apply the pull request's prompt files
         if: github.event_name == 'workflow_dispatch' && env.PR_NUMBER != ''
-        run: >-
-          uv run python scripts/review_eval/overlay_pr.py "$PR_NUMBER"
-          --remote "https://github.com/$GITHUB_REPOSITORY.git" | tee "$RUNNER_TEMP/review-eval/overlay.md"
+        # A refused file or a failed fetch stops the job, so main's prompts are never evaluated in the PR's name.
+        run: |
+          uv run python scripts/review_eval/overlay_pr.py "$PR_NUMBER" \
+            --remote "https://github.com/$GITHUB_REPOSITORY.git" > "$RUNNER_TEMP/review-eval/overlay.md"
+          cat "$RUNNER_TEMP/review-eval/overlay.md"
 
       - name: Run the eval
         env:

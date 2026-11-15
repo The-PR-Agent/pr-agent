@@ -193,7 +193,7 @@ def summary(m, failures, notes, args):
              "| Metric | Value |", "|---|---|",
              f"| Known findings caught | {m['catch']:.2f} of {m['known_findings']} (per repeat: "
              f"{', '.join(f'{x:.2f}' for x in m['catch_by_repeat'])}) |",
-             f"| Valid of posted findings, recent PRs (per repeat) | {precision} |",
+             *([f"| Valid of posted findings, recent PRs (per repeat) | {precision} |"] if args.tier == "full" else []),
              f"| Findings per review | {m['findings_per_run']:.2f} |",
              f"| Failed runs / output-cap hits | {m['failed_runs']} / {m['capped_runs']} |",
              f"| Review tokens in / out | {m['tokens']['review_in']:,} / {m['tokens']['review_out']:,} |",

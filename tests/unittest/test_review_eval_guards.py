@@ -72,3 +72,8 @@ def test_overlay_refuses_new_tables_keys_and_non_strings():
     assert not overlay.same_shape({"pr_review_prompt": {"system": "a"}, "openai": {"api_base": "http://x"}}, old)
     assert not overlay.same_shape({"pr_review_prompt": {"system": "a", "api_base": "http://x"}}, old)
     assert not overlay.same_shape({"pr_review_prompt": {"system": 1}}, old)
+
+
+@pytest.mark.parametrize("value", ["@format {env[OPENAI__KEY]}", "  @jinja {{ env.OPENAI__KEY }}", "@get openai.key"])
+def test_overlay_refuses_dynaconf_tokens(value):
+    assert not overlay.same_shape({"pr_review_prompt": {"system": value}}, {"pr_review_prompt": {"system": "a"}})

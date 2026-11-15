@@ -50,7 +50,7 @@ def gate(current, baseline, repeats):
     (failures if delta < -floor else notes).append(line)
     for key, label in (("valid", "valid findings"), ("posted", "posted findings"), ("findings_per_run",
                                                                                      "findings per run")):
-        if key in baseline and key in current:
+        if key in baseline and key in current and (baseline[key] or current[key]):
             notes.append(f"{label} {current[key]:.4g} vs baseline {baseline[key]:.4g}")
     if baseline.get("judge_model") and baseline["judge_model"] != current.get("judge_model"):
         notes.append(f"judge model differs from the baseline's ({baseline['judge_model']}): compare with care")

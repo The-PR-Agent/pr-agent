@@ -17,6 +17,7 @@ import tomllib
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SAFE_NAME = re.compile(r"[a-z_]+\.toml")
+PLAIN_PATH = re.compile(r"[A-Za-z0-9_./-]{1,200}")
 
 
 def is_prompt_file(path):
@@ -31,13 +32,15 @@ def git(*args):
 
 
 def same_shape(new, old):
-    """True when new only rewrites string values of tables and keys that old already has."""
+    """True when new only rewrites string values of tables and keys that old already has. A string starting with "@"
+    is refused: Dynaconf resolves @format, @jinja, @get and similar tokens against the environment, which holds the
+    key."""
     if not isinstance(new, dict) or not set(new) <= set(old):
         return False
     for table, values in new.items():
         if not isinstance(values, dict) or not isinstance(old[table], dict) or not set(values) <= set(old[table]):
             return False
-        if not all(isinstance(v, str) for v in values.values()):
+        if not all(isinstance(v, str) and not v.lstrip().startswith("@") for v in values.values()):
             return False
     return True
 
@@ -70,11 +73,13 @@ def main():
         applied.append(path)
     lines = [f"Pull request #{args.pr}: applied {len(applied)} prompt file(s) onto the default branch."]
     lines += [f"- applied `{p}`" for p in applied]
-    lines += [f"- refused `{p}` (adds tables, keys or non-string values)" for p in refused]
+    lines += [f"- refused `{p}` (adds tables or keys, a non-string value, or an @ token)" for p in refused]
     if skipped:
+        shown = [p for p in skipped if PLAIN_PATH.fullmatch(p)][:10]  # paths come from the PR and go into a comment
         lines.append(f"- not applied, {len(skipped)} other changed file(s) (code is never run from a pull request; "
-                     "run the eval locally on the branch to include them): "
-                     + ", ".join(f"`{p}`" for p in skipped[:10]) + (" ..." if len(skipped) > 10 else ""))
+                     "run the eval locally on the branch to include them)"
+                     + (": " + ", ".join(f"`{p}`" for p in shown) if shown else "")
+                     + (" ..." if len(skipped) > len(shown) else ""))
     print("\n".join(lines))
     if refused or not applied:
         sys.exit(2)
