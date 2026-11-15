@@ -426,15 +426,22 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
 
 def revoke_auto_approval_on_push(data: dict) -> None:
-    """Dismiss PR-Agent's approval when a push changes the merge request code it approved.
+    """Dismiss PR-Agent's approval when a push or retarget changes what it approved.
 
-    Call this before any filter that may skip the event: an approval must not outlive
-    what it was given for just because the push came from a bot or the MR is ignored.
+    A retarget is an update with no ``oldrev``; only code changes carry one. Call this
+    before any filter that may skip the event: an approval must not outlive what it was
+    given for just because the push came from a bot or the MR is ignored.
     """
     if data.get("object_kind") != "merge_request":
         return
     object_attributes = data.get("object_attributes") or {}
-    if object_attributes.get("action") != "update" or not object_attributes.get("oldrev"):
+    if object_attributes.get("action") != "update":
+        return
+    if object_attributes.get("oldrev"):
+        why = "new commits were pushed"
+    elif "target_branch" in (data.get("changes") or {}):
+        why = "the target branch changed"
+    else:
         return
     mr_url = object_attributes.get("url")
     # The gates are host-only, so read them after the trusted host layer and before any repository override.
@@ -451,11 +458,11 @@ def revoke_auto_approval_on_push(data: dict) -> None:
         return
     try:
         if not get_git_provider_with_context(mr_url).revoke_auto_approval(
-            f"{get_bot_display_name()} withdrew its approval: new commits were pushed."
+            f"{get_bot_display_name()} withdrew its approval: {why}."
         ):
-            get_logger().error("Could not confirm that PR-Agent's approvals were dismissed after a push")
+            get_logger().error(f"Could not confirm that PR-Agent's approvals were dismissed after: {why}")
     except Exception as e:
-        get_logger().exception(f"Failed to dismiss PR-Agent approvals after a push, error: {e}")
+        get_logger().exception(f"Failed to dismiss PR-Agent approvals after: {why}, error: {e}")
 
 
 async def process_gitlab_event(data: dict, log_context: dict):

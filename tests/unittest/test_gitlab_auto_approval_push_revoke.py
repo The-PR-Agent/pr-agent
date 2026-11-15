@@ -46,6 +46,19 @@ def test_helper_dismisses_on_push(monkeypatch, provider, flag):
     assert "new commits were pushed" in provider.revoke_auto_approval.call_args.args[0]
 
 
+def test_helper_dismisses_when_the_target_branch_changes(monkeypatch, provider):
+    monkeypatch.setitem(get_settings().config, "enable_auto_approval", True)
+    payload = _payload(
+        oldrev=None,
+        changes={"target_branch": {"previous": "main", "current": "release"}},
+    )
+
+    gitlab_webhook.revoke_auto_approval_on_push(payload)
+
+    provider.revoke_auto_approval.assert_called_once()
+    assert "the target branch changed" in provider.revoke_auto_approval.call_args.args[0]
+
+
 def test_helper_reads_the_gate_from_the_host_layer(monkeypatch, provider):
     monkeypatch.setitem(get_settings().config, "enable_auto_approval", False)
     monkeypatch.setattr(
