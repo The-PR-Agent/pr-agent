@@ -23,6 +23,7 @@ requirement this module exists for, and it ships as a 0.x pre-release.
 """
 
 import re
+from threading import Lock
 from typing import Any
 
 from opentelemetry.sdk.metrics import Counter
@@ -46,6 +47,9 @@ from pr_agent.log import get_logger
 from pr_agent.telemetry.types import ExporterType
 
 _NAME_INVALID_CHARS = re.compile(r"[^a-zA-Z0-9_:]")
+_OVERFLOW_ATTRIBUTE = "otel.metric.overflow"
+_OVERFLOW_LABEL = "otel_metric_overflow"
+_ESCAPED_LABEL_PREFIX = "pr_agent_escaped_"
 
 _prometheus_client = None
 _prometheus_registry = None
@@ -119,6 +123,47 @@ def attach_metrics_endpoint(router) -> None:
     )
 
 
+class _MetricFamily:
+    """Collect normal and overflow metrics under one registered family."""
+
+    def __init__(self, metric_class, name, help_text, labels, overflow):
+        self._metric_class = metric_class
+        self._name = name
+        self._help_text = help_text
+        self._lock = Lock()
+        self._normal = None
+        self._overflow = None
+        self.metric(labels, overflow)
+        _registry().register(self)
+
+    def metric(self, labels, overflow):
+        with self._lock:
+            entry = self._overflow if overflow else self._normal
+            if entry is None:
+                label_names = tuple(sorted(labels))
+                metric = self._metric_class(self._name, self._help_text, labelnames=label_names, registry=None)
+                entry = (label_names, metric)
+                if overflow:
+                    self._overflow = entry
+                else:
+                    self._normal = entry
+            label_names, metric = entry
+        return metric, {label: labels.get(label, "") for label in label_names}
+
+    def describe(self):
+        with self._lock:
+            entry = self._normal or self._overflow
+        return entry[1].describe()
+
+    def collect(self):
+        with self._lock:
+            entries = [entry for entry in (self._normal, self._overflow) if entry is not None]
+        families = [next(iter(entry[1].collect())) for entry in entries]
+        for family in families[1:]:
+            families[0].samples.extend(family.samples)
+        return families[:1]
+
+
 class PrometheusMetricExporter(MetricExporter):
     """Translate SDK `MetricsData` into prometheus_client metrics.
 
@@ -129,9 +174,9 @@ class PrometheusMetricExporter(MetricExporter):
 
     def __init__(self):
         super().__init__(preferred_temporality={Counter: AggregationTemporality.DELTA})
-        # metric name -> (label_names, prometheus_client metric object)
-        self._counters: dict[str, tuple] = {}
-        self._gauges: dict[str, tuple] = {}
+        # metric name -> registered family of prometheus_client metric objects
+        self._counters: dict[str, _MetricFamily] = {}
+        self._gauges: dict[str, _MetricFamily] = {}
 
     def export(self, metrics_data, timeout_millis=10_000, **kwargs) -> MetricExportResult:
         try:
@@ -157,15 +202,15 @@ class PrometheusMetricExporter(MetricExporter):
             if metric.data.is_monotonic:
                 for point in metric.data.data_points:
                     obj, labels = self._metric(self._counters, "Counter", name, help_text, point)
-                    obj.labels(**labels).inc(point.value)
+                    (obj.labels(**labels) if labels else obj).inc(point.value)
             else:
                 for point in metric.data.data_points:
                     obj, labels = self._metric(self._gauges, "Gauge", name, help_text, point)
-                    obj.labels(**labels).set(point.value)
+                    (obj.labels(**labels) if labels else obj).set(point.value)
         elif isinstance(metric.data, OTelGauge):
             for point in metric.data.data_points:
                 obj, labels = self._metric(self._gauges, "Gauge", name, help_text, point)
-                obj.labels(**labels).set(point.value)
+                (obj.labels(**labels) if labels else obj).set(point.value)
         elif isinstance(metric.data, OTelHistogram):
             get_logger().warning(
                 f"Skipping histogram metric '{metric.name}': Prometheus histograms are "
@@ -177,21 +222,17 @@ class PrometheusMetricExporter(MetricExporter):
             )
 
     def _metric(self, cache, metric_class_name, name, help_text, point):
-        labels = _point_labels(point)
-        entry = cache.get(name)
-        if entry is None:
+        # Inspect the SDK's original attributes before sanitizing: another key
+        # can sanitize to the same Prometheus label without being overflow.
+        overflow = (len(point.attributes) == 1 and point.attributes.get(_OVERFLOW_ATTRIBUTE) is True)
+        labels = {_OVERFLOW_LABEL: "true"} if overflow else _point_labels(point)
+        family = cache.get(name)
+        if family is None:
             client = _client()
             metric_class = getattr(client, metric_class_name)
-            label_names = tuple(sorted(labels))
-            metric_object = metric_class(
-                name, help_text, labelnames=label_names, registry=_registry()
-            )
-            entry = cache[name] = (label_names, metric_object)
-        label_names, metric_object = entry
-        # A family's label set is fixed on the first data point; drop later
-        # attributes we cannot attach and back-fill missing ones with "".
-        normalized = {label: labels.get(label, "") for label in label_names}
-        return metric_object, normalized
+            family = cache[name] = _MetricFamily(metric_class, name, help_text, labels, overflow)
+        # Keep the existing first-normal-point schema for ordinary series.
+        return family.metric(labels, overflow)
 
 
 def _sanitize_metric_name(name: str) -> str:
@@ -204,4 +245,14 @@ def _sanitize_label_key(key: str) -> str:
 
 
 def _point_labels(point) -> dict:
-    return {_sanitize_label_key(key): str(value) for key, value in point.attributes.items()}
+    labels = {_sanitize_label_key(key): str(value) for key, value in point.attributes.items()}
+    result = {}
+    for key, value in labels.items():
+        # generate_latest uses legacy label escaping, which turns ':' into '_'.
+        # Canonicalize reserved names before escaping so all workers use the
+        # same multiprocess key, even when their original spellings differ.
+        output_key = key.replace(":", "_")
+        if output_key == _OVERFLOW_LABEL or output_key.startswith(_ESCAPED_LABEL_PREFIX):
+            key = _ESCAPED_LABEL_PREFIX + output_key
+        result[key] = value
+    return result

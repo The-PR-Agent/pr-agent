@@ -499,8 +499,16 @@ prometheus_multiproc_dir = "/tmp/pr-agent-prometheus" # shared, writable by ever
 
 1. The exporter is metrics-only: command spans are not exported in this mode.
 2. `/metrics` is mounted only when this exporter is selected, so nothing is exposed by default. It does not depend on an OTLP collector or endpoint.
-3. gunicorn registers and deregisters workers' state files automatically (`when_ready`/`child_exit`); a worker that dies mid-scrape leaves only a stale file, which is ignored once it is marked dead.
-4. Metric families are created from the first data point's label set. Later attributes that do not fit the family are dropped, and missing ones are back-filled with an empty string, so a scrape never breaks on drifting label cardinality.
+3. gunicorn prepares the multiprocess state directory at `when_ready` and calls `mark_process_dead` from `child_exit`. The client removes live-gauge files, but retains counter and default-gauge files; retained values remain visible until the directory is cleared or replaced.
+4. With OpenTelemetry SDK 1.45.2, each metric stream tracks up to 2,000 distinct attribute sets by default; measurements for additional sets go into an overflow point. PR-Agent's synchronous DELTA counters start tracking attribute sets again after each collection, while exported Prometheus counters continue accumulating. The built-in counters use bounded labels; high-cardinality custom metrics using the same provider can reach this limit.
+
+   Normal series use the first normal data point's label set. Later attributes that do not fit are dropped, and missing ones are back-filled with an empty string. Overflow points use `otel_metric_overflow="true"`; normal attribute values still use their usual string representation, including `True` for a boolean. Normal labels whose Prometheus text output is `otel_metric_overflow` or starts with `pr_agent_escaped_` receive the prefix `pr_agent_escaped_`, including names containing `:` that the client renders as `_`. Update queries that use those labels.
+
+   Different attribute names that map to the same label can still collide. Prometheus treats an empty label value as equivalent to an absent label, including across workers. An attribute set identical to the SDK's `otel.metric.overflow = true` marker cannot be distinguished from overflow.
+
+   Gauge values, including overflow points, can remain visible after the SDK stops reporting them. This exporter does not currently expire stale gauge series.
+
+   Use the same exporter version across workers sharing a multiprocess state directory: older workers and their retained state files can still collide with overflow series when their final label values match, including through `:` label escaping. For example, an old normal boolean value `True` stays distinct from the new overflow value `true`, but an old string value `true` can collide. Stop all workers using the state directory before clearing it, or switch to a fresh directory as part of a coordinated worker restart; replacing the directory resets the stored counters. Even with a new directory, an old normal series and a new overflow series with the same metric name and labels share Prometheus history across the upgrade.
 5. The exporter ships with PR-Agent (it depends on `prometheus-client`); no extra package is required. Scrape it like any exporter:
 
    ```yaml
