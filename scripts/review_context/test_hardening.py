@@ -419,9 +419,9 @@ def test_staged_bundle_is_private_and_preserves_umask(builder_module, monkeypatc
             builder_module.build(SimpleNamespace(repo=".", head="unused", out_dir=str(tmp_path)))
         finally:
             os.umask(original)
-    assert stat.S_IMODE(out_path.stat().st_mode) == 0o666 & ~mask
+    assert stat.S_IMODE(out_path.stat().st_mode) == 0o600 & ~mask
     assert staging_dir_modes == [0o700]  # Unpublished bytes cannot be reached through the directory.
-    assert staging_file_modes == [0o666 & ~mask]
+    assert staging_file_modes == [0o600 & ~mask]
     assert not list(tmp_path.glob(".pr_bundle_*.tmp"))
     assert capsys.readouterr().out.strip() == '{"pr": 1}'
 
@@ -503,9 +503,7 @@ def test_staged_bundle_preserves_setgid_group(builder_module, monkeypatch, tmp_p
         def close(self, force=False):
             pass
 
-    # The test deliberately models a group-writable shared output directory.
-    # codeql[py/overly-permissive-file]
-    os.chmod(tmp_path, 0o2770)
+    os.chmod(tmp_path, 0o2700)
     if not tmp_path.stat().st_mode & stat.S_ISGID:
         pytest.skip("setgid directories unavailable")
     reference = tmp_path / "ordinary-file"
@@ -540,9 +538,7 @@ def test_staged_bundle_fails_closed_if_setgid_cannot_be_preserved(builder_module
         def close(self, force=False):
             pass
 
-    # Model shared setgid permissions to exercise Linux's fail-closed path.
-    # codeql[py/overly-permissive-file]
-    os.chmod(tmp_path, 0o2770)
+    os.chmod(tmp_path, 0o2700)
     if not tmp_path.stat().st_mode & stat.S_ISGID:
         pytest.skip("setgid directories unavailable")
     original_fchmod, original_mkdir = os.fchmod, os.mkdir
