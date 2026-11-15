@@ -252,7 +252,6 @@ class _SlowPattern:
     def search(self, text, timeout=None):
         self.timeouts.append(timeout)
         self.clock[0] += 1 / 32
-        return None
 
 
 def test_pattern_slow_on_every_line_is_dropped_after_its_review_budget(monkeypatch, risk_settings):

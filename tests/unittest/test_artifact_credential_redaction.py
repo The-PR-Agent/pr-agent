@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import pr_agent.algo.artifacts as artifacts
+from pr_agent.algo import artifacts
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import redact_credentials
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings

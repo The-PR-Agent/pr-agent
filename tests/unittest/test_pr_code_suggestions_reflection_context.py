@@ -66,7 +66,7 @@ async def test_reflection_empty_context_preserves_prompt(captured):
 
 
 async def test_reflection_context_is_counted_in_real_token_budget(monkeypatch):
-    import pr_agent.algo.token_budget as token_budget
+    from pr_agent.algo import token_budget
 
     monkeypatch.setattr(token_budget, "get_max_tokens", lambda *args, **kwargs: 4000)
     command = PRCodeSuggestions.__new__(PRCodeSuggestions)

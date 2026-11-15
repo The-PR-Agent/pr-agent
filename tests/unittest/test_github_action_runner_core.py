@@ -9,7 +9,6 @@ from github import GithubException
 from starlette_context import context, request_cycle_context
 
 import pr_agent.agent.pr_agent as pr_agent_module
-import pr_agent.servers.github_action_runner as github_action_runner
 from pr_agent import config_loader
 from pr_agent.agent.request_policy import enforce_request_policy
 from pr_agent.algo import artifacts
@@ -19,6 +18,7 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import _GIT_PROVIDERS, get_git_provider_with_context
 from pr_agent.git_providers import utils as git_utils
 from pr_agent.git_providers.github_provider import GithubProvider, IncompletePullRequestFilesError
+from pr_agent.servers import github_action_runner
 
 
 @pytest.fixture(autouse=True)
@@ -1043,7 +1043,6 @@ class _FakeAutoCommand:
 
     async def run(self):
         type(self).runs.append(self.pr_url)
-        return None
 
 
 class _FakeDescription(_FakeAutoCommand):
@@ -1070,7 +1069,6 @@ def test_recorded_auto_command_failure_fails_action_with_default_gate(monkeypatc
         async def run(self):
             type(self).runs.append(self.pr_url)
             record_command_failure()
-            return None
 
     monkeypatch.setattr(github_action_runner, "PRReviewer", FailingCommand)
     _install_action_env(monkeypatch, tmp_path, _write_pull_request_opened_event(tmp_path))
@@ -1092,7 +1090,6 @@ def test_recorded_command_failure_stays_green_when_gate_disabled(monkeypatch, tm
         async def run(self):
             type(self).runs.append(self.pr_url)
             record_command_failure()
-            return None
 
     monkeypatch.setattr(github_action_runner, "PRReviewer", FailingCommand)
     _install_action_env(monkeypatch, tmp_path, _write_pull_request_opened_event(tmp_path))
@@ -1169,7 +1166,6 @@ def test_recorded_command_failure_fails_action_with_default_gate(monkeypatch, tm
     class FailingAgent:
         async def handle_request(self, url, body, notify=None):
             record_command_failure()
-            return None
 
     monkeypatch.setattr(github_action_runner, "PRAgent", FailingAgent)
     monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)

@@ -16,7 +16,7 @@ import openai
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
-import pr_agent.algo.ai_handlers.litellm_helpers as litellm_helpers
+from pr_agent.algo.ai_handlers import litellm_helpers
 from pr_agent.algo.ai_handlers.litellm_ai_handler import DUMMY_LITELLM_API_KEY, LiteLLMAIHandler
 
 

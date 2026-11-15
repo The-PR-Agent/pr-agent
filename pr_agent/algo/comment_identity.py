@@ -250,16 +250,15 @@ def emphasize_header(text: str, only_markdown=False, reference_link=None) -> str
                     )
                 else:
                     transformed_string = f"**{text[:colon_position + 1]}**\n" + text[colon_position + 1:]
+            elif reference_link:
+                transformed_string = (
+                    f"<strong><a href='{reference_link}'>{text[:colon_position + 1]}</a></strong><br>"
+                    + text[colon_position + 1:]
+                )
             else:
-                if reference_link:
-                    transformed_string = (
-                        f"<strong><a href='{reference_link}'>{text[:colon_position + 1]}</a></strong><br>"
-                        + text[colon_position + 1:]
-                    )
-                else:
-                    transformed_string = (
-                        "<strong>" + text[:colon_position + 1] + "</strong>" + "<br>" + text[colon_position + 1:]
-                    )
+                transformed_string = (
+                    "<strong>" + text[:colon_position + 1] + "</strong>" + "<br>" + text[colon_position + 1:]
+                )
         else:
             # Return the original string when no colon exists.
             transformed_string = text

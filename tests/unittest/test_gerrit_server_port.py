@@ -2,7 +2,7 @@ from unittest import mock
 
 import pytest
 
-import pr_agent.servers.gerrit_server as gerrit_server
+from pr_agent.servers import gerrit_server
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
