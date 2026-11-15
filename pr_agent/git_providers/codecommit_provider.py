@@ -23,6 +23,9 @@ from .git_provider import GitProvider, cache_languages, format_persistent_update
 
 # UpdatePullRequestDescription rejects a description longer than this.
 MAX_PR_DESCRIPTION_CODECOMMIT_LENGTH = 10240
+# UpdatePullRequestTitle rejects a title longer than this (API length constraint).
+MAX_PR_TITLE_CODECOMMIT_LENGTH = 150
+_TITLE_TRUNCATION_MARKER = "..."
 
 
 class PullRequestCCMimic:
@@ -250,9 +253,19 @@ class CodeCommitProvider(GitProvider):
         # UpdatePullRequestDescription rejects a description over 10,240 characters, and the
         # newline doubling below can push a long description over it. Cap what CodeCommit
         # receives, after the doubling.
+        # UpdatePullRequestTitle similarly rejects a title over 150 characters. The
+        # client sends the title first, so an overlong AI title would fail the
+        # whole publish, including a body that already fits.
         pr_body = self.limit_description_characters(
             CodeCommitProvider._add_additional_newlines(pr_body), MAX_PR_DESCRIPTION_CODECOMMIT_LENGTH
         )
+        if pr_title is not None and len(pr_title) > MAX_PR_TITLE_CODECOMMIT_LENGTH:
+            get_logger().warning(
+                f"PR title of {len(pr_title)} characters is over the limit of "
+                f"{MAX_PR_TITLE_CODECOMMIT_LENGTH}; truncated"
+            )
+            budget = MAX_PR_TITLE_CODECOMMIT_LENGTH - len(_TITLE_TRUNCATION_MARKER)
+            pr_title = pr_title[:budget] + _TITLE_TRUNCATION_MARKER
         try:
             self.codecommit_client.publish_description(
                 pr_number=self.pr_num,
