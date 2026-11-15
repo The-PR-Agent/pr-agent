@@ -105,6 +105,7 @@ async def test_unknown_project_access_skips_tickets_once_per_run(monkeypatch, st
 @pytest.mark.parametrize("mr_visibility,sibling_visibility,issues_access_level,expected", [
     ("public", "public", "private", []),
     ("public", "internal", "enabled", []),
+    ("internal", "internal", "enabled", []),
     ("internal", "public", "enabled", [1, 2]),
     ("public", "public", "enabled", [1, 2]),
     ("private", "private", "private", []),

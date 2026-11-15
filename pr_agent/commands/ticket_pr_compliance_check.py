@@ -1202,11 +1202,9 @@ def _gitlab_issue_covers_mr_audience(project, mr_project, is_own_project):
     if is_own_project:
         members_only = visibility == "private" or getattr(project, "merge_requests_access_level", None) == "private"
         return access == "enabled" or (access == "private" and members_only)
-    # Membership in separate private projects is not an audience guarantee. Internal
-    # projects also exclude external users who may be members of a private MR project.
-    return access == "enabled" and (
-        visibility == "public" or (visibility == "internal" and mr_visibility == "internal")
-    )
+    # Membership in separate projects is not an audience guarantee, and internal projects
+    # exclude external users who may be members of the MR project.
+    return access == "enabled" and visibility == "public"
 
 
 async def extract_tickets(git_provider):
