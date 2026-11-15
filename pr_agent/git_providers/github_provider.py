@@ -1074,10 +1074,14 @@ class GithubProvider(GitProvider):
         `<app-slug>[bot]` login.
         """
         try:
-            login = self.get_user_id()
+            login = "" if getattr(self, "_user_login_denied", False) else self.get_user_id()
         except (GithubException, RequestException) as e:
             get_logger().warning(f"Could not resolve the GitHub user login: {e}")
             login = ""
+            # Remember a refused `GET /user` so later checks skip it; retry other failures.
+            # PyGithub raises it from the lazy payload read in `get_user_id`.
+            if isinstance(e, GithubException) and _is_permanent_github_error(e):
+                self._user_login_denied = True
         if isinstance(login, str) and login.strip():
             return login.strip()
         # A GitHub App installation token cannot call `GET /user` either, but it posts as
