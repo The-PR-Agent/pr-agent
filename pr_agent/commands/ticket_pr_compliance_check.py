@@ -1426,10 +1426,8 @@ async def extract_tickets(git_provider):
                         )
                         continue
                     issue = await _run_ticket_io(project.issues.get, issue_iid)
-                    if not is_own_project and getattr(issue, "confidential", False):
-                        get_logger().warning(
-                            f"Ignoring confidential cross-project GitLab issue: {project_path}#{issue_iid}"
-                        )
+                    if getattr(issue, "confidential", False):
+                        get_logger().warning(f"Ignoring confidential GitLab issue: {project_path}#{issue_iid}")
                         continue
 
                     issue_body = issue.description or ""

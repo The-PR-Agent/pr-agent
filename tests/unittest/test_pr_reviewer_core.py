@@ -2796,3 +2796,14 @@ def test_convert_to_markdown_renders_the_confidence_the_filter_compares(monkeypa
     assert ("Possible Issue (confidence: 8.5)" in markdown) is rendered
     assert ("Possible Issue (confidence: 7)" in markdown) is rendered
     assert markdown.count("confidence:") == (3 if rendered else 0)
+
+
+def test_fix_keeps_git_line_numbers_around_unicode_separators(committable_on):
+    issue = _key_issue(start_line=3, end_line=3, existing_code="c = 3", improved_code="c = 4")
+    reviewer, data = _reviewer_with_findings(issue, head_file="a = 1\nb = '\u2028'\nc = 3\n")
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion\nc = 4\n```" in comment["body"]
+    assert comment["original_suggestion"]["existing_code"] == "c = 3"
