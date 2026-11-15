@@ -134,7 +134,7 @@ class _CustomGitLabSubstitute(_BaseStubProvider):
             description="GitLab Description 55",
             labels=["backend", "p1"],
         )
-        project = MagicMock()
+        project = MagicMock(visibility="public", issues_access_level="enabled")
         project.issues.get.return_value = issue
         self.gl.projects.get.return_value = project
 
@@ -301,7 +301,7 @@ async def test_extract_tickets_supports_duck_typed_substitutes(route):
             number=42, title="GH 42", body="GH Body", labels=[], pull_request=None
         )
     elif route == "gitlab":
-        mock_proj = MagicMock()
+        mock_proj = MagicMock(visibility="public", issues_access_level="enabled")
         mock_proj.issues.get.return_value = MagicMock(
             iid=42, web_url="https://gitlab.com/duck/repo/-/issues/42", title="GL 42", description="GL Body", labels=[]
         )
