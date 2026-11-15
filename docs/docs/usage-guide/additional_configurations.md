@@ -501,6 +501,8 @@ prometheus_multiproc_dir = "/tmp/pr-agent-prometheus" # shared, writable by ever
 2. `/metrics` is mounted only when this exporter is selected, so nothing is exposed by default. It does not depend on an OTLP collector or endpoint.
 3. gunicorn registers and deregisters workers' state files automatically (`when_ready`/`child_exit`); a worker that dies mid-scrape leaves only a stale file, which is ignored once it is marked dead.
 4. Metric families are created from the first data point's label set. Later attributes that do not fit the family are dropped, and missing ones are back-filled with an empty string, so a scrape never breaks on drifting label cardinality.
+
+   By default, the OpenTelemetry SDK tracks up to 2,000 distinct attribute sets per metric stream and aggregates measurements for additional sets into an overflow point. For PR-Agent's synchronous DELTA counters, the SDK starts tracking attribute sets again after each collection; exported Prometheus counters continue accumulating. If the first data point did not establish an overflow label, the native exporter drops the overflow marker and may merge the point with a legitimate series whose labels are all empty. The built-in counters use bounded labels, but high-cardinality custom metrics using this provider can reach this limit.
 5. The exporter ships with PR-Agent (it depends on `prometheus-client`); no extra package is required. Scrape it like any exporter:
 
    ```yaml
