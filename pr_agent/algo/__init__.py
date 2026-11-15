@@ -114,6 +114,15 @@ _CLAUDE_MODEL_FAMILIES = [
         # Ref: https://platform.claude.com/docs/en/build-with-claude/claude-in-amazon-bedrock#regions
         "bedrock_regions": ("global", "us"),
     },
+    {
+        "model_id": "claude-fable-5-2",
+        "max_tokens": 1000000,
+        "bedrock_regions": ("global", "us"),
+        "extra_aliases": {
+            "azure_ai/claude-fable-5-2": 1000000,
+            "bedrock/claude_platform/claude-fable-5-2": 1000000,
+        },
+    },
 ]
 
 
