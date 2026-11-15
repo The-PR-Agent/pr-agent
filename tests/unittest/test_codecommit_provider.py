@@ -1483,23 +1483,22 @@ class TestCodeCommitProvider:
         provider.codecommit_client = MagicMock()
         return provider
 
-    def test_publish_description_drops_the_file_walkthrough_over_the_codecommit_limit(self):
-        # UpdatePullRequestDescription rejects a description over 10,240 characters, and the
-        # file walkthrough of a large PR passes that, so /describe failed to publish at all.
+    def test_publish_description_caps_a_long_marker_description_after_doubling(self):
+        # CodeCommit has no gfm_markdown, so /describe emits no file walkthrough or usage guide.
+        # The reachable overflow is a long description (use_description_markers) whose newlines
+        # are doubled: it fits before the doubling, and UpdatePullRequestDescription rejected it.
         provider = self._make_description_provider()
-        summary = ("<!-- pr-agent-generated -->\n### **PR Type**\nEnhancement\n\n\n___\n\n"
-                   "### **Description**\n- Rename the billing modules\n\n\n")
-        walkthrough = ("<details> <summary><h3> File Walkthrough</h3></summary>\n\n<table>"
-                       + "<tr><td><strong>InvoiceRule.java</strong></td></tr>\n" * 300
-                       + "</table>\n\n</details>\n\n___\n\n")
+        body = ("## Context\n" + "- keep rule A\n" * 700
+                + "\n### Summary\nRename the billing modules\n")
+        assert len(body) <= 10240 < len(CodeCommitProvider._add_additional_newlines(body))
 
-        provider.publish_description("AI title", summary + walkthrough)
+        provider.publish_description("AI title", body)
 
         kwargs = provider.codecommit_client.publish_description.call_args.kwargs
         assert kwargs["pr_title"] == "AI title"
-        # The limit applies to what CodeCommit receives, after the newline doubling.
-        assert kwargs["pr_body"] == CodeCommitProvider._add_additional_newlines(summary)
-        assert len(kwargs["pr_body"]) <= 10240
+        published = kwargs["pr_body"]
+        assert len(published) == 10240
+        assert published.startswith("## Context\n\n- keep rule A\n\n- keep rule A\n\n")
 
     def test_publish_description_truncates_a_body_still_over_the_limit_after_doubling(self):
         provider = self._make_description_provider()

@@ -248,8 +248,8 @@ class CodeCommitProvider(GitProvider):
 
     def publish_description(self, pr_title: str, pr_body: str):
         # UpdatePullRequestDescription rejects a description over 10,240 characters, and the
-        # file walkthrough of a large PR can pass it. Cap what CodeCommit receives, after the
-        # newline doubling.
+        # newline doubling below can push a long description over it. Cap what CodeCommit
+        # receives, after the doubling.
         pr_body = self.limit_description_characters(
             CodeCommitProvider._add_additional_newlines(pr_body), MAX_PR_DESCRIPTION_CODECOMMIT_LENGTH
         )
