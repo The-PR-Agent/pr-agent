@@ -1402,8 +1402,24 @@ class TestSubIssues:
         assert result and len(result) == 1
         subs = result[0]["sub_issues"]
         assert len(subs) == 10
-        expected_urls = sorted(sub_urls)[:10]
+        expected_urls = sub_urls[:10]
         assert [s["ticket_url"] for s in subs] == expected_urls
+
+    def test_sub_issue_cap_keeps_lowest_issue_numbers(self, settings_snapshot):
+        # Sub-issues #2-#13: as text, #10-#13 sort before #2 and would push out #8 and #9.
+        issues_dict = {1: _FakeIssue(1, title="Main", body="m")}
+        sub_urls = []
+        for i in range(13, 1, -1):
+            issues_dict[i] = _FakeIssue(i, title=f"Sub {i}", body=f"body {i}")
+            sub_urls.append(f"https://github.com/org/repo/issues/{i}")
+        provider = _make_github_provider(
+            user_description="Fixes #1",
+            repo_obj=_FakeRepoObj(issues_dict),
+            sub_issues_map={"https://github.com/org/repo/issues/1": sub_urls},
+        )
+        result = asyncio.run(extract_tickets(provider))
+        subs = result[0]["sub_issues"]
+        assert [s["ticket_url"] for s in subs] == [f"https://github.com/org/repo/issues/{i}" for i in range(2, 12)]
 
     def test_malformed_sub_issue_entries_skipped_safely(self, settings_snapshot):
         repo_obj = _FakeRepoObj({
