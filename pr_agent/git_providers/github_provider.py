@@ -511,9 +511,8 @@ class GithubProvider(GitProvider):
         self.unreviewed_files_map = {}
         loaded = vars(self).setdefault("_loaded_commits", {})
         if commit.sha not in loaded:
-            gh_commit = self._get_repo().get_commit(commit.sha)
-            loaded[commit.sha] = gh_commit, (list(gh_commit.get_files(commit_files_per_page=300))
-                                             if len(gh_commit.parents) == 1 else [])
+            gh_commit = self._get_repo().get_commit(commit.sha, commit_files_per_page=300)
+            loaded[commit.sha] = gh_commit, list(gh_commit.files) if len(gh_commit.parents) == 1 else []
         gh_commit, files = loaded[commit.sha]
         parents = gh_commit.parents
         if len(parents) != 1:

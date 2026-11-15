@@ -357,7 +357,12 @@ class PRReviewer:
         self._review_finding_previous_state = None
         self._review_state_preserved = False
         self._pending_sink_output = None
-        previous_findings = self._load_previous_findings_context()
+        defer_pr_context = _as_bool_setting(get_settings().pr_reviewer.get("per_commit_review", False))
+        self._deferred_previous_findings = defer_pr_context
+        self._deferred_commit_messages = defer_pr_context or self.incremental.is_incremental
+        previous_findings = (
+            "" if self._deferred_previous_findings else self._load_previous_findings_context()
+        )
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
         if (self.pr_description_files and get_settings().get("config.is_auto_command", False) and
@@ -402,7 +407,9 @@ class PRReviewer:
             "skills_context": get_skills_context(),
             "repo_context": build_repo_context(self.git_provider),
             "previous_findings": previous_findings,
-            "commit_messages_str": "" if self.incremental.is_incremental else self.git_provider.get_commit_messages(),
+            "commit_messages_str": (
+                "" if self._deferred_commit_messages else self.git_provider.get_commit_messages()
+            ),
             "commit_messages_begin": commit_messages_begin,
             "commit_messages_end": commit_messages_end,
             "commit_under_review": "",
@@ -502,6 +509,8 @@ class PRReviewer:
         reviewed_fingerprints = set(reviewed.values())
         fingerprints = dict(reviewed)
         incremental_args = self.incremental.is_incremental
+        deferred_findings = getattr(self, "_deferred_previous_findings", False)
+        deferred_commits = getattr(self, "_deferred_commit_messages", False)
         base_vars = copy.deepcopy(self.vars)
         max_message_tokens = get_settings().config.get("max_commits_tokens", None)
         try:
@@ -516,6 +525,7 @@ class PRReviewer:
         failed = False
         first_error = None
         unloaded = []
+        cap_fallback = False
         try:
             pending = []
             for commit in commits:
@@ -542,10 +552,11 @@ class PRReviewer:
                     pending.append((commit, fingerprint))
 
             if 0 < max_commits < len(pending):
+                cap_fallback = True
                 self._restore_full_scope()
                 if incremental_args:
-                    self.vars.update(commit_messages_str=self.git_provider.get_commit_messages(),
-                                     previous_findings=self._load_previous_findings_context())
+                    self._deferred_previous_findings = True
+                    self._deferred_commit_messages = True
                 await self._review_as_one(
                     f"{len(pending)} commits to review exceed max_commits_per_review={max_commits}",
                     f"There are {len(pending)} commits to review, more than the limit of {max_commits} for per "
@@ -586,6 +597,14 @@ class PRReviewer:
                     new_records[commit.sha] = fingerprint
         finally:
             self._review_commit = None
+            if cap_fallback:
+                if not getattr(self, "_deferred_previous_findings", False) and "previous_findings" in self.vars:
+                    base_vars["previous_findings"] = self.vars["previous_findings"]
+                if not getattr(self, "_deferred_commit_messages", False) and "commit_messages_str" in self.vars:
+                    base_vars["commit_messages_str"] = self.vars["commit_messages_str"]
+            else:
+                self._deferred_previous_findings = deferred_findings or incremental_args
+                self._deferred_commit_messages = deferred_commits or incremental_args
             self.vars = base_vars
             self._restore_full_scope()
             if unloaded:
@@ -704,9 +723,16 @@ class PRReviewer:
                 if not can_run and self.incremental.is_incremental:
                     return None
                 if not self.incremental.is_incremental:
-                    # Reload the findings the incremental mode left out, for the fallback full review.
+                    self._deferred_previous_findings = True
+                    self._deferred_commit_messages = True
+
+            if self._review_commit is None:
+                if getattr(self, "_deferred_previous_findings", False):
                     self.vars["previous_findings"] = self._load_previous_findings_context()
+                    self._deferred_previous_findings = False
+                if not self.incremental.is_incremental and getattr(self, "_deferred_commit_messages", False):
                     self.vars["commit_messages_str"] = self.git_provider.get_commit_messages()
+                    self._deferred_commit_messages = False
 
             # if isinstance(self.args, list) and self.args and self.args[0] == 'auto_approve':
             #     get_logger().info(f'Auto approve flow PR: {self.pr_url} ...')
