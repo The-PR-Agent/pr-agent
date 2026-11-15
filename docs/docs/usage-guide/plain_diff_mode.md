@@ -30,7 +30,7 @@ python -m pr_agent.cli --diff-file changes.diff --output review.md review
 | `--stdin` | Read a unified diff from stdin |
 | `--diff-file <path>` | Read a unified diff from a file |
 | `--output <path>` | Write Markdown produced by a compatible Plain Diff command to a file in addition to stdout |
-| `--json-output <path>` | Write structured results and token usage for `review`, `describe`, or `generate_labels` (including aliases; `improve` runs `review`; also available with `--pr_url`) |
+| `--json-output <path>` | Write structured results and token usage for `review`, `describe`, `ask`, or `generate_labels` (including aliases; `improve` runs `review`; also available with `--pr_url`) |
 
 `--stdin` and `--diff-file` are mutually exclusive. At least one must be provided to
 enter plain-diff mode; omitting both falls back to the normal `--pr_url` flow.
@@ -105,6 +105,7 @@ that use it, but does not add model requests.
    With `--json-output <path>`, `review`/`review_pr` (and `improve`/`improve_code`, which run it) writes the parsed review, token
    `usage`, and a `coverage` object listing omitted or clipped files.
    `describe`/`describe_pr` writes the parsed description and `usage`.
+   `ask`/`ask_question` writes the `question`, `answer`, and `usage`, including a note when no diff is analyzable.
    `generate_labels` writes the filtered `labels` list and `usage`; it never
    combines existing user labels into that list.
 

@@ -61,7 +61,7 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | `per_directory_settings_max_tree_pages` | 10 | maximum GitLab recursive-tree pages (100 entries each); skip nested settings if discovery is incomplete. Root/host-controlled, independent of the settings-file cap. |
 | `extra_config_url` | "" | optional URL or path to an additional .pr_agent.toml merged before the repo-local config; also settable via --extra_config_url or PR_AGENT_EXTRA_CONFIG_URL. See docs/docs/usage-guide/configuration_options.md#external-configuration-url. |
 | `disable_auto_feedback` | false |  |
-| `enable_auto_approval` | false | host-only. /review approves the reviewed GitHub commit when every gated-approval check passes, and withdraws it otherwise; see docs/docs/commands/review.md |
+| `enable_auto_approval` | false | host-only. /review approves or withdraws its approval of the reviewed GitHub or GitLab commit; see docs/docs/commands/review.md |
 | `ai_timeout` | 120 | 2 minutes |
 | `http_request_timeout` | 60 | host-only connect/read inactivity seconds for GitLab/Gitea and direct Bitbucket/Gerrit HTTP attempts; capped at 600 |
 | `retry_same_model_on_timeout` | true | when false, a timed-out call is not retried on the same model and moves on to fallback_models |
@@ -85,7 +85,7 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | --- | --- | --- |
 | `max_description_tokens` | 500 |  |
 | `max_commits_tokens` | 500 | Token cap on the commit messages sent to the model by /describe, /review, /improve and other commands. 0 means no limit; -1 sends none. |
-| `max_model_tokens` | 32000 | Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities. |
+| `max_model_tokens` | 256000 | Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities. |
 | `custom_model_max_tokens` | -1 | Override unknown models or Sol-tier GPT-6 on non-native custom providers. |
 | `max_output_tokens` | 0 | 0 = unset (the provider's own default applies) |
 | `model_token_count_estimate_factor` | 0.3 | factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate. |
@@ -148,7 +148,7 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | `claude_adaptive_thinking_models_override` | [] | Optional model ids to treat as adaptive-only Claude models, including opaque Bedrock ARNs. See [changing a model](changing_a_model.md). |
 | `claude_extended_thinking_models_override` | [] | Optional: override the built-in list of Claude models that receive the extended-thinking payload. When non-empty, this list fully replaces the built-in defaults (see CLAUDE_EXTENDED_THINKING_MODELS in pr_agent/algo/__init__.py). Leave empty to use the defaults. |
 | `extract_issue_from_branch` | true | Extract issue number from PR source branch name (e.g. feature/1-auth-google -> issue #1). When true, branch-derived issue URLs are merged with tickets from the PR description for compliance. Set to false to restore description-only behaviour. Note: Branch-name extraction is GitHub-only for now; other providers planned for later. |
-| `branch_issue_regex` | "" | Optional: custom regex with one or more capturing groups for the issue number (validated at runtime); only the first group is used. If the regex has no capturing group, the default pattern is used; if it does not compile, no branch tickets are extracted. If empty, uses default pattern: first 1-6 digits at start of branch or after a slash, followed by hyphen or end (e.g. feature/1-test, 123-fix). GitHub only; other providers planned for later. |
+| `branch_issue_regex` | "" | Optional: custom regex with one or more capturing groups for the issue number (validated at runtime); only the first group is used. If the regex has no capturing group, the default pattern is used; if it does not compile, no branch tickets are extracted. If empty, uses default pattern: first 1-6 digits at start of branch or after a slash, followed by hyphen or end (e.g. feature/1-test, 123-fix), skipping date prefixes such as release/2026-11-15. GitHub only; other providers planned for later. |
 | `description_issue_regex` | "" | Configure a regex replacing bare #N references, with exactly one capturing group for an ASCII issue number. Leave empty for default matching (up to six digits); fall back with a warning on invalid patterns. Set the custom digit limit in the pattern; use only integer-parseable captures. Keep full URLs and owner/repo#N references. Use TOML literal quotes to preserve backslashes, e.g. description_issue_regex = '(?i)(?:fixes\|closes\|resolves)\s+#(\d+)' |
 
 
@@ -194,6 +194,7 @@ See [Review](../commands/review.md#configuration-options).
 | `max_previous_findings_chars` | 8000 | Character budget for the findings stored by earlier reviews, given to /review as context so it keeps their wording instead of re-raising them reworded, and skips findings whose GitHub or GitLab inline thread someone other than PR-Agent resolved (needs persistent_finding_state); 0 disables it. |
 | `show_previous_findings_summary` | true | Show a 'Since the last review' section at the top of the review: addressed, reappeared, still-open and new findings (needs persistent_finding_state). |
 | `inline_key_issues` | true | Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab, Gitea). Findings with a fix become committable suggestions when pr_code_suggestions.committable_code_suggestions is on. Set to false to keep every finding in the review summary. |
+| `min_finding_confidence` | 0 | Drop findings below this model-reported confidence (0-10); 0 keeps every finding and does not ask the model for one. |
 | `extra_instructions` | "" |  |
 | `num_max_findings` | 6 | maximum number of key issues /review reports (integer; default 6) |
 | `final_update_message` | true |  |
@@ -334,7 +335,7 @@ See [Add Docs](../commands/add_docs.md#configuration-options).
 | Key | Default | Description |
 | --- | --- | --- |
 | `extra_instructions` | "" |  |
-| `docs_style` | "Sphinx" | "Google Style with Args, Returns, Attributes...etc", "Numpy Style", "Sphinx Style", "PEP257", "reStructuredText" |
+| `docs_style` | "Sphinx" | Docstring style: Google Style with Args, Returns, Attributes...etc; Numpy Style; Sphinx; PEP257; reStructuredText. See docs/docs/commands/add_docs.md. |
 
 
 ## `[pr_update_changelog]` — /update_changelog {#pr_update_changelog-update_changelog}

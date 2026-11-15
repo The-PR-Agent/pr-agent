@@ -18,7 +18,8 @@ from pr_agent.algo.pr_processing import (
     run_diff_preparation,
 )
 from pr_agent.algo.repo_context import build_repo_context
-from pr_agent.algo.run_details import init_run_details
+from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
+from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure
 from pr_agent.algo.run_output import append_run_details, push_outputs_async
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.skills_loader import get_skills_context
@@ -71,6 +72,24 @@ def _get_question_diff(git_provider, *args, **kwargs):
 
 
 class PRQuestions:
+    def _write_json_output(self, answer: str) -> None:
+        """Export a question's answer when the CLI requested a JSON artifact."""
+        if not review_json_output_path.get():
+            return
+        details = get_run_details()
+        usage = {}
+        if details is not None and details.has_token_usage:
+            usage = {
+                "prompt_tokens": details.prompt_tokens,
+                "completion_tokens": details.completion_tokens,
+                "total_tokens": details.total_tokens,
+            }
+        try:
+            write_review_json_output({"question": self.question_str, "answer": answer, "usage": usage})
+        except (OSError, TypeError, ValueError):
+            # Keep the normal answer available; the CLI still reports the missing artifact.
+            record_command_failure()
+
     def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         question_str = self.parse_args(args)
         self.pr_url = pr_url
@@ -149,15 +168,18 @@ class PRQuestions:
 
             if getattr(self, "no_analyzable_files", False):
                 # No model was called, so there are no run details to report.
+                answer = self._no_analyzable_files_note()
                 note = self._prepare_no_analyzable_files_answer()
+                self._write_json_output(answer)
                 if get_settings().config.publish_output:
-                    await self._publish_answer_with_sinks(note, self._no_analyzable_files_note())
+                    await self._publish_answer_with_sinks(note, answer)
                 else:
-                    get_settings().set("data.answer", self._no_analyzable_files_note())
+                    get_settings().set("data.answer", answer)
                 return ""
 
             pr_comment = self._prepare_pr_answer()
             get_logger().debug("PR output", artifact=pr_comment)
+            self._write_json_output((self.prediction or "").strip())
 
             if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_questions.enable_help_text:
                 pr_comment += "<hr>\n\n<details> <summary><strong>💡 Command usage guide:</strong></summary><hr> \n\n"

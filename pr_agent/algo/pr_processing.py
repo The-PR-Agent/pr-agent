@@ -51,9 +51,10 @@ def get_effective_fallback_chain() -> tuple[tuple[str, str | None], ...] | None:
 def _count_raw_and_stripped_tokens(token_handler: TokenHandler, text: str) -> int:
     """Count both raw and stripped forms because either representation may be rendered."""
     token_count = token_handler.count_tokens(text)
-    stripped = text.strip()
-    if stripped != text:
-        token_count = max(token_count, token_handler.count_tokens(stripped))
+    if text[:1].isspace() or text[-1:].isspace():
+        stripped = text.strip()
+        if stripped != text:
+            token_count = max(token_count, token_handler.count_tokens(stripped))
     return token_count
 
 
@@ -252,10 +253,11 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
         pr_languages, token_handler, add_line_numbers_to_hunks,
         patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE, patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER,
         # Retain per-file counts when filtered-file metadata may force repacking.
-        skip_file_tokens_below=None if filtered_files else soft_token_budget)
+        skip_file_tokens_below=None if filtered_files else soft_token_budget,
+        overflow_token_budget=soft_token_budget)
 
-    # if we are under the limit, return the full diff
-    if not patches_extended:
+    # Return early only when no files produced a patch (as opposed to patches released on overflow).
+    if not patches_extended and not patches_extended_tokens:
         if return_prepared:
             return PreparedPRDiff("", [], model=model,
                                   add_line_numbers_to_hunks=add_line_numbers_to_hunks,
@@ -445,14 +447,17 @@ def _pack_pr_multi_diffs(file_dict: dict,
         rendered = "\n".join(candidate_patches)
         return _count_raw_and_stripped_tokens(token_handler, rendered)
 
-    def clip_single_patch(filename, patch):
+    def clip_single_patch(filename, patch, known_tokens=None):
         if file_dict[filename].get("content_fetch_failed", False):
             get_logger().warning(f"Unreadable-file notice too large, skipping: {filename}")
             return None
         if get_settings().config.get("large_patch_policy", "clip") != "clip":
             get_logger().warning(f"Patch too large, skipping: {filename}")
             return None
-        patch_tokens = count_chunk([patch])
+        if known_tokens is not None and not (patch[:1].isspace() or patch[-1:].isspace()):
+            patch_tokens = known_tokens
+        else:
+            patch_tokens = count_chunk([patch])
         patch_clipped = clip_tokens(
             patch,
             token_budget,
@@ -482,7 +487,7 @@ def _pack_pr_multi_diffs(file_dict: dict,
             if not patch:
                 continue
             if new_patch_tokens > token_budget:
-                clipped_item = clip_single_patch(filename, patch)
+                clipped_item = clip_single_patch(filename, patch, known_tokens=new_patch_tokens)
                 if not clipped_item:
                     continue
                 filename, patch, new_patch_tokens = clipped_item
@@ -578,15 +583,18 @@ def _get_pr_multi_diffs_from_prepared(prepared_diff: PreparedPRDiff,
     and large-patch policy while avoiding a second provider fetch, patch conversion, and token
     count for every file.
     """
-    file_dict = {}
-    for filename, data in (prepared_diff.file_dict or {}).items():
-        patch = data["patch"]
-        tokens = data["tokens"]
-        file = (prepared_diff.files_by_name or {}).get(filename)
-        if file and file.ai_file_summary and get_settings().get("config.enable_ai_metadata", False):
-            patch = add_ai_summary_top_patch(file, patch)
-            tokens = token_handler.count_tokens(patch)
-        file_dict[filename] = {**data, "patch": patch, "tokens": tokens}
+    if not (prepared_diff.files_by_name and get_settings().get("config.enable_ai_metadata", False)):
+        file_dict = prepared_diff.file_dict or {}
+    else:
+        file_dict = {}
+        for filename, data in (prepared_diff.file_dict or {}).items():
+            patch = data["patch"]
+            tokens = data["tokens"]
+            file = (prepared_diff.files_by_name or {}).get(filename)
+            if file and file.ai_file_summary:
+                patch = add_ai_summary_top_patch(file, patch)
+                tokens = token_handler.count_tokens(patch)
+            file_dict[filename] = {**data, "patch": patch, "tokens": tokens}
 
     return _pack_pr_multi_diffs(
         file_dict,
@@ -614,21 +622,50 @@ def _unreadable_file_notice(file) -> str:
     )
 
 
+_EXTENDED_DIFF_MIN_CHECK_CHARS = 262_144
+_EXTENDED_DIFF_CHARS_PER_TOKEN = 3
+_BPE_BOUNDARY_SLACK_PER_FILE = 4
+_BPE_BOUNDARY_SLACK_FLOOR = 64
+
+
 def pr_generate_extended_diff(pr_languages: list,
                               token_handler: TokenHandler,
                               add_line_numbers_to_hunks: bool,
                               patch_extra_lines_before: int = 0,
                               patch_extra_lines_after: int = 0,
                               deleted_files: list | None = None,
-                              *, skip_file_tokens_below: int | None = None) -> tuple[list, int, list]:
+                              *, skip_file_tokens_below: int | None = None,
+                              overflow_token_budget: int | None = None) -> tuple[list, int, list]:
     """Render patches; optionally skip per-file counts below a diff-only token threshold.
 
     Leave file.tokens unchanged and return an empty per-patch count list when skipping.
+    When ``overflow_token_budget`` is provided, switch to streaming per-file counting and
+    release retained patches once cumulative per-file tokens prove the budget is exceeded.
     """
-    total_tokens = token_handler.prompt_tokens  # initial tokens
+    prompt_tokens = token_handler.prompt_tokens
     patches_extended = []
     patches_extended_tokens = []
     rendered_files = []
+    counted_upto = 0
+    running_diff_tokens = 0
+    buffered_chars = 0
+    overflowed = False
+    check_chars = (
+        max(overflow_token_budget * _EXTENDED_DIFF_CHARS_PER_TOKEN, _EXTENDED_DIFF_MIN_CHECK_CHARS)
+        if overflow_token_budget is not None and overflow_token_budget > 0
+        else None
+    )
+
+    def _flush_pending_counts() -> None:
+        nonlocal counted_upto, running_diff_tokens
+        for file, patch in zip(
+            rendered_files[counted_upto:], patches_extended[counted_upto:], strict=True
+        ):
+            file.tokens = token_handler.count_tokens(patch)
+            patches_extended_tokens.append(file.tokens)
+            running_diff_tokens += file.tokens
+        counted_upto = len(rendered_files)
+
     for lang in pr_languages:
         for file in lang['files']:
             original_file_content_str = file.base_file
@@ -640,45 +677,68 @@ def pr_generate_extended_diff(pr_languages: list,
                 # See _unreadable_file_notice: the file is kept, but as a notice rather than a
                 # fabricated diff, so the model knows this part of the PR was not reviewed.
                 full_extended_patch = _unreadable_file_notice(file)
-                patches_extended.append(full_extended_patch)
-                rendered_files.append(file)
-                continue
+            else:
+                if deleted_files is not None:
+                    patch = handle_patch_deletions(patch, original_file_content_str, new_file_content_str,
+                                                   file.filename, file.edit_type)
+                    if patch is None:
+                        deleted_files.append(file.filename)
+                        continue
 
-            if deleted_files is not None:
-                patch = handle_patch_deletions(patch, original_file_content_str, new_file_content_str,
-                                               file.filename, file.edit_type)
-                if patch is None:
-                    deleted_files.append(file.filename)
+                # extend each patch with extra lines of context
+                extended_patch = extend_patch(original_file_content_str, patch,
+                                              patch_extra_lines_before, patch_extra_lines_after, file.filename,
+                                              new_file_str=new_file_content_str)
+                if not extended_patch:
+                    get_logger().warning(f"Failed to extend patch for file: {file.filename}")
                     continue
 
-            # extend each patch with extra lines of context
-            extended_patch = extend_patch(original_file_content_str, patch,
-                                          patch_extra_lines_before, patch_extra_lines_after, file.filename,
-                                          new_file_str=new_file_content_str)
-            if not extended_patch:
-                get_logger().warning(f"Failed to extend patch for file: {file.filename}")
+                if add_line_numbers_to_hunks:
+                    full_extended_patch = decouple_and_convert_to_hunks_with_lines_numbers(extended_patch, file)
+                else:
+                    extended_patch = extended_patch.replace('\n@@ ', '\n\n@@ ') # add extra line before each hunk
+                    full_extended_patch = f"\n\n## File: '{file.filename.strip()}'\n\n{extended_patch.strip("\r\n")}\n"
+
+                # add AI-summary metadata to the patch
+                if file.ai_file_summary and get_settings().get("config.enable_ai_metadata", False):
+                    full_extended_patch = add_ai_summary_top_patch(file, full_extended_patch)
+
+            if overflowed:
+                file.tokens = token_handler.count_tokens(full_extended_patch)
+                patches_extended_tokens.append(file.tokens)
+                running_diff_tokens += file.tokens
                 continue
-
-            if add_line_numbers_to_hunks:
-                full_extended_patch = decouple_and_convert_to_hunks_with_lines_numbers(extended_patch, file)
-            else:
-                extended_patch = extended_patch.replace('\n@@ ', '\n\n@@ ') # add extra line before each hunk
-                full_extended_patch = f"\n\n## File: '{file.filename.strip()}'\n\n{extended_patch.strip("\r\n")}\n"
-
-            # add AI-summary metadata to the patch
-            if file.ai_file_summary and get_settings().get("config.enable_ai_metadata", False):
-                full_extended_patch = add_ai_summary_top_patch(file, full_extended_patch)
 
             patches_extended.append(full_extended_patch)
             rendered_files.append(file)
+            if check_chars is not None:
+                buffered_chars += len(full_extended_patch)
+                if buffered_chars >= check_chars:
+                    _flush_pending_counts()
+                    slack = max(_BPE_BOUNDARY_SLACK_FLOOR, _BPE_BOUNDARY_SLACK_PER_FILE * len(rendered_files))
+                    if running_diff_tokens > overflow_token_budget + slack:
+                        overflowed = True
+                        patches_extended.clear()
+                    else:
+                        remaining_budget = max(overflow_token_budget - running_diff_tokens, 0)
+                        check_chars = buffered_chars + max(
+                            remaining_budget * _EXTENDED_DIFF_CHARS_PER_TOKEN,
+                            _EXTENDED_DIFF_MIN_CHECK_CHARS,
+                        )
 
+    if overflowed:
+        return patches_extended, prompt_tokens + running_diff_tokens, patches_extended_tokens
+
+    total_tokens = prompt_tokens
     if patches_extended:
-        total_tokens += _count_raw_and_stripped_tokens(token_handler, "\n".join(patches_extended))
-    if skip_file_tokens_below is None or total_tokens - token_handler.prompt_tokens >= skip_file_tokens_below:
+        joined_patches = "\n".join(patches_extended)
+        total_tokens += _count_raw_and_stripped_tokens(token_handler, joined_patches)
+        del joined_patches
+    if skip_file_tokens_below is None or total_tokens - prompt_tokens >= skip_file_tokens_below:
         # Preserve extended-patch ordering whenever the caller needs to compress or split the diff.
-        for file, patch in zip(rendered_files, patches_extended, strict=True):
-            file.tokens = token_handler.count_tokens(patch)
-            patches_extended_tokens.append(file.tokens)
+        _flush_pending_counts()
+    else:
+        patches_extended_tokens.clear()
     return patches_extended, total_tokens, patches_extended_tokens
 
 
@@ -1053,7 +1113,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE,
         patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER,
         deleted_files=deleted_files,
-        skip_file_tokens_below=soft_token_budget)
+        skip_file_tokens_below=soft_token_budget,
+        overflow_token_budget=soft_token_budget)
 
     # if we are under the limit, return the full diff
     if total_tokens - token_handler.prompt_tokens < soft_token_budget:

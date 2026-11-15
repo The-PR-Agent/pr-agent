@@ -29,7 +29,7 @@ from tests.unittest._telemetry_helpers import build_in_memory_tracer
 
 SENTINEL_URL = "https://secret-repo.example/org/private-repo/pull/42"
 
-_TRACKED_KEYS = ("otel.include_error_details",)
+_TRACKED_KEYS = ("otel.include_error_details", "otel.include_pr_url")
 
 
 @pytest.fixture(autouse=True)
@@ -381,3 +381,64 @@ async def test_exception_details_exported_when_opted_in(telemetry, monkeypatch):
     attrs = dict(span.attributes)
     assert SENTINEL_URL in attrs["error.message"]
     assert any(event.name == "exception" for event in span.events)
+
+
+# Dynaconf only turns lowercase `false` into a bool; values such as `FALSE`, `no`
+# or `off` (e.g. from OTEL__INCLUDE_PR_URL=FALSE) stay non-empty strings.
+_STRING_FALSE_VALUES = ["FALSE", "False ", "no", "off", "0"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", _STRING_FALSE_VALUES)
+async def test_string_false_error_details_keeps_request_content_out(telemetry, value):
+    exporter, _ = telemetry
+    get_settings().set("otel.include_error_details", value)
+
+    await PRAgent()._handle_request("https://example/pr/1", [SENTINEL_URL])
+
+    span = exporter.get_finished_spans()[0]
+    assert "error.message" not in dict(span.attributes)
+    assert SENTINEL_URL not in _all_exported_text(exporter)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", _STRING_FALSE_VALUES)
+async def test_string_false_error_details_does_not_record_exceptions(telemetry, monkeypatch, value):
+    exporter, _ = telemetry
+    get_settings().set("otel.include_error_details", value)
+
+    def exploding(pr_url):
+        raise RuntimeError(f"failed to fetch {SENTINEL_URL}")
+
+    monkeypatch.setattr(pr_agent_module, "apply_repo_settings", exploding)
+
+    await PRAgent().handle_request("https://example/pr/1", "/review")
+
+    span = exporter.get_finished_spans()[0]
+    assert span.events == ()
+    assert SENTINEL_URL not in _all_exported_text(exporter)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", _STRING_FALSE_VALUES)
+async def test_string_false_include_pr_url_keeps_pr_url_out(telemetry, value):
+    exporter, _ = telemetry
+    get_settings().set("otel.include_pr_url", value)
+
+    await PRAgent()._handle_request(SENTINEL_URL, ["unknowncmd"])
+
+    span = exporter.get_finished_spans()[0]
+    assert "pr_agent.pr_url" not in dict(span.attributes)
+    assert SENTINEL_URL not in _all_exported_text(exporter)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [True, "true", "TRUE", "yes", "on"])
+async def test_include_pr_url_opt_in_values(telemetry, value):
+    exporter, _ = telemetry
+    get_settings().set("otel.include_pr_url", value)
+
+    await PRAgent()._handle_request(SENTINEL_URL, ["unknowncmd"])
+
+    span = exporter.get_finished_spans()[0]
+    assert dict(span.attributes)["pr_agent.pr_url"] == SENTINEL_URL

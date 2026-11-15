@@ -139,6 +139,19 @@ def test_pr_review_prompt_gates_standards_rules(monkeypatch, repo_context):
     assert ("Standards compliance" in rendered) is bool(repo_context)
 
 
+@pytest.mark.parametrize("threshold,asks_for_confidence", [(0, False), (5, True)])
+def test_pr_review_prompt_asks_for_a_confidence_only_when_filtering(monkeypatch, threshold, asks_for_confidence):
+    monkeypatch.setitem(get_settings().pr_reviewer, "min_finding_confidence", threshold)
+    reviewer = _build_reviewer(monkeypatch)
+    environment = Environment(autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
+
+    rendered = environment.from_string(get_settings().pr_review_prompt.system).render(reviewer.vars)
+
+    assert ("confidence: int" in rendered) is asks_for_confidence
+    assert ("confidence: 8" in rendered) is asks_for_confidence
+    assert "Below 50" not in rendered
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_failure_modes_prompt_follows_captured_setting(monkeypatch, enabled):
     settings = get_settings()

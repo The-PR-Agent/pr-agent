@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from pr_agent.algo.i18n import t
+from pr_agent.algo.suggestion_checks import get_patch_range_lines
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.commands.pr_code_suggestions import (
     PRCodeSuggestions,
@@ -203,15 +204,15 @@ def test_get_patch_range_lines_rejects_oversized_span_without_enumerating_it():
     # before any range(start, end) enumeration would iterate over it.
     patch = DEFAULT_PATCH
 
-    assert PRCodeSuggestions._get_patch_range_lines(patch, 1, 1_000_000_000) is None
-    assert PRCodeSuggestions._get_patch_range_lines(patch, 2, 6) == [
+    assert get_patch_range_lines(patch, 1, 1_000_000_000) is None
+    assert get_patch_range_lines(patch, 2, 6) == [
         "    return new()",
         "    extra",
         "    more",
         "    lines",
         "    added line",
     ]
-    assert PRCodeSuggestions._get_patch_range_lines(patch, 2, 2) == ["    return new()"]
+    assert get_patch_range_lines(patch, 2, 2) == ["    return new()"]
 
 
 def test_prepare_pr_code_suggestions_applies_truncation_inline():

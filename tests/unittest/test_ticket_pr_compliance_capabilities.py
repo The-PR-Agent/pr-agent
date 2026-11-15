@@ -133,8 +133,9 @@ class _CustomGitLabSubstitute(_BaseStubProvider):
             title="GitLab Issue 55",
             description="GitLab Description 55",
             labels=["backend", "p1"],
+            confidential=False,
         )
-        project = MagicMock()
+        project = MagicMock(visibility="public", issues_access_level="enabled")
         project.issues.get.return_value = issue
         self.gl.projects.get.return_value = project
 
@@ -158,7 +159,7 @@ class _CustomAzureSubstitute(_BaseStubProvider):
                     "title": "Work Item 999",
                     "body": "Work item body 999",
                     "acceptance_criteria": "AC 999",
-                    "labels": ["azure-label"],
+                    "tags": ["azure-label"],
                 }
             ]
         )
@@ -301,9 +302,10 @@ async def test_extract_tickets_supports_duck_typed_substitutes(route):
             number=42, title="GH 42", body="GH Body", labels=[], pull_request=None
         )
     elif route == "gitlab":
-        mock_proj = MagicMock()
+        mock_proj = MagicMock(visibility="public", issues_access_level="enabled")
         mock_proj.issues.get.return_value = MagicMock(
-            iid=42, web_url="https://gitlab.com/duck/repo/-/issues/42", title="GL 42", description="GL Body", labels=[]
+            iid=42, web_url="https://gitlab.com/duck/repo/-/issues/42", title="GL 42", description="GL Body", labels=[],
+            confidential=False,
         )
         provider.gl.projects.get.return_value = mock_proj
 
@@ -349,6 +351,22 @@ async def test_extract_tickets_gitlab_substitute_handles_project_error():
     provider.gl.projects.get.side_effect = RuntimeError("GitLab API error")
     tickets = await extract_tickets(provider)
     assert tickets == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tags", "expected"),
+    [
+        (["backend", "security"], "backend, security"),
+        (["ünïcode", "c++"], "ünïcode, c++"),
+        ([], ""),
+    ],
+)
+async def test_extract_tickets_azure_tags_become_labels(tags, expected):
+    work_item = {"id": 1, "url": "u", "title": "t", "body": "b", "tags": tags}
+    provider = _CustomAzureSubstitute(work_items=[work_item])
+    tickets = await extract_tickets(provider)
+    assert tickets[0]["labels"] == expected
 
 
 @pytest.mark.asyncio

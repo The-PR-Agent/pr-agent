@@ -44,6 +44,17 @@ from pr_agent.mosaico.diff_provider import parse_unified_diff
 DEFAULT_GITEA_URL = "https://gitea.com"
 
 
+def _replace_non_bmp_characters(text: str) -> str:
+    """Replace characters unsupported by MySQL's 3-byte utf8 without joining neighbors."""
+    replacements = {"🔵": "⚫"}
+    return "".join(
+        character
+        if ord(character) <= 0xFFFF and not 0xD800 <= ord(character) <= 0xDFFF
+        else replacements.get(character, "�")
+        for character in text
+    )
+
+
 def _has_complete_raw_hunks(patch: str) -> bool:
     """Check each unified hunk against its declared old/new line counts."""
     if not patch:
@@ -218,6 +229,38 @@ class GiteaProvider(GitProvider):
             self.issue_url = url
             self.__set_repo_and_owner_from_issue()
             self.enabled_issue = True
+
+    def reset_diff_cache_for_command(self) -> None:
+        """Refresh the PR and discard revision-bound state before another automatic command."""
+        super().reset_diff_cache_for_command()
+        if not self.enabled_pr:
+            return
+        try:
+            pr = self.repo_api.get_pull_request(owner=self.owner, repo=self.repo, pr_number=self.pr_number)
+        except ApiException as exc:
+            if exc.status not in (500, 502, 503, 504):
+                raise
+            # Retry one read-only request, never fall back to a stale PR revision.
+            pr = self.repo_api.get_pull_request(owner=self.owner, repo=self.repo, pr_number=self.pr_number)
+        head, base = getattr(pr, "head", None), getattr(pr, "base", None)
+        if head is None or base is None:
+            raise ValueError("Gitea PR refresh returned incomplete head/base metadata")
+        head_sha, base_sha, base_ref = head.sha or "", base.sha or "", base.ref or ""
+        if not (head_sha and base_sha and base_ref):
+            raise ValueError("Gitea PR refresh returned incomplete revision metadata")
+        merge_base = getattr(pr, "merge_base", None) or ""
+        # Read all metadata first so a failed refresh cannot leave mixed revisions.
+        self.pr, self.sha = pr, head_sha
+        self.base_sha, self.base_ref, self.merge_base = base_sha, base_ref, merge_base
+        self.git_files = None
+        self.file_diffs = None
+        self.filtered_diff_file_names = []
+        self.file_contents = {}
+        self.pr_commits = None
+        self.last_commit = _GiteaCommitAdapter({"sha": self.sha})
+        self.last_commit_id = self.last_commit
+        self.user_description = None
+        self._base_url_html = None
 
     @property
     def base_url_html(self) -> str:
@@ -1314,26 +1357,37 @@ class RepoApi(giteapy.RepositoryApi):
         )
 
     def create_comment(self, owner: str, repo: str, index: int, comment: str):
-        body = {
-            "body": comment
-        }
-        return self.issue.issue_create_comment(
-            owner=owner,
-            repo=repo,
-            index=index,
-            body=body
-        )
+        def send(body: str):
+            return self.issue.issue_create_comment(
+                owner=owner,
+                repo=repo,
+                index=index,
+                body={"body": body},
+            )
+
+        return self._send_comment_with_fallback(send, comment)
 
     def edit_comment(self, owner: str, repo: str, comment_id: int, comment: str):
-        body = {
-            "body": comment
-        }
-        return self.issue.issue_edit_comment(
-            owner=owner,
-            repo=repo,
-            id=comment_id,
-            body=body
-        )
+        def send(body: str):
+            return self.issue.issue_edit_comment(
+                owner=owner,
+                repo=repo,
+                id=comment_id,
+                body={"body": body},
+            )
+
+        return self._send_comment_with_fallback(send, comment)
+
+    def _send_comment_with_fallback(self, send, comment: str):
+        try:
+            return send(comment)
+        except ApiException as error:
+            if error.status != 500:
+                raise
+            fallback = _replace_non_bmp_characters(comment)
+            if fallback == comment:
+                raise
+            return send(fallback)
 
     def remove_comment(self, owner: str, repo: str, comment_id: int):
         return self.issue.issue_delete_comment(

@@ -11,7 +11,11 @@ from jinja2.sandbox import SandboxedEnvironment
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, retry_with_fallback_models
+from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    FallbackEligibleError,
+    retry_with_fallback_models,
+)
 from pr_agent.algo.token_budget import AttemptTokenBudget, FittedPrompt, clip_tokens
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType, load_yaml
@@ -418,6 +422,8 @@ class PredictionPreparator:
             response, finish_reason = await self.ai_handler.chat_completion(
                 model=model, temperature=get_settings().config.temperature,
                 system=fitted.system_prompt, user=fitted.user_prompt)
+            if finish_reason == "length":
+                raise FallbackEligibleError(f"The /help_docs response was truncated by {model}")
             return response
         except Exception as e:
             get_logger().exception(

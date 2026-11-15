@@ -12,6 +12,7 @@ import pytest
 
 from pr_agent.algo.pr_processing import PackedPRDiffs, PreparedPRDiff, _pack_pr_multi_diffs
 from pr_agent.algo.review_finding_state import ParsedReviewState, reconcile_review_findings
+from pr_agent.algo.review_json_output import hosted_markdown_artifact, hosted_markdown_export
 from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
@@ -427,9 +428,48 @@ async def test_a_malformed_chunk_is_retried_without_repeating_successful_chunks(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("has_successful_chunks", [True, False])
+async def test_hosted_export_captures_completed_review_from_reviewer():
+    reviewer = _make_reviewer()
+    reviewer.vars = {}
+    reviewer._get_prediction = AsyncMock(return_value=CHUNK_A)
+    settings_values = {
+        "config.model": "primary",
+        "config.fallback_models": [],
+        "config.publish_output": False,
+        "pr_reviewer.enable_large_pr_chunking": False,
+    }
+    snapshot = snapshot_settings(settings_values)
+    try:
+        for key, value in settings_values.items():
+            get_settings().set(key, value)
+        with (
+            patch("pr_agent.commands.pr_reviewer.extract_and_cache_pr_tickets", new_callable=AsyncMock),
+            patch("pr_agent.commands.pr_reviewer.fit_related_tickets_to_prompt_budget",
+                  return_value=({}, reviewer.token_handler)),
+            patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", [])),
+            patch.object(reviewer, "_prepare_pr_review", return_value="# Complete review"),
+        ):
+            export_token = hosted_markdown_export.set(True)
+            artifact_token = hosted_markdown_artifact.set(None)
+            try:
+                await reviewer._run_review()
+                assert hosted_markdown_artifact.get() == "# Complete review"
+            finally:
+                hosted_markdown_artifact.reset(artifact_token)
+                hosted_markdown_export.reset(export_token)
+    finally:
+        restore_settings(snapshot)
+
+    assert reviewer.review_failed_chunk_count == 0
+    reviewer.git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_successful_chunks,hosted_export", [
+    (True, False), (False, False), (True, True),
+])
 async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succeeded(
-    chunking_enabled, has_successful_chunks,
+    chunking_enabled, has_successful_chunks, hosted_export,
 ):
     reviewer = _make_reviewer()
     reviewer.vars = {}
@@ -442,7 +482,7 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
     settings_values = {
         "config.model": "primary",
         "config.fallback_models": ["fallback"],
-        "config.publish_output": True,
+        "config.publish_output": not hosted_export,
         "config.is_auto_command": False,
         "config.propagate_command_errors": False,
         "pr_reviewer.persistent_comment": False,
@@ -464,13 +504,24 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
             patch.object(reviewer, "_prepare_pr_review", side_effect=lambda: _render_review(reviewer)) as render,
         ):
             # Exercise the real fallback chain and run()'s terminal publication path.
-            await reviewer.run()
+            export_token = hosted_markdown_export.set(hosted_export)
+            artifact_token = hosted_markdown_artifact.set(None)
+            try:
+                await reviewer.run()
+                captured_export = hosted_markdown_artifact.get()
+            finally:
+                hosted_markdown_artifact.reset(artifact_token)
+                hosted_markdown_export.reset(export_token)
     finally:
         restore_settings(snapshot)
 
     calls = [call.args for call in reviewer._get_prediction.await_args_list]
     assert calls[:3] == [("primary", "chunk-a"), ("primary", "chunk-b"), ("primary", "chunk-c")]
-    published = reviewer.git_provider.publish_comment.call_args.args[0]
+    if hosted_export:
+        reviewer.git_provider.publish_comment.assert_not_called()
+        assert captured_export is None
+    else:
+        published = reviewer.git_provider.publish_comment.call_args.args[0]
     if not has_successful_chunks:
         render.assert_not_called()
         assert reviewer._structured_review_data is None
@@ -489,7 +540,8 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
         "files_not_reviewed": [],
         "files_partially_reviewed": [],
     }
-    assert "1 chunk(s) failed and are not covered by this review." in published
+    if not hosted_export:
+        assert "1 chunk(s) failed and are not covered by this review." in published
     issues = reviewer.prediction_data["review"]["key_issues_to_review"]
     assert [issue["relevant_file"].strip() for issue in issues] == ["a.py", "c.py"]
 
@@ -925,3 +977,102 @@ def test_review_coverage_caps_each_category_and_preserves_failed_chunk_note(enab
         assert f"{prefix}-50.py" not in rendered
     assert "... and 2 more" in rendered
     assert "... and 3 more" in rendered
+
+
+def _chunk_with_confidences(*confidences):
+    issues = "".join(
+        f"    - relevant_file: |\n        a.py\n      issue_header: |\n        Possible Issue\n"
+        f"      issue_content: |\n        problem {confidence}\n      start_line: 3\n      end_line: 4\n"
+        f"      confidence: {confidence}\n"
+        for confidence in confidences
+    )
+    return f"review:\n  score: 50\n  key_issues_to_review:\n{issues}  security_concerns: |\n    No\n"
+
+
+@pytest.mark.asyncio
+async def test_confidence_filter_runs_before_the_findings_cap_across_chunks(chunking_enabled, monkeypatch):
+    # three 3s in the first chunk would fill num_max_findings and push out the 9 of the second
+    get_settings().set("pr_reviewer.num_max_findings", 3)
+    monkeypatch.setitem(get_settings().pr_reviewer, "min_finding_confidence", 7)
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(
+        side_effect=[_chunk_with_confidences(3, 3, 3), _chunk_with_confidences(9)])
+
+    with (
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
+              return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], [])),
+    ):
+        await reviewer._prepare_prediction("model")
+
+    issues = reviewer.prediction_data["review"]["key_issues_to_review"]
+    assert [issue["confidence"] for issue in issues] == [9]
+    assert reviewer.low_confidence_filtered_count == 3
+
+
+@pytest.mark.asyncio
+async def test_remerging_cached_chunks_keeps_the_low_confidence_count(chunking_enabled, monkeypatch):
+    # a fallback attempt reuses the cached chunks, so the count must not depend on the first merge
+    monkeypatch.setitem(get_settings().pr_reviewer, "min_finding_confidence", 7)
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(
+        side_effect=[_chunk_with_confidences(3, 3), _chunk_with_confidences(9)])
+
+    with (
+        patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
+              return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], [])),
+    ):
+        await reviewer._prepare_prediction("model")
+    reviewer.low_confidence_filtered_count = 0  # what the next attempt's reset does
+
+    assert reviewer._merge_cached_review_chunks()
+
+    assert reviewer.low_confidence_filtered_count == 2
+    assert [issue["confidence"] for issue in reviewer.prediction_data["review"]["key_issues_to_review"]] == [9]
+
+
+@pytest.mark.asyncio
+async def test_chunked_review_drops_prepared_diff_and_renders_filtered_prompts_lazily(
+    chunking_enabled, monkeypatch,
+):
+    import gc
+    import weakref
+
+    reviewer = _make_reviewer()
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = ["yarn.lock"]
+    prepared_ref = None
+    observed_prompts = []
+
+    async def fake_get_prediction(_model, prompt):
+        gc.collect()
+        assert prepared_ref is not None and prepared_ref() is None
+        observed_prompts.append(prompt)
+        return CHUNK_A if len(observed_prompts) == 1 else CHUNK_B
+
+    reviewer._get_prediction = AsyncMock(side_effect=fake_get_prediction)
+
+    async def fake_prepare_diff(*_args, **_kwargs):
+        nonlocal prepared_ref
+        prepared = PreparedPRDiff(
+            "chunk-a",
+            ["b.py"],
+            file_dict={"a.py": {"patch": "chunk-a", "tokens": 7}, "b.py": {"patch": "chunk-b", "tokens": 7}},
+            model="model",
+            add_line_numbers_to_hunks=True,
+            token_handler=reviewer.token_handler,
+        )
+        prepared_ref = weakref.ref(prepared)
+        return prepared
+
+    # Avoid MagicMock here: MagicMock stores call_args, which would keep prepared_diff alive.
+    monkeypatch.setattr("pr_agent.commands.pr_reviewer.run_diff_preparation", fake_prepare_diff)
+    monkeypatch.setattr(
+        "pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
+        lambda *_args, **_kwargs: PackedPRDiffs(["chunk-a", "chunk-b"], [], []),
+    )
+
+    await reviewer._prepare_prediction("model")
+
+    assert len(observed_prompts) == 2
+    assert all("yarn.lock" in prompt for prompt in observed_prompts)

@@ -612,7 +612,7 @@ in PR-Agent's registry or the installed LiteLLM metadata.
 CompactifAI's public model pages do not currently specify those limits.
 
 PR-Agent also caps the effective budget with `config.max_model_tokens`, which
-defaults to 32,000. To use a larger verified budget, raise both
+defaults to 256,000. To use a larger verified budget, raise both
 `config.custom_model_max_tokens` and `config.max_model_tokens`; the effective limit
 is the smaller of the two values.
 
@@ -720,6 +720,25 @@ key = ...
 ```
 
 (you can obtain a Xiaomi MiMo API key from [here](https://platform.xiaomimimo.com/#/docs))
+
+### OpenCode Go
+
+To use models from an [OpenCode Go](https://opencode.ai/docs/console/go/) subscription, for example, set:
+
+```toml
+[config] # in configuration.toml
+model = "opencode_go/deepseek-v4.1-flash"
+fallback_models=[]
+```
+
+and fill up your key
+
+```toml
+[opencode_go] # in .secrets.toml
+key = ...
+```
+
+You can also set the `OPENCODE_API_KEY` (or `OPENCODE_GO_API_KEY`) environment variable instead.
 
 ### DeepInfra
 
@@ -838,7 +857,7 @@ model = "github_copilot/gpt-4o"
 fallback_models = ["github_copilot/gpt-4.1"]
 ```
 
-The GitHub identity behind the model needs an active Copilot subscription. The token budgets for these models are resolved automatically from litellm's model metadata, so `custom_model_max_tokens` is not required. However, `get_max_tokens` clamps the effective window to `config.max_model_tokens`, which defaults to 32000. To use the input limits recorded for these Copilot routes (e.g., 64000 for gpt-4o, 128000 for gpt-4.1), raise `config.max_model_tokens` accordingly.
+The GitHub identity behind the model needs an active Copilot subscription. The token budgets for these models are resolved automatically from litellm's model metadata, so `custom_model_max_tokens` is not required. However, `get_max_tokens` clamps the effective window to `config.max_model_tokens`, which defaults to 256000 — above the input limits recorded for these Copilot routes (e.g., 64000 for gpt-4o, 128000 for gpt-4.1) — so those limits apply in full without changing it.
 
 Authentication uses the [GitHub Copilot provider](https://docs.litellm.ai/docs/providers/github_copilot) flow:
 
@@ -961,7 +980,7 @@ The existing Chat Completions path is used; access depends on your OpenAI accoun
 
 ### Anthropic models
 
-PR-Agent registers existing Claude Sonnet 4.6 and Opus 4.6 aliases with a 1,000,000-token context window. `config.max_model_tokens` still caps the usable prompt budget unless a command explicitly bypasses that cap.
+PR-Agent registers existing Claude Sonnet 4.6, Opus 4.6, and Fable 5.2 aliases with a 1,000,000-token context window. `config.max_model_tokens` still caps the usable prompt budget unless a command explicitly bypasses that cap.
 
 ```toml
 [config]
@@ -986,7 +1005,7 @@ built-in defaults.
 :::note[Only models that accept a thinking budget are supported]
 PR-Agent enables extended thinking through the manual
 `thinking={"type": "enabled", "budget_tokens": ...}` request. Adaptive-only Claude models
-(e.g. Opus 4.7/4.8, Opus 5/5.5, Sonnet 5/5.5, Haiku 5.5, Fable 5, Fable 5.1) reject `budget_tokens`, so they are
+(e.g. Opus 4.7/4.8, Opus 5/5.5, Sonnet 5/5.5, Haiku 5.5, Fable 5, Fable 5.1/5.2) reject `budget_tokens`, so they are
 intentionally excluded from the built-in defaults. If you add one to
 `claude_extended_thinking_models_override` anyway, PR-Agent skips the extended-thinking payload
 for it and logs a warning rather than sending a request the provider would reject — use

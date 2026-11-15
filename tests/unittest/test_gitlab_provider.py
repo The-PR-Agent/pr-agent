@@ -430,6 +430,50 @@ class TestGitLabProvider:
         assert gitlab_provider.get_latest_commit_url() == next_url
         assert client.http_request.call_count == 2
 
+    def test_latest_commit_url_reuses_commit_messages_fetch_until_reset(self, gitlab_provider):
+        client = Gitlab("https://gitlab.example.com", private_token="test-token")
+        gitlab_provider.mr = client.projects.get("target/repo", lazy=True).mergerequests.get(1, lazy=True)
+        latest_url = "https://gitlab.example.com/fork/repo/-/commit/newest"
+        older_url = "https://gitlab.example.com/fork/repo/-/commit/older"
+        response = MagicMock()
+        response.json.return_value = [
+            {"id": "newest", "message": "Newest commit", "web_url": latest_url},
+            {"id": "older", "message": "Older commit", "web_url": older_url},
+        ]
+        response.links = {}
+        response.headers = {}
+        client.http_request = MagicMock(return_value=response)
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as mock_settings:
+            mock_settings.return_value.get.return_value = None
+            messages = gitlab_provider.get_commit_messages()
+
+        assert messages == "1. Newest commit\n2. Older commit"
+        assert gitlab_provider.get_latest_commit_url() == latest_url
+        client.http_request.assert_called_once()
+
+        next_url = "https://gitlab.example.com/fork/repo/-/commit/pushed"
+        response.json.return_value = [{"id": "pushed", "message": "Pushed", "web_url": next_url}]
+        gitlab_provider.reset_diff_cache_for_command()
+        assert gitlab_provider.get_latest_commit_url() == next_url
+        assert client.http_request.call_count == 2
+
+    def test_latest_commit_url_reuses_pr_commits_fetch(self, gitlab_provider):
+        gitlab_provider.mr.commits.return_value = [
+            SimpleNamespace(
+                id="new", message="new", web_url="https://gitlab.com/test/repo/-/commit/new", parent_ids=["old"]
+            ),
+            SimpleNamespace(
+                id="old", message="old", web_url="https://gitlab.com/test/repo/-/commit/old", parent_ids=[]
+            ),
+        ]
+
+        commits = gitlab_provider.get_pr_commits()
+
+        assert [c.sha for c in commits] == ["old", "new"]
+        assert gitlab_provider.get_latest_commit_url() == "https://gitlab.com/test/repo/-/commit/new"
+        gitlab_provider.mr.commits.assert_called_once_with(per_page=100)
+
     @pytest.mark.parametrize("first_result,expected", [
         (StopIteration(), ""),
         (GitlabGetError("temporary failure", response_code=503), ""),
@@ -1625,7 +1669,7 @@ class TestGitLabProvider:
     def test_inline_fallback_note_neutralizes_mentions(self, gitlab_provider, as_draft):
         gitlab_provider.mr = MagicMock()
         create = gitlab_provider.mr.draft_notes.create if as_draft else gitlab_provider.mr.discussions.create
-        create.side_effect = GitlabCreateError("position rejected")
+        create.side_effect = GitlabCreateError("position rejected", response_code=400)
         gitlab_provider.get_relevant_diff = MagicMock(return_value=SimpleNamespace(
             base_commit_sha="base", start_commit_sha="start", head_commit_sha="head"
         ))
@@ -2356,6 +2400,21 @@ class TestGitLabProvider:
         gitlab_provider.mr.discussions.list.assert_not_called()
         outdated.save.assert_not_called()
 
+    @pytest.mark.parametrize("configured", ["false", "FALSE", "0"])
+    def test_string_false_does_not_resolve_outdated_inline_threads(self, gitlab_provider, configured):
+        # Env/TOML often delivers "false" as a string. Truthiness would enable
+        # the opt-in cleanup; parse it the same way as the other GitLab flags.
+        outdated = _thread([_thread_note()])
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated])
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {
+            "GITLAB.RESOLVE_OUTDATED_INLINE_THREADS": configured,
+        }.get(key, default)
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
+            gitlab_provider.resolve_outdated_inline_threads()
+        gitlab_provider.mr.discussions.list.assert_not_called()
+        outdated.save.assert_not_called()
+
     def test_resolve_outdated_inline_threads_resolves_only_the_bots_outdated_threads(self, gitlab_provider):
         outdated = _thread([_thread_note()], discussion_id='outdated')
         current = _thread([_thread_note(head_sha=_CURRENT_HEAD_SHA)], discussion_id='current')
@@ -3022,6 +3081,25 @@ class TestGitLabIncrementalReview:
         assert gitlab_provider.incremental.is_incremental is True
         assert gitlab_provider.unreviewed_files_map == {}
         mock_project.repository_compare.assert_not_called()
+
+    def test_latest_commit_url_reuses_incremental_commits_fetch(self, gitlab_provider, mock_project):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            SimpleNamespace(
+                id="new", committed_date="2024-05-01T11:00:00Z", web_url="https://gitlab.com/test/repo/-/commit/new"
+            ),
+            SimpleNamespace(
+                id="old", committed_date="2024-05-01T09:00:00Z", web_url="https://gitlab.com/test/repo/-/commit/old"
+            ),
+        ]
+        mock_project.repository_compare.return_value = {"diffs": []}
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+
+        assert gitlab_provider.get_latest_commit_url() == "https://gitlab.com/test/repo/-/commit/new"
+        gitlab_provider.mr.commits.assert_called_once_with(per_page=100)
 
     def test_get_incremental_commits_no_anchor_commit_falls_back(self, gitlab_provider, mock_project):
         # All commits are after the previous review -> no last_seen_commit -> can't anchor.

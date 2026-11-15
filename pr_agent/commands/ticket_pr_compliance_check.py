@@ -90,8 +90,9 @@ def _github_ticket_pattern(base_url_html):
         r"|((?<![\w./-])([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/([A-Za-z0-9._-]+)#(\d+)\b)"
         r"|(#\d+)"
     )
-# Option A: issue number at start of branch or after /, followed by - or end (e.g. feature/1-test-issue, 123-fix)
-BRANCH_ISSUE_PATTERN = re.compile(r"(?:^|/)(\d{1,6})(?=-|$)")
+# Option A: issue number at start of branch or after /, followed by - or end (e.g. feature/1-test-issue, 123-fix).
+# A year followed by a month (release/2026-11-15, deploy/2025-03) is a date, not an issue number.
+BRANCH_ISSUE_PATTERN = re.compile(r"(?:^|/)(?!(?:19|20)\d\d-(?:0[1-9]|1[0-2])(?:[-/._]|$))(\d{1,6})(?=-|$)")
 # A bare "#12345" is as likely to be an error code as an issue, so a shorthand reference is
 # only followed up to this many digits. The bound matches BRANCH_ISSUE_PATTERN above: the same
 # number written in a branch name and in the description should resolve the same way.
@@ -1064,7 +1065,8 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
 def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html="https://github.com"):
     """
     Extract GitHub issue URLs from branch name. Numbers are matched at start of branch or after /,
-    followed by - or end (e.g. feature/1-test-issue -> #1). Respects extract_issue_from_branch
+    followed by - or end (e.g. feature/1-test-issue -> #1); a date prefix such as release/2026-11-15
+    is skipped. Respects extract_issue_from_branch
     and optional branch_issue_regex (may be under [config] in TOML).
     """
     if not branch_name or not repo_path:
@@ -1185,11 +1187,32 @@ def _provider_supports(git_provider, capability: str) -> bool:
     return bool(check()) if callable(check) else False
 
 
+def _issue_url_sort_key(url):
+    """Order issue URLs by repository, then by issue number, so #9 comes before #10."""
+    prefix, _, number = url.rstrip("/").rpartition("/")
+    return prefix, int(number) if number.isascii() and number.isdigit() else float("inf"), url
+
+
 async def _run_ticket_io(function, *args):
     """Offload ticket reads only when settings are isolated from shared state."""
     if get_settings() is get_settings(use_context=False):
         return function(*args)
     return await asyncio.to_thread(function, *args)
+
+
+def _gitlab_issue_covers_mr_audience(project, mr_project, is_own_project):
+    """Require known issue access that covers everyone who can read the MR."""
+    visibility = getattr(project, "visibility", None)
+    mr_visibility = getattr(mr_project, "visibility", None)
+    access = getattr(project, "issues_access_level", None)
+    if visibility not in ("public", "internal", "private") or mr_visibility not in ("public", "internal", "private"):
+        return False
+    if is_own_project:
+        members_only = visibility == "private" or getattr(project, "merge_requests_access_level", None) == "private"
+        return access == "enabled" or (access == "private" and members_only)
+    # Membership in separate projects is not an audience guarantee, and internal projects
+    # exclude external users who may be members of the MR project.
+    return access == "enabled" and visibility == "public"
 
 
 async def extract_tickets(git_provider):
@@ -1292,7 +1315,12 @@ async def extract_tickets(git_provider):
                             url for url in raw_sub_issues
                             if isinstance(url, str) and url.strip()
                         ]
-                        for sub_issue_url in sorted(valid_sub_issues)[:MAX_SUB_ISSUES_PER_TICKET]:
+                        sub_issue_urls = sorted(valid_sub_issues, key=_issue_url_sort_key)
+                        if len(sub_issue_urls) > MAX_SUB_ISSUES_PER_TICKET:
+                            get_logger().info(
+                                f"Using the first {MAX_SUB_ISSUES_PER_TICKET} of {len(sub_issue_urls)} "
+                                f"sub-issues of {ticket}")
+                        for sub_issue_url in sub_issue_urls[:MAX_SUB_ISSUES_PER_TICKET]:
                             try:
                                 sub_repo, sub_issue_number = git_provider._parse_issue_url(sub_issue_url)
                                 sub_repo_obj = await _get_repo_obj_for_ticket(
@@ -1372,21 +1400,34 @@ async def extract_tickets(git_provider):
                     references.append((project_path, issue_iid))
             tickets_content = []
             own_project = str(getattr(git_provider, "id_project", "") or "")
+            project_cache = {}
+
+            async def get_ticket_project(project_path):
+                key = project_path.casefold()
+                if key not in project_cache:
+                    # Cache failures too, but only for this extraction.
+                    project_cache[key] = None
+                    if key == own_project.casefold():
+                        project_cache[key] = await _run_ticket_io(git_provider.gl.projects.get, project_path)
+                    else:
+                        project_cache[key] = await _run_ticket_io(git_provider.get_sibling_repo, project_path)
+                return project_cache[key]
+
             for project_path, issue_iid in references[:MAX_GITLAB_TICKET_LOOKUPS]:
                 try:
                     is_own_project = project_path.casefold() == own_project.casefold()
-                    if is_own_project:
-                        # Only the issue manager is needed; avoid fetching unused project metadata.
-                        project = git_provider.gl.projects.get(project_path, lazy=True)
-                    else:
-                        project = await _run_ticket_io(git_provider.get_sibling_repo, project_path)
-                        if project is None:
-                            continue
-                    issue = await _run_ticket_io(project.issues.get, issue_iid)
-                    if not is_own_project and getattr(issue, "confidential", False):
+                    project = await get_ticket_project(project_path)
+                    if project is None:
+                        continue
+                    mr_project = project if is_own_project else await get_ticket_project(own_project)
+                    if not _gitlab_issue_covers_mr_audience(project, mr_project, is_own_project):
                         get_logger().warning(
-                            f"Ignoring confidential cross-project GitLab issue: {project_path}#{issue_iid}"
+                            f"Ignoring GitLab issues with insufficient or unknown visibility: {project_path}"
                         )
+                        continue
+                    issue = await _run_ticket_io(project.issues.get, issue_iid)
+                    if getattr(issue, "confidential", False):
+                        get_logger().warning(f"Ignoring confidential GitLab issue: {project_path}#{issue_iid}")
                         continue
 
                     issue_body = issue.description or ""
@@ -1439,6 +1480,8 @@ async def extract_tickets(git_provider):
                     if len(requirements_str) > MAX_TICKET_CHARACTERS:
                         requirements_str = requirements_str[:MAX_TICKET_CHARACTERS] + "..."
 
+                    labels_str = ", ".join(ticket.get("tags", []))
+
                     tickets_content.append(
                         {
                             "ticket_id": ticket.get("id"),
@@ -1446,7 +1489,7 @@ async def extract_tickets(git_provider):
                             "title": ticket.get("title"),
                             "body": ticket_body_str,
                             "requirements": requirements_str,
-                            "labels": ", ".join(ticket.get("labels", [])),
+                            "labels": labels_str,
                         }
                     )
                 except Exception as e:

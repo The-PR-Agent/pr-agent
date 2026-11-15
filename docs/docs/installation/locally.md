@@ -193,6 +193,29 @@ This does not change how interactive PR comments are parsed.
 
    *Note: the `similar_issue` command needs extra dependencies that a bare `uv sync` does not install. Install them with `uv sync --group similar-issue` before running it.*
 
+### Save a hosted PR review without publishing
+
+To inspect a real GitHub PR or GitLab MR locally, save the review as Markdown
+without posting comments, labels, or approvals to the hosting platform:
+
+```bash
+uv run pr-agent --pr_url https://github.com/owner/repo/pull/123 --output review.md review
+```
+
+The `--output` option must appear before the command. It works with `review`,
+`review_pr`, `improve`, and `improve_code` (`improve` runs `review`). The command
+runs a single full-PR review even when per-commit review is configured. It
+still requires the normal Git provider and model credentials and makes the
+usual read-only API and model requests. It creates the Markdown file only after
+a completed review with valid repository settings; missing results, invalid
+settings, or file-write failures return a nonzero exit without replacing an
+existing Markdown file. Plain-diff commands retain their existing `--output`
+behavior; other hosted commands do not accept this option.
+
+When running from a checkout that contains untrusted changes (such as a CI job),
+choose an output directory that PR contributors cannot modify. Existing output
+symlinks are followed, so the destination path must be trusted.
+
 [Optional] Add the pr_agent folder to your PYTHONPATH
 
 ```bash

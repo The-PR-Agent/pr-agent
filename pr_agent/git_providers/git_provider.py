@@ -429,6 +429,10 @@ class GitProvider(ABC):
         self._latest_commit_url = None
         if getattr(self, "incremental", None) is not None:
             self.incremental = IncrementalPR(False)
+        if hasattr(self, "_incremental_unfiltered_files"):
+            self._incremental_unfiltered_files = None
+        if hasattr(self, "unreviewed_rename_sources"):
+            self.unreviewed_rename_sources = []
         if context.exists():
             context.pop("diff_files", None)
 

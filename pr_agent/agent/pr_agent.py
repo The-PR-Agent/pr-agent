@@ -7,7 +7,7 @@ from functools import partial
 
 import dynaconf
 from opentelemetry.trace import StatusCode
-from starlette_context import context, request_cycle_context
+from starlette_context import context
 
 from pr_agent.agent.command_registry import COMMAND_SPECS
 from pr_agent.agent.request_policy import RequestOutcome, enforce_request_policy
@@ -27,7 +27,7 @@ from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.commands.pr_questions import PRQuestions
 from pr_agent.commands.pr_reviewer import PRReviewer
-from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.config_loader import get_settings, global_settings, safe_request_cycle_context
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import (
     IncompleteBitbucketPullRequestFilesError as _IncompleteBitbucketPullRequestFilesError,
@@ -345,28 +345,31 @@ class PRAgent:
     async def _handle_request(
         self, pr_url, request, notify=None, propagate_command_errors: bool | None = None
     ) -> bool | RequestOutcome:
+        if propagate_command_errors is not None:
+            try:
+                context["settings"]
+            except Exception:
+                # Create request-local settings before awaiting commands outside middleware.
+                with safe_request_cycle_context({"settings": copy.deepcopy(global_settings)}):
+                    return await self._handle_request(
+                        pr_url, request, notify, propagate_command_errors=propagate_command_errors
+                    )
         # Exceptions raised inside are caught below, but a BaseException (e.g. the
         # CancelledError a webhook timeout raises) still escapes the span, and the SDK
         # would auto-record its message and stacktrace — request content, so opt-in.
-        record_details = bool(get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False))
+        record_details = _as_bool_setting(
+            get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False), setting_name="OTEL.INCLUDE_ERROR_DETAILS"
+        )
         with get_tracer().start_as_current_span(
             "pr_agent.command",
             record_exception=record_details,
             set_status_on_exception=record_details,
         ) as span:
-            if get_settings().get("OTEL.INCLUDE_PR_URL", False):
+            if _as_bool_setting(get_settings().get("OTEL.INCLUDE_PR_URL", False), setting_name="OTEL.INCLUDE_PR_URL"):
                 span.set_attribute("pr_agent.pr_url", pr_url)
             try:
                 if propagate_command_errors is None:
                     return await self._run_command(pr_url, request, notify, span)
-                try:
-                    context["settings"]
-                except Exception:
-                    # Create request-local settings before awaiting commands outside middleware.
-                    with request_cycle_context({"settings": copy.deepcopy(global_settings)}):
-                        return await self._run_command(
-                            pr_url, request, notify, span, propagate_command_errors=propagate_command_errors
-                        )
                 return await self._run_command(
                     pr_url, request, notify, span, propagate_command_errors=propagate_command_errors
                 )
@@ -441,7 +444,9 @@ class PRAgent:
                 get_logger().warning(f"Unknown command: {action}")
                 span.set_status(StatusCode.ERROR)
                 span.set_attribute("error.type", "unknown_command")
-                if get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False):
+                if _as_bool_setting(
+                    get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False), setting_name="OTEL.INCLUDE_ERROR_DETAILS"
+                ):
                     span.set_attribute("error.message", f"Unknown command: {action}")
                 if language_overridden:
                     settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)

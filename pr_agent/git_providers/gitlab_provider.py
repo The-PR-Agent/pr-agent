@@ -23,11 +23,20 @@ from gitlab import (
     GitlabGetError,
     GitlabUpdateError,
 )
-from requests.exceptions import RequestException
-from urllib3.exceptions import HTTPError
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import (
+    ConnectTimeout,
+    InvalidHeader,
+    InvalidSchema,
+    InvalidURL,
+    MissingSchema,
+    RequestException,
+)
+from urllib3.exceptions import ConnectTimeoutError, HTTPError, MaxRetryError, NewConnectionError
+from urllib3.exceptions import ProxyError as Urllib3ProxyError
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
-from pr_agent.algo.setting_utils import _as_bool_setting
+from pr_agent.algo.setting_utils import _as_bool_setting, _as_ssl_verify_setting
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.diff_parsing import to_hunk_only_patch
 
@@ -631,7 +640,7 @@ class GitLabProvider(GitProvider):
         if not gitlab_url:
             raise ValueError("GitLab URL is not set in the config file")
         self.gitlab_url = gitlab_url
-        ssl_verify = get_settings().get("GITLAB.SSL_VERIFY", True)
+        ssl_verify = _as_ssl_verify_setting(get_settings().get("GITLAB.SSL_VERIFY", True))
         gitlab_access_token = get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
         if not gitlab_access_token:
             raise ValueError("GitLab personal access token is not set in the config file")
@@ -1203,6 +1212,7 @@ class GitLabProvider(GitProvider):
         # MR changes cache re-polls together with the diff cache it feeds.
         self._merge_request_changes_cache = None
         self._diff_mr_refs = None
+        self._incremental_unfiltered_files = None
 
     def get_incremental_commits(self, incremental: IncrementalPR | None = None, kind: str = "review"):
         """Populate state needed for an incremental run.
@@ -1220,6 +1230,7 @@ class GitLabProvider(GitProvider):
         # next get_diff_files() call reflects the scope configured here.
         self.diff_files = None
         self._diff_mr_refs = None
+        self._incremental_unfiltered_files = None
         self._merge_request_changes_cache = None
         self.mr_commits = None
         self._commit_diff_refs = None
@@ -1247,6 +1258,8 @@ class GitLabProvider(GitProvider):
         if not getattr(self, 'mr_commits', None):
             # gitlab returns commits newest-first; reverse to match PyGithub's oldest-first ordering
             self.mr_commits = list(self.mr.commits(per_page=100))[::-1]
+            if self.mr_commits:
+                self._cache_latest_commit_url(self.mr_commits[-1])
 
         self.incremental.commits_range = self.get_commit_range()
         if not self.incremental.commits_range:
@@ -1390,8 +1403,11 @@ class GitLabProvider(GitProvider):
         return self.mr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
 
     def get_pr_commits(self) -> list[PRCommit]:
+        raw_commits = list(self.mr.commits(per_page=100))[::-1]
+        if raw_commits:
+            self._cache_latest_commit_url(raw_commits[-1])
         commits = []
-        for commit in list(self.mr.commits(per_page=100))[::-1]:
+        for commit in raw_commits:
             parent_ids = getattr(commit, "parent_ids", None)
             commits.append(PRCommit(sha=commit.id, message=commit.message or "",
                                     url=getattr(commit, "web_url", "") or "",
@@ -1401,14 +1417,24 @@ class GitLabProvider(GitProvider):
     def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> str | None:
         self.incremental = incremental
         self.diff_files = None
+        self._incremental_unfiltered_files = None
         self.unreviewed_files_map = {}
         self._commit_diff_refs = None
         loaded = vars(self).setdefault("_loaded_commits", {})
         if commit.sha not in loaded:
-            gl_commit = self.gl.projects.get(self.id_project, lazy=True).commits.get(commit.sha)
-            parent_ids = list(getattr(gl_commit, "parent_ids", None) or [])
-            loaded[commit.sha] = parent_ids, (list(gl_commit.diff(get_all=True, per_page=100))
-                                              if len(parent_ids) == 1 else [])
+            project = self.gl.projects.get(self.id_project, lazy=True)
+            if commit.parents is not None:
+                parent_ids = list(commit.parents)
+                diffs = (
+                    list(project.commits.get(commit.sha, lazy=True).diff(get_all=True, per_page=100))
+                    if len(parent_ids) == 1
+                    else []
+                )
+            else:
+                gl_commit = project.commits.get(commit.sha)
+                parent_ids = list(getattr(gl_commit, "parent_ids", None) or [])
+                diffs = list(gl_commit.diff(get_all=True, per_page=100)) if len(parent_ids) == 1 else []
+            loaded[commit.sha] = parent_ids, diffs
         parent_ids, diffs = loaded[commit.sha]
         if len(parent_ids) != 1:
             get_logger().info(f"Skipping commit {commit.sha} with {len(parent_ids)} parents in per commit review")
@@ -1804,6 +1830,11 @@ class GitLabProvider(GitProvider):
             head_sha_for_content = diff_refs.get('head_sha')
         raw_changes = self._expand_submodule_changes(raw_changes, diff_refs)
         diffs_original = raw_changes
+        self._incremental_unfiltered_files = (
+            [c for c in diffs_original if c.get('new_path') or c.get('old_path')]
+            if incremental_active
+            else None
+        )
         diffs = filter_ignored(diffs_original, 'gitlab')
         if diffs != diffs_original:
             try:
@@ -1958,6 +1989,11 @@ class GitLabProvider(GitProvider):
             get_logger().exception(f"Could not update merge request {self.id_mr} description: {e}")
             raise
 
+    def _cache_latest_commit_url(self, commit) -> None:
+        url = commit.get("web_url") if isinstance(commit, dict) else getattr(commit, "web_url", None)
+        if isinstance(url, str) and url:
+            self._latest_commit_url = url
+
     def get_latest_commit_url(self):
         if (cached_url := getattr(self, "_latest_commit_url", None)) is not None:
             return cached_url
@@ -1984,6 +2020,65 @@ class GitLabProvider(GitProvider):
         except (GitlabError, RequestException, AttributeError) as e:
             get_logger().exception(f"Could not get head SHA: {e}")
             return ""
+
+    def _own_approval_present(self) -> bool | None:
+        """Return whether this account approved the MR, or None when that cannot be read."""
+        try:
+            approvals = self.mr.approvals.get()
+            approved_by = getattr(approvals, "approved_by", None)
+            own_user_id = self._get_own_user_id()
+            if not isinstance(approved_by, list) or own_user_id is None:
+                return None
+            for entry in approved_by:
+                user = entry.get("user") if isinstance(entry, dict) else getattr(entry, "user", None)
+                user_id = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
+                if user_id is not None and str(user_id) == str(own_user_id):
+                    return True
+            return False
+        except (GitlabError, RequestException, AttributeError):
+            return None
+
+    def auto_approve(self, body: str = "") -> bool:
+        """Approve the merge request at the exact revision this run reviewed.
+
+        GitLab moves an approval with the branch, so pin the approval to the reviewed
+        head and target, and verify after approving that neither moved.
+        """
+        reviewed_head_sha = getattr(self, "_diff_head_sha", None)
+        if not isinstance(reviewed_head_sha, str) or not reviewed_head_sha:
+            get_logger().info("Skipping auto-approval: no reviewed head SHA to pin")
+            return False
+        approved = False
+        try:
+            if not self._cleanup_revision_is_current(reviewed_head_sha):
+                get_logger().info("Skipping auto-approval: the merge request revision changed since the review")
+                return False
+            self.mr.approve(sha=reviewed_head_sha)
+            approved = True
+            if not self._cleanup_revision_is_current(reviewed_head_sha):
+                self.mr.unapprove()
+                get_logger().info("Withdrew auto-approval: the merge request revision changed during approval")
+                return False
+            return True
+        except (GitlabError, RequestException, AttributeError) as e:
+            get_logger().exception(f"Failed to auto-approve merge request: {e}")
+            if approved:
+                try:
+                    self.mr.unapprove()
+                except (GitlabError, RequestException, AttributeError) as unapprove_error:
+                    get_logger().exception(f"Failed to withdraw auto-approval: {unapprove_error}")
+            return False
+
+    def revoke_auto_approval(self, reason: str) -> bool:
+        """Withdraw PR-Agent's approval from the merge request."""
+        try:
+            if self._own_approval_present() is False:
+                return True
+            self.mr.unapprove()
+            return True
+        except (GitlabError, RequestException, AttributeError) as e:
+            get_logger().exception(f"Failed to revoke auto-approval: {e}")
+            return False
 
     def publish_merge_recommendation_status(self, recommendation: str) -> bool:
         """Publish the computed verdict as a GitLab commit status on the reviewed head SHA."""
@@ -2457,7 +2552,7 @@ class GitLabProvider(GitProvider):
         return head_sha if isinstance(head_sha, str) and head_sha else None
 
     def resolve_outdated_inline_threads(self):
-        if (not get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False)
+        if (not _as_bool_setting(get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False))
                 or getattr(self, "_commit_diff_refs", None) is not None):
             return
         own_user_id = self._get_own_user_id()
@@ -2553,7 +2648,7 @@ class GitLabProvider(GitProvider):
         return removed
 
     def reconcile_code_suggestion_threads(self) -> int:
-        if not get_settings().get("GITLAB.AUTO_RESOLVE_FIXED_INLINE_THREADS", False):
+        if not _as_bool_setting(get_settings().get("GITLAB.AUTO_RESOLVE_FIXED_INLINE_THREADS", False)):
             return 0
         own_user_id = self._get_own_user_id()
         current_head_sha = self._cleanup_command_head()
@@ -2747,6 +2842,34 @@ class GitLabProvider(GitProvider):
         if body and body not in recent:
             recent.append(body)
 
+    def _record_if_unconfirmed_suggestion_write(self, error, body, store, body_fp, code_fp, as_draft) -> bool:
+        if isinstance(error, (ConnectTimeout, InvalidHeader, InvalidSchema, InvalidURL, MissingSchema)):
+            return False  # The request never reached GitLab.
+        if isinstance(error, RequestsConnectionError):
+            reason = error.args[0] if error.args else None
+            if isinstance(reason, MaxRetryError):
+                reason = reason.reason
+            if isinstance(reason, Urllib3ProxyError):
+                reason = reason.original_error
+            if isinstance(reason, (ConnectTimeoutError, NewConnectionError)):
+                return False
+        status = getattr(error, "response_code", None)
+        if status is None:
+            status = getattr(getattr(error, "response", None), "status_code", None)
+        if isinstance(status, int) and 400 <= status < 500 and status != 408:
+            return False
+        get_logger().warning(
+            f"GitLab did not confirm suggestion creation for MR {self.id_mr}; "
+            f"avoiding a possibly duplicate write: {error}")
+        if not as_draft:
+            self._remember_published_inline_comment_body(body)
+        if store is not None:
+            store.add(body_fp)
+            store.add(code_fp)
+        if as_draft:
+            self._code_suggestion_draft_queued = True
+        return True
+
     def send_inline_comment(self, body: str, edit_type: str, found: bool, relevant_file: str,
                             relevant_line_in_file: str,
                             source_line_no: int, target_file: str, target_line_no: int,
@@ -2824,7 +2947,10 @@ class GitLabProvider(GitProvider):
                 store.add(body_fp)
                 store.add(code_fp)
             return True
-        except (GitlabError, RequestException):
+        except (GitlabError, RequestException) as error:
+            if self._record_if_unconfirmed_suggestion_write(error, body, store, body_fp, code_fp, as_draft):
+                return True
+            fallback_create_attempted = False
             try:
                 # fallback - create a general note on the file in the MR
                 if 'suggestion_orig_location' in original_suggestion:
@@ -2845,11 +2971,13 @@ class GitLabProvider(GitProvider):
                     new_code_snippet = original_suggestion['improved_code']
                     content = original_suggestion['suggestion_content']
                     label = original_suggestion['label']
-                    score = original_suggestion.get('score', 7)
+                    score = original_suggestion.get('score')
 
                 score_why = str(original_suggestion.get('score_why') or "").strip()
                 link = self.get_line_link(relevant_file, line_start, line_end)
-                body_fallback =f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
+                # /review findings carry no importance score; do not invent one
+                tag = f"[{label}, importance: {score}]" if score is not None else f"[{label}]"
+                body_fallback =f"**Suggestion:** {content} {tag}\n\n"
                 if score_why:
                     body_fallback += f"Why: {score_why}\n\n"
                 body_fallback += (f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):"
@@ -2879,6 +3007,7 @@ class GitLabProvider(GitProvider):
                     'position_type': 'text',
                     'file_path': f'{target_file.filename}',
                 }
+                fallback_create_attempted = True
                 if as_draft:
                     self.mr.draft_notes.create({'note': body_fallback, 'position': fallback_position})
                     self._code_suggestion_draft_queued = True
@@ -2891,7 +3020,11 @@ class GitLabProvider(GitProvider):
                     store.add(code_fp)
                 return True
 
-            except (GitlabError, RequestException, KeyError, TypeError):
+            except (GitlabError, RequestException, KeyError, TypeError) as error:
+                if (fallback_create_attempted and isinstance(error, (GitlabError, RequestException))
+                        and self._record_if_unconfirmed_suggestion_write(
+                            error, body_fallback, store, body_fp, code_fp, as_draft)):
+                    return True
                 get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
                 return False
 
@@ -3660,8 +3793,11 @@ class GitLabProvider(GitProvider):
         """
         max_tokens = get_settings().get("CONFIG.MAX_COMMITS_TOKENS", None)
         try:
-            commit_messages_list = [commit['message'] for commit in self.mr.commits(per_page=100)._list]
+            commits = list(self.mr.commits(per_page=100)._list)
+            commit_messages_list = [commit['message'] for commit in commits]
             commit_messages_str = "\n".join([f"{i + 1}. {message}" for i, message in enumerate(commit_messages_list)])
+            if commits:
+                self._cache_latest_commit_url(commits[0])
         except (GitlabError, RequestException, KeyError, TypeError, AttributeError):
             commit_messages_str = ""
         if max_tokens:

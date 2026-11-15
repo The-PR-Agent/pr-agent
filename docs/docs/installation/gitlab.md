@@ -182,7 +182,7 @@ For all supported filters, see [Ignoring automatic commands in PRs](../usage-gui
    PORT=3000  # Optional: override the webhook server port
    ```
 
-8. Create a webhook in your GitLab project. Set the URL to `http[s]://<PR_AGENT_HOSTNAME>/webhook`, the secret token to the generated secret from step 3, and enable the triggers `push`, `comments` and `merge request events`.
+8. Create a webhook in your GitLab project. Set the URL to `http[s]://<PR_AGENT_HOSTNAME>/webhook`, the secret token to the generated secret from step 3, and enable the `comments` and `merge request events` triggers. The separate `push` trigger is not required for merge request push commands.
 
 9. Test your installation by opening a merge request or commenting on a merge request using one of PR Agent's commands.
 

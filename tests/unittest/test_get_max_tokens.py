@@ -655,6 +655,8 @@ class TestGetMaxTokens:
         "vertex_ai/gemini-4-argon",
         "gemini/gemini-4-carbon",
         "vertex_ai/gemini-4-carbon",
+        "gemini/gemini-4-hydrogen",
+        "vertex_ai/gemini-4-hydrogen",
     ])
     def test_gemini_4_x_models_max_tokens(self, monkeypatch, model):
         fake_settings = type("", (), {
@@ -908,6 +910,24 @@ class TestGetMaxTokens:
 
         assert get_max_tokens(model) == 1000000
 
+    @pytest.mark.parametrize("model", [
+        "claude-fable-5-2",
+        "anthropic/claude-fable-5-2",
+        "vertex_ai/claude-fable-5-2",
+        "bedrock/anthropic.claude-fable-5-2",
+        "bedrock/global.anthropic.claude-fable-5-2",
+        "bedrock/us.anthropic.claude-fable-5-2",
+        "azure_ai/claude-fable-5-2",
+        "bedrock/claude_platform/claude-fable-5-2",
+    ])
+    def test_claude_fable_5_2_uses_official_context_window(self, monkeypatch, model):
+        settings = type("Settings", (), {
+            "config": type("Config", (), {"custom_model_max_tokens": 0, "max_model_tokens": 0})(),
+        })()
+        monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
+
+        assert get_max_tokens(model) == 1000000
+
     @pytest.mark.parametrize(
         "model",
         [
@@ -991,6 +1011,18 @@ class TestGetMaxTokens:
         assert get_max_tokens(model) == 1000000
 
 
+
+    def test_opencode_go_model_max_tokens_from_litellm(self, monkeypatch):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0
+            })()
+        })()
+
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens("opencode_go/deepseek-v4.1-flash") == 1000000
 
     @pytest.mark.parametrize(
         "model",
@@ -1410,6 +1442,28 @@ class TestGetMaxTokens:
         assert get_max_tokens(model) == 32000
         assert get_max_tokens(model, ignore_max_model_tokens=True) == expected
 
+    def test_shipped_default_max_model_tokens_clamps_large_windows(self, monkeypatch):
+        """Issue #4948: the shipped config.max_model_tokens default is 256000, so a
+        model with a far larger window is clamped to it instead of the old 32000."""
+        import tomllib
+        from pathlib import Path
+
+        toml_path = (
+            Path(token_budget.__file__).resolve().parents[2]
+            / "pr_agent"
+            / "settings"
+            / "configuration.toml"
+        )
+        with open(toml_path, "rb") as f:
+            shipped_default = tomllib.load(f)["config"]["max_model_tokens"]
+        assert shipped_default == 256000
+
+        fake_settings = SimpleNamespace(
+            config=SimpleNamespace(custom_model_max_tokens=0, max_model_tokens=shipped_default)
+        )
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+        assert get_max_tokens("openrouter/auto") == 256000
+
 
 class TestCorrectedClaudeWindows:
 
@@ -1462,6 +1516,8 @@ class TestNoLiteLLMDuplicates:
         "vertex_ai/gemini-4-argon",
         "gemini/gemini-4-carbon",
         "vertex_ai/gemini-4-carbon",
+        "gemini/gemini-4-hydrogen",
+        "vertex_ai/gemini-4-hydrogen",
         "openrouter/x-ai/grok-4.5",
         "openrouter/x-ai/grok-4.6",
         "openrouter/deepseek/deepseek-chat",

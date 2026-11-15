@@ -44,7 +44,7 @@ class CommandSpec:
     check_run: str | None = None
     takes_comment_id: bool = False
     plain_diff_markdown: bool = False
-    json_output: str | None = None  # "review" | "describe" | "labels"
+    json_output: str | None = None  # "review" | "describe" | "labels" | "ask"
 
 
 COMMAND_SPECS: dict[str, CommandSpec] = {
@@ -73,8 +73,8 @@ COMMAND_SPECS: dict[str, CommandSpec] = {
         PRReviewer, check_run="review", takes_comment_id=True,
         plain_diff_markdown=True, json_output="review",
     ),
-    "ask": CommandSpec(PRQuestions, takes_comment_id=True, plain_diff_markdown=True),
-    "ask_question": CommandSpec(PRQuestions, takes_comment_id=True, plain_diff_markdown=True),
+    "ask": CommandSpec(PRQuestions, takes_comment_id=True, plain_diff_markdown=True, json_output="ask"),
+    "ask_question": CommandSpec(PRQuestions, takes_comment_id=True, plain_diff_markdown=True, json_output="ask"),
     "ask_line": CommandSpec(PR_LineQuestions),
     "update_changelog": CommandSpec(PRUpdateChangelog),
     "config": CommandSpec(PRConfig, plain_diff_markdown=True),

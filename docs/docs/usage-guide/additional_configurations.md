@@ -158,7 +158,49 @@ Generated language guidance applies only while the command runs. Earlier generat
 
 Some text in PR-Agent comments is written by PR-Agent, not by the model: labels, table headers and status lines. PR-Agent translates this text when it ships a catalog for the language of `response_language`. The tag is matched without regard to case or to `-` versus `_`, and region subtags are dropped until a catalog matches: `es-AR` uses the `es` catalog. When no catalog matches, or a catalog has no translation for a text, that text stays in U.S. English.
 
-Catalogs ship for English (`en`) and Spanish (`es`). In the `/review` comment, the intro line, the effort, tests, security and key-issue labels, the resolved-findings section, the persistent-review update lines and the "Preparing review..." message are translated. The agent run details section is translated for every command. Everything else stays in U.S. English: the review heading (set it with `pr_reviewer.review_heading`), the other `/review` fields (ticket compliance, risk level, failure modes and the other opt-in fields), the review coverage footer, chunk progress, the comments of the other commands and the labels added to the PR. Numbers keep the U.S. format.
+Catalogs ship for the following languages and regional variants:
+
+| Language | Catalog code |
+| --- | --- |
+| Arabic | `ar` |
+| Bengali | `bn` |
+| Chinese, Simplified (China) | `zh-cn` |
+| Chinese, Traditional (Taiwan) | `zh-tw` |
+| Czech | `cs` |
+| Danish | `da` |
+| Dutch | `nl` |
+| English | `en` |
+| Finnish | `fi` |
+| French | `fr` |
+| German | `de` |
+| Hebrew | `he` |
+| Hindi | `hi` |
+| Hungarian | `hu` |
+| Indonesian | `id` |
+| Italian | `it` |
+| Japanese | `ja` |
+| Korean | `ko` |
+| Persian | `fa` |
+| Polish | `pl` |
+| Portuguese (Brazil) | `pt-br` |
+| Portuguese (Portugal) | `pt-pt` |
+| Romanian | `ro` |
+| Russian | `ru` |
+| Spanish | `es` |
+| Swedish | `sv` |
+| Thai | `th` |
+| Turkish | `tr` |
+| Ukrainian | `uk` |
+| Vietnamese | `vi` |
+
+The 28 new catalogs were drafted and cross-checked with multiple frontier LLMs and an automated code-review
+harness. The Chinese catalogs (`zh-cn` and `zh-tw`) also received human review by the contributor.
+The other 26 catalogs were machine-drafted and AI-reviewed, but have not undergone native-speaker human review.
+Corrections from native speakers are welcome.
+
+Use `zh-CN` or `zh-TW` for Chinese, and `pt-BR` or `pt-PT` for Portuguese. There is no shared `zh` or `pt` catalog, and script tags such as `zh-Hant` are not mapped to a regional catalog.
+
+In the `/review` comment, the intro line, the effort, tests, security and key-issue labels, the resolved-findings section, the finding lifecycle summary, the suggested-fix label, the persistent-review update lines and the "Preparing review..." message are translated. `/improve` and `/improve_code` now run `/review`; their one-line notice is also translated. The agent run details section is translated for every command. Other fixed text stays in U.S. English: the review heading (set it with `pr_reviewer.review_heading`), the other `/review` fields (ticket compliance, risk level, failure modes and the other opt-in fields), the review coverage footer, chunk progress, other commands' comments outside their run details, and the labels added to the PR. Numbers keep the U.S. format.
 
 To add a language, copy `pr_agent/settings/i18n/en.toml` to a file named after the language code, such as `pt.toml` or `pt-br.toml`, and translate its values. Keep each `{placeholder}` unchanged.
 
@@ -457,8 +499,16 @@ prometheus_multiproc_dir = "/tmp/pr-agent-prometheus" # shared, writable by ever
 
 1. The exporter is metrics-only: command spans are not exported in this mode.
 2. `/metrics` is mounted only when this exporter is selected, so nothing is exposed by default. It does not depend on an OTLP collector or endpoint.
-3. gunicorn registers and deregisters workers' state files automatically (`when_ready`/`child_exit`); a worker that dies mid-scrape leaves only a stale file, which is ignored once it is marked dead.
-4. Metric families are created from the first data point's label set. Later attributes that do not fit the family are dropped, and missing ones are back-filled with an empty string, so a scrape never breaks on drifting label cardinality.
+3. gunicorn prepares the multiprocess state directory at `when_ready` and calls `mark_process_dead` from `child_exit`. The client removes live-gauge files, but retains counter and default-gauge files; retained values remain visible until the directory is cleared or replaced.
+4. With OpenTelemetry SDK 1.45.2, each metric stream tracks up to 2,000 distinct attribute sets by default; measurements for additional sets go into an overflow point. PR-Agent's synchronous DELTA counters start tracking attribute sets again after each collection, while exported Prometheus counters continue accumulating. The built-in counters use bounded labels; high-cardinality custom metrics using the same provider can reach this limit.
+
+   Normal series use the first normal data point's label set. Later attributes that do not fit are dropped, and missing ones are back-filled with an empty string. Overflow points use `otel_metric_overflow="true"`; normal attribute values still use their usual string representation, including `True` for a boolean. Normal labels whose Prometheus text output is `otel_metric_overflow` or starts with `pr_agent_escaped_` receive the prefix `pr_agent_escaped_`, including names containing `:` that the client renders as `_`. Update queries that use those labels.
+
+   Different attribute names that map to the same label can still collide. Prometheus treats an empty label value as equivalent to an absent label, including across workers. An attribute set identical to the SDK's `otel.metric.overflow = true` marker cannot be distinguished from overflow.
+
+   Gauge values, including overflow points, can remain visible after the SDK stops reporting them. This exporter does not currently expire stale gauge series.
+
+   Use the same exporter version across workers sharing a multiprocess state directory: older workers and their retained state files can still collide with overflow series when their final label values match, including through `:` label escaping. For example, an old normal boolean value `True` stays distinct from the new overflow value `true`, but an old string value `true` can collide. Stop all workers using the state directory before clearing it, or switch to a fresh directory as part of a coordinated worker restart; replacing the directory resets the stored counters. Even with a new directory, an old normal series and a new overflow series with the same metric name and labels share Prometheus history across the upgrade.
 5. The exporter ships with PR-Agent (it depends on `prometheus-client`); no extra package is required. Scrape it like any exporter:
 
    ```yaml
@@ -500,14 +550,12 @@ By default, PR-Agent includes the `AGENTS.md` file at the repository root:
 repo_context_files = ["AGENTS.md"]
 ```
 
-A nested list is a group of alternatives: only the first one that yields content is used. This is opt-in, for repositories that keep the same instructions under several conventions (or symlink them) and want them sent once:
+A nested list is a group of repository-relative path alternatives: only the first one that yields content is used. This is opt-in, for repositories that keep the same instructions under several conventions (or symlink them) and want them sent once:
 
 ```toml
 [config]
 repo_context_files = [["AGENTS.md", "CLAUDE.md", ".kiro/steering/*.md"]]
 ```
-
-A nested list is a group of alternatives: only the first one that yields content is used, so a repository that keeps the same instructions under several conventions (or symlinks one file to another) sends them once. Alternatives must be repository-relative paths.
 
 You can list any repository-relative paths. By default the files are read from the repository's **default branch**, so only trusted, already-merged content is used and a PR cannot influence the guidance used to review it. A file that is missing is silently skipped. For example, to include several files:
 

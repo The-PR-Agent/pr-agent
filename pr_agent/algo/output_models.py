@@ -23,6 +23,7 @@ class KeyIssuesComponentLink(BaseModel):
     end_line: int
     existing_code: str | None = None
     improved_code: str | None = None
+    confidence: int | None = Field(default=None, ge=0, le=10)
 
 
 class TodoSection(BaseModel):
@@ -135,6 +136,22 @@ def parse_artifact_findings(value: object, artifact_context: dict | None) -> lis
         if len(findings) == MAX_ARTIFACT_FINDINGS:
             break
     return findings
+
+
+def finding_confidence(issue: object) -> float | None:
+    """Return a finding's confidence as a number in 0-10, or None when it is absent or unusable.
+
+    Filtering and rendering share this, so a finding is shown with a confidence exactly when
+    the filter compared it.
+    """
+    value = issue.get("confidence") if isinstance(issue, dict) else None
+    if isinstance(value, bool):
+        return None
+    try:
+        confidence = float(str(value).strip())
+    except ValueError:
+        return None
+    return confidence if 0 <= confidence <= 10 else None  # also rejects NaN
 
 
 class Review(BaseModel):

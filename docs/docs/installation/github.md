@@ -14,6 +14,8 @@ You can use our pre-built GitHub Action Docker image to run PR-Agent as a GitHub
    ```yaml
    on:
      pull_request:
+       # PR-Agent skips synchronize by default. Include it in github_action_config.pr_actions
+       # for auto commands, or enable github_action_config.handle_push_trigger for push_commands (takes precedence).
        types: [opened, reopened, ready_for_review, synchronize]
      issue_comment:
    jobs:
@@ -642,7 +644,7 @@ For better performance with large repositories:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Optimize for large PRs
         config.large_patch_policy: "clip"
-        config.max_model_tokens: "32000"
+        config.max_model_tokens: "256000"
         config.patch_extra_lines_before: "3"
         config.patch_extra_lines_after: "1"
         github_action_config.auto_review: "true"

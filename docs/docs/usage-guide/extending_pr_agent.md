@@ -73,6 +73,6 @@ Then select it with `git_provider="forge"` under `[config]`. The class must exte
 2. Add a `[pr_<command>]` section in `pr_agent/settings/configuration.toml` for the option keys the command reads (`[pr_reviewer]` is the pattern to follow).
 3. Add a prompt TOML under `pr_agent/settings/` and register it in the `settings_files=[...]` list in `pr_agent/config_loader.py` — it is not loaded otherwise.
 4. Match the TOML section name to the settings key the command reads: `[pr_review_prompt]` in `pr_reviewer_prompts.toml` ↔ `get_settings().pr_review_prompt` in `pr_reviewer.py`.
-5. Register the command in `command2class` in `pr_agent/agent/pr_agent.py` under a command name, e.g. `"my_command": PRMyCommand`. Then add it to the hardcoded help surfaces, or it will not show up in `/help`: `pr_agent/commands/pr_help_message.py`, `pr_agent/servers/help.py`, and the command list in `pr_agent/cli.py`.
-6. Add a row to the command list in `docs/docs/commands/index.md`, a page `docs/docs/commands/<name>.md` (see [`review.md`](../commands/review.md)), and register the page under `Commands` in `docs/sidebars.js`.
+5. Register the command in `COMMAND_SPECS` in `pr_agent/agent/command_registry.py` under a command name, e.g. `"my_command": CommandSpec(PRMyCommand)`. Add it to the hardcoded help surfaces in `pr_agent/commands/pr_help_message.py` and `pr_agent/servers/help.py`, and to the CLI usage text in `pr_agent/cli.py`.
+6. Add a row to the command list in `docs/docs/commands/index.md`, a page `docs/docs/commands/<name>.md` (see [`review.md`](../commands/review.md)), and register the page under `Main commands` or `More commands` in `docs/sidebars.js`.
 7. Add tests under `tests/unittest/` and verify with `PYTHONPATH=. uv run pytest tests/unittest`.

@@ -219,6 +219,7 @@ class GithubProvider(GitProvider):
         if context.exists():
             context.pop("diff_files", None)
         self.incremental = incremental if incremental is not None else IncrementalPR(False)
+        self.unreviewed_rename_sources = []
         if getattr(self, "_pr_head_commit", None) is not None:
             self.last_commit_id, self._pr_head_commit = self._pr_head_commit, None
         if self.incremental.is_incremental:
@@ -448,9 +449,11 @@ class GithubProvider(GitProvider):
                 if is_merge_commit:
                     get_logger().info(f"Skipping merge commit {commit.commit.message}")
                     continue
-                self.unreviewed_files_map.update({
-                    file.filename: file for file in commit.get_files(commit_files_per_page=300)
-                })
+                for file in commit.get_files(commit_files_per_page=300):
+                    prev = getattr(file, "previous_filename", None)
+                    if prev and prev not in self.unreviewed_rename_sources:
+                        self.unreviewed_rename_sources.append(prev)
+                    self.unreviewed_files_map[file.filename] = file
         else:
             get_logger().info("No previous review found, will review the entire PR")
             self.incremental.is_incremental = False
@@ -501,15 +504,15 @@ class GithubProvider(GitProvider):
 
     def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> str | None:
         self.incremental = incremental
+        self.unreviewed_rename_sources = []
         self.diff_files = None
         if context.exists():
             context.pop("diff_files", None)
         self.unreviewed_files_map = {}
         loaded = vars(self).setdefault("_loaded_commits", {})
         if commit.sha not in loaded:
-            gh_commit = self._get_repo().get_commit(commit.sha)
-            loaded[commit.sha] = gh_commit, (list(gh_commit.get_files(commit_files_per_page=300))
-                                             if len(gh_commit.parents) == 1 else [])
+            gh_commit = self._get_repo().get_commit(commit.sha, commit_files_per_page=300)
+            loaded[commit.sha] = gh_commit, list(gh_commit.files) if len(gh_commit.parents) == 1 else []
         gh_commit, files = loaded[commit.sha]
         parents = gh_commit.parents
         if len(parents) != 1:
@@ -772,9 +775,6 @@ class GithubProvider(GitProvider):
                             f"Cannot reconstruct GitHub patch for {file.filename}: content read failed")
                     else:
                         patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
-                    if incremental_active:
-                        self.unreviewed_files_map[file.filename] = patch
-
 
                 if file.status == 'added':
                     edit_type = EDIT_TYPE.ADDED
@@ -905,6 +905,7 @@ class GithubProvider(GitProvider):
             try:
                 status, _, body = self._post_graphql(query, variables)
                 response = json.loads(body) if status == 200 else None
+                del body
             except (GithubException, RequestException, ValueError) as e:
                 # Not `{e}`: a GithubException carries the whole response, which can hold blob contents.
                 get_logger().info(
@@ -1072,10 +1073,14 @@ class GithubProvider(GitProvider):
         `<app-slug>[bot]` login.
         """
         try:
-            login = self.get_user_id()
+            login = "" if getattr(self, "_user_login_denied", False) else self.get_user_id()
         except (GithubException, RequestException) as e:
             get_logger().warning(f"Could not resolve the GitHub user login: {e}")
             login = ""
+            # Remember a refused `GET /user` so later checks skip it; retry other failures.
+            # PyGithub raises it from the lazy payload read in `get_user_id`.
+            if isinstance(e, GithubException) and _is_permanent_github_error(e):
+                self._user_login_denied = True
         if isinstance(login, str) and login.strip():
             return login.strip()
         # A GitHub App installation token cannot call `GET /user` either, but it posts as

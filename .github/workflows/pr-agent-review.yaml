@@ -230,7 +230,7 @@ jobs:
         id: context-uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
-          version: '0.13.7'
+          version: '0.13.8'
           enable-cache: false
 
       - name: Install hash-pinned context dependencies and grammars
@@ -378,7 +378,8 @@ jobs:
           CONFIG__MODEL_WEAK: openai/gpt-6.1-sol
           CONFIG__MODEL_REASONING: openai/gpt-6.1-sol
           CONFIG__FALLBACK_MODELS: '[]'
-          CONFIG__CUSTOM_MODEL_MAX_TOKENS: '32000'
+          CONFIG__CUSTOM_MODEL_MAX_TOKENS: '256000'
+          CONFIG__MAX_MODEL_TOKENS: '256000'
           CONFIG__NO_TEMPERATURE_MODELS: '["gpt-6.1-sol"]'
           CONFIG__MAX_OUTPUT_TOKENS: '8192'
           CONFIG__LOG_LEVEL: INFO

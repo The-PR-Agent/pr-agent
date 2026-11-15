@@ -625,6 +625,51 @@ def test_a_resolvable_token_ignores_agent_login(monkeypatch, review_settings):
     assert provider._resolve_user_login() == "octo-bot"
 
 
+class _LazyUser:
+    """PyGithub's `get_user()` is lazy: `GET /user` is sent when the payload is first read."""
+
+    def __init__(self, *outcomes):
+        self.outcomes = outcomes
+        self.requests = 0
+
+    @property
+    def raw_data(self):
+        self.requests += 1
+        outcome = self.outcomes[min(self.requests, len(self.outcomes)) - 1]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _lazy_user_provider(monkeypatch, *outcomes):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    provider = _github_provider(monkeypatch, "user", comments=[], bot_login="github-actions[bot]", user_login="unused")
+    user = provider.github_client.get_user.return_value = _LazyUser(*outcomes)
+    return provider, user
+
+
+def test_a_denied_user_login_is_requested_once(monkeypatch):
+    """The Actions token is refused `GET /user`, and every authorship check used to ask again."""
+    denied = GithubException(403, {"message": "Resource not accessible by integration"}, None)
+    provider, user = _lazy_user_provider(monkeypatch, denied)
+
+    assert [provider._agent_login() for _ in range(3)] == ["github-actions[bot]"] * 3
+    assert user.requests == 1
+
+
+@pytest.mark.parametrize("failure", [
+    RequestException("connection reset"),
+    GithubException(403, {"message": "You have exceeded a secondary rate limit"}, {"Retry-After": "60"}),
+], ids=["network", "rate-limit"])
+def test_a_transient_user_login_failure_is_retried(monkeypatch, failure):
+    """Control: only a refusal is remembered, so a later check can still resolve the real login."""
+    provider, user = _lazy_user_provider(monkeypatch, failure, {"login": "octo-bot"})
+
+    assert provider._agent_login() == "github-actions[bot]"
+    assert provider._agent_login() == "octo-bot"
+    assert user.requests == 2
+
+
 def test_agent_login_is_host_only():
     from pr_agent.config_security import is_repo_host_only_key
 

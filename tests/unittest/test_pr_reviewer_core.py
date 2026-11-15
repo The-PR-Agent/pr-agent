@@ -2,6 +2,7 @@ import asyncio
 import copy
 import gc
 import json
+import re
 import threading
 import weakref
 from contextlib import nullcontext
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from requests.exceptions import ReadTimeout, RequestException
 from starlette_context import request_cycle_context
 
 from pr_agent.algo.comment_identity import PRReviewHeader, PRReviewIdentity
@@ -689,7 +691,9 @@ def _key_issue(**overrides):
     return issue
 
 
-def _reviewer_with_findings(*issues, head_file="one\ntwo\nthree\nfour\n"):
+def _reviewer_with_findings(
+    *issues, head_file="one\ntwo\nthree\nfour\n", patch="", head_file_is_complete=True
+):
     git_provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
     git_provider.azure_devops_client = MagicMock()
     git_provider.azure_devops_client.get_threads.return_value = []
@@ -698,7 +702,13 @@ def _reviewer_with_findings(*issues, head_file="one\ntwo\nthree\nfour\n"):
     git_provider.pr_num = 1
     git_provider.get_diff_files = MagicMock()
     git_provider.get_diff_files.return_value = [
-        FilePatchInfo(base_file="", head_file=head_file, patch="", filename="app.py")
+        FilePatchInfo(
+            base_file="",
+            head_file=head_file,
+            patch=patch,
+            filename="app.py",
+            head_file_is_complete=head_file_is_complete,
+        )
     ]
     git_provider.publish_code_suggestions = MagicMock(return_value=True)
     git_provider.max_comment_chars = None
@@ -853,6 +863,51 @@ def test_gitlab_can_verify_inline_key_issue_publication():
     reviewer = _make_reviewer(provider)
 
     assert reviewer._can_verify_inline_key_issue_publication() is True
+
+
+@pytest.mark.parametrize("as_review", [False, True])
+def test_gitlab_unconfirmed_inline_write_only_prunes_published_findings(monkeypatch, as_review):
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.RE_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
+    provider.id_mr = 1
+    provider.mr = MagicMock()
+    provider.mr.discussions.list.return_value = []
+    provider.mr.draft_notes.list.return_value = []
+    drafts = []
+    if as_review:
+        def create_draft(payload):
+            drafts.append(SimpleNamespace(note=payload["note"]))
+            raise ReadTimeout("response lost after draft was queued")
+
+        provider.mr.draft_notes.create.side_effect = create_draft
+        provider.mr.draft_notes.list.side_effect = lambda **kwargs: list(drafts)
+        provider.mr.draft_notes.bulk_publish.side_effect = RequestException("draft publication unavailable")
+    else:
+        provider.mr.discussions.create.side_effect = ReadTimeout("response lost after write")
+    provider.resolve_outdated_inline_threads = MagicMock()
+    provider.reconcile_code_suggestion_threads = MagicMock()
+    provider.get_relevant_diff = MagicMock(return_value=SimpleNamespace(
+        base_commit_sha="base", start_commit_sha="start", head_commit_sha="head"))
+    provider.get_diff_files = MagicMock(return_value=[FilePatchInfo(
+        base_file="", head_file="one\ntwo\nthree\nfour\n", filename="app.py",
+        patch="@@ -1,4 +1,4 @@\n one\n two\n three\n four\n")])
+    provider.max_comment_chars = None
+    provider._inline_comment_store = None
+    reviewer = _make_reviewer(provider)
+    monkeypatch.setitem(get_settings().config, "persistent_inline_comments", False)
+    monkeypatch.setitem(get_settings().gitlab, "publish_code_suggestions_as_review", as_review)
+
+    result = reviewer._publish_key_issues_as_inline_comments({
+        "review": {"key_issues_to_review": [_key_issue()]}})
+
+    if as_review:
+        assert result["review"]["key_issues_to_review"] == [_key_issue()]
+        provider.mr.draft_notes.create.assert_called_once()
+        assert len(drafts) == 1
+    else:
+        assert "key_issues_to_review" not in result["review"]
+        provider.mr.discussions.create.assert_called_once()
+        provider.mr.notes.create.assert_not_called()
 
 
 def test_same_key_issue_on_different_lines_is_published_at_each_location():
@@ -2465,6 +2520,70 @@ def test_numbered_existing_code_is_stripped(committable_on):
     assert comment["original_suggestion"]["existing_code"] == "two\nthree"
 
 
+def test_numbered_existing_code_with_unicode_line_separator_is_stripped(committable_on):
+    head_file = "one\ns = 'a\u2028b'\nthree\n"
+    issue = _key_issue(existing_code="2  s = 'a\u2028b'\n3  three", improved_code="s = 'ab'\nthree")
+    reviewer, data = _reviewer_with_findings(issue, head_file=head_file)
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion\ns = 'ab'\nthree\n```" in comment["body"]
+    assert comment["original_suggestion"]["existing_code"] == "s = 'a\u2028b'\nthree"
+
+
+@pytest.mark.parametrize(
+    "head_file,head_file_is_complete,patch,start_line,end_line",
+    [
+        ("", True, "@@ -1,3 +1,3 @@\n one\n-    old_two\n+    two\n     three\n", 2, 3),
+        (
+            "    two\n    three\n",
+            False,
+            "@@ -19,3 +19,3 @@\n one\n-    old_two\n+    two\n     three\n",
+            20,
+            21,
+        ),
+    ],
+)
+def test_patch_only_file_finding_and_committable_fix_are_published(
+    committable_on, head_file, head_file_is_complete, patch, start_line, end_line
+):
+    issue = _key_issue(
+        start_line=start_line, end_line=end_line, existing_code="two\nthree", improved_code="TWO\nTHREE"
+    )
+    reviewer, data = _reviewer_with_findings(
+        issue, head_file=head_file, patch=patch, head_file_is_complete=head_file_is_complete
+    )
+    reviewer.git_provider.publish_code_suggestions = (
+        AzureDevopsProvider.publish_code_suggestions.__get__(reviewer.git_provider)
+    )
+    reviewer._published_inline_key_issue_fingerprints = (
+        PRReviewer._published_inline_key_issue_fingerprints.__get__(reviewer)
+    )
+
+    result = reviewer._publish_key_issues_as_inline_comments(data)
+
+    reviewer.git_provider.azure_devops_client.create_thread.assert_called_once()
+    thread = reviewer.git_provider.azure_devops_client.create_thread.call_args.kwargs["comment_thread"]
+    assert thread.thread_context.right_file_start.line == start_line
+    assert thread.thread_context.right_file_end.line == end_line
+    assert thread.thread_context.right_file_end.offset == len("    three") + 1
+    assert "```suggestion\n    TWO\n    THREE\n```" in thread.comments[0].content
+    assert "key_issues_to_review" not in result["review"]
+
+
+def test_patch_only_file_finding_outside_hunk_stays_in_summary(committable_on):
+    patch = "@@ -2,2 +2,2 @@\n-old_two\n+two\n three\n"
+    issue = _key_issue(start_line=1, end_line=2, **_FIX_ISSUE)
+    reviewer, data = _reviewer_with_findings(issue, head_file="", patch=patch)
+
+    result = reviewer._publish_key_issues_as_inline_comments(data)
+
+    reviewer.git_provider.publish_code_suggestions.assert_not_called()
+    assert result["review"]["key_issues_to_review"] == [issue]
+    assert reviewer.git_provider._get_suggestion_end_offset("app.py", 2, 1) is None
+
+
 def test_fix_with_backticks_gets_longer_fence(committable_on):
     issue = _key_issue(existing_code="two\nthree", improved_code="s = '''\n```\n'''")
     reviewer, data = _reviewer_with_findings(issue)
@@ -2519,7 +2638,7 @@ def test_gitlab_position_fallback_posts_fix(committable_on):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_mr = 1
     provider.mr = MagicMock()
-    provider.mr.discussions.create.side_effect = GitlabError("position rejected")
+    provider.mr.discussions.create.side_effect = GitlabError("position rejected", response_code=400)
     provider.get_relevant_diff = MagicMock(return_value=SimpleNamespace(
         base_commit_sha="b", start_commit_sha="s", head_commit_sha="h"))
     provider.get_line_link = MagicMock(return_value="https://gitlab/link")
@@ -2548,7 +2667,7 @@ def test_gitlab_position_fallback_keeps_the_review_markers(committable_on):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_mr = 1
     provider.mr = MagicMock()
-    provider.mr.discussions.create.side_effect = GitlabError("position rejected")
+    provider.mr.discussions.create.side_effect = GitlabError("position rejected", response_code=400)
     provider.get_relevant_diff = MagicMock(return_value=SimpleNamespace(
         base_commit_sha="b", start_commit_sha="s", head_commit_sha="h"))
     provider.get_line_link = MagicMock(return_value="https://gitlab/link")
@@ -2625,3 +2744,66 @@ def test_github_publish_gets_full_original_suggestion(committable_on):
     assert len(validated) == 1
     assert "```suggestion" not in validated[0]["body"]
     assert "-line8" in validated[0]["body"] and "+LINE8" in validated[0]["body"]
+
+
+@pytest.mark.parametrize(
+    "threshold,expected_contents,expected_dropped",
+    [
+        (0, ["high", "low", "none", "string", "garbage", "float", "float-string", "out-of-range"], 0),
+        (6, ["high", "none", "string", "garbage", "float-string", "out-of-range"], 2),
+        (8, ["high", "none", "garbage", "float-string", "out-of-range"], 3),
+        ("not-a-number", ["high", "low", "none", "string", "garbage", "float", "float-string", "out-of-range"], 0),
+        (70, ["high", "low", "none", "string", "garbage", "float", "float-string", "out-of-range"], 0),
+        (-3, ["high", "low", "none", "string", "garbage", "float", "float-string", "out-of-range"], 0),
+        ("inf", ["high", "low", "none", "string", "garbage", "float", "float-string", "out-of-range"], 0),
+        ("nan", ["high", "low", "none", "string", "garbage", "float", "float-string", "out-of-range"], 0),
+    ],
+)
+def test_filter_low_confidence_findings(monkeypatch, threshold, expected_contents, expected_dropped):
+    monkeypatch.setitem(get_settings().pr_reviewer, "min_finding_confidence", threshold)
+    reviewer = _make_reviewer()
+    data = {"review": {"key_issues_to_review": [
+        _key_issue(issue_content="high", confidence=9),
+        _key_issue(issue_content="low", confidence=4),
+        _key_issue(issue_content="none"),
+        _key_issue(issue_content="string", confidence=" 7 "),
+        _key_issue(issue_content="garbage", confidence="very"),
+        _key_issue(issue_content="float", confidence=5.9),
+        _key_issue(issue_content="float-string", confidence="8.5"),
+        _key_issue(issue_content="out-of-range", confidence=15),
+    ]}}
+
+    reviewer._filter_low_confidence_findings(data)
+
+    assert [issue["issue_content"] for issue in data["review"]["key_issues_to_review"]] == expected_contents
+    assert reviewer.low_confidence_filtered_count == expected_dropped
+
+
+@pytest.mark.parametrize("threshold,rendered", [(5, True), (0, False)])
+def test_convert_to_markdown_renders_the_confidence_the_filter_compares(monkeypatch, threshold, rendered):
+    monkeypatch.setitem(get_settings().pr_reviewer, "min_finding_confidence", threshold)
+    output = {"review": {"key_issues_to_review": [
+        _key_issue(issue_content="whole", confidence=8),
+        _key_issue(issue_content="fractional", confidence=8.5),
+        _key_issue(issue_content="string", confidence="7"),
+        _key_issue(issue_content="garbage", confidence="high"),
+        _key_issue(issue_content="out-of-range", confidence=15),
+    ]}}
+
+    markdown = convert_to_markdown_v2(output, gfm_supported=True)
+
+    assert ("Possible Issue (confidence: 8)" in markdown) is rendered
+    assert ("Possible Issue (confidence: 8.5)" in markdown) is rendered
+    assert ("Possible Issue (confidence: 7)" in markdown) is rendered
+    assert markdown.count("confidence:") == (3 if rendered else 0)
+
+
+def test_fix_keeps_git_line_numbers_around_unicode_separators(committable_on):
+    issue = _key_issue(start_line=3, end_line=3, existing_code="c = 3", improved_code="c = 4")
+    reviewer, data = _reviewer_with_findings(issue, head_file="a = 1\nb = '\u2028'\nc = 3\n")
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion\nc = 4\n```" in comment["body"]
+    assert comment["original_suggestion"]["existing_code"] == "c = 3"

@@ -154,6 +154,7 @@ PROVIDER_API_BASE_ENV_VARS = {
     "nlp_cloud": ("NLP_CLOUD_API_BASE",),
     "ollama": ("OLLAMA_API_BASE",),
     "openai_like": ("OPENAI_LIKE_API_BASE",),
+    "opencode_go": ("OPENCODE_GO_API_BASE",),
     "openrouter": ("OPENROUTER_API_BASE",),
     "ovhcloud": ("OVHCLOUD_API_BASE",),
     "perplexity": ("PERPLEXITY_API_BASE",),
@@ -284,6 +285,7 @@ PROVIDER_API_KEY_ENV_VARS = {
     "ollama": ("OLLAMA_API_KEY",),
     "openai": ("OPENAI_API_KEY",),
     "openai_like": ("OPENAI_LIKE_API_KEY",),
+    "opencode_go": ("OPENCODE_GO_API_KEY", "OPENCODE_API_KEY"),
     "openrouter": ("OPENROUTER_API_KEY", "OR_API_KEY"),
     "ovhcloud": ("OVHCLOUD_API_KEY",),
     "perplexity": ("PERPLEXITYAI_API_KEY", "PERPLEXITY_API_KEY"),
@@ -444,6 +446,11 @@ def _exchange_azure_oidc_token(selector, environment, native=None):
     # and refresh/TTL behavior. Only the outer exchange's inputs are request-owned.
     native_globals["os"] = SimpleNamespace(getenv=captured_getenv)
     native_globals["azure_ad_cache"] = SimpleNamespace(get_cache=get_cache, set_cache=set_cache)
+    # The native exchange reads and fills the cache in module-level helpers.
+    for name in ("_cached_oidc_token", "_exchange_oidc_token"):
+        if not isinstance(native_globals.get(name), FunctionType):
+            raise RuntimeError("LiteLLM's Azure OIDC exchange interface is incompatible")
+        native_globals[name] = _rebind_to_globals(native_globals[name], native_globals)
     exchange = _rebind_to_globals(native, native_globals)
     return exchange(
         selector,

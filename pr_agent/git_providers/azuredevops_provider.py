@@ -33,6 +33,7 @@ from ..algo.inline_comment_dedup import (
     has_marker,
 )
 from ..algo.language_handler import is_valid_file
+from ..algo.suggestion_checks import get_patch_range_lines
 from ..algo.utils import (
     find_line_number_of_relevant_line_in_file,
     load_large_diff,
@@ -153,7 +154,7 @@ def _get_azure_change_path(change):
 
 
 def _get_azure_change_old_path(change):
-    additional = getattr(change, "additional_properties", None)
+    additional = change if isinstance(change, dict) else getattr(change, "additional_properties", None)
     if not isinstance(additional, dict):
         additional = {}
 
@@ -174,7 +175,7 @@ def _get_azure_change_old_path(change):
 
 
 def _get_azure_change_type(change):
-    additional = getattr(change, "additional_properties", None)
+    additional = change if isinstance(change, dict) else getattr(change, "additional_properties", None)
     if not isinstance(additional, dict):
         additional = {}
 
@@ -241,6 +242,7 @@ class AzureDevopsProvider(GitProvider):
         self.temp_comments = []
         self.incremental = incremental
         self.unreviewed_files_map = {}
+        self._incremental_unfiltered_files = None
         self.pr_commits = None
         self.previous_review = None
         self._published_inline_comment_bodies = []
@@ -265,14 +267,26 @@ class AzureDevopsProvider(GitProvider):
                 self._diff_path_map = path_map
         return path_map.get(relevant_file) or path_map.get(relevant_file.lstrip("/"))
 
-    def _get_suggestion_end_offset(self, relevant_file: str, relevant_lines_end: int) -> int | None:
-        for file in self.diff_files or []:
-            if file.filename != relevant_file or not isinstance(file.head_file, str):
+    def _get_suggestion_end_offset(
+        self, relevant_file: str, relevant_lines_end: int, relevant_lines_start: int | None = None
+    ) -> int | None:
+        start_line = relevant_lines_end if relevant_lines_start is None else relevant_lines_start
+        if start_line < 1 or relevant_lines_end < start_line:
+            return None
+        diff_files = self.diff_files if getattr(self, "diff_files", None) is not None else self.get_diff_files()
+        for file in diff_files or []:
+            if file.filename != relevant_file:
                 continue
-            lines = split_diff_lines(file.head_file)
-            if relevant_lines_end > len(lines):
-                return None
-            line = lines[relevant_lines_end - 1]
+            if isinstance(file.head_file, str) and file.head_file and getattr(file, "head_file_is_complete", True):
+                lines = split_diff_lines(file.head_file)
+                if relevant_lines_end > len(lines):
+                    return None
+                line = lines[relevant_lines_end - 1]
+            else:
+                patch_lines = get_patch_range_lines(file.patch, start_line, relevant_lines_end)
+                if patch_lines is None:
+                    return None
+                line = patch_lines[-1]
             return len(line.encode("utf-16-le")) // 2 + 1
         return None
 
@@ -432,7 +446,9 @@ class AzureDevopsProvider(GitProvider):
 
             end_offset = 1
             if has_suggestion_fence:
-                end_offset = self._get_suggestion_end_offset(resolved_file, relevant_lines_end)
+                end_offset = self._get_suggestion_end_offset(
+                    resolved_file, relevant_lines_end, relevant_lines_start
+                )
                 if end_offset is None:
                     if fallback_to_pr_comment:
                         if should_mark:
@@ -613,6 +629,7 @@ class AzureDevopsProvider(GitProvider):
         self.pr_commits = None
         self.previous_review = None
         self.unreviewed_files_map = {}
+        self._incremental_unfiltered_files = None
         self.temp_comments = []
         self._published_inline_comment_bodies = []
         self._inline_comment_store = None
@@ -624,12 +641,19 @@ class AzureDevopsProvider(GitProvider):
     def get_incremental_commits(self, incremental=None, kind: str = "review"):
         if incremental is None:
             incremental = IncrementalPR(False)
+        was_incremental = (
+            bool(getattr(getattr(self, "incremental", None), "is_incremental", False))
+            or bool(getattr(self, "unreviewed_files_map", None))
+            or getattr(self, "_incremental_unfiltered_files", None) is not None
+        )
         self.incremental = incremental
-        if self.incremental.is_incremental:
+        self._incremental_unfiltered_files = None
+        if self.incremental.is_incremental or was_incremental:
             # Recompute a diff cached for a different incremental scope.
             self.diff_files = None
             self._diff_path_map = None
             self.unreviewed_files_map = {}
+        if self.incremental.is_incremental:
             self._incremental_kind = kind
             self._get_incremental_commits()
 
@@ -656,6 +680,7 @@ class AzureDevopsProvider(GitProvider):
         if self.incremental.commits_range is None:
             return
         candidate_paths = []
+        unfiltered_paths = []
         had_errors = False
         non_merge_seen = False
         for commit in self.incremental.commits_range:
@@ -677,6 +702,11 @@ class AzureDevopsProvider(GitProvider):
                 path = _get_azure_change_path(change)
                 if path:
                     candidate_paths.append(path)
+                    unfiltered_paths.append(path)
+                if "rename" in _get_azure_change_type(change).lower():
+                    old_path = _get_azure_change_old_path(change)
+                    if old_path:
+                        unfiltered_paths.append(old_path)
 
         if had_errors:
             get_logger().warning(
@@ -696,6 +726,9 @@ class AzureDevopsProvider(GitProvider):
                 "Incremental range only contains merge commits; falling back to full review."
             )
             self.incremental.is_incremental = False
+            return
+
+        self._incremental_unfiltered_files = list(dict.fromkeys(unfiltered_paths))
 
     def _get_commit_range(self):
         last_review_time = _to_naive_utc(getattr(self.previous_review, "created_at", None))

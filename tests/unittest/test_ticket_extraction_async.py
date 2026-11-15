@@ -161,8 +161,9 @@ def _make_gitlab_provider(user_description):
         title="GitLab issue",
         description="Issue body",
         labels=["bug", "backend"],
+        confidential=False,
     )
-    project = MagicMock()
+    project = MagicMock(visibility="public", issues_access_level="enabled")
     project.issues.get.return_value = issue
     provider.gl = MagicMock()
     provider.gl.projects.get.return_value = project
@@ -247,7 +248,6 @@ async def test_ticket_reads_use_workers_and_request_settings(monkeypatch, scoped
         provider, project = _make_gitlab_provider(f"Fixes {reference} PROJ-9")
         provider.get_pr_branch = lambda: "main"
         issue = project.issues.get.return_value
-        issue.confidential = False
         project.issues.get.side_effect = record("issue", lambda number: issue)
         if kind == "gitlab-sibling":
             provider.get_sibling_repo = record("sibling", lambda name: project)
@@ -569,7 +569,7 @@ class TestNativeTitleExtraction:
 
         result = asyncio.run(extract_tickets(provider))
 
-        provider.gl.projects.get.assert_called_once_with("group/repo", lazy=True)
+        provider.gl.projects.get.assert_called_once_with("group/repo")
         project.issues.get.assert_called_once_with(7)
         provider.get_user_description = lambda: reference
         provider.mr.title = "No reference"
@@ -690,7 +690,7 @@ class TestNativeTitleExtraction:
 
         assert [ticket["ticket_id"] for ticket in result] == [1, 2, 3]
         assert [call.args[0] for call in project.issues.get.call_args_list] == [1, 2, 3]
-        assert [call.args[0] for call in provider.gl.projects.get.call_args_list] == ["group/repo"] * 3
+        assert [call.args[0] for call in provider.gl.projects.get.call_args_list] == ["group/repo"]
 
     def test_gitlab_title_does_not_extend_lookup_budget(self, settings_snapshot):
         limit = tpc.MAX_GITLAB_TICKET_LOOKUPS
@@ -721,7 +721,7 @@ class TestNativeTitleExtraction:
         assert [ticket["ticket_id"] for ticket in asyncio.run(extract_tickets(provider))] == expected
         assert [call.args[0] for call in project.issues.get.call_args_list] == expected
         if expected:
-            provider.gl.projects.get.assert_called_once_with("group/repo", lazy=True)
+            provider.gl.projects.get.assert_called_once_with("group/repo")
         else:
             provider.gl.projects.get.assert_not_called()
 
@@ -1402,8 +1402,24 @@ class TestSubIssues:
         assert result and len(result) == 1
         subs = result[0]["sub_issues"]
         assert len(subs) == 10
-        expected_urls = sorted(sub_urls)[:10]
+        expected_urls = sub_urls[:10]
         assert [s["ticket_url"] for s in subs] == expected_urls
+
+    def test_sub_issue_cap_keeps_lowest_issue_numbers(self, settings_snapshot):
+        # Sub-issues #2-#13: as text, #10-#13 sort before #2 and would push out #8 and #9.
+        issues_dict = {1: _FakeIssue(1, title="Main", body="m")}
+        sub_urls = []
+        for i in range(13, 1, -1):
+            issues_dict[i] = _FakeIssue(i, title=f"Sub {i}", body=f"body {i}")
+            sub_urls.append(f"https://github.com/org/repo/issues/{i}")
+        provider = _make_github_provider(
+            user_description="Fixes #1",
+            repo_obj=_FakeRepoObj(issues_dict),
+            sub_issues_map={"https://github.com/org/repo/issues/1": sub_urls},
+        )
+        result = asyncio.run(extract_tickets(provider))
+        subs = result[0]["sub_issues"]
+        assert [s["ticket_url"] for s in subs] == [f"https://github.com/org/repo/issues/{i}" for i in range(2, 12)]
 
     def test_malformed_sub_issue_entries_skipped_safely(self, settings_snapshot):
         repo_obj = _FakeRepoObj({
@@ -1480,7 +1496,7 @@ class TestAzureDevopsExtraction:
                 "title": "WI 1",
                 "body": long_body,
                 "acceptance_criteria": "AC1",
-                "labels": ["a", "b"],
+                "tags": ["a", "b"],
             },
             {
                 "id": 2,
@@ -1718,7 +1734,7 @@ class TestGitLabExtraction:
                 "labels": "bug, backend",
             }
         ]
-        provider.gl.projects.get.assert_called_once_with("group/repo", lazy=True)
+        provider.gl.projects.get.assert_called_once_with("group/repo")
         project.issues.get.assert_called_once_with(7)
 
     @pytest.mark.parametrize("source", ["description", "title"])
@@ -1749,7 +1765,7 @@ class TestGitLabExtraction:
                 "body": "Issue body",
                 "labels": "bug, backend",
             }]
-            provider.gl.projects.get.assert_called_once_with("group/repo", lazy=True)
+            provider.gl.projects.get.assert_called_once_with("group/repo")
             project.issues.get.assert_called_once_with(7)
 
 

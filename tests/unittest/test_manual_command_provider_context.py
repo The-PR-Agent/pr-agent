@@ -267,7 +267,7 @@ async def test_gitea_push_between_commands_rebuilds_head_and_file_list(monkeypat
     for pr, sha in ((old_pr, "old-head"), (new_pr, "new-head")):
         pr.head = SimpleNamespace(sha=sha, ref="feature")
         pr.base = SimpleNamespace(sha="base", ref="main")
-    repo_api.get_pull_request.side_effect = [old_pr, old_pr, new_pr]
+    repo_api.get_pull_request.side_effect = [old_pr, old_pr, new_pr, new_pr]
     repo_api.get_languages.return_value = {"Python": 100}
     repo_api.get_pr_commits.return_value = []
     repo_api.get_change_file_pull_request.side_effect = [
@@ -286,4 +286,4 @@ async def test_gitea_push_between_commands_rebuilds_head_and_file_list(monkeypat
         assert await PRAgent(ai_handler=SimpleNamespace).handle_request(url, ["ask", "Why?"])
 
     assert observed == [("old-head", ["old.py"]), ("new-head", ["old.py", "new.py"])]
-    assert repo_api.get_pull_request.call_count == 3
+    assert repo_api.get_pull_request.call_count == 4

@@ -76,6 +76,9 @@ class KeyIssuesComponentLink(BaseModel):
     end_line: int = Field(description="The end line that corresponds to this issue in the relevant file")
     existing_code: Optional[str] = Field(default=None, description="Include whenever a concrete code change of at most 10 lines fixes this issue; omit both fix fields only when the fix is longer or not a code change. The exact lines from start_line to end_line that the change replaces, copied verbatim from the new code in the diff, without the line number prefix and without the leading '+' or '-'.")
     improved_code: Optional[str] = Field(default=None, description="Optional. Include only together with existing_code. The complete replacement for those lines, with the same indentation, that fixes the issue.")
+{%- if min_finding_confidence %}
+    confidence: int = Field(description="An integer from 0 to 10: how certain you are that this is a real issue introduced by this PR that will matter in practice. 9-10: verified from the visible code, and the trigger scenario is concrete. 7-8: very likely, and depends only on reasonable assumptions about code outside the diff. 5-6: plausible but unverified from the diff.")
+{%- endif %}
 
 {%- if require_todo_scan %}
 class TodoSection(BaseModel):
@@ -235,6 +238,9 @@ review:
         return cache.get(key)  # may be None
       improved_code: |
         return cache.get(key, default)  # fall back to the default
+{%- if min_finding_confidence %}
+      confidence: 8
+{%- endif %}
     - ...
   security_concerns: |
     No
@@ -443,6 +449,9 @@ review:
         ...
       improved_code: |
         ...
+{%- if min_finding_confidence %}
+      confidence: ...
+{%- endif %}
     - ...
   security_concerns: |
     No

@@ -17,6 +17,7 @@ Usage: graph_bundle_ts.py --repo ROOT --base BASE_SHA --head HEAD_SHA --pr N --o
 """
 import argparse
 import bisect
+import contextlib
 import difflib
 import fnmatch
 import heapq
@@ -24,7 +25,9 @@ import json
 import os
 import posixpath
 import re
+import secrets
 import signal
+import stat
 import subprocess
 import sys
 
@@ -102,10 +105,70 @@ PUNCT = set("()[]{},;:.")
 # submodule or untracked file cannot reach the bundle; oversized and secret-looking files are left out too.
 MAX_FILE_BYTES = 1_000_000
 DEFAULT_TIMEOUT_S = 120
+# What open(path, "w") requests; the umask and any default ACL narrow it.
+_ORDINARY_FILE_MODE = (stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
 SECRET_NAMES = (".env", ".env.*", "*.env", ".netrc", ".npmrc", ".pypirc", ".git-credentials", ".secrets.toml",
                 "secrets.toml", "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore", "id_rsa*", "id_dsa*",
                 "id_ecdsa*", "id_ed25519*", "*.tfstate", "*.tfstate.*", "credentials", "credentials.*")
 GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1"}
+
+_TIMED_OUT = None
+
+
+class _SignalTimeout(BaseException):
+    """Keep one-shot timeout signals out of generic OSError/Exception handlers."""
+
+
+def _check_timeout():
+    if _TIMED_OUT is not None:
+        raise _SignalTimeout(_TIMED_OUT)
+
+
+@contextlib.contextmanager
+def _block_sigalrm():
+    mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+
+
+def _disarm_timeout(seconds):
+    """Reconcile an alarm even if its Python handler has not run yet; call with SIGALRM blocked."""
+    global _TIMED_OUT
+    signal.alarm(0)
+    pending = signal.SIGALRM in signal.sigpending()
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, signal.SIG_IGN)  # Also discards a pending SIGALRM.
+    signal.signal(signal.SIGALRM, previous_handler)
+    if pending and _TIMED_OUT is None:
+        _TIMED_OUT = f"build exceeded {seconds} s"
+    return _TIMED_OUT is not None
+
+
+def _timeout_handler(seconds):
+    def handler(_signum, _frame):
+        global _TIMED_OUT
+        if _TIMED_OUT is None:
+            _TIMED_OUT = f"build exceeded {seconds} s"
+        raise _SignalTimeout(_TIMED_OUT)
+
+    return handler
+
+
+def _emit_cli_failure(exc, seconds):
+    with _block_sigalrm():
+        timed_out = _disarm_timeout(seconds)
+    is_timeout = isinstance(exc, _SignalTimeout) or timed_out
+    name = "TimeoutError" if is_timeout else type(exc).__name__
+    detail = _TIMED_OUT if is_timeout and _TIMED_OUT is not None else str(exc)
+    print(f"review-context build failed: {name}: {detail[:300]}", file=sys.stderr)
+    sys.exit(2)
+
+
+def _reconcile_timeout_before_publish(seconds):
+    if _disarm_timeout(seconds):
+        _check_timeout()
 
 
 def git_cmd(repo, *args):
@@ -123,13 +186,83 @@ def is_secret_path(path):
     return any(fnmatch.fnmatchcase(name, pat) for pat in SECRET_NAMES)
 
 
+def _kill_git_descendants(parent_pid):
+    """On Linux, kill descendants without signalling the caller's process group."""
+    if not (hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")):
+        return  # Never signal a potentially recycled numeric PID.
+
+    def proc_stat(pid):
+        try:
+            with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as fh:
+                fields = fh.read().rpartition(")")[2].split()
+            return int(fields[1]), int(fields[19])  # PPID and process start time.
+        except (OSError, ValueError, IndexError):
+            return None
+
+    def children_of(pid):
+        try:
+            tids = os.listdir(f"/proc/{pid}/task")
+        except OSError:
+            return None
+        found = False
+        children = set()
+        for tid in tids:
+            try:
+                with open(f"/proc/{pid}/task/{tid}/children", encoding="ascii") as fh:
+                    children.update(int(child) for child in fh.read().split())
+                found = True
+            except (OSError, ValueError):
+                continue
+        return children if found else None
+
+    direct = children_of(parent_pid)
+    children_by_parent = {}
+    if direct is None:  # Some procfs variants do not expose task/<tid>/children.
+        try:
+            processes = os.listdir("/proc")
+        except OSError:
+            processes = ()
+        for name in processes:
+            if name.isdecimal():
+                state = proc_stat(int(name))
+                if state is not None:
+                    children_by_parent.setdefault(state[0], []).append(int(name))
+
+    victims = []
+
+    def walk(parent):
+        children = children_of(parent) if direct is not None else children_by_parent.get(parent, ())
+        for child in children or ():
+            state = proc_stat(child)
+            if state is None or state[0] != parent:
+                continue
+            walk(child)
+            victims.append((child, parent, state[1]))
+
+    walk(parent_pid)
+    for pid, expected_parent, start_time in victims:
+        try:
+            fd = os.pidfd_open(pid)
+        except OSError:
+            continue
+        try:
+            if proc_stat(pid) == (expected_parent, start_time):
+                signal.pidfd_send_signal(fd, signal.SIGKILL)
+        except OSError:
+            pass  # Already exited or no permission to signal this descendant.
+        finally:
+            os.close(fd)
+
+
 class HeadTree:
     """Regular files tracked at the head commit, read through one `git cat-file --batch` process."""
 
     def __init__(self, repo, head):
         self.repo, self.blobs, self.dirs, self._cat = repo, {}, {}, None
-        out = subprocess.run(git_cmd(repo, "ls-tree", "-r", "-l", "-z", "--full-tree", head), check=True,
-                             capture_output=True, env=GIT_ENV).stdout
+        # Fixed Git argv with shell=False; the repository path is a single argument, not shell text.
+        out = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+            git_cmd(repo, "ls-tree", "-r", "-l", "-z", "--full-tree", head), check=True,
+            capture_output=True, env=GIT_ENV).stdout
         for entry in out.split(b"\0"):
             if not entry:
                 continue
@@ -152,8 +285,11 @@ class HeadTree:
         if sha is None:
             return None
         if self._cat is None:
-            self._cat = subprocess.Popen(git_cmd(self.repo, "cat-file", "--batch"), stdin=subprocess.PIPE,
-                                         stdout=subprocess.PIPE, env=GIT_ENV)
+            # Fixed Git argv, no shell evaluation; explicitly audited for command injection.
+            self._cat = subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+                git_cmd(self.repo, "cat-file", "--batch"), stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, env=GIT_ENV)
+            _check_timeout()
         self._cat.stdin.write(sha.encode() + b"\n")
         self._cat.stdin.flush()
         header = self._cat.stdout.readline().split()
@@ -167,11 +303,43 @@ class HeadTree:
         except UnicodeDecodeError:
             return None
 
-    def close(self):
-        if self._cat is not None:
-            self._cat.stdin.close()
-            self._cat.wait()
-            self._cat = None
+    def close(self, force=False):
+        def kill_and_reap(cat):
+            # Keep Git in our process group for the external watchdog. On Linux,
+            # also kill descendants of a non-exec Git wrapper during an internal
+            # timeout, without signalling the entire (caller-owned) group.
+            if sys.platform.startswith("linux"):
+                _kill_git_descendants(cat.pid)
+            try:
+                cat.kill()
+            except ProcessLookupError:
+                pass  # The child has already exited; its pipes still need closing and reaping.
+            for pipe in (cat.stdin, cat.stdout):
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass  # A closed/broken pipe must not interrupt child cleanup.
+            cat.wait()
+
+        cat = None
+        try:
+            with _block_sigalrm():
+                cat, self._cat = self._cat, None
+            if cat is None:
+                return
+            if force or _TIMED_OUT is not None:
+                with _block_sigalrm():
+                    kill_and_reap(cat)
+                return
+            cat.stdin.close()
+            cat.stdout.close()
+            cat.wait()
+        except BaseException:
+            if cat is not None:
+                with _block_sigalrm():
+                    kill_and_reap(cat)
+            raise
 
 
 HEAD = None  # the HeadTree of the commit being reviewed, set by build()
@@ -280,7 +448,10 @@ class Lang:
     def parse(self, text):
         """(IR root, has syntax errors)"""
         src = text.encode("utf-8")
-        tree = self.parser.parse(src)
+        try:
+            tree = self.parser.parse(src)
+        finally:
+            _check_timeout()
         return to_ir(tree, src, self.drop), tree.root_node.has_error
 
     # literals
@@ -349,11 +520,18 @@ class Tags(Lang):
     def __init__(self, name, suffixes):
         self.name, self.fence, self.suffixes = name, name, suffixes
         self.init_name = {"python": "__init__", "ruby": "initialize", "php": "__construct"}.get(name, "constructor")
-        self.queries = [Query(get_language(name), get_tags_query(name))]
+        try:
+            self.queries = [Query(get_language(name), get_tags_query(name))]
+        finally:
+            _check_timeout()
         for extra in self.INHERITS.get(name, ()):
             try:
-                self.queries.append(Query(get_language(name), get_tags_query(extra)))
+                try:
+                    self.queries.append(Query(get_language(name), get_tags_query(extra)))
+                finally:
+                    _check_timeout()
             except Exception:
+                _check_timeout()
                 pass  # a parent pattern naming a node type this grammar lacks
         self.ident, self.drop = IdentTypes(), CommentTypes()
         self.attr_types, self.call_types = {}, {}
@@ -362,14 +540,17 @@ class Tags(Lang):
 
     def parse(self, text):
         src = text.encode("utf-8")
-        tree = self.parser.parse(src)
+        try:
+            tree = self.parser.parse(src)
+        finally:
+            _check_timeout()
         root = to_ir(tree, src, self.drop)
         at = {(n.sb, n.eb, n.type): n for n in walk(root)}
 
         def ir(x):
             return at.get((x.start_byte, x.end_byte, x.type))
 
-        for _pi, caps in (m for q in self.queries for m in QueryCursor(q).matches(tree.root_node)):
+        for _pi, caps in self._matches(tree.root_node):
             names = caps.get("name", [])
             for cap, nodes in caps.items():
                 kind = cap.split(".", 1)[1] if "." in cap else ""
@@ -428,6 +609,23 @@ class Tags(Lang):
 
     def self_types(self):
         return {"self", "this"}
+
+    def _matches(self, root):
+        for query in self.queries:
+            try:
+                matches = QueryCursor(query).matches(root)
+            finally:
+                _check_timeout()
+            iterator = iter(matches)
+            while True:
+                try:
+                    try:
+                        match = next(iterator)
+                    finally:
+                        _check_timeout()
+                except StopIteration:
+                    break
+                yield match
 
     def string_value(self, n):
         if n.type not in self.string_types:
@@ -744,8 +942,12 @@ def tags_langs():
             if name and (get_tags_query(name) or "").strip():
                 by_name.setdefault(name, []).append(ext)
         except Exception:
+            _check_timeout()
             continue
-    return [Tags(name, tuple(exts)) for name, exts in sorted(by_name.items())]
+        _check_timeout()
+    result = [Tags(name, tuple(exts)) for name, exts in sorted(by_name.items())]
+    _check_timeout()
+    return result
 
 
 LANGS = []  # initialized after the local grammar directory and timeout are set
@@ -1847,16 +2049,128 @@ def default_scope(code_changed):
     return tops if tops and "" not in tops else [""]
 
 
-def build(args):
+def build(args, before_publish=None):
     global HEAD
     HEAD = HeadTree(args.repo, args.head)
+    complete = False
     try:
-        return _build(args)
+        out_path, text, manifest = _build_content(args)
+        complete = True
     finally:
-        HEAD.close()
+        HEAD.close(force=not complete)
+
+    _publish_bundle(args, out_path, text, before_publish)
+    print(json.dumps(manifest), flush=True)
+    return manifest
 
 
-def _build(args):
+def _publish_bundle(args, out_path, text, before_publish):
+    """Stage output privately, then publish only after cleanup and deadline reconciliation."""
+    _check_timeout()
+    os.makedirs(args.out_dir, exist_ok=True)
+    staging_dir, staging_fd, staging_info, tmp_name, fh, fd = None, None, None, None, None, None
+    try:
+        for _ in range(3):
+            candidate = os.path.join(args.out_dir, f".pr_bundle_{secrets.token_hex(12)}.tmp")
+            # Leave SIGALRM unmasked during filesystem operations. A signal can
+            # interrupt mkdir *after* it created the directory, so remember the
+            # unpredictable candidate before calling it for best-effort cleanup.
+            staging_dir = candidate
+            try:
+                os.mkdir(candidate, 0o700)
+            except FileExistsError:
+                staging_dir = None  # Never remove another process's colliding directory.
+                continue
+            staging_info = os.lstat(candidate)
+            if not stat.S_ISDIR(staging_info.st_mode) or staging_info.st_uid != os.geteuid():
+                raise PermissionError("bundle staging directory ownership changed")
+            # O_RDONLY permits descriptor-based fchmod even for directories
+            # made unsearchable by umask 0177. Reserve O_PATH for the unusual
+            # ACL/umask case that also denies the owner read access; ordinary
+            # Linux containers need no /proc/self/fd mount to publish bundles.
+            path_fd = False
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            try:
+                staging_fd = os.open(candidate, flags)
+            except PermissionError:
+                if not (sys.platform.startswith("linux") and hasattr(os, "O_PATH")):
+                    raise
+                path_fd = True
+                staging_fd = os.open(candidate, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+            pinned_info = os.fstat(staging_fd)
+            if (pinned_info.st_dev, pinned_info.st_ino) != (staging_info.st_dev, staging_info.st_ino):
+                raise PermissionError("bundle staging directory was replaced")
+            # A setgid output directory passes its group and setgid bit to the
+            # staging directory. Retain the bit so bundle.tmp inherits that
+            # group before the final atomic rename.
+            mode = 0o700 | (pinned_info.st_mode & stat.S_ISGID)
+            if stat.S_IMODE(pinned_info.st_mode) != mode:
+                if path_fd:
+                    os.chmod(f"/proc/self/fd/{staging_fd}", mode)
+                else:
+                    os.fchmod(staging_fd, mode)
+            pinned_info = os.fstat(staging_fd)
+            actual_mode = stat.S_IMODE(pinned_info.st_mode)
+            # If an unprivileged owner cannot retain inherited setgid, fail
+            # closed rather than publishing a bundle with the wrong group.
+            if pinned_info.st_uid != os.geteuid() or actual_mode != mode:
+                raise PermissionError("bundle staging directory is not private to this user")
+            _check_timeout()
+            break
+        else:
+            raise FileExistsError("could not reserve a unique bundle staging directory")
+        # A private directory shields unfinished bytes while a normal 0666
+        # creation inherits the output directory's default ACL and umask.
+        # Use dir_fd throughout so a swapped pathname cannot redirect writes.
+        tmp_name = "bundle.tmp"
+        fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _ORDINARY_FILE_MODE, dir_fd=staging_fd)
+        fh = os.fdopen(fd, "w", encoding="utf-8")
+        fd = None
+        with fh:
+            fh.write(text)
+        with _block_sigalrm():
+            if before_publish is not None:
+                before_publish()  # Check both handled and pending alarms before the final rename.
+            else:
+                _check_timeout()  # Direct callers may own their own SIGALRM handler.
+            os.replace(tmp_name, out_path, src_dir_fd=staging_fd)
+    except BaseException:
+        try:
+            if fd is not None:
+                os.close(fd)
+            if fh is not None and not fh.closed:
+                fh.close()
+        finally:
+            if tmp_name is not None and staging_fd is not None:
+                try:
+                    os.unlink(tmp_name, dir_fd=staging_fd)
+                except OSError:
+                    pass  # The file may already have moved or been removed after an interruption.
+        raise
+    finally:
+        try:
+            if staging_fd is not None:
+                os.close(staging_fd)
+        finally:
+            # A SIGALRM may interrupt close; still try to remove our staging
+            # directory without masking the deadline around filesystem I/O.
+            if staging_dir is not None:
+                try:
+                    info = os.lstat(staging_dir)
+                    # Normally require the original inode. If mkdir was interrupted
+                    # after creation but before lstat, only reclaim an empty,
+                    # owner-private directory at our fresh random candidate.
+                    owned = (staging_info is not None and (info.st_dev, info.st_ino) ==
+                             (staging_info.st_dev, staging_info.st_ino))
+                    interrupted_creation = (staging_info is None and stat.S_ISDIR(info.st_mode)
+                                            and info.st_uid == os.geteuid() and not info.st_mode & 0o077)
+                    if owned or interrupted_creation:
+                        os.rmdir(staging_dir)
+                except OSError:
+                    pass  # A replaced or nonempty staging path must be left alone.
+
+
+def _build_content(args):
     mb, files = parse_diff(args.repo, args.base, args.head)
     changed_langs = [lg for lg in LANGS if any(p.endswith(lg.suffixes) for p in files)] or LANGS[:1]
     repo = Repo(args.repo, changed_langs)
@@ -2248,12 +2562,8 @@ def _build(args):
         header += f"Caller search skipped for generic names: {', '.join(sorted(skipped_names))}.\n\n"
 
     text, summary, counts, sizes = assemble(header, nonpy, sections, hub_lines, cycles_text, scope_desc)
-    os.makedirs(args.out_dir, exist_ok=True)
     name = args.name or str(args.pr)
     out_path = os.path.join(args.out_dir, f"pr{name}.G6.md")
-    with open(out_path + ".tmp", "w", encoding="utf-8") as fh:
-        fh.write(text)
-    os.replace(out_path + ".tmp", out_path)  # a crash or timeout never leaves a partial bundle behind
     found = {k: sum(1 for s in sections if s["kind"] == k) for k in KINDS}
     manifest = dict(
         pr=args.pr, name=name, base=args.base, head=args.head, merge_base=mb, scope=scope,
@@ -2263,8 +2573,7 @@ def _build(args):
         sibling_candidates=sib_found, removed_shapes=len(removed_shapes), circular_imports=len(cycle_lines),
         added_imports_checked=checked, caller_search_skipped=sorted(skipped_names),
         tests_search_skipped=sorted(set(tests_skipped)), cut=summary)
-    print(json.dumps(manifest))
-    return manifest
+    return out_path, text, manifest
 
 
 def site_owner(by_path, path, ln):
@@ -2428,18 +2737,23 @@ if __name__ == "__main__":
     ap.add_argument("--generic", action="store_true",
                     help="compatibility flag; every language always uses tags queries")
     ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_S,
-                    help="wall-clock limit for grammar loading and the build in seconds")
+                    help="wall-clock limit through bundle preparation and writing in seconds")
     a = ap.parse_args()
     os.environ["TREE_SITTER_LANGUAGE_PACK_LIBS_DIR"] = os.path.abspath(a.grammar_cache)
 
-    def _timeout(_signum, _frame):
-        raise TimeoutError(f"build exceeded {a.timeout} s")
-
-    signal.signal(signal.SIGALRM, _timeout)
-    signal.alarm(a.timeout)
+    _TIMED_OUT = None
+    signal.signal(signal.SIGALRM, _timeout_handler(a.timeout))
     try:
-        LANGS[:] = tags_langs()
-        build(a)
-    except Exception as e:  # one line and exit 2, no bundle: the caller runs a diff-only review instead
-        print(f"review-context build failed: {type(e).__name__}: {str(e)[:300]}", file=sys.stderr)
-        sys.exit(2)
+        try:
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
+            signal.alarm(a.timeout)
+            LANGS[:] = tags_langs()
+            _check_timeout()
+            build(a, before_publish=lambda: _reconcile_timeout_before_publish(a.timeout))
+        except (_SignalTimeout, Exception) as exc:  # one line and exit 2; the caller uses a diff-only review
+            _emit_cli_failure(exc, a.timeout)
+    except _SignalTimeout as exc:  # The alarm can interrupt the inner failure handler itself.
+        _emit_cli_failure(exc, a.timeout)
+    finally:
+        with _block_sigalrm():
+            signal.alarm(0)

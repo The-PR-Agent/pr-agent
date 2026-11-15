@@ -44,7 +44,12 @@ from pr_agent.algo.inline_comment_dedup import (
 from pr_agent.algo.language_handler import filter_bad_extensions
 from pr_agent.algo.markdown_span import _markdown_code_span
 from pr_agent.algo.merge_verdict import compute_merge_verdict
-from pr_agent.algo.output_models import PRReview, parse_artifact_findings, parse_failure_modes
+from pr_agent.algo.output_models import (
+    PRReview,
+    finding_confidence,
+    parse_artifact_findings,
+    parse_failure_modes,
+)
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
@@ -67,7 +72,12 @@ from pr_agent.algo.review_finding_state import (
     render_lifecycle_summary,
     render_previous_findings,
 )
-from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
+from pr_agent.algo.review_json_output import (
+    hosted_markdown_artifact,
+    hosted_markdown_export,
+    review_json_output_path,
+    write_review_json_output,
+)
 from pr_agent.algo.review_merge import all_key_issues, chunk_hit_findings_limit, merge_review_chunks
 from pr_agent.algo.run_details import (
     command_failed,
@@ -85,11 +95,17 @@ from pr_agent.algo.run_output import (
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.structural_reach import build_structural_reach
-from pr_agent.algo.suggestion_checks import dedent_code_for_file, python_syntax_is_valid, validate_suggestion
+from pr_agent.algo.suggestion_checks import (
+    dedent_code_for_file,
+    is_line_range_in_diff,
+    python_syntax_is_valid,
+    validate_suggestion,
+)
 from pr_agent.algo.token_budget import AttemptTokenBudget, clip_tokens
 from pr_agent.algo.utils import (
     ModelType,
     convert_to_markdown_v2,
+    get_min_finding_confidence,
     get_suggestion_fence,
     is_value_no,
     load_yaml,
@@ -215,7 +231,7 @@ def _strip_line_numbers(code: str | None, start_line: int, end_line: int) -> str
     """Drop the diff's line-number prefix when every line of the model's code carries the expected one."""
     if not code:
         return code
-    lines = code.splitlines()
+    lines = split_diff_lines(code)
     if len(lines) != end_line - start_line + 1:
         return code
     stripped = []
@@ -294,6 +310,7 @@ class PRReviewer:
     prediction_data = None  # merged review dict; None means "parse self.prediction instead"
     review_chunk_count = 1
     review_failed_chunk_count = 0
+    low_confidence_filtered_count = 0
     # chunked reviews only: every finding the chunks reported (before the merge cut it to
     # num_max_findings), and whether a chunk reached that limit on its own
     review_all_issues = None
@@ -340,7 +357,12 @@ class PRReviewer:
         self._review_finding_previous_state = None
         self._review_state_preserved = False
         self._pending_sink_output = None
-        previous_findings = self._load_previous_findings_context()
+        defer_pr_context = _as_bool_setting(get_settings().pr_reviewer.get("per_commit_review", False))
+        self._deferred_previous_findings = defer_pr_context
+        self._deferred_commit_messages = defer_pr_context or self.incremental.is_incremental
+        previous_findings = (
+            "" if self._deferred_previous_findings else self._load_previous_findings_context()
+        )
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
         if (self.pr_description_files and get_settings().get("config.is_auto_command", False) and
@@ -379,12 +401,15 @@ class PRReviewer:
             'require_can_be_split_review': get_settings().pr_reviewer.require_can_be_split_review,
             'require_security_review': get_settings().pr_reviewer.require_security_review,
             'require_todo_scan': get_settings().pr_reviewer.get("require_todo_scan", False),
+            'min_finding_confidence': get_min_finding_confidence(),
             "extra_instructions": self._extra_instructions(),
             "artifact_context": get_artifact_context("pr_reviewer"),
             "skills_context": get_skills_context(),
             "repo_context": build_repo_context(self.git_provider),
             "previous_findings": previous_findings,
-            "commit_messages_str": "" if self.incremental.is_incremental else self.git_provider.get_commit_messages(),
+            "commit_messages_str": (
+                "" if self._deferred_commit_messages else self.git_provider.get_commit_messages()
+            ),
             "commit_messages_begin": commit_messages_begin,
             "commit_messages_end": commit_messages_end,
             "commit_under_review": "",
@@ -415,13 +440,16 @@ class PRReviewer:
         is_incremental = False
         if args and len(args) >= 1:
             arg = args[0]
-            if arg == "-i":
+            if arg == "-i" and not hosted_markdown_export.get():
                 is_incremental = True
         incremental = IncrementalPR(is_incremental)
         return incremental
 
     async def run(self) -> None:
-        if _as_bool_setting(get_settings().pr_reviewer.get("per_commit_review", False)):
+        if (
+            _as_bool_setting(get_settings().pr_reviewer.get("per_commit_review", False))
+            and not hosted_markdown_export.get()
+        ):
             await self._run_per_commit()
         else:
             await self._run_review()
@@ -481,6 +509,8 @@ class PRReviewer:
         reviewed_fingerprints = set(reviewed.values())
         fingerprints = dict(reviewed)
         incremental_args = self.incremental.is_incremental
+        deferred_findings = getattr(self, "_deferred_previous_findings", False)
+        deferred_commits = getattr(self, "_deferred_commit_messages", False)
         base_vars = copy.deepcopy(self.vars)
         max_message_tokens = get_settings().config.get("max_commits_tokens", None)
         try:
@@ -495,6 +525,7 @@ class PRReviewer:
         failed = False
         first_error = None
         unloaded = []
+        cap_fallback = False
         try:
             pending = []
             for commit in commits:
@@ -521,10 +552,11 @@ class PRReviewer:
                     pending.append((commit, fingerprint))
 
             if 0 < max_commits < len(pending):
+                cap_fallback = True
                 self._restore_full_scope()
                 if incremental_args:
-                    self.vars.update(commit_messages_str=self.git_provider.get_commit_messages(),
-                                     previous_findings=self._load_previous_findings_context())
+                    self._deferred_previous_findings = True
+                    self._deferred_commit_messages = True
                 await self._review_as_one(
                     f"{len(pending)} commits to review exceed max_commits_per_review={max_commits}",
                     f"There are {len(pending)} commits to review, more than the limit of {max_commits} for per "
@@ -565,6 +597,14 @@ class PRReviewer:
                     new_records[commit.sha] = fingerprint
         finally:
             self._review_commit = None
+            if cap_fallback:
+                if not getattr(self, "_deferred_previous_findings", False) and "previous_findings" in self.vars:
+                    base_vars["previous_findings"] = self.vars["previous_findings"]
+                if not getattr(self, "_deferred_commit_messages", False) and "commit_messages_str" in self.vars:
+                    base_vars["commit_messages_str"] = self.vars["commit_messages_str"]
+            else:
+                self._deferred_previous_findings = deferred_findings or incremental_args
+                self._deferred_commit_messages = deferred_commits or incremental_args
             self.vars = base_vars
             self._restore_full_scope()
             if unloaded:
@@ -683,9 +723,16 @@ class PRReviewer:
                 if not can_run and self.incremental.is_incremental:
                     return None
                 if not self.incremental.is_incremental:
-                    # Reload the findings the incremental mode left out, for the fallback full review.
+                    self._deferred_previous_findings = True
+                    self._deferred_commit_messages = True
+
+            if self._review_commit is None:
+                if getattr(self, "_deferred_previous_findings", False):
                     self.vars["previous_findings"] = self._load_previous_findings_context()
+                    self._deferred_previous_findings = False
+                if not self.incremental.is_incremental and getattr(self, "_deferred_commit_messages", False):
                     self.vars["commit_messages_str"] = self.git_provider.get_commit_messages()
+                    self._deferred_commit_messages = False
 
             # if isinstance(self.args, list) and self.args and self.args[0] == 'auto_approve':
             #     get_logger().info(f'Auto approve flow PR: {self.pr_url} ...')
@@ -766,6 +813,12 @@ class PRReviewer:
                     reason += ": no major issues detected."
                 get_logger().info(reason)
                 get_settings().data = {"artifact": pr_review}
+                if (
+                    hosted_markdown_export.get()
+                    and partial_review_error is None
+                    and not self.review_failed_chunk_count
+                ):
+                    hosted_markdown_artifact.set(pr_review)
                 self._publish_merge_recommendation_status()
                 review_completed = True
                 self._review_done = True
@@ -1242,6 +1295,8 @@ class PRReviewer:
             and current_findings is not None
             # a dropped finding is not an absent one, so this run cannot resolve anything
             and not dropped_findings
+            # neither is a finding suppressed by min_finding_confidence
+            and not self.low_confidence_filtered_count
             and (
                 len(current_findings) < max_findings
                 # a chunked review that reached the limit is complete unless a chunk stopped at it
@@ -1292,6 +1347,7 @@ class PRReviewer:
         self.review_failed_chunk_count = 0
         self.review_all_issues = None
         self.review_chunk_hit_limit = None
+        self.low_confidence_filtered_count = 0
         self.partial_files_list = []
         raw_prompt_vars = getattr(self, "_raw_prompt_vars", getattr(self, "vars", None))
         ai_handler = getattr(self, "ai_handler", None)
@@ -1346,9 +1402,14 @@ class PRReviewer:
         # Otherwise, the single-call path would bypass cached successful chunks.
         has_incomplete_chunk_plan = hasattr(self, "_chunked_patches_diff_list")
         if chunking_enabled and (self.remaining_files_list or has_incomplete_chunk_plan):
-            prepared_diff = output if isinstance(output, PreparedPRDiff) else None
-            if await self._prepare_chunked_prediction(model, prepared_diff):
+            chunk_coro = self._prepare_chunked_prediction(
+                model, output if isinstance(output, PreparedPRDiff) else None
+            )
+            del output
+            if await chunk_coro:
                 return
+        else:
+            del output
 
         if self.patches_diff:
             get_logger().debug("PR diff", diff=self.patches_diff)
@@ -1424,6 +1485,8 @@ class PRReviewer:
                 self.token_handler,
                 model,
                 **multi_diff_kwargs)
+            multi_diff_kwargs.clear()
+            prepared_diff = None
             patches_diff_list = coverage.chunks
             self._chunked_patches_diff_list = patches_diff_list
             self._chunked_remaining_files_list = coverage.remaining_files_list
@@ -1433,6 +1496,7 @@ class PRReviewer:
                 self.patches_diff = patches_diff_list[0]
                 self.remaining_files_list = coverage.remaining_files_list
                 self.partial_files_list = coverage.partial_files_list
+        prepared_diff = None
         if len(patches_diff_list) < 2:
             get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
             return False
@@ -1444,14 +1508,19 @@ class PRReviewer:
         filtered_files = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
         if isinstance(filtered_files, (list, tuple)) and filtered_files:
             attempt_budget = self._review_attempt_budget(model)
-            max_tokens = attempt_budget.token_handler.prompt_tokens + attempt_budget.available_tokens(
+            attempt_token_handler = attempt_budget.token_handler
+            max_tokens = attempt_token_handler.prompt_tokens + attempt_budget.available_tokens(
                 OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True, clamp=False,
             )
-            prompts = [append_filtered_file_names(
-                patches_diff_list[index], self.git_provider, attempt_budget.token_handler, max_tokens,
-            ) for index in pending_indices]
+
+            async def _run_chunk(index: int):
+                prompt = append_filtered_file_names(
+                    patches_diff_list[index], self.git_provider, attempt_token_handler, max_tokens,
+                )
+                return await self._get_prediction(model, prompt)
         else:
-            prompts = [patches_diff_list[index] for index in pending_indices]
+            async def _run_chunk(index: int):
+                return await self._get_prediction(model, patches_diff_list[index])
         # A fallback model starts a new batch, so clear the previous attempt's line first.
         # Otherwise it stays on screen at "N of N" and the new attempt's first chunk rewinds
         # it; the chunks an earlier attempt finished are counted through `completed` below.
@@ -1463,8 +1532,8 @@ class PRReviewer:
             completed=len(patches_diff_list) - len(pending_indices),
         )
         predictions = await run_chunk_batch(
-            prompts,
-            lambda prompt: self._get_prediction(model, prompt),
+            pending_indices,
+            _run_chunk,
             reporter=self._chunk_progress,
         )
 
@@ -1580,7 +1649,13 @@ class PRReviewer:
         # Keep raw text for logging only; use the merged verdict from self.prediction_data.
         indices = sorted(chunk_results)
         raw_predictions = [chunk_results[index][0] for index in indices]
-        chunk_outputs = [chunk_results[index][1] for index in indices]
+        # Filter before merge_review_chunks cuts to num_max_findings, so low-confidence findings cannot
+        # take the place of a confident one from another chunk. Cached chunks stay raw (a fallback attempt
+        # reuses them), so filter copies and recount on every merge.
+        self.low_confidence_filtered_count = 0
+        chunk_outputs = [copy.deepcopy(chunk_results[index][1]) for index in indices]
+        for chunk_output in chunk_outputs:
+            self._filter_low_confidence_findings(chunk_output)
         self.prediction = "\n".join(raw_predictions)
         try:
             max_findings = int(get_settings().pr_reviewer.num_max_findings)
@@ -1706,6 +1781,19 @@ class PRReviewer:
             raise FallbackEligibleError(f"{source} did not contain a non-empty review mapping")
         return data
 
+    def _incremental_unfiltered_files(self) -> list | None:
+        expanded_incremental = getattr(self.git_provider, "_incremental_unfiltered_files", None)
+        if isinstance(expanded_incremental, list):
+            return list(expanded_incremental)
+        unreviewed_files = getattr(self.git_provider, "unreviewed_files_map", None)
+        if not isinstance(unreviewed_files, dict):
+            return None
+        paths = [path if isinstance(item, str) else item for path, item in unreviewed_files.items()]
+        rename_sources = getattr(self.git_provider, "unreviewed_rename_sources", None)
+        if isinstance(rename_sources, list) and rename_sources:
+            paths.extend(rename_sources)
+        return paths
+
     def _prepare_pr_review(self) -> str:
         """
         Prepare the PR review by processing the AI prediction and generating a markdown-formatted text that summarizes
@@ -1725,6 +1813,7 @@ class PRReviewer:
                 data["review"].pop(key)
         if self.prediction_data is None:
             self._validate_review_schema(data)
+            self._filter_low_confidence_findings(data)
         if isinstance(data, dict) and isinstance(data.get("review"), dict) and "failure_modes" in data["review"]:
             data["review"]["failure_modes"] = parse_failure_modes(data["review"]["failure_modes"])
         if isinstance(data, dict) and isinstance(data.get("review"), dict) and "artifact_findings" in data["review"]:
@@ -1759,18 +1848,33 @@ class PRReviewer:
             risk_diff_files = verdict_diff_files
         else:
             risk_diff_files = diff_files
-        if hasattr(self.git_provider, "get_pr_file_paths"):
+        incremental_scope = bool(
+            getattr(self.incremental, "is_incremental", False) and not require_merge_recommendation
+        )
+        empty_incremental_diff = False
+        if incremental_scope:
+            unfiltered_files = self._incremental_unfiltered_files()
+            empty_incremental_diff = (
+                unfiltered_files == [] or getattr(self.git_provider, "unreviewed_files_map", None) == {}
+            )
+            if empty_incremental_diff:
+                risk_diff_files = []
+        elif hasattr(self.git_provider, "get_pr_file_paths"):
             try:
                 unfiltered_files = self.git_provider.get_pr_file_paths()
             except Exception:
                 unfiltered_files = None
-        if not unfiltered_files and hasattr(self.git_provider, "get_files"):
+        if not incremental_scope and not unfiltered_files and hasattr(self.git_provider, "get_files"):
             try:
                 unfiltered_files = self.git_provider.get_files()
             except Exception:
                 unfiltered_files = None
 
-        filtered_names = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
+        filtered_names = (
+            []
+            if empty_incremental_diff
+            else getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
+        )
         if filtered_names:
             unfiltered_files = list(unfiltered_files or []) + list(filtered_names)
 
@@ -1991,6 +2095,9 @@ class PRReviewer:
         thread. Awaiting it keeps the event loop responsive and still delivers the
         output before the command returns.
         """
+        if hosted_markdown_export.get():
+            self._pending_sink_output = None
+            return
         pending = getattr(self, "_pending_sink_output", None)
         if pending is None:
             return
@@ -1999,6 +2106,27 @@ class PRReviewer:
         await push_outputs_async(
             message_type, payload=payload, markdown=markdown, git_provider=self.git_provider
         )
+
+    def _filter_low_confidence_findings(self, data) -> None:
+        """Drop findings below `min_finding_confidence`, counting them in `low_confidence_filtered_count`."""
+        review = data.get("review") if isinstance(data, dict) else None
+        issues = review.get("key_issues_to_review") if isinstance(review, dict) else None
+        if not isinstance(issues, list):
+            return
+        threshold = get_min_finding_confidence()
+        if threshold <= 0:
+            return
+        kept = []
+        for issue in issues:
+            confidence = finding_confidence(issue)
+            if confidence is not None and confidence < threshold:
+                continue
+            kept.append(issue)
+        dropped = len(issues) - len(kept)
+        if dropped:
+            get_logger().info(f"Dropped {dropped} finding(s) below min_finding_confidence={threshold:g}")
+            review["key_issues_to_review"] = kept
+            self.low_confidence_filtered_count += dropped
 
     def _build_key_issue_comment(self, finding: Finding, diff_files: dict) -> dict | None:
         relevant_file = finding.path
@@ -2016,7 +2144,7 @@ class PRReviewer:
             get_logger().warning("Review finding points at a file that is not in the diff, "
                                  "keeping it in the summary", artifact={"relevant_file": relevant_file})
             return None
-        if not file.head_file or end_line > len(file.head_file.splitlines()):
+        if not is_line_range_in_diff(file, start_line, end_line):
             get_logger().warning("Review finding points past the end of the file, keeping it in the summary",
                                  artifact={"relevant_file": relevant_file, "start_line": start_line,
                                            "end_line": end_line})

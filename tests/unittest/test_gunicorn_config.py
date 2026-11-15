@@ -214,6 +214,24 @@ def test_prepare_prometheus_provisions_state_or_propagates_error(monkeypatch, tm
         assert gunicorn_config.os.environ["PROMETHEUS_MULTIPROC_DIR"] == str(state_dir)
 
 
+@pytest.mark.parametrize("is_enabled", [False, "FALSE", "off", "no"])
+def test_prepare_prometheus_skips_state_when_telemetry_is_off(monkeypatch, tmp_path, is_enabled):
+    state_dir = tmp_path / "master-state"
+    settings = {
+        "OTEL.IS_ENABLED": is_enabled,
+        "OTEL.EXPORTER_TYPE": "prometheus",
+        "OTEL.PROMETHEUS_MULTIPROC_DIR": str(state_dir),
+    }
+    monkeypatch.setattr("pr_agent.config_loader.get_settings", lambda: SimpleNamespace(get=settings.get))
+    monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", "")
+    monkeypatch.delenv("PROMETHEUS_MULTIPROC_DIR")
+
+    gunicorn_config._prepare_prometheus()
+
+    assert not state_dir.exists()
+    assert "PROMETHEUS_MULTIPROC_DIR" not in gunicorn_config.os.environ
+
+
 def _fake_prometheus_client(monkeypatch):
     """Stub prometheus_client so the gate tests never import the real module.
 

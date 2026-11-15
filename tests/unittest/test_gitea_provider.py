@@ -31,6 +31,95 @@ def _guidance_response(body=b"", status=200, *, headers=None, reason=None):
     return HTTPResponse(body=BytesIO(body), status=status, headers=headers, reason=reason, preload_content=False)
 
 
+def test_gitea_publish_comment_preserves_non_bmp_characters_on_first_send():
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.enabled_issue = False
+    provider.enabled_pr = True
+    provider.pr_number = 123
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.max_comment_chars = 10000
+    provider.limit_output_characters = lambda text, _max_chars: text
+    provider.repo_api = MagicMock()
+    provider.repo_api.create_comment.return_value = SimpleNamespace(id=7)
+    provider.comments_list = []
+    provider.temp_comments = []
+    provider.logger = MagicMock()
+
+    result = provider.publish_comment("Review 🔍, tests 🧪, BMP symbol ⚗, clock ⏱️")
+
+    provider.repo_api.create_comment.assert_called_once_with(
+        owner="owner",
+        repo="repo",
+        index=123,
+        comment="Review 🔍, tests 🧪, BMP symbol ⚗, clock ⏱️",
+    )
+    assert result["comment_id"] == 7
+
+
+@pytest.mark.parametrize(
+    ("method", "api_method", "kwargs"),
+    [
+        (
+            "create_comment",
+            "issue_create_comment",
+            {"owner": "owner", "repo": "repo", "index": 123, "comment": "Review 😀, effort 🔵, marker 🧪<!-- intact"},
+        ),
+        (
+            "edit_comment",
+            "issue_edit_comment",
+            {
+                "owner": "owner",
+                "repo": "repo",
+                "comment_id": 7,
+                "comment": "Review 😀, effort 🔵, marker 🧪<!-- intact",
+            },
+        ),
+    ],
+)
+def test_repo_api_comment_retries_500_once_with_replacements(
+    guidance_raw_api, method, api_method, kwargs
+):
+    api, _ = guidance_raw_api
+    api.issue = MagicMock()
+    sender = getattr(api.issue, api_method)
+    sender.side_effect = [ApiException(status=500, reason="legacy utf8"), SimpleNamespace(id=7)]
+
+    response = getattr(api, method)(**kwargs)
+
+    assert response.id == 7
+    assert sender.call_count == 2
+    assert sender.call_args_list[0].kwargs["body"]["body"] == kwargs["comment"]
+    assert sender.call_args_list[1].kwargs["body"]["body"] == "Review �, effort ⚫, marker �<!-- intact"
+
+
+@pytest.mark.parametrize(
+    ("method", "api_method", "kwargs"),
+    [
+        (
+            "create_comment",
+            "issue_create_comment",
+            {"owner": "owner", "repo": "repo", "index": 123, "comment": "Review 🔍"},
+        ),
+        (
+            "edit_comment",
+            "issue_edit_comment",
+            {"owner": "owner", "repo": "repo", "comment_id": 7, "comment": "Review 🔍"},
+        ),
+    ],
+)
+def test_repo_api_comment_does_not_retry_non_500(guidance_raw_api, method, api_method, kwargs):
+    api, _ = guidance_raw_api
+    api.issue = MagicMock()
+    sender = getattr(api.issue, api_method)
+    sender.side_effect = ApiException(status=403, reason="forbidden")
+
+    with pytest.raises(ApiException):
+        getattr(api, method)(**kwargs)
+
+    sender.assert_called_once()
+
+
 @pytest.mark.parametrize("ref", ["base-sha", "feature/nested#branch?", ""])
 @pytest.mark.parametrize("filepath", [
     "src/plain.py",
