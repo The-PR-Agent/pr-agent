@@ -34,7 +34,9 @@ setting, and `--write-baseline scripts/review_eval/baseline_<tier>.json` records
 In CI, `.github/workflows/review-eval.yaml` runs it only on demand and never blocks a merge (it is not a required
 check). A maintainer runs it from the Actions tab with a pull request number: `overlay_pr.py` applies that PR's prompt
 files onto the default branch, refusing any file that adds tables, keys or non-string values (Dynaconf would merge
-them into the settings), and the result is posted on the PR. No code from the PR runs, so a change to
+them into the settings) or any string starting with `@` (a Dynaconf token such as `@format` would read the
+environment, which holds the key), and the result is posted on the PR. This relies on pr-agent rendering prompts in
+Jinja's `SandboxedEnvironment` and on the pinned Dynaconf's token rules: re-check both when either changes. No code from the PR runs, so a change to
 `pr_reviewer.py` is evaluated locally on the branch instead. On a same-repository PR that changes the review prompt or
 the reviewer, the `review-eval` label runs it too (re-apply the label to run it again after a push). It needs the `REVIEW_EVAL_MODEL` and `REVIEW_EVAL_JUDGE_MODEL` repository variables, and the matching
 `REVIEW_EVAL_OPENAI_KEY` or `REVIEW_EVAL_ANTHROPIC_KEY` secret in a `review-eval` environment; give that environment
