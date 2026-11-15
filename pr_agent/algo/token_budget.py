@@ -91,7 +91,9 @@ def get_max_tokens(model, ignore_max_model_tokens=False, *, custom_llm_provider:
     (6) else, raise an error.
 
     For all cases, we further limit the number of tokens to 'config.max_model_tokens' if it is set.
-    This aims to improve the algorithmic quality, as the AI model degrades in performance when the input is too long.
+    The clamp keeps the smaller of that value and the model's own limit, so a model with a larger
+    window is not pruned to a smaller budget than it can use. The default (256000) reflects that no
+    degradation was observed at prompt sizes up to 57k tokens in a local /review replay.
     Pass ignore_max_model_tokens=True to keep the unreduced value, for sites that deliberately use the
     raw model context size rather than the conservative clamp.
     """
