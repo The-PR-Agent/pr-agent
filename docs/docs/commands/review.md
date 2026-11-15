@@ -731,8 +731,8 @@ GitHub and GitLab approves the exact commit it reviewed when all of these hold:
 
 Each `/review` run withdraws the approval PR-Agent gave when it starts, and approves again only when it ends with all
 of these holding, so a run that fails or finds a concern leaves no approval behind. On a push, the GitHub App, the
-GitHub Action, and the GitLab webhook dismiss it before any other event filter runs. GitHub also dismisses it when
-the base branch changes or the pull request is reopened. On GitHub, PR-Agent only dismisses approvals it gave
+GitHub Action, and the GitLab webhook dismiss it before any other event filter runs. A change of base branch also
+dismisses it, and on GitHub so does a reopen. On GitHub, PR-Agent only dismisses approvals it gave
 automatically; manual approvals from the same account are left alone. On GitLab, an approval belongs to the token's
 account, so use an account reserved for PR-Agent. With `publish_output` off, nothing is approved or dismissed.
 
