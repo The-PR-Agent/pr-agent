@@ -434,7 +434,7 @@ push_commands = [
 
 ### BitBucket Server webhook
 
-For a BitBucket Server webhook deployment, new commits pushed to an open PR (the `pr:from_ref_updated` and `repo:refs_changed` events) run no commands by default. To run commands on each **push**, set (for example):
+For a BitBucket Server webhook deployment, new commits pushed to an open PR arrive as `pr:from_ref_updated` ("Source branch updated" in the webhook settings) and run no commands by default. The repository "Push" event (`repo:refs_changed`) carries no pull request and is ignored. To run commands on each **push**, subscribe the webhook to `pr:from_ref_updated` and set (for example):
 
 ```toml
 [bitbucket_server]
