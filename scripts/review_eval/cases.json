@@ -1079,5 +1079,5 @@
    "tickets": []
   }
  ],
- "fast_note": "fast tier: the catch cases caught in every one of 4 Sonnet runs (local and fork CI, 14 Nov 2026); a canary for breakage, not a quality measure"
+ "fast_note": "fast tier: the catch cases caught in every one of 4 trial runs (local and fork CI, 14 Nov 2026); a canary for breakage, not a quality measure"
 }

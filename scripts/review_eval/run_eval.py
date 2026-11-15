@@ -5,9 +5,9 @@ Catch cases carry known findings (real issues a maintainer raised) and measure h
 cases measure how many posted findings a code-reading judge confirms. Each case runs `--repeats` times because model
 output varies run to run. The exit code is 1 when the gate fails (see score.gate), so a pipeline can block on it.
 
-Example (from the repository root, with the model's key in the environment, e.g. ANTHROPIC__KEY):
-  uv run python scripts/review_eval/run_eval.py --model anthropic/claude-sonnet-5-5 \\
-      --judge-model anthropic/claude-sonnet-5-5 --repeats 2 --out /tmp/review-eval
+Example (from the repository root, with OPENAI__KEY in the environment):
+  uv run python scripts/review_eval/run_eval.py --model openai/gpt-6.1-sol \\
+      --judge-model openai/gpt-6.1-sol --repeats 2 --out /tmp/review-eval
 Runs are cached in --out, so an interrupted eval resumes. Use --write-baseline to record an accepted run.
 """
 import argparse
@@ -29,7 +29,7 @@ REPLAY = HERE / "replay.py"
 BRANCH_PREFIX = "review-eval-base-"
 MAX_DIFF = 60_000
 PASS_ENV = ("PATH", "HOME", "TMPDIR", "SSL_CERT_FILE")
-SECRET_ENV = {"anthropic": ("ANTHROPIC__KEY",), "openai": ("OPENAI__KEY", "OPENAI_KEY")}
+SECRET_ENV = {"openai": ("OPENAI__KEY", "OPENAI_KEY")}
 OVERRIDE_SECTIONS = {"CONFIG", "PR_REVIEWER"}
 OVERRIDE_DENY = {"KEY", "KEYS", "TOKEN", "SECRET", "PASSWORD", "BASE", "URL", "PROXY", "HEADER", "HEADERS", "TYPE",
                  "ENDPOINT", "MODEL", "MODELS", "CERT", "SSL", "BUNDLE", "HOST"}
@@ -236,8 +236,8 @@ def main():
     ap.add_argument("--out", required=True, type=pathlib.Path)
     ap.add_argument("--cases", type=pathlib.Path, default=HERE / "cases.json")
     ap.add_argument("--tier", choices=("fast", "full"), default="full",
-                    help="fast: the six always-caught catch cases, a breakage canary (about $1 on Sonnet with two "
-                         "repeats); full: all 55 cases (about $8.50)")
+                    help="fast: the six always-caught catch cases, a breakage canary (about $1 with two repeats in "
+                         "the fork trial); full: all 55 cases (about $8.50)")
     ap.add_argument("--baseline", type=pathlib.Path, help="default: baseline_<tier>.json next to this script")
     ap.add_argument("--write-baseline", type=pathlib.Path)
     ap.add_argument("--limit", type=int, help="first N cases of each kind only (smoke test)")
@@ -278,15 +278,15 @@ def main():
     baseline = json.loads(args.baseline.read_text()) if args.baseline.exists() and not args.limit else None
     failures, notes = score.gate(m, baseline, args.repeats)
     text = summary(m, failures, notes, args)
-    (args.out / "metrics.json").write_text(json.dumps(m, indent=1))
+    m.update({"model": args.model, "tier": args.tier, "repeats": args.repeats})
+    (args.out / "metrics.json").write_text(json.dumps(m, indent=1) + "\n")  # commit it as baseline_<tier>.json
     (args.out / "summary.md").write_text(text)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
             f.write(text)
     print(text)
     if args.write_baseline:
-        args.write_baseline.write_text(json.dumps({**m, "model": args.model, "tier": args.tier,
-                                                   "repeats": args.repeats}, indent=1) + "\n")
+        args.write_baseline.write_text(json.dumps(m, indent=1) + "\n")
     sys.exit(1 if failures else 0)
 
 

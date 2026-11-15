@@ -8,8 +8,7 @@ import time
 
 import litellm
 
-KEY_ENV = {"anthropic": ("ANTHROPIC__KEY", "ANTHROPIC_API_KEY"),
-           "openai": ("OPENAI__KEY", "OPENAI_KEY", "OPENAI_API_KEY")}
+KEY_ENV = {"openai": ("OPENAI__KEY", "OPENAI_KEY", "OPENAI_API_KEY")}
 MAX_LOOKUPS, READ_LINES, GREP_LINES, MAX_TEXT = 8, 120, 40, 200
 
 CATCH_SYSTEM = """You judge whether an automated code review raised known problems. Each known finding is a real \
