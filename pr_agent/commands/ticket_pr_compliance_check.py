@@ -1185,6 +1185,12 @@ def _provider_supports(git_provider, capability: str) -> bool:
     return bool(check()) if callable(check) else False
 
 
+def _issue_url_sort_key(url):
+    """Order issue URLs by repository, then by issue number, so #9 comes before #10."""
+    prefix, _, number = url.rstrip("/").rpartition("/")
+    return prefix, int(number) if number.isascii() and number.isdigit() else float("inf"), url
+
+
 async def _run_ticket_io(function, *args):
     """Offload ticket reads only when settings are isolated from shared state."""
     if get_settings() is get_settings(use_context=False):
@@ -1292,7 +1298,12 @@ async def extract_tickets(git_provider):
                             url for url in raw_sub_issues
                             if isinstance(url, str) and url.strip()
                         ]
-                        for sub_issue_url in sorted(valid_sub_issues)[:MAX_SUB_ISSUES_PER_TICKET]:
+                        sub_issue_urls = sorted(valid_sub_issues, key=_issue_url_sort_key)
+                        if len(sub_issue_urls) > MAX_SUB_ISSUES_PER_TICKET:
+                            get_logger().info(
+                                f"Using the first {MAX_SUB_ISSUES_PER_TICKET} of {len(sub_issue_urls)} "
+                                f"sub-issues of {ticket}")
+                        for sub_issue_url in sub_issue_urls[:MAX_SUB_ISSUES_PER_TICKET]:
                             try:
                                 sub_repo, sub_issue_number = git_provider._parse_issue_url(sub_issue_url)
                                 sub_repo_obj = await _get_repo_obj_for_ticket(
