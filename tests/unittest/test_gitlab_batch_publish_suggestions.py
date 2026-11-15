@@ -428,7 +428,7 @@ def test_rejected_position_fallback_keeps_review_markers_and_invents_no_score():
     # /review key issues carry no score, and the reviewer finds its published findings by the
     # location marker embedded in the body; the file-level fallback note must keep both intact.
     p = _gl_provider()
-    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
     location_marker = "<!-- pr-agent-key-issue-location: 0123456789ab -->"
     body = ("**Possible Issue** The lock is never released.\n\n```suggestion\nx = 2\n```\n\n"
             f"<!-- pr-agent-dedup: ba9876543210 -->\n{location_marker}")
@@ -452,7 +452,7 @@ def test_rejected_position_fallback_keeps_review_markers_and_invents_no_score():
 
 def test_rejected_position_fallback_keeps_improve_score():
     p = _gl_provider()
-    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
     gs = _settings(as_review=False)
     try:
         assert p.publish_code_suggestions([_suggestion(score=9)]) is True

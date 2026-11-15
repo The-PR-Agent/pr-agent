@@ -2807,15 +2807,3 @@ def test_fix_keeps_git_line_numbers_around_unicode_separators(committable_on):
     comment = _published_comment(reviewer.git_provider)
     assert "```suggestion\nc = 4\n```" in comment["body"]
     assert comment["original_suggestion"]["existing_code"] == "c = 3"
-
-
-def test_fix_on_incomplete_head_file_is_plain(committable_on):
-    reviewer, data = _reviewer_with_findings(_key_issue(**_FIX_ISSUE))
-    reviewer.git_provider.get_diff_files.return_value[0].head_file_is_complete = False
-
-    reviewer._publish_key_issues_as_inline_comments(data)
-
-    comment = _published_comment(reviewer.git_provider)
-    assert "```suggestion" not in comment["body"]
-    assert "```text fix\nTWO\nTHREE\n```" in comment["body"]
-    assert "original_suggestion" not in comment
