@@ -1030,3 +1030,49 @@ async def test_remerging_cached_chunks_keeps_the_low_confidence_count(chunking_e
 
     assert reviewer.low_confidence_filtered_count == 2
     assert [issue["confidence"] for issue in reviewer.prediction_data["review"]["key_issues_to_review"]] == [9]
+
+
+@pytest.mark.asyncio
+async def test_chunked_review_drops_prepared_diff_and_renders_filtered_prompts_lazily(
+    chunking_enabled, monkeypatch,
+):
+    import gc
+    import weakref
+
+    reviewer = _make_reviewer()
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = ["yarn.lock"]
+    prepared_ref = None
+    observed_prompts = []
+
+    async def fake_get_prediction(_model, prompt):
+        gc.collect()
+        assert prepared_ref is not None and prepared_ref() is None
+        observed_prompts.append(prompt)
+        return CHUNK_A if len(observed_prompts) == 1 else CHUNK_B
+
+    reviewer._get_prediction = AsyncMock(side_effect=fake_get_prediction)
+
+    async def fake_prepare_diff(*_args, **_kwargs):
+        nonlocal prepared_ref
+        prepared = PreparedPRDiff(
+            "chunk-a",
+            ["b.py"],
+            file_dict={"a.py": {"patch": "chunk-a", "tokens": 7}, "b.py": {"patch": "chunk-b", "tokens": 7}},
+            model="model",
+            add_line_numbers_to_hunks=True,
+            token_handler=reviewer.token_handler,
+        )
+        prepared_ref = weakref.ref(prepared)
+        return prepared
+
+    # Avoid MagicMock here: MagicMock stores call_args, which would keep prepared_diff alive.
+    monkeypatch.setattr("pr_agent.commands.pr_reviewer.run_diff_preparation", fake_prepare_diff)
+    monkeypatch.setattr(
+        "pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
+        lambda *_args, **_kwargs: PackedPRDiffs(["chunk-a", "chunk-b"], [], []),
+    )
+
+    await reviewer._prepare_prediction("model")
+
+    assert len(observed_prompts) == 2
+    assert all("yarn.lock" in prompt for prompt in observed_prompts)

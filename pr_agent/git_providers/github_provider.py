@@ -903,6 +903,7 @@ class GithubProvider(GitProvider):
             try:
                 status, _, body = self._post_graphql(query, variables)
                 response = json.loads(body) if status == 200 else None
+                del body
             except (GithubException, RequestException, ValueError) as e:
                 # Not `{e}`: a GithubException carries the whole response, which can hold blob contents.
                 get_logger().info(

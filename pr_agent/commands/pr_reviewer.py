@@ -1376,9 +1376,14 @@ class PRReviewer:
         # Otherwise, the single-call path would bypass cached successful chunks.
         has_incomplete_chunk_plan = hasattr(self, "_chunked_patches_diff_list")
         if chunking_enabled and (self.remaining_files_list or has_incomplete_chunk_plan):
-            prepared_diff = output if isinstance(output, PreparedPRDiff) else None
-            if await self._prepare_chunked_prediction(model, prepared_diff):
+            chunk_coro = self._prepare_chunked_prediction(
+                model, output if isinstance(output, PreparedPRDiff) else None
+            )
+            del output
+            if await chunk_coro:
                 return
+        else:
+            del output
 
         if self.patches_diff:
             get_logger().debug("PR diff", diff=self.patches_diff)
@@ -1454,6 +1459,8 @@ class PRReviewer:
                 self.token_handler,
                 model,
                 **multi_diff_kwargs)
+            multi_diff_kwargs.clear()
+            prepared_diff = None
             patches_diff_list = coverage.chunks
             self._chunked_patches_diff_list = patches_diff_list
             self._chunked_remaining_files_list = coverage.remaining_files_list
@@ -1463,6 +1470,7 @@ class PRReviewer:
                 self.patches_diff = patches_diff_list[0]
                 self.remaining_files_list = coverage.remaining_files_list
                 self.partial_files_list = coverage.partial_files_list
+        prepared_diff = None
         if len(patches_diff_list) < 2:
             get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
             return False
@@ -1474,14 +1482,19 @@ class PRReviewer:
         filtered_files = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
         if isinstance(filtered_files, (list, tuple)) and filtered_files:
             attempt_budget = self._review_attempt_budget(model)
-            max_tokens = attempt_budget.token_handler.prompt_tokens + attempt_budget.available_tokens(
+            attempt_token_handler = attempt_budget.token_handler
+            max_tokens = attempt_token_handler.prompt_tokens + attempt_budget.available_tokens(
                 OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True, clamp=False,
             )
-            prompts = [append_filtered_file_names(
-                patches_diff_list[index], self.git_provider, attempt_budget.token_handler, max_tokens,
-            ) for index in pending_indices]
+
+            async def _run_chunk(index: int):
+                prompt = append_filtered_file_names(
+                    patches_diff_list[index], self.git_provider, attempt_token_handler, max_tokens,
+                )
+                return await self._get_prediction(model, prompt)
         else:
-            prompts = [patches_diff_list[index] for index in pending_indices]
+            async def _run_chunk(index: int):
+                return await self._get_prediction(model, patches_diff_list[index])
         # A fallback model starts a new batch, so clear the previous attempt's line first.
         # Otherwise it stays on screen at "N of N" and the new attempt's first chunk rewinds
         # it; the chunks an earlier attempt finished are counted through `completed` below.
@@ -1493,8 +1506,8 @@ class PRReviewer:
             completed=len(patches_diff_list) - len(pending_indices),
         )
         predictions = await run_chunk_batch(
-            prompts,
-            lambda prompt: self._get_prediction(model, prompt),
+            pending_indices,
+            _run_chunk,
             reporter=self._chunk_progress,
         )
 
