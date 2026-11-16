@@ -745,7 +745,9 @@ key = ...
 
 You can also set the `OPENCODE_API_KEY` (or `OPENCODE_GO_API_KEY`) environment variable instead.
 
-> Note: some reasoning models currently stall behind the OpenCode Go proxy. On large PRs, `deepseek-v4.1-flash` (and `deepseek-v4-pro`) can stream reasoning for over 10 minutes without returning an answer, so requests fail with `litellm.Timeout` and do not show up in the OpenCode console. This appears to be a known issue ([anomalyco/opencode#48419](https://github.com/anomalyco/opencode/issues/48419), [NousResearch/hermes-agent#61461](https://github.com/NousResearch/hermes-agent/issues/61461)). Use a model such as `opencode_go/glm-5.3-flash`, or set `reasoning_effort = "none"` in the `[config]` section.
+:::note[Reasoning models can stall on OpenCode Go]
+On large PRs, `deepseek-v4.1-flash` and `deepseek-v4-pro` have been seen streaming reasoning for over 10 minutes without returning an answer, so the request ends in `litellm.Timeout`. Using a differnet model such as `opencode_go/glm-5.3-flash`, or setting `reasoning_effort = "none"` in the `[config]` section, avoids it.
+:::
 
 ### DeepInfra
 
