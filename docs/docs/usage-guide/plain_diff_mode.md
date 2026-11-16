@@ -56,11 +56,13 @@ not existing human-applied PR labels.
 `review`, `describe`, and `ask` are supported, along with their
 `review_pr`, `describe_pr`, and `ask_question` aliases. `improve` and `improve_code` run `review`.
 `generate_labels` also works with raw diffs and can write its filtered labels as JSON.
+`update_changelog` can generate a changelog draft to stdout (`--output` is not supported for it),
+but cannot read or update an existing repository changelog file in this mode.
 Because there is no hosting
 platform to push to, `review` writes its findings, including any fixes, as a single markdown
 document to stdout (and to `--output`, if given), with each fix as a text block in the
 summary, instead of as committable inline suggestions. Commands that require live platform interaction (such as
-`update_changelog` or `similar_issue`) are not meaningful in this mode.
+`similar_issue`) are not meaningful in this mode.
 
 By default, `describe` uses `Local diff review` as the title in stdout and `--output`;
 set `pr_description.generate_ai_title=true` to use an AI-generated title.
