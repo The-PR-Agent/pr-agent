@@ -516,7 +516,7 @@ merged field by field:
 | `relevant_tests` | Yes if any chunk found tests |
 | `score` | The lowest score any chunk gave |
 | `risk_level`, `merge_recommendation` | The most conservative value any chunk gave |
-| `failure_modes` | Concatenate valid cases in chunk order, keeping at most three |
+| `failure_modes` | Concatenate valid cases in chunk order, dropping exact duplicates and keeping at most three |
 | `estimated_effort_to_review_[1-5]` | The highest value any chunk gave |
 | `contribution_time_cost_estimate` | The sum over the chunks, per case |
 | `ticket_compliance_check` | One entry per ticket, with its bullet lists unioned across chunks |
