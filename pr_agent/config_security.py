@@ -195,10 +195,12 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "github_action_config": frozenset({"fail_on_command_errors"}),
     "ignore": frozenset({"regex"}),
     "pr_code_suggestions": frozenset({"parallel_calls", "max_number_of_calls"}),
+    "pr_description": frozenset({"max_ai_calls"}),
     # PR comments must not enable ticket reads performed with the operator's credentials.
     "pr_questions": frozenset({"resolve_threads", "use_ticket_context"}),
     # A commenter must not choose which host file the structural-reach row reads, or turn on quoting of CI output.
     "pr_reviewer": frozenset({
+        "enable_large_pr_chunking",
         "enable_risk_checks",
         "extra_risky_shapes",
         "max_changed_lines",

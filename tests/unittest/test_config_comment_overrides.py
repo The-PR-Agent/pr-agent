@@ -126,7 +126,7 @@ COMMENT_OVERRIDABLE_KEYS = {
         "collapsible_file_list_threshold", "enable_help_comment", "enable_help_text",
         "enable_large_pr_handling", "enable_pr_description", "enable_pr_diagram", "enable_pr_type",
         "enable_semantic_files_types", "extra_instructions", "file_table_collapsible_open_by_default",
-        "final_update_message", "generate_ai_title", "include_generated_by_header", "max_ai_calls",
+        "final_update_message", "generate_ai_title", "include_generated_by_header",
         "pr_diagram_direction", "pr_diagram_direction_threshold", "publish_description_as_comment",
         "publish_description_as_comment_persistent", "publish_labels", "use_description_markers",
     }),
@@ -137,7 +137,7 @@ COMMENT_OVERRIDABLE_KEYS = {
         "ask_heading", "enable_help_text", "extra_instructions", "use_conversation_history",
     }),
     "pr_reviewer": frozenset({
-        "enable_help_text", "enable_intro_text", "enable_large_pr_chunking", "enable_review_coverage_footer",
+        "enable_help_text", "enable_intro_text", "enable_review_coverage_footer",
         "enable_review_labels_effort", "enable_review_labels_security", "extra_instructions",
         "final_update_message", "inline_key_issues", "max_previous_findings_chars", "min_finding_confidence",
         "minimal_commits_for_incremental_review", "minimal_minutes_for_incremental_review",
