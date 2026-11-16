@@ -67,7 +67,8 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "jira": frozenset({"cloud_id", "jira_api_email", "jira_site", "project_keys"}),
     # extra_headers is attached to every model request, so on a shared gateway that routes or
     # authenticates by header the reviewed repository must not choose the headers the operator sends.
-    "litellm": frozenset({"extra_headers"}),
+    # suppress_debug_info sets a LiteLLM process global, so one repository must not change it for the others.
+    "litellm": frozenset({"extra_headers", "suppress_debug_info"}),
     "moonshot": frozenset({"api_base"}),
     "ollama": frozenset({"api_base"}),
     "openai": frozenset({"api_base", "api_type", "api_version"}),
