@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 
 from pr_agent.algo.git_patch_processing import check_if_hunk_lines_matches_to_file, extend_patch
+from pr_agent.commands.pr_questions import PRQuestions
 from pr_agent.git_providers.git_provider import get_main_pr_language
-from pr_agent.tools.pr_questions import PRQuestions
 
 # ---------------------------------------------------------------------------
 # 1. image reference extraction
@@ -30,10 +30,10 @@ from pr_agent.tools.pr_questions import PRQuestions
 
 
 def _identify(question: str) -> str:
-    tool = PRQuestions.__new__(PRQuestions)
-    tool.vars = {}
-    tool.question_str = question
-    return tool.identify_image_in_comment()
+    command = PRQuestions.__new__(PRQuestions)
+    command.vars = {}
+    command.question_str = question
+    return command.identify_image_in_comment()
 
 
 def test_direct_image_link_after_another_link_is_extracted():
@@ -83,31 +83,31 @@ def test_image_extensions_and_query_strings(url, expected):
 
 def test_markdown_directive_form_still_works():
     """The '![image](path)' form must keep taking precedence over link scanning."""
-    tool = PRQuestions.__new__(PRQuestions)
-    tool.vars = {}
-    tool.question_str = "/ask what is this > ![image](https://i.imgur.com/x.png)"
+    command = PRQuestions.__new__(PRQuestions)
+    command.vars = {}
+    command.question_str = "/ask what is this > ![image](https://i.imgur.com/x.png)"
 
-    assert tool.identify_image_in_comment() == "https://i.imgur.com/x.png"
-    assert tool.vars["img_path"] == "https://i.imgur.com/x.png"
+    assert command.identify_image_in_comment() == "https://i.imgur.com/x.png"
+    assert command.vars["img_path"] == "https://i.imgur.com/x.png"
 
 
 def test_resolved_path_is_recorded_in_vars():
-    tool = PRQuestions.__new__(PRQuestions)
-    tool.vars = {}
-    tool.question_str = "look at https://a.example.com/1.png and https://b.example.com/2.png"
+    command = PRQuestions.__new__(PRQuestions)
+    command.vars = {}
+    command.question_str = "look at https://a.example.com/1.png and https://b.example.com/2.png"
 
-    assert tool.identify_image_in_comment() == "https://a.example.com/1.png"
-    assert tool.vars["img_path"] == "https://a.example.com/1.png"
+    assert command.identify_image_in_comment() == "https://a.example.com/1.png"
+    assert command.vars["img_path"] == "https://a.example.com/1.png"
 
 
 def test_no_image_leaves_img_path_unset():
     """A miss must not poison vars with the previous run's value."""
-    tool = PRQuestions.__new__(PRQuestions)
-    tool.vars = {}
-    tool.question_str = "plain question, no links at all"
+    command = PRQuestions.__new__(PRQuestions)
+    command.vars = {}
+    command.question_str = "plain question, no links at all"
 
-    assert tool.identify_image_in_comment() == ""
-    assert "img_path" not in tool.vars
+    assert command.identify_image_in_comment() == ""
+    assert "img_path" not in command.vars
 
 
 # ---------------------------------------------------------------------------

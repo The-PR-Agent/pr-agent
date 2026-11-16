@@ -4,7 +4,7 @@
 # import unittest
 # import asyncio
 # from unittest.mock import AsyncMock, patch
-# from pr_agent.tools.ticket_pr_compliance_check import extract_tickets, extract_and_cache_pr_tickets
+# from pr_agent.commands.ticket_pr_compliance_check import extract_tickets, extract_and_cache_pr_tickets
 # from pr_agent.git_providers.github_provider import GithubProvider
 #
 #

@@ -7,11 +7,12 @@ from unittest.mock import Mock
 import pytest
 from starlette_context import request_cycle_context
 
-from pr_agent import git_providers
+from pr_agent import doctor, git_providers
 from pr_agent.agent import pr_agent as pr_agent_module
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.servers import github_action_runner
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
 @pytest.fixture
@@ -105,7 +106,7 @@ async def test_other_pr_commands_still_require_model_key(monkeypatch, pr_comment
     )
     pr_comment_env(body, event_name)
 
-    with pytest.raises(SystemExit, match="Stopping before any tool runs.*OPENAI_API_KEY"):
+    with pytest.raises(SystemExit, match="Stopping before any command runs.*OPENAI_API_KEY"):
         await github_action_runner.run_action()
 
 
@@ -118,7 +119,7 @@ async def test_static_pr_comments_still_require_github_token(monkeypatch, pr_com
         await github_action_runner.run_action()
 
 
-async def test_missing_key_stops_before_tools_naming_the_env_variable(
+async def test_missing_key_stops_before_commands_naming_the_env_variable(
     monkeypatch, action_env
 ):
     monkeypatch.setattr(
@@ -126,8 +127,22 @@ async def test_missing_key_stops_before_tools_naming_the_env_variable(
         lambda: ("openai", ("OPENAI_API_KEY",)),
     )
 
-    with pytest.raises(SystemExit, match="Stopping before any tool runs.*OPENAI_API_KEY"):
+    with pytest.raises(SystemExit, match="Stopping before any command runs.*OPENAI_API_KEY"):
         await github_action_runner.run_action()
+
+
+async def test_placeholder_without_known_env_names_has_actionable_guidance(monkeypatch, action_env):
+    monkeypatch.setattr(
+        github_action_runner, "missing_provider_key_env_vars",
+        lambda: ("unlisted_provider", ()),
+    )
+
+    with pytest.raises(SystemExit) as error:
+        await github_action_runner.run_action()
+
+    message = str(error.value)
+    assert "Replace the placeholder key in provider settings or workflow env." in message
+    assert "Set  in this workflow" not in message
 
 
 async def test_repository_settings_are_applied_before_key_gate(monkeypatch, action_env):
@@ -320,3 +335,124 @@ async def test_inline_command_comments_keep_setup_before_line_conversion(monkeyp
     else:
         expected.append(("dispatch", body))
     assert order == expected
+
+
+@pytest.mark.parametrize("provider", ["watsonx", "watsonx_text"])
+@pytest.mark.parametrize(
+    ("source", "value"),
+    [
+        ("LITELLM.EXTRA_HEADERS.Authorization", ""),
+        ("LITELLM.EXTRA_HEADERS.Authorization", "Bearer"),
+        ("LITELLM.EXTRA_HEADERS.Authorization", "Bearer dummy_key"),
+        ("LITELLM.EXTRA_HEADERS.Authorization", "ZenApiKey dummy_key"),
+        ("WATSONX_TOKEN", "dummy_key"),
+        ("WATSONX_ZENAPIKEY", "dummy_key"),
+    ],
+)
+async def test_watsonx_gate_names_the_override_that_must_be_corrected(
+    monkeypatch, action_env, capsys, provider, source, value,
+):
+    from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+
+    # Watsonx's authentication checks must not trigger unrelated AWS discovery.
+    monkeypatch.setattr(LiteLLMAIHandler, "_initialize_aws_request_credentials", lambda self, settings: None)
+    settings = get_settings()
+    snapshot = snapshot_settings((
+        "config.model", "litellm.custom_llm_provider", "litellm.extra_headers",
+        "openai.api_type", "openai.org", "watsonx", "watsonx_text",
+        "github.user_token", "github.deployment_type", "github_action_config.enable_output",
+    ))
+    secret = "synthetic-native-key-not-for-diagnostics"
+    dispatches = []
+
+    async def run_command(*args):
+        dispatches.append(args)
+
+    try:
+        for key in ("watsonx", "watsonx_text"):
+            settings.set(key, {})
+        settings.set("config.model", f"{provider}/ibm/granite-3-8b-instruct")
+        for key in ("litellm.custom_llm_provider", "litellm.extra_headers", "openai.api_type"):
+            settings.set(key, None)
+        for name in ("WATSONX_APIKEY", "WATSONX_API_KEY", "WX_API_KEY", "WATSONX_TOKEN", "WATSONX_ZENAPIKEY"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("WATSONX_APIKEY", secret)
+        monkeypatch.setenv("WATSONX_URL", "https://watsonx.example")
+        if source == "LITELLM.EXTRA_HEADERS.Authorization":
+            headers = {"authorization": value, "X-Private": secret}
+            if value == "Bearer dummy_key":
+                headers = {"Authorization": "Bearer valid-earlier-entry", **headers}
+            settings.set("litellm.extra_headers", json.dumps(headers))
+        else:
+            monkeypatch.setenv(source, value)
+        monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda url: None)
+        monkeypatch.setattr(github_action_runner, "enforce_request_policy", lambda *args, **kwargs: True)
+        monkeypatch.setattr(github_action_runner, "_run_auto_command", run_command)
+
+        # Use the real handler and shared gate; a valid native key cannot fix an overriding credential.
+        assert doctor.missing_provider_key_env_vars() == (provider, (source,))
+        with pytest.raises(SystemExit) as error:
+            await github_action_runner.run_action()
+        message = str(error.value)
+        if source == "LITELLM.EXTRA_HEADERS.Authorization":
+            assert "last case-insensitive Authorization entry in LITELLM.EXTRA_HEADERS" in message
+        else:
+            assert f"Correct or remove {source}" in message
+        assert "Set WATSONX_API" not in message
+        assert secret not in message
+        assert dispatches == []
+        output = capsys.readouterr()
+        assert secret not in output.out + output.err
+
+        # Removing the indicated source allows the already-present native key to be used.
+        if source == "LITELLM.EXTRA_HEADERS.Authorization":
+            settings.set("litellm.extra_headers", None)
+        else:
+            monkeypatch.delenv(source)
+        assert doctor.missing_provider_key_env_vars() is None
+    finally:
+        restore_settings(snapshot)
+
+
+@pytest.mark.parametrize("locale_encoding", ["cp1252", "ascii"])
+@pytest.mark.parametrize("text", ["café", "שלום", "你好 👋"])
+async def test_event_payload_is_read_as_utf8_on_non_utf8_locales(
+    monkeypatch, tmp_path, locale_encoding, text
+):
+    # GitHub writes the event file as raw UTF-8 (not \uXXXX escapes). Reading it with the
+    # runner's locale encoding turned a non-ASCII PR title into mojibake on cp1252 and raised
+    # UnicodeDecodeError on an ASCII locale. Emulate the locale through the module's file
+    # opener, as test_github_action_output.py does for GITHUB_OUTPUT, and stop at the first
+    # helper that receives the parsed payload.
+    event = {
+        "action": "opened",
+        "pull_request": {"title": text, "url": "https://api.github.com/repos/owner/repo/pulls/1"},
+    }
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(event, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    real_open = open
+
+    def locale_open(path, mode="r", **kwargs):
+        kwargs.setdefault("encoding", locale_encoding)
+        return real_open(path, mode, **kwargs)
+
+    monkeypatch.setattr(github_action_runner, "open", locale_open, raising=False)
+
+    class _Stop(Exception):
+        pass
+
+    received = {}
+
+    def capture(event_payload, event_name):
+        received["title"] = event_payload["pull_request"]["title"]
+        raise _Stop
+
+    monkeypatch.setattr(github_action_runner, "_settings_pr_url", capture)
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}), pytest.raises(_Stop):
+        await github_action_runner.run_action()
+
+    assert received["title"] == text

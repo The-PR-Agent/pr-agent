@@ -1,7 +1,7 @@
 """MOSAICO A2A executor + the /health LLM probe (A2A 1.0).
 
 PRAgentExecutor.execute runs a single non-streaming path: it FIRST installs a
-request-scoped deepcopy of global_settings into starlette_context (so the tool run
+request-scoped deepcopy of global_settings into starlette_context (so the command run
 mutates only the per-request copy — load-bearing isolation under concurrency), routes
 the inbound text to a pr-agent command, and completes the Task with the rendered
 markdown.
@@ -124,7 +124,7 @@ class PRAgentExecutor(AgentExecutor):
                     )
                 )
 
-            # Request-scoped settings: the tool run mutates ONLY this deepcopy, never the
+            # Request-scoped settings: the command run mutates ONLY this deepcopy, never the
             # shared global. get_settings() resolves to sctx["settings"] when present.
             sctx["settings"] = copy.deepcopy(global_settings)
 

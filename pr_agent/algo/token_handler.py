@@ -11,6 +11,7 @@ from jinja2 import StrictUndefined
 from jinja2.sandbox import SandboxedEnvironment
 from tiktoken import encoding_for_model, get_encoding
 
+from pr_agent.algo.instruction_context import append_protected_system_instructions
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -41,7 +42,7 @@ def _await_coroutine(coro):
     """Run a coroutine to completion from a synchronous call site.
 
     ``asyncio.run`` cannot be called from a running event loop, and the accurate
-    token-count path is invoked synchronously from tools that run inside one, so
+    token-count path is invoked synchronously from commands that run inside one, so
     an active loop runs the coroutine on a dedicated worker loop instead. The
     caller's contextvars are copied into the worker so request-scoped settings
     (e.g. starlette ``context``) stay visible to the token-count coroutine.
@@ -120,7 +121,7 @@ class TokenHandler:
     CLAUDE_MAX_CONTENT_SIZE = 9_000_000 # Maximum allowed content size (9MB) for Claude API
 
     def __init__(self, pr=None, vars: dict | None = None, system="", user="", model=None, *,
-                 count_prompt_tokens: bool = True):
+                 count_prompt_tokens: bool = True, ai_handler=None):
         """
         Initializes the TokenHandler object.
 
@@ -131,10 +132,12 @@ class TokenHandler:
         - user: The user string.
         - model: Optional model name whose tokenizer should be used.
         - count_prompt_tokens: Whether to render and count the initial prompt during construction.
+        - ai_handler: Optional request handler whose token-limit policy applies to this prompt.
         """
         if vars is None:
             vars = {}
         self.model = model or get_settings().config.model
+        self.ai_handler = ai_handler
         self.pr = pr
         self.vars = vars
         self.system = system
@@ -149,7 +152,7 @@ class TokenHandler:
         """Return a handler bound to ``model`` without mutating this handler."""
         if model == self.model:
             return self
-        return TokenHandler(self.pr, self.vars, self.system, self.user, model=model)
+        return TokenHandler(self.pr, self.vars, self.system, self.user, model=model, ai_handler=self.ai_handler)
 
     def _get_system_user_tokens(self, pr, encoder, vars: dict, system, user):
         """
@@ -168,6 +171,7 @@ class TokenHandler:
         try:
             environment = SandboxedEnvironment(undefined=StrictUndefined)
             system_prompt = environment.from_string(system).render(vars)
+            system_prompt = append_protected_system_instructions(system_prompt)
             user_prompt = environment.from_string(user).render(vars)
             system_prompt_tokens = len(encoder.encode(system_prompt, disallowed_special=()))
             user_prompt_tokens = len(encoder.encode(user_prompt, disallowed_special=()))

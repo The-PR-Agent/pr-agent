@@ -1,5 +1,6 @@
 """Exercise MR diff retrieval through python-gitlab's HTTP and pagination code."""
 import json
+import re
 from types import SimpleNamespace
 from unittest.mock import Mock, call
 from urllib.parse import urlparse
@@ -109,6 +110,87 @@ def _metadata_reads(*snapshots):
     return [(200, snapshot, {}) for snapshot in snapshots]
 
 
+def _prepare_suggestion_publication(provider, monkeypatch, refs):
+    settings = {
+        "gitlab.publish_code_suggestions_as_review": False,
+        "GITLAB.RESOLVE_OUTDATED_INLINE_THREADS": False,
+        "GITLAB.AUTO_RESOLVE_FIXED_INLINE_THREADS": False,
+        "config.persistent_inline_comments": False,
+    }
+    monkeypatch.setattr(gitlab_provider, "get_settings", lambda: settings)
+    provider.id_mr = 7
+    provider.last_diff = SimpleNamespace(
+        base_commit_sha="construction-base", start_commit_sha="construction-start", head_commit_sha="construction-head",
+    )
+    provider.mr.diffs.list = Mock(return_value=[SimpleNamespace(
+        **{f"{key}_commit_sha": refs[f"{key}_sha"] for key in ("base", "start", "head")},
+    )])
+    provider.mr.discussions.create = Mock()
+    provider.RE_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
+    return [{"body": "```suggestion\nfixed\n```", "relevant_file": "a.py",
+             "relevant_lines_start": 1, "relevant_lines_end": 1}]
+
+
+def test_reconstructed_patch_uses_the_reviewed_version_not_the_construction_version(provider_factory, monkeypatch):
+    provider, transport = provider_factory([(200, [_change("a.py", diff="")], {})], count="1")
+    suggestions = _prepare_suggestion_publication(provider, monkeypatch, _metadata()["diff_refs"])
+
+    assert provider.publish_code_suggestions(suggestions)
+
+    position = provider.mr.discussions.create.call_args.args[0]["position"]
+    assert {key: position[key] for key in ("base_sha", "start_sha", "head_sha")} == _metadata()["diff_refs"]
+    assert position["new_path"] == "a.py" and position["new_line"] == 1
+    assert len(transport.diff_requests) == 1
+
+
+def test_missing_position_ref_does_not_prevent_read_only_analysis(provider_factory, monkeypatch):
+    provider, transport = provider_factory([(200, [_change("a.py")], {})], count="1")
+    transport.metadata["diff_refs"].pop("start_sha")
+    assert provider.get_diff_files()[0].head_file == "new\n"
+    suggestions = _prepare_suggestion_publication(provider, monkeypatch, _metadata()["diff_refs"])
+
+    assert provider.publish_code_suggestions(suggestions) is False
+
+    provider.mr.discussions.create.assert_not_called()
+    provider.mr.diffs.list.assert_not_called()
+
+
+@pytest.mark.parametrize("changed_ref", ["head_sha", "base_sha", "start_sha"])
+@pytest.mark.parametrize("count", ["1", None], ids=["cached", "uncached"])
+def test_suggestions_reject_a_changed_version_after_analysis(provider_factory, monkeypatch, changed_ref, count):
+    provider, transport = provider_factory([(200, [_change("a.py")], {})] * 2, count=count)
+    provider.get_diff_files()
+    newer = _metadata(count=count, **{changed_ref: "newer-ref"})
+    transport.metadata = newer
+    suggestions = _prepare_suggestion_publication(provider, monkeypatch, newer["diff_refs"])
+
+    assert provider.publish_code_suggestions(suggestions) is False
+
+    provider.mr.discussions.create.assert_not_called()
+    assert len(transport.diff_requests) == 1
+
+
+@pytest.mark.parametrize("scope_available", [True, False])
+def test_incremental_positions_require_verified_mr_refs(provider_factory, monkeypatch, scope_available):
+    response = (200, [_change("a.py")], {}) if scope_available else (503, {"message": "unavailable"}, {})
+    provider, _ = provider_factory([response, (200, [_change("a.py")], {})], count="1")
+    _prepare_incremental(provider)
+    provider._get_incremental_commits()
+    files = provider.get_diff_files()
+    assert files and provider.incremental.is_incremental
+    suggestions = _prepare_suggestion_publication(provider, monkeypatch, _metadata()["diff_refs"])
+
+    assert provider.publish_code_suggestions(suggestions) is scope_available
+
+    if scope_available:
+        position = provider.mr.discussions.create.call_args.args[0]["position"]
+        assert position["base_sha"] == "base"
+        assert position["base_sha"] != provider.incremental.last_seen_commit_sha
+    else:
+        provider.mr.discussions.create.assert_not_called()
+        provider.mr.diffs.list.assert_not_called()
+
+
 def _pages(first, second):
     next_url = "https://gitlab.example/gitlab/api/v4/projects/group%2Fsub%2Frepo/merge_requests/7/diffs?page=2"
     return [(200, first, {"Link": f'<{next_url}>; rel="next"'}), (200, second, {})]
@@ -153,6 +235,27 @@ def test_diff_line_counts_keep_unicode_separators_in_source_lines(provider_facto
     file = provider.get_diff_files()[0]
 
     assert (file.num_plus_lines, file.num_minus_lines) == (1, 1)
+
+
+def test_diff_line_counts_ignore_unified_diff_file_headers(provider_factory):
+    # Older GitLab MRs carry the ---/+++ headers in /diffs (gitlab-org/gitlab !1
+    # still does today); newer ones start at @@. gitlab-org/gitlab#270960
+    # confirms the standard API diff field "already includes full headers".
+    patch = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+    provider, _ = provider_factory([(200, [_change("a.py", diff=patch)], {})], count="1")
+
+    file = provider.get_diff_files()[0]
+
+    assert (file.num_plus_lines, file.num_minus_lines) == (1, 1)
+
+
+def test_added_file_line_counts_ignore_dev_null_header(provider_factory):
+    patch = "--- /dev/null\n+++ b/a.py\n@@ -0,0 +1,2 @@\n+one\n+two\n"
+    provider, _ = provider_factory([(200, [_change("a.py", diff=patch)], {})], count="1")
+
+    file = provider.get_diff_files()[0]
+
+    assert (file.num_plus_lines, file.num_minus_lines) == (2, 0)
 
 
 @pytest.mark.parametrize("project_id", [123, "123"])
@@ -246,7 +349,7 @@ def test_empty_diff_result_is_cached_until_scope_reset(provider_factory, changes
     assert len(transport.diff_requests) == 2
 
 
-def test_unready_empty_diff_remains_retryable(provider_factory):
+def test_unready_empty_diff_is_consistent_within_a_command_and_retryable_at_the_boundary(provider_factory):
     pending = {**_metadata(count=None), "changes_count": None, "diff_refs": None}
     ready = _metadata(count="1")
     provider, transport = provider_factory(
@@ -255,8 +358,15 @@ def test_unready_empty_diff_remains_retryable(provider_factory):
         metadata_responses=_metadata_reads(pending, pending, ready, ready),
     )
 
+    # Both calls in the command see the same provisional empty; one diff poll.
     assert provider.get_diff_files() == []
-    assert provider.diff_files is None
+    assert provider.diff_files == []
+    assert provider.get_diff_files() == []
+    assert len(transport.diff_requests) == 1
+
+    # The command boundary (#4373) clears the diff and MR-changes caches together,
+    # so the next command re-polls and sees the ready diff.
+    provider.reset_diff_cache_for_command()
     assert [file.filename for file in provider.get_diff_files()] == ["ready.py"]
     assert len(transport.diff_requests) == 2
 
@@ -293,12 +403,37 @@ def test_missing_diffs_endpoint_propagates_without_fallback(provider_factory, me
     assert [urlparse(request.url).path.rsplit("/", 1)[-1] for request in transport.requests] == ["7", "diffs"]
 
 
-@pytest.mark.parametrize("status", [401, 403, 500])
+@pytest.mark.parametrize("status", [401, 403])
 def test_other_errors_do_not_probe_version_or_use_legacy(provider_factory, status):
     provider, transport = provider_factory([(status, {"message": "denied"}, {})])
     with pytest.raises((gitlab.GitlabHttpError, gitlab.GitlabAuthenticationError)):
         provider.get_files()
     assert len(transport.requests) == 2
+
+
+def test_server_error_on_large_pages_retries_with_the_default_page_size(provider_factory):
+    """GitLab before 17.11 answers HTTP 500 when per_page exceeds 30 on the MR diffs endpoint (#4793)."""
+    provider, transport = provider_factory([
+        (500, {"message": "500 Internal Server Error"}, {}),
+        *_pages([_change("a.py")], [_change("b.py")]),
+    ])
+
+    assert provider.get_files() == ["a.py", "b.py"]
+    assert [urlparse(request.url).query for request in transport.diff_requests] == [
+        "per_page=100", "per_page=20", "page=2&per_page=20"]
+
+
+def test_repeated_server_error_is_raised_after_one_retry(provider_factory):
+    provider, transport = provider_factory([
+        (500, {"message": "500 Internal Server Error"}, {}),
+        (500, {"message": "500 Internal Server Error"}, {}),
+    ])
+
+    with pytest.raises(gitlab.GitlabHttpError) as error:
+        provider.get_files()
+    assert error.value.response_code == 500
+    assert len(transport.diff_requests) == 2
+    assert provider.git_files is None
 
 
 def _prepare_incremental(provider):

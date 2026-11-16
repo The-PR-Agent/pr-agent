@@ -14,6 +14,8 @@ You can use our pre-built GitHub Action Docker image to run PR-Agent as a GitHub
    ```yaml
    on:
      pull_request:
+       # PR-Agent skips synchronize by default. Include it in github_action_config.pr_actions
+       # for auto commands, or enable github_action_config.handle_push_trigger for push_commands (takes precedence).
        types: [opened, reopened, ready_for_review, synchronize]
      issue_comment:
    jobs:
@@ -46,7 +48,7 @@ You can use our pre-built GitHub Action Docker image to run PR-Agent as a GitHub
    Ignored comments and events without a target still skip successfully.
 
 3. Merge this change to your main branch.
-   When you open your next PR, you should see a comment from `github-actions` bot with a review of your PR, and instructions on how to use the rest of the tools.
+   When you open your next PR, you should see a comment from `github-actions` bot with a review of your PR, and instructions on how to use the rest of the commands.
 
 4. You may configure PR-Agent by adding environment variables under the env section corresponding to any configurable property in the [configuration](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) file. Some examples:
 
@@ -55,10 +57,18 @@ You can use our pre-built GitHub Action Docker image to run PR-Agent as a GitHub
            # ... previous environment values
            OPENAI.ORG: "<Your organization name under your OpenAI account>"
            PR_REVIEWER.REQUIRE_TESTS_REVIEW: "false" # Disable tests review
-           PR_CODE_SUGGESTIONS.NUM_CODE_SUGGESTIONS_PER_CHUNK: 6 # Increase number of code suggestions
+           PR_REVIEWER.NUM_MAX_FINDINGS: 5 # Increase number of review findings
    ```
 
 See detailed usage instructions in the [USAGE GUIDE](../usage-guide/automations_and_usage.md#github-action)
+
+When a PR opens with a reviewer already requested, GitHub can send both `opened` and
+`review_requested`. With both actions enabled, the Action skips the initial
+`review_requested` event when the PR's creation and update timestamps match, so the
+commands run once for the opening event stream. A configuration that enables only
+`review_requested` still runs that event.
+Later review requests still run the enabled commands when `review_requested` is listed in
+`github_action_config.pr_actions`. This applies to both `pull_request` and `pull_request_target`.
 
 ### Using with pull_request_target (fork/contribution support)
 
@@ -195,9 +205,9 @@ jobs:
           github_action_config.auto_improve: "true"
 ```
 
-#### Basic Configuration with Tool Controls
+#### Basic Configuration with Command Controls
 
-Start with this enhanced workflow that includes tool configuration:
+Start with this enhanced workflow that includes command configuration:
 
 ```yaml
 on:
@@ -220,7 +230,7 @@ jobs:
         env:
           OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Enable/disable automatic tools
+          # Enable/disable automatic commands
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "true"
           github_action_config.auto_improve: "true"
@@ -242,7 +252,7 @@ To use Gemini models instead of the default OpenAI models:
         config.fallback_models: '[]'
         # Add your Gemini API key
         GOOGLE_AI_STUDIO.GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        # Tool configuration
+        # Command configuration
         github_action_config.auto_review: "true"
         github_action_config.auto_describe: "true"
         github_action_config.auto_improve: "true"
@@ -266,7 +276,7 @@ To use Claude models:
         config.fallback_models: '["anthropic/claude-haiku-4-5-20251001"]'
         # Add your Anthropic API key
         ANTHROPIC.KEY: ${{ secrets.ANTHROPIC_KEY }}
-        # Tool configuration
+        # Command configuration
         github_action_config.auto_review: "true"
         github_action_config.auto_describe: "true"
         github_action_config.auto_improve: "true"
@@ -294,7 +304,7 @@ To use Azure OpenAI services:
         # Set the model to match your Azure deployment
         config.model: "gpt-4o"
         config.fallback_models: '[]'
-        # Tool configuration
+        # Command configuration
         github_action_config.auto_review: "true"
         github_action_config.auto_describe: "true"
         github_action_config.auto_improve: "true"
@@ -319,14 +329,14 @@ To use local models via Ollama:
         config.fallback_models: '[]'
         config.custom_model_max_tokens: "128000"
         # Ollama configuration
-        OLLAMA.API_BASE: "http://localhost:11434"
-        # Tool configuration
+        OLLAMA.API_BASE: "http://<ollama-host-reachable-from-container>:11434"
+        # Command configuration
         github_action_config.auto_review: "true"
         github_action_config.auto_describe: "true"
         github_action_config.auto_improve: "true"
 ```
 
-**Note:** For local models, you'll need to use a self-hosted runner with Ollama installed, as GitHub Actions hosted runners cannot access localhost services.
+**Note:** Ollama must be reachable from the action's Docker container. `localhost` inside that container refers to the container itself, not the runner host. If Ollama runs on a self-hosted runner, configure a host address and Ollama network binding that the action container can reach.
 
 ##### Using Amazon Bedrock
 
@@ -376,7 +386,7 @@ Add specific instructions for the review process:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Custom review instructions
         pr_reviewer.extra_instructions: "Focus on security vulnerabilities and performance issues. Check for proper error handling."
-        # Tool configuration
+        # Command configuration
         github_action_config.auto_review: "true"
         github_action_config.auto_describe: "true"
         github_action_config.auto_improve: "true"
@@ -392,23 +402,22 @@ Configure for specific programming languages:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Language-specific settings
         pr_reviewer.extra_instructions: "Focus on Python best practices, type hints, and docstrings."
-        pr_code_suggestions.num_code_suggestions_per_chunk: "8"
-        pr_code_suggestions.suggestions_score_threshold: "7"
-        # Tool configuration
+        pr_reviewer.num_max_findings: "5"
+        # Command configuration
         github_action_config.auto_review: "true"
         github_action_config.auto_describe: "true"
         github_action_config.auto_improve: "true"
 ```
 
-##### Selective Tool Execution
+##### Selective Command Execution
 
-Run only specific tools automatically:
+Run only specific commands automatically:
 
 ```yaml
       env:
         OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # Only run review and describe, skip improve
+        # Only run review and describe; the review also runs when auto_improve is enabled
         github_action_config.auto_review: "true"
         github_action_config.auto_describe: "true"
         github_action_config.auto_improve: "false"
@@ -418,7 +427,7 @@ Run only specific tools automatically:
 
 ##### CI artifact context
 
-A file produced by an earlier CI step — a test report, a coverage summary, a linter or SAST output — can be injected into the prompts of `/review`, `/describe` and `/improve`, so the model reviews the PR with your pipeline's own findings in hand.
+A file produced by an earlier CI step — a test report, a coverage summary, a linter or SAST output — can be injected into the prompts of `/review` and `/describe`, so the model reviews the PR with your pipeline's own findings in hand.
 
 Point the action at the file with the `artifact_path` input. The path is resolved relative to `GITHUB_WORKSPACE` (an absolute path also works), so the file must already exist in the workspace when PR-Agent runs — produce it in a previous step, or download it with `actions/download-artifact`:
 
@@ -437,9 +446,9 @@ Point the action at the file with the `artifact_path` input. The path is resolve
           artifact_instructions: "These are the failing tests from this PR's CI run. Call out any suggestion that would not fix them."
 ```
 
-Setting `artifact_path` turns the feature on by itself; there is no separate enable switch to flip in the workflow. Supported target tools receive a dedicated artifact section in their prompt. The label and file contents are explicitly marked as untrusted data, while `artifact_instructions` appears separately as subordinate analysis guidance. The supported targets are `pr_reviewer`, `pr_description`, `pr_code_suggestions` and `pr_questions`; unsupported names are skipped with a warning.
+Setting `artifact_path` turns the feature on by itself; there is no separate enable switch to flip in the workflow. Supported target commands receive a dedicated artifact section in their prompt. The label and file contents are explicitly marked as untrusted data, while `artifact_instructions` appears separately as subordinate analysis guidance. The supported targets are `pr_reviewer`, `pr_description`, `pr_code_suggestions` and `pr_questions`; unsupported names are skipped with a warning.
 
-When overriding a supported tool's prompt, keep `artifact_context.instructions` in the system prompt and render
+When overriding a supported command's prompt, keep `artifact_context.instructions` in the system prompt and render
 `artifact_context.label`, `artifact_context.content`, `artifact_context.start_marker`, and `artifact_context.end_marker` in
 a clearly marked, untrusted section of the user prompt. This replaces the legacy `extra_instructions` behavior for CI
 artifacts.
@@ -448,26 +457,28 @@ The remaining knobs live in the `[artifacts]` section of your configuration:
 
 ```toml
 [artifacts]
-enable = false                                              # auto-enabled when artifact_path is set
+enable = true                                               # required when configuring paths here
 artifact_path = [
   { path = "reports/pytest.xml" },
   { path = "reports/coverage.xml" },
 ]
 artifact_instructions = ""                                  # empty = a generic "treat this as CI context" instruction
 artifact_label = ""                                         # shared label; empty = each file's name
-target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions", "pr_questions"]
+target_commands = ["pr_reviewer", "pr_description", "pr_code_suggestions", "pr_questions"]
 max_artifact_size = 50000                                   # characters; longer files are truncated with a marker
 ```
 
 `artifact_path` may also be a single string. For multiple files, each entry can set
-`path`, `artifact_label`, `artifact_instructions`, `target_tools`, and `truncate_from` on
+`path`, `artifact_label`, `artifact_instructions`, `target_commands`, and `truncate_from` on
 its own line; a shared `artifact_label` applies only to a single file, otherwise each file falls
 back to its name.
+
+Automatic enabling applies to the action's `artifact_path` input or the `ARTIFACT_PATH` / `PR_AGENT_ARTIFACT_PATH` environment variables. A path set only in `[artifacts]` requires `enable = true`.
 
 CI artifacts are checked for recognizable URL credentials, authorization headers, standard GitLab tokens, AWS access keys, and common credential assignments before model submission, with redaction matches logged only by type and count; this pattern-based check does not recognize every secret format, so use sanitized CI logs as input.
 
 :::note
-A path that resolves outside `GITHUB_WORKSPACE` is rejected, and a missing or unreadable file is skipped with a warning — in both cases the tools still run, just without the artifact context.
+A path that resolves outside `GITHUB_WORKSPACE` is rejected, and a missing or unreadable file is skipped with a warning — in both cases the commands still run, just without the artifact context.
 :::
 
 The same settings apply when PR-Agent runs as a CLI from another CI system, with `ARTIFACT_PATH` set in the job's environment; see the [GitLab pipeline example](./gitlab.md#ci-artifact-context).
@@ -487,8 +498,7 @@ Instead of setting all options via environment variables, you can use a `.pr_age
    extra_instructions = "Focus on security issues and code quality."
 
    [pr_code_suggestions]
-   num_code_suggestions_per_chunk = 6
-   suggestions_score_threshold = 7
+   committable_code_suggestions = true
    ```
 
 2. Use a simpler workflow file:
@@ -573,7 +583,7 @@ A 429 is returned immediately; raising `config.ai_timeout` only bounds the durat
 - **Note**: For non-OpenAI models (Gemini, Claude, etc.), you only need the model-specific API key, not `OPENAI_KEY`
 
 **Error: "Incorrect API key provided: dummy_key"**
-- **Cause**: No usable key for the active model's provider reached the run. For automatic runs and commands other than bare `/help`, `/config`, or `/settings`, the step log now shows `Stopping before any tool runs` with the missing variable named, and the job fails at once; older versions logged `OPENAI_KEY not set` near the top and carried on, so the request went out with PR-Agent's placeholder key instead and failed a full run later.
+- **Cause**: No usable key for the active model's provider reached the run. For automatic runs and commands other than bare `/help`, `/config`, or `/settings`, the step log now shows `Stopping before any command runs` with the missing variable named, and the job fails at once; older versions logged `OPENAI_KEY not set` near the top and carried on, so the request went out with PR-Agent's placeholder key instead and failed a full run later.
 - **Note**: For PR `issue_comment` and `pull_request_review_comment` events, bare `/help`, `/config`, and `/settings` skip this model-key check (ignoring case and surrounding whitespace). They still need `GITHUB_TOKEN`; commands with arguments, including `/help <question>`, retain the check.
 - **Solution**: Check which of the three causes applies:
     - **The run gets no secrets.** On the `pull_request` event, runs triggered from a fork receive no repository secrets, so `${{ secrets.OPENAI_KEY }}` is empty. Use the [`pull_request_target` setup](#using-with-pull_request_target-forkcontribution-support) instead. Dependabot pull requests are the same case: their secrets live under Dependabot secrets, not Actions secrets, and the `github.event.sender.type != 'Bot'` condition in the examples above keeps those runs from starting at all.
@@ -581,7 +591,7 @@ A 429 is returned immediately; raising `config.ai_timeout` only bounds the durat
     - **Another provider's key is set, but the model is not.** Keys alone do not switch provider: set `config.model` (and `config.fallback_models`) as well, otherwise the default OpenAI model is used and only an OpenAI key counts. See [Changing a model in PR-Agent](../usage-guide/changing_a_model.md).
 
 **Error: "Rate limit exceeded"**
-- **Solution**: Add fallback models and/or set `config.num_retries` (recommended for transient 429s). Raising `config.ai_timeout` only helps with timeouts, not pure rate-limit responses. For a manual `/review` failure, you can also set `pr_reviewer.publish_error_details: "true"` in the workflow `env` (it cannot be enabled via `.pr_agent.toml`) to surface a sanitized failure reason. See the [Review tool docs](../tools/review.md).
+- **Solution**: Add fallback models and/or set `config.num_retries` (recommended for transient 429s). Raising `config.ai_timeout` only helps with timeouts, not pure rate-limit responses. For a manual `/review` failure, you can also set `pr_reviewer.publish_error_details: "true"` in the workflow `env` (it cannot be enabled via `.pr_agent.toml`) to surface a sanitized failure reason. See the [Review command docs](../commands/review.md).
 
 **Error: "Permission denied"**
 - **Solution**: Ensure your workflow has the correct permissions set:
@@ -591,8 +601,8 @@ A 429 is returned immediately; raising `config.ai_timeout` only bounds the durat
     issues: write
     pull-requests: write
   ```
-  The default tools need no additional scopes. Add `checks: write` only when
-  `github.publish_as_check_run` is enabled. Features that push repository contents, such as
+  The default commands need no additional scopes. Add `checks: write` when
+  `github.publish_as_check_run` or `pr_reviewer.publish_merge_recommendation_status` is enabled. Features that push repository contents, such as
   `pr_update_changelog.push_changelog_changes`, require `contents: write`, and so does
   `pr_questions.resolve_threads`, because GitHub gates thread resolution on that scope. If you omit
   `contents: write`, enable `config.restricted_mode` so operations that need it are skipped or fall
@@ -634,7 +644,7 @@ For better performance with large repositories:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Optimize for large PRs
         config.large_patch_policy: "clip"
-        config.max_model_tokens: "32000"
+        config.max_model_tokens: "256000"
         config.patch_extra_lines_before: "3"
         config.patch_extra_lines_after: "1"
         github_action_config.auto_review: "true"
@@ -681,7 +691,7 @@ gh attestation verify \
 ```
 :::
 
-### Action for GitHub enterprise server
+### Action for GitHub enterprise server or GHE.com
 
 :::tip
 To use the action with a GitHub enterprise server, add an environment variable `GITHUB__BASE_URL` with the API URL of your GitHub server.
@@ -691,6 +701,13 @@ For example, if your GitHub server is at `https://github.mycompany.com`, add the
       env:
         # ... previous environment values
         GITHUB__BASE_URL: "https://github.mycompany.com/api/v3"
+```
+
+For GitHub Enterprise Cloud with data residency (GHE.com), set `GITHUB__BASE_URL` to the API host `https://api.<subdomain>.ghe.com`, which the workflow exposes as `github.api_url`:
+```yaml
+      env:
+        # ... previous environment values
+        GITHUB__BASE_URL: ${{ github.api_url }} # e.g. https://api.mycompany.ghe.com
 ```
 :::
 
@@ -704,7 +721,7 @@ Allowing you to automate the review process on your private or public repositori
 
    - Set the following permissions:
      - Pull requests: Read & write
-     - Issue comment: Read & write
+     - Issues: Read & write
      - Metadata: Read-only
      - Contents: Read-only (or Read & write if using `resolve_threads` — see note below)
    - Set the following events:
@@ -736,6 +753,7 @@ Allowing you to automate the review process on your private or public repositori
 
    ```bash
    git clone https://github.com/the-pr-agent/pr-agent.git
+   cd pr-agent
    ```
 
 5. Copy the secrets template file and fill in the following:
@@ -772,7 +790,7 @@ Allowing you to automate the review process on your private or public repositori
     > Service images run as UID/GID `10001`: mounted secrets must be readable, and mounted data paths writable, by that user.
     > Home-relative mounts belong under `/home/pragent`.
 
-    > Another option is to set the secrets as environment variables in your deployment environment, for example `OPENAI.KEY` and `GITHUB.USER_TOKEN`.
+    > Another option is to set the secrets as environment variables in your deployment environment, for example `OPENAI__KEY`, `GITHUB__APP_ID`, `GITHUB__PRIVATE_KEY`, and `GITHUB__WEBHOOK_SECRET`.
 
 6. Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
 
@@ -790,7 +808,7 @@ Allowing you to automate the review process on your private or public repositori
 
 8. Go back to your app's settings, and set the following:
 
-   - Webhook URL: The URL of your app's server or the URL of the smee.io channel.
+   - Webhook URL: `https://<PR_AGENT_HOSTNAME>/api/v1/github_webhooks`, or your smee.io channel URL with forwarding configured to that endpoint.
    - Webhook secret: The secret you generated earlier.
 
 9. Install the app by navigating to the "Install App" tab and selecting your desired repositories.
@@ -798,7 +816,7 @@ Allowing you to automate the review process on your private or public repositori
 10. The app runs under gunicorn with multiple worker processes. See [Sizing a self-hosted webhook server](./index.md#sizing-a-self-hosted-webhook-server) for the `GUNICORN_WORKERS` / `GUNICORN_MAX_WORKERS` knobs and memory guidance — worth reading before setting a memory limit.
 
 > **Note:** When running PR-Agent from GitHub app, the default configuration file (configuration.toml) will be loaded.
-> However, you can override the default tool parameters by uploading a local configuration file `.pr_agent.toml`
+> However, you can override the default command parameters by uploading a local configuration file `.pr_agent.toml`
 > To use organization-level global configuration, set `config.global_settings_repo = "pr-agent-settings"`, create `<organization>/pr-agent-settings` with a `.pr_agent.toml` file, and install the GitHub App on that repository too.
 > The app needs read access to the settings repository as well as the pull request repositories. This applies to both GitHub.com and GitHub Enterprise Server.
 > For more information please check out the [USAGE GUIDE](../usage-guide/automations_and_usage.md#github-app)
@@ -827,7 +845,7 @@ For example: `GITHUB.WEBHOOK_SECRET` --> `GITHUB__WEBHOOK_SECRET`
     docker push <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pr-agent:github_lambda
     ```
 
-4. Create a lambda function that uses the uploaded image. Set the lambda timeout to be at least 3m.
+4. Create a lambda function that uses the uploaded image. Add the IAM permission `lambda:InvokeFunction` on the function itself to the execution role: the webhook is acknowledged as soon as its signature is verified, and the review runs in a second, asynchronous invocation of the same function. Set the lambda timeout for the review length (for example 5m) — it no longer needs to cover the webhook acknowledgement. Lambda retries a timed-out or failed asynchronous invocation twice by default, which would run the review again; set the function's asynchronous invocation retry attempts to 0 if you do not want that.
 5. Configure the lambda function to have a Function URL.
 6. In the environment variables of the Lambda function, specify `AZURE_DEVOPS_CACHE_DIR` to a writable location such as /tmp. (see [link](https://github.com/the-pr-agent/pr-agent/pull/450#issuecomment-1840242269))
 7. Go back to steps 8-9 of [Method 5](#run-as-a-github-app) with the function url as your Webhook URL.
@@ -842,6 +860,7 @@ For production Lambda deployments, use AWS Secrets Manager instead of environmen
    ```json
    {
      "openai.key": "sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+     "github.app_id": 123456,
      "github.webhook_secret": "your-webhook-secret-from-step-2",
      "github.private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----"
    }
@@ -868,9 +887,9 @@ Not all features have been added to CodeCommit yet.  As of right now, CodeCommit
 4. Set the Access Key and Secret using environment variables (see Access Key example below)
 5. Set the `git_provider` value to `codecommit` in the `pr_agent/settings/configuration.toml` settings file
 6. Set the `PYTHONPATH` to include your `pr-agent` project directory
-    - Option A: Add `PYTHONPATH="/PATH/TO/PROJECTS/pr-agent` to your `.env` file
+    - Option A: Run `export PYTHONPATH="/PATH/TO/PROJECTS/pr-agent"` in your shell. PR-Agent does not automatically load `.env` files.
     - Option B: Set `PYTHONPATH` and run the CLI in one command, for example:
-        - `PYTHONPATH="/PATH/TO/PROJECTS/pr-agent python pr_agent/cli.py [--ARGS]`
+        - `PYTHONPATH="/PATH/TO/PROJECTS/pr-agent" python pr_agent/cli.py [--ARGS]`
 
 ---
 

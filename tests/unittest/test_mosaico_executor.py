@@ -258,18 +258,18 @@ class TestExecute:
     @pytest.mark.asyncio
     async def test_settings_writes_are_request_scoped_under_concurrency(self, monkeypatch, spy_updater):
         """Each execute() gets its own settings deepcopy: two in-flight requests must not
-        observe each other's propagate_tool_errors, and global_settings stays untouched."""
+        observe each other's propagate_command_errors, and global_settings stays untouched."""
         seen = {}
 
         async def fake_route_and_run_result(text):
             settings = get_settings()
-            settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", text == "a")
+            settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", text == "a")
             await asyncio.sleep(0)  # yield so the two runs interleave between write and read
-            seen[text] = (id(settings), settings.config.get("propagate_tool_errors"))
+            seen[text] = (id(settings), settings.config.get("propagate_command_errors"))
             return RouteResult(f"done-{text}", ok=True)
 
         monkeypatch.setattr(executor_mod, "route_and_run_result", fake_route_and_run_result)
-        global_before = global_settings.config.get("propagate_tool_errors", None)
+        global_before = global_settings.config.get("propagate_command_errors", None)
 
         async def run(text):
             with request_cycle_context({}):
@@ -280,4 +280,4 @@ class TestExecute:
         assert seen["a"][1] is True
         assert seen["b"][1] is False, "one request observed another's settings write"
         assert seen["a"][0] != seen["b"][0], "both requests shared one settings object"
-        assert global_settings.config.get("propagate_tool_errors", None) == global_before
+        assert global_settings.config.get("propagate_command_errors", None) == global_before

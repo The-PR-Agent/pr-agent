@@ -10,8 +10,8 @@ guarded name resolves to ``None``.
 
 import pytest
 
-import pr_agent.algo.ai_handlers.cloud_auth as cloud_auth
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
+from pr_agent.algo.ai_handlers import cloud_auth
 
 # What breaks at runtime when each guarded LiteLLM symbol goes missing.
 _CLOUD_AUTH_GUARDED = {

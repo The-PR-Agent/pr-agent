@@ -392,8 +392,9 @@ def handle_patch_deletions(patch: str, original_file_content_str: str,
             get_logger().info(f"Processing file: {file_name}, minimizing deletion file")
         patch = None # file was deleted
     else:
-        patch_lines = split_diff_lines(patch)
-        patch_new = omit_deletion_hunks(patch_lines)
+        # ---/+++ file headers would count as an added line and keep every deletion hunk
+        patch_lines = split_diff_lines(to_hunk_only_patch(patch))
+        patch_new = omit_deletion_hunks(patch_lines) or '\n'.join(patch_lines)
         if patch_new and patch != patch_new:
             if get_verbosity_level() > 0:
                 get_logger().info(f"Processing file: {file_name}, hunks were deleted")

@@ -373,12 +373,11 @@ def _shipped_providers():
     import pkgutil
     from importlib import import_module
 
-    import pr_agent.git_providers as git_providers
+    from pr_agent import git_providers
     from pr_agent.git_providers.git_provider import GitProvider
 
     modules = ["pr_agent.git_providers"]
-    for info in pkgutil.iter_modules(git_providers.__path__):
-        modules.append(f"pr_agent.git_providers.{info.name}")
+    modules.extend(f"pr_agent.git_providers.{info.name}" for info in pkgutil.iter_modules(git_providers.__path__))
     modules.append("pr_agent.mosaico.diff_provider")
 
     found = {}

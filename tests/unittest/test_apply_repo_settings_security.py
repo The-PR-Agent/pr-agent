@@ -273,6 +273,58 @@ def test_repo_settings_cannot_set_structural_reach_input_file(monkeypatch, setti
     assert pr_reviewer.get("num_max_findings") == 11
 
 
+def test_repo_settings_cannot_weaken_merge_verdict_risk_limits(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=(
+            b"[pr_reviewer]\nmax_changed_lines = 9999\nsensitive_paths = []\nnum_max_findings = 11\n"
+        )
+    )
+    _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("pr_reviewer.max_changed_lines", 250)
+    settings.set("pr_reviewer.sensitive_paths", ["host-controlled/**"])
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    pr_reviewer = _section(settings, "pr_reviewer")
+    assert pr_reviewer["max_changed_lines"] == 250
+    assert pr_reviewer["sensitive_paths"] == ["host-controlled/**"]
+    assert pr_reviewer["num_max_findings"] == 11
+    assert is_repo_host_only_key("pr_reviewer", "max_changed_lines")
+    assert is_repo_host_only_key("pr_reviewer", "sensitive_paths")
+
+
+def test_repo_settings_cannot_configure_extra_risky_shapes(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(repo_settings_bytes=b'[pr_reviewer]\nextra_risky_shapes = ["CUSTOM_RISK"]\n')
+    _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("pr_reviewer.extra_risky_shapes", ["HOST_RISK"])
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert _section(settings, "pr_reviewer")["extra_risky_shapes"] == ["HOST_RISK"]
+    assert is_repo_host_only_key("pr_reviewer", "extra_risky_shapes")
+
+
+def test_repo_settings_cannot_enable_artifact_findings(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=b"[pr_reviewer]\nrequire_artifact_findings = true\nnum_max_findings = 11\n"
+    )
+    _install_provider(monkeypatch, provider)
+
+    get_settings().set("config.use_repo_settings_file", True)
+    settings = get_settings()
+    before = _section(settings, "pr_reviewer").get("require_artifact_findings")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    pr_reviewer = _section(settings, "pr_reviewer")
+    assert pr_reviewer.get("require_artifact_findings") == before
+    assert pr_reviewer.get("num_max_findings") == 11
+
+
 def test_repo_settings_cannot_override_prompt_fragments(monkeypatch, settings_snapshot):
     provider = FakeGitProvider(repo_settings_bytes=b'[prompt_fragments]\ndiff_hunk_format = "UNTRUSTED-FRAGMENT"\n')
     captured = _install_provider(monkeypatch, provider)
@@ -302,6 +354,22 @@ def test_repo_settings_cannot_override_extra_config_url(monkeypatch, settings_sn
 
     assert captured["errors"] is None
     assert _section(settings, "config").get("extra_config_url") == extra_before
+
+
+def test_repo_settings_cannot_override_bot_display_name(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=b'[config]\nbot_display_name = "GitHub Security"\n'
+    )
+    captured = _install_provider(monkeypatch, provider)
+
+    get_settings().set("config.use_repo_settings_file", True)
+    get_settings().set("config.bot_display_name", "PR-Agent")
+    settings = get_settings()
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    assert _section(settings, "config").get("bot_display_name") == "PR-Agent"
 
 
 def test_invalid_toml_does_not_pollute_settings(monkeypatch, settings_snapshot):

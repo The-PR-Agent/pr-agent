@@ -9,8 +9,8 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_body_with_markers,
 )
 from pr_agent.algo.types import FilePatchInfo
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.git_providers.gitea_provider import GiteaProvider, RepoApi
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 
 def _provider(issue_comment_bodies=(), review_comment_bodies=()):

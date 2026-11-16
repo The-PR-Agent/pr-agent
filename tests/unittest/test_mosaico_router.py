@@ -1,7 +1,7 @@
 """Tests for the MOSAICO dispatch router (capture/fallback behavior).
 
 Pins: each path returns a string and NEVER raises; no-files/no-suggestions/empty-ask
--> empty-fallback string; a tool that raises (monkeypatched) -> error-fallback string
+-> empty-fallback string; a command that raises (monkeypatched) -> error-fallback string
 with no exception escaping.
 
 asyncio_mode=auto."""
@@ -15,15 +15,19 @@ from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.mosaico import dispatch
 from pr_agent.mosaico.dispatch import (
-    _detect_verb,
     _diff_prose,
     _empty_fallback,
     _error_fallback,
     _explicit_verb,
+    _resolve_verb,
     _split_turns,
-    route_and_run,
     route_and_run_result,
 )
+
+
+async def route_and_run(user_text: str) -> str:
+    """Adapt the live route_and_run_result to the text-only shape the dead wrapper returned."""
+    return (await route_and_run_result(user_text)).text
 
 
 def _patch_questions(monkeypatch, question_class):
@@ -124,7 +128,7 @@ def restore_settings():
     """Snapshot/restore the settings keys the router mutates, leaving global_settings
     exactly as found."""
     keys = ["CONFIG.GIT_PROVIDER", "CONFIG.PUBLISH_OUTPUT", "CONFIG.PUBLISH_OUTPUT_PROGRESS",
-            "CONFIG.PROPAGATE_TOOL_ERRORS"]
+            "CONFIG.PROPAGATE_COMMAND_ERRORS"]
     before = {k: global_settings.get(k, _SENTINEL) for k in keys}
     mosaico_existed = "MOSAICO" in global_settings
     mosaico_input = global_settings.get("MOSAICO.INPUT", _SENTINEL)
@@ -149,7 +153,7 @@ def restore_settings():
 
 
 def _set_artifact(value):
-    # Mirror how the real tools stash output: attribute assignment replaces cleanly
+    # Mirror how the real commands stash output: attribute assignment replaces cleanly
     # (Dynaconf .set merges dicts, which would not overwrite a prior artifact).
     global_settings.data = {"artifact": value}
 
@@ -165,21 +169,21 @@ def _clear_artifact():
 # ---------------------------------------------------------------------------
 class TestVerbDetection:
     def test_explicit_slash_verbs(self):
-        assert _detect_verb("/review please") == "review"
-        assert _detect_verb("/improve this") == "improve"
-        assert _detect_verb("/describe it") == "describe"
-        assert _detect_verb("/ask something") == "ask"
+        assert _resolve_verb(["/review please"]) == "review"
+        assert _resolve_verb(["/improve this"]) == "improve"
+        assert _resolve_verb(["/describe it"]) == "describe"
+        assert _resolve_verb(["/ask something"]) == "ask"
 
     def test_bare_verb_words(self):
-        assert _detect_verb("review this PR") == "review"
-        assert _detect_verb("improve the code") == "improve"
+        assert _resolve_verb(["review this PR"]) == "review"
+        assert _resolve_verb(["improve the code"]) == "improve"
 
     def test_question_defaults_to_ask(self):
-        assert _detect_verb("what does this change?") == "ask"
-        assert _detect_verb("How is the error handled") == "ask"
+        assert _resolve_verb(["what does this change?"]) == "ask"
+        assert _resolve_verb(["How is the error handled"]) == "ask"
 
     def test_default_is_review(self):
-        assert _detect_verb("here is a blob of stuff") == "review"
+        assert _resolve_verb(["here is a blob of stuff"]) == "review"
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +207,7 @@ class TestPathPrUrl:
         from pr_agent.agent.pr_agent import PRAgent
         monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
 
-        out = await route_and_run(f"review {PR_URL}")
+        out = (await route_and_run_result(f"review {PR_URL}")).text
         assert out == "REVIEW MARKDOWN"
         # After Fix B path (a) routes through the supplied-diff target, not the raw PR URL.
         assert captured["pr_url"] == "mosaico://supplied-diff"
@@ -228,7 +232,7 @@ class TestPathPrUrl:
         from pr_agent.agent.pr_agent import PRAgent
         monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
 
-        await route_and_run(f"review {PR_URL}")
+        await route_and_run_result(f"review {PR_URL}")
         assert global_settings.get("CONFIG.GIT_PROVIDER") == "mosaico_diff"
 
     @pytest.mark.asyncio
@@ -266,7 +270,7 @@ class TestPathSuppliedDiff:
         from pr_agent.agent.pr_agent import PRAgent
         monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
 
-        out = await route_and_run(f"review the following\n{SAMPLE_DIFF}")
+        out = (await route_and_run_result(f"review the following\n{SAMPLE_DIFF}")).text
         assert out == "DIFF REVIEW"
         assert captured["git_provider"] == "mosaico_diff"
         assert "/review" in captured["request"]
@@ -314,7 +318,7 @@ index 1111111..2222222 100644
         from pr_agent.agent.pr_agent import PRAgent
         monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
 
-        assert await route_and_run(f"review the following\n{language_diff}") == "DIFF REVIEW"
+        assert (await route_and_run_result(f"review the following\n{language_diff}")).text == "DIFF REVIEW"
         assert captured["languages"] == {
             "Python": 2,
             "JavaScript": 1,
@@ -358,7 +362,7 @@ index 1111111..2222222 100644
 
         from pr_agent.agent.pr_agent import PRAgent
         monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
-        monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions", _explode_prquestions)
+        monkeypatch.setattr("pr_agent.commands.pr_questions.PRQuestions", _explode_prquestions)
 
         diff_with_q = (
             "```diff\n"
@@ -495,7 +499,7 @@ class TestDefensiveCapture:
         from pr_agent.agent.pr_agent import PRAgent
         monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
 
-        out = await route_and_run(f"review {PR_URL}")
+        out = (await route_and_run_result(f"review {PR_URL}")).text
         assert out == _error_fallback("review")
 
     @pytest.mark.asyncio
@@ -521,8 +525,8 @@ class TestDefensiveCapture:
         assert result.ok is True
 
     @pytest.mark.asyncio
-    async def test_tool_exception_marks_failed(self, monkeypatch, restore_settings):
-        """The contrast to the test above: same empty artifact, but the tool raised. The
+    async def test_command_exception_marks_failed(self, monkeypatch, restore_settings):
+        """The contrast to the test above: same empty artifact, but the command raised. The
         re-raise makes handle_request return False, so the router must report ok=False
         rather than the empty fallback."""
         async def fake_fetch_public_diff(pr_url):
@@ -543,8 +547,8 @@ class TestDefensiveCapture:
 
     @pytest.mark.asyncio
     async def test_legacy_callers_unaffected_when_flag_off(self, monkeypatch, restore_settings):
-        """Blast-radius guard for CLI/webhook callers, which pass no propagate_tool_errors
-        arg: a tool failing internally must still swallow and still return True, unchanged."""
+        """Blast-radius guard for CLI/webhook callers, which pass no propagate_command_errors
+        arg: a command failing internally must still swallow and still return True, unchanged."""
         import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
         import pr_agent.mosaico.provider_registration  # noqa: F401
         from pr_agent.agent.pr_agent import PRAgent
@@ -563,8 +567,8 @@ class TestDefensiveCapture:
         assert ok is True, "flag off must preserve the pre-existing swallow-and-succeed behaviour"
 
     @pytest.mark.asyncio
-    async def test_propagate_tool_errors_passed_to_handle_request(self, monkeypatch, restore_settings):
-        """Pins the wiring: without this arg the tools swallow and a failure reads as empty."""
+    async def test_propagate_command_errors_passed_to_handle_request(self, monkeypatch, restore_settings):
+        """Pins the wiring: without this arg the commands swallow and a failure reads as empty."""
         seen = {}
 
         async def fake_fetch_public_diff(pr_url):
@@ -580,11 +584,11 @@ class TestDefensiveCapture:
         monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
 
         await route_and_run_result(f"review {PR_URL}")
-        assert "--config.propagate_tool_errors=true" in seen["args"]
+        assert "--config.propagate_command_errors=true" in seen["args"]
 
     @pytest.mark.asyncio
     async def test_propagate_flag_does_not_outlive_a_contextless_run(self, monkeypatch, restore_settings):
-        """Runs the real arg-parsing path: the flag must be live at the tool run, and gone after.
+        """Runs the real arg-parsing path: the flag must be live at the command run, and gone after.
         Contextless, get_settings() is global_settings, so without the restore one dispatch call
         would leave re-raising on for every later caller."""
         import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
@@ -594,20 +598,20 @@ class TestDefensiveCapture:
         seen = {}
 
         async def failing_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
-            seen["during"] = get_settings().config.get("propagate_tool_errors")
+            seen["during"] = get_settings().config.get("propagate_command_errors")
             raise RuntimeError("provider unavailable")
 
         monkeypatch.setattr(litellm_mod.LiteLLMAIHandler, "chat_completion", failing_chat_completion)
         global_settings.set("MOSAICO.INPUT", {"files": parse_unified_diff(SAMPLE_RAW_DIFF),
                                               "languages": {"py": 1}, "title": "Supplied diff"})
         global_settings.set("CONFIG.GIT_PROVIDER", "mosaico_diff")
-        global_settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+        global_settings.set("CONFIG.PROPAGATE_COMMAND_ERRORS", False)
 
         result = await dispatch._run_pr_agent("mosaico://supplied-diff", "review")
 
-        assert seen["during"] is True, "the arg never reached the tool run"
+        assert seen["during"] is True, "the arg never reached the command run"
         assert result.ok is False, "the re-raise must surface as ok=False"
-        assert global_settings.config.get("propagate_tool_errors") is False, "flag leaked past the run"
+        assert global_settings.config.get("propagate_command_errors") is False, "flag leaked past the run"
 
     @pytest.mark.asyncio
     async def test_ask_that_raises_returns_error_fallback(self, monkeypatch, restore_settings):
@@ -906,7 +910,7 @@ class TestPublishOutputForced:
     async def test_run_pr_agent_injects_no_publish_flags(self, monkeypatch, restore_settings):
         """_run_pr_agent must pass --config.publish_output=false and
         --config.publish_output_progress=false in the handle_request args list so that
-        the tool writes into data['artifact'] rather than publishing to the real PR."""
+        the command writes into data['artifact'] rather than publishing to the real PR."""
         captured_args = {}
 
         async def fake_handle_request(self, pr_url, request, notify=None):
@@ -926,7 +930,7 @@ class TestPublishOutputForced:
         assert out.text == "REVIEW OUTPUT"
         assert "--config.publish_output=false" in captured_args["request"], (
             "Production path must inject --config.publish_output=false; "
-            "without it the tool publishes to the real PR and returns nothing to MOSAICO."
+            "without it the command publishes to the real PR and returns nothing to MOSAICO."
         )
         assert "--config.publish_output_progress=false" in captured_args["request"], (
             "Production path must inject --config.publish_output_progress=false."
@@ -1099,7 +1103,7 @@ class TestVerbNegationAndPosition:
         ("describe this, then improve it", "describe"),
     ])
     def test_negated_and_positional_verbs(self, text, expected):
-        assert _detect_verb(text) == expected
+        assert _resolve_verb([text]) == expected
 
     @pytest.mark.parametrize("text, expected", [
         ("there is no bug, review this", "review"),
@@ -1108,13 +1112,13 @@ class TestVerbNegationAndPosition:
         ("do not review", "review"),
     ])
     def test_negation_does_not_fire_on_ordinary_prose(self, text, expected):
-        assert _detect_verb(text) == expected
+        assert _resolve_verb([text]) == expected
 
 
 class TestStickyReviewToken:
     def test_reviewer_heading_alone_does_not_reach_the_matcher(self):
         assert _explicit_verb("## PR Reviewer Guide 🔍") is None
-        assert _detect_verb("## PR Reviewer Guide 🔍") == "review"
+        assert _resolve_verb(["## PR Reviewer Guide 🔍"]) == "review"
 
     def test_estimated_effort_line_is_the_token_that_matches(self):
         assert _explicit_verb("### ⏱️ Estimated effort to review: 1 🔵⚪⚪⚪⚪") == "review"
@@ -1195,10 +1199,10 @@ class TestExtendedHeaderNotLeaked:
         assert _diff_prose(self.NEW_FILE_DIFF).strip() == ""
 
     def test_renamed_path_does_not_override_the_request(self):
-        assert _detect_verb(_diff_prose(self.RENAME_DIFF)) == "review"
+        assert _resolve_verb([self.RENAME_DIFF]) == "review"
 
     def test_question_mark_in_a_leaked_path_does_not_flip_to_ask(self):
-        assert _detect_verb(_diff_prose(self.NEW_FILE_DIFF)) == "review"
+        assert _resolve_verb([self.NEW_FILE_DIFF]) == "review"
 
     def test_prose_after_an_extended_header_patch_still_survives(self):
         prose = _diff_prose(f"{self.NEW_FILE_DIFF}\nnow describe it")
@@ -1270,7 +1274,7 @@ class TestSingleTurnUnchanged:
     @pytest.mark.asyncio
     async def test_single_turn_diff_unchanged(self, monkeypatch, restore_settings):
         seen = _routed(monkeypatch)
-        out = await route_and_run(f"review the following\n{SAMPLE_DIFF}")
+        out = (await route_and_run_result(f"review the following\n{SAMPLE_DIFF}")).text
         assert out == "ROUTED"
         assert seen["verb"] == "review"
         assert seen["title"] == "Supplied diff"

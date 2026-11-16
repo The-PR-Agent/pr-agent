@@ -15,7 +15,6 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.comment_identity import (
     PRCodeSuggestionsIdentity,
-    PRDescriptionHeader,
     add_comment_identity,
     comment_matches_any_identity,
     comment_matches_identity,
@@ -23,7 +22,7 @@ from ..algo.comment_identity import (
     get_pr_review_comment_identifiers,
 )
 from ..algo.file_filter import filter_ignored
-from ..algo.git_patch_processing import count_patch_lines
+from ..algo.git_patch_processing import count_patch_lines, split_diff_lines
 from ..algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
     body_with_markers,
@@ -34,6 +33,7 @@ from ..algo.inline_comment_dedup import (
     has_marker,
 )
 from ..algo.language_handler import is_valid_file
+from ..algo.suggestion_checks import get_patch_range_lines
 from ..algo.utils import (
     find_line_number_of_relevant_line_in_file,
     load_large_diff,
@@ -116,11 +116,16 @@ class _AzureCommitInner:
         self.message = getattr(raw, "comment", "") or ""
         author = getattr(raw, "author", None)
         author_date = _to_naive_utc(getattr(author, "date", None)) if author else None
-        self.author = type("_AzureAuthor", (), {"date": author_date})()
+        committer = getattr(raw, "committer", None)
+        committer_date = _to_naive_utc(getattr(committer, "date", None)) if committer else None
+        # PRReviewer compares the last-seen commit's author date with a datetime, so a commit
+        # that has only a committer date also gets it as its author date.
+        self.author = type("_AzureAuthor", (), {"date": author_date or committer_date})()
+        self.committer = type("_AzureCommitter", (), {"date": committer_date})()
 
 
 class _AzureCommitAdapter:
-    """Mimics PyGithub `Commit` shape (.sha, .commit.author.date, .commit.message, .parents)."""
+    """Mimics PyGithub `Commit` shape (.sha, .commit.author.date, .commit.committer.date, .commit.message, .parents)."""
 
     def __init__(self, raw):
         self.sha = raw.commit_id
@@ -149,7 +154,7 @@ def _get_azure_change_path(change):
 
 
 def _get_azure_change_old_path(change):
-    additional = getattr(change, "additional_properties", None)
+    additional = change if isinstance(change, dict) else getattr(change, "additional_properties", None)
     if not isinstance(additional, dict):
         additional = {}
 
@@ -170,7 +175,7 @@ def _get_azure_change_old_path(change):
 
 
 def _get_azure_change_type(change):
-    additional = getattr(change, "additional_properties", None)
+    additional = change if isinstance(change, dict) else getattr(change, "additional_properties", None)
     if not isinstance(additional, dict):
         additional = {}
 
@@ -237,6 +242,7 @@ class AzureDevopsProvider(GitProvider):
         self.temp_comments = []
         self.incremental = incremental
         self.unreviewed_files_map = {}
+        self._incremental_unfiltered_files = None
         self.pr_commits = None
         self.previous_review = None
         self._published_inline_comment_bodies = []
@@ -261,22 +267,34 @@ class AzureDevopsProvider(GitProvider):
                 self._diff_path_map = path_map
         return path_map.get(relevant_file) or path_map.get(relevant_file.lstrip("/"))
 
-    def _get_suggestion_end_offset(self, relevant_file: str, relevant_lines_end: int) -> int | None:
-        for file in self.diff_files or []:
-            if file.filename != relevant_file or not isinstance(file.head_file, str):
+    def _get_suggestion_end_offset(
+        self, relevant_file: str, relevant_lines_end: int, relevant_lines_start: int | None = None
+    ) -> int | None:
+        start_line = relevant_lines_end if relevant_lines_start is None else relevant_lines_start
+        if start_line < 1 or relevant_lines_end < start_line:
+            return None
+        diff_files = self.diff_files if getattr(self, "diff_files", None) is not None else self.get_diff_files()
+        for file in diff_files or []:
+            if file.filename != relevant_file:
                 continue
-            lines = file.head_file.splitlines()
-            if relevant_lines_end > len(lines):
-                return None
-            line = lines[relevant_lines_end - 1]
+            if isinstance(file.head_file, str) and file.head_file and getattr(file, "head_file_is_complete", True):
+                lines = split_diff_lines(file.head_file)
+                if relevant_lines_end > len(lines):
+                    return None
+                line = lines[relevant_lines_end - 1]
+            else:
+                patch_lines = get_patch_range_lines(file.patch, start_line, relevant_lines_end)
+                if patch_lines is None:
+                    return None
+                line = patch_lines[-1]
             return len(line.encode("utf-16-le")) // 2 + 1
         return None
 
     @staticmethod
     def _render_suggestion_as_diff(body: str, original_suggestion: dict | None) -> str:
-        """Azure DevOps has no committable suggestion blocks, so a ```suggestion fence is
-        published verbatim and renders as an uneditable raw block. Replace it with a diff
-        block, the same way the Bitbucket providers do."""
+        """A PR-level comment has no lines for a ```suggestion fence to replace, so Azure DevOps
+        shows the fence as a raw block. Replace it with a diff block, the same way the Bitbucket
+        providers do."""
         if not original_suggestion:
             return body
         try:
@@ -313,6 +331,8 @@ class AzureDevopsProvider(GitProvider):
         prepared = []
         for suggestion, reason in suggestions:
             try:
+                suggestion = {**suggestion, "body": self._render_suggestion_as_diff(
+                    suggestion["body"], suggestion.get("original_suggestion"))}
                 prepared.append((suggestion, self._fallback_suggestion_section(suggestion, reason)))
             except (KeyError, TypeError) as e:
                 get_logger().warning(f"Could not format Azure code suggestion fallback, error: {e}")
@@ -386,9 +406,6 @@ class AzureDevopsProvider(GitProvider):
                 continue
 
             has_suggestion_fence = "```suggestion" in body
-            raw_body = body
-            body = self._render_suggestion_as_diff(body, suggestion.get("original_suggestion"))
-            suggestion = {**suggestion, "body": body}
 
             publishable_count += 1
             fallback_to_pr_comment = suggestion.get("fallback_to_pr_comment", True)
@@ -400,8 +417,8 @@ class AzureDevopsProvider(GitProvider):
             should_mark = store is not None and not has_marker(body)
             fingerprints = set()
             if should_mark:
-                body_fp = full_body_fingerprint(fingerprint_file, fingerprint_anchor, raw_body)
-                code_fp = code_fingerprint(fingerprint_file, fingerprint_anchor, raw_body)
+                body_fp = full_body_fingerprint(fingerprint_file, fingerprint_anchor, body)
+                code_fp = code_fingerprint(fingerprint_file, fingerprint_anchor, body)
                 fingerprints.add(body_fp)
                 if code_fp is not None:
                     fingerprints.add(code_fp)
@@ -429,7 +446,9 @@ class AzureDevopsProvider(GitProvider):
 
             end_offset = 1
             if has_suggestion_fence:
-                end_offset = self._get_suggestion_end_offset(resolved_file, relevant_lines_end)
+                end_offset = self._get_suggestion_end_offset(
+                    resolved_file, relevant_lines_end, relevant_lines_start
+                )
                 if end_offset is None:
                     if fallback_to_pr_comment:
                         if should_mark:
@@ -579,6 +598,8 @@ class AzureDevopsProvider(GitProvider):
             return None
 
     def is_supported(self, capability: str) -> bool:
+        if capability in ("head_ci_status", "head_staleness", "author_human_check"):
+            return False
         return True
 
     def supports_incremental_kind(self, kind: str) -> bool:
@@ -608,6 +629,7 @@ class AzureDevopsProvider(GitProvider):
         self.pr_commits = None
         self.previous_review = None
         self.unreviewed_files_map = {}
+        self._incremental_unfiltered_files = None
         self.temp_comments = []
         self._published_inline_comment_bodies = []
         self._inline_comment_store = None
@@ -619,12 +641,19 @@ class AzureDevopsProvider(GitProvider):
     def get_incremental_commits(self, incremental=None, kind: str = "review"):
         if incremental is None:
             incremental = IncrementalPR(False)
+        was_incremental = (
+            bool(getattr(getattr(self, "incremental", None), "is_incremental", False))
+            or bool(getattr(self, "unreviewed_files_map", None))
+            or getattr(self, "_incremental_unfiltered_files", None) is not None
+        )
         self.incremental = incremental
-        if self.incremental.is_incremental:
+        self._incremental_unfiltered_files = None
+        if self.incremental.is_incremental or was_incremental:
             # Recompute a diff cached for a different incremental scope.
             self.diff_files = None
             self._diff_path_map = None
             self.unreviewed_files_map = {}
+        if self.incremental.is_incremental:
             self._incremental_kind = kind
             self._get_incremental_commits()
 
@@ -651,6 +680,7 @@ class AzureDevopsProvider(GitProvider):
         if self.incremental.commits_range is None:
             return
         candidate_paths = []
+        unfiltered_paths = []
         had_errors = False
         non_merge_seen = False
         for commit in self.incremental.commits_range:
@@ -672,6 +702,11 @@ class AzureDevopsProvider(GitProvider):
                 path = _get_azure_change_path(change)
                 if path:
                     candidate_paths.append(path)
+                    unfiltered_paths.append(path)
+                if "rename" in _get_azure_change_type(change).lower():
+                    old_path = _get_azure_change_old_path(change)
+                    if old_path:
+                        unfiltered_paths.append(old_path)
 
         if had_errors:
             get_logger().warning(
@@ -691,6 +726,9 @@ class AzureDevopsProvider(GitProvider):
                 "Incremental range only contains merge commits; falling back to full review."
             )
             self.incremental.is_incremental = False
+            return
+
+        self._incremental_unfiltered_files = list(dict.fromkeys(unfiltered_paths))
 
     def _get_commit_range(self):
         last_review_time = _to_naive_utc(getattr(self.previous_review, "created_at", None))
@@ -704,12 +742,15 @@ class AzureDevopsProvider(GitProvider):
         # Walk newest -> oldest to find the newest commit that predates the previous review
         # (the "last seen" baseline). The new range is then everything positioned after that
         # baseline, sliced by index — not by re-testing each commit's date — so that commits
-        # with a missing author date (the adapter allows author.date to be None) are still
+        # with no date (the adapter allows both dates to be None) are still
         # included rather than silently dropped from the incremental scope.
         last_seen_index = None
         saw_reliable_date = False
         for index in range(len(self.pr_commits) - 1, -1, -1):
-            cdate = self.pr_commits[index].commit.author.date
+            # Prefer the committer date: amend, rebase and cherry-pick keep the author date, so a
+            # commit rewritten after the previous review would otherwise count as already seen.
+            commit = self.pr_commits[index].commit
+            cdate = commit.committer.date or commit.author.date
             if cdate is None:
                 continue
             saw_reliable_date = True
@@ -719,7 +760,7 @@ class AzureDevopsProvider(GitProvider):
                 break
         if not saw_reliable_date:
             get_logger().info(
-                "All PR commit author dates are missing; cannot compute incremental range. "
+                "All PR commit dates are missing; cannot compute incremental range. "
                 "Falling back to full review."
             )
             self.incremental.is_incremental = False
@@ -1318,23 +1359,7 @@ class AzureDevopsProvider(GitProvider):
         return any(value in stable_identities for value in values)
 
     def publish_description(self, pr_title: str, pr_body: str) -> None:
-        if len(pr_body) > MAX_PR_DESCRIPTION_AZURE_LENGTH:
-
-            usage_guide_text='<details> <summary><strong>✨ Describe tool usage guide:</strong></summary><hr>'
-            ind = pr_body.find(usage_guide_text)
-            if ind != -1:
-                pr_body = pr_body[:ind]
-
-            if len(pr_body) > MAX_PR_DESCRIPTION_AZURE_LENGTH:
-                changes_walkthrough_text = PRDescriptionHeader.FILE_WALKTHROUGH.value
-                ind = pr_body.find(changes_walkthrough_text)
-                if ind != -1:
-                    pr_body = pr_body[:ind]
-
-            if len(pr_body) > MAX_PR_DESCRIPTION_AZURE_LENGTH:
-                trunction_message = " ... (description truncated due to length limit)"
-                pr_body = pr_body[:MAX_PR_DESCRIPTION_AZURE_LENGTH - len(trunction_message)] + trunction_message
-                get_logger().warning("PR description was truncated due to length limit")
+        pr_body = self.limit_description_characters(pr_body, MAX_PR_DESCRIPTION_AZURE_LENGTH)
         try:
             updated_pr = GitPullRequest()
             if pr_title is not None:
@@ -1427,9 +1452,6 @@ class AzureDevopsProvider(GitProvider):
                         f"{relevant_file}, error: {e}")
                     overall_success = False
             return overall_success
-
-    def get_title(self):
-        return self.pr.title
 
     @cache_languages
     def get_languages(self):
@@ -1768,14 +1790,14 @@ class AzureDevopsProvider(GitProvider):
                     content = getattr(item, "content", None)
                     if not isinstance(content, str):
                         raise TypeError("Azure DevOps returned non-string file content")
-                    file_lines[path] = content.splitlines()
+                    file_lines[path] = split_diff_lines(content)
                 except Exception as e:
                     get_logger().warning(f"Failed to read {path} while reconciling code suggestions: {e}")
                     file_lines[path] = None
             lines = file_lines[path]
             if lines is None:
                 continue
-            suggested_lines = suggestion_code.splitlines()
+            suggested_lines = split_diff_lines(suggestion_code)
             if lines[start - 1:start - 1 + len(suggested_lines)] != suggested_lines:
                 continue
             thread_id = self._value(thread, "id")
@@ -2041,20 +2063,15 @@ class AzureDevopsProvider(GitProvider):
         ):
             raise ValueError("Azure work item response is incomplete")
 
-        work_items = []
-        for item in raw_work_items:
-            work_items.append(
-                {
-                    "id": item.id,
-                    "title": item.fields.get("System.Title", ""),
-                    "url": item.url,
-                    "body": item.fields.get("System.Description", ""),
-                    "acceptance_criteria": item.fields.get(
-                        "Microsoft.VSTS.Common.AcceptanceCriteria", ""
-                    ),
-                    "tags": item.fields.get("System.Tags", "").split("; ")
-                    if item.fields.get("System.Tags")
-                    else [],
-                }
-            )
+        work_items = [
+            {
+                "id": item.id,
+                "title": item.fields.get("System.Title", ""),
+                "url": item.url,
+                "body": item.fields.get("System.Description", ""),
+                "acceptance_criteria": item.fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", ""),
+                "tags": item.fields.get("System.Tags", "").split("; ") if item.fields.get("System.Tags") else [],
+            }
+            for item in raw_work_items
+        ]
         return work_items

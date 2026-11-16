@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import os
 from typing import Any
@@ -10,13 +11,15 @@ from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
-from pr_agent.algo.setting_utils import normalize_setting_list
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     auto_feedback_disabled,
+    dedupe_review_commands,
+    get_include_pr_labels,
     get_pr_commands,
     is_command_comment,
     push_trigger_slot,
@@ -84,7 +87,11 @@ async def handle_request(body: dict[str, Any], event: str):
 
     # Handle different event types
     if event == "pull_request":
-        if not should_process_pr_logic(body):
+        prefilter_allowed = (
+            shared_should_process_pr_logic(body, provider="gitea", check_include_labels=False)
+            if get_include_pr_labels() else should_process_pr_logic(body)
+        )
+        if not prefilter_allowed:
             get_logger().debug("Request ignored: PR logic filtering")
             return {}
         if action in ["opened", "reopened", "synchronized"]:
@@ -118,7 +125,7 @@ async def handle_pr_event(body: dict[str, Any], event: str, action: str, agent: 
     elif action == "synchronized":
         # Handle push to PR
         commands_on_push = normalize_setting_list(get_settings().get("gitea.push_commands", {}))
-        handle_push_trigger = get_settings().get("gitea.handle_push_trigger", False)
+        handle_push_trigger = _as_bool_setting(get_settings().get("gitea.handle_push_trigger", False))
         if not commands_on_push or not handle_push_trigger:
             get_logger().info("Push event, but no push commands found or push trigger is disabled")
             return
@@ -153,7 +160,7 @@ async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict
     commands = (
         get_pr_commands("gitea")
         if commands_conf == "pr_commands"
-        else normalize_setting_list(get_settings().get(f"gitea.{commands_conf}"))
+        else dedupe_review_commands(normalize_setting_list(get_settings().get(f"gitea.{commands_conf}")))
     )
     if not commands:
         get_logger().info("New PR, but no auto commands configured")
@@ -166,7 +173,7 @@ async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict
                 provider = context.get("git_provider", {}).get(api_url)
                 reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)
                 if callable(reset_diff_cache):
-                    reset_diff_cache()
+                    await asyncio.to_thread(reset_diff_cache)
             new_command = prepare_command(command)
             get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
             if await agent.handle_request(api_url, new_command) is RequestOutcome.SKIPPED:

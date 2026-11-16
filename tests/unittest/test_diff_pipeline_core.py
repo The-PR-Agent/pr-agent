@@ -15,7 +15,7 @@ formatting tweaks.
 
 import pytest
 
-import pr_agent.algo.pr_processing as pr_processing
+from pr_agent.algo import pr_processing
 from pr_agent.algo.git_patch_processing import (
     decouple_and_convert_to_hunks_with_lines_numbers,
     extract_hunk_lines_from_patch,

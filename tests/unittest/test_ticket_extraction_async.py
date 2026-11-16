@@ -1,6 +1,6 @@
 """
 Unit tests for async ticket extraction & caching in
-``pr_agent.tools.ticket_pr_compliance_check``.
+``pr_agent.commands.ticket_pr_compliance_check``.
 
 These tests are deterministic and fake-provider based — no live API or
 network access is performed.
@@ -8,20 +8,24 @@ network access is performed.
 import asyncio
 import copy
 import json
+import threading
+from contextlib import nullcontext
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from github.Repository import Repository
+from starlette_context import context, request_cycle_context
 
-from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import AzureDevopsProvider, GithubProvider, GitLabProvider
-from pr_agent.tools import ticket_pr_compliance_check as tpc
-from pr_agent.tools.ticket_pr_compliance_check import (
+from pr_agent.algo.types import FilePatchInfo
+from pr_agent.commands import ticket_pr_compliance_check as tpc
+from pr_agent.commands.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
     extract_gitlab_ticket_references,
     extract_tickets,
 )
+from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import AzureDevopsProvider, GithubProvider, GitLabProvider
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
@@ -157,8 +161,9 @@ def _make_gitlab_provider(user_description):
         title="GitLab issue",
         description="Issue body",
         labels=["bug", "backend"],
+        confidential=False,
     )
-    project = MagicMock()
+    project = MagicMock(visibility="public", issues_access_level="enabled", merge_requests_access_level="enabled")
     project.issues.get.return_value = issue
     provider.gl = MagicMock()
     provider.gl.projects.get.return_value = project
@@ -180,16 +185,186 @@ def settings_snapshot():
     """
     s = get_settings()
     snapshot = snapshot_settings(
-        ["related_tickets", "pr_reviewer.require_ticket_analysis_review", "config.repo_context_sibling_repos"]
+        ["related_tickets", "pr_reviewer.require_ticket_analysis_review", "config.repo_context_sibling_repos",
+         "config.extract_issue_from_branch"]
     )
     # Reset to known defaults for each test
     s.set("config.repo_context_sibling_repos", [])
+    s.set("config.extract_issue_from_branch", True)
     s.set("related_tickets", [])
     s.set("pr_reviewer.require_ticket_analysis_review", False)
     try:
         yield s
     finally:
         restore_settings(snapshot)
+
+
+@pytest.fixture
+def scoped_ticket_settings():
+    base = get_settings(use_context=False)
+    base.get("pr_reviewer")  # Load the lazy defaults before copying them.
+    settings = copy.deepcopy(base)
+    settings.set("related_tickets", [])
+    settings.set("pr_reviewer.require_ticket_analysis_review", True)
+    settings.set("pr_reviewer.max_previous_findings_chars", 0)
+    settings.set("config.repo_context_files", [])
+    settings.set("config.publish_output", False)
+    settings.set("config.propagate_command_errors", True)
+    settings.set("jira", {})
+    with request_cycle_context({"settings": settings}):
+        yield settings
+
+
+@pytest.mark.parametrize("kind", ["github", "github-uninitialized", "gitlab", "gitlab-sibling", "azure", "jira"])
+async def test_ticket_reads_use_workers_and_request_settings(monkeypatch, scoped_ticket_settings, kind):
+    calls = []
+
+    def record(name, function):
+        def call(*args, **kwargs):
+            calls.append((name, threading.get_ident(), get_settings()))
+            return function(*args, **kwargs)
+        return call
+
+    jira = SimpleNamespace(issue=record("jira", lambda key, fields: {"fields": {"summary": "Jira ticket"}}))
+    monkeypatch.setattr(tpc, "_get_jira_client", lambda: jira)
+    expected = []
+    native_ids = [7]
+    if kind.startswith("github"):
+        child_url = "https://github.com/org/other/issues/8"
+        parent_repo = _FakeRepoObj({7: _FakeIssue(7)})
+        child_repo = _FakeRepoObj({8: _FakeIssue(8, raw_data={"sub_issues_summary": {"total": 0}})})
+        provider = _make_github_provider(
+            user_description=f"Fixes #7 {child_url} PROJ-9", repo_obj=parent_repo,
+        )
+        if kind == "github-uninitialized":
+            provider.repo_obj = None
+            provider.github_client = SimpleNamespace(get_repo=record("repo", lambda name: parent_repo))
+            expected.append("repo")
+        provider.get_sibling_repo = record("sibling", lambda name: child_repo)
+        provider.get_issue_content = record("issue", lambda repo, number: repo.get_issue(number))
+        provider.fetch_sub_issues = record("subissues", lambda url: [child_url])
+        expected += ["issue", "subissues", "sibling", "issue"]
+        native_ids = [7, 8]
+    elif kind.startswith("gitlab"):
+        reference = "group/other#7" if kind == "gitlab-sibling" else "#7"
+        provider, project = _make_gitlab_provider(f"Fixes {reference} PROJ-9")
+        provider.get_pr_branch = lambda: "main"
+        issue = project.issues.get.return_value
+        project.issues.get.side_effect = record("issue", lambda number: issue)
+        if kind == "gitlab-sibling":
+            provider.get_sibling_repo = record("sibling", lambda name: project)
+            expected.append("sibling")
+        expected.append("issue")
+    elif kind == "azure":
+        provider = _make_azure_provider([])
+        provider.get_user_description = lambda: "PROJ-9"
+        provider.get_pr_branch = lambda: "main"
+        provider.get_linked_work_items = record("work_items", lambda: [{"id": 7, "body": "Work item"}])
+        expected.append("work_items")
+    else:
+        provider = SimpleNamespace(get_user_description=lambda: "PROJ-9", get_pr_branch=lambda: "main")
+        native_ids = []
+
+    result = await extract_tickets(provider)
+
+    assert [ticket["ticket_id"] for ticket in result] == [*native_ids, "PROJ-9"]
+    assert [name for name, _, _ in calls] == [*expected, "jira"]
+    assert all(thread_id != threading.get_ident() for _, thread_id, _ in calls)
+    assert all(settings is scoped_ticket_settings for _, _, settings in calls)
+    if kind.startswith("github"):
+        assert result[0]["sub_issues"][0]["ticket_url"] == child_url
+        assert child_repo.get_issue_calls == [8]  # Reuse the child when it is also linked directly.
+
+
+@pytest.mark.parametrize("with_context", [False, True])
+async def test_ticket_reads_keep_shared_settings_on_the_event_loop(monkeypatch, with_context):
+    settings = get_settings(use_context=False)
+    provider, project = _make_gitlab_provider("Fixes #7")
+    provider.get_pr_branch = lambda: "main"
+    calls = []
+    issue = project.issues.get.return_value
+
+    def fetch_issue(number):
+        calls.append((threading.get_ident(), get_settings()))
+        return issue
+
+    def unexpected_worker(*args, **kwargs):
+        pytest.fail("Shared settings must not be used from a worker")
+
+    project.issues.get.side_effect = fetch_issue
+    monkeypatch.setattr(tpc.asyncio, "to_thread", unexpected_worker)
+    scope = request_cycle_context({"settings": settings}) if with_context else nullcontext()
+    with scope:
+        result = await extract_tickets(provider)
+
+    assert [ticket["ticket_id"] for ticket in result] == [7]
+    assert calls == [(threading.get_ident(), settings)]
+
+
+@pytest.mark.parametrize("cancel", [False, True], ids=["complete", "cancel"])
+async def test_review_ticket_wait_keeps_loop_responsive(monkeypatch, scoped_ticket_settings, cancel):
+    from pr_agent.commands import pr_reviewer as reviewer_module
+
+    loop = asyncio.get_running_loop()
+    started, finished = asyncio.Event(), asyncio.Event()
+    release = threading.Event()
+    calls = []
+    repo = _FakeRepoObj({number: _FakeIssue(number) for number in (7, 8)})
+    provider = _make_github_provider(user_description="Fixes #7 #8", repo_obj=repo)
+
+    def fetch_issue(repository, number):
+        calls.append(number)
+        try:
+            if number == 7:
+                loop.call_soon_threadsafe(started.set)
+                assert release.wait(10)
+            return repository.get_issue(number)
+        finally:
+            if number == 7:
+                loop.call_soon_threadsafe(finished.set)
+
+    provider.get_issue_content = fetch_issue
+    provider.pr = SimpleNamespace(title="Update app", body="Fixes #7 #8")
+    provider.git_files = ["app.py"]
+    provider.get_languages = lambda: {"Python": 100}
+    provider.get_files = lambda: ["app.py"]
+    provider.get_diff_files = MagicMock(return_value=[
+        FilePatchInfo(base_file="", head_file="", patch="", filename="app.py")
+    ])
+    provider.get_commit_messages = lambda: ""
+    pr_url = "https://github.com/org/repo/pull/1"
+    context["git_provider"] = {pr_url: provider}
+    predict = AsyncMock()
+    monkeypatch.setattr(reviewer_module, "retry_with_fallback_models", predict)
+    reviewer = reviewer_module.PRReviewer(pr_url, ai_handler=SimpleNamespace)
+
+    run = asyncio.create_task(reviewer.run())
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        assert not run.done()
+        assert scoped_ticket_settings.get("related_tickets") == []
+        if cancel:
+            run.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await run
+    finally:
+        release.set()
+        await asyncio.wait_for(finished.wait(), 5)
+        if not run.cancelled():
+            await asyncio.wait_for(run, 5)
+
+    provider.get_diff_files.assert_called_once_with()
+    if cancel:
+        assert calls == [7]
+        assert scoped_ticket_settings.get("related_tickets") == []
+        assert reviewer.vars["related_tickets"] == []
+        predict.assert_not_awaited()
+    else:
+        assert calls == [7, 8]
+        assert [ticket["ticket_id"] for ticket in reviewer.vars["related_tickets"]] == [7, 8]
+        assert reviewer._raw_prompt_vars["related_tickets"] == reviewer.vars["related_tickets"]
+        assert scoped_ticket_settings.get("related_tickets") == reviewer.vars["related_tickets"]
+        predict.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +571,7 @@ class TestNativeTitleExtraction:
 
         result = asyncio.run(extract_tickets(provider))
 
-        provider.gl.projects.get.assert_called_once_with("group/repo", lazy=True)
+        provider.gl.projects.get.assert_called_once_with("group/repo")
         project.issues.get.assert_called_once_with(7)
         provider.get_user_description = lambda: reference
         provider.mr.title = "No reference"
@@ -517,7 +692,245 @@ class TestNativeTitleExtraction:
 
         assert [ticket["ticket_id"] for ticket in result] == [1, 2, 3]
         assert [call.args[0] for call in project.issues.get.call_args_list] == [1, 2, 3]
-        assert [call.args[0] for call in provider.gl.projects.get.call_args_list] == ["group/repo"] * 3
+        assert [call.args[0] for call in provider.gl.projects.get.call_args_list] == ["group/repo"]
+
+    @pytest.mark.parametrize(
+        "description,title,branch,expected",
+        [
+            ("", "No reference", "7-fix-export", [7]),
+            ("#7", "No reference", "7-fix-export", [7]),
+            ("#1", "#2", "7-fix-export", [1, 2, 7]),
+            ("#1 #2 #3", "No reference", "7-fix-export", [1, 2, 3]),
+            ("", "No reference", "2024-upgrade-deps", [2024]),
+        ],
+    )
+    def test_gitlab_same_project_branch_fills_remaining_ticket_slots(
+        self, settings_snapshot, description, title, branch, expected,
+    ):
+        provider, project = _make_gitlab_provider(description)
+        provider.mr = SimpleNamespace(
+            title=title, source_branch=branch, source_project_id=42, target_project_id=42,
+        )
+        project.issues.get.side_effect = lambda iid: SimpleNamespace(
+            iid=iid, web_url=f"https://gitlab.com/group/repo/-/issues/{iid}",
+            title=f"Issue {iid}", description="Context", labels=[],
+        )
+
+        assert [ticket["ticket_id"] for ticket in asyncio.run(extract_tickets(provider))] == expected
+        assert [call.args[0] for call in project.issues.get.call_args_list] == expected
+
+    @pytest.mark.parametrize(
+        "branch,source_project_id,target_project_id",
+        [
+            ("feature/7-fix", 42, 42),
+            ("7fix", 42, 42),
+            ("0-fix", 42, 42),
+            ("007-fix", 42, 42),
+            ("000000-fix", 42, 42),
+            ("٠٧-fix", 42, 42),
+            ("7٢-fix", 42, 42),
+            ("1234567-fix", 42, 42),
+            ("2026-11-15", 42, 42),
+            ("2026-11-15-hotfix", 42, 42),
+            ("2026-11/123-fix", 42, 42),
+            ("feature/42-2026-11-15", 42, 42),
+            ("7-fix", 10, 42),
+            ("7-fix", None, 42),
+        ],
+    )
+    def test_gitlab_branch_does_not_infer_ambiguous_or_fork_issues(
+        self, settings_snapshot, branch, source_project_id, target_project_id,
+    ):
+        provider, project = _make_gitlab_provider("")
+        provider.mr = SimpleNamespace(
+            title="No reference", source_branch=branch,
+            source_project_id=source_project_id, target_project_id=target_project_id,
+        )
+
+        assert asyncio.run(extract_tickets(provider)) == []
+        project.issues.get.assert_not_called()
+
+    @pytest.mark.parametrize("project_id", [None, ""])
+    def test_gitlab_branch_does_not_infer_without_project_id(self, settings_snapshot, project_id):
+        provider, _ = _make_gitlab_provider("")
+        provider.id_project = project_id
+        provider.mr = SimpleNamespace(
+            title="No reference", source_branch="7-fix", source_project_id=42, target_project_id=42,
+        )
+
+        assert asyncio.run(extract_tickets(provider)) == []
+        provider.gl.projects.get.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "issues_access,mr_access,expected",
+        [
+            ("enabled", "enabled", [7]),
+            ("enabled", "private", [7]),
+            ("private", "private", [7]),
+            ("private", "enabled", []),
+            ("disabled", "enabled", []),
+            (None, "enabled", []),
+            ("enabled", None, []),
+        ],
+    )
+    def test_gitlab_branch_only_issue_visibility_matches_mr_audience(
+        self, settings_snapshot, issues_access, mr_access, expected,
+    ):
+        provider, project = _make_gitlab_provider("")
+        provider.mr = SimpleNamespace(
+            title="No reference", source_branch="7-fix",
+            source_project_id=42, target_project_id=42,
+        )
+        project.issues_access_level = issues_access
+        project.merge_requests_access_level = mr_access
+        project.issues.get.return_value.confidential = False
+
+        assert [ticket["ticket_id"] for ticket in asyncio.run(extract_tickets(provider))] == expected
+        provider.gl.projects.get.assert_called_once_with("group/repo")
+        if expected:
+            project.issues.get.assert_called_once_with(7)
+        else:
+            project.issues.get.assert_not_called()
+
+    def test_gitlab_private_project_branch_issue_with_enabled_mrs(self, settings_snapshot):
+        provider, project = _make_gitlab_provider("")
+        provider.mr = SimpleNamespace(
+            title="No reference", source_branch="7-fix",
+            source_project_id=42, target_project_id=42,
+        )
+        project.visibility = "private"
+        project.issues_access_level = "private"
+        project.merge_requests_access_level = "enabled"
+
+        assert [ticket["ticket_id"] for ticket in asyncio.run(extract_tickets(provider))] == [7]
+        provider.gl.projects.get.assert_called_once_with("group/repo")
+        project.issues.get.assert_called_once_with(7)
+
+    @pytest.mark.parametrize("setting,expected", [(False, []), ("false", []), ("true", [7])])
+    def test_gitlab_branch_respects_existing_disabled_setting(self, settings_snapshot, setting, expected):
+        settings_snapshot.set("config.extract_issue_from_branch", setting)
+        provider, project = _make_gitlab_provider("")
+        provider.mr = SimpleNamespace(
+            title="No reference", source_branch="7-fix", source_project_id=42, target_project_id=42,
+        )
+        project.issues.get.return_value.confidential = False
+
+        assert [ticket["ticket_id"] for ticket in asyncio.run(extract_tickets(provider))] == expected
+        if expected:
+            project.issues.get.assert_called_once_with(7)
+        else:
+            project.issues.get.assert_not_called()
+
+    @pytest.mark.parametrize("setting,expected", [("false", []), ("true", [7])])
+    def test_github_branch_uses_same_string_setting_semantics(self, settings_snapshot, setting, expected):
+        settings_snapshot.set("config.extract_issue_from_branch", setting)
+        urls = tpc.extract_ticket_links_from_branch_name("7-fix", "group/repo")
+        assert urls == [f"https://github.com/group/repo/issues/{iid}" for iid in expected]
+
+    def test_gitlab_missing_branch_metadata_preserves_explicit_tickets(self, settings_snapshot):
+        provider, project = _make_gitlab_provider("#7")
+        provider.mr = SimpleNamespace(title="No reference", source_project_id=42, target_project_id=42)
+
+        assert [ticket["ticket_id"] for ticket in asyncio.run(extract_tickets(provider))] == [7]
+        project.issues.get.assert_called_once_with(7)
+
+    @pytest.mark.parametrize("description", ["", "#7"])
+    def test_gitlab_branch_does_not_expose_implicitly_linked_confidential_issue(
+        self, settings_snapshot, description,
+    ):
+        provider, project = _make_gitlab_provider(description)
+        provider.mr = SimpleNamespace(
+            title="No reference", source_branch="7-fix", source_project_id=42, target_project_id=42,
+        )
+        project.issues.get.return_value.confidential = True
+
+        assert asyncio.run(extract_tickets(provider)) == []
+        project.issues.get.assert_called_once_with(7)
+
+    @pytest.mark.parametrize("numeric_project_id", ["42", 42])
+    @pytest.mark.parametrize("branch,branch_enabled", [("7-fix", True), ("main", True), ("7-fix", False)])
+    def test_gitlab_numeric_project_url_resolves_alias_independently_of_branch(
+        self, settings_snapshot, numeric_project_id, branch, branch_enabled,
+    ):
+        settings_snapshot.set("config.extract_issue_from_branch", branch_enabled)
+        provider, project = _make_gitlab_provider("")
+        parsed_project_id, _ = provider._parse_merge_request_url(
+            "https://gitlab.com/projects/42/-/merge_requests/9"
+        )
+        assert parsed_project_id == "42"
+        provider.id_project = numeric_project_id
+        provider.mr = SimpleNamespace(
+            title="group/repo#7", source_branch=branch,
+            source_project_id=42, target_project_id=42,
+            web_url="https://gitlab.com/group/repo/-/merge_requests/9",
+        )
+        project.issues.get.return_value.confidential = False
+        provider.get_sibling_repo = MagicMock(return_value=project)
+
+        assert [ticket["ticket_id"] for ticket in asyncio.run(extract_tickets(provider))] == [7]
+        provider.gl.projects.get.assert_called_once_with("42")
+        project.issues.get.assert_called_once_with(7)
+        provider.get_sibling_repo.assert_not_called()
+
+    @pytest.mark.parametrize("project_id", ["42", 42])
+    @pytest.mark.parametrize("description", ["group/repo#7 #7", "#7 group/repo#7"])
+    def test_gitlab_numeric_project_alias_skips_explicit_local_confidential_issue(
+        self, settings_snapshot, project_id, description,
+    ):
+        provider, project = _make_gitlab_provider(description)
+        provider.id_project = project_id
+        provider.mr = SimpleNamespace(
+            title="No reference", source_branch="7-fix",
+            source_project_id=42, target_project_id=42,
+            web_url="https://gitlab.com/group/repo/-/merge_requests/9",
+        )
+        project.issues.get.return_value.confidential = True
+        provider.get_sibling_repo = MagicMock(return_value=project)
+
+        assert asyncio.run(extract_tickets(provider)) == []
+        project.issues.get.assert_called_once_with(7)
+        provider.gl.projects.get.assert_called_once_with("42")
+        provider.get_sibling_repo.assert_not_called()
+
+    def test_gitlab_numeric_project_alias_handles_default_port(self, settings_snapshot):
+        provider, project = _make_gitlab_provider("")
+        provider.gitlab_url = "https://gitlab.example.test/gitlab"
+        provider.id_project = "42"
+        provider.mr = SimpleNamespace(
+            title="group/repo#8", source_branch="7-fix", source_project_id=42, target_project_id=42,
+            web_url="https://gitlab.example.test:443/gitlab/group/repo/-/merge_requests/9",
+        )
+        project.issues.get.side_effect = lambda iid: SimpleNamespace(
+            iid=iid, web_url=f"https://gitlab.example.test/gitlab/group/repo/-/issues/{iid}",
+            title=f"Issue {iid}", description="Context", labels=[],
+        )
+        provider.get_sibling_repo = MagicMock(return_value=None)
+
+        assert [ticket["ticket_id"] for ticket in asyncio.run(extract_tickets(provider))] == [8, 7]
+        assert [call.args[0] for call in project.issues.get.call_args_list] == [8, 7]
+        provider.get_sibling_repo.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "branch,branch_enabled", [("7-fix", True), ("main", True), ("7-fix", False)],
+    )
+    def test_gitlab_numeric_project_url_preserves_explicit_confidential_filter(
+        self, settings_snapshot, branch, branch_enabled,
+    ):
+        settings_snapshot.set("config.extract_issue_from_branch", branch_enabled)
+        provider, project = _make_gitlab_provider("")
+        provider.id_project = "42"
+        provider.mr = SimpleNamespace(
+            title="group/repo#7", source_branch=branch,
+            source_project_id=42, target_project_id=42,
+            web_url="https://gitlab.com/group/repo/-/merge_requests/9",
+        )
+        project.issues.get.return_value.confidential = True
+        provider.get_sibling_repo = MagicMock(return_value=project)
+
+        assert asyncio.run(extract_tickets(provider)) == []
+        provider.gl.projects.get.assert_called_once_with("42")
+        project.issues.get.assert_called_once_with(7)
+        provider.get_sibling_repo.assert_not_called()
 
     def test_gitlab_title_does_not_extend_lookup_budget(self, settings_snapshot):
         limit = tpc.MAX_GITLAB_TICKET_LOOKUPS
@@ -548,7 +961,7 @@ class TestNativeTitleExtraction:
         assert [ticket["ticket_id"] for ticket in asyncio.run(extract_tickets(provider))] == expected
         assert [call.args[0] for call in project.issues.get.call_args_list] == expected
         if expected:
-            provider.gl.projects.get.assert_called_once_with("group/repo", lazy=True)
+            provider.gl.projects.get.assert_called_once_with("group/repo")
         else:
             provider.gl.projects.get.assert_not_called()
 
@@ -1229,8 +1642,24 @@ class TestSubIssues:
         assert result and len(result) == 1
         subs = result[0]["sub_issues"]
         assert len(subs) == 10
-        expected_urls = sorted(sub_urls)[:10]
+        expected_urls = sub_urls[:10]
         assert [s["ticket_url"] for s in subs] == expected_urls
+
+    def test_sub_issue_cap_keeps_lowest_issue_numbers(self, settings_snapshot):
+        # Sub-issues #2-#13: as text, #10-#13 sort before #2 and would push out #8 and #9.
+        issues_dict = {1: _FakeIssue(1, title="Main", body="m")}
+        sub_urls = []
+        for i in range(13, 1, -1):
+            issues_dict[i] = _FakeIssue(i, title=f"Sub {i}", body=f"body {i}")
+            sub_urls.append(f"https://github.com/org/repo/issues/{i}")
+        provider = _make_github_provider(
+            user_description="Fixes #1",
+            repo_obj=_FakeRepoObj(issues_dict),
+            sub_issues_map={"https://github.com/org/repo/issues/1": sub_urls},
+        )
+        result = asyncio.run(extract_tickets(provider))
+        subs = result[0]["sub_issues"]
+        assert [s["ticket_url"] for s in subs] == [f"https://github.com/org/repo/issues/{i}" for i in range(2, 12)]
 
     def test_malformed_sub_issue_entries_skipped_safely(self, settings_snapshot):
         repo_obj = _FakeRepoObj({
@@ -1307,7 +1736,7 @@ class TestAzureDevopsExtraction:
                 "title": "WI 1",
                 "body": long_body,
                 "acceptance_criteria": "AC1",
-                "labels": ["a", "b"],
+                "tags": ["a", "b"],
             },
             {
                 "id": 2,
@@ -1481,6 +1910,18 @@ class TestGitLabExtraction:
                 'https://gitlab.com/gitlab',
                 [],
             ),
+            (
+                "[other #7](https://gitlab.example.com/gitlab/group/other-project/-/issues/9) and #8",
+                "group/repo",
+                "https://gitlab.example.com/gitlab",
+                [("group/other-project", 9), ("group/repo", 8)],
+            ),
+            (
+                "[#7](https://gitlab.com/group/other-project/-/work_items/9)",
+                "group/repo",
+                "https://gitlab.com",
+                [("group/other-project", 9)],
+            ),
         ],
     )
     def test_url_reference_boundaries(self, description, repo_path, gitlab_url, expected):
@@ -1492,6 +1933,19 @@ class TestGitLabExtraction:
             ("##7", []),
             ("group/proj#7", [("group/proj", 7)]),
             ("#7", [("group/repo", 7)]),
+            ("#123456", [("group/repo", 123456)]),
+            ("#1234567", []),
+            ("group/proj#1234567", [("group/proj", 1234567)]),
+            (
+                "<!-- Closes #1234 or group/proj#56 or https://gitlab.com/group/repo/-/issues/78 --> #42",
+                [("group/repo", 42)],
+            ),
+            ("See [#6211][release]\n\n[release]: https://example.com/changelog", []),
+            ('<a href="https://example.com/changelog">#42</a> Fixes #7', [("group/repo", 7)]),
+            ('class="bg-[#121212]" dark:bg-[#123456]', []),
+            ("#0 group/proj#0 https://gitlab.com/group/repo/-/issues/000", []),
+            ("#١٢ group/proj#١٢ https://gitlab.com/group/repo/-/issues/١٢", []),
+            (f"group/proj#{'9' * 4301} #42", [("group/repo", 42)]),
         ],
     )
     def test_shorthand_reference_boundaries(self, description, expected):
@@ -1520,7 +1974,7 @@ class TestGitLabExtraction:
                 "labels": "bug, backend",
             }
         ]
-        provider.gl.projects.get.assert_called_once_with("group/repo", lazy=True)
+        provider.gl.projects.get.assert_called_once_with("group/repo")
         project.issues.get.assert_called_once_with(7)
 
     @pytest.mark.parametrize("source", ["description", "title"])
@@ -1551,7 +2005,7 @@ class TestGitLabExtraction:
                 "body": "Issue body",
                 "labels": "bug, backend",
             }]
-            provider.gl.projects.get.assert_called_once_with("group/repo", lazy=True)
+            provider.gl.projects.get.assert_called_once_with("group/repo")
             project.issues.get.assert_called_once_with(7)
 
 

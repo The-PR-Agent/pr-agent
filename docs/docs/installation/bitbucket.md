@@ -45,10 +45,10 @@ No configuration change is required.
 
 PR-Agent stops when Bitbucket Cloud returns a different number of patches than
 entries in the filtered changed-file list, instead of treating the diff as empty.
-An affected `/add_docs`, `/generate_labels`, `/describe`, `/review`, or `/improve`
+An affected `/add_docs`, `/generate_labels`, `/describe`, or `/review`
 run may post **PR-Agent command was not run** with a Bitbucket-specific explanation
 when `CONFIG.PUBLISH_OUTPUT` is enabled. This provider-specific notice replaces the
-generic `/review` and `/improve` failure output to avoid duplicate comments.
+generic `/review` failure output to avoid duplicate comments.
 
 Retry the command. If the problem persists, check the pull request's diff in
 Bitbucket. PR-Agent does not recover missing patches automatically.
@@ -57,14 +57,14 @@ Bitbucket. PR-Agent does not recover missing patches automatically.
 
 Login into your on-prem instance of Bitbucket with your service account username and password.
 Navigate to `Manage account`, `HTTP Access tokens`, `Create Token`.
-Generate the token and add it to .secret.toml under `bitbucket_server` section
+Generate the token and add it to `pr_agent/settings/.secrets.toml` under `bitbucket_server` section
 
 ```toml
 [bitbucket_server]
 bearer_token = "<your key>"
 ```
 
-Don't forget to also set the URL of your Bitbucket Server instance (either in `.secret.toml` or in `configuration.toml`):
+Don't forget to also set the URL of your Bitbucket Server instance (either in `.secrets.toml` or in `configuration.toml`):
 
 ```toml
 [bitbucket_server]
@@ -73,10 +73,11 @@ url = "<full URL to your Bitbucket instance, e.g.: https://git.bitbucket.com>"
 
 ### Run it as CLI
 
-Modify `configuration.toml`:
+In `configuration.toml`, change `git_provider` in the `[config]` section:
 
 ```toml
-git_provider="bitbucket_server"
+[config]
+git_provider = "bitbucket_server"
 ```
 
 
@@ -84,7 +85,7 @@ git_provider="bitbucket_server"
 and pass the Pull request URL:
 
 ```shell
-python cli.py --pr_url https://git.on-prem-instance-of-bitbucket.com/projects/PROJECT/repos/REPO/pull-requests/1 review
+uv run pr-agent --pr_url https://git.on-prem-instance-of-bitbucket.com/projects/PROJECT/repos/REPO/pull-requests/1 review
 ```
 
 ### Run it as service

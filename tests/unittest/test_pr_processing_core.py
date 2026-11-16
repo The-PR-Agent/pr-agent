@@ -3,8 +3,7 @@ from pathlib import Path
 
 import pytest
 
-import pr_agent.algo.pr_processing as pr_processing
-import pr_agent.algo.token_budget as token_budget
+from pr_agent.algo import pr_processing, token_budget
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
@@ -2184,3 +2183,125 @@ def test_pr_description_reads_fall_back_when_keys_missing():
     assert pr_description.get("enable_large_pr_handling", True) is True
     assert pr_description.get("async_ai_calls", True) is True
     assert pr_description.get("max_ai_calls", 4) == 4
+
+
+def test_extended_diff_overflow_budget_streams_and_releases_patches():
+    seen_lengths = []
+
+    class RecordingCharacterHandler(CharacterTokenHandler):
+        def count_tokens(self, patch):
+            seen_lengths.append(len(patch))
+            return super().count_tokens(patch)
+
+    body = "context " * 12_000 + "\n"
+    files = [
+        FilePatchInfo(
+            "", body, "@@ -0,0 +1,1 @@\n+" + body, f"f_{index}.py", edit_type=EDIT_TYPE.ADDED,
+        )
+        for index in range(4)
+    ]
+    handler = RecordingCharacterHandler(prompt_tokens=11)
+    budget = 25_000
+
+    patches, total, per_patch = pr_processing.pr_generate_extended_diff(
+        [{"files": files}],
+        handler,
+        add_line_numbers_to_hunks=False,
+        skip_file_tokens_below=budget,
+        overflow_token_budget=budget,
+    )
+
+    assert patches == []
+    assert len(per_patch) == 4
+    assert [f.tokens for f in files] == per_patch
+    assert total == handler.prompt_tokens + sum(per_patch)
+    # Never concatenates all extended patches into one multi-file string when overflowed.
+    assert max(seen_lengths) < sum(per_patch) // 2
+
+
+@pytest.mark.parametrize("path", ["single", "multi"])
+def test_get_pr_diff_handles_overflow_released_extended_patches(monkeypatch, path):
+    seen_lengths = []
+
+    class RecordingCharacterHandler(CharacterTokenHandler):
+        def count_tokens(self, patch):
+            seen_lengths.append(len(patch))
+            return super().count_tokens(patch)
+
+    body = "alpha beta gamma delta\n" * 4_500
+    files = [
+        FilePatchInfo(
+            "", body, "@@ -0,0 +1,4500 @@\n" + "\n".join("+" + line for line in body.splitlines()),
+            f"src/file_{index}.py", edit_type=EDIT_TYPE.ADDED,
+        )
+        for index in range(4)
+    ]
+    handler = RecordingCharacterHandler(prompt_tokens=0)
+    provider = FakeProvider(files, filtered_names=["pnpm-lock.yaml"])
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, fs: [{"files": fs}])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 120_000)
+
+    if path == "single":
+        prepared = pr_processing.get_pr_diff(
+            provider, handler, "model", add_line_numbers_to_hunks=False, return_prepared=True,
+        )
+        assert prepared.diff
+        assert prepared.remaining_files_list
+    else:
+        packed = pr_processing.get_pr_multi_diffs(
+            provider, handler, "model", max_calls=4, add_line_numbers=False, return_coverage=True,
+        )
+        assert len(packed.chunks) >= 2
+        assert packed.remaining_files_list == []
+
+    # Combined extended patches (~420 KB) exceed _EXTENDED_DIFF_MIN_CHECK_CHARS without being joined.
+    assert max(seen_lengths) < 160_000
+
+
+def test_extended_diff_under_overflow_budget_keeps_exact_join_for_whitespace_diff():
+    class WordCountHandler(FakeTokenHandler):
+        def count_tokens(self, patch):
+            self.count_calls += 1
+            return len(patch.split())
+
+    whitespace_body = ("word " + " " * 70_000 + "\n")
+    files = [
+        FilePatchInfo(
+            "", whitespace_body, "@@ -0,0 +1,1 @@\n+" + whitespace_body,
+            f"ws_{index}.txt", edit_type=EDIT_TYPE.ADDED,
+        )
+        for index in range(5)
+    ]
+    handler = WordCountHandler(prompt_tokens=5)
+
+    patches, total, per_patch = pr_processing.pr_generate_extended_diff(
+        [{"files": files}],
+        handler,
+        add_line_numbers_to_hunks=False,
+        skip_file_tokens_below=1_000,
+        overflow_token_budget=1_000,
+    )
+
+    assert len(patches) == 5
+    assert per_patch == []
+    assert total == handler.prompt_tokens + max(
+        WordCountHandler().count_tokens("\n".join(patches)),
+        WordCountHandler().count_tokens("\n".join(patches).strip()),
+    )
+
+
+def test_count_raw_and_stripped_tokens_skips_strip_copy_when_already_stripped():
+    calls = []
+
+    class SpyHandler:
+        @staticmethod
+        def count_tokens(text):
+            calls.append(text)
+            return len(text)
+
+    assert pr_processing._count_raw_and_stripped_tokens(SpyHandler, "already_stripped") == 16
+    assert calls == ["already_stripped"]
+
+    calls.clear()
+    assert pr_processing._count_raw_and_stripped_tokens(SpyHandler, "\nneeds_strip\n") == 13
+    assert calls == ["\nneeds_strip\n", "needs_strip"]

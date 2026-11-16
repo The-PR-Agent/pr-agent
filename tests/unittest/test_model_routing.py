@@ -130,6 +130,16 @@ class TestCountPatchChars:
 
 
 class TestRouting:
+    @pytest.mark.parametrize("key", ["max_files", "max_hunks", "max_patch_chars"])
+    @pytest.mark.parametrize("limit", [float("inf"), float("-inf"), float("nan")])
+    def test_nonfinite_rule_limits_do_not_abort_later_rules(self, settings, key, limit):
+        settings.set("model_routing.rules", [
+            {key: limit, "model": "invalid-model"},
+            {"max_files": 1, "model": "small-model"},
+        ])
+
+        assert route_primary_model(ModelType.REGULAR, _pr(1, 1)) == ("small-model", None)
+
     async def test_cold_diff_fetch_keeps_the_loop_responsive_and_request_settings(self, settings, monkeypatch):
         request_settings = copy.deepcopy(settings)
         provider = _pr(num_files=1, hunks_per_file=1)

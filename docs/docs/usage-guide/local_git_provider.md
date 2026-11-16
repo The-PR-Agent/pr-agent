@@ -33,7 +33,7 @@ Before running a command:
 
 ## Basic usage
 
-The CLI command names are `review`, `describe`, and `improve`; they correspond to the `/review`, `/describe`, and `/improve` tools.
+The CLI command names are `review` and `describe`; they correspond to the `/review` and `/describe` commands. `improve` runs `review`.
 
 Run `/review` against a local `main` branch:
 
@@ -50,13 +50,6 @@ CONFIG__GIT_PROVIDER=local \
 python -m pr_agent.cli --pr_url main describe
 ```
 
-Run `/improve`:
-
-```bash
-CONFIG__GIT_PROVIDER=local \
-python -m pr_agent.cli --pr_url main improve
-```
-
 Replace `main` with the local branch to use as the target.
 
 ## Output files
@@ -65,19 +58,24 @@ By default, the commands write files in the repository root:
 
 - The `/review` command writes `review.md`.
 - The `/describe` command writes `description.md`.
-- The `/improve` command writes `improve.md`.
 
 The local provider writes these files instead of publishing the result to a hosted pull/merge request.
 
 ## Custom output paths
 
-Set paths in the configuration used by the run, for example in the repository root `.pr_agent.toml`:
+Set paths in a trusted, operator-controlled configuration file outside the repository under review, for example `$HOME/.config/pr-agent/local.toml`:
 
 ```toml
 [local]
 review_path = "artifacts/review.md"
 description_path = "artifacts/description.md"
-improve_path = "artifacts/improve.md"
+```
+
+The local provider does not automatically load the repository's `.pr_agent.toml`. `--extra_config_url` loads trusted host configuration without the repository-settings filter, so do not point it at a file from an untrusted PR checkout. Pass your operator-controlled file before the command:
+
+```bash
+CONFIG__GIT_PROVIDER=local \
+python -m pr_agent.cli --pr_url main --extra_config_url "$HOME/.config/pr-agent/local.toml" review
 ```
 
 When using relative custom paths, run PR-Agent from the repository root as shown above.

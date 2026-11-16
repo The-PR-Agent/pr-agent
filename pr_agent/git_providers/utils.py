@@ -14,7 +14,8 @@ from dynaconf import Dynaconf
 from dynaconf.loaders import env_loader
 from starlette_context import context
 
-from pr_agent.config_loader import get_settings
+from pr_agent.algo.review_json_output import hosted_markdown_config_error, hosted_markdown_export
+from pr_agent.config_loader import DEFAULT_BOT_DISPLAY_NAME, get_bot_display_name, get_settings
 from pr_agent.config_security import (
     PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION,
     REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION,
@@ -820,7 +821,16 @@ def handle_configurations_errors(config_errors, git_provider):
                     "Invalid shared configuration; check the settings repository and server logs for details."
                     if config_type in {"global", "group"} else err['error']
                 )
-                header = f"❌ **PR-Agent failed to apply '{config_type}' repo settings**"
+                if hosted_markdown_export.get():
+                    # Preserve local diagnostics without writing to the hosting platform.
+                    hosted_markdown_config_error.set(True)
+                    get_logger().warning(
+                        "Configuration error during unpublished hosted review export",
+                        artifact={"category": config_type, "error": err_message},
+                    )
+                    continue
+                bot_display_name = get_bot_display_name()
+                header = f"❌ **{bot_display_name} failed to apply '{config_type}' repo settings**"
                 body = (
                     f"{header}\n\nThe configuration file needs to be a valid "
                     "[TOML](https://docs.pr-agent.ai/usage-guide/configuration_options/), please fix it.\n\n"
@@ -858,7 +868,10 @@ def handle_configurations_errors(config_errors, git_provider):
                                                             initial_header=header,
                                                             update_header=False,
                                                             final_update_message=False,
-                                                            name=f"config-errors-{config_type}")
+                                                            name=f"config-errors-{config_type}",
+                                                            legacy_initial_header=(
+                                                                f"❌ **{DEFAULT_BOT_DISPLAY_NAME} failed to apply "
+                                                                f"'{config_type}' repo settings**"))
                 else:
                     git_provider.publish_comment(body)
     except Exception as e:

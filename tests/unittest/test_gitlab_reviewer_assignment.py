@@ -93,6 +93,68 @@ class TestIsBotAssignedAsReviewer:
         assert asyncio.run(is_bot_assigned_as_reviewer(data)) is True
 
 
+@pytest.mark.parametrize("reviewers, expected", [
+    ([[], [{"id": 516}]], True),
+    ([[{"id": 516, "re_requested": False}], [{"id": 516, "re_requested": True}]], True),
+    ({"previous": [{"id": 516, "re_requested": False}],
+      "current": [{"id": 516, "re_requested": True}]}, True),
+    ([[{"id": 516, "re_requested": True}], [{"id": 516, "re_requested": True}]], False),
+    ([[{"id": 516}], [{"id": 516, "re_requested": True}]], False),
+    ([[{"id": 516, "state": "unreviewed"}], [{"id": 516, "state": "approved"}]], False),
+    ([[{"id": 516}, {"id": 7, "re_requested": False}],
+      [{"id": 516}, {"id": 7, "re_requested": True}]], False),
+    ([[], None], False),
+    ([[], [{"id": 516}], []], False),
+])
+async def test_reviewer_change_formats_and_transitions(monkeypatch, reviewers, expected):
+    from pr_agent.servers import gitlab_webhook
+
+    monkeypatch.setattr(gitlab_webhook, "_get_bot_user_id", mock.AsyncMock(return_value=516))
+    assert await gitlab_webhook.is_bot_assigned_as_reviewer({"changes": {"reviewers": reviewers}}) is expected
+
+
+@pytest.mark.parametrize("enabled, allowed, draft, expected", [
+    (True, True, False, True),
+    (False, True, False, False),
+    (True, False, False, False),
+    (True, True, True, False),
+])
+async def test_rerequest_dispatch_respects_existing_gates(monkeypatch, enabled, allowed, draft, expected):
+    from pr_agent.servers import gitlab_webhook
+
+    url = "https://gitlab.example.com/group/repo/-/merge_requests/1"
+    payload = {
+        "object_kind": "merge_request",
+        "object_attributes": {"action": "update", "url": url},
+        "changes": {"reviewers": [
+            [{"id": 516, "re_requested": False}],
+            [{"id": 516, "re_requested": True}],
+        ]},
+    }
+    settings = mock.Mock()
+    settings.get.side_effect = lambda key, default=None: {
+        "gitlab.handle_reviewer_assignment": enabled,
+        "gitlab.reviewer_commands": ["/review"],
+    }.get(key, default)
+    monkeypatch.setattr(gitlab_webhook, "get_settings", lambda: settings)
+    monkeypatch.setattr(gitlab_webhook, "is_bot_user", lambda data: False)
+    monkeypatch.setattr(gitlab_webhook, "get_include_pr_labels", lambda: False)
+    monkeypatch.setattr(gitlab_webhook, "should_process_pr_logic", lambda data: allowed)
+    monkeypatch.setattr(gitlab_webhook, "apply_repo_settings", lambda url: None)
+    monkeypatch.setattr(gitlab_webhook, "is_draft", lambda data: draft)
+    monkeypatch.setattr(gitlab_webhook, "_get_bot_user_id", mock.AsyncMock(return_value=516))
+    dispatch = mock.AsyncMock()
+    monkeypatch.setattr(gitlab_webhook, "_perform_commands_gitlab", dispatch)
+
+    await gitlab_webhook.process_gitlab_event(payload, {})
+    if expected:
+        dispatch.assert_awaited_once()
+        assert dispatch.await_args.args[0] == "reviewer_commands"
+        assert dispatch.await_args.args[2] == url
+    else:
+        dispatch.assert_not_awaited()
+
+
 class TestGetBotUserId:
     @staticmethod
     def _make_fake_gitlab(user_id):

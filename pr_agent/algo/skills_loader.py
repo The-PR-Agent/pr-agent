@@ -2,7 +2,7 @@
 Agent skills loader.
 
 Discovers ``SKILL.md`` files from configured filesystem paths, parses their YAML
-frontmatter, and formats them as prompt context for review/improve/describe tools.
+frontmatter, and formats them as prompt context for review/improve/describe commands.
 
 A skill is a directory containing a ``SKILL.md`` file with the structure:
 
@@ -341,7 +341,7 @@ def get_skills_context() -> str:
     """Read settings, discover skills, and format them for prompt injection.
 
     Memoised per request, effective Skills settings, and model via ``starlette_context``
-    so tools that inject ``skills_context`` (review, improve, describe, ask)
+    so commands that inject ``skills_context`` (review, improve, describe, ask)
     share a single discovery + parse + format. Returns ``''`` when skills are
     disabled, no paths are configured, or no skills are found.
     """

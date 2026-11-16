@@ -3,7 +3,7 @@
 Fires TWO execute() calls concurrently via asyncio.gather. Each coroutine runs inside
 its own starlette_context scope (request_cycle_context — exactly what RawContextMiddleware
 establishes per request in production); the executor installs a per-request
-deepcopy(global_settings) into that scope. A request-distinct route_and_run writes
+deepcopy(global_settings) into that scope. A request-distinct route_and_run_result writes
 distinct CONFIG.MODEL / CONFIG.GIT_PROVIDER / data["artifact"], yields (asyncio.sleep(0))
 to force interleave, then reads them back and asserts NO bleed from the sibling.
 

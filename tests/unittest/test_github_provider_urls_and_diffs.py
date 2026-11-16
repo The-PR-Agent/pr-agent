@@ -22,6 +22,7 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from pr_agent.algo.pr_processing import pr_generate_extended_diff
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import github_provider
 from pr_agent.git_providers.github_provider import GithubProvider, IncompletePullRequestFilesError
 from pr_agent.log import get_logger
@@ -42,11 +43,15 @@ def _bare_provider():
     ("https://github.com/acme/issues-helper/pull/42", "acme/issues-helper", False),
     ("https://api.github.com/repos/acme/issues-helper/pulls/42", "acme/issues-helper", False),
     ("https://ghes.example.com/api/v3/repos/acme/issues-helper/pulls/42", "acme/issues-helper", False),
+    ("https://api.octo.ghe.com/repos/acme/pull-tools/issues/42", "acme/pull-tools", True),
+    ("https://api.octo.ghe.com/repos/acme/issues-helper/pulls/42", "acme/issues-helper", False),
+    ("https://api.example.com/acme/issues-helper/pull/42", "acme/issues-helper", False),
 ])
 def test_constructor_routes_by_url_resource(monkeypatch, url, repo_name, is_issue):
     client = Mock()
     repo = client.get_repo.return_value
-    repo.get_pull.return_value.get_commits.return_value = [Mock()]
+    repo.get_pull.return_value.head.sha = "a" * 40
+    repo.get_pull.return_value.get_commits.return_value = [SimpleNamespace(sha="a" * 40)]
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: client)
 
     provider = GithubProvider(url)
@@ -243,6 +248,13 @@ class TestRepoPathAndGitUrl:
             == "owner/repo"
         )
 
+    def test_owner_repo_from_git_url_keeps_dot_git_inside_repo_name(self):
+        p = _bare_provider()
+        assert (
+            p._get_owner_and_repo_path("https://github.com/owner/owner.github.io.git")
+            == "owner/owner.github.io"
+        )
+
     def test_unknown_url_returns_empty(self):
         p = _bare_provider()
         # No "issues" or "pull" segment and no .git suffix -> empty string,
@@ -264,6 +276,23 @@ class TestRepoPathAndGitUrl:
             p.get_git_repo_url("https://ghes.example.com/owner/repo/pull/1")
             == "https://ghes.example.com/owner/repo.git"
         )
+
+    @pytest.mark.parametrize(("base_url", "pr_url", "git_url"), [
+        ("https://api.github.com", "https://github.com/owner/repo/pull/1", "https://github.com/owner/repo.git"),
+        ("https://ghes.example.com/api/v3", "https://ghes.example.com/owner/repo/pull/1",
+         "https://ghes.example.com/owner/repo.git"),
+        ("https://api.octo.ghe.com", "https://octo.ghe.com/owner/repo/pull/1", "https://octo.ghe.com/owner/repo.git"),
+    ])
+    def test_get_git_repo_url_follows_configured_base_url(self, monkeypatch, base_url, pr_url, git_url):
+        monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: Mock())
+        settings = get_settings()
+        previous = settings.get("GITHUB.BASE_URL")
+        settings.set("GITHUB.BASE_URL", base_url)
+        try:
+            provider = GithubProvider()
+        finally:
+            settings.set("GITHUB.BASE_URL", previous)
+        assert provider.get_git_repo_url(pr_url) == git_url
 
     def test_get_git_repo_url_mismatch_returns_empty(self):
         """If derived owner/repo doesn't appear in the input URL, return ''."""
@@ -818,6 +847,30 @@ class TestGetDiffFilesRename:
         original_content_call = spy.call_args_list[-1]
         assert original_content_call.args[1] == "prev-sha"
         assert original_content_call.kwargs.get("path") == "old_dir/module.py"
+        assert p.get_files() == [f]
+
+    def test_incremental_diff_retry_preserves_unreviewed_file_objects(self, patched_helpers, monkeypatch):
+        f1 = _make_file("a.py", "modified")
+        f2 = _make_file("b.py", "modified")
+        p = _make_provider_for_diff([f1, f2])
+        p.incremental = SimpleNamespace(is_incremental=True, last_seen_commit_sha="prev-sha")
+        p.unreviewed_files_map = {"a.py": f1, "b.py": f2}
+        monkeypatch.setattr("pr_agent.git_providers.github_provider.time.sleep", lambda _s: None)
+        calls = {"b": 0}
+
+        def get_content(file, sha, path=None, **kwargs):
+            if file.filename == "b.py" and calls["b"] == 0:
+                calls["b"] += 1
+                raise GithubException(502, {"message": "bad gateway"}, {})
+            return f"{file.filename}@{sha}\n"
+
+        p._get_pr_file_content = get_content
+
+        diffs = p.get_diff_files()
+
+        assert calls["b"] == 1
+        assert [d.filename for d in diffs] == ["a.py", "b.py"]
+        assert p.get_files() == [f1, f2]
 
 
 # ---------------------------------------------------------------------------
@@ -1229,6 +1282,7 @@ class TestCompletePullRequestFiles:
         )
 
         assert provider.get_pr_file_paths() == files
+        assert provider.get_verdict_diff_files() == files
         assert provider.git_files == files
         assert request_context["git_files"] == files
         assert pr.get_files_calls == 1

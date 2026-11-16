@@ -92,6 +92,19 @@ async def test_handle_request_bypasses_deduplication_when_disabled_or_missing_id
 
 
 @pytest.mark.asyncio
+async def test_invalid_deduplication_setting_fails_closed(monkeypatch, delivery_context):
+    delivery_context.set("GITHUB_APP.WEBHOOK_DELIVERY_DEDUPLICATION", "y")
+    dispatch = AsyncMock(return_value={})
+    monkeypatch.setattr(github_app, "_dispatch_request", dispatch)
+    body = {"action": "created"}
+
+    await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
+    await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
+
+    dispatch.assert_awaited_once_with(body, "issue_comment", "created")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("result", [True, {}, None])
 async def test_handle_request_suppresses_completed_or_intentionally_ignored_delivery(
     monkeypatch, delivery_context, result

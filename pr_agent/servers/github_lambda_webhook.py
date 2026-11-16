@@ -2,6 +2,7 @@ from mangum import Mangum
 from starlette.middleware import Middleware
 from starlette_context.middleware import RawContextMiddleware
 
+from pr_agent.servers import lambda_handoff
 from pr_agent.servers.github_app import router
 from pr_agent.servers.request_body_limit import create_server_app
 
@@ -24,4 +25,6 @@ handler = Mangum(app, lifespan="off")
 
 
 def lambda_handler(event, context):
-    return handler(event, context)
+    # Webhook events go through Mangum as before, but the review runs in a second,
+    # asynchronous invocation so the webhook is acknowledged in seconds (#4748).
+    return lambda_handoff.run_lambda_handler(event, context, "github", handler)

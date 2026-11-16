@@ -3,7 +3,7 @@
 Drive message/send requests through the SDK via an in-process ASGI HTTP transport against
 build_app() (REAL RawContextMiddleware mounted), proving the full path:
   HTTP POST / -> RawContextMiddleware -> DefaultRequestHandler -> PRAgentExecutor.execute
-  -> request-scoped settings deepcopy -> route_and_run -> DiffInputProvider -> render.
+  -> request-scoped settings deepcopy -> route_and_run_result -> DiffInputProvider -> render.
 
 The LLM is mocked (LiteLLMAIHandler.chat_completion -> canned review YAML); no real
 LLM/Langfuse/host. A second case drives an empty diff and asserts the empty-fallback

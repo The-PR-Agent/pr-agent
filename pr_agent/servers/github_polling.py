@@ -8,21 +8,18 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 
 import aiohttp
-from starlette_context import request_cycle_context
 
 from pr_agent.agent.pr_agent import PRAgent
-from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
     litellm_callbacks_registered,
 )
-from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.config_loader import get_settings, global_settings, safe_request_cycle_context
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
-NOTIFICATION_URL = "https://api.github.com/notifications"
 DEFAULT_POLLING_REQUEST_TIMEOUT = 10
 MAX_POLLING_REQUEST_TIMEOUT = 60
 POLLING_CAPACITY_CHECK_INTERVAL = 0.25
@@ -48,6 +45,12 @@ def _pr_comments_url(pr_url: str) -> str:
     """Map an API pull request URL to its issue comments URL."""
     base, sep, number = pr_url.rpartition("/pulls/")
     return f"{base}/issues/{number}/comments" if sep else f"{pr_url}/comments"
+
+
+def _notifications_url() -> str:
+    """Notifications endpoint on the configured GitHub API host (github.com, GHES or GHE.com)."""
+    base_url = global_settings.get("GITHUB.BASE_URL", "https://api.github.com").rstrip("/")
+    return f"{base_url}/notifications"
 
 
 def _get_polling_request_timeout() -> float:
@@ -188,7 +191,7 @@ async def _fetch_comment_history(session, url, headers) -> list:
 
 async def mark_notification_as_read(headers, notification, session):
     async with session.patch(
-            f"https://api.github.com/notifications/threads/{notification['id']}",
+            f"{_notifications_url()}/threads/{notification['id']}",
             headers=headers) as mark_read_response:
         if mark_read_response.status != 205:
             get_logger().error(
@@ -251,17 +254,9 @@ def _polling_request_settings():
 
 @contextmanager
 def _polling_settings_scope():
-    """request_cycle_context with a guaranteed reset: its bare yield (unfixed
-    upstream as of starlette-context 0.5.1) skips the ContextVar reset when an
-    exception crosses the with-body, so enter and exit are driven explicitly
-    and the reset runs on any exit, BaseException included.
-    """
-    cm = request_cycle_context({"settings": _polling_request_settings()})
-    cm.__enter__()
-    try:
+    """Scope request settings to one polled comment and reset on any exit."""
+    with safe_request_cycle_context({"settings": _polling_request_settings()}):
         yield
-    finally:
-        cm.__exit__(None, None, None)
 
 
 def process_comment_sync(pr_url, rest_of_comment, comment_id):
@@ -271,16 +266,6 @@ def process_comment_sync(pr_url, rest_of_comment, comment_id):
     except Exception as e:
         get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
-
-async def process_comment(pr_url, rest_of_comment, comment_id):
-    try:
-        with _polling_settings_scope():
-            result = await async_handle_request(pr_url, rest_of_comment, comment_id)
-            if result is RequestOutcome.SKIPPED:
-                return
-        get_logger().info(f"Finished processing comment for PR: {pr_url}")
-    except Exception as e:
-        get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
 async def is_valid_notification(
     notification, headers, handled_ids, session, user_id, added_handled_ids=None
@@ -323,13 +308,12 @@ async def is_valid_notification(
                         if not comment_body:
                             get_logger().debug("no comment_body")
                             check_prev_comments = True
+                        elif user_tag not in comment_body:
+                            get_logger().debug("user_tag not in comment_body")
+                            check_prev_comments = True
                         else:
-                            if user_tag not in comment_body:
-                                get_logger().debug("user_tag not in comment_body")
-                                check_prev_comments = True
-                            else:
-                                get_logger().info(f"Polling, pr_url: {pr_url}",
-                                                  artifact={"comment": comment_body})
+                            get_logger().info(f"Polling, pr_url: {pr_url}",
+                                              artifact={"comment": comment_body})
 
                         if not check_prev_comments:
                             return True, handled_ids, comment, comment_body, pr_url, user_tag
@@ -482,7 +466,7 @@ async def polling_loop():
                 if last_modified[0]:
                     headers["If-Modified-Since"] = last_modified[0]
 
-                async with session.get(NOTIFICATION_URL, headers=headers, params=params) as response:
+                async with session.get(_notifications_url(), headers=headers, params=params) as response:
                     if response.status == 200:
                         if 'Last-Modified' in response.headers:
                             last_modified[0] = response.headers['Last-Modified']
@@ -522,7 +506,6 @@ async def polling_loop():
                                 last_modified[0] = None
                                 get_logger().exception("Failed to mark polling notification as read; retrying later")
                                 break
-                            handled_ids.add(notification['id'])
                             if output[0]:
                                 _, handled_ids, comment, comment_body, pr_url, user_tag = output
                                 rest_of_comment = comment_body.split(user_tag, 1)[1].strip()

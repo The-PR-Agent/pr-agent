@@ -5,9 +5,10 @@ sidebar_position: 5
 
 `Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps, Gitea`
 
-:::note[Branch-name linking: Jira keys on all providers; numeric GitHub issues on GitHub only]
+:::note[Branch-name linking: Jira keys on all providers; numeric issues on GitHub and GitLab]
 **Jira** ticket keys (e.g. `ABC-123`) are extracted from the branch name on **every git provider**.
-Extracting **numeric GitHub issue** links from the branch name (and the optional `branch_issue_regex` setting) is currently implemented for **GitHub only**; support for other providers is planned for a later release.
+**GitHub** extracts numeric issue references from branch names, with optional `branch_issue_regex` customization.
+**GitLab** also recognizes same-project MR branches prefixed with an issue number and hyphen (e.g. `123-fix-bug`).
 :::
 
 ## Overview
@@ -26,30 +27,31 @@ This integration enriches the review process by automatically surfacing relevant
 
 1. Ticket Title
 2. Ticket Description
-3. Custom Fields (Acceptance criteria)
-4. Subtasks (linked tasks)
+3. Acceptance criteria (configured Jira custom fields and Azure DevOps work items)
+4. GitHub sub-issues
 5. Labels
-6. Attached Images/Screenshots
 
-## Affected Tools
+Image attachments are not fetched or sent to the model as images by the ticket integration.
+
+## Affected Commands
 
 Ticket Recognition Requirements:
 
-- GitHub/GitLab issue references can appear in the PR/MR title or description. GitHub also recognizes numeric issue references in the branch name.
+- GitHub/GitLab issue references can appear in the PR/MR title or description. Both platforms also recognize their supported numeric issue branch patterns.
 - For Jira tickets, you should follow the instructions in [Jira Integration](#jira-integration) in order to authenticate with Jira.
 - For Asana tickets, see [Asana Integration](#asana-integration).
 
-### Describe tool
+### Describe command
 
 PR-Agent will recognize the ticket and use the ticket content (title, description, labels) to provide additional context for the code changes.
 By understanding the reasoning and intent behind modifications, the LLM can offer more insightful and relevant code analysis.
 
-### Review tool
+### Review command
 
-Similarly to the `describe` tool, the `review` tool will use the ticket content to provide additional context for the code changes.
+Similarly to the `describe` command, the `review` command will use the ticket content to provide additional context for the code changes.
 
 In addition, this feature will evaluate how well a Pull Request (PR) adheres to its original purpose/intent as defined by the associated ticket or issue.
-Each ticket will be assigned a label (Compliance/Alignment level), Indicates the degree to which the PR fulfills its original purpose:
+Each ticket will be assigned a compliance assessment in the review comment, indicating the degree to which the PR fulfills its original purpose. These assessments are not added as PR labels:
 
 - Fully Compliant
 - Partially Compliant
@@ -58,12 +60,12 @@ Each ticket will be assigned a label (Compliance/Alignment level), Indicates the
 
 <img src="/img/ticket_compliance_review.png" alt="Ticket Compliance" width="768" />
 
-A `PR Code Verified` label indicates the PR code meets ticket requirements, but requires additional manual testing beyond the code scope. For example - validating UI display across different environments (Mac, Windows, mobile, etc.).
+A `PR Code Verified` assessment indicates the PR code meets ticket requirements, but requires additional manual testing beyond the code scope. For example - validating UI display across different environments (Mac, Windows, mobile, etc.).
 
 
 #### Configuration options
 
-- By default, the `review` tool will automatically validate if the PR complies with the referenced ticket.
+- By default, the `review` command will automatically validate if the PR complies with the referenced ticket.
     If you want to disable this feedback, add the following line to your configuration file:
 
     ```toml
@@ -71,14 +73,13 @@ A `PR Code Verified` label indicates the PR code meets ticket requirements, but 
     require_ticket_analysis_review=false
     ```
 
-- If you set:
-    ```toml
-    [pr_reviewer]
-    check_pr_additional_content=true
-    ```
-    (default: `false`)
+### Ask command
 
-    the `review` tool will also validate that the PR code doesn't contain any additional content that is not related to the ticket. If it does, the PR will be labeled at best as `PR Code Verified`, and the `review` tool will provide a comment with the additional unrelated content found in the PR code.
+Set `pr_questions.use_ticket_context=true` to include linked ticket content in top-level `/ask` questions.
+This is disabled by default and is independent of `pr_reviewer.require_ticket_analysis_review`.
+It reuses the ticket integrations below and fits complete ticket records into the space left after the question,
+conversation history and selected diff. See [Linked ticket context](../commands/ask.md#linked-ticket-context)
+for usage and limits.
 
 ## GitHub/GitLab Issues Integration
 
@@ -93,16 +94,27 @@ Full GitHub issue URLs are recognized on the configured instance's HTTPS web ori
 Full GitHub issue URLs on other origins are ignored.
 
 GitHub processes references from the description first, then the branch name, then the title. GitLab processes
-description references before title references. Repeated identical references do not add lookups, and title references use
-the existing ticket lookup and result limits without displacing earlier sources.
+description references first, then title references, then eligible branch references. Repeated identical references do
+not add lookups, and branch references use the existing ticket lookup and result limits without displacing earlier sources.
 
-The optional `config.description_issue_regex` setting applies only to the GitHub PR description. GitHub titles use
-the built-in reference formats above, including local `#<ISSUE_NUMBER>` references of up to six digits.
+The optional `config.description_issue_regex` setting applies only to the GitHub PR description. Built-in matching on
+GitHub and GitLab recognizes local `#<ISSUE_NUMBER>` references of up to six digits.
 
 Branch names can also be used to link issues, for example:
 - `123-fix-bug` (where `123` is the issue number)
 
-This branch-name detection applies **only when the git provider is GitHub**. Support for other platforms is planned for later.
+On **GitHub**, matching also supports `feature/123-fix-bug` and the optional `config.branch_issue_regex` setting.
+The custom regex must have a capturing group for the issue number; an invalid regex disables branch detection,
+while a regex without a capturing group falls back to the default pattern (up to six digits after a slash or at the start).
+On **GitLab**, only branches starting with a 1–6 digit ASCII issue number (no leading zeros) followed by a
+hyphen are recognized.
+The source and target projects must be the same; fork MRs and patterns such as `feature/123-fix-bug` are not inferred.
+Date prefixes such as `2026-11-15` are excluded, while `2024-upgrade-deps` remains a valid issue prefix.
+GitLab uses its native prefix rule rather than the GitHub-only `branch_issue_regex` setting. Set
+`config.extract_issue_from_branch=false` to disable branch-based issue recognition on either platform.
+For branch-only issues, the project's Issues and Merge Requests access levels must also be known and eligible;
+otherwise the inferred reference is skipped. This reuses the project metadata already fetched for GitLab ticket
+visibility checks, without an additional metadata request for branch inference.
 
 By default, GitHub and GitLab ticket context is limited to the PR's or MR's own repository. Issues and
 sub-issues in another repository require explicit host approval through `config.repo_context_sibling_repos`:
@@ -120,6 +132,13 @@ reads, including public repositories. Approve only content that may be included 
 description. Ticket lookup limits are separate from the sibling-file limit. PyGithub may follow an issue transfer,
 but results from a different repository are discarded before prompt use. Reference a transferred issue by its
 current repository and number.
+
+For GitLab, ticket extraction checks project visibility and `issues_access_level` once per project per run.
+Member-only issues in the MR's own project are included when the project is private or the MR itself is member-only;
+they are skipped for broadly visible MRs in public and internal projects. Disabled, unknown, or unreadable issue
+access settings are skipped. Approved sibling issues must have Issues enabled and be public.
+Internal and private sibling projects cannot guarantee that every MR reader can see their issues and are skipped.
+Confidential issues are skipped in every project.
 
 For GitHub, PR-Agent skips sub-issue lookup only when the parent issue's fetched summary explicitly reports zero
 sub-issues; nonzero, missing, or invalid totals use the usual lookup.

@@ -1,4 +1,5 @@
 import copy
+import os
 from enum import StrEnum
 from json import JSONDecodeError
 
@@ -52,7 +53,6 @@ class Action(StrEnum):
     describe = "describe"
     ask = "ask"
     improve = "improve"
-    answer = "answer"
 
 
 class Item(BaseModel):
@@ -130,7 +130,7 @@ def start():
     app = create_server_app(middleware=middleware)
     app.include_router(router)
 
-    uvicorn.run(app, host="0.0.0.0", port=3000)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "3000")))
 
 
 if __name__ == '__main__':

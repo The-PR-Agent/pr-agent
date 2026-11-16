@@ -8,7 +8,6 @@ from pr_agent.algo.comment_identity import PRReviewHeader, PRReviewIdentity
 from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.git_providers.codecommit_provider import CodeCommitFile, CodeCommitProvider, PullRequestCCMimic
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 
 class TestCodeCommitFile:
@@ -141,6 +140,7 @@ class TestCodeCommitProvider:
         assert diff_files[0].base_file == "old contents\n"
         assert diff_files[0].head_file == ""
         assert diff_files[0].edit_type == EDIT_TYPE.DELETED
+        assert (diff_files[0].num_plus_lines, diff_files[0].num_minus_lines) == (0, 1)
         assert "-old contents" in diff_files[0].patch
         assert provider.codecommit_client.get_file.call_args_list == [
             call("my_test_repo", "deleted.py", "destination-commit")
@@ -862,42 +862,6 @@ class TestCodeCommitProvider:
         assert comments[0].user.login == "arn:aws:iam::123456789012:user/pr-agent"
         provider.codecommit_client.get_comments_for_pull_request.assert_called_once_with(321)
 
-    @pytest.mark.parametrize("raw_order", [("q-old", "a-old", "q-new", "a-new"), ("a-new", "q-new", "a-old", "q-old")])
-    def test_answer_mode_uses_newest_question_and_answer_after_oldest_first_sort(self, raw_order):
-        provider = self._make_persistent_provider()
-        bodies_by_name = {
-            "q-old": "Questions to better understand the PR:\n\nold question",
-            "a-old": "/answer old answer",
-            "q-new": "Questions to better understand the PR:\n\nnew question",
-            "a-new": "/answer new answer",
-        }
-        dates_by_name = {
-            "q-old": datetime(2024, 1, 1, tzinfo=UTC),
-            "a-old": datetime(2024, 1, 2, tzinfo=UTC),
-            "q-new": datetime(2024, 1, 3, tzinfo=UTC),
-            "a-new": datetime(2024, 1, 4, tzinfo=UTC),
-        }
-        provider.codecommit_client.get_comments_for_pull_request.return_value = [
-            self._comment_group(
-                *(
-                    self._comment(
-                        bodies_by_name[name],
-                        comment_id=name,
-                        created_at=dates_by_name[name],
-                    )
-                    for name in raw_order
-                )
-            )
-        ]
-        reviewer = PRReviewer.__new__(PRReviewer)
-        reviewer.is_answer = True
-        reviewer.git_provider = provider
-
-        question, answer = reviewer._get_user_answers()
-
-        assert question == bodies_by_name["q-new"]
-        assert answer == bodies_by_name["a-new"]
-
     @pytest.mark.parametrize("raw_order", [("old", "new"), ("new", "old")])
     def test_persistent_review_updates_newest_duplicate_under_both_api_feed_orders(self, raw_order):
         provider = self._make_persistent_provider()
@@ -1067,6 +1031,34 @@ class TestCodeCommitProvider:
         provider.codecommit_client.get_comments_for_pull_request.assert_not_called()
         provider.codecommit_client.update_comment.assert_not_called()
         provider.codecommit_client.publish_comment.assert_called_once()
+
+    def test_persistent_config_error_updates_legacy_header_after_rename(self):
+        provider = self._make_persistent_provider()
+        legacy_header = "❌ **PR-Agent failed to apply 'local' repo settings**"
+        new_header = "❌ **Acme Bot failed to apply 'local' repo settings**"
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(
+                self._comment(f"{legacy_header}\n\nOld body", comment_id="config-error"),
+                before_commit_id="destination-commit-1",
+                after_commit_id="source-commit-1",
+            )
+        ]
+        provider.codecommit_client.update_comment.side_effect = self._successful_update_response
+
+        result = provider.publish_persistent_comment(
+            f"{new_header}\n\nNew body",
+            initial_header=new_header,
+            update_header=False,
+            final_update_message=False,
+            name="config-errors-local",
+            legacy_initial_header=legacy_header,
+        )
+
+        assert result.id == "config-error"
+        provider.codecommit_client.publish_comment.assert_not_called()
+        comment_id, updated_body = provider.codecommit_client.update_comment.call_args.args
+        assert comment_id == "config-error"
+        assert updated_body == f"{new_header}\n\nNew body"
 
     def test_get_issue_comments_support_does_not_enable_gfm_improve_history(self):
         provider = self._make_persistent_provider()
@@ -1293,13 +1285,6 @@ class TestCodeCommitProvider:
         assert sent.endswith("...")
         assert "\n\n" in sent
 
-    def test_get_title(self):
-        # Test that the get_title() function returns the PR title
-        with patch.object(CodeCommitProvider, "__init__", lambda x, y: None):
-            provider = CodeCommitProvider(None)
-            provider.pr = PullRequestCCMimic("My Test PR Title", [])
-            assert provider.get_title() == "My Test PR Title"
-
     def test_get_pr_id(self):
         # Test that the get_pr_id() function returns the correct ID
         with patch.object(CodeCommitProvider, "__init__", lambda x, y: None):
@@ -1490,6 +1475,77 @@ class TestCodeCommitProvider:
         assert CodeCommitProvider._get_edit_type("r") == EDIT_TYPE.RENAMED
 
         assert CodeCommitProvider._get_edit_type("X") is None
+
+    @staticmethod
+    def _make_description_provider():
+        provider = object.__new__(CodeCommitProvider)
+        provider.pr_num = 321
+        provider.codecommit_client = MagicMock()
+        return provider
+
+    def test_publish_description_caps_a_long_marker_description_after_doubling(self):
+        # CodeCommit has no gfm_markdown, so /describe emits no file walkthrough or usage guide.
+        # The reachable overflow is a long description (use_description_markers) whose newlines
+        # are doubled: it fits before the doubling, and UpdatePullRequestDescription rejected it.
+        provider = self._make_description_provider()
+        body = ("## Context\n" + "- keep rule A\n" * 700
+                + "\n### Summary\nRename the billing modules\n")
+        assert len(body) <= 10240 < len(CodeCommitProvider._add_additional_newlines(body))
+
+        provider.publish_description("AI title", body)
+
+        kwargs = provider.codecommit_client.publish_description.call_args.kwargs
+        assert kwargs["pr_title"] == "AI title"
+        published = kwargs["pr_body"]
+        assert len(published) == 10240
+        assert published.startswith("## Context\n\n- keep rule A\n\n- keep rule A\n\n")
+
+    def test_publish_description_truncates_a_body_still_over_the_limit_after_doubling(self):
+        provider = self._make_description_provider()
+        # 10,000 characters fit, but CodeCommit receives 12,000 once the newlines are doubled.
+        body = "line\n" * 2000
+
+        provider.publish_description(None, body)
+
+        published = provider.codecommit_client.publish_description.call_args.kwargs["pr_body"]
+        assert len(published) == 10240
+        assert published.endswith(" ... (description truncated due to length limit)")
+
+    def test_publish_description_keeps_a_body_within_the_limit(self):
+        provider = self._make_description_provider()
+        body = "### **Description**\n- Short change\n"
+
+        provider.publish_description("AI title", body)
+
+        published = provider.codecommit_client.publish_description.call_args.kwargs["pr_body"]
+        assert published == CodeCommitProvider._add_additional_newlines(body)
+
+
+    def test_publish_description_caps_a_title_over_the_api_limit(self):
+        # UpdatePullRequestTitle rejects a title longer than 150 characters.
+        # The client updates the title before the description, so an overlong
+        # AI title would fail the whole /describe publish, including a body
+        # that already fits the description limit.
+        provider = self._make_description_provider()
+        title = "A" * 200
+        body = "### **Description**\n- Short change\n"
+
+        provider.publish_description(title, body)
+
+        kwargs = provider.codecommit_client.publish_description.call_args.kwargs
+        published_title = kwargs["pr_title"]
+        assert len(published_title) == 150
+        assert published_title.endswith("...")
+        assert published_title.startswith("A")
+        assert kwargs["pr_body"] == CodeCommitProvider._add_additional_newlines(body)
+
+    def test_publish_description_keeps_a_title_within_the_limit(self):
+        provider = self._make_description_provider()
+        title = "A" * 150
+
+        provider.publish_description(title, "short")
+
+        assert provider.codecommit_client.publish_description.call_args.kwargs["pr_title"] == title
 
     def test_add_additional_newlines_doubles_newlines_in_short_text(self):
         # a short string to test adding double newlines

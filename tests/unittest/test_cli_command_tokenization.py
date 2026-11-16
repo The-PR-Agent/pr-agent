@@ -81,6 +81,19 @@ def _tokenize_like_string_request(command):
 
 
 @pytest.mark.parametrize(
+    ("command", "path"),
+    [
+        ('/ask_line --file_name="on"', "on"),
+        ("/ask_line --file_name='null'", "null"),
+        ('/ask_line --file_name="\'null\'"', "'null'"),
+    ],
+)
+def test_quoted_command_filename_preserves_literal_path(command, path):
+    assert agent_module.parse_command(command) == ["/ask_line", f"--file_name={path}"]
+    assert _tokenize_like_string_request(command) == ("/ask_line", [f"--file_name={path}"])
+
+
+@pytest.mark.parametrize(
     ("command", "expected_args"),
     [
         (

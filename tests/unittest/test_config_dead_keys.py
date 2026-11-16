@@ -50,7 +50,7 @@ _ALLOWLIST = {
         "config",
         "output_relevant_configurations",
     ): "get_settings().get('config', {}).get('output_relevant_configurations', False) in "
-    "pr_agent/tools/pr_description.py",
+    "pr_agent/commands/pr_description.py",
     (
         "config",
         "enable_claude_extended_thinking",
@@ -123,11 +123,11 @@ _ALLOWLIST = {
         "pr_description",
         "pr_diagram_direction",
     ): "description_settings = get_settings().pr_description then "
-    "description_settings.pr_diagram_direction in pr_agent/tools/pr_description.py",
+    "description_settings.pr_diagram_direction in pr_agent/commands/pr_description.py",
     (
         "pr_description",
         "pr_diagram_direction_threshold",
-    ): "description_settings.pr_diagram_direction_threshold in pr_agent/tools/pr_description.py",
+    ): "description_settings.pr_diagram_direction_threshold in pr_agent/commands/pr_description.py",
     # [push_outputs] read as cfg = get_settings().get("push_outputs", {}) or {}
     (
         "push_outputs",
@@ -137,6 +137,10 @@ _ALLOWLIST = {
         "push_outputs",
         "channels",
     ): "cfg.get(\"channels\", []) in pr_agent/algo/run_output.py",
+    (
+        "push_outputs",
+        "commands",
+    ): "cfg.get(\"commands\", [\"review\", \"describe\", \"improve\"]) in pr_agent/algo/output_sinks.py",
     (
         "push_outputs",
         "file_path",
@@ -149,6 +153,10 @@ _ALLOWLIST = {
         "push_outputs",
         "slack_webhook_url",
     ): "_push_outputs_sink_url(cfg, \"slack_webhook_url\") in pr_agent/algo/output_sinks.py",
+    (
+        "push_outputs",
+        "teams_webhook_url",
+    ): "_push_outputs_sink_url(cfg, \"teams_webhook_url\") in pr_agent/algo/output_sinks.py",
     (
         "push_outputs",
         "telegram_bot_token",

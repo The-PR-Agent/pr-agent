@@ -1271,6 +1271,93 @@ def test_validate_comments_inside_hunks_preserves_backslashes_in_fallback_diff()
     assert r'+pattern = r"\1\n\\x"' in result["body"]
 
 
+@pytest.mark.parametrize(
+    "start,end,expected_start,expected_end",
+    [
+        (9, 11, 10, 11),  # overlaps the hunk start
+        (5, 7, 10, 10),  # wholly above the hunk
+        (13, 15, 11, 11),  # wholly below the hunk
+        (8, 13, 10, 11),  # encloses the hunk
+    ],
+)
+def test_suggestion_near_a_hunk_is_published_inside_it(monkeypatch, start, end, expected_start, expected_end):
+    provider = _make_provider()
+    provider.max_comment_chars = 65000
+    provider.get_diff_files = lambda: [
+        SimpleNamespace(filename="src/example.py", patch="@@ -10,2 +10,2 @@\n-old\n+new\n ctx", language="python")
+    ]
+    published = []
+    monkeypatch.setattr(provider, "publish_inline_comments", lambda comments: published.extend(comments) or True)
+
+    assert provider.publish_code_suggestions([{
+        "body": "```suggestion\nnew\n```",
+        "relevant_file": "src/example.py",
+        "relevant_lines_start": start,
+        "relevant_lines_end": end,
+        "original_suggestion": {"existing_code": "old", "improved_code": "new"},
+    }]) is True
+
+    assert len(published) == 1
+    assert published[0].get("start_line", published[0]["line"]) == expected_start
+    assert published[0]["line"] == expected_end
+    assert "```suggestion" not in published[0]["body"]
+
+
+@pytest.mark.parametrize(
+    "start,end,expected_start,expected_end",
+    [
+        (5, 7, 10, 10),  # wholly above the hunk
+        (13, 15, 11, 11),  # wholly below the hunk
+    ],
+)
+def test_comment_near_a_hunk_is_moved_into_it_without_a_suggestion_block(
+    monkeypatch, start, end, expected_start, expected_end
+):
+    """A finding without diff code has no suggestion block to rewrite, so it is only re-anchored."""
+    provider = _make_provider()
+    provider.max_comment_chars = 65000
+    provider.get_diff_files = lambda: [
+        SimpleNamespace(filename="src/example.py", patch="@@ -10,2 +10,2 @@\n-old\n+new\n ctx", language="python")
+    ]
+    published = []
+    monkeypatch.setattr(provider, "publish_inline_comments", lambda comments: published.extend(comments) or True)
+    body = "The loop reads past the end of the buffer."
+
+    assert provider.publish_code_suggestions([{
+        "body": body,
+        "relevant_file": "src/example.py",
+        "relevant_lines_start": start,
+        "relevant_lines_end": end,
+    }]) is True
+
+    assert len(published) == 1
+    assert published[0].get("start_line", published[0]["line"]) == expected_start
+    assert published[0]["line"] == expected_end
+    assert published[0]["body"].startswith(body)
+
+
+def test_committable_block_without_diff_code_is_not_moved(monkeypatch):
+    """A suggestion block carries its own line, so moving it would apply it elsewhere."""
+    provider = _make_provider()
+    provider.max_comment_chars = 65000
+    provider.get_diff_files = lambda: [
+        SimpleNamespace(filename="src/example.py", patch="@@ -10,2 +10,2 @@\n-old\n+new\n ctx", language="python")
+    ]
+    published = []
+    monkeypatch.setattr(provider, "publish_inline_comments", lambda comments: published.extend(comments) or True)
+
+    assert provider.publish_code_suggestions([{
+        "body": "```suggestion\nnew\n```",
+        "relevant_file": "src/example.py",
+        "relevant_lines_start": 13,
+        "relevant_lines_end": 15,
+    }]) is True
+
+    assert len(published) == 1
+    assert published[0].get("start_line", published[0]["line"]) == 13
+    assert published[0]["line"] == 15
+
+
 def test_validate_comments_inside_hunks_does_not_partially_update_on_render_error(monkeypatch):
     provider = _make_provider()
     provider.get_diff_files = lambda: [

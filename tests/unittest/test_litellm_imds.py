@@ -15,8 +15,7 @@ import pytest
 from botocore.exceptions import ClientError, CredentialRetrievalError, ProfileNotFound
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
-import pr_agent.algo.ai_handlers.litellm_helpers as litellm_helpers
-from pr_agent.algo.ai_handlers import cloud_auth
+from pr_agent.algo.ai_handlers import cloud_auth, litellm_helpers
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 
 
@@ -732,9 +731,11 @@ async def test_native_aws_environment_token_selection(monkeypatch, use_imds, ses
     }
     if use_imds:
         environment["AWS_USE_IMDS"] = "true"
-    for name, value in (("AWS_SESSION_TOKEN", session_token), ("AWS_SECURITY_TOKEN", security_token)):
-        if value is not None:
-            environment[name] = value
+    environment.update(
+        (name, value)
+        for name, value in (("AWS_SESSION_TOKEN", session_token), ("AWS_SECURITY_TOKEN", security_token))
+        if value is not None
+    )
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
     if use_imds:

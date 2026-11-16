@@ -33,6 +33,7 @@ from pr_agent.algo.output_models import (
     SubPR,
     TicketCompliance,
     TodoSection,
+    finding_confidence,
 )
 from pr_agent.algo.utils import load_yaml
 
@@ -45,6 +46,7 @@ def _review_fixture():
         "start_line": 10,
         "end_line": 12,
     }
+
     return {
         "review": {
             "estimated_effort_to_review_[1-5]": 3,
@@ -54,7 +56,6 @@ def _review_fixture():
             "contribution_time_cost_estimate": {"best_case": "45m", "average_case": "2h", "worst_case": "5h"},
             "score": 89,
             "relevant_tests": "Yes",
-            "insights_from_user_answers": "The deployment target is Linux.",
             "key_issues_to_review": [issue],
             "security_concerns": "No",
             "todo_sections": [{"relevant_file": "src/app.py", "line_number": 20, "content": "Remove fallback."}],
@@ -68,6 +69,28 @@ def _review_fixture():
             }],
         }
     }
+
+
+def test_key_issue_model_accepts_fix_fields():
+    payload = {
+        "relevant_file": "src/app.py",
+        "issue_header": "Possible Bug",
+        "issue_content": "The lock is never released.",
+        "start_line": 4,
+        "end_line": 5,
+    }
+
+    plain = KeyIssuesComponentLink.model_validate(payload)
+    fixed = KeyIssuesComponentLink.model_validate(
+        {**payload, "existing_code": "lock.acquire()", "improved_code": "with lock: ..."}
+    )
+
+    assert (plain.existing_code, plain.improved_code) == (None, None)
+    assert (fixed.existing_code, fixed.improved_code) == ("lock.acquire()", "with lock: ...")
+
+
+def test_review_model_does_not_expose_user_answer_insights():
+    assert "insights_from_user_answers" not in Review.model_fields
 
 
 @pytest.mark.parametrize(
@@ -507,3 +530,33 @@ def test_ranking_example_is_a_valid_numeric_payload():
     parsed = load_yaml(text)
     assert isinstance(parsed["which_response_was_better"], int)
     PRRankResponses.model_validate(parsed)
+
+
+@pytest.mark.parametrize("confidence", [-1, 11, 8.5])
+def test_key_issue_confidence_must_be_an_integer_from_0_to_10(confidence):
+    issue = dict(_review_fixture()["review"]["key_issues_to_review"][0], confidence=confidence)
+
+    with pytest.raises(ValueError):
+        KeyIssuesComponentLink.model_validate(issue)
+
+
+@pytest.mark.parametrize("confidence", [0, 8, 10])
+def test_key_issue_accepts_integer_confidence(confidence):
+    issue = dict(_review_fixture()["review"]["key_issues_to_review"][0], confidence=confidence)
+
+    assert KeyIssuesComponentLink.model_validate(issue).confidence == confidence
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(8, 8.0), (8.5, 8.5), (" 7 ", 7.0), ("8.0", 8.0), (0, 0.0), (10, 10.0),
+     (None, None), (True, None), ("very", None), (-1, None), (15, None), (float("nan"), None),
+     (float("inf"), None), ([8], None)],
+)
+def test_finding_confidence_normalises_one_value_for_filtering_and_rendering(value, expected):
+    assert finding_confidence({"confidence": value}) == expected
+
+
+def test_finding_confidence_of_a_non_finding_is_none():
+    assert finding_confidence("not a dict") is None
+    assert finding_confidence({}) is None

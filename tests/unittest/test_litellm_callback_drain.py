@@ -361,7 +361,6 @@ def test_cancellation_cleanup_uses_remaining_callback_timeout(clean_litellm_call
         def get_worker():
             drain_start["time"] = loop.time()
             drain_started.set()
-            return None
 
         monkeypatch.setattr(litellm_helpers, "_get_global_logging_worker", get_worker)
         monkeypatch.setattr(litellm_helpers, "CANCELLATION_CLEANUP_SECONDS", 1.0)
@@ -429,7 +428,6 @@ def test_batch_cancellation_cleanup_uses_overall_callback_timeout(clean_litellm_
 
         def get_worker():
             drain_start["time"] = loop.time()
-            return None
 
         callback = BlockingBatchCallback()
         monkeypatch.setattr(litellm_helpers, "_get_global_logging_worker", get_worker)
@@ -2758,7 +2756,6 @@ def test_worker_introspection_failure_preserves_cancellation(
             def _worker_task(self):
                 if failing_attribute == "_worker_task":
                     raise RuntimeError("worker task failed")
-                return None
 
             @property
             def _running_tasks(self):

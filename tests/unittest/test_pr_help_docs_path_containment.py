@@ -1,7 +1,7 @@
 import os
 from types import SimpleNamespace
 
-from pr_agent.tools.pr_help_docs import PRHelpDocs
+from pr_agent.commands.pr_help_docs import PRHelpDocs
 
 
 def _help_docs_with_clone(tmp_path, docs_path, include_root_readme_file=False):

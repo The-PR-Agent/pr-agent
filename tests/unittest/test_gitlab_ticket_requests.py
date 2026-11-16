@@ -10,22 +10,32 @@ import pytest
 import requests
 from requests.adapters import BaseAdapter
 
+from pr_agent.commands import ticket_pr_compliance_check as tickets
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.tools import ticket_pr_compliance_check as tickets
 
 
 class IssueTransport(BaseAdapter):
     def __init__(self, outcomes=()):
         super().__init__()
         self.requests = []
+        self.metadata_requests = []
         self.outcomes = iter(outcomes)
 
     def send(self, request, **kwargs):
+        if "/issues/" not in request.url:
+            self.metadata_requests.append(request)
+            response = requests.Response()
+            response.status_code = 200
+            response._content = json.dumps({
+                "id": 1, "visibility": "public", "issues_access_level": "enabled",
+            }).encode()
+            response.headers["Content-Type"] = "application/json"
+            response.request = request
+            return response
         self.requests.append(request)
         outcome = next(self.outcomes, 200)
         if isinstance(outcome, BaseException):
             raise outcome
-        # A project metadata request must never reach the transport.
         assert request.method == "GET" and "/issues/" in request.url
         iid = int(urlparse(request.url).path.rsplit("/", 1)[-1])
         payload = {
@@ -75,15 +85,18 @@ def provider_factory(monkeypatch):
         session.close()
 
 
-async def test_extract_issues_without_project_metadata(provider_factory):
+async def test_extract_issues_with_project_visibility_metadata(provider_factory):
     provider, transport = provider_factory("Fixes #1 #2 #4 #1")
     result = await tickets.extract_tickets(provider)
 
     assert [ticket["ticket_id"] for ticket in result] == [1, 2, 4]
+    assert [urlparse(request.url).path for request in transport.metadata_requests] == [
+        "/gitlab/api/v4/projects/group%2Frepo",
+    ]
     assert [urlparse(request.url).path for request in transport.requests] == [
-        "/gitlab/api/v4/projects/group%2Frepo/issues/1",
-        "/gitlab/api/v4/projects/group%2Frepo/issues/2",
-        "/gitlab/api/v4/projects/group%2Frepo/issues/4",
+        "/gitlab/api/v4/projects/1/issues/1",
+        "/gitlab/api/v4/projects/1/issues/2",
+        "/gitlab/api/v4/projects/1/issues/4",
     ]
     assert all(request.headers["PRIVATE-TOKEN"] == "offline-token" for request in transport.requests)
     assert all(ticket["body"] == "x" * tickets.MAX_TICKET_CHARACTERS + "..." for ticket in result)
@@ -202,10 +215,25 @@ async def test_other_ticket_integrations_remain_outside_gitlab_success_limit(pro
     assert len(transport.requests) == 4
 
 
+def _confidential_issue(iid):
+    return 200, {"iid": iid, "web_url": f"https://gitlab.example/group/repo/-/issues/{iid}", "title": "Secret",
+                 "description": "customer details", "labels": [], "confidential": True}
+
+
+async def test_confidential_own_project_issue_is_skipped(provider_factory):
+    provider, transport = provider_factory("Fixes #1 #2", [_confidential_issue(1), 200])
+
+    result = await tickets.extract_tickets(provider)
+
+    assert [ticket["ticket_id"] for ticket in result] == [2]
+    assert len(transport.requests) == 2
+
+
 def _sibling_project(path="group/sub/project", visibility="public", confidential=False):
     project = Mock()
     project.path_with_namespace = path
     project.visibility = visibility
+    project.issues_access_level = "enabled"
     project.issues.get.return_value = SimpleNamespace(
         iid=3,
         web_url="https://gitlab.example/group/sub/project/-/issues/3",
@@ -238,14 +266,14 @@ async def test_confidential_sibling_issue_is_skipped(provider_factory, monkeypat
     monkeypatch.setattr(provider, "get_owning_namespace", Mock(return_value="group"))
     monkeypatch.setattr(provider, "is_sibling_repo_allowed", Mock(return_value=True))
 
-    with patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as logger:
+    with patch("pr_agent.commands.ticket_pr_compliance_check.get_logger") as logger:
         result = await tickets.extract_tickets(provider)
 
     assert result == []
     assert transport.requests == []
     project.issues.get.assert_called_once_with(3)
     logger.return_value.warning.assert_called_once_with(
-        "Ignoring confidential cross-project GitLab issue: other/sub/project#3"
+        "Ignoring confidential GitLab issue: other/sub/project#3"
     )
 
 

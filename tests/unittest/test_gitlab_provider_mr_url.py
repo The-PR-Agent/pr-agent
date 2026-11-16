@@ -219,3 +219,39 @@ def test_parse_merge_request_url_rejects_an_issue_of_a_project_named_merge_reque
 def test_merge_request_url_with_a_tab_suffix(url):
     assert _provider()._parse_merge_request_url(url) == ("grp/my-issues", 42)
     assert _provider().get_git_repo_url(url) == "https://gitlab.example.com/grp/my-issues.git"
+
+
+@pytest.mark.parametrize("gitlab_url, repo_git_url, expected", [
+    ("https://gitlab.com", "https://gitlab.com/group/docs.git", "https://gitlab.com/group/docs/-/blob/main"),
+    (
+        "https://gitlab.example.org",
+        "https://gitlab.example.org/group/sub/docs.git",
+        "https://gitlab.example.org/group/sub/docs/-/blob/main",
+    ),
+    (
+        "https://gitlab.com",
+        "https://gitlab.com/group/group.gitlab.io.git",
+        "https://gitlab.com/group/group.gitlab.io/-/blob/main",
+    ),
+    (
+        "https://example.org/gitlab",
+        "https://example.org/gitlab/group/docs.git",
+        "https://example.org/gitlab/group/docs/-/blob/main",
+    ),
+    (
+        "https://gitlab.example.org",
+        "https://oauth2:secret@gitlab.example.org/group/docs.git",
+        "https://gitlab.example.org/group/docs/-/blob/main",
+    ),
+])
+def test_get_canonical_url_parts_builds_prefix_from_explicit_repo_url(gitlab_url, repo_git_url, expected):
+    assert _provider(gitlab_url).get_canonical_url_parts(repo_git_url=repo_git_url, desired_branch="main") == (
+        expected,
+        "?ref_type=heads",
+    )
+
+
+def test_get_canonical_url_parts_rejects_repo_url_without_host():
+    assert _provider().get_canonical_url_parts(
+        repo_git_url="git@gitlab.example.com:group/docs.git", desired_branch="main"
+    ) == ("", "")

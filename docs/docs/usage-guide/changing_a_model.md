@@ -22,7 +22,8 @@ retried on the same model up to `config.num_retries` times (default 4) before th
 are tried, waiting for the provider's `Retry-After` (up to 30 seconds) or with exponential backoff
 between attempts. Set it to `0` to move to the fallback models at once.
 
-`/describe`, `/add_docs`, `/generate_labels`, and `/update_changelog` reject responses with
+`/describe`, `/add_docs`, `/generate_labels`, `/update_changelog`, `/ask`, `/ask_line`, and `/help`
+reject responses with
 `finish_reason="length"` before publication and use the existing failure and fallback handling.
 If every model attempt fails, they do not publish the truncated result. For large-PR `/describe`,
 successful chunks can still produce an output with an incomplete-coverage notice when other chunks
@@ -112,6 +113,15 @@ configured model, including fallback models, so use it only when all selected
 endpoints support the field. Existing `service_tier` and `processing_mode` options
 can be included in the same JSON object.
 
+An endpoint that accepts `thinking_token_budget`, such as vLLM, can limit the reasoning tokens of a model:
+
+```toml
+[litellm]
+extra_body='{"thinking_token_budget": 4000}'
+```
+
+PR-Agent also sends this field to fallback models.
+
 ### Azure
 
 To use Azure, set in your `.secrets.toml` (working from CLI), or in the GitHub `Settings > Secrets and variables` (working from GitHub App or GitHub Action):
@@ -151,7 +161,7 @@ Passing custom headers to the underlying LLM Model API can be done by setting ex
 
 ```toml
 [litellm]
-extra_headers='{"projectId": "<authorized projectId >", ...}') #The value of this setting should be a JSON string representing the desired headers, a ValueError is thrown otherwise.
+extra_headers='{"projectId": "<authorized projectId >"}' #The value of this setting should be a JSON string representing the desired headers, a ValueError is thrown otherwise.
 ```
 
 This enables users to pass authorization tokens or API keys, when routing requests through an API management gateway.
@@ -169,7 +179,7 @@ E.g. to use a new model locally via Ollama, set in `.secrets.toml` or in a confi
 model = "ollama/qwen2.5-coder:32b"
 fallback_models=[]
 custom_model_max_tokens=128000 # set the maximal input tokens for the model
-duplicate_examples=true # will duplicate the examples in the prompt, to help the model to generate structured output
+duplicate_prompt_examples=true # will duplicate the examples in the prompt, to help the model to generate structured output
 
 [ollama]
 api_base = "http://localhost:11434" # or whatever port you're running Ollama on
@@ -204,7 +214,7 @@ key = ... # your Hugging Face api key
 api_base = ... # the base url for your Hugging Face inference endpoint
 ```
 
-(you can obtain a Llama2 key from [here](https://replicate.com/replicate/llama-2-70b-chat/api))
+(you can obtain a Hugging Face access token from [here](https://huggingface.co/settings/tokens))
 
 ### Replicate
 
@@ -435,16 +445,18 @@ credential sources and appropriate process/container isolation for distinct work
 explicit request-local credentials. Request-local configuration is not an isolation boundary against arbitrary
 code running in the same process.
 
-Minimal GitHub Actions workflow (no AWS secret keys required):
+Minimal GitHub Actions step for review only (no AWS secret keys required):
 
 ```yaml
 - uses: the-pr-agent/pr-agent@main
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     AWS_USE_IMDS: "true"
+    CONFIG__MODEL: "bedrock/us.anthropic.claude-sonnet-4-6"
+    CONFIG__FALLBACK_MODELS: "[]"
+    GITHUB_ACTION_CONFIG__AUTO_DESCRIBE: "false"
+    GITHUB_ACTION_CONFIG__AUTO_IMPROVE: "false"
     # AWS_REGION_NAME: us-east-1  # optional if the instance metadata provides it
-  with:
-    command: review
 ```
 
 The IAM role must have `bedrock:InvokeModel` permission on the inference profile and its destination foundation models. For the US profile invoked from `us-east-1`, replace `123456789012` with your AWS account ID:
@@ -600,7 +612,7 @@ in PR-Agent's registry or the installed LiteLLM metadata.
 CompactifAI's public model pages do not currently specify those limits.
 
 PR-Agent also caps the effective budget with `config.max_model_tokens`, which
-defaults to 32,000. To use a larger verified budget, raise both
+defaults to 256,000. To use a larger verified budget, raise both
 `config.custom_model_max_tokens` and `config.max_model_tokens`; the effective limit
 is the smaller of the two values.
 
@@ -708,6 +720,34 @@ key = ...
 ```
 
 (you can obtain a Xiaomi MiMo API key from [here](https://platform.xiaomimimo.com/#/docs))
+
+### OpenCode Go
+
+To use models from an [OpenCode Go](https://opencode.ai/docs/console/go/) subscription, for example, set:
+
+```toml
+[config] # in configuration.toml
+model = "opencode_go/deepseek-v4.1-flash"
+fallback_models=[]
+
+[litellm] # in configuration.toml
+add_session_id_to_requests = true
+```
+
+OpenCode Go rejects requests without an `x-opencode-session` header (`MissingSessionID`). `add_session_id_to_requests` sends one per PR, see [Grouping requests by PR in LiteLLM](./additional_configurations.md#grouping-requests-by-pr-in-litellm). To use a fixed session instead, set `extra_headers='{"x-opencode-session": "<session id>"}'` in the `[litellm]` section.
+
+and fill up your key
+
+```toml
+[opencode_go] # in .secrets.toml
+key = ...
+```
+
+You can also set the `OPENCODE_API_KEY` (or `OPENCODE_GO_API_KEY`) environment variable instead.
+
+:::note[Reasoning models can stall on OpenCode Go]
+On large PRs, `deepseek-v4.1-flash` and `deepseek-v4-pro` have been seen streaming reasoning for over 10 minutes without returning an answer, so the request ends in `litellm.Timeout`. Using a different model such as `opencode_go/glm-5.3-flash`, or setting `reasoning_effort = "none"` in the `[config]` section, avoids it.
+:::
 
 ### DeepInfra
 
@@ -826,7 +866,7 @@ model = "github_copilot/gpt-4o"
 fallback_models = ["github_copilot/gpt-4.1"]
 ```
 
-The GitHub identity behind the model needs an active Copilot subscription. The token budgets for these models are resolved automatically from litellm's model metadata, so `custom_model_max_tokens` is not required. However, `get_max_tokens` clamps the effective window to `config.max_model_tokens`, which defaults to 32000. To use the input limits recorded for these Copilot routes (e.g., 64000 for gpt-4o, 128000 for gpt-4.1), raise `config.max_model_tokens` accordingly.
+The GitHub identity behind the model needs an active Copilot subscription. The token budgets for these models are resolved automatically from litellm's model metadata, so `custom_model_max_tokens` is not required. However, `get_max_tokens` clamps the effective window to `config.max_model_tokens`, which defaults to 256000 — above the input limits recorded for these Copilot routes (e.g., 64000 for gpt-4o, 128000 for gpt-4.1) — so those limits apply in full without changing it.
 
 Authentication uses the [GitHub Copilot provider](https://docs.litellm.ai/docs/providers/github_copilot) flow:
 
@@ -895,7 +935,7 @@ All three map `max` to `xhigh` on Azure and OpenRouter, and the legacy `minimal`
 mapped to `low`.
 Each has a 1,050,000-token context window, a 922,000-token input ceiling,
 and support up to 128,000 output tokens. PR-Agent also applies `config.max_model_tokens` unless
-a tool bypasses that configured cap, as `/help` does; the native input ceiling still applies.
+a command bypasses that configured cap, as `/help` does; the native input ceiling still applies.
 The existing Chat Completions path is used for PR-Agent's
 text requests. For GPT-6 Sol and Luna, OpenAI requires the Responses API for built-in tools and
 function calling with reasoning; Chat Completions function calling is limited to
@@ -949,7 +989,7 @@ The existing Chat Completions path is used; access depends on your OpenAI accoun
 
 ### Anthropic models
 
-PR-Agent registers existing Claude Sonnet 4.6 and Opus 4.6 aliases with a 1,000,000-token context window. `config.max_model_tokens` still caps the usable prompt budget unless a tool explicitly bypasses that cap.
+PR-Agent registers existing Claude Sonnet 4.6, Opus 4.6, and Fable 5.2 aliases with a 1,000,000-token context window. `config.max_model_tokens` still caps the usable prompt budget unless a command explicitly bypasses that cap.
 
 ```toml
 [config]
@@ -974,7 +1014,7 @@ built-in defaults.
 :::note[Only models that accept a thinking budget are supported]
 PR-Agent enables extended thinking through the manual
 `thinking={"type": "enabled", "budget_tokens": ...}` request. Adaptive-only Claude models
-(e.g. Opus 4.7/4.8, Opus 5/5.5, Sonnet 5/5.5, Haiku 5.5, Fable 5, Fable 5.1) reject `budget_tokens`, so they are
+(e.g. Opus 4.7/4.8, Opus 5/5.5, Sonnet 5/5.5, Haiku 5.5, Fable 5, Fable 5.1/5.2) reject `budget_tokens`, so they are
 intentionally excluded from the built-in defaults. If you add one to
 `claude_extended_thinking_models_override` anyway, PR-Agent skips the extended-thinking payload
 for it and logs a warning rather than sending a request the provider would reject — use
@@ -1063,14 +1103,14 @@ same endpoint while retaining the configured primary in this collision case. Wit
 
 The first successful attempt returns immediately; later entries are attempted only after fallback-eligible
 failures. An empty fallback list adds no backup, and a noncolliding route still replaces the primary without
-adding it back. The same model with distinct deployment IDs is treated as distinct endpoints. `/improve`
+adding it back. The same model with distinct deployment IDs is treated as distinct endpoints. `/review`
 uses this effective chain to recover failed chunks without rerunning successful chunks. Its defensive
 uniqueness checks remain: repeated complete pairs in unchanged, noncolliding or unrouted chains can still
 disable chunk recovery; those chains are not deduplicated by this routing-specific repair.
 
-Routing applies only to calls that ask for the regular model: `/review`, `/improve`, `/generate_labels` and
-`/add_docs`. Tools that already use `config.model_weak` (`/describe`, `/ask`, `/update_changelog`) are left
-alone, and a dedicated `config.model_reasoning` is still used for self-reflection. With `config.output_run_details`
+Routing applies only to calls that ask for the regular model: `/review` (which `/improve` runs), `/generate_labels` and
+`/add_docs`. Commands that already use `config.model_weak` (`/describe`, `/ask`, `/update_changelog`) are left
+alone, and `config.model_reasoning` is no longer used by any command, since `/improve` and its self-reflection call were folded into `/review`. With `config.output_run_details`
 enabled, the run details show which model a routed pull request ended up on.
 
 :::note[Azure deployments]

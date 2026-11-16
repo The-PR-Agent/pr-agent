@@ -14,12 +14,12 @@ from unittest.mock import MagicMock
 import pytest
 from github import GithubException, RateLimitExceededException
 
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.commands.pr_description import PRDescription
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.log import get_logger
 from pr_agent.servers.utils import RateLimitExceeded
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from pr_agent.tools.pr_description import PRDescription
 
 RATE_LIMITED = RateLimitExceededException(
     403,
@@ -137,7 +137,7 @@ def publishing(monkeypatch):
     monkeypatch.setitem(settings.config, "publish_output", True)
     monkeypatch.setitem(settings.config, "publish_output_progress", True)
     monkeypatch.setitem(settings.config, "is_auto_command", False)
-    monkeypatch.setitem(settings.config, "propagate_tool_errors", False)
+    monkeypatch.setitem(settings.config, "propagate_command_errors", False)
     return settings
 
 
@@ -224,35 +224,35 @@ def test_a_rate_limited_diff_fetch_is_retried(
 
 
 async def test_describe_swallows_a_provider_error(publishing):
-    """`propagate_tool_errors` is false by default, so `run()` logs and returns."""
+    """`propagate_command_errors` is false by default, so `run()` logs and returns."""
     provider = MagicMock()
     provider.publish_comment.side_effect = NOT_ACCESSIBLE
-    tool = PRDescription.__new__(PRDescription)
-    tool.git_provider = provider
-    tool.pr_id = "org/repo/1"
+    command = PRDescription.__new__(PRDescription)
+    command.git_provider = provider
+    command.pr_id = "org/repo/1"
 
-    await tool.run()
+    await command.run()
 
 
 async def test_improve_reports_a_provider_error_to_the_pr(publishing):
     provider = MagicMock()
     provider.supports_code_suggestion_state = lambda: False
     provider.get_files.side_effect = RATE_LIMITED
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = provider
-    tool.pr_url = "https://github.com/org/repo/pull/1"
-    tool.progress_response = None
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = provider
+    command.pr_url = "https://github.com/org/repo/pull/1"
+    command.progress_response = None
 
-    await tool.run()
+    await command.run()
 
-    provider.publish_tool_failure.assert_called_once_with("improve", "Failed to generate code suggestions for PR")
+    provider.publish_command_failure.assert_called_once_with("improve", "Failed to generate code suggestions for PR")
 
 
 async def test_one_unreadable_ticket_link_keeps_the_others(monkeypatch):
     """A 404 on one linked issue must not discard every extracted ticket."""
     from types import SimpleNamespace
 
-    from pr_agent.tools.ticket_pr_compliance_check import extract_tickets
+    from pr_agent.commands.ticket_pr_compliance_check import extract_tickets
 
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: MagicMock())
     provider = GithubProvider(pr_url=None)

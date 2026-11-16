@@ -53,6 +53,10 @@ KEY_ISSUE_LOCATION_MARKER_RE = re.compile(
 )
 _MARKER_RES = (BODY_MARKER_RE, CODE_MARKER_RE, KEY_ISSUE_LOCATION_MARKER_RE)
 
+# Info string of the fix block a review finding carries when it is not committable. Its second word
+# keeps it apart from a code block in the finding's own text.
+TEXT_FIX_INFO = "text fix"
+
 _LEAD_RE = re.compile(r"^\*\*Suggestion:\*\*\s*", re.IGNORECASE)
 _TAG_RE = re.compile(r"\[[^\]]+?,\s*importance:\s*\d+\]", re.IGNORECASE)
 _WS_RE = re.compile(r"\s+")
@@ -191,6 +195,16 @@ def body_with_markers(body: str, body_fp: str, code_fp: str | None,
     return _append_markers(body, build_markers(body_fp, code_fp, git_provider), max_chars)
 
 
+def body_with_carried_markers(body: str, source: str, max_chars: int | None = None) -> str:
+    """Append the markers of *source* that *body* lacks, so a rewritten comment stays recognisable."""
+    found = []
+    for marker_re in _MARKER_RES:
+        for match in marker_re.finditer(source or ""):
+            if match.group(0) not in body and match.group(0) not in found:
+                found.append(match.group(0))
+    return _append_markers(body, "\n".join(found), max_chars) if found else body
+
+
 def key_issue_body_with_markers(body: str, body_fp: str, location_fp: str,
                                 max_chars: int | None = None, git_provider=None) -> str:
     markers = (f"{build_markers(body_fp, None, git_provider)}\n"
@@ -221,13 +235,8 @@ def iter_existing_inline_comment_bodies(git_provider) -> Iterator[str]:
             for note in attrs.get("notes", []) or []:
                 if isinstance(note, dict):
                     yield note.get("body", "") or ""
-        # The committable-suggestion fallback posts via mr.notes.create, which
-        # may not surface as a discussion; scan plain notes too so their markers
-        # are seen on later runs.
-        for note in git_provider.mr.notes.list(get_all=True):
-            yield getattr(note, "body", "") or ""
         # gitlab.publish_code_suggestions_as_review queues suggestions as draft notes
-        # (invisible in the discussions/notes listings above until published). Scan
+        # (invisible in the discussions listing above until published). Scan
         # them too, so a marker from a draft that's still pending - e.g. because a
         # prior run's bulk-publish failed - is still seen, instead of being re-posted
         # as a duplicate once it (or a fresh copy) is eventually published.

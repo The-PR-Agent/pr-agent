@@ -5,8 +5,8 @@ from dynaconf import Dynaconf
 from starlette_context import request_cycle_context
 
 from pr_agent import config_loader, git_providers
-from pr_agent.tools import pr_config
-from pr_agent.tools.pr_config import PRConfig
+from pr_agent.commands import pr_config
+from pr_agent.commands.pr_config import PRConfig
 
 PR_URL = "https://github.com/example/repo/pull/1"
 
@@ -157,4 +157,10 @@ def test_config_output_has_no_declaration_note_when_shipped_loading_fails(monkey
     assert output == (
         "<details> <summary><strong>🛠️ PR-Agent Configurations:</strong></summary> \n\n"
         "\n\n```yaml\n\n\n```\n</details>\n"
+    )
+
+    monkeypatch.setitem(config_loader.get_settings().config, "bot_display_name", "Acme Bot")
+    custom_output = PRConfig.__new__(PRConfig)._prepare_pr_configs()
+    assert custom_output.startswith(
+        "<details> <summary><strong>🛠️ Acme Bot Configurations:</strong></summary> \n\n"
     )

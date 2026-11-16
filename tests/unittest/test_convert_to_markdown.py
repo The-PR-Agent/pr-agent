@@ -6,7 +6,7 @@ import pytest
 
 from pr_agent.algo.comment_identity import PRReviewHeader
 from pr_agent.algo.utils import _expand_minute_suffix, convert_to_markdown_v2
-from pr_agent.tools.pr_description import insert_br_after_x_chars
+from pr_agent.commands.pr_description import insert_br_after_x_chars
 
 """
 Code Analysis
@@ -192,6 +192,44 @@ class TestConvertToMarkdown:
 
         assert '<strong></strong><br>The function needs review.' in output
 
+    @pytest.mark.parametrize("gfm", [True, False])
+    def test_summary_shows_fix_for_findings_left_in_summary(self, gfm):
+        issue = {
+            'relevant_file': 'src/utils.py',
+            'issue_header': 'Code Smell',
+            'issue_content': 'The function is too long.',
+            'start_line': 30,
+            'end_line': 50,
+            'improved_code': 'x = 1\n```\nprint(x)',
+        }
+        input_data = {'review': {'key_issues_to_review': [issue]}}
+
+        output = convert_to_markdown_v2(input_data, gfm_supported=gfm)
+
+        fix_block = "````text\nx = 1\n```\nprint(x)\n````"
+        assert fix_block in output
+        assert output.index('The function is too long.') < output.index(fix_block)
+        assert ('<details><summary>Suggested fix</summary>' in output) is gfm
+        assert ('**Suggested fix**' in output) is not gfm
+
+    @pytest.mark.parametrize("gfm,expected", [
+        (True, "<strong>Code Smell</strong><br>The function is too long.\n\n"),
+        (False, "**Code Smell**\n\nThe function is too long.\n\n\n\n"),
+    ])
+    def test_summary_without_fix_renders_unchanged(self, gfm, expected):
+        issue = {
+            'relevant_file': 'src/utils.py',
+            'issue_header': 'Code Smell',
+            'issue_content': 'The function is too long.',
+            'improved_code': '   ',
+        }
+        output = convert_to_markdown_v2({'review': {'key_issues_to_review': [issue]}}, gfm_supported=gfm)
+        del issue['improved_code']
+        baseline = convert_to_markdown_v2({'review': {'key_issues_to_review': [issue]}}, gfm_supported=gfm)
+
+        assert expected in output
+        assert output == baseline
+
     def test_ticket_compliance(self):
         input_data = {'review': {
             'ticket_compliance_check': [
@@ -248,6 +286,30 @@ class TestConvertToMarkdown:
 
         assert '[]()' not in output
         assert '**Untracked ticket - Fully compliant**' in output
+
+    @pytest.mark.parametrize('ticket_url, not_compliant, expected_header', [
+        (None, None, '**Untracked ticket - Fully compliant**'),
+        ('https://example.com/ticket/123', ['Requirement 2'],
+         '**[123](https://example.com/ticket/123) - Partially compliant**'),
+    ])
+    def test_ticket_compliance_accepts_null_and_list_fields(self, ticket_url, not_compliant, expected_header):
+        # Models may leave an empty field as YAML null and answer a bullet list as a YAML list.
+        input_data = {'review': {
+            'ticket_compliance_check': [
+                {
+                    'ticket_url': ticket_url,
+                    'fully_compliant_requirements': ['Requirement 1'],
+                    'not_compliant_requirements': not_compliant,
+                    'requires_further_human_verification': None,
+                }
+            ]
+        }}
+
+        output = convert_to_markdown_v2(input_data)
+
+        assert expected_header in output
+        assert 'Compliant requirements:\n\n- Requirement 1' in output
+        assert ('Non-compliant requirements:\n\n- Requirement 2' in output) == bool(not_compliant)
 
     _CAN_BE_SPLIT_INPUT = {'review': {
         'can_be_split': [

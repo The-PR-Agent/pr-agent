@@ -148,7 +148,7 @@ def test_gitea_e2e_does_not_repeat_successful_pr_cleanup(monkeypatch):
     file_response.status_code = 200
     file_response.json.return_value = {"sha": "file-sha"}
     results = MagicMock(return_value=[])
-    monkeypatch.setattr(gitea_e2e, "_missing_gitea_tool_results", results)
+    monkeypatch.setattr(gitea_e2e, "_missing_gitea_command_results", results)
     http.get.side_effect = [file_response]
 
     pr_response = MagicMock()

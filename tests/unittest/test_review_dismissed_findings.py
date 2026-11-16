@@ -7,7 +7,10 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from pr_agent.algo.comment_identity import PRReviewHeader
+from pr_agent.algo.findings import Finding
 from pr_agent.algo.inline_comment_dedup import key_issue_body_with_markers
 from pr_agent.algo.review_finding_state import (
     normalize_finding,
@@ -15,10 +18,11 @@ from pr_agent.algo.review_finding_state import (
     render_previous_findings,
     serialize_review_state,
 )
+from pr_agent.algo.types import FilePatchInfo
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 _BOT_USER_ID = 7
 _KEY_ISSUE_BODY = "**Possible Issue**\n\nThe lock is never released."
@@ -66,8 +70,13 @@ def test_gitlab_key_issue_resolved_by_a_human_is_dismissed_with_the_last_reply()
     ], "human")
 
     assert _reviewer(_gitlab_provider([human]))._load_dismissed_key_issues() == [
-        {"path": "app.py", "body": _KEY_ISSUE_BODY, "line_start": 2, "line_end": 2,
-         "reply": "By design: the caller releases it."},
+        Finding(
+            path="app.py",
+            body=_KEY_ISSUE_BODY,
+            line_start=2,
+            line_end=2,
+            reply="By design: the caller releases it.",
+        ),
     ]
 
 
@@ -184,3 +193,34 @@ def test_dismissed_entry_too_large_for_the_budget_does_not_fall_back_to_the_acti
     dismissed = [{"path": "app.py", "body": _KEY_ISSUE_BODY, "line_start": 2, "line_end": 2, "reply": "x" * 500}]
 
     assert render_previous_findings(state, len(render_previous_findings(state, 10_000)), dismissed) == ""
+
+
+def _round_trip_dismissed(monkeypatch, committable, **issue):
+    monkeypatch.setitem(get_settings().pr_code_suggestions, "committable_code_suggestions", committable)
+    monkeypatch.setitem(get_settings().pr_code_suggestions, "commitable_code_suggestions", committable)
+    finding = Finding.from_review_issue({
+        "relevant_file": "app.py", "issue_header": "Possible Issue", "start_line": 2, "end_line": 3, **issue})
+    diff_file = FilePatchInfo(base_file="", head_file="one\ntwo\nthree\nfour\n", patch="", filename="app.py")
+    comment = _reviewer(None)._build_key_issue_comment(finding, {"app.py": diff_file})
+    body = key_issue_body_with_markers(comment["body"], "aabbccddeeff", "112233445566")
+    discussion = _discussion([_key_issue_note(resolved_by=99, body=body)], "human")
+    dismissed = _reviewer(_gitlab_provider([discussion]))._load_dismissed_key_issues()
+    return finding, comment, dismissed
+
+
+@pytest.mark.parametrize("committable", [True, False])
+def test_dismissed_finding_with_a_fix_keeps_the_id_of_the_stored_finding(monkeypatch, committable):
+    finding, comment, dismissed = _round_trip_dismissed(
+        monkeypatch, committable, issue_content="The lock is never released.",
+        existing_code="two\nthree", improved_code="TWO\nTHREE")
+
+    assert ("```suggestion" in comment["body"]) is committable
+    assert len(dismissed) == 1
+    assert normalize_finding(dismissed[0])["finding_id"] == normalize_finding(finding)["finding_id"]
+
+
+def test_dismissed_finding_without_a_fix_keeps_its_own_trailing_code_block(monkeypatch):
+    finding, _, dismissed = _round_trip_dismissed(
+        monkeypatch, False, issue_content="The lock is never released:\n```text\nlock.acquire()\n```")
+
+    assert normalize_finding(dismissed[0])["finding_id"] == normalize_finding(finding)["finding_id"]

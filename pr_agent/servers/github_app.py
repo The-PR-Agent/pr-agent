@@ -11,19 +11,24 @@ from starlette.middleware import Middleware
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
+from pr_agent.agent.command_registry import command_check_run
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
-from pr_agent.algo.setting_utils import normalize_setting_list
-from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
+from pr_agent.config_loader import get_bot_display_name, get_settings, global_settings
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers import lambda_handoff
 from pr_agent.servers.github_common import (
     _normalise_setting_list,
     _reformat_quote_ask_command,
+    handle_file_question_comment,
+    pushed_base_branch_merge,
+    revoke_auto_approval_on_push,
 )
 from pr_agent.servers.github_common import handle_line_comments as handle_line_comments
 from pr_agent.servers.github_common import matches_review_state as matches_review_state
@@ -31,6 +36,8 @@ from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     DefaultDictWithTimeout,
     auto_feedback_disabled,
+    dedupe_review_commands,
+    get_include_pr_labels,
     get_pr_commands,
     is_ask_command_comment,
     push_trigger_slot,
@@ -71,12 +78,18 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
     context["installation_id"] = installation_id
     context["settings"] = copy.deepcopy(global_settings)
     context["git_provider"] = {}
-    background_tasks.add_task(
-        handle_request,
-        body,
-        event=request.headers.get("X-GitHub-Event", None),
-        delivery_id=request.headers.get("X-GitHub-Delivery", None),
-    )
+    handed_off = lambda_handoff.handoff_enabled() and await lambda_handoff.try_handoff(
+        "github", body, request.headers)
+    if not handed_off:
+        # Not a Lambda deployment, or the hand-off failed: process the webhook in a
+        # background task, after the response is sent. Under Lambda (Mangum) the
+        # hand-off above replaces this task with a second invocation (#4748).
+        background_tasks.add_task(
+            handle_request,
+            body,
+            event=request.headers.get("X-GitHub-Event", None),
+            delivery_id=request.headers.get("X-GitHub-Delivery", None),
+        )
     return {}
 
 
@@ -146,12 +159,15 @@ async def handle_comments_on_pr(body: dict[str, Any],
         api_url = body["comment"]["pull_request_url"]
         try:
             if (is_ask_command_comment(comment_body) and
-                    'subject_type' in body["comment"] and body["comment"]["subject_type"] == "line"):
-                # comment on a code line in the "files changed" tab
-                comment_body = handle_line_comments(body, comment_body)
+                    body["comment"].get("subject_type") in ("line", "file")):
+                # comment on code lines or on a whole file in the "files changed" tab
+                comment_body = (handle_file_question_comment(body, comment_body)
+                                or handle_line_comments(body, comment_body))
                 disable_eyes = True
         except Exception as e:
-            get_logger().error("Failed to get log context", artifact={'error': e})
+            get_logger().error("Failed to handle review comment context", artifact={'error': e})
+            if body["comment"].get("subject_type") in ("line", "file") and is_ask_command_comment(comment_body):
+                return {}
     else:
         return {}
     log_context["api_url"] = api_url
@@ -166,7 +182,7 @@ async def handle_comments_on_pr(body: dict[str, Any],
                 api_url, comment_body,
                 notify=lambda: provider.add_eyes_reaction(comment_id, disable_eyes=disable_eyes),
                 # Preserve compatibility mode while exposing failures to outcome reactions.
-                propagate_tool_errors=True)
+                propagate_command_errors=True)
             # Optional, and disabled by default: tell the author how the command ended without
             # adding another comment to the thread.
             if succeeded is RequestOutcome.SKIPPED:
@@ -197,11 +213,6 @@ async def handle_new_pr_opened(body: dict[str, Any],
             get_logger().info(f"User {sender=} is not eligible to process PR {api_url=}")
 
 
-# The check run each automatic command publishes its output to when `github.publish_as_check_run`
-# is on, keyed by command and valued by the `name` the tool passes to `_publish_check_run`.
-_AUTO_COMMAND_CHECK_RUNS = {"describe": "describe", "review": "review", "improve": "suggestions"}
-
-
 def _check_run_provider(api_url: str):
     """The provider whose check runs the automatic commands complete, or None when they publish none."""
     if not get_settings().get("github.publish_as_check_run", False):
@@ -215,10 +226,14 @@ def _check_run_provider(api_url: str):
 
 
 def _auto_command_check_run(command) -> tuple[str, str | None]:
-    """The command's leading token and the check run its tool publishes to, if any."""
+    """The command's leading token and the check run its command publishes to, if any.
+
+    The check run comes from the command registry, so aliases resolve to the
+    same run as their canonical command (``/review_pr`` -> ``review``).
+    """
     tokens = command if isinstance(command, list) else str(command).split()
     action = tokens[0] if tokens else ""
-    return action, _AUTO_COMMAND_CHECK_RUNS.get(action.lstrip("/").lower())
+    return action, command_check_run(action)
 
 
 def _start_auto_command_check_run(provider, command) -> str | None:
@@ -227,18 +242,19 @@ def _start_auto_command_check_run(provider, command) -> str | None:
     if provider is None or name is None:
         return None
     try:
-        provider.start_check_run(name, f"PR-Agent is running {action}")
+        provider.start_check_run(name, f"{get_bot_display_name()} is running {action}")
     except Exception as e:
         get_logger().warning(f"Failed to open the {name} check run: {e}")
     return name
 
 
 def _finish_auto_command_check_run(provider, name: str | None, command, succeeded: bool) -> None:
-    """Complete the command's check run when its tool did not, so it cannot stay in_progress."""
+    """Complete the command's check run when its command did not, so it cannot stay in_progress."""
     if provider is None or name is None:
         return
     action, _ = _auto_command_check_run(command)
-    summary = f"PR-Agent ran {action}" if succeeded else f"PR-Agent could not finish {action}"
+    bot_display_name = get_bot_display_name()
+    summary = f"{bot_display_name} ran {action}" if succeeded else f"{bot_display_name} could not finish {action}"
     try:
         provider.finish_check_run(name, "success" if succeeded else "failure", summary)
     except Exception as e:
@@ -306,24 +322,34 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
 
     # we need to apply the repo settings to get the correct settings for the PR.
     # This is quite expensive - a call to the git provider is made for each PR event.
-    apply_repo_settings(api_url)
-    if not get_settings().github_app.handle_push_trigger:
+    git_provider = apply_repo_settings(api_url)
+    if not _as_bool_setting(get_settings().github_app.handle_push_trigger):
         return {}
-    if get_settings().github_app.push_trigger_ignore_bot_commits and body.get("sender", {}).get("type") == "Bot":
+    if (_as_bool_setting(
+            get_settings().github_app.push_trigger_ignore_bot_commits,
+            default=True,
+            setting_name="github_app.push_trigger_ignore_bot_commits",
+        )
+            and body.get("sender", {}).get("type") == "Bot"):
         get_logger().info(f"Skipping {event}: bot commit detected")
         return {}
 
     before_sha = body.get("before")
     after_sha = body.get("after")
-    merge_commit_sha = pull_request.get("merge_commit_sha")
     if before_sha == after_sha:
         return {}
-    if get_settings().github_app.push_trigger_ignore_merge_commits and after_sha == merge_commit_sha:
+    if (_as_bool_setting(
+            get_settings().github_app.push_trigger_ignore_merge_commits,
+            default=True,
+            setting_name="github_app.push_trigger_ignore_merge_commits",
+        )
+            and pushed_base_branch_merge(git_provider, before_sha, after_sha)):
+        get_logger().info(f"Skipping {event}: the push only merged the base branch")
         return {}
 
     async with push_trigger_slot(
         api_url,
-        allow_backlog=get_settings().github_app.push_trigger_pending_tasks_backlog,
+        allow_backlog=_as_bool_setting(get_settings().github_app.push_trigger_pending_tasks_backlog, default=True),
         ttl=get_settings().github_app.push_trigger_pending_tasks_ttl,
     ) as proceed:
         if not proceed:
@@ -388,13 +414,20 @@ async def _dispatch_request(body: dict[str, Any], event: str, action: str):
     """Return False when a command fails, preserving ignored events as completed work."""
     agent = PRAgent()
     log_context, sender, sender_id, sender_type = get_log_context(body, event, action, build_number)
+    if event == 'pull_request':
+        revoke_auto_approval_on_push(body)
 
     # logic to ignore PRs opened by bot, PRs with specific titles, labels, source branches, or target branches
     if is_bot_user(sender, sender_type) and 'check_run' not in body:
         get_logger().debug("Request ignored: bot user detected")
         return {}
     if action != 'created' and 'check_run' not in body:
-        if not should_process_pr_logic(body):
+        # Defer the opt-in label gate until repository settings have been applied.
+        prefilter_allowed = (
+            shared_should_process_pr_logic(body, provider="github", check_include_labels=False)
+            if get_include_pr_labels() else should_process_pr_logic(body)
+        )
+        if not prefilter_allowed:
             get_logger().debug("Request ignored: PR logic filtering")
             return {}
 
@@ -443,7 +476,11 @@ async def handle_request(body: dict[str, Any], event: str, delivery_id: str | No
         get_logger().debug("No action found in request body, exiting handle_request")
         return {}
     settings = get_settings()
-    if not delivery_id or not settings.get("GITHUB_APP.WEBHOOK_DELIVERY_DEDUPLICATION", False):
+    if not delivery_id or not _as_bool_setting(
+        settings.get("GITHUB_APP.WEBHOOK_DELIVERY_DEDUPLICATION", False),
+        default=True,
+        setting_name="github_app.webhook_delivery_deduplication",
+    ):
         await _dispatch_request(body, event, action)
         return {}
 
@@ -480,7 +517,7 @@ def _check_pull_request_event(action: str, body: dict, log_context: dict) -> tup
 
 async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body: dict, api_url: str,
                                         log_context: dict):
-    feedback_on_draft = get_settings().github_app.feedback_on_draft_pr
+    feedback_on_draft = _as_bool_setting(get_settings().github_app.feedback_on_draft_pr)
     if commands_conf == "pr_commands" and body.get("action") == "ready_for_review" and feedback_on_draft:
         get_logger().info(f"Skipping draft-ready commands because draft feedback is enabled: {api_url}")
         return
@@ -497,7 +534,7 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
     commands = (
         get_pr_commands("github_app")
         if commands_conf == "pr_commands"
-        else normalize_setting_list(get_settings().get(f"github_app.{commands_conf}"))
+        else dedupe_review_commands(normalize_setting_list(get_settings().get(f"github_app.{commands_conf}")))
     )
     if not commands:
         get_logger().info(f"No {commands_conf} configured, skipping auto commands")
@@ -523,7 +560,7 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
                 nonlocal check_run
                 check_run = _start_auto_command_check_run(provider, new_command)
             # Install a fresh collector so `command_failed()` below cannot read a verdict left
-            # behind by the previous command; the tool replaces it with its own on entry.
+            # behind by the previous command; the command replaces it with its own on entry.
             init_run_details()
             result = await agent.handle_request(api_url, new_command, notify=notify_start)
             if result is RequestOutcome.SKIPPED:
@@ -531,7 +568,7 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
             if result is False:
                 command_succeeded = False
             elif command_failed():
-                # `propagate_tool_errors` is false by default, so a tool that failed internally
+                # `propagate_command_errors` is false by default, so a command that failed internally
                 # still returns normally. Reporting that as success would put a green tick on a
                 # pull request that never got its review.
                 get_logger().warning(f"Command '{command}' reported success but recorded a failure")

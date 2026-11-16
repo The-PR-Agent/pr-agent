@@ -10,7 +10,7 @@ import os
 import litellm
 import pytest
 
-import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_ai_handler
+from pr_agent.algo.ai_handlers import litellm_ai_handler
 
 REQUEST_SPAN_ENV = "USE_OTEL_LITELLM_REQUEST_SPAN"
 
@@ -19,6 +19,7 @@ REQUEST_SPAN_ENV = "USE_OTEL_LITELLM_REQUEST_SPAN"
 def _restore_litellm_globals(monkeypatch):
     """litellm's callbacks and turn_off_message_logging are process globals."""
     monkeypatch.setattr(litellm, "turn_off_message_logging", False, raising=False)
+    monkeypatch.setattr(litellm, "suppress_debug_info", False, raising=False)
     monkeypatch.setattr(litellm, "success_callback", [], raising=False)
     monkeypatch.setattr(litellm, "failure_callback", [], raising=False)
     monkeypatch.setattr(litellm, "service_callback", [], raising=False)
@@ -64,6 +65,42 @@ def test_message_logging_untouched_when_not_configured(monkeypatch):
     assert litellm.turn_off_message_logging is False
 
 
+def test_litellm_feedback_banner_is_suppressed_by_default(monkeypatch):
+    """Otherwise every provider error prints LiteLLM's "Give Feedback / Get Help" banner to stdout."""
+    _build(monkeypatch)
+
+    assert litellm.suppress_debug_info is True
+
+
+@pytest.mark.parametrize("value", [False, "false", 0])
+def test_litellm_feedback_banner_can_be_kept(monkeypatch, value):
+    _build(monkeypatch, **{"LITELLM.SUPPRESS_DEBUG_INFO": value})
+
+    assert litellm.suppress_debug_info is False
+
+
+def test_litellm_feedback_banner_opt_out_leaves_an_existing_choice(monkeypatch):
+    """Opting out stops pr-agent from setting the flag; it does not undo an embedding application's choice."""
+    monkeypatch.setattr(litellm, "suppress_debug_info", True, raising=False)
+
+    _build(monkeypatch, **{"LITELLM.SUPPRESS_DEBUG_INFO": False})
+
+    assert litellm.suppress_debug_info is True
+
+
+def test_litellm_feedback_banner_setting_is_host_controlled(monkeypatch):
+    """A repository's settings must not turn the process-wide banner back on."""
+    monkeypatch.setattr("pr_agent.algo.ai_handlers.litellm_ai_handler.global_settings", _settings())
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.get_settings",
+        lambda: _settings(**{"LITELLM.SUPPRESS_DEBUG_INFO": False}),
+    )
+
+    litellm_ai_handler.LiteLLMAIHandler()
+
+    assert litellm.suppress_debug_info is True
+
+
 def test_otel_callback_with_pr_agent_telemetry_requests_its_own_span(monkeypatch):
     """Otherwise litellm writes gen_ai attributes onto pr-agent's command span
     instead of emitting its own, and the two layers stop being separable."""
@@ -78,6 +115,7 @@ def test_otel_callback_with_pr_agent_telemetry_requests_its_own_span(monkeypatch
 @pytest.mark.parametrize("values", [
     {"LITELLM.SUCCESS_CALLBACK": ["otel"]},  # pr-agent telemetry off
     {"OTEL.IS_ENABLED": True},               # litellm otel callback off
+    {"LITELLM.SUCCESS_CALLBACK": ["otel"], "OTEL.IS_ENABLED": "FALSE"},  # string false is off
 ])
 def test_request_span_env_untouched_unless_both_layers_on(monkeypatch, values):
     _build(monkeypatch, **values)

@@ -320,3 +320,45 @@ def test_helpers_are_noops_when_not_initialized():
         add_token_usage({"total_tokens": 5})  # must not raise
     finally:
         run_details._run_details.reset(token)
+
+
+@pytest.mark.parametrize("field", [
+    "prompt_tokens", "completion_tokens", "total_tokens",
+    "cache_read_input_tokens", "cache_creation_input_tokens", "prompt_cache_hit_tokens",
+])
+@pytest.mark.parametrize("invalid", [True, False, -1, -100])
+def test_invalid_token_counts_cannot_invent_or_subtract_usage(field, invalid):
+    details = init_run_details()
+    add_token_usage({"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110,
+                     "cache_read_input_tokens": 20, "cache_creation_input_tokens": 30})
+
+    add_token_usage({field: invalid})
+
+    assert (details.prompt_tokens, details.completion_tokens, details.total_tokens) == (100, 10, 110)
+    assert (details.cache_read_tokens, details.cache_creation_tokens) == (20, 30)
+
+
+def test_invalid_reported_total_falls_back_to_valid_prompt_and_completion_counts():
+    details = init_run_details()
+
+    add_token_usage({"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": -1})
+
+    assert details.total_tokens == 12
+
+
+def test_invalid_object_usage_counts_are_ignored():
+    details = init_run_details()
+
+    add_token_usage(_Usage(True, -1, -2))
+
+    assert (details.prompt_tokens, details.completion_tokens, details.total_tokens) == (0, 0, 0)
+    assert not details.has_token_usage
+
+
+@pytest.mark.parametrize("invalid", [True, -1])
+def test_invalid_nested_cached_tokens_are_ignored(invalid):
+    details = init_run_details()
+
+    add_token_usage({"prompt_tokens_details": {"cached_tokens": invalid}})
+
+    assert details.cache_read_tokens == 0

@@ -27,6 +27,7 @@ from pr_agent.git_providers.gitlab_provider import (
     GitLabProvider,
     _GitLabIncrementalCommit,
     _GitLabIncrementalNote,
+    _neutralize_gitlab_mentions,
     _parse_gitlab_iso_datetime,
 )
 
@@ -75,6 +76,251 @@ def _thread(notes, discussion_id='d1'):
     return discussion
 
 
+@pytest.mark.parametrize(("origin_note_id", "expected"), [
+    (None, []),
+    (102, [(101, "reviewer", "Earlier context")]),
+    (999, []),
+])
+def test_line_question_history_reads_only_selected_gitlab_discussion(origin_note_id, expected):
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.mr = MagicMock()
+    provider.mr.discussions.get.return_value = _thread([
+        {"id": 101, "body": "Earlier context", "author": {"username": "reviewer"}},
+        {"id": 102, "body": "/ask why?", "author": {"username": "alice"}},
+        {"id": 103, "body": "System note", "system": True},
+        {"id": 104, "body": "  "},
+        {"id": 105, "body": "Anonymous reply", "author": None},
+    ])
+
+    assert provider.supports_line_question_history() is True
+    with (patch("pr_agent.git_providers.gitlab_provider.get_settings") as settings,
+          patch("pr_agent.git_providers.gitlab_provider.get_logger") as logger):
+        settings.return_value.get.return_value = origin_note_id
+        comments = provider.get_review_thread_comments("discussion-1")
+
+    if origin_note_id is None:
+        provider.mr.discussions.get.assert_not_called()
+    else:
+        provider.mr.discussions.get.assert_called_once_with("discussion-1")
+    if origin_note_id == 999:
+        logger.return_value.warning.assert_called_once()
+    else:
+        logger.return_value.warning.assert_not_called()
+    assert [(comment.id, comment.user.login, comment.body) for comment in comments] == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    (
+        "Ping @user, email x@y.com, package /package/@scope/pkg, and (@group).",
+        "Ping @\u200buser, email x@y.com, package /package/@\u200bscope/pkg, and (@\u200bgroup).",
+    ),
+    (
+        "Inline `@literal` and fenced:\n```text\n@literal\n```\n@active",
+        "Inline `@literal` and fenced:\n```text\n@literal\n```\n@\u200bactive",
+    ),
+    (
+        "    @indented\n\t@tab-indented\n@active",
+        "    @indented\n\t@tab-indented\n@\u200bactive",
+    ),
+    (
+        "@active\n\n    @indented-code\n@after",
+        "@\u200bactive\n\n    @indented-code\n@\u200bafter",
+    ),
+    (
+        "- a\n    - sub @all\n    continuation @reviewer",
+        "- a\n    - sub @\u200ball\n    continuation @\u200breviewer",
+    ),
+    (
+        "`unclosed\n\n@all `closed`",
+        "`unclosed\n\n@\u200ball `closed`",
+    ),
+])
+def test_neutralize_gitlab_mentions_preserves_literals(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("café@user", "café@\u200buser"),
+    ("Тест@user", "Тест@\u200buser"),
+    ("packages/@scope/pkg", "packages/@\u200bscope/pkg"),
+    ("cc &#64;user", "cc &#64;\u200buser"),
+    ("cc &#0064;user", "cc &#0064;\u200buser"),
+    ("cc &#x40;user and &#X0040;team", "cc &#x40;\u200buser and &#X0040;\u200bteam"),
+    ("cc &commat;user", "cc &commat;\u200buser"),
+    ("cc é&#64;user", "cc é&#64;\u200buser"),
+])
+def test_neutralize_gitlab_mentions_uses_gitlab_reference_boundaries(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "email x@y.com and first.last_1@example.org",
+    "entity in a word a&#64;b.com",
+    "unknown entities &#640;user &#x400;user &at;user &#64user",
+    "see https://medium.com/@user/post and <https://example.com/@team>",
+    "mentions inside code `&#64;user` and `/@scope/pkg`",
+    "already neutralised @\u200buser and &#64;\u200buser",
+])
+def test_neutralize_gitlab_mentions_leaves_non_mentions_unchanged(text):
+    assert _neutralize_gitlab_mentions(text) == text
+
+
+def test_neutralize_gitlab_mentions_resumes_after_an_autolinked_url():
+    text = "see https://medium.com/@user then @reviewer"
+    expected = "see https://medium.com/@user then @\u200breviewer"
+
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("[docs](https://example.com)@reviewer", "[docs](https://example.com)@\u200breviewer"),
+    ("`https://example.com`/@user", "`https://example.com`/@\u200buser"),
+    ("[https://example.com]@user", "[https://example.com]@\u200buser"),
+    ("\"https://example.com\"@user", "\"https://example.com\"@\u200buser"),
+    ("**https://x.com**@all", "**https://x.com**@\u200ball"),
+    ("~~https://x.com~~@all", "~~https://x.com~~@\u200ball"),
+    ("|https://x.com|@all|", "|https://x.com|@\u200ball|"),
+    ("https://x.com\\@all", "https://x.com\\@\u200ball"),
+])
+def test_neutralize_gitlab_mentions_ends_a_url_at_markdown_delimiters(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_stops_a_code_span_at_a_fence_line():
+    text = "Stray ` tick\n```suggestion\n@Override\n```\n\n@all ` here"
+    expected = "Stray ` tick\n```suggestion\n@Override\n```\n\n@\u200ball ` here"
+
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_handles_many_unmatched_tick_lengths():
+    text = " ".join("`" * length for length in range(1, 128)) + " @active"
+
+    assert _neutralize_gitlab_mentions(text).endswith(" @\u200bactive")
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    (
+        "- uses ` as the delimiter\n- ping @plg-tech/plg about `x`",
+        "- uses ` as the delimiter\n- ping @\u200bplg-tech/plg about `x`",
+    ),
+    (
+        "Note the ` here\n### Ask @plg-tech/plg about `x`",
+        "Note the ` here\n### Ask @\u200bplg-tech/plg about `x`",
+    ),
+    (
+        "the ` char\n> cc @plg-tech/plg on `y`",
+        "the ` char\n> cc @\u200bplg-tech/plg on `y`",
+    ),
+    (
+        "| a | b |\n|---|---|\n| ` | x |\n| @plg-tech/plg | `z` |",
+        "| a | b |\n|---|---|\n| ` | x |\n| @\u200bplg-tech/plg | `z` |",
+    ),
+    (
+        "- item one\n\n    cc @plg-tech/plg please",
+        "- item one\n\n    cc @\u200bplg-tech/plg please",
+    ),
+])
+def test_neutralize_gitlab_mentions_stops_a_code_span_at_a_block_boundary(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_keeps_a_code_span_across_a_soft_break():
+    text = "Start `multi\nline @literal` then @active"
+    expected = "Start `multi\nline @literal` then @\u200bactive"
+
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_leaves_indented_code_inside_a_list():
+    text = "- item\n\n      @literal-code\n@active"
+    expected = "- item\n\n      @literal-code\n@\u200bactive"
+
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    (
+        "Note the ` here\n===\n@all about `x`",
+        "Note the ` here\n===\n@\u200ball about `x`",
+    ),
+    (
+        "Note the ` here\n---\n@all about `x`",
+        "Note the ` here\n---\n@\u200ball about `x`",
+    ),
+    (
+        "Note the ` here\n***\n@all about `x`",
+        "Note the ` here\n***\n@\u200ball about `x`",
+    ),
+    (
+        "### Note the ` here\n@all about `x`",
+        "### Note the ` here\n@\u200ball about `x`",
+    ),
+    (
+        "Note the ` here\n<details><summary>More</summary>\n@all about `x`",
+        "Note the ` here\n<details><summary>More</summary>\n@\u200ball about `x`",
+    ),
+    (
+        "<!-- a ` here -->\n@all about `x`",
+        "<!-- a ` here -->\n@\u200ball about `x`",
+    ),
+    (
+        "<pre>\n```\n@all\n</pre>\n@reviewer",
+        "<pre>\n```\n@\u200ball\n</pre>\n@\u200breviewer",
+    ),
+    (
+        "a ` stray\n<div>`@all`</div>",
+        "a ` stray\n<div>`@\u200ball`</div>",
+    ),
+    (
+        "<details>\n`@all`\n\n`@literal`",
+        "<details>\n`@\u200ball`\n\n`@literal`",
+    ),
+])
+def test_neutralize_gitlab_mentions_stops_a_code_span_at_a_heading_break_or_html_block(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("Escaped \\` tick, @all and `x`", "Escaped \\` tick, @\u200ball and `x`"),
+    ("Escaped \\``` @literal`` and @all", "Escaped \\``` @literal`` and @\u200ball"),
+    ("Escaped backslash \\\\` @literal `x`", "Escaped backslash \\\\` @literal `x`"),
+    ("Inside `a\\` @all `x`", "Inside `a\\` @\u200ball `x`"),
+])
+def test_neutralize_gitlab_mentions_handles_escaped_backticks(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_ignores_a_backtick_fence_with_a_backtick_in_its_info():
+    text = "```a`b\n@all\n"
+    expected = "```a`b\n@\u200ball\n"
+
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_does_not_close_a_fence_on_a_line_with_an_info_string():
+    text = "```\n@first\n```js\n@second\n```\n@active"
+    expected = "```\n@first\n```js\n@second\n```\n@\u200bactive"
+
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("cc _@all_ please", "cc _@\u200ball_ please"),
+    ("cc __@all__ please", "cc __@\u200ball__ please"),
+    ("snake_@case stays", "snake_@case stays"),
+    ("@_@all", "@\u200b_@\u200ball"),
+])
+def test_neutralize_gitlab_mentions_handles_underscore_emphasis(text, expected):
+    assert _neutralize_gitlab_mentions(text) == expected
+
+
+def test_neutralize_gitlab_mentions_handles_many_escaped_ticks_and_underscores():
+    text = "\\` " * 20000 + "_" * 20000 + "@active"
+
+    assert _neutralize_gitlab_mentions(text).endswith("_@\u200bactive")
+
+
 class TestGitLabProvider:
     """Test suite for GitLab provider functionality."""
 
@@ -114,6 +360,30 @@ class TestGitLabProvider:
 
             mock_gitlab_client.http_get.side_effect = _current_mr_metadata
             return provider
+
+    @pytest.mark.parametrize(
+        ("recommendation", "state"),
+        [
+            ("no_concerns_found", "success"),
+            ("needs_review", "skipped"),
+            ("changes_required", "failed"),
+        ],
+    )
+    def test_publish_merge_recommendation_status_on_reviewed_commit(
+        self, gitlab_provider, recommendation, state
+    ):
+        gitlab_provider.mr.diff_refs = {"head_sha": "reviewed-head"}
+        gitlab_provider.mr.source_project_id = 741
+
+        assert gitlab_provider.publish_merge_recommendation_status(recommendation) is True
+
+        gitlab_provider.gl.projects.get.assert_called_with(741, lazy=True)
+        commit = gitlab_provider.gl.projects.get.return_value.commits.get.return_value
+        commit.statuses.create.assert_called_once_with({
+            "state": state,
+            "name": "PR Agent - Review",
+            "description": f"Computed merge recommendation: {recommendation}",
+        })
 
     def test_get_commit_messages_reads_all_commits_with_larger_pages(self, gitlab_provider):
         client = Gitlab("https://gitlab.example.com", private_token="test-token")
@@ -159,6 +429,50 @@ class TestGitLabProvider:
         gitlab_provider.reset_diff_cache_for_command()
         assert gitlab_provider.get_latest_commit_url() == next_url
         assert client.http_request.call_count == 2
+
+    def test_latest_commit_url_reuses_commit_messages_fetch_until_reset(self, gitlab_provider):
+        client = Gitlab("https://gitlab.example.com", private_token="test-token")
+        gitlab_provider.mr = client.projects.get("target/repo", lazy=True).mergerequests.get(1, lazy=True)
+        latest_url = "https://gitlab.example.com/fork/repo/-/commit/newest"
+        older_url = "https://gitlab.example.com/fork/repo/-/commit/older"
+        response = MagicMock()
+        response.json.return_value = [
+            {"id": "newest", "message": "Newest commit", "web_url": latest_url},
+            {"id": "older", "message": "Older commit", "web_url": older_url},
+        ]
+        response.links = {}
+        response.headers = {}
+        client.http_request = MagicMock(return_value=response)
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as mock_settings:
+            mock_settings.return_value.get.return_value = None
+            messages = gitlab_provider.get_commit_messages()
+
+        assert messages == "1. Newest commit\n2. Older commit"
+        assert gitlab_provider.get_latest_commit_url() == latest_url
+        client.http_request.assert_called_once()
+
+        next_url = "https://gitlab.example.com/fork/repo/-/commit/pushed"
+        response.json.return_value = [{"id": "pushed", "message": "Pushed", "web_url": next_url}]
+        gitlab_provider.reset_diff_cache_for_command()
+        assert gitlab_provider.get_latest_commit_url() == next_url
+        assert client.http_request.call_count == 2
+
+    def test_latest_commit_url_reuses_pr_commits_fetch(self, gitlab_provider):
+        gitlab_provider.mr.commits.return_value = [
+            SimpleNamespace(
+                id="new", message="new", web_url="https://gitlab.com/test/repo/-/commit/new", parent_ids=["old"]
+            ),
+            SimpleNamespace(
+                id="old", message="old", web_url="https://gitlab.com/test/repo/-/commit/old", parent_ids=[]
+            ),
+        ]
+
+        commits = gitlab_provider.get_pr_commits()
+
+        assert [c.sha for c in commits] == ["old", "new"]
+        assert gitlab_provider.get_latest_commit_url() == "https://gitlab.com/test/repo/-/commit/new"
+        gitlab_provider.mr.commits.assert_called_once_with(per_page=100)
 
     @pytest.mark.parametrize("first_result,expected", [
         (StopIteration(), ""),
@@ -1226,6 +1540,14 @@ class TestGitLabProvider:
         assert gitlab_provider.mr.description == "Updated description"
         gitlab_provider.mr.save.assert_called_once()
 
+    def test_publish_description_neutralizes_mentions(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+
+        gitlab_provider.publish_description("Ping @reviewer", "Email x@y.com and `@literal`")
+
+        assert gitlab_provider.mr.title == "Ping @\u200breviewer"
+        assert gitlab_provider.mr.description == "Email x@y.com and `@literal`"
+
     def test_publish_description_propagates_save_failure(self, gitlab_provider):
         gitlab_provider.mr = MagicMock()
         gitlab_provider.mr.save.side_effect = RuntimeError("permission denied")
@@ -1233,6 +1555,52 @@ class TestGitLabProvider:
 
         with pytest.raises(RuntimeError, match="permission denied"):
             gitlab_provider.publish_description("AI title", "Updated description")
+
+    def test_publish_description_caps_a_title_over_the_api_limit(self, gitlab_provider):
+        # GitLab rejects a title longer than 255 characters (HTTP 400). An
+        # overlong AI title would fail the whole /describe publish, including
+        # a body that already fits.
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.id_mr = 1
+        title = "A" * 300
+        body = "### **Description**\n- Short change\n"
+
+        gitlab_provider.publish_description(title, body)
+
+        published_title = gitlab_provider.mr.title
+        assert len(published_title) == 255
+        assert published_title.endswith("...")
+        assert published_title.startswith("A")
+        assert gitlab_provider.mr.description == body
+        gitlab_provider.mr.save.assert_called_once()
+
+    def test_publish_description_keeps_a_title_within_the_limit(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.id_mr = 1
+        title = "A" * 255
+
+        gitlab_provider.publish_description(title, "short")
+
+        assert gitlab_provider.mr.title == title
+        assert gitlab_provider.mr.description == "short"
+        gitlab_provider.mr.save.assert_called_once()
+
+    def test_publish_description_caps_a_title_grown_by_mention_neutralization(self, gitlab_provider):
+        # Neutralization inserts a zero-width space after @, so a 255-character
+        # title can go over the API limit only after that rewrite.
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.id_mr = 1
+        title = "A" * 245 + " @reviewer"
+        assert len(title) == 255
+
+        gitlab_provider.publish_description(title, "short")
+
+        published_title = gitlab_provider.mr.title
+        assert "\u200b" in published_title
+        assert len(published_title) == 255
+        assert published_title.endswith("...")
+        assert gitlab_provider.mr.description == "short"
+        gitlab_provider.mr.save.assert_called_once()
 
     @pytest.mark.parametrize("configured", [True, False])
     def test_should_publish_review_as_thread_reflects_config(self, gitlab_provider, configured):
@@ -1295,11 +1663,109 @@ class TestGitLabProvider:
     def test_publish_comment_defaults_to_a_note(self, gitlab_provider):
         # Without a trigger discussion, publishing stays a plain note.
         gitlab_provider.mr = MagicMock()
-        result = gitlab_provider.publish_comment("a status comment")
+        result = gitlab_provider.publish_comment("a status comment for @reviewer")
 
-        gitlab_provider.mr.notes.create.assert_called_once_with({'body': 'a status comment'})
+        gitlab_provider.mr.notes.create.assert_called_once_with({'body': 'a status comment for @\u200breviewer'})
         gitlab_provider.mr.discussions.create.assert_not_called()
         assert result is gitlab_provider.mr.notes.create.return_value
+
+    def test_edit_comment_neutralizes_mentions(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        comment = SimpleNamespace(id=12)
+
+        gitlab_provider.edit_comment(comment, "Updated for @reviewer; x@y.com stays")
+
+        gitlab_provider.mr.notes.update.assert_called_once_with(
+            12, {'body': 'Updated for @\u200breviewer; x@y.com stays'}
+        )
+
+    def test_reply_to_comment_neutralizes_mentions(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+
+        gitlab_provider.reply_to_comment_from_comment_id(42, "Reply to @reviewer")
+
+        gitlab_provider.mr.discussions.get.return_value.notes.create.assert_called_once_with(
+            {'body': 'Reply to @\u200breviewer'}
+        )
+
+    @pytest.mark.parametrize("as_draft", [False, True])
+    def test_inline_comment_neutralizes_mentions_for_live_and_draft_notes(self, gitlab_provider, as_draft):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_relevant_diff = MagicMock(return_value=SimpleNamespace(
+            base_commit_sha="base", start_commit_sha="start", head_commit_sha="head"
+        ))
+        target_file = SimpleNamespace(filename="src/app.py", old_filename="src/app.py")
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as settings:
+            settings.return_value.get.return_value = False
+            result = gitlab_provider.send_inline_comment(
+                "Suggestion for @reviewer", "addition", True, "src/app.py", "new line", 1,
+                target_file, 2, as_draft=as_draft,
+            )
+
+        assert result is True
+        if as_draft:
+            gitlab_provider.mr.draft_notes.create.assert_called_once()
+            published_body = gitlab_provider.mr.draft_notes.create.call_args.args[0]["note"]
+        else:
+            gitlab_provider.mr.discussions.create.assert_called_once()
+            published_body = gitlab_provider.mr.discussions.create.call_args.args[0]["body"]
+        assert published_body == "Suggestion for @\u200breviewer"
+
+    @pytest.mark.parametrize("as_draft", [False, True])
+    def test_inline_fallback_note_neutralizes_mentions(self, gitlab_provider, as_draft):
+        gitlab_provider.mr = MagicMock()
+        create = gitlab_provider.mr.draft_notes.create if as_draft else gitlab_provider.mr.discussions.create
+        create.side_effect = GitlabCreateError("position rejected", response_code=400)
+        gitlab_provider.get_relevant_diff = MagicMock(return_value=SimpleNamespace(
+            base_commit_sha="base", start_commit_sha="start", head_commit_sha="head"
+        ))
+        gitlab_provider.get_line_link = MagicMock(return_value="https://gitlab.test/file")
+        target_file = SimpleNamespace(filename="src/app.py", old_filename="src/app.py")
+        original_suggestion = {
+            "relevant_lines_start": 1,
+            "relevant_lines_end": 1,
+            "existing_code": "old",
+            "improved_code": "new",
+            "suggestion_content": "Notify @reviewer",
+            "label": "quality",
+        }
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as settings:
+            settings.return_value.get.return_value = False
+            result = gitlab_provider.send_inline_comment(
+                "Primary suggestion", "addition", True, "src/app.py", "new line", 1,
+                target_file, 2, original_suggestion=original_suggestion, as_draft=as_draft,
+            )
+
+        assert result is True
+        if as_draft:
+            fallback_body = gitlab_provider.mr.draft_notes.create.call_args.args[0]["note"]
+        else:
+            fallback_body = gitlab_provider.mr.notes.create.call_args.args[0]["body"]
+        assert "Notify @\u200breviewer" in fallback_body
+
+    def test_inline_fingerprint_uses_body_before_mention_rewrite(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_relevant_diff = MagicMock(return_value=SimpleNamespace(
+            base_commit_sha="base", start_commit_sha="start", head_commit_sha="head"
+        ))
+        target_file = SimpleNamespace(filename="src/app.py", old_filename="src/app.py")
+        store = MagicMock()
+        store.seen.return_value = False
+        raw_body = "Suggestion for @reviewer"
+        with (
+            patch("pr_agent.git_providers.gitlab_provider.get_settings") as settings,
+            patch("pr_agent.git_providers.gitlab_provider.get_inline_comment_store", return_value=store),
+            patch("pr_agent.git_providers.gitlab_provider.body_fingerprint", return_value="body-fp") as fingerprint,
+            patch("pr_agent.git_providers.gitlab_provider.code_fingerprint", return_value="code-fp"),
+        ):
+            settings.return_value.get.return_value = True
+            gitlab_provider.send_inline_comment(
+                raw_body, "addition", True, "src/app.py", "new line", 1, target_file, 2
+            )
+
+        fingerprint.assert_called_once_with("src/app.py", 2, raw_body)
+        published_body = gitlab_provider.mr.discussions.create.call_args.args[0]["body"]
+        assert "Suggestion for @\u200breviewer" in published_body
 
     def test_publish_comment_replies_to_trigger_discussion(self, gitlab_provider):
         gitlab_provider.mr = MagicMock()
@@ -1960,8 +2426,11 @@ class TestGitLabProvider:
                                   current_head_sha=_CURRENT_HEAD_SHA):
         gitlab_provider._own_user_id = own_user_id
         gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.diff_refs = {'head_sha': current_head_sha}
+        gitlab_provider.mr.diff_refs = {'head_sha': current_head_sha, 'start_sha': 'target-start'}
         gitlab_provider.mr.discussions.list.return_value = threads
+        gitlab_provider._get_merge_request = MagicMock(
+            side_effect=lambda: SimpleNamespace(diff_refs=dict(gitlab_provider.mr.diff_refs))
+        )
 
     def _run_outdated_cleanup(self, gitlab_provider, enabled=True):
         with patch("pr_agent.git_providers.gitlab_provider.get_settings",
@@ -1974,6 +2443,21 @@ class TestGitLabProvider:
 
         self._run_outdated_cleanup(gitlab_provider, enabled=False)
 
+        gitlab_provider.mr.discussions.list.assert_not_called()
+        outdated.save.assert_not_called()
+
+    @pytest.mark.parametrize("configured", ["false", "FALSE", "0"])
+    def test_string_false_does_not_resolve_outdated_inline_threads(self, gitlab_provider, configured):
+        # Env/TOML often delivers "false" as a string. Truthiness would enable
+        # the opt-in cleanup; parse it the same way as the other GitLab flags.
+        outdated = _thread([_thread_note()])
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated])
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {
+            "GITLAB.RESOLVE_OUTDATED_INLINE_THREADS": configured,
+        }.get(key, default)
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
+            gitlab_provider.resolve_outdated_inline_threads()
         gitlab_provider.mr.discussions.list.assert_not_called()
         outdated.save.assert_not_called()
 
@@ -2062,6 +2546,27 @@ class TestGitLabProvider:
         self._run_outdated_cleanup(gitlab_provider)
 
         outdated.save.assert_called_once()
+
+    def test_outdated_cleanup_does_not_resolve_after_head_changes_during_scan(self, gitlab_provider):
+        outdated = _thread([_thread_note()])
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated])
+        gitlab_provider._get_merge_request = MagicMock(
+            return_value=SimpleNamespace(diff_refs={'head_sha': _OUTDATED_HEAD_SHA})
+        )
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+        outdated.save.assert_not_called()
+
+    def test_outdated_cleanup_rejects_target_update_without_head_change(self, gitlab_provider):
+        outdated = _thread([_thread_note()])
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated])
+        gitlab_provider._get_merge_request = MagicMock(return_value=SimpleNamespace(
+            diff_refs={'head_sha': _CURRENT_HEAD_SHA, 'start_sha': 'new-target'}
+        ))
+
+        self._run_outdated_cleanup(gitlab_provider)
+        outdated.save.assert_not_called()
 
     def test_resolve_outdated_inline_threads_soft_fails(self, gitlab_provider):
         self._prepare_outdated_cleanup(gitlab_provider, [])
@@ -2622,6 +3127,25 @@ class TestGitLabIncrementalReview:
         assert gitlab_provider.incremental.is_incremental is True
         assert gitlab_provider.unreviewed_files_map == {}
         mock_project.repository_compare.assert_not_called()
+
+    def test_latest_commit_url_reuses_incremental_commits_fetch(self, gitlab_provider, mock_project):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            SimpleNamespace(
+                id="new", committed_date="2024-05-01T11:00:00Z", web_url="https://gitlab.com/test/repo/-/commit/new"
+            ),
+            SimpleNamespace(
+                id="old", committed_date="2024-05-01T09:00:00Z", web_url="https://gitlab.com/test/repo/-/commit/old"
+            ),
+        ]
+        mock_project.repository_compare.return_value = {"diffs": []}
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+
+        assert gitlab_provider.get_latest_commit_url() == "https://gitlab.com/test/repo/-/commit/new"
+        gitlab_provider.mr.commits.assert_called_once_with(per_page=100)
 
     def test_get_incremental_commits_no_anchor_commit_falls_back(self, gitlab_provider, mock_project):
         # All commits are after the previous review -> no last_seen_commit -> can't anchor.
@@ -3208,8 +3732,7 @@ class TestGitLabCapabilities:
         return provider
 
     def test_get_issue_comments_is_reported_as_supported(self):
-        """The capability flag used to contradict the working implementation below it,
-        which was the only thing blocking ``/answer`` on GitLab."""
+        """GitLab exposes issue comments for provider features that consume them."""
         assert self._provider().is_supported("get_issue_comments") is True
 
     def test_get_issue_comments_returns_notes_oldest_first(self):
@@ -3251,13 +3774,6 @@ class TestGitLabCapabilities:
         assert provider.is_comment_authored_by_pr_agent({"author": {"id": 42}}) is True
         assert provider.is_comment_authored_by_pr_agent({"author": {"id": 99}}) is False
 
-    @pytest.mark.parametrize("capability", [
-        "create_inline_comment",
-        "publish_inline_comments",
-    ])
-    def test_unimplemented_capabilities_stay_unsupported(self, capability):
-        assert self._provider().is_supported(capability) is False
-
     def test_gfm_markdown_is_supported(self):
         assert self._provider().is_supported("gfm_markdown") is True
 
@@ -3267,7 +3783,8 @@ class TestGitLabRelevantDiff:
     version anchors the comment to a superseded diff — the state a force-push leaves behind."""
 
     # the versions endpoint is ordered newest-first
-    VERSIONS = ["newest", "older", "oldest"]
+    VERSIONS = [SimpleNamespace(base_commit_sha="base", start_commit_sha="base", head_commit_sha=head)
+                for head in ("head", "older", "oldest")]
 
     def _provider(self, changes):
         provider = GitLabProvider.__new__(GitLabProvider)
@@ -3289,12 +3806,12 @@ class TestGitLabRelevantDiff:
     def test_matching_change_resolves_to_the_newest_version(self):
         provider = self._provider([{"new_path": "app.py", "diff": "@@\n+added line\n"}])
 
-        assert provider.get_relevant_diff("app.py", "+added line") == "newest"
+        assert provider.get_relevant_diff("app.py", "+added line") is self.VERSIONS[0]
 
-    def test_fallback_uses_the_latest_version_not_the_oldest(self):
+    def test_fallback_uses_the_latest_version_not_the_construction_snapshot(self):
         provider = self._provider([{"new_path": "other.py", "diff": "@@\n+unrelated\n"}])
 
-        assert provider.get_relevant_diff("app.py", "+added line") == "latest-at-construction"
+        assert provider.get_relevant_diff("app.py", "+added line") is self.VERSIONS[0]
 
     def test_returns_none_when_the_mr_has_no_diff_versions(self):
         provider = self._provider([{"new_path": "app.py", "diff": "@@\n+added line\n"}])
@@ -3310,15 +3827,16 @@ class TestGitLabRelevantDiff:
              patch.object(GitLabProvider, "_get_merge_request", return_value=mr):
             provider._set_merge_request("https://gitlab.com/group/repo/-/merge_requests/1")
 
-        assert provider.last_diff == "newest"
+        assert provider.last_diff is self.VERSIONS[0]
 
-    def test_fallback_is_logged_once_not_once_per_version(self):
-        provider = self._provider([{"new_path": "other.py", "diff": "@@\n+unrelated\n"}])
+    @pytest.mark.parametrize("ref", ["base", "start", "head"])
+    def test_missing_version_ref_is_rejected(self, ref):
+        provider = self._provider([{"new_path": "app.py", "diff": "@@\n+added line\n"}])
+        latest = SimpleNamespace(base_commit_sha="base", start_commit_sha="base", head_commit_sha="head")
+        setattr(latest, f"{ref}_commit_sha", None)
+        provider.mr.diffs.list.return_value = [latest]
 
-        with patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_logger:
-            provider.get_relevant_diff("app.py", "+added line")
-
-        assert mock_logger.return_value.debug.call_count == 1
+        assert provider.get_relevant_diff("app.py", "+added line") is None
 
 
 class TestGitLabProviderUrlParsing:
