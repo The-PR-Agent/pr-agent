@@ -1556,6 +1556,52 @@ class TestGitLabProvider:
         with pytest.raises(RuntimeError, match="permission denied"):
             gitlab_provider.publish_description("AI title", "Updated description")
 
+    def test_publish_description_caps_a_title_over_the_api_limit(self, gitlab_provider):
+        # GitLab rejects a title longer than 255 characters (HTTP 400). An
+        # overlong AI title would fail the whole /describe publish, including
+        # a body that already fits.
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.id_mr = 1
+        title = "A" * 300
+        body = "### **Description**\n- Short change\n"
+
+        gitlab_provider.publish_description(title, body)
+
+        published_title = gitlab_provider.mr.title
+        assert len(published_title) == 255
+        assert published_title.endswith("...")
+        assert published_title.startswith("A")
+        assert gitlab_provider.mr.description == body
+        gitlab_provider.mr.save.assert_called_once()
+
+    def test_publish_description_keeps_a_title_within_the_limit(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.id_mr = 1
+        title = "A" * 255
+
+        gitlab_provider.publish_description(title, "short")
+
+        assert gitlab_provider.mr.title == title
+        assert gitlab_provider.mr.description == "short"
+        gitlab_provider.mr.save.assert_called_once()
+
+    def test_publish_description_caps_a_title_grown_by_mention_neutralization(self, gitlab_provider):
+        # Neutralization inserts a zero-width space after @, so a 255-character
+        # title can go over the API limit only after that rewrite.
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.id_mr = 1
+        title = "A" * 245 + " @reviewer"
+        assert len(title) == 255
+
+        gitlab_provider.publish_description(title, "short")
+
+        published_title = gitlab_provider.mr.title
+        assert "\u200b" in published_title
+        assert len(published_title) == 255
+        assert published_title.endswith("...")
+        assert gitlab_provider.mr.description == "short"
+        gitlab_provider.mr.save.assert_called_once()
+
     @pytest.mark.parametrize("configured", [True, False])
     def test_should_publish_review_as_thread_reflects_config(self, gitlab_provider, configured):
         with patch("pr_agent.git_providers.gitlab_provider.get_settings",

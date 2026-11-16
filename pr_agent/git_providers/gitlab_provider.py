@@ -109,6 +109,9 @@ class GitLabDiffNotReadyError(IncompleteGitLabDiffError):
 _DIFF_READY_RETRY_DELAYS = (2, 5, 10)
 _diff_ready_sleep = time.sleep
 
+# GitLab rejects a merge request title longer than this (HTTP 400).
+MAX_PR_TITLE_GITLAB_LENGTH = 255
+
 # Keep requests small: GitLab limits multi-blob GraphQL responses to 20 MB.
 # The wall-clock budget is best-effort while Requests waits for response headers.
 _GRAPHQL_CONTENT_BATCH = 10
@@ -1982,7 +1985,12 @@ class GitLabProvider(GitProvider):
     def publish_description(self, pr_title: str, pr_body: str) -> None:
         try:
             if pr_title is not None:
-                self.mr.title = _neutralize_gitlab_mentions(pr_title)
+                # Neutralization can insert a zero-width space after @, so apply
+                # the 255-character title cap after that rewrite. An overlong AI
+                # title would fail the whole publish, including a body that fits.
+                pr_title = _neutralize_gitlab_mentions(pr_title)
+                pr_title = self.limit_title_characters(pr_title, MAX_PR_TITLE_GITLAB_LENGTH)
+                self.mr.title = pr_title
             self.mr.description = _neutralize_gitlab_mentions(pr_body)
             self.mr.save()
         except (GitlabError, RequestException) as e:
