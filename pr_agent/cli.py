@@ -359,7 +359,7 @@ def run(inargs=None, args=None):
         )
         if (settings.config.get("propagate_command_errors", False) or json_artifact_required) and (
             result is False or recorded_failure
-            or ((label_json_required or ask_json_required) and result is RequestOutcome.SKIPPED)
+            or (json_artifact_required and result is RequestOutcome.SKIPPED)
         ):
             if result is not False and recorded_failure:
                 get_logger().warning("Command reported success but recorded a failure; exiting with an error")

@@ -108,6 +108,9 @@ that use it, but does not add model requests.
    `ask`/`ask_question` writes the `question`, `answer`, and `usage`, including a note when no diff is analyzable.
    `generate_labels` writes the filtered `labels` list and `usage`; it never
    combines existing user labels into that list.
+   With `--json-output`, a run whose command fails or that the request policy skips exits with status 1;
+   parser errors, such as an unreadable diff file or empty input, exit with status 2.
+   A skipped run (for example, `config.include_pr_labels` is set and a diff has no labels) writes no JSON file.
 
 No platform token, no PR URL, and no internet access are required for the diff processing
 step itself. An LLM API key is still needed unless you configure a local model.
