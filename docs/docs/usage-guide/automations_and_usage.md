@@ -123,6 +123,27 @@ disable_auto_feedback = true
 
 When this parameter is set to `true`, PR-Agent will not run any automatic commands (like `describe` and `review`) when a new PR is opened, or when new code is pushed to an open PR.
 
+### Skipping runs when nothing changed
+
+Rebases, reopened PRs and CI pipelines that re-run when the target branch moves can run `/review` and `/describe` again on a PR that has not changed. To skip those runs, set:
+
+```toml
+[config]
+skip_unchanged_diff = true
+```
+
+An automatic or CLI `/review` or `/describe` run is then skipped, with no model calls, when either is true since that command last succeeded on the PR:
+
+- the head commit and the target branch are the same, or
+- the diff is the same (for example after a rebase that changed no content).
+
+PR-Agent keeps its record in one comment on the PR, and edits it to say when a run was skipped and why. The record is written only after a command succeeds, so a failed run is retried next time.
+
+- A command typed in a PR comment, such as `/review`, always runs.
+- Incremental review (`/review -i`) and per commit review are not affected.
+- Changing the configuration or model does not count as a change. Comment the command to run it again.
+- It works on providers that can verify which comments PR-Agent wrote (GitHub, GitLab, and Azure DevOps when its identity is configured).
+
 ### GitHub App
 
 :::note[Configurations for PR-Agent]

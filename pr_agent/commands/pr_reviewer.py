@@ -102,6 +102,7 @@ from pr_agent.algo.suggestion_checks import (
     validate_suggestion,
 )
 from pr_agent.algo.token_budget import AttemptTokenBudget, clip_tokens
+from pr_agent.algo.unchanged_diff import UnchangedDiffGuard, skip_unchanged_diff_configured
 from pr_agent.algo.utils import (
     ModelType,
     convert_to_markdown_v2,
@@ -451,8 +452,16 @@ class PRReviewer:
             and not hosted_markdown_export.get()
         ):
             await self._run_per_commit()
-        else:
-            await self._run_review()
+            return
+        guard = None
+        # Incremental review already reviews only what is new.
+        if skip_unchanged_diff_configured() and not self.incremental.is_incremental:
+            guard = UnchangedDiffGuard("review", self.git_provider)
+        if guard is not None and guard.should_skip():
+            return
+        await self._run_review()
+        if guard is not None and self._review_done and not command_failed():
+            guard.record()
 
     async def _review_as_one(self, reason: str, notice: str) -> None:
         get_logger().warning(f"{reason}, skipping per commit review")

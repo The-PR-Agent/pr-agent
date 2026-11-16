@@ -26,10 +26,11 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
-from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure
+from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details, record_command_failure
 from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.algo.unchanged_diff import UnchangedDiffGuard
 from pr_agent.algo.utils import (
     FILE_WALKTHROUGH_ESCAPED_MARKER,
     ModelType,
@@ -147,6 +148,16 @@ class PRDescription:
         write_review_json_output({**data, "usage": usage})
 
     async def run(self):
+        guard = UnchangedDiffGuard("describe", self.git_provider)
+        if guard.should_skip():
+            return ""
+        result = await self._run_describe()
+        # Only a finished run returns "": an empty prediction returns None.
+        if result == "" and not command_failed():
+            guard.record()
+        return result
+
+    async def _run_describe(self):
         init_run_details()
         self.progress_response = None
         try:
