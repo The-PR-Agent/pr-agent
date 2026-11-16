@@ -28,7 +28,7 @@ from pr_agent.git_providers.azuredevops_provider import AZURE_AGENT_RESPONSE_MAR
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.request_body_limit import create_server_app
-from pr_agent.servers.utils import auto_feedback_disabled, basic_auth_matches, get_pr_commands
+from pr_agent.servers.utils import auto_feedback_disabled, basic_auth_matches, dedupe_review_commands, get_pr_commands
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
@@ -69,10 +69,10 @@ async def handle_request_comment(url: str, body: str, thread_id: int, comment_id
             is_question = body.startswith("/ask")
             handled = await agent.handle_request(
                 url, body, notify=lambda: provider.reply_to_thread(thread_id, "On it! ⏳", True),
-                # A tool that fails internally returns normally while `propagate_tool_errors` is
+                # A command that fails internally returns normally while `propagate_command_errors` is
                 # false, and then a resolved discussion thread plus a deleted progress comment would
                 # read as "review done" for a review that was never published.
-                propagate_tool_errors=True)
+                propagate_command_errors=True)
             if handled is RequestOutcome.SKIPPED:
                 return
             if handled and not is_question:
@@ -133,8 +133,9 @@ def handle_line_comment(body: str, thread_id: int, comment_id: int, provider: Az
         return None
     body = body.strip()
     cli_args = ""
-    if body == "/ask" or body.startswith("/ask "):
-        cli_args, question = _split_leading_cli_args(body[5:])
+    parts = body.split(maxsplit=1)
+    if parts and parts[0] in ("/ask", "/ask_question"):
+        cli_args, question = _split_leading_cli_args(parts[1] if len(parts) > 1 else "")
     elif available_commands_rgx.match(body):
         return body
     else:
@@ -220,6 +221,8 @@ async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: s
         if commands_conf == "pr_commands"
         else get_settings().get(f"azure_devops_server.{commands_conf}")
     )
+    if commands:
+        commands = dedupe_review_commands(commands)
     if not commands:
         return
 

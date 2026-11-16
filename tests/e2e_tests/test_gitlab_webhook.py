@@ -30,11 +30,13 @@ def test_e2e_run_github_app():
 
     base_branch = "main"  # or any base branch you want
     new_branch = f"github_app_e2e_test-{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}"
+    branch_created = False
 
     try:
         # Create a new branch from the base branch
         logger.info(f"Creating a new branch {new_branch} from {base_branch}")
         project.branches.create({'branch': new_branch, 'ref': base_branch})
+        branch_created = True
 
         # Get the file you want to edit
         file = project.files.get(file_path=FILE_PATH, ref=base_branch)
@@ -56,9 +58,9 @@ def test_e2e_run_github_app():
         })
         logger.info(f"Merge request created: {mr.web_url}")
 
-        # check every 1 minute, for 5, minutes if the PR has all the tool results
+        # check every 1 minute, for 5, minutes if the PR has all the command results
         for i in range(NUM_MINUTES):
-            logger.info("Waiting for the MR to get all the tool results...")
+            logger.info("Waiting for the MR to get all the command results...")
             time.sleep(60)
             logger.info(f"Checking the MR {mr.web_url} after {i + 1} minute(s)")
             mr = project.mergerequests.get(mr.iid)
@@ -75,21 +77,26 @@ def test_e2e_run_github_app():
                 assert re.match(IMPROVE_START_WITH_REGEX_PATTERN, comments_body[1]), "IMPROVE feedback is invalid"
                 break
             else:
-                logger.info(f"Waiting for the MR to get all the tool results. {i + 1} minute(s) passed")
+                logger.info(f"Waiting for the MR to get all the command results. {i + 1} minute(s) passed")
         else:
-            raise AssertionError(f"After {NUM_MINUTES} minutes, the MR did not get all the tool results")
+            raise AssertionError(f"After {NUM_MINUTES} minutes, the MR did not get all the command results")
 
         # cleanup - delete the branch
         logger.info(f"Deleting the branch {new_branch}")
         project.branches.delete(new_branch)
+        branch_created = False
 
         # If we reach here, the test is successful
         logger.info(f"Succeeded in running e2e test for GitLab app on the MR {mr.web_url}")
     except Exception as e:
-        logger.error(f"Failed to run e2e test for GitHub app: {e}")
-        logger.info(f"Deleting the branch {new_branch}")
-        project.branches.delete(new_branch)
-        raise AssertionError() from e
+        logger.error(f"Failed to run e2e test for GitLab webhook: {e}")
+        if branch_created:
+            try:
+                logger.info(f"Deleting the branch {new_branch}")
+                project.branches.delete(new_branch)
+            except Exception:
+                logger.exception("Failed to delete the GitLab test branch during cleanup")
+        raise AssertionError("GitLab webhook e2e test failed") from e
 
 
 if __name__ == '__main__':

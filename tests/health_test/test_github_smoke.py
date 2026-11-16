@@ -77,7 +77,7 @@ async def _run_smoke() -> None:
     get_settings().set("config.git_provider", "github")
     get_settings().set("config.publish_output", False)
     get_settings().set("config.fallback_models", [])
-    get_settings().set("config.propagate_tool_errors", True)
+    get_settings().set("config.propagate_command_errors", True)
 
     stub = StubDescribeHandler()
     agent = PRAgent(ai_handler=lambda: stub)

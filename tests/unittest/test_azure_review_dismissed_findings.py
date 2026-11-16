@@ -6,11 +6,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from pr_agent.algo.comment_identity import PRReviewHeader
+from pr_agent.algo.findings import Finding
 from pr_agent.algo.inline_comment_dedup import key_issue_body_with_markers
 from pr_agent.algo.review_finding_state import reconcile_review_findings, serialize_review_state
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 BOT = "11111111-1111-1111-1111-111111111111"
 BODY = "**Possible Issue**\n\nThe lock is never released."
@@ -76,8 +77,15 @@ def test_explicit_dismissal_only_when_different_from_default(provider, monkeypat
     if status == default:
         assert findings == []
     else:
-        assert findings == [{"path": "/app.py", "body": BODY, "line_start": 2, "line_end": 2,
-                             "reply": "By design: caller releases it."}]
+        assert findings == [
+            Finding(
+                path="/app.py",
+                body=BODY,
+                line_start=2,
+                line_end=2,
+                reply="By design: caller releases it.",
+            )
+        ]
     assert item["status"] == status
     provider.azure_devops_client.get_threads.assert_not_called()
 

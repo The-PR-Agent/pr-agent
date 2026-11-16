@@ -1,9 +1,9 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 
 def _set_issue_comments(provider, comments):

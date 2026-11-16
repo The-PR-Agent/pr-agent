@@ -3,13 +3,13 @@ from types import SimpleNamespace
 import litellm
 import pytest
 
-import pr_agent.algo.token_budget as token_budget
 from pr_agent.algo import (
     _CLAUDE_MODEL_FAMILIES,
     CLAUDE_EXTENDED_THINKING_MODELS,
     MAX_TOKENS,
     _generate_claude_registries,
     _validate_claude_model_family,
+    token_budget,
 )
 from pr_agent.algo.token_budget import get_max_tokens
 
@@ -522,18 +522,26 @@ class TestGetMaxTokens:
         assert get_max_tokens(model, ignore_max_model_tokens=True) == expected
 
     @pytest.mark.parametrize("model, input_limit", [
-        ("openrouter/anthropic/claude-sonnet-5", 1000000),
         ("openrouter/deepseek/deepseek-chat", 163840),
+        *[
+            (f"openrouter/anthropic/claude-{name}", 1000000)
+            for name in (
+                "sonnet-5", "sonnet-5.5", "sonnet-4.6", "sonnet-4.5",
+                "opus-5.5", "opus-5", "opus-4.8", "opus-4.7", "opus-4.6",
+                "haiku-5.5", "fable-5.2", "fable-5.1", "fable-5",
+            )
+        ],
     ])
     @pytest.mark.parametrize("cap", [0, 32000, 500000])
     def test_openrouter_input_budget_regression(self, monkeypatch, model, input_limit, cap):
         """Guard verified input budgets, including reductions hidden by the default cap.
 
-        These are compatibility baselines from the pinned bundled map, not immutable
-        provider limits. Revalidate intentional changes rather than deriving expected
-        values from the same SDK lookup under test.
+        These are compatibility baselines, not immutable provider limits. LiteLLM 1.108
+        dropped deepseek-chat and reports 200000 for these Anthropic models, so they
+        are pinned in MAX_TOKENS at the limits OpenRouter lists. Revalidate intentional
+        changes rather than deriving expected values from the SDK lookup.
         """
-        assert model not in MAX_TOKENS, "Revalidate SDK fallback coverage if this model gains a built-in limit"
+        assert MAX_TOKENS[model] == input_limit
         settings = SimpleNamespace(config=SimpleNamespace(custom_model_max_tokens=0, max_model_tokens=cap))
         monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
 
@@ -645,6 +653,10 @@ class TestGetMaxTokens:
     @pytest.mark.parametrize("model", [
         "gemini/gemini-4-argon",
         "vertex_ai/gemini-4-argon",
+        "gemini/gemini-4-carbon",
+        "vertex_ai/gemini-4-carbon",
+        "gemini/gemini-4-hydrogen",
+        "vertex_ai/gemini-4-hydrogen",
     ])
     def test_gemini_4_x_models_max_tokens(self, monkeypatch, model):
         fake_settings = type("", (), {
@@ -898,6 +910,24 @@ class TestGetMaxTokens:
 
         assert get_max_tokens(model) == 1000000
 
+    @pytest.mark.parametrize("model", [
+        "claude-fable-5-2",
+        "anthropic/claude-fable-5-2",
+        "vertex_ai/claude-fable-5-2",
+        "bedrock/anthropic.claude-fable-5-2",
+        "bedrock/global.anthropic.claude-fable-5-2",
+        "bedrock/us.anthropic.claude-fable-5-2",
+        "azure_ai/claude-fable-5-2",
+        "bedrock/claude_platform/claude-fable-5-2",
+    ])
+    def test_claude_fable_5_2_uses_official_context_window(self, monkeypatch, model):
+        settings = type("Settings", (), {
+            "config": type("Config", (), {"custom_model_max_tokens": 0, "max_model_tokens": 0})(),
+        })()
+        monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
+
+        assert get_max_tokens(model) == 1000000
+
     @pytest.mark.parametrize(
         "model",
         [
@@ -981,6 +1011,18 @@ class TestGetMaxTokens:
         assert get_max_tokens(model) == 1000000
 
 
+
+    def test_opencode_go_model_max_tokens_from_litellm(self, monkeypatch):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0
+            })()
+        })()
+
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens("opencode_go/deepseek-v4.1-flash") == 1000000
 
     @pytest.mark.parametrize(
         "model",
@@ -1400,6 +1442,28 @@ class TestGetMaxTokens:
         assert get_max_tokens(model) == 32000
         assert get_max_tokens(model, ignore_max_model_tokens=True) == expected
 
+    def test_shipped_default_max_model_tokens_clamps_large_windows(self, monkeypatch):
+        """Issue #4948: the shipped config.max_model_tokens default is 256000, so a
+        model with a far larger window is clamped to it instead of the old 32000."""
+        import tomllib
+        from pathlib import Path
+
+        toml_path = (
+            Path(token_budget.__file__).resolve().parents[2]
+            / "pr_agent"
+            / "settings"
+            / "configuration.toml"
+        )
+        with open(toml_path, "rb") as f:
+            shipped_default = tomllib.load(f)["config"]["max_model_tokens"]
+        assert shipped_default == 256000
+
+        fake_settings = SimpleNamespace(
+            config=SimpleNamespace(custom_model_max_tokens=0, max_model_tokens=shipped_default)
+        )
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+        assert get_max_tokens("openrouter/auto") == 256000
+
 
 class TestCorrectedClaudeWindows:
 
@@ -1435,6 +1499,10 @@ class TestNoLiteLLMDuplicates:
         "bedrock/converse/moonshotai.kimi-k3",
         "bedrock/converse/us.moonshotai.kimi-k3",
         "bedrock/converse/global.moonshotai.kimi-k3",
+        "bedrock/anthropic.claude-sonnet-4-20250514-v1:0",
+        "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
+        "bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0",
+        "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0",
     }
 
     # Models pinned in MAX_TOKENS because LiteLLM's bundled backup cost map (used
@@ -1446,8 +1514,13 @@ class TestNoLiteLLMDuplicates:
         "vertex_ai/gemini-3.8-flash",
         "gemini/gemini-4-argon",
         "vertex_ai/gemini-4-argon",
+        "gemini/gemini-4-carbon",
+        "vertex_ai/gemini-4-carbon",
+        "gemini/gemini-4-hydrogen",
+        "vertex_ai/gemini-4-hydrogen",
         "openrouter/x-ai/grok-4.5",
         "openrouter/x-ai/grok-4.6",
+        "openrouter/deepseek/deepseek-chat",
         "xai/grok-build-latest",
         "zai/glm-5.2",
     }

@@ -1,7 +1,7 @@
 """Regression tests: Bitbucket providers must report added/removed line counts.
 
 ``FilePatchInfo.num_plus_lines`` / ``num_minus_lines`` default to ``-1`` when a
-provider leaves them unset. ``pr_agent/tools/pr_description.py`` renders them
+provider leaves them unset. ``pr_agent/commands/pr_description.py`` renders them
 unconditionally as ``f"+{num_plus_lines}/-{num_minus_lines}"`` and only replaces
 the result with ``[link]`` when it is longer than 12 characters or exactly
 ``+0/-0``, so the unset sentinel reached user-visible PR descriptions verbatim
@@ -19,7 +19,7 @@ from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 
 
 def _format_delta(num_plus_lines: int, num_minus_lines: int) -> str:
-    """Mirror the formatting branch in ``pr_agent.tools.pr_description``."""
+    """Mirror the formatting branch in ``pr_agent.commands.pr_description``."""
     diff_plus_minus = f"+{num_plus_lines}/-{num_minus_lines}"
     if len(diff_plus_minus) > 12 or diff_plus_minus == "+0/-0":
         diff_plus_minus = "[link]"

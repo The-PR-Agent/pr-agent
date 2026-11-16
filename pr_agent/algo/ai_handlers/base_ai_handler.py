@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
 
+from pr_agent.algo.instruction_context import append_protected_system_instructions
+
 
 class BaseAiHandler(ABC):
     """
@@ -15,6 +17,14 @@ class BaseAiHandler(ABC):
     def deployment_id(self):
         pass
 
+    def prompt_cache_active(self, model: str, *, prompt_tokens: int | None = None) -> bool:
+        """Whether the handler expects Anthropic-style prompt caching for this call.
+
+        Only the LiteLLM Claude path can know; other handlers keep the plain
+        parallel chunk dispatch.
+        """
+        return False
+
     def build_request_messages(
         self,
         model: str,
@@ -24,6 +34,7 @@ class BaseAiHandler(ABC):
         image_path: str | None = None,
     ) -> list[dict]:
         """Build the text-only message payload dispatched by the base handler contract."""
+        system_prompt = append_protected_system_instructions(system_prompt)
         return [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},

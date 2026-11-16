@@ -104,7 +104,7 @@ class BitbucketServerProvider(GitProvider):
                                    f"project_name={project_name}, default_branch_dict={default_branch_dict}")
                 return ("", "")
         elif '.git' in repo_git_url and 'scm/' in repo_git_url:
-            repo_path = repo_git_url.split('.git')[0].split('scm/')[-1]
+            repo_path = repo_git_url.rstrip('/').removesuffix('.git').split('scm/')[-1]
             if repo_path.count('/') == 1:  # Has to have the form <workspace>/<repo>
                 workspace_name, project_name = repo_path.split('/')
         if not workspace_name or not project_name:
@@ -212,7 +212,13 @@ class BitbucketServerProvider(GitProvider):
         get_logger().error(f"Bitbucket Server failed to publish code suggestion, error: {error}")
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ['get_labels', 'gfm_markdown']:
+        if capability in [
+            'get_labels',
+            'gfm_markdown',
+            'head_ci_status',
+            'head_staleness',
+            'author_human_check',
+        ]:
             return False
         return True
 
@@ -227,9 +233,10 @@ class BitbucketServerProvider(GitProvider):
     def get_file(self, path: str, commit_id: str, *, missing_is_error: bool = False):
         file_content = ""
         try:
+            # atlassian adds the path to the URL unescaped; quote it so "#", "?" and "%" stay part of the file name.
             file_content = self.bitbucket_client.get_content_of_file(self.workspace_slug,
                                                                      self.repo_slug,
-                                                                     path,
+                                                                     quote(path, safe="/"),
                                                                      commit_id)
         except HTTPError as e:
             if getattr(getattr(e, "response", None), "status_code", None) == 404:
@@ -270,7 +277,9 @@ class BitbucketServerProvider(GitProvider):
         return guaranteed_common_ancestor
 
     def get_diff_files(self) -> list[FilePatchInfo]:
-        if self.diff_files:
+        # `is not None`: an empty diff is a completed result and caches like any other,
+        # so repeated calls within a command make one round of API calls (#4860).
+        if self.diff_files is not None:
             return self.diff_files
 
         head_sha = self.pr.fromRef['latestCommit']
@@ -547,9 +556,6 @@ class BitbucketServerProvider(GitProvider):
         # A partial failure must not report failure: the caller republishes the whole
         # list, which would post the already-accepted suggestions a second time.
         return published_count > 0 or publishable_count == 0
-
-    def get_title(self):
-        return self.pr.title
 
     @cache_languages
     def get_languages(self):

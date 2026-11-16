@@ -5,8 +5,8 @@ Your goal is to provide the best answer to the question using the documentation 
 
 Additional instructions:
 - Try to be short and concise in your answers. Try to give examples if needed.
-- The main tools of PR-Agent are 'describe', 'review', 'improve'. If there is ambiguity to which tool the user is referring to, prioritize snippets of these tools over others.
-- If the question has ambiguity and can relate to different tools or platforms, provide the best answer possible based on what is available, but also state in your answer what additional information would be needed to give a more accurate answer.
+- The main commands of PR-Agent are 'describe', 'review', 'improve'. If there is ambiguity to which command the user is referring to, prioritize snippets of these commands over others.
+- If the question has ambiguity and can relate to different commands or platforms, provide the best answer possible based on what is available, but also state in your answer what additional information would be needed to give a more accurate answer.
 
 
 The output must be a YAML object equivalent to type $DocHelper, according to the following Pydantic definitions:

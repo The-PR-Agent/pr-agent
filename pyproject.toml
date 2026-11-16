@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools==84.2.1", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -40,7 +40,11 @@ dependencies = [
   "GitPython>=3.1.62,<4",
   "starlette>=1.6.0,<2",
   "Jinja2==3.1.6",
-  "litellm==1.105.1",
+  "litellm==1.109.1",
+  # filelock arrives through litellm and huggingface-hub, whose ranges still allow releases
+  # before 4.2.1. Declare the floor so pip installs get the patched lock as well; it follows
+  # the >=patched,<next-major convention above.
+  "filelock>=4.2.1,<5",
   "loguru==0.7.3",
   "openai>=1.55.3",
   "PyJWT>=2.15.1,<3",
@@ -57,7 +61,7 @@ dependencies = [
   "tenacity==8.2.3",
   "langfuse==4.18.0",
   "gunicorn==26.2.0",
-  "pydantic==2.14.2",
+  "pydantic==2.14.3",
   # LiteLLM declares pydantic-settings as a base dependency and imports it unconditionally from
   # litellm/integrations/otel/model/config.py. Keep the exact pin to lock the resolved transitive version.
   # Recheck LiteLLM's declared constraint on upgrade; the observability guard covers callback imports.
@@ -65,12 +69,15 @@ dependencies = [
   "html2text==2025.4.15",
   # pr_agent/telemetry imports these directly; already resolved transitively via
   # langfuse and litellm, pinned here to lock the version the code is tested against.
-  "opentelemetry-api==1.45.1",
-  "opentelemetry-sdk==1.45.1",
-  "opentelemetry-exporter-otlp-proto-http==1.45.1",
+  "opentelemetry-api==1.45.2",
+  "opentelemetry-sdk==1.45.2",
+  "opentelemetry-exporter-otlp-proto-http==1.45.2",
   # Prometheus scrape endpoint for [otel] command telemetry (native /metrics on
   # the webhook apps). Multiprocess-capable; see pr_agent/telemetry/prometheus.py.
   "prometheus-client==0.26.0",
+  # pr_agent/algo/deterministic_risk.py matches host-supplied extra_risky_shapes with a per-search
+  # timeout, which re lacks; already resolved transitively via tiktoken, pinned to the tested version.
+  "regex==2026.11.7",
 ]
 
 [project.urls]
@@ -101,7 +108,7 @@ azure = [
   "azure-identity==1.27.0",
   "msrest==0.7.1",
 ]
-codecommit = ["boto3==1.43.123"]
+codecommit = ["boto3==1.43.126"]
 gitea = ["giteapy==1.0.8"]
 google = [
   "google-cloud-aiplatform==2.7.0",
@@ -111,7 +118,7 @@ google = [
   "google-cloud-storage==3.12.0; python_version >= '3.13'",
   # Keep protobuf explicit to lock the transitive version resolved with the gRPC dependency stack.
   # Revalidate compatibility when updating grpcio-status or related Google/gRPC dependencies.
-  "protobuf==6.33.6",
+  "protobuf==7.36.2",
 ]
 mosaico = ["a2a-sdk[http-server]==1.3.0"]
 # Preserve the dependency set that the published Docker images shipped before provider SDKs became optional.
@@ -124,7 +131,7 @@ all = ["pr-agent[github,gitlab,bitbucket,azure,codecommit,gitea,google,mosaico]"
 lambda = ["mangum==0.22.0"]
 # OTLP/gRPC transport for pr-agent telemetry (OTEL.OTLP_PROTOCOL = "grpc").
 # The default OTLP/HTTP transport needs no extra: its exporter is a base dependency.
-otel-grpc = ["opentelemetry-exporter-otlp-proto-grpc==1.45.1"]
+otel-grpc = ["opentelemetry-exporter-otlp-proto-grpc==1.45.2"]
 # LangChainOpenAIHandler. Install with: uv sync --extra langchain
 langchain = [
   "langchain",
@@ -138,39 +145,49 @@ pr-agent = "pr_agent.cli:run"
 [dependency-groups]
 # Keep the full optional integration matrix available to the unit suite without publishing it as a base dependency.
 integration-dev = ["pr-agent[all]"]
-# 'similar issue' tool. Install with: uv sync --group similar-issue.
+# 'similar issue' command. Install with: uv sync --group similar-issue.
 # Keep this a dependency group rather than a published extra so the vector
 # database drivers stay out of the base install.
 similar-issue = [
   "pandas",  # imported directly by the qdrant indexing path
-  "pinecone==10.2.0",
+  "pinecone==10.3.0",
   "lancedb==0.41.0",
   "qdrant-client==1.20.0",
 ]
 dev = [
   { include-group = "integration-dev" },
+  # The Lambda webhook hand-off unit tests import the Mangum entry points.
+  "pr-agent[lambda]",
   "pytest==9.2.0",
   "pytest-asyncio>=1.4.1",
   "pytest-cov==7.1.0",
   "httpx==0.28.1",
-  "ruff==0.17.3",
+  "ruff==0.17.5",
 ]
 
 [tool.uv]
 # Keep the floor aligned with the patched uv release used by Docker and CI.
-required-version = ">=0.13.5"
+required-version = ">=0.13.8"
 
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+unsafe-fixes=false
+preview=false
 
 lint.select = [
-  "E",    # pycodestyle
-  "F",    # Pyflakes
-  "B",    # flake8-bugbear
-  "I",    # isort
-  "UP",   # pyupgrade
-  "FURB", # refurb
+  "E",      # pycodestyle
+  "F",      # Pyflakes
+  "B",      # flake8-bugbear
+  "I",      # isort
+  "UP",     # pyupgrade
+  "FURB",   # refurb
+  "PERF",   # perflint
+  "PLE",    # pylint (error)
+  "PLR0402",  # manual-from-import
+  "PLR1711",  # useless-return
+  "PLR1716",  # boolean-chained-comparison
+  "PLR5501",  # collapsible-else-if
 ]
 
 lint.exclude = ["api/code_completions"]

@@ -33,3 +33,12 @@ HEAD = "def f():\n    return 1\n"
 )
 def test_python_replacement_compiles(filename, head_file, start, end, replacement, expected):
     assert python_replacement_compiles(filename, head_file, start, end, replacement) is expected
+
+
+def test_already_aligned_replacement_preserves_multiline_string_data():
+    code = 'payload = """start\n    \nend"""\n'
+    aligned = reindent_to_line(code, "previous = 1")
+    namespace = {}
+    exec(aligned, namespace)
+    assert namespace["payload"] == "start\n    \nend"
+    assert aligned == code

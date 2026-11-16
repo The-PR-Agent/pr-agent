@@ -290,12 +290,14 @@ def _prepare_prometheus():
     so the dir must exist (and PROMETHEUS_MULTIPROC_DIR be set) in the master before the
     first worker fork — workers import the client lazily and inherit the env var.
     """
+    from pr_agent.algo.setting_utils import _as_bool_setting
     from pr_agent.config_loader import get_settings
     from pr_agent.telemetry.prometheus_multiproc import ensure_prometheus_multiproc_dir
     from pr_agent.telemetry.types import ExporterType
 
     settings = get_settings()
-    if settings.get("OTEL.IS_ENABLED", False) and settings.get("OTEL.EXPORTER_TYPE") == ExporterType.PROMETHEUS:
+    is_enabled = _as_bool_setting(settings.get("OTEL.IS_ENABLED", False), setting_name="OTEL.IS_ENABLED")
+    if is_enabled and settings.get("OTEL.EXPORTER_TYPE") == ExporterType.PROMETHEUS:
         ensure_prometheus_multiproc_dir(str(settings.get("OTEL.PROMETHEUS_MULTIPROC_DIR", "/tmp/pr-agent-prometheus")))
 
 

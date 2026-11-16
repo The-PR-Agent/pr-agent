@@ -114,6 +114,15 @@ _CLAUDE_MODEL_FAMILIES = [
         # Ref: https://platform.claude.com/docs/en/build-with-claude/claude-in-amazon-bedrock#regions
         "bedrock_regions": ("global", "us"),
     },
+    {
+        "model_id": "claude-fable-5-2",
+        "max_tokens": 1000000,
+        "bedrock_regions": ("global", "us"),
+        "extra_aliases": {
+            "azure_ai/claude-fable-5-2": 1000000,
+            "bedrock/claude_platform/claude-fable-5-2": 1000000,
+        },
+    },
 ]
 
 
@@ -224,8 +233,7 @@ def _generate_claude_registries(families=None):
                     thinking_regions = fam.get(
                         "thinking_bedrock_regions", ("us", "au", "eu", "jp", "global")
                     )
-                    for reg in thinking_regions:
-                        claude_extended_thinking.append(f"bedrock/{reg}.anthropic.{b_name}")
+                    claude_extended_thinking.extend(f"bedrock/{reg}.anthropic.{b_name}" for reg in thinking_regions)
 
     return claude_tokens, claude_extended_thinking
 
@@ -300,11 +308,15 @@ MAX_TOKENS = {
     'vertex_ai/gemini-3.5-pro': 1048576,
     'vertex_ai/gemini-3.8-flash': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'vertex_ai/gemini-4-argon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
+    'vertex_ai/gemini-4-carbon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
+    'vertex_ai/gemini-4-hydrogen': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'gemini/gemini-3.1-flash': 1048576,
     'gemini/gemini-3.1-pro': 1048576,
     'gemini/gemini-3.5-pro': 1048576,
     'gemini/gemini-3.8-flash': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'gemini/gemini-4-argon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
+    'gemini/gemini-4-carbon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
+    'gemini/gemini-4-hydrogen': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     # -- Bedrock Claude ----------------------------------------------------
     'bedrock/anthropic.claude-sonnet-4-20250514-v1:0': 200000,
     # -- Bedrock Claude (cross-region) -------------------------------------
@@ -344,6 +356,20 @@ MAX_TOKENS = {
     "xai/grok-build-latest": 500000,  # kept pinned: absent from LiteLLM's bundled cost map
     "openrouter/x-ai/grok-4.5": 500000,  # kept pinned: absent from LiteLLM's bundled cost map
     "openrouter/x-ai/grok-4.6": 500000,  # kept pinned: absent from LiteLLM's bundled cost map
+    "openrouter/anthropic/claude-sonnet-5": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-sonnet-5.5": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-sonnet-4.6": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-sonnet-4.5": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-opus-5.5": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-opus-5": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-opus-4.8": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-opus-4.7": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-opus-4.6": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-haiku-5.5": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-fable-5.2": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-fable-5.1": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-fable-5": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/deepseek/deepseek-chat": 163840,  # kept pinned: absent from LiteLLM's bundled cost map
     'watsonx/meta-llama/llama-3-8b-instruct': 4096,
     "watsonx/meta-llama/llama-3-70b-instruct": 4096,
     "watsonx/meta-llama/llama-3-405b-instruct": 16384,

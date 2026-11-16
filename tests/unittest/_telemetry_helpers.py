@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 
 from pr_agent.telemetry.types import TelemetryConfig
 
@@ -72,11 +73,12 @@ def capture_loguru(level: str = "DEBUG"):
 def build_in_memory_tracer():
     """Return (tracer, exporter) backed by a local provider — not the global one.
 
+    Sample every test span regardless of the host's OTEL_TRACES_SAMPLER setting.
     SimpleSpanProcessor exports synchronously on span end, so finished spans
     are visible in the exporter without an explicit flush.
     """
     exporter = InMemorySpanExporter()
-    provider = TracerProvider(shutdown_on_exit=False)
+    provider = TracerProvider(sampler=ALWAYS_ON, shutdown_on_exit=False)
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     return provider.get_tracer("telemetry-test"), exporter
 

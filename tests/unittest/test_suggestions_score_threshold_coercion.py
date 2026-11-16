@@ -1,8 +1,8 @@
 """Read the /improve score thresholds whatever numeric form the settings file uses."""
 import pytest
 
+from pr_agent.commands.pr_code_suggestions import get_dual_publishing_score_threshold, get_suggestions_score_threshold
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_code_suggestions import get_dual_publishing_score_threshold, get_suggestions_score_threshold
 
 
 @pytest.fixture

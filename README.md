@@ -14,8 +14,29 @@
 <br>
 The Original Open-Source PR Reviewer
 <br><br>
+<a href="https://github.com/The-PR-Agent/pr-agent/releases/latest">
+<img alt="Release" src="https://img.shields.io/github/v/release/The-PR-Agent/pr-agent?style=for-the-badge" height="20">
+</a>
+<a href="https://pypi.org/project/pr-agent/">
+<img alt="PyPI" src="https://img.shields.io/pypi/v/pr-agent?style=for-the-badge" height="20">
+</a>
+<a href="https://hub.docker.com/r/pragent/pr-agent">
+<img alt="Docker Hub" src="https://img.shields.io/badge/docker%20hub-pragent%2Fpr--agent-2496ED?style=for-the-badge&amp;logo=docker&amp;logoColor=white" height="20">
+</a>
+<a href="https://docs.pr-agent.ai/">
+<img alt="Documentation" src="https://img.shields.io/badge/docs-docs.pr--agent.ai-267bbd?style=for-the-badge" height="20">
+</a>
+<a href="https://codecov.io/gh/The-PR-Agent/pr-agent">
+<img alt="Coverage" src="https://img.shields.io/codecov/c/github/The-PR-Agent/pr-agent/main?style=for-the-badge" height="20">
+</a>
+<a href="https://github.com/The-PR-Agent/pr-agent/blob/main/LICENSE">
+<img alt="License" src="https://img.shields.io/github/license/The-PR-Agent/pr-agent?style=for-the-badge" height="20">
+</a>
 <a href="https://github.com/the-pr-agent/pr-agent/commits/main">
 <img alt="GitHub" src="https://img.shields.io/github/last-commit/the-pr-agent/pr-agent/main?style=for-the-badge" height="20">
+</a>
+<a href="https://github.com/The-PR-Agent/pr-agent/actions/workflows/build-and-test.yaml?query=branch%3Amain">
+<img alt="Build and test" src="https://img.shields.io/github/actions/workflow/status/The-PR-Agent/pr-agent/build-and-test.yaml?branch=main&amp;event=push&amp;style=for-the-badge" height="20">
 </a>
 </div>
 
@@ -72,10 +93,16 @@ Add automated PR reviews to your repository with a simple workflow file:
 name: PR Agent
 on:
   pull_request:
+    # PR-Agent skips synchronize by default. Include it in github_action_config.pr_actions
+    # for auto commands, or enable github_action_config.handle_push_trigger for push_commands (takes precedence).
     types: [opened, synchronize]
 jobs:
   pr_agent_job:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
     - name: PR Agent action step
       uses: the-pr-agent/pr-agent@main
@@ -91,7 +118,8 @@ Run PR-Agent locally on your repository:
 
 ```bash
 pip install "pr-agent[github]"
-export OPENAI_KEY=your_key_here
+export OPENAI__KEY=your_openai_key
+export GITHUB__USER_TOKEN=your_github_token
 pr-agent --pr_url https://github.com/owner/repo/pull/123 review
 ```
 Git provider SDKs are optional extras: install the one for your provider ([list](https://docs.pr-agent.ai/installation/locally/#using-pip-package)), or `pr-agent[all]` for every integration.
@@ -112,7 +140,7 @@ Full notes for every release are on the [Releases page](https://github.com/the-p
 
 ### 🎯 Built for Real Development Teams
 
-**Fast & Affordable**: Each tool (`/review`, `/improve`, `/ask`) uses a single LLM call (~30 seconds, low cost)
+**Fast & Affordable**: Simple `/review` and `/ask` requests can use one LLM call; retries, fallbacks, and larger reviews may need more.
 
 **Handles Any PR Size**: Our [PR Compression strategy](https://docs.pr-agent.ai/core-abilities/compression_strategy/) effectively processes both small and large PRs
 
@@ -174,13 +202,12 @@ ___
 
 ### Usage Examples
 
-PR-Agent tools run as a comment on a PR or from the CLI. A few common ones:
+PR-Agent commands run as a comment on a PR or from the CLI. A few common ones:
 
 ```bash
 # Comment on a PR (GitHub/GitLab/Bitbucket/…):
 /describe
 /review
-/improve
 /ask "What does this PR change?" # free-text Q&A about the PR
 
 # Issue-scoped commands run on an issue instead of a PR:
@@ -191,15 +218,15 @@ pr-agent --pr_url <PR_URL> review
 pr-agent --issue_url <ISSUE_URL> similar_issue
 ```
 
-See the [Tools docs](https://docs.pr-agent.ai/tools/#usage-examples) for the full list of tools with example commands, and each tool's page for screenshots and options.
+See the [Commands docs](https://docs.pr-agent.ai/commands/#usage-examples) for the full list of commands with example commands, and each command's page for screenshots and options.
 
 <hr>
 
 ## How It Works
 
-The following diagram illustrates PR-Agent tools and their flow:
+The following diagram illustrates PR-Agent commands and their flow:
 
-![PR-Agent Tools](https://raw.githubusercontent.com/The-PR-Agent/pr-agent/main/docs/static/img/diagram-v0.9.png)
+![PR-Agent Commands](https://raw.githubusercontent.com/The-PR-Agent/pr-agent/main/docs/static/img/diagram-v0.9.png)
 
 ## Data Privacy
 

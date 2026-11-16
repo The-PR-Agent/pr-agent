@@ -7,7 +7,7 @@ import pytest
 import yaml
 from yaml.scanner import ScannerError
 
-import pr_agent.algo.utils as utils
+from pr_agent.algo import utils
 from pr_agent.log import get_logger
 
 load_yaml = utils.load_yaml

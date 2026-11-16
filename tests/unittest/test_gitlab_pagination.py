@@ -43,7 +43,7 @@ def _provider_with_lists(count=150):
         SimpleNamespace(attributes={"notes": [{"body": f"discussion-{index}"}]})
         for index in range(count)
     ])
-    notes = _PaginatedList([SimpleNamespace(body=f"note-{index}") for index in range(count)])
+    notes = _PaginatedList([SimpleNamespace(body=f"discussion-{index}") for index in range(count)])
     draft_notes = _PaginatedList([SimpleNamespace(note=f"draft-{index}") for index in range(count)])
     provider = object.__new__(GitLabProvider)
     provider.mr = SimpleNamespace(discussions=discussions, notes=notes, draft_notes=draft_notes)
@@ -55,10 +55,13 @@ def test_persistent_comment_listing_requests_max_pages():
 
     bodies = provider.get_persistent_comment_bodies()
 
-    assert len(bodies) == 450
-    for listing in (discussions, notes, draft_notes):
+    assert len(bodies) == 300
+    for listing in (discussions, draft_notes):
         assert listing.requests == 2
         assert listing.calls == [{"get_all": True, "per_page": 100}]
+
+    assert notes.requests == 0
+    assert notes.calls == []
 
 
 def test_issue_comment_listing_requests_max_pages():
@@ -105,6 +108,11 @@ def test_every_get_all_call_sets_per_page():
             get_all_calls.append(keywords)
 
     assert get_all_calls
+    page_sizes = []
     for keywords in get_all_calls:
         per_page = keywords.get("per_page")
-        assert isinstance(per_page, ast.Constant) and per_page.value == 100
+        assert isinstance(per_page, ast.Constant)
+        page_sizes.append(per_page.value)
+    # The MR diffs retry for GitLab before 17.11 (#4793) is the only call below the maximum.
+    assert page_sizes.count(20) == 1
+    assert all(size == 100 for size in page_sizes if size != 20)

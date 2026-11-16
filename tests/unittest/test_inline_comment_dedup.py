@@ -409,8 +409,8 @@ def test_gitlab_recent_inline_bodies_include_marked_posts():
 
 def test_gitlab_failed_create_does_not_record_a_recent_body():
     p = _gl_provider([])
-    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
-    p.mr.notes.create.side_effect = GitlabCreateError("note rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
+    p.mr.notes.create.side_effect = GitlabCreateError("note rejected", response_code=400)
     p.get_line_link = MagicMock(return_value="http://link")
     original = {
         "relevant_lines_start": 10, "relevant_lines_end": 11,
@@ -510,7 +510,7 @@ def test_gitlab_failed_bulk_publish_does_not_record_drafts(_gl_review_provider):
 
 
 def test_gitlab_persistent_bodies_list_existing_mr_notes_without_duplicates():
-    p = _gl_provider(["discussion finding", "discussion finding"])
+    p = _gl_provider(["discussion finding", "discussion finding", "plain note finding"])
     note = MagicMock()
     note.body = "plain note finding"
     draft = MagicMock()
@@ -521,6 +521,7 @@ def test_gitlab_persistent_bodies_list_existing_mr_notes_without_duplicates():
     bodies = p.get_persistent_comment_bodies()
 
     assert bodies == ["discussion finding", "plain note finding", "pending draft finding"]
+    p.mr.notes.list.assert_not_called()
 
 
 def test_gitlab_persistent_bodies_include_recent_posts_only_once():
@@ -544,7 +545,7 @@ def test_gitlab_persistent_bodies_survive_draft_listing_failure():
 
 def test_gitlab_fallback_leaves_reduced_key_issue_in_summary():
     p = _gl_provider([])
-    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
     p.get_line_link = MagicMock(return_value="http://link")
     body = "**Possible Issue**\n\nfinding text"
     fingerprint = d.key_issue_fingerprint("a.py", body)
@@ -700,7 +701,7 @@ def test_gitlab_skips_when_existing_discussion_has_marker():
 
 def test_gitlab_fallback_note_carries_marker_and_records():
     p = _gl_provider([])
-    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
     p.get_line_link = MagicMock(return_value="http://link")
     original = {
         "relevant_lines_start": 10, "relevant_lines_end": 11,
@@ -733,20 +734,24 @@ def test_gitlab_fallback_note_carries_marker_and_records():
 
 
 def test_gitlab_skips_when_fallback_note_has_marker():
-    # a prior run posted via the general-note fallback (mr.notes.create); its
-    # marker must be found by scanning notes, not only discussions.
+    # GitLab includes ordinary fallback notes as individual-note discussions.
     body = "**Suggestion:** from fallback [possible issue, importance: 7]"
     seen_fp = d.body_fingerprint("a.py", 10, body)
     p = _gl_provider([])
     note = MagicMock()
     note.body = f"from fallback\n\n<!-- pr-agent-dedup: {seen_fp} -->"
     p.mr.notes.list.return_value = [note]
+    discussion = MagicMock()
+    discussion.attributes = {"individual_note": True, "notes": [{"type": None, "body": note.body}]}
+    p.mr.discussions.list.return_value = [discussion]
     gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
     m = gs.start()
     m.return_value.get.side_effect = _flag_side_effect(True)
     try:
         _send(p, body)
+        p.mr.discussions.list.assert_called_once_with(get_all=True, per_page=100)
         p.mr.discussions.create.assert_not_called()
+        p.mr.notes.list.assert_not_called()
     finally:
         gs.stop()
 

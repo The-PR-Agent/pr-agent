@@ -21,6 +21,7 @@ def environment(monkeypatch):
     settings = copy.deepcopy(global_settings)
     for rule in RULE_FIELDS.values():
         settings.set(f"config.{rule}", [])
+    settings.set("config.include_pr_labels", [])
     provider = Mock()
     provider.get_request_policy_metadata.return_value = METADATA.copy()
     monkeypatch.setattr(git_providers, "get_git_provider_with_context", lambda *_a, **_kw: provider)
@@ -36,11 +37,11 @@ def environment(monkeypatch):
     ("ignore_pr_title", "^Regular"), ("ignore_pr_labels", "skip"),
     ("ignore_pr_source_branches", "^feature/"), ("ignore_pr_target_branches", "^main$"),
 ])
-async def test_ignored_request_returns_skip_before_tool_notify_and_followup(environment, monkeypatch, rule, value):
+async def test_ignored_request_returns_skip_before_command_notify_and_followup(environment, monkeypatch, rule, value):
     settings, _ = environment
     settings.set(f"config.{rule}", [value])
-    tool, notify, after, cleanup = Mock(), Mock(), Mock(), Mock()
-    monkeypatch.setitem(agent.command2class, "review", tool)
+    command, notify, after, cleanup = Mock(), Mock(), Mock(), Mock()
+    monkeypatch.setitem(agent.command2class, "review", command)
 
     async def transport():
         try:
@@ -53,7 +54,7 @@ async def test_ignored_request_returns_skip_before_tool_notify_and_followup(envi
             cleanup()
 
     await transport()
-    tool.assert_not_called()
+    command.assert_not_called()
     notify.assert_not_called()
     after.assert_not_called()
     cleanup.assert_called_once()
@@ -62,13 +63,13 @@ async def test_ignored_request_returns_skip_before_tool_notify_and_followup(envi
 
 @pytest.mark.parametrize("failure", [False, True])
 async def test_allowed_commands_preserve_success_failure_and_notifications(environment, monkeypatch, failure):
-    tool = SimpleNamespace(run=AsyncMock(side_effect=RuntimeError("tool failed") if failure else None))
-    factory, notify = Mock(return_value=tool), Mock()
+    command = SimpleNamespace(run=AsyncMock(side_effect=RuntimeError("command failed") if failure else None))
+    factory, notify = Mock(return_value=command), Mock()
     monkeypatch.setitem(agent.command2class, "review", factory)
     result = await agent.PRAgent().handle_request(URL, ["review"], notify=notify)
     assert result is (not failure)
     notify.assert_called_once()
-    tool.run.assert_awaited_once()
+    command.run.assert_awaited_once()
     agent.apply_repo_settings.assert_called_once_with(URL)
 
 
@@ -77,11 +78,11 @@ async def test_repo_settings_are_loaded_before_policy_and_argument_overrides(env
     def load(_url):
         settings.set("config.ignore_pr_labels", ["skip"])
     monkeypatch.setattr(agent, "apply_repo_settings", load)
-    tool = Mock()
-    monkeypatch.setitem(agent.command2class, "review", tool)
+    command = Mock()
+    monkeypatch.setitem(agent.command2class, "review", command)
     result = await agent.PRAgent().handle_request(URL, ["review", "--config.ignore_pr_labels=[]"])
     assert result is RequestOutcome.SKIPPED
-    tool.assert_not_called()
+    command.assert_not_called()
 
 
 @pytest.mark.parametrize("missing_form", ["omitted", "none"])
@@ -96,17 +97,17 @@ async def test_unavailable_author_skips_only_author_rule(environment, monkeypatc
     else:
         metadata["sender"] = None
     provider.get_request_policy_metadata.return_value = metadata
-    tool = SimpleNamespace(run=AsyncMock())
-    factory, notify = Mock(return_value=tool), Mock()
+    command = SimpleNamespace(run=AsyncMock())
+    factory, notify = Mock(return_value=command), Mock()
     monkeypatch.setitem(agent.command2class, "review", factory)
     result = await agent.PRAgent().handle_request(URL, "/review", notify=notify)
     if title_matches:
         assert result is RequestOutcome.SKIPPED
-        tool.run.assert_not_awaited()
+        command.run.assert_not_awaited()
         notify.assert_not_called()
     else:
         assert result is True
-        tool.run.assert_awaited_once()
+        command.run.assert_awaited_once()
         notify.assert_called_once()
 
 
@@ -118,13 +119,71 @@ async def test_policy_lookup_error_allows_command(environment, monkeypatch, fail
         monkeypatch.setattr(git_providers, "get_git_provider_with_context", Mock(side_effect=RuntimeError("outage")))
     else:
         provider.get_request_policy_metadata.side_effect = RuntimeError("outage")
-    tool = SimpleNamespace(run=AsyncMock())
+    command = SimpleNamespace(run=AsyncMock())
     notify = Mock()
-    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=tool))
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=command))
     assert await agent.PRAgent().handle_request(URL, "/review", notify=notify) is True
-    tool.run.assert_awaited_once()
+    command.run.assert_awaited_once()
     notify.assert_called_once()
     agent.flush_telemetry.assert_called_once()
+
+
+@pytest.mark.parametrize(("labels", "allowed"), [
+    (["ai-review", "other"], True),
+    (["other"], False),
+    ([], False),
+    (None, False),
+])
+async def test_include_pr_labels_gates_real_command_entrypoint(environment, monkeypatch, labels, allowed):
+    settings, provider = environment
+    settings.set("config.include_pr_labels", ["ai-review"])
+    provider.get_request_policy_metadata.return_value = {**METADATA, "labels": labels}
+    command = SimpleNamespace(run=AsyncMock())
+    factory, notify = Mock(return_value=command), Mock()
+    monkeypatch.setitem(agent.command2class, "review", factory)
+
+    result = await agent.PRAgent().handle_request(URL, "/review", notify=notify)
+    assert result is (True if allowed else RequestOutcome.SKIPPED)
+    if allowed:
+        command.run.assert_awaited_once()
+        notify.assert_called_once()
+    else:
+        command.run.assert_not_awaited()
+        notify.assert_not_called()
+    provider.get_request_policy_metadata.assert_called_once_with({"labels"})
+
+
+@pytest.mark.parametrize("failure_at", ["provider", "metadata"])
+async def test_include_pr_labels_skips_on_metadata_lookup_failure(environment, monkeypatch, failure_at):
+    settings, provider = environment
+    settings.set("config.include_pr_labels", ["ai-review"])
+    if failure_at == "provider":
+        monkeypatch.setattr(git_providers, "get_git_provider_with_context", Mock(side_effect=RuntimeError("outage")))
+    else:
+        provider.get_request_policy_metadata.side_effect = RuntimeError("outage")
+    command, notify = SimpleNamespace(run=AsyncMock()), Mock()
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=command))
+
+    assert await agent.PRAgent().handle_request(URL, "/review", notify=notify) is RequestOutcome.SKIPPED
+    command.run.assert_not_awaited()
+    notify.assert_not_called()
+
+
+@pytest.mark.parametrize("numeric_label", [0, 123])
+async def test_numeric_include_labels_still_gate_command_entrypoint(environment, monkeypatch, numeric_label):
+    settings, provider = environment
+    settings.set("config.include_pr_labels", numeric_label)
+    command = SimpleNamespace(run=AsyncMock())
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=command))
+
+    provider.get_request_policy_metadata.return_value = {**METADATA, "labels": [str(numeric_label)]}
+    assert await agent.PRAgent().handle_request(URL, "/review") is True
+    provider.get_request_policy_metadata.assert_called_with({"labels"})
+    command.run.assert_awaited_once()
+
+    provider.get_request_policy_metadata.return_value = {**METADATA, "labels": ["other"]}
+    assert await agent.PRAgent().handle_request(URL, "/review") is RequestOutcome.SKIPPED
+    command.run.assert_awaited_once()
 
 
 async def test_provider_without_metadata_uses_empty_default(environment, monkeypatch):
@@ -133,10 +192,10 @@ async def test_provider_without_metadata_uses_empty_default(environment, monkeyp
     settings.set("config.ignore_pr_title", ["Regular"])
     provider.get_request_policy_metadata.side_effect = (
         lambda fields: GitProvider.get_request_policy_metadata(None, fields))
-    tool = SimpleNamespace(run=AsyncMock())
-    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=tool))
+    command = SimpleNamespace(run=AsyncMock())
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=command))
     assert await agent.PRAgent().handle_request(URL, "/review") is True
-    tool.run.assert_awaited_once()
+    command.run.assert_awaited_once()
 
 
 @pytest.mark.parametrize("provider_kind", ["current", "unrelated", "subclass"])
@@ -212,12 +271,12 @@ async def test_mosaico_skip_returns_explicit_skip_without_stale_output(environme
     settings, _ = environment
     settings.set("config.ignore_pr_labels", ["skip"])
     settings.set("data.artifact", "old output")
-    tool = Mock()
-    monkeypatch.setitem(agent.command2class, verb, tool)
+    command = Mock()
+    monkeypatch.setitem(agent.command2class, verb, command)
     result = await (dispatch._run_ask(URL, "why?") if verb == "ask" else dispatch._run_pr_agent(URL, verb))
     assert result.ok
     assert result.text == "Request ignored by policy."
-    tool.assert_not_called()
+    command.assert_not_called()
 
 
 def test_cli_skip_does_not_print_usage_or_exit_as_failure(environment, monkeypatch, capsys):
@@ -226,13 +285,13 @@ def test_cli_skip_does_not_print_usage_or_exit_as_failure(environment, monkeypat
     # CLI intentionally snapshots global settings into its own request scope.
     monkeypatch.setattr(cli, "_cli_settings_scope", lambda: request_cycle_context({"settings": settings}))
     settings.set("config.ignore_pr_labels", ["skip"])
-    settings.set("config.propagate_tool_errors", True)
+    settings.set("config.propagate_command_errors", True)
     monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
-    tool = Mock()
-    monkeypatch.setitem(agent.command2class, "review", tool)
+    command = Mock()
+    monkeypatch.setitem(agent.command2class, "review", command)
     assert cli.run(inargs=[f"--pr_url={URL}", "review"]) is None
     assert "usage:" not in capsys.readouterr().out
-    tool.assert_not_called()
+    command.assert_not_called()
 
 
 @pytest.mark.parametrize("provider_id", ["github", "gitea", "gitlab", "bitbucket", "bitbucket_server", "azure"])
@@ -278,12 +337,12 @@ async def test_mosaico_public_diff_retains_repository_filtering(monkeypatch, sou
     patch = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
     monkeypatch.setattr(dispatch, "_fetch_public_diff", AsyncMock(return_value=patch))
     monkeypatch.setattr(agent, "flush_telemetry", Mock())
-    tool = Mock()
-    monkeypatch.setitem(agent.command2class, "review", tool)
+    command = Mock()
+    monkeypatch.setitem(agent.command2class, "review", command)
     with request_cycle_context({"settings": settings, "git_provider": {}}):
         result = await dispatch.route_and_run_result(f"review {source}")
     assert result.text == "Request ignored by policy."
-    tool.assert_not_called()
+    command.assert_not_called()
 
 
 async def test_github_auto_skip_opens_no_check_and_stops_batch(environment, monkeypatch):
@@ -322,11 +381,11 @@ async def test_gitea_comment_uses_central_policy(environment, monkeypatch):
     from pr_agent.servers import gitea_app
     settings, _ = environment
     settings.set("config.ignore_pr_labels", ["skip"])
-    tool = Mock()
-    monkeypatch.setitem(agent.command2class, "review", tool)
+    command = Mock()
+    monkeypatch.setitem(agent.command2class, "review", command)
     body = {"action": "created", "pull_request": {"url": URL}, "comment": {"body": "/review"}}
     await gitea_app.handle_request(body, "issue_comment")
-    tool.assert_not_called()
+    command.assert_not_called()
 
 
 async def test_action_skip_does_not_mark_job_failed(environment, monkeypatch):
@@ -368,10 +427,10 @@ def test_skipped_result_is_distinct_from_success_and_failure():
 async def test_invalid_policy_preserves_shared_matcher_error_fallback(environment, monkeypatch):
     settings, _ = environment
     settings.set("config.ignore_pr_title", ["["])
-    tool, notify = SimpleNamespace(run=AsyncMock()), Mock()
-    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=tool))
+    command, notify = SimpleNamespace(run=AsyncMock()), Mock()
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=command))
     assert await agent.PRAgent().handle_request(URL, "/review", notify=notify) is True
-    tool.run.assert_awaited_once()
+    command.run.assert_awaited_once()
     notify.assert_called_once()
     agent.flush_telemetry.assert_called_once()
 
@@ -447,8 +506,8 @@ def test_plain_diff_cli_does_not_filter_synthetic_title(monkeypatch, tmp_path, i
     monkeypatch.setattr(cli, "_cli_settings_scope", lambda: request_cycle_context({"settings": settings}))
     monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
     monkeypatch.setattr(agent, "flush_telemetry", Mock())
-    tool = SimpleNamespace(run=AsyncMock())
-    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=tool))
+    command = SimpleNamespace(run=AsyncMock())
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=command))
     if input_mode == "file":
         path = tmp_path / "change.diff"
         path.write_text(patch)
@@ -457,7 +516,7 @@ def test_plain_diff_cli_does_not_filter_synthetic_title(monkeypatch, tmp_path, i
         monkeypatch.setattr("sys.stdin", io.StringIO(patch))
         arguments = ["--stdin", "review"]
     cli.run(inargs=arguments)
-    tool.run.assert_awaited_once()
+    command.run.assert_awaited_once()
 
 
 async def test_gitlab_numeric_project_policy_matches_namespace(environment, monkeypatch):
@@ -471,11 +530,11 @@ async def test_gitlab_numeric_project_policy_matches_namespace(environment, monk
     provider.mr = SimpleNamespace(title="Regular PR", author={"username": "author"},
                                   source_branch="feature", target_branch="main")
     policy_provider.get_request_policy_metadata.side_effect = provider.get_request_policy_metadata
-    tool = Mock()
-    monkeypatch.setitem(agent.command2class, "review", tool)
+    command = Mock()
+    monkeypatch.setitem(agent.command2class, "review", command)
     result = await agent.PRAgent().handle_request("https://gitlab.com/projects/1234/-/merge_requests/7", "/review")
     assert result is RequestOutcome.SKIPPED
-    tool.assert_not_called()
+    command.assert_not_called()
     provider.gl.projects.get.assert_called_once_with("1234")
 
 
@@ -488,10 +547,10 @@ async def test_mosaico_display_title_is_not_pr_policy_title(monkeypatch, source)
     patch = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
     monkeypatch.setattr(dispatch, "_fetch_public_diff", AsyncMock(return_value=patch))
     monkeypatch.setattr(agent, "flush_telemetry", Mock())
-    tool = SimpleNamespace(run=AsyncMock())
-    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=tool))
+    command = SimpleNamespace(run=AsyncMock())
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=command))
     with request_cycle_context({"settings": settings, "git_provider": {}}):
         result = await dispatch.route_and_run_result(f"review {source}" if source else f"review\n{patch}")
     assert result.ok
     assert result.text != "Request ignored by policy."
-    tool.run.assert_awaited_once()
+    command.run.assert_awaited_once()

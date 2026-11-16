@@ -29,7 +29,7 @@ from tests.unittest._telemetry_helpers import build_in_memory_tracer
 
 SENTINEL_URL = "https://secret-repo.example/org/private-repo/pull/42"
 
-_TRACKED_KEYS = ("otel.include_error_details",)
+_TRACKED_KEYS = ("otel.include_error_details", "otel.include_pr_url")
 
 
 @pytest.fixture(autouse=True)
@@ -68,6 +68,18 @@ def _all_exported_text(exporter):
         repr(dict(s.attributes)) + repr(s.events) + s.name + repr(s.status.description)
         for s in exporter.get_finished_spans()
     )
+
+
+def test_in_memory_tracer_ignores_host_sampling_policy(monkeypatch):
+    monkeypatch.setenv("OTEL_TRACES_SAMPLER", "always_off")
+    tracer, exporter = build_in_memory_tracer()
+
+    with tracer.start_as_current_span("test-request") as span:
+        span.set_attribute("test.recorded", True)
+
+    finished, = exporter.get_finished_spans()
+    assert finished.name == "test-request"
+    assert finished.attributes["test.recorded"] is True
 
 
 @pytest.mark.asyncio
@@ -113,14 +125,14 @@ async def test_rejected_requests_do_not_increment_commands_counter(telemetry):
 async def test_known_command_increments_counter_with_bounded_labels(telemetry, monkeypatch):
     _, counter = telemetry
 
-    class FakeTool:
+    class FakeCommand:
         def __init__(self, pr_url, ai_handler, args):
             pass
 
         async def run(self):
             return None
 
-    monkeypatch.setitem(pr_agent_module.command2class, "customcmd", FakeTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "customcmd", FakeCommand)
 
     handled = await PRAgent(ai_handler="fake")._handle_request("https://example/pr/1", ["customcmd"])
 
@@ -149,7 +161,7 @@ async def test_recorded_review_failure_marks_span_and_next_review_starts_clean(
         "config.fallback_models": ["gpt-4o-mini"],
         "config.use_repo_settings_file": False,
         "config.extra_config_url": None,
-        "config.propagate_tool_errors": False,
+        "config.propagate_command_errors": False,
         "config.repo_context_files": [],
         "plain_diff.output_path": None,
         "plain_diff.json_output_path": None,
@@ -194,7 +206,7 @@ async def test_recorded_review_failure_marks_span_and_next_review_starts_clean(
             assert "value = 2" in call.kwargs["user"]
         span = exporter.get_finished_spans()[-1]
         assert span.status.status_code is (StatusCode.ERROR if failed else StatusCode.OK)
-        assert span.attributes.get("error.type") == ("tool_execution_failed" if failed else None)
+        assert span.attributes.get("error.type") == ("command_execution_failed" if failed else None)
         assert span.status.description is None
         assert "error.message" not in span.attributes
         assert SENTINEL_URL not in str((span.attributes, span.status.description, span.events))
@@ -249,7 +261,7 @@ async def test_exception_message_not_exported_by_default(telemetry, monkeypatch)
     assert SENTINEL_URL not in _all_exported_text(exporter)
 
 
-class _ExplodingTool:
+class _ExplodingCommand:
     def __init__(self, pr_url, ai_handler, args):
         pass
 
@@ -258,13 +270,13 @@ class _ExplodingTool:
 
 
 @pytest.mark.asyncio
-async def test_tool_exception_not_auto_recorded_by_default(telemetry, monkeypatch):
+async def test_command_exception_not_auto_recorded_by_default(telemetry, monkeypatch):
     """The OTel SDK auto-records exceptions (message, stacktrace, status
     description) on every span they propagate through — start_as_current_span
-    defaults to record_exception=True. A failing tool must not smuggle its
+    defaults to record_exception=True. A failing command must not smuggle its
     message onto the span that way, bypassing the error.message opt-in."""
     exporter, _ = telemetry
-    monkeypatch.setitem(pr_agent_module.command2class, "customcmd", _ExplodingTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "customcmd", _ExplodingCommand)
 
     handled = await PRAgent(ai_handler="fake").handle_request("https://example/pr/1", ["customcmd"])
 
@@ -286,7 +298,7 @@ async def test_incomplete_files_error_keeps_bounded_telemetry_when_notification_
     provider.supports_html_comment_markers.return_value = True
     provider.publish_comment.side_effect = RuntimeError("notification failed")
 
-    class IncompleteTool:
+    class IncompleteCommand:
         def __init__(self, pr_url, ai_handler, args):
             raise pr_agent_module.IncompletePullRequestFilesError(
                 f"failed to fetch {SENTINEL_URL}"
@@ -294,7 +306,7 @@ async def test_incomplete_files_error_keeps_bounded_telemetry_when_notification_
 
     monkeypatch.setitem(get_settings().config, "publish_output", True)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _url: provider)
-    monkeypatch.setitem(pr_agent_module.command2class, "customcmd", IncompleteTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "customcmd", IncompleteCommand)
 
     handled = await PRAgent(ai_handler="fake")._handle_request(
         "https://example/pr/1", ["customcmd"]
@@ -318,13 +330,13 @@ async def test_incomplete_files_error_keeps_primary_telemetry_when_comment_decod
         f"could not decode comment from {SENTINEL_URL}"
     )
 
-    class IncompleteTool:
+    class IncompleteCommand:
         def __init__(self, pr_url, ai_handler, args):
             raise pr_agent_module.IncompletePullRequestFilesError("primary failure")
 
     monkeypatch.setitem(get_settings().config, "publish_output", True)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _url: provider)
-    monkeypatch.setitem(pr_agent_module.command2class, "customcmd", IncompleteTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "customcmd", IncompleteCommand)
 
     handled = await PRAgent(ai_handler="fake")._handle_request(
         "https://example/pr/1", ["customcmd"]
@@ -341,7 +353,7 @@ async def test_incomplete_files_error_keeps_primary_telemetry_when_comment_decod
 async def test_propagating_exception_recorded_when_opted_in(telemetry, monkeypatch):
     exporter, _ = telemetry
     get_settings().set("otel.include_error_details", True)
-    monkeypatch.setitem(pr_agent_module.command2class, "customcmd", _ExplodingTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "customcmd", _ExplodingCommand)
 
     await PRAgent(ai_handler="fake").handle_request("https://example/pr/1", ["customcmd"])
 
@@ -369,3 +381,64 @@ async def test_exception_details_exported_when_opted_in(telemetry, monkeypatch):
     attrs = dict(span.attributes)
     assert SENTINEL_URL in attrs["error.message"]
     assert any(event.name == "exception" for event in span.events)
+
+
+# Dynaconf only turns lowercase `false` into a bool; values such as `FALSE`, `no`
+# or `off` (e.g. from OTEL__INCLUDE_PR_URL=FALSE) stay non-empty strings.
+_STRING_FALSE_VALUES = ["FALSE", "False ", "no", "off", "0"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", _STRING_FALSE_VALUES)
+async def test_string_false_error_details_keeps_request_content_out(telemetry, value):
+    exporter, _ = telemetry
+    get_settings().set("otel.include_error_details", value)
+
+    await PRAgent()._handle_request("https://example/pr/1", [SENTINEL_URL])
+
+    span = exporter.get_finished_spans()[0]
+    assert "error.message" not in dict(span.attributes)
+    assert SENTINEL_URL not in _all_exported_text(exporter)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", _STRING_FALSE_VALUES)
+async def test_string_false_error_details_does_not_record_exceptions(telemetry, monkeypatch, value):
+    exporter, _ = telemetry
+    get_settings().set("otel.include_error_details", value)
+
+    def exploding(pr_url):
+        raise RuntimeError(f"failed to fetch {SENTINEL_URL}")
+
+    monkeypatch.setattr(pr_agent_module, "apply_repo_settings", exploding)
+
+    await PRAgent().handle_request("https://example/pr/1", "/review")
+
+    span = exporter.get_finished_spans()[0]
+    assert span.events == ()
+    assert SENTINEL_URL not in _all_exported_text(exporter)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", _STRING_FALSE_VALUES)
+async def test_string_false_include_pr_url_keeps_pr_url_out(telemetry, value):
+    exporter, _ = telemetry
+    get_settings().set("otel.include_pr_url", value)
+
+    await PRAgent()._handle_request(SENTINEL_URL, ["unknowncmd"])
+
+    span = exporter.get_finished_spans()[0]
+    assert "pr_agent.pr_url" not in dict(span.attributes)
+    assert SENTINEL_URL not in _all_exported_text(exporter)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [True, "true", "TRUE", "yes", "on"])
+async def test_include_pr_url_opt_in_values(telemetry, value):
+    exporter, _ = telemetry
+    get_settings().set("otel.include_pr_url", value)
+
+    await PRAgent()._handle_request(SENTINEL_URL, ["unknowncmd"])
+
+    span = exporter.get_finished_spans()[0]
+    assert dict(span.attributes)["pr_agent.pr_url"] == SENTINEL_URL

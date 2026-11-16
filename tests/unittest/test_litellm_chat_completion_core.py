@@ -7,6 +7,7 @@ import openai
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
+from pr_agent.algo import instruction_context
 
 
 @pytest.fixture(autouse=True)
@@ -188,7 +189,7 @@ async def test_chat_completion_dead_image_uses_current_help_link(monkeypatch):
             img_path="https://example.test/missing.png",
         )
 
-    assert "https://docs.pr-agent.ai/tools/ask/#ask-on-images" in response
+    assert "https://docs.pr-agent.ai/commands/ask/#ask-on-images" in response
     assert "pr-agent-docs.codium.ai" not in response
     assert finish_reason == "error"
     mock_call.assert_not_awaited()
@@ -667,6 +668,23 @@ def test_request_messages_recognize_routed_user_only_models(monkeypatch, model):
     assert messages == [{"role": "user", "content": "sys\n\n\nusr"}]
 
 
+def test_request_messages_append_protected_system_instructions(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    monkeypatch.setattr(
+        instruction_context,
+        "get_settings",
+        lambda: FakeSettings(config_values={"system_instructions": "TRUSTED POLICY"}),
+    )
+    handler = litellm_handler.LiteLLMAIHandler()
+
+    messages = handler.build_request_messages("gpt-4o", "command instructions", "usr")
+
+    assert messages == [
+        {"role": "system", "content": "command instructions\n\nTRUSTED POLICY"},
+        {"role": "user", "content": "usr"},
+    ]
+
+
 @pytest.mark.asyncio
 async def test_chat_completion_keeps_image_for_user_message_only_models(monkeypatch):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
@@ -1030,7 +1048,7 @@ async def test_chat_completion_streaming_empty_without_length_still_retries(monk
 
 @pytest.mark.asyncio
 async def test_length_truncation_reaches_the_fallback_model(monkeypatch):
-    import pr_agent.algo.pr_processing as pr_processing
+    from pr_agent.algo import pr_processing
 
     monkeypatch.setattr(pr_processing, "_get_all_models", lambda model_type: ["primary", "fallback"])
     monkeypatch.setattr(pr_processing, "_get_all_deployments", lambda models: [None, None])

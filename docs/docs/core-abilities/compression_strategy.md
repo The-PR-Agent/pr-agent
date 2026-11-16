@@ -29,7 +29,7 @@ We prioritize the languages of the repo based on the following criteria:
 In this case, we can fit the entire PR in a single prompt:
 
 1. Exclude binary files and non code files (e.g. images, pdfs, etc)
-2. We Expand the surrounding context of each patch to 3 lines above and below the patch
+2. We Expand the surrounding context of each patch using `config.patch_extra_lines_before` and `config.patch_extra_lines_after` (5 extra lines before and 1 after by default). [Dynamic context](./dynamic_context.md) can extend the preceding context further when an enclosing function or class is found.
 
 ### Large PR
 

@@ -100,7 +100,7 @@ async def test_bitbucket_backlog_reviews_latest_push_without_revalidating_old_ev
     assert not servers_utils._active_push_trigger_states
 
 
-@pytest.mark.parametrize("enabled,valid", [(False, True), (True, False)])
+@pytest.mark.parametrize("enabled,valid", [(False, True), ("false", True), (True, False)])
 async def test_bitbucket_disabled_or_invalid_push_does_not_reserve_slot(push_env, monkeypatch, enabled, valid):
     push_env.set("BITBUCKET_APP.HANDLE_PUSH_TRIGGER", enabled)
     validate = AsyncMock(return_value=valid)
@@ -115,4 +115,4 @@ async def test_bitbucket_disabled_or_invalid_push_does_not_reserve_slot(push_env
         "push_commands", agent, "https://example.test/pr/1", {}, push_payload(1)
     )
     agent.handle_request.assert_not_awaited()
-    assert validate.await_count == int(enabled)
+    assert validate.await_count == int(enabled is True)

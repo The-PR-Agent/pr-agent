@@ -141,6 +141,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     _response_field,
     get_repetition_penalty,
 )
+from pr_agent.algo.instruction_context import append_protected_system_instructions
 from pr_agent.algo.prompt_fragments import render_skills_prefix
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.run_output import get_version
@@ -161,7 +162,7 @@ _IMAGE_HEAD_TIMEOUT_SECONDS = 5
 _IMAGE_NOT_ALIVE_MESSAGE = (
     "The image link is not [alive](img_path).\n"
     "Please repost the original image as a comment, and send the question again with 'quote reply' "
-    "(see [instructions](https://docs.pr-agent.ai/tools/ask/#ask-on-images))."
+    "(see [instructions](https://docs.pr-agent.ai/commands/ask/#ask-on-images))."
 )
 OPENAI_DEFAULT_API_BASE = "https://api.openai.com/v1"
 
@@ -195,6 +196,7 @@ PROVIDER_SETTING_PATHS = {
     "mistral": {"api_key": "MISTRAL.KEY"},
     "moonshot": {"api_key": "MOONSHOT.KEY", "api_base": "MOONSHOT.API_BASE"},
     "ollama": {"api_key": "OLLAMA.API_KEY", "api_base": "OLLAMA.API_BASE"},
+    "opencode_go": {"api_key": "OPENCODE_GO.KEY"},
     "openrouter": {"api_key": "OPENROUTER.KEY", "api_base": "OPENROUTER.API_BASE"},
     "replicate": {"api_key": "REPLICATE.KEY"},
     "sambanova": {"api_key": "SAMBANOVA.KEY"},
@@ -580,6 +582,12 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         if global_settings.get("LITELLM.DISABLE_AIOHTTP", False):
             litellm.disable_aiohttp_transport = True
+        # LiteLLM prints a "Give Feedback / Get Help" banner to stdout for every mapped provider error.
+        if _as_bool_setting(
+            global_settings.get("LITELLM.SUPPRESS_DEBUG_INFO", True),
+            default=True, setting_name="LITELLM.SUPPRESS_DEBUG_INFO",
+        ):
+            litellm.suppress_debug_info = True
         self._initialize_aws_request_credentials(settings)
         # LiteLLM callbacks are process globals, so only deployment settings may set them.
         if global_settings.get("LITELLM.SUCCESS_CALLBACK", None):
@@ -592,7 +600,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         if settings.get("LITELLM.TURN_OFF_MESSAGE_LOGGING", False):
             litellm.turn_off_message_logging = True
         # Keep LiteLLM request spans separate from pr-agent command spans when both OTEL layers are enabled.
-        if self._litellm_otel_callback_enabled() and settings.get("OTEL.IS_ENABLED", False):
+        if self._litellm_otel_callback_enabled() and _as_bool_setting(
+            settings.get("OTEL.IS_ENABLED", False), setting_name="OTEL.IS_ENABLED"
+        ):
             os.environ.setdefault("USE_OTEL_LITELLM_REQUEST_SPAN", "true")
         repetition_penalty = get_repetition_penalty()
         if repetition_penalty is not None:
@@ -2472,6 +2482,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         image_path: str | None = None,
     ) -> list[dict]:
         """Build the exact message payload for normalized prompt strings."""
+        system_prompt = append_protected_system_instructions(system_prompt)
         combine_prompts = (
             self._uses_user_message_only(model)
             or get_settings().config.custom_reasoning_model
@@ -2682,7 +2693,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             return ""
         # Cap the individual values before serialization, so the result stays
         # valid JSON: slicing the serialized string could cut through closing
-        # quotes and braces. 30 chars cover every tool command; 200 chars of
+        # quotes and braces. 30 chars cover every command; 200 chars of
         # pr_url keep the total under 256 with the JSON overhead.
         for key, max_len in (("command", 30), ("pr_url", 200)):
             value = context.get(key)
@@ -2727,6 +2738,36 @@ class LiteLLMAIHandler(BaseAiHandler):
         Returns the deployment ID for the OpenAI API.
         """
         return get_settings().get("OPENAI.DEPLOYMENT_ID", None)
+
+    def prompt_cache_active(self, model: str, *, prompt_tokens: int | None = None) -> bool:
+        """Whether the shared-prefix prompt cache will apply to this model's calls.
+
+        The chunk runners stagger their first call when it is, so sibling chunks read
+        the cache entry the first one writes instead of each writing their own (#4876).
+        Uses the same gates as the request path: injection points configured, a model
+        that honors them, and — when the caller knows the shared prompt's token count —
+        a prefix that clears the model's ``prompt_cache_min_tokens``. Below that
+        minimum Anthropic silently does not cache, so staggering would only add
+        latency. Best effort like the call-time warning: a missing token count or a
+        metadata gap skips the length check, never the call.
+        """
+        points = self._resolve_cache_control_injection_points()
+        # A role: user or index: -1 point caches through the chunk's own diff, so
+        # siblings can never read it and the stagger only adds latency; gate on a
+        # system point to keep it to the shared prefix.
+        if not any(isinstance(point, dict) and point.get("role") == "system" for point in points or []):
+            return False
+        if not self._is_claude_model(model):
+            return False
+        if prompt_tokens is not None:
+            try:
+                min_tokens = litellm.get_model_info(model).get("prompt_cache_min_tokens")
+            except Exception:
+                return True
+            if isinstance(min_tokens, int) and not isinstance(min_tokens, bool) and min_tokens > 0:
+                if prompt_tokens < min_tokens:
+                    return False
+        return True
 
     @staticmethod
     def _resolve_cache_control_injection_points():
@@ -2785,10 +2826,10 @@ class LiteLLMAIHandler(BaseAiHandler):
     def _split_system_prompt_for_skills_cache(self, messages: list[dict], model: str, injection_points) -> None:
         """Add a cache breakpoint at the end of the shared skills prefix (#4007).
 
-        The review tools open their system prompts with an identical skills block, so marking
+        The review commands open their system prompts with an identical skills block, so marking
         that block lets Anthropic read one cache entry across /review, /describe and /improve
-        instead of writing one per tool. The tool-specific remainder keeps its own breakpoint
-        rather than losing it, so a tool that repeats still reads its whole system prompt; the
+        instead of writing one per command. The command-specific remainder keeps its own breakpoint
+        rather than losing it, so a command that repeats still reads its whole system prompt; the
         price is a second breakpoint slot of the four Anthropic allows, not a smaller cache.
         Only applies to Anthropic Claude models when a configured injection point targets the
         system message and the rendered prefix matches; every other request keeps the plain
@@ -3291,6 +3332,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                 if get_settings().litellm.get("add_session_id_to_requests", False):
                     session_id = self._get_request_session_id()
                     if session_id:
+                        # The SDK derives provider session headers, such as OpenCode Go's
+                        # required x-opencode-session, from this parameter, not the proxy header.
+                        kwargs["litellm_session_id"] = session_id
                         headers = dict(kwargs.get("headers") or {})
                         if not any(name.lower() == "x-litellm-session-id" for name in headers):
                             headers["x-litellm-session-id"] = session_id

@@ -9,7 +9,7 @@ review, it is ``/review`` failing outright on every PR.
 
 These tests derive the requirement from the templates (via
 ``jinja2.meta.find_undeclared_variables``) instead of restating it, and check it
-against the dict the tool actually builds by driving the real
+against the dict the command actually builds by driving the real
 ``PRReviewer.__init__``.
 """
 
@@ -21,13 +21,13 @@ from jinja2 import Environment, StrictUndefined, meta, select_autoescape
 from jinja2.sandbox import SandboxedEnvironment
 
 from pr_agent.algo.artifacts import prompt_boundary_markers
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 
 def _build_reviewer(monkeypatch):
     """Run the real ``PRReviewer.__init__`` so ``self.vars`` is the shipped dict."""
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     provider = MagicMock()
     provider.is_supported.return_value = True
@@ -128,6 +128,30 @@ def test_user_prompt_contributes_variables_of_its_own(monkeypatch):
     assert user_referenced - (set(reviewer.vars) - {dropped}) == {dropped}
 
 
+@pytest.mark.parametrize("repo_context", ["", "<file path=\"docs/adr/0001.md\">Use UTC.</file>"])
+def test_pr_review_prompt_gates_standards_rules(monkeypatch, repo_context):
+    reviewer = _build_reviewer(monkeypatch)
+    variables = dict(reviewer.vars, repo_context=repo_context, skills_context="")
+    environment = Environment(autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
+
+    rendered = environment.from_string(get_settings().pr_review_prompt.system).render(variables)
+
+    assert ("Standards compliance" in rendered) is bool(repo_context)
+
+
+@pytest.mark.parametrize("threshold,asks_for_confidence", [(0, False), (5, True)])
+def test_pr_review_prompt_asks_for_a_confidence_only_when_filtering(monkeypatch, threshold, asks_for_confidence):
+    monkeypatch.setitem(get_settings().pr_reviewer, "min_finding_confidence", threshold)
+    reviewer = _build_reviewer(monkeypatch)
+    environment = Environment(autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
+
+    rendered = environment.from_string(get_settings().pr_review_prompt.system).render(reviewer.vars)
+
+    assert ("confidence: int" in rendered) is asks_for_confidence
+    assert ("confidence: 8" in rendered) is asks_for_confidence
+    assert "Below 50" not in rendered
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_failure_modes_prompt_follows_captured_setting(monkeypatch, enabled):
     settings = get_settings()
@@ -153,6 +177,44 @@ def test_failure_modes_prompt_follows_captured_setting(monkeypatch, enabled):
     if enabled:
         assert "max_items=3" in system
         assert "Return an empty list when no concrete scenario is supported" in system
+
+
+_PLAN_ARTIFACT = {
+    "label": "plan.txt",
+    "content": "# aws_s3_bucket.exports will be destroyed",
+    "instructions": "Report planned destroys.",
+    "start_marker": "<<<CI_ARTIFACT_BEGIN>>>",
+    "end_marker": "<<<CI_ARTIFACT_END>>>",
+}
+
+
+@pytest.mark.parametrize(("setting", "artifact", "enabled"), [
+    (False, _PLAN_ARTIFACT, False),
+    (True, None, False),
+    ("false", _PLAN_ARTIFACT, False),
+    (True, _PLAN_ARTIFACT, True),
+    ("true", _PLAN_ARTIFACT, True),
+])
+def test_artifact_findings_prompt_needs_the_setting_and_an_artifact(monkeypatch, setting, artifact, enabled):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    monkeypatch.setattr(pr_reviewer_module, "get_artifact_context", lambda command_name: artifact)
+    settings = get_settings()
+    original = settings.pr_reviewer.get("require_artifact_findings", False)
+    try:
+        settings.pr_reviewer.require_artifact_findings = setting
+        reviewer = _build_reviewer(monkeypatch)
+    finally:
+        settings.pr_reviewer.require_artifact_findings = original
+    assert reviewer.vars["require_artifact_findings"] is enabled
+    reviewer.vars["duplicate_prompt_examples"] = True
+    environment = Environment(autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
+    system = environment.from_string(settings.pr_review_prompt.system).render(reviewer.vars)
+    user = environment.from_string(settings.pr_review_prompt.user).render(reviewer.vars)
+    assert ("class ArtifactFinding(BaseModel):" in system) is enabled
+    assert ("artifact_findings: List[ArtifactFinding]" in system) is enabled
+    for prompt in (system, user):
+        assert ("\n  artifact_findings:" in prompt) is enabled
 
 
 def test_artifact_context_is_untrusted_user_input(monkeypatch):
@@ -306,7 +368,7 @@ def _assert_fenced(user, variables, before, after):
 
 
 def _build_suggestions(monkeypatch, commit_messages, decouple_hunks, args=None, supports_incremental=False):
-    from pr_agent.tools import pr_code_suggestions as pr_code_suggestions_module
+    from pr_agent.commands import pr_code_suggestions as pr_code_suggestions_module
 
     provider = MagicMock()
     provider.pr.title = "Title sentinel"
@@ -334,8 +396,6 @@ def test_review_commit_context(monkeypatch, trim_blocks, estimate_time, commit_m
         require_estimate_contribution_time_cost=estimate_time,
         commit_messages_str=commit_messages,
         description="Description sentinel",
-        question_str="Question sentinel",
-        answer_str="Answer sentinel",
         previous_findings="Finding sentinel",
         diff="Diff sentinel",
     )
@@ -348,7 +408,7 @@ def test_review_commit_context(monkeypatch, trim_blocks, estimate_time, commit_m
     empty_user = environment.from_string(template.user).render(empty_vars)
     if commit_messages.strip():
         assert commit_messages.strip() not in system
-        _assert_fenced(user, reviewer.vars, "Description sentinel", "Question sentinel")
+        _assert_fenced(user, reviewer.vars, "Description sentinel", "Finding sentinel")
         assert user.index("Finding sentinel") < user.index("Diff sentinel")
     else:
         assert _COMMIT_LABEL not in user
@@ -365,7 +425,7 @@ def test_review_commit_markers_are_unpredictable(monkeypatch):
 
 @pytest.mark.parametrize("args,expected", [(None, "1. Fix the parser"), (["-i"], "")])
 def test_incremental_review_leaves_out_the_full_commit_list(monkeypatch, args, expected):
-    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
     provider = MagicMock()
     provider.get_languages.return_value = {}
@@ -415,7 +475,7 @@ def test_improve_commit_context(prompt_name, trim_blocks, date, commit_messages)
 
 
 @pytest.mark.parametrize("decouple_hunks", [True, False])
-def test_improve_tool_renders_commit_messages_into_its_prompt(monkeypatch, decouple_hunks):
+def test_improve_command_renders_commit_messages_into_its_prompt(monkeypatch, decouple_hunks):
     suggestions = _build_suggestions(monkeypatch, _FAKE_END, decouple_hunks)
     environment = SandboxedEnvironment(undefined=StrictUndefined)
 
@@ -432,3 +492,67 @@ def test_incremental_improve_leaves_out_the_full_commit_list(monkeypatch, args, 
     suggestions = _build_suggestions(monkeypatch, _FAKE_END, True, args, supports_incremental)
 
     assert suggestions.vars["commit_messages_str"] == expected
+
+
+def _render_review_prompt(variables, half="system"):
+    environment = Environment(autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
+    return environment.from_string(getattr(get_settings().pr_review_prompt, half)).render(variables)
+
+
+def test_prompt_schema_lists_fix_fields(monkeypatch):
+    system = _render_review_prompt(_build_reviewer(monkeypatch).vars)
+
+    assert "    existing_code: Optional[str] = Field(" in system
+    assert "    improved_code: Optional[str] = Field(" in system
+    assert "      existing_code: |" in system
+    assert "      improved_code: |" in system
+    assert "Include whenever a concrete code change of at most 10 lines fixes this issue" in system
+
+
+def test_prompt_keeps_word_for_word_rule(monkeypatch):
+    reviewer = _build_reviewer(monkeypatch)
+    reviewer.vars["previous_findings"] = '[{"finding_id": "a1"}]'
+
+    user = _render_review_prompt(reviewer.vars, "user")
+
+    assert "report it again with the same issue_header and issue_content, word for word" in user
+    assert "then with the same issue_header and issue_content, word for word, like an active finding" in user
+    assert "Do not report it again unless the current code makes it worse, and then with the same issue_header" in user
+
+
+@pytest.mark.parametrize("previous_findings", ["", '[{"finding_id": "a1"}]'])
+@pytest.mark.parametrize("duplicate_prompt_examples", [False, True])
+def test_prompt_renders_with_all_vars(monkeypatch, previous_findings, duplicate_prompt_examples):
+    reviewer = _build_reviewer(monkeypatch)
+    reviewer.vars["previous_findings"] = previous_findings
+    reviewer.vars["duplicate_prompt_examples"] = duplicate_prompt_examples
+
+    for half in ("system", "user"):
+        assert _render_review_prompt(reviewer.vars, half).strip()
+
+
+def test_prompt_excludes_low_value_fix_findings(monkeypatch):
+    system = _render_review_prompt(_build_reviewer(monkeypatch).vars)
+
+    assert "unused imports or a narrower exception type, unless a broad handler hides a real failure" in system
+
+
+@pytest.mark.parametrize(
+    ("review_extra", "suggestions_extra", "expected"),
+    [
+        ("Use British English.", "Use British English.", "Use British English."),
+        ("Use British English.", "Mention tests.", "Use British English.\n\nMention tests."),
+        ("", "Mention tests.", "Mention tests."),
+        ("Use British English.", "", "Use British English."),
+        ("Use British English.\n======\n\nCI failed.", "CI failed.", "Use British English.\n======\n\nCI failed."),
+        ("Use British English.", "   ", "Use British English."),
+        ("Use British English.", 7, "Use British English.\n\n7"),
+    ],
+)
+def test_ci_extra_instructions_not_duplicated(monkeypatch, review_extra, suggestions_extra, expected):
+    monkeypatch.setitem(get_settings().pr_reviewer, "extra_instructions", review_extra)
+    monkeypatch.setitem(get_settings().pr_code_suggestions, "extra_instructions", suggestions_extra)
+
+    reviewer = _build_reviewer(monkeypatch)
+
+    assert reviewer.vars["extra_instructions"] == expected

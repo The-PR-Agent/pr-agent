@@ -3,8 +3,8 @@ import copy
 import pytest
 
 from pr_agent.algo.run_output import show_relevant_configurations
+from pr_agent.commands.pr_config import PRConfig
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_config import PRConfig
 
 
 def _rendered_keys(section):

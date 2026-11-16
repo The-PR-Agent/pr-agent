@@ -5,9 +5,9 @@ import pytest
 
 from pr_agent.algo import output_sinks
 from pr_agent.algo.run_output import push_outputs
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.github_provider import GithubProvider
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 PR_IDENTITY = {
     "url": "https://github.com/org/repo/pull/123",
@@ -68,7 +68,7 @@ async def test_reviewer_sink_uses_provider_identity_and_redacts_url_credentials(
     async def deliver(message_type, **kwargs):
         push_outputs(message_type, **kwargs)
 
-    monkeypatch.setattr("pr_agent.tools.pr_reviewer.push_outputs_async", deliver)
+    monkeypatch.setattr("pr_agent.commands.pr_reviewer.push_outputs_async", deliver)
     await reviewer._deliver_sink_output()
 
     record = json.loads(out.read_text(encoding='utf-8'))

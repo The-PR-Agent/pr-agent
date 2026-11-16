@@ -1,0 +1,5 @@
+# CI builder: CPython 3.12, Linux x86_64 wheels only. Install with --require-hashes --only-binary :all:.
+tree-sitter-language-pack==1.22.1 \
+    --hash=sha256:8a476b71c2f6c71f23b0b63f5ff6f72a8ba2c11901db63c360ebcaf1fc51af5c
+tree-sitter==0.26.0 \
+    --hash=sha256:5a6b333b0282d8bb0af741f9b018bd2523d4eecb2686bf6717066a625fecfaa4

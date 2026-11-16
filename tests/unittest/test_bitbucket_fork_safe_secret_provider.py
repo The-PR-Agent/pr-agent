@@ -5,8 +5,8 @@ import sys
 
 import pytest
 
-import pr_agent.secret_providers as secret_providers
-import pr_agent.servers.bitbucket_app as bitbucket_app
+from pr_agent import secret_providers
+from pr_agent.servers import bitbucket_app
 
 
 class FakeSecretProvider:

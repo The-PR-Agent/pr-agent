@@ -86,12 +86,13 @@ def _paths_from_patch_headers(patch: str) -> tuple[str, str] | None:
     rename_old = rename_new = None
     file_old = file_new = None
     for line in patch.split("\n"):
+        line = line.removesuffix("\r")
         if line.startswith("@@"):
             break
         if line.startswith("rename from "):
-            rename_old = line[len("rename from "):].strip()
+            rename_old = line[len("rename from "):]
         elif line.startswith("rename to "):
-            rename_new = line[len("rename to "):].strip()
+            rename_new = line[len("rename to "):]
         elif line.startswith("--- "):
             file_old = line[len("--- "):].split("\t", 1)[0]
         elif line.startswith("+++ "):
@@ -316,7 +317,8 @@ class BitbucketProvider(GitProvider):
         if repo_git_url:
             parsed_git_url = urlparse(repo_git_url)
             scheme_and_netloc = parsed_git_url.scheme + "://" + parsed_git_url.netloc
-            repo_path = parsed_git_url.path.split('.git')[0][1:] #/<workspace>/<repo>.git -> <workspace>/<repo>
+            #/<workspace>/<repo>.git -> <workspace>/<repo>
+            repo_path = parsed_git_url.path.rstrip('/').removesuffix('.git')[1:]
             if repo_path.count('/') != 1:
                 get_logger().error(f"repo_git_url is not a valid git repo url: {repo_git_url}")
                 return ("", "")
@@ -372,7 +374,13 @@ class BitbucketProvider(GitProvider):
         get_logger().error(f"Bitbucket failed to publish code suggestion, error: {error}")
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ['publish_inline_comments', 'get_labels', 'gfm_markdown']:
+        if capability in [
+            'get_labels',
+            'gfm_markdown',
+            'head_ci_status',
+            'head_staleness',
+            'author_human_check',
+        ]:
             return False
         if capability == "push_code":
             return not get_settings().config.restricted_mode and self._pr_head_in_base_repo()
@@ -432,7 +440,9 @@ class BitbucketProvider(GitProvider):
             return self.git_files
 
     def get_diff_files(self) -> list[FilePatchInfo]:
-        if self.diff_files:
+        # `is not None`: an empty diff is a completed result and caches like any other,
+        # so repeated calls within a command make one diffstat + diff round trip.
+        if self.diff_files is not None:
             self._pending_diffstat = None
             return self.diff_files
 
@@ -457,24 +467,15 @@ class BitbucketProvider(GitProvider):
 
         # get the pr patches
         try:
-            pr_patches = self.pr.diff()
+            diff_split = _split_raw_diff(self.pr.diff())
         except Exception as e:
-            # Try different encodings if UTF-8 fails
-            get_logger().warning(f"Failed to decode PR patch with utf-8, error: {e}")
-            encodings_to_try = ['iso-8859-1', 'latin-1', 'ascii', 'utf-16']
-            pr_patches = None
-            for encoding in encodings_to_try:
-                try:
-                    pr_patches = self.pr.diff(encoding=encoding)
-                    get_logger().info(f"Successfully decoded PR patch with encoding {encoding}")
-                    break
-                except UnicodeDecodeError:
-                    continue
+            # A file that is not UTF-8 fails the decode of the whole diff. Read it as ISO-8859-1, which maps every
+            # byte to one character, and decode each file on its own, so the other files keep their UTF-8 text.
+            get_logger().warning(
+                f"Failed to get the PR diff as UTF-8 ({type(e).__name__}: {e}), decoding each file on its own")
+            pr_patches = self.pr.diff(encoding='iso-8859-1')
+            diff_split = [decode_if_bytes(patch.encode('iso-8859-1')) for patch in _split_raw_diff(pr_patches)]
 
-            if pr_patches is None:
-                raise ValueError(f"Failed to decode PR patch with encodings {encodings_to_try}") from e
-
-        diff_split = _split_raw_diff(pr_patches)
         patches_by_path = {}
         for patch in diff_split:
             paths = _diff_header_paths(patch)
@@ -755,9 +756,6 @@ class BitbucketProvider(GitProvider):
         # A partial failure must not report failure: the caller republishes the whole
         # list, which would post the already-accepted suggestions a second time.
         return published_count > 0 or publishable_count == 0
-
-    def get_title(self):
-        return self.pr.title
 
     @cache_languages
     def get_languages(self):

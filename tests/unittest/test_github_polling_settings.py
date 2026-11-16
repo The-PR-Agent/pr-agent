@@ -50,29 +50,6 @@ def test_process_comment_sync_scopes_settings_per_comment():
     assert global_settings.get("pr_description.publish_description_as_comment") == describe_as_comment_before
 
 
-@pytest.mark.asyncio
-async def test_process_comment_scopes_settings_per_comment():
-    captured = {}
-
-    async def fake_handle_request(pr_url, request, notify=None):
-        settings = get_settings()
-        captured["settings"] = settings
-        captured["publish_progress"] = settings.get("CONFIG.PUBLISH_OUTPUT_PROGRESS")
-        settings.set("config.leaky_test_key_async", "from-another-pr")
-        return True
-
-    agent = MagicMock()
-    agent.handle_request = AsyncMock(side_effect=fake_handle_request)
-
-    with patch.object(github_polling, "PRAgent", return_value=agent):
-        await github_polling.process_comment("https://example/pr/2", "/describe", 456)
-
-    agent.handle_request.assert_awaited_once()
-    assert captured["settings"] is not global_settings
-    assert captured["publish_progress"] is False
-    assert global_settings.get("config.leaky_test_key_async", None) is None
-
-
 def test_consecutive_comments_do_not_share_state():
     tickets_before = global_settings.get("related_tickets", None)
     seen = []
@@ -95,15 +72,17 @@ def test_consecutive_comments_do_not_share_state():
     assert global_settings.get("related_tickets", None) == tickets_before
 
 
-@pytest.mark.asyncio
-async def test_failed_comment_does_not_pin_settings_on_the_calling_context():
+def test_failed_comment_does_not_pin_settings_on_the_calling_context():
     # request_cycle_context has no try/finally around its yield, so an exception
     # crossing the with-body would skip the ContextVar reset and leave this
     # comment's settings active for everything that runs later in the task.
     settings_before = get_settings()
 
-    with patch.object(github_polling, "PRAgent", side_effect=ValueError("bad PR url")):
-        await github_polling.process_comment("https://example/pr/3", "/review", 789)
+    with (
+        patch.object(github_polling, "async_handle_request", side_effect=ValueError("bad PR url")),
+        patch.object(github_polling, "litellm_callbacks_registered", return_value=False),
+    ):
+        github_polling.process_comment_sync("https://example/pr/3", "/review", 789)
 
     assert get_settings() is settings_before
 
@@ -118,28 +97,6 @@ def test_cancellation_does_not_pin_settings_on_the_calling_context():
             github_polling.process_comment_sync("https://example/pr/4", "/review", 999)
 
     assert get_settings() is settings_before
-
-
-@pytest.mark.asyncio
-async def test_async_polling_gets_provider_only_when_notifying():
-    provider = MagicMock()
-    agent = MagicMock()
-
-    async def handle(pr_url, command, notify):
-        getter.assert_not_called()
-        notify()
-        return True
-
-    agent.handle_request = AsyncMock(side_effect=handle)
-    with (
-        patch.object(github_polling, "get_git_provider", side_effect=AssertionError("eager provider")),
-        patch.object(github_polling, "get_git_provider_with_context", return_value=provider) as getter,
-        patch.object(github_polling, "PRAgent", return_value=agent),
-    ):
-        await github_polling.process_comment("https://example/pr/5", "/review", 5)
-
-    getter.assert_called_once_with("https://example/pr/5")
-    provider.add_eyes_reaction.assert_called_once_with(5)
 
 
 def test_sync_polling_gets_provider_only_when_notifying():
@@ -162,3 +119,30 @@ def test_sync_polling_gets_provider_only_when_notifying():
 
     getter.assert_called_once_with("https://example/pr/6")
     provider.add_eyes_reaction.assert_called_once_with(6)
+
+
+@pytest.mark.parametrize("base_url, expected", [
+    (None, "https://api.github.com/notifications"),
+    ("https://github.example.com/api/v3/", "https://github.example.com/api/v3/notifications"),
+    ("https://api.octo.ghe.com", "https://api.octo.ghe.com/notifications"),
+])
+def test_notifications_url_follows_github_base_url(base_url, expected):
+    if base_url is None:
+        global_settings.unset("github.base_url")
+    else:
+        global_settings.set("github.base_url", base_url)
+    assert github_polling._notifications_url() == expected
+
+
+@pytest.mark.asyncio
+async def test_mark_notification_as_read_uses_github_base_url():
+    global_settings.set("github.base_url", "https://api.octo.ghe.com")
+    response = MagicMock(status=205)
+    session = MagicMock()
+    session.patch.return_value.__aenter__ = AsyncMock(return_value=response)
+    session.patch.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    await github_polling.mark_notification_as_read({"Authorization": "Bearer t"}, {"id": "42"}, session)
+
+    session.patch.assert_called_once_with("https://api.octo.ghe.com/notifications/threads/42",
+                                          headers={"Authorization": "Bearer t"})

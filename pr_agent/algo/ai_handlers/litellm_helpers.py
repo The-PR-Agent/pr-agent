@@ -266,7 +266,7 @@ def _process_litellm_extra_body(kwargs: dict) -> dict:
     Raises:
         ValueError: If extra_body contains invalid JSON, unsupported keys, or colliding keys
     """
-    allowed_extra_body_keys = {"processing_mode", "service_tier", "chat_template_kwargs"}
+    allowed_extra_body_keys = {"processing_mode", "service_tier", "chat_template_kwargs", "thinking_token_budget"}
     extra_body = getattr(getattr(get_settings(), "litellm", None), "extra_body", None)
     if extra_body:
         try:
@@ -382,7 +382,7 @@ def _resolve_litellm_callbacks(callback):
                 loggers.append(service_datadog_logger)
         return loggers
     try:
-        import litellm.litellm_core_utils.litellm_logging as litellm_logging
+        from litellm.litellm_core_utils import litellm_logging
     except ImportError:
         return []
     try:

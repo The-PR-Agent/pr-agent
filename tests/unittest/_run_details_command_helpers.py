@@ -1,6 +1,6 @@
 """Shared scaffolding for the run-details command coverage tests.
 
-Tests built on these helpers drive the tool's real run() through the real
+Tests built on these helpers drive the command's real run() through the real
 retry_with_fallback_models, stubbing only the per-model prediction call, so the recorded
 model (and fallback flag) comes from the production recording path. Each test module wraps
 its tests in ``command_run_settings()`` through a module-level autouse fixture.
@@ -25,7 +25,7 @@ _TRACKED_KEYS = (
     "config.output_run_cost",
     "config.output_relevant_configurations",
     "config.publish_output",
-    "config.propagate_tool_errors",
+    "config.propagate_command_errors",
     "model_routing.enable",
     "openai.deployment_id",
     "openai.fallback_deployments",
@@ -53,7 +53,7 @@ def command_run_settings():
     settings.set("config.output_run_cost", False)
     settings.set("config.output_relevant_configurations", False)
     settings.set("config.publish_output", True)
-    settings.set("config.propagate_tool_errors", True)
+    settings.set("config.propagate_command_errors", True)
     settings.set("model_routing.enable", False)
     settings.set("openai.deployment_id", None)
     settings.set("openai.fallback_deployments", [])
@@ -79,7 +79,7 @@ def _seed_stale_fallback_run():
 
 
 def _published_bodies(provider):
-    """Every non-temporary comment and thread reply the tool published, in order."""
+    """Every non-temporary comment and thread reply the command published, in order."""
     bodies = [c.args[0] for c in provider.publish_comment.call_args_list if not c.kwargs.get("is_temporary")]
     bodies += [c.args[1] for c in provider.reply_to_comment_from_comment_id.call_args_list]
     return bodies

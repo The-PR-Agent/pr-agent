@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import pr_agent.tools.pr_similar_issue as psi
+import pr_agent.commands.pr_similar_issue as psi
 
 CREDENTIALS_MESSAGE = "Please set qdrant url and api key in secrets file"
 
@@ -63,7 +63,7 @@ def _install_fakes(monkeypatch, settings, repo):
     monkeypatch.setattr(psi, "get_settings", lambda: settings)
 
 
-def _build_tool(monkeypatch, settings, repo=None):
+def _build_command(monkeypatch, settings, repo=None):
     repo = repo or _Repo()
     _install_fakes(monkeypatch, settings, repo)
     return repo, psi.PRSimilarIssue("https://github.com/org/repo/issues/42", ai_handler=None)
@@ -72,25 +72,25 @@ def _build_tool(monkeypatch, settings, repo=None):
 def test_blank_qdrant_url_is_treated_as_unset(monkeypatch):
     """A blank url from the secrets template raises instead of targeting localhost."""
     with pytest.raises(Exception, match=CREDENTIALS_MESSAGE):
-        _build_tool(monkeypatch, _Settings(cli_mode=True, url=""))
+        _build_command(monkeypatch, _Settings(cli_mode=True, url=""))
 
 
 def test_blank_url_and_blank_api_key_raise(monkeypatch):
     """The secrets template ships both values blank; url alone decides, so this raises too."""
     with pytest.raises(Exception, match=CREDENTIALS_MESSAGE):
-        _build_tool(monkeypatch, _Settings(cli_mode=True, url="", api_key=""))
+        _build_command(monkeypatch, _Settings(cli_mode=True, url="", api_key=""))
 
 
 def test_missing_qdrant_url_still_raises(monkeypatch):
     """An absent url keeps the pre-existing behaviour of raising the guidance error."""
     with pytest.raises(Exception, match=CREDENTIALS_MESSAGE):
-        _build_tool(monkeypatch, _Settings(cli_mode=True, url=None))
+        _build_command(monkeypatch, _Settings(cli_mode=True, url=None))
 
 
 def test_blank_url_in_app_mode_posts_the_guidance_comment(monkeypatch):
     """App mode posts the guidance comment on the issue before raising."""
     repo = _Repo()
     with pytest.raises(Exception, match=CREDENTIALS_MESSAGE):
-        _build_tool(monkeypatch, _Settings(cli_mode=False, url=""), repo=repo)
+        _build_command(monkeypatch, _Settings(cli_mode=False, url=""), repo=repo)
 
     assert repo.recorder.posted == [CREDENTIALS_MESSAGE]

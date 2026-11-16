@@ -16,7 +16,7 @@ import openai
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
-import pr_agent.algo.ai_handlers.litellm_helpers as litellm_helpers
+from pr_agent.algo.ai_handlers import litellm_helpers
 from pr_agent.algo.ai_handlers.litellm_ai_handler import DUMMY_LITELLM_API_KEY, LiteLLMAIHandler
 
 
@@ -241,7 +241,7 @@ async def _assert_native_azure_ad_auth(
         })
 
     monkeypatch.setattr(azure_common, "get_secret_str", assertion)
-    monkeypatch.setattr(litellm.module_level_client, "post", exchange)
+    monkeypatch.setattr(azure_common.HTTPHandler, "post", staticmethod(exchange))
     handler = LiteLLMAIHandler()
     second_handler = None
     if concurrent_handlers:
@@ -430,10 +430,12 @@ async def test_azure_header_adapter_does_not_touch_other_transports(model):
 
 @pytest.mark.asyncio
 async def test_azure_oidc_exchange_failure_cannot_use_guard_key(monkeypatch, native_azure_oidc):
+    from litellm.llms.azure import common_utils as azure_common
+
     state = native_azure_oidc
     handler = LiteLLMAIHandler()
     exchange = MagicMock(side_effect=RuntimeError("exchange failed"))
-    monkeypatch.setattr(litellm.module_level_client, "post", exchange)
+    monkeypatch.setattr(azure_common.HTTPHandler, "post", staticmethod(exchange))
     with pytest.raises(litellm.APIError, match="exchange failed"):
         await state.invoke(handler)
     exchange.assert_called_once()
@@ -546,7 +548,7 @@ async def native_azure_oidc(monkeypatch):
         return state.sent[-1].headers.get("Authorization")
 
     state.invoke = invoke
-    monkeypatch.setattr(litellm.module_level_client, "post", exchange)
+    monkeypatch.setattr(azure_common.HTTPHandler, "post", staticmethod(exchange))
     monkeypatch.setattr(httpx.AsyncClient, "send", send)
     worker = logging_worker.LoggingWorker()
     atexit.unregister(worker._flush_on_exit)
@@ -664,7 +666,7 @@ async def test_native_azure_token_executor_boundary(
     if transport == "v1":
         state.expected_url = f"{endpoint}/openai/v1/chat/completions"
     elif transport == "responses":
-        state.expected_url = f"{endpoint}/openai/responses?api-version={version}"
+        state.expected_url = f"{endpoint}/openai/v1/responses?api-version=preview"
     elif transport.startswith("cloudflare"):
         suffix = "gpt-3.5-turbo-instruct/completions" if transport.endswith("text") else "gpt-4o/chat/completions"
         state.expected_url = f"{endpoint}/{suffix}?api-version={version}"
@@ -707,7 +709,8 @@ async def test_native_azure_oidc_scope_cache(monkeypatch, native_azure_oidc, ide
         monkeypatch.delenv("AZURE_SCOPE")
     native_key = json.dumps({
         "azure_client_id": "owned-client", "azure_tenant_id": "owned-tenant",
-        "azure_authority_host": "https://owned-authority.example", "oidc_token": "owned-assertion",
+        "azure_authority_host": "https://owned-authority.example", "scope": state.inputs["AZURE_SCOPE"],
+        "oidc_token": "owned-assertion",
     })
     if identity == "legacy":
         state.cache.set_cache(native_key, "old-unnamespaced-token", ttl=3600)
@@ -739,7 +742,7 @@ async def test_native_azure_oidc_assertion_rotation(monkeypatch, native_azure_oi
     # Responses executes token selection per request, so this exercises the
     # token cache independently of native SDK client reuse (covered below).
     state.response_kind = "responses"
-    state.expected_url = "https://owned.openai.azure.com/openai/responses?api-version=2024-06-01"
+    state.expected_url = "https://owned.openai.azure.com/openai/v1/responses?api-version=preview"
     model = "azure/responses/gpt-4o"
     if refresh == "expiry":
         state.ttl = -1
@@ -805,7 +808,7 @@ async def test_native_azure_oidc_bridge_responses(monkeypatch, native_azure_oidc
 
     state = native_azure_oidc
     state.response_kind = "responses"
-    state.expected_url = "https://owned.openai.azure.com/openai/responses?api-version=2024-06-01"
+    state.expected_url = "https://owned.openai.azure.com/openai/v1/responses?api-version=preview"
     handler = LiteLLMAIHandler()
     for field in ("AZURE_CLIENT_ID", "AZURE_TENANT_ID"):
         if mutation == "removed":
@@ -832,7 +835,7 @@ async def test_native_azure_oidc_bridge_responses(monkeypatch, native_azure_oidc
 async def test_native_azure_ad_responses_guard(monkeypatch, native_azure_oidc, entrypoint, key, ambient):
     state = native_azure_oidc
     state.response_kind = "responses"
-    state.expected_url = "https://owned.openai.azure.com/openai/responses?api-version=2024-06-01"
+    state.expected_url = "https://owned.openai.azure.com/openai/v1/responses?api-version=preview"
     state.expected_api_key = key
     monkeypatch.setenv("AZURE_AD_TOKEN", "owned-ad-token")
     monkeypatch.setattr(litellm, "enable_azure_ad_token_refresh", False)
@@ -863,7 +866,7 @@ async def test_native_azure_ad_responses_companion(monkeypatch, native_azure_oid
 
     state = native_azure_oidc
     state.response_kind = "responses"
-    state.expected_url = "https://owned.openai.azure.com/openai/responses?api-version=2024-06-01"
+    state.expected_url = "https://owned.openai.azure.com/openai/v1/responses?api-version=preview"
     monkeypatch.setenv("AZURE_AD_TOKEN", "owned-ad-token")
     monkeypatch.setattr(litellm, "enable_azure_ad_token_refresh", refresh)
     fields = {"AZURE_CLIENT_SECRET": "owned-secret"} if source == "client_secret" else {
@@ -911,7 +914,7 @@ async def test_native_azure_ad_responses_scopes_companion_client_cache(monkeypat
 
     state = native_azure_oidc
     state.response_kind = "responses"
-    state.expected_url = "https://owned.openai.azure.com/openai/responses?api-version=2024-06-01"
+    state.expected_url = "https://owned.openai.azure.com/openai/v1/responses?api-version=preview"
     monkeypatch.setenv("AZURE_AD_TOKEN", "shared-ad-token")
     monkeypatch.setenv("AZURE_CLIENT_SECRET", "first-secret")
     monkeypatch.setattr(litellm, "enable_azure_ad_token_refresh", True)
@@ -1076,6 +1079,7 @@ async def native_companion_auth(monkeypatch, native_azure_oidc):
 
     caches = [litellm.in_memory_llm_clients_cache]
     common_utils._cached_entra_id_token_provider.cache_clear()
+    common_utils._cached_username_password_token_provider.cache_clear()
 
     def deny_auth_http(*args, **kwargs):
         raise AssertionError("Unexpected authentication HTTP")
@@ -1086,6 +1090,7 @@ async def native_companion_auth(monkeypatch, native_azure_oidc):
         yield caches
     finally:
         common_utils._cached_entra_id_token_provider.cache_clear()
+        common_utils._cached_username_password_token_provider.cache_clear()
         clients = {id(value): value for cache in caches for value in cache.cache_dict.values()}
         for client in clients.values():
             result = client.close()
@@ -1128,7 +1133,7 @@ async def test_native_tokenless_azure_companion(
     elif transport == "responses":
         model = "azure/responses/gpt-4o"
         state.response_kind = "responses"
-        state.expected_url = f"{endpoint}/openai/responses?api-version={version}"
+        state.expected_url = f"{endpoint}/openai/v1/responses?api-version=preview"
     elif transport == "text":
         model = "azure_text/gpt-3.5-turbo-instruct"
         state.response_kind = "text"
@@ -1386,7 +1391,7 @@ async def test_native_azure_ad_responses_context(monkeypatch, native_azure_oidc,
 
     state = native_azure_oidc
     state.response_kind = "responses"
-    state.expected_url = "https://owned.openai.azure.com/openai/responses?api-version=2024-06-01"
+    state.expected_url = "https://owned.openai.azure.com/openai/v1/responses?api-version=preview"
     monkeypatch.setattr(litellm, "enable_azure_ad_token_refresh", False)
     handlers = []
     for token in ("first-token", "second-token"):
@@ -1493,7 +1498,7 @@ async def test_native_azure_oidc_auth_sources(monkeypatch, native_azure_oidc, tr
     model = "azure/gpt-4o"
     if transport == "responses":
         state.response_kind = "responses"
-        state.expected_url = "https://owned.openai.azure.com/openai/responses?api-version=2024-06-01"
+        state.expected_url = "https://owned.openai.azure.com/openai/v1/responses?api-version=preview"
         model = "azure/responses/gpt-4o"
     expected = "provider-token" if timing == "initial" and transport in {"v1", "responses"} else "exchanged-token-1"
     assert await state.invoke(handler, guard_key=guard_key, model=model) == f"Bearer {expected}"
@@ -1554,7 +1559,7 @@ async def test_native_azure_oidc_companion_authority(monkeypatch, native_azure_o
         state.expected_url = "https://owned.openai.azure.com/openai/v1/chat/completions"
     else:
         state.response_kind = "responses"
-        state.expected_url = "https://owned.openai.azure.com/openai/responses?api-version=2024-06-01"
+        state.expected_url = "https://owned.openai.azure.com/openai/v1/responses?api-version=preview"
         model = "azure/responses/gpt-4o"
     first = LiteLLMAIHandler()
     monkeypatch.setenv("AZURE_AUTHORITY_HOST", "https://foreign-authority.example")
@@ -1597,7 +1602,7 @@ async def test_native_azure_oidc_companion_authority_default(monkeypatch, native
     monkeypatch.setattr(ClientSecretCredential, "get_token_info", acquire_token)
     monkeypatch.setattr(UsernamePasswordCredential, "get_token_info", acquire_token)
     state.response_kind = "responses"
-    state.expected_url = "https://owned.openai.azure.com/openai/responses?api-version=2024-06-01"
+    state.expected_url = "https://owned.openai.azure.com/openai/v1/responses?api-version=preview"
     handler = LiteLLMAIHandler()
     monkeypatch.setenv("AZURE_AUTHORITY_HOST", "https://foreign-authority.example")
     if captured == "":
@@ -1696,7 +1701,7 @@ async def test_native_azure_oidc_bridge_api_key_winner(monkeypatch, native_azure
         state.expected_url = f"{endpoint}/gpt-4o/chat/completions?api-version=2024-06-01"
     else:
         state.response_kind = "responses"
-        state.expected_url = f"{endpoint}/openai/responses?api-version=2024-06-01"
+        state.expected_url = f"{endpoint}/openai/v1/responses?api-version=preview"
     settings = {
         "OPENAI.API_TYPE": "azure", "OPENAI.API_BASE": endpoint, "OPENAI.API_VERSION": "2024-06-01",
         "OPENAI.KEY": api_key if key_source == "setting" else None,
@@ -2460,6 +2465,122 @@ def test_sdk_header_marker_fails_before_http_without_bridge(monkeypatch):
     assert not captured
 
 
+@pytest.mark.parametrize("override", (None, "explicit-account", "omit"))
+def test_sdk_wire_string_sentinels_are_restored_by_build_headers(override):
+    # LiteLLM validates extra_headers as dict[str, str], so the bridge sends strings.
+    from pr_agent.algo.ai_handlers import cloud_auth
+
+    litellm_handler._install_sdk_header_bridge()
+    captured = []
+    headers = {"OpenAI-Organization": "custom-account", "OpenAI-Project": "custom-account"}
+    explicit = {} if override is None else {
+        name.lower(): openai.Omit() if override == "omit" else override for name in headers
+    }
+    token = cloud_auth._register_sdk_snapshot({
+        "organization": "env-org", "project": "env-project", "custom_headers": headers,
+        "explicit_headers": explicit,
+    })
+    request_headers = {name: cloud_auth._CAPTURED_HEADER_VALUE for name in headers}
+    request_headers["X-Dropped"] = cloud_auth._OMITTED_HEADER_VALUE
+    request_headers[litellm_handler._SDK_HEADER_MARKER] = token
+    assert all(isinstance(value, str) for value in request_headers.values())
+
+    def send(request):
+        captured.append(request)
+        return httpx.Response(200, request=request, json={
+            "id": "test", "object": "chat.completion", "created": 0, "model": "gpt-4o", "choices": [],
+        })
+
+    try:
+        with httpx.Client(transport=httpx.MockTransport(send)) as http_client:
+            with openai.OpenAI(api_key="handler-key", http_client=http_client) as client:
+                client.chat.completions.create(model="gpt-4o", messages=[], extra_headers=request_headers)
+    finally:
+        cloud_auth._sdk_header_snapshots.pop(token, None)
+    assert len(captured) == 1
+    for name in headers:
+        expected = [] if override == "omit" else ["custom-account" if override is None else override]
+        assert captured[0].headers.get_list(name) == expected
+    assert captured[0].headers.get_list("x-dropped") == []
+    assert cloud_auth._CAPTURED_HEADER_VALUE not in str(captured[0].headers)
+    assert litellm_handler._SDK_HEADER_MARKER not in captured[0].headers
+
+
+def test_sdk_header_token_without_snapshot_fails_before_http():
+    litellm_handler._install_sdk_header_bridge()
+    captured = []
+
+    def send(request):
+        captured.append(request)
+        raise AssertionError("A stale snapshot token must fail before HTTP")
+
+    with httpx.Client(transport=httpx.MockTransport(send)) as http_client:
+        with openai.OpenAI(api_key="handler-key", http_client=http_client, max_retries=0) as client:
+            with pytest.raises(RuntimeError, match="no longer available"):
+                client.chat.completions.create(model="gpt-4o", messages=[], extra_headers={
+                    litellm_handler._SDK_HEADER_MARKER: "stale-token",
+                })
+    assert not captured
+
+
+def test_sdk_snapshot_token_is_rejected_by_http_layer_when_unconsumed():
+    import h11
+
+    from pr_agent.algo.ai_handlers import cloud_auth
+
+    token = cloud_auth._register_sdk_snapshot({})
+    try:
+        with pytest.raises(h11.LocalProtocolError):
+            h11.Request(method="POST", target="/", headers=[
+                ("host", "example.com"), (litellm_handler._SDK_HEADER_MARKER, token),
+            ])
+    finally:
+        cloud_auth._sdk_header_snapshots.pop(token, None)
+
+
+@pytest.mark.asyncio
+async def test_sdk_snapshot_is_released_after_call_stream_close_and_discard():
+    import gc
+
+    from pr_agent.algo.ai_handlers import cloud_auth
+
+    registry = cloud_auth._sdk_header_snapshots
+
+    async def call():
+        return "done"
+
+    async def stream():
+        yield 1
+        yield 2
+
+    token = cloud_auth._register_sdk_snapshot({})
+    wrapped = cloud_auth._release_sdk_snapshot_after(call(), token)
+    assert token in registry
+    assert await wrapped == "done"
+    assert token not in registry
+
+    token = cloud_auth._register_sdk_snapshot({})
+    wrapped = cloud_auth._release_sdk_snapshot_after(stream(), token)
+    assert await wrapped.__anext__() == 1
+    assert token in registry
+    await wrapped.aclose()
+    assert token not in registry
+
+    token = cloud_auth._register_sdk_snapshot({})
+    inner = call()
+    wrapped = cloud_auth._release_sdk_snapshot_after(inner, token)
+    assert token in registry
+    wrapped.close()
+    inner.close()
+    del wrapped
+    gc.collect()
+    assert token not in registry
+
+    token = cloud_auth._register_sdk_snapshot({})
+    assert cloud_auth._release_sdk_snapshot_after("sync-result", token) == "sync-result"
+    assert token not in registry
+
+
 @pytest.mark.parametrize("initial_key", (None, "handler-key"))
 @pytest.mark.asyncio
 async def test_manus_responses_transport_uses_request_local_credentials(monkeypatch, initial_key):
@@ -2866,6 +2987,8 @@ async def test_openai_like_blocks_unrelated_openai_fallback(monkeypatch, fallbac
     ("lemonade/model", "LEMONADE_API_KEY"),
     ("ollama/model", "OLLAMA_API_KEY"),
     ("openai/gpt-4o", "OPENAI_API_KEY"),
+    ("opencode_go/deepseek-v4.1-flash", "OPENCODE_API_KEY"),
+    ("opencode_go/deepseek-v4.1-flash", "OPENCODE_GO_API_KEY"),
     ("openrouter/model", "OPENROUTER_API_KEY"),
     ("predibase/model", "PREDIBASE_API_KEY"),
     ("replicate/model", "REPLICATE_API_TOKEN"),
@@ -4574,7 +4697,8 @@ async def test_vertex_executable_default_adc_and_path_are_rejected(monkeypatch, 
         return vertex.get_access_token(credentials, project)
 
     kwargs = {"vertex_credentials": str(path)} if source == "direct_path" else {}
-    with pytest.raises(ValueError, match="executable.*request isolation"):
+    # LiteLLM 1.108 reports a generic message for unreadable credential files and logs the reason.
+    with pytest.raises(ValueError, match="executable.*request isolation|Unable to load the vertex credentials file"):
         await LiteLLMAIHandler()._acompletion(
             _completion=completion, model="vertex_ai/gemini-2.5-pro", **kwargs,
         )
@@ -5788,6 +5912,7 @@ async def test_openai_sdk_request_blocks_residual_organization_and_headers(monke
         "openrouter/model",
         "deepseek/model",
         "groq/model",
+        "opencode_go/deepseek-v4.1-flash",
         "gpt-5-pro",
         "azure/codex-mini",
         "azure/responses/custom-deployment",
@@ -5817,6 +5942,7 @@ async def test_raw_http_request_rejects_residual_headers_without_omit_values(mon
         "openrouter/model",
         "deepseek/model",
         "groq/model",
+        "opencode_go/deepseek-v4.1-flash",
         "gpt-5-pro",
         "azure/codex-mini",
         "azure/responses/custom-deployment",
@@ -6246,6 +6372,16 @@ async def test_json_provider_blocks_unrelated_openai_environment(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_opencode_go_key_is_not_replaced_by_openai_guard(monkeypatch):
+    monkeypatch.setenv("OPENCODE_API_KEY", "native-opencode-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "unrelated-openai-key")
+
+    kwargs = await _call(LiteLLMAIHandler(), "opencode_go/deepseek-v4.1-flash")
+
+    assert kwargs["api_key"] == "native-opencode-key"
+
+
+@pytest.mark.asyncio
 async def test_native_compatible_provider_environment_ignores_openai_gateway(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "native-deepseek-key")
     overrides = {
@@ -6422,6 +6558,7 @@ async def test_azure_deployment_id_is_not_used_for_non_azure_probe(monkeypatch):
     ("ZAI.KEY", "zai/glm-4.5", "zai-key"),
     ("DASHSCOPE.KEY", "dashscope/qwen3.8-max", "dashscope-key"),
     ("XIAOMI_MIMO.KEY", "xiaomi_mimo/mimo-v2-flash", "xiaomi-key"),
+    ("OPENCODE_GO.KEY", "opencode_go/deepseek-v4.1-flash", "opencode-go-key"),
     ("DEEPINFRA.KEY", "deepinfra/meta-llama/model", "deepinfra-key"),
     ("MISTRAL.KEY", "mistral/mistral-large-latest", "mistral-key"),
     ("CODESTRAL.KEY", "codestral/codestral-latest", "codestral-key"),
@@ -7555,7 +7692,8 @@ def test_json_responses_native_config_contract():
     providers = {name for name in registry.list_providers() if registry.supports_responses_api(name)}
     assert providers == {
         "neosantara", "tensormesh", "parasail", "empiriolabs", "meta", "pinstripes",
-        "cortecs", "prism", "sail",
+        "cortecs", "prism", "sail", "coralbricks", "inferenceapis", "aiand", "openinfer",
+        "refuseless", "zerogpu",
     }
     # Pinned native HTTP client selection rejects this registry-only provider
     # before authentication; do not claim transport coverage for that path.

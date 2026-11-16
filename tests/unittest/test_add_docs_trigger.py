@@ -1,11 +1,11 @@
 import pytest
 
 from pr_agent.agent.pr_agent import PRAgent
+from pr_agent.commands.pr_add_docs import PRAddDocs
 from pr_agent.config_loader import get_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.servers.github_app import handle_new_pr_opened
-from pr_agent.tools.pr_add_docs import PRAddDocs
 
 
 @pytest.mark.asyncio
@@ -46,7 +46,7 @@ async def test_add_docs_trigger(monkeypatch, action, draft, state, should_run):
         lambda pr_url: FakeGitProvider(pr_url),
     )
     monkeypatch.setattr(
-        "pr_agent.tools.pr_add_docs.get_git_provider_for_tool",
+        "pr_agent.commands.pr_add_docs.get_git_provider_for_command",
         lambda pr_url: FakeGitProvider(pr_url),
     )
 

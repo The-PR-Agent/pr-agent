@@ -3,9 +3,14 @@ import fnmatch
 import pytest
 
 from pr_agent.algo import file_filter
-from pr_agent.algo.file_filter import filter_ignored, filter_ignored_with_status, translate_globs_to_regexes
+from pr_agent.algo.file_filter import filter_ignored, filter_ignored_with_status
 from pr_agent.config_loader import global_settings
 from pr_agent.log import get_logger
+
+
+def translate_globs_to_regexes(globs):
+    """Adapt the live _translate_globs_to_regexes_with_status to the regexes-only shape."""
+    return file_filter._translate_globs_to_regexes_with_status(globs)[0]
 
 
 def _capture_logs(call):

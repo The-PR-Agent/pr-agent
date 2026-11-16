@@ -12,9 +12,9 @@ from pr_agent.algo.comment_identity import (
     hidden_marker_forms,
     render_hidden_marker,
 )
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from pr_agent.git_providers.git_provider import GitProvider
-from pr_agent.tools.pr_reviewer import PRReviewer
 
 
 @pytest.mark.parametrize("identity", list(PRReviewIdentity) + list(PRCodeSuggestionsIdentity))
@@ -85,7 +85,7 @@ def test_bitbucket_character_budget_reserves_rendered_marker():
 
 @pytest.mark.parametrize("stored", hidden_marker_forms(PRCodeSuggestionsIdentity.SUMMARY.value))
 def test_suggestions_history_strips_both_forms_and_updates_existing_comment(stored):
-    from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+    from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 
     provider = BitbucketProvider.__new__(BitbucketProvider)
     comment = SimpleNamespace(body=f"## Suggestions\n\n{stored}\n\nold")
