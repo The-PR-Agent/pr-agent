@@ -111,7 +111,6 @@ _diff_ready_sleep = time.sleep
 
 # GitLab rejects a merge request title longer than this (HTTP 400).
 MAX_PR_TITLE_GITLAB_LENGTH = 255
-_TITLE_TRUNCATION_MARKER = "..."
 
 # Keep requests small: GitLab limits multi-blob GraphQL responses to 20 MB.
 # The wall-clock budget is best-effort while Requests waits for response headers.
@@ -1990,13 +1989,7 @@ class GitLabProvider(GitProvider):
                 # the 255-character title cap after that rewrite. An overlong AI
                 # title would fail the whole publish, including a body that fits.
                 pr_title = _neutralize_gitlab_mentions(pr_title)
-                if len(pr_title) > MAX_PR_TITLE_GITLAB_LENGTH:
-                    get_logger().warning(
-                        f"PR title of {len(pr_title)} characters is over the limit of "
-                        f"{MAX_PR_TITLE_GITLAB_LENGTH}; truncated"
-                    )
-                    budget = MAX_PR_TITLE_GITLAB_LENGTH - len(_TITLE_TRUNCATION_MARKER)
-                    pr_title = pr_title[:budget] + _TITLE_TRUNCATION_MARKER
+                pr_title = self.limit_title_characters(pr_title, MAX_PR_TITLE_GITLAB_LENGTH)
                 self.mr.title = pr_title
             self.mr.description = _neutralize_gitlab_mentions(pr_body)
             self.mr.save()
