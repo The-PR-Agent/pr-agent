@@ -31,12 +31,12 @@ def _section(name):
 
 def test_mapping_arg_merges_into_section_leaving_other_keys(restore_sections):
     before = _section("PR_DESCRIPTION")
-    assert len(before) == 23
+    assert len(before) == 24
 
     update_settings_from_args(["--pr_description={'publish_labels':false}"])
 
     after = _section("PR_DESCRIPTION")
-    assert len(after) == 23
+    assert len(after) == 24
     assert after["publish_labels"] is False
     assert after["enable_pr_diagram"] is True
     assert after["collapsible_file_list_threshold"] == 6
