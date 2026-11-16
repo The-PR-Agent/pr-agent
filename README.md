@@ -140,7 +140,7 @@ Full notes for every release are on the [Releases page](https://github.com/the-p
 
 ### 🎯 Built for Real Development Teams
 
-**Fast & Affordable**: Each command (`/review`, `/ask`) uses a single LLM call (~30 seconds, low cost)
+**Fast & Affordable**: Simple `/review` and `/ask` requests can use one LLM call; retries, fallbacks, and larger reviews may need more.
 
 **Handles Any PR Size**: Our [PR Compression strategy](https://docs.pr-agent.ai/core-abilities/compression_strategy/) effectively processes both small and large PRs
 
