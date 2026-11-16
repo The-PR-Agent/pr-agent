@@ -41,15 +41,9 @@ The commands above assume the `pr_agent` package is importable — use the venv 
 3. **git provider**: The [git_provider](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) field in a configuration file determines the GIT provider that will be used by PR-Agent. Currently, the following providers are supported:
    `github` **(default)**, `gitlab`, `bitbucket`, `bitbucket_server`, `azure`, `codecommit`, `local`, `gerrit`, `gitea`, and `plain-diff`.
 
-4. For scripts that need a failed request to return a non-zero process status, enable command error propagation:
+4. A failed request returns a non-zero process status, so scripts and CI jobs can detect it. The installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1 when the request fails or a command records a failure even though it returns successfully (for example, when no model produced a prediction). In the latter case, the CLI logs a warning explaining the non-zero exit.
 
-   ```bash
-   python -m pr_agent.cli --pr_url=<pr_url> review --config.propagate_command_errors=true
-   ```
-
-   With `config.propagate_command_errors=true`, the installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1 when a propagated command error makes the request fail or a command records a failure even though it returns successfully. In the latter case, the CLI logs a warning explaining the non-zero exit.
-
-   Command error propagation is disabled by default, preserving the existing status 0 behavior for these command failures. Argparse parse and usage errors continue to exit with status 2.
+   This does not depend on `config.propagate_command_errors`, which controls whether a command re-raises an internal error instead of swallowing it. A review that was published as a partial result after its fallback chain was exhausted still exits with status 0 unless that setting is enabled (see [`/review`](../commands/review.md)). Argparse parse and usage errors continue to exit with status 2.
 
 ### CLI Health Check
 
