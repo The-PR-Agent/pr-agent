@@ -10,10 +10,10 @@ import asyncio
 
 import pytest
 
+from pr_agent.commands import ticket_pr_compliance_check as tpc
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.github_provider import GithubProvider
-from pr_agent.tools import ticket_pr_compliance_check as tpc
 from tests.unittest import _settings_helpers
 
 
@@ -49,6 +49,7 @@ def _make_github_provider(description, repo_obj=None):
     provider.repo = "owner/repo"
     provider.base_url_html = "https://github.com"
     provider.repo_obj = repo_obj if repo_obj is not None else _Repo()
+    provider.get_issue_content = lambda repository, number: repository.get_issue(number)
     provider.get_user_description = lambda: description
     provider.get_pr_branch = lambda: ""
     provider._parse_issue_url = lambda ticket: (
@@ -374,11 +375,11 @@ class TestFindAsanaTickets:
             get_settings().set("jira.jira_api_token", "test-token")
 
             class _FakeJira:
-                def issue(self, key):
+                def issue(self, key, fields):
                     return {"fields": {"summary": f"Ticket {key}", "description": "body",
                                        "labels": []}}
 
-            monkeypatch.setattr(tpc, "Jira", lambda **kwargs: _FakeJira())
+            monkeypatch.setattr("atlassian.Jira", lambda **kwargs: _FakeJira())
             provider = _GenericProvider(
                 "Related Asana tasks: "
                 "https://app.asana.com/0/99/111111111111 "

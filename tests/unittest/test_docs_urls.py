@@ -56,5 +56,5 @@ def test_referenced_docs_urls_point_at_existing_pages():
 def test_scanner_sees_the_known_reference_sites():
     """Keeps the scanner honest: if it silently stops reading a file, this fails."""
     sources = {src for sources in _checker.collect_referenced_urls().values() for src in sources}
-    for expected in ("README.md", "pr_agent/servers/help.py", "pr_agent/tools/pr_help_message.py"):
+    for expected in ("README.md", "pr_agent/servers/help.py", "pr_agent/commands/pr_help_message.py"):
         assert expected in sources, f"scanner no longer finds docs URLs in {expected}"

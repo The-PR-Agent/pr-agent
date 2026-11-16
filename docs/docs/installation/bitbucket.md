@@ -9,16 +9,16 @@ You can use the Bitbucket Pipeline system to run PR-Agent on every pull request 
 
 1. Add the following file in your repository bitbucket-pipelines.yml
 
-```yaml
-pipelines:
-    pull-requests:
-      '**':
-        - step:
-            name: PR Agent Review
-            image: pragent/pr-agent:latest
-            script:
-              - pr-agent --pr_url=https://bitbucket.org/$BITBUCKET_WORKSPACE/$BITBUCKET_REPO_SLUG/pull-requests/$BITBUCKET_PR_ID review
-```
+   ```yaml
+   pipelines:
+       pull-requests:
+         '**':
+           - step:
+               name: PR Agent Review
+               image: pragent/pr-agent:latest
+               script:
+                 - pr-agent --pr_url=https://bitbucket.org/$BITBUCKET_WORKSPACE/$BITBUCKET_REPO_SLUG/pull-requests/$BITBUCKET_PR_ID review
+   ```
 
 2. Add the following secure variables to your repository under Repository settings > Pipelines > Repository variables.
 
@@ -28,10 +28,12 @@ pipelines:
    - BITBUCKET__BEARER_TOKEN: `<your token>` (required when auth_type is bearer)
    - BITBUCKET__BASIC_TOKEN: `<your token>` (required when auth_type is basic)
 
-You can get a Bitbucket token for your repository by following Repository Settings -> Security -> Access Tokens.
-For basic auth, you can generate a base64 encoded token from your username:password combination.
+   You can get a Bitbucket token for your repository by following Repository Settings -> Security -> Access Tokens.
+   For basic auth, you can generate a base64 encoded token from your username:password combination.
 
 Note that comments on a PR are not supported in Bitbucket Pipeline.
+
+## Bitbucket Cloud behavior
 
 ### Persistent comments on Bitbucket Cloud
 
@@ -39,18 +41,30 @@ Review and code-suggestion identity markers use invisible Markdown link referenc
 Existing comments with older HTML identity markers are still recognized and updated in place.
 No configuration change is required.
 
+### Incomplete pull-request diff
+
+PR-Agent stops when Bitbucket Cloud returns a different number of patches than
+entries in the filtered changed-file list, instead of treating the diff as empty.
+An affected `/add_docs`, `/generate_labels`, `/describe`, or `/review`
+run may post **PR-Agent command was not run** with a Bitbucket-specific explanation
+when `CONFIG.PUBLISH_OUTPUT` is enabled. This provider-specific notice replaces the
+generic `/review` failure output to avoid duplicate comments.
+
+Retry the command. If the problem persists, check the pull request's diff in
+Bitbucket. PR-Agent does not recover missing patches automatically.
+
 ## Bitbucket Server and Data Center
 
 Login into your on-prem instance of Bitbucket with your service account username and password.
 Navigate to `Manage account`, `HTTP Access tokens`, `Create Token`.
-Generate the token and add it to .secret.toml under `bitbucket_server` section
+Generate the token and add it to `pr_agent/settings/.secrets.toml` under `bitbucket_server` section
 
 ```toml
 [bitbucket_server]
 bearer_token = "<your key>"
 ```
 
-Don't forget to also set the URL of your Bitbucket Server instance (either in `.secret.toml` or in `configuration.toml`):
+Don't forget to also set the URL of your Bitbucket Server instance (either in `.secrets.toml` or in `configuration.toml`):
 
 ```toml
 [bitbucket_server]
@@ -59,10 +73,11 @@ url = "<full URL to your Bitbucket instance, e.g.: https://git.bitbucket.com>"
 
 ### Run it as CLI
 
-Modify `configuration.toml`:
+In `configuration.toml`, change `git_provider` in the `[config]` section:
 
 ```toml
-git_provider="bitbucket_server"
+[config]
+git_provider = "bitbucket_server"
 ```
 
 
@@ -70,7 +85,7 @@ git_provider="bitbucket_server"
 and pass the Pull request URL:
 
 ```shell
-python cli.py --pr_url https://git.on-prem-instance-of-bitbucket.com/projects/PROJECT/repos/REPO/pull-requests/1 review
+uv run pr-agent --pr_url https://git.on-prem-instance-of-bitbucket.com/projects/PROJECT/repos/REPO/pull-requests/1 review
 ```
 
 ### Run it as service
@@ -86,7 +101,16 @@ docker push <your-registry>/pr-agent:bitbucket_server_webhook
 ```
 
 Navigate to `Projects` or `Repositories`, `Settings`, `Webhooks`, `Create Webhook`.
-Fill in the name and URL. For Authentication, select 'None'. Select the 'Pull Request Opened' checkbox to receive that event as a webhook.
+Fill in the name and URL. Configure a webhook **Secret** and set the same value in PR-Agent's `.secrets.toml`:
+
+```toml
+[bitbucket_server]
+webhook_secret = "<webhook secret>"
+```
+
+Bitbucket signs webhook payloads with this secret in the `X-Hub-Signature` header. PR-Agent requires the secret and rejects webhook requests with HTTP 403 if it is missing or empty. Normal webhook deliveries without a valid signature also receive HTTP 403. Bitbucket's connection test remains available after the secret is configured.
+
+The separate Authentication option can remain 'None' because this server verifies the secret-based signature rather than Basic authentication. Select the 'Pull Request Opened' checkbox to receive that event as a webhook.
 
 The URL should end with `/webhook`, for example: https://domain.com/webhook
 

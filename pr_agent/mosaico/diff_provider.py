@@ -1,25 +1,29 @@
 """DiffInputProvider — a GitProvider that feeds a SUPPLIED unified diff to pr-agent's
-tools (no host, no checkout). Used by the MOSAICO path (b): the inbound text is a
+commands (no host, no checkout). Used by the MOSAICO path (b): the inbound text is a
 pasted unified diff. INPUT methods are real; publish/label/comment/reaction methods
-are safe no-op stubs (with publish_output=False the tools render into
+are safe no-op stubs (with publish_output=False the commands render into
 get_settings().data rather than calling the publish path).
 
 The diff is parsed by parse_unified_diff(); per-request the parsed files/languages/title
 are read from MOSAICO.INPUT on the (context) settings.
 """
+import io
 import re
-from typing import List, Optional
+from urllib.parse import unquote, urlsplit
 
-from pr_agent.algo.git_patch_processing import to_hunk_only_patch
+from pr_agent.agent.request_policy import policy_metadata
+from pr_agent.algo.file_filter import filter_ignored_with_status
+from pr_agent.algo.git_patch_processing import count_patch_lines, to_hunk_only_patch
+from pr_agent.algo.language_handler import partition_files_by_language_filter
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 
 
 class _PullRequestMimic:
-    """Mimics the PullRequest object the tools touch (.title, .diff_files)."""
+    """Mimics the PullRequest object the commands touch (.title, .diff_files)."""
 
-    def __init__(self, title: str, diff_files: List[FilePatchInfo]):
+    def __init__(self, title: str, diff_files: list[FilePatchInfo]):
         self.title = title
         self.diff_files = diff_files
 
@@ -52,7 +56,7 @@ def _normalize_file_header_path(path: str) -> str:
     return path
 
 
-def parse_unified_diff(diff_text: str) -> List[FilePatchInfo]:
+def parse_unified_diff(diff_text: str) -> list[FilePatchInfo]:
     """Parse a supplied unified diff (git format) into a list of FilePatchInfo.
 
     Splits on ``diff --git a/<f> b/<f>`` headers; per file: filename = the b/ path,
@@ -64,20 +68,28 @@ def parse_unified_diff(diff_text: str) -> List[FilePatchInfo]:
     if not diff_text or not isinstance(diff_text, str):
         return []
 
-    lines = diff_text.splitlines(keepends=True)
+    lines = list(io.StringIO(diff_text, newline="\n"))
     # Find the start index of each "diff --git" section.
     starts = [i for i, ln in enumerate(lines) if _DIFF_GIT_RE.match(ln.rstrip("\r\n"))]
     if not starts:
         return []
     starts.append(len(lines))
 
-    files: List[FilePatchInfo] = []
+    files: list[FilePatchInfo] = []
     for idx in range(len(starts) - 1):
         section = lines[starts[idx]:starts[idx + 1]]
         header = section[0].rstrip("\r\n")
         m = _DIFF_GIT_RE.match(header)
         a_path = _normalize_file_header_path(m.group("a")) if m else ""
         b_path = _normalize_file_header_path(m.group("b")) if m else ""
+        # Split at the midpoint instead of searching ambiguous " b/" substrings.
+        if header.startswith("diff --git a/"):
+            rest = header[len("diff --git a/"):]
+            path_length = (len(rest) - 3) // 2
+            if (path_length > 0 and len(rest) == 2 * path_length + 3
+                    and rest[path_length:path_length + 3] == " b/"
+                    and rest[:path_length] == rest[path_length + 3:]):
+                a_path = b_path = rest[:path_length]
 
         edit_type = EDIT_TYPE.MODIFIED
         old_filename = None
@@ -95,9 +107,11 @@ def parse_unified_diff(diff_text: str) -> List[FilePatchInfo]:
                 edit_type = EDIT_TYPE.DELETED
             elif s.startswith("rename from "):
                 edit_type = EDIT_TYPE.RENAMED
-                old_filename = _unquote_git_path(s[len("rename from "):].strip())
+                old_filename = _unquote_git_path(s[len("rename from "):])
             elif s.startswith("rename to "):
                 edit_type = EDIT_TYPE.RENAMED
+                # The diff header is ambiguous when paths contain " b/".
+                b_path = _unquote_git_path(s[len("rename to "):])
         if (
             edit_type not in (EDIT_TYPE.ADDED, EDIT_TYPE.DELETED)
             and a_path != b_path
@@ -107,8 +121,8 @@ def parse_unified_diff(diff_text: str) -> List[FilePatchInfo]:
             old_filename = a_path
 
         # Best-effort reconstruct head/base file content from hunk lines.
-        base_lines: List[str] = []
-        head_lines: List[str] = []
+        base_lines: list[str] = []
+        head_lines: list[str] = []
         in_hunk = False
         for ln in section:
             if ln.startswith("@@"):
@@ -129,13 +143,17 @@ def parse_unified_diff(diff_text: str) -> List[FilePatchInfo]:
             # other lines (e.g. index/+++/---) are ignored for content reconstruction
 
         filename = b_path or a_path
+        patch = to_hunk_only_patch("".join(section))
+        num_plus_lines, num_minus_lines = count_patch_lines(patch)
         files.append(FilePatchInfo(
             base_file="".join(base_lines),
             head_file="".join(head_lines),
-            patch=to_hunk_only_patch("".join(section)),
+            patch=patch,
             filename=filename,
             edit_type=edit_type,
             old_filename=old_filename,
+            num_plus_lines=num_plus_lines,
+            num_minus_lines=num_minus_lines,
             head_file_is_complete=False,
         ))
     return files
@@ -146,20 +164,34 @@ class DiffInputProvider(GitProvider):
     with a single positional ``pr_url`` arg (unused here); reads the parsed diff,
     languages and title from MOSAICO.INPUT on the (context) settings."""
 
-    def __init__(self, pr_url: Optional[str] = None):
+    def __init__(self, pr_url: str | None = None):
         self.pr_url = pr_url
         mosaico_input = get_settings().get("MOSAICO.INPUT", {}) or {}
-        self.diff_files: List[FilePatchInfo] = list(mosaico_input.get("files", []) or [])
+        self.diff_files: list[FilePatchInfo] = list(mosaico_input.get("files", []) or [])
         self._languages = dict(mosaico_input.get("languages", {}) or {})
         self._title = mosaico_input.get("title", "") or ""
+        self._source_url = mosaico_input.get("source_url")
         self.pr = _PullRequestMimic(self._title, self.diff_files)
+
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        # Preserve repository identity when the router fetched a public PR diff.
+        # A pasted patch has no repository, author, labels or branch metadata.
+        repo = ""
+        if self._source_url:
+            path = unquote(urlsplit(self._source_url).path).strip("/")
+            repo = re.split(r"/(?:-/)?(?:pull|pulls|merge_requests|pullrequest|pull-requests)/", path)[0]
+        # The display title is a URL or "Supplied diff", not the hosted PR title.
+        return policy_metadata(title=None, sender="", repo_full_name=repo,
+                               source_branch="", target_branch="")
 
     # ---- INPUT methods (real) ----
     def is_supported(self, capability: str) -> bool:
-        # Steer tools to the simplest render branches (no gfm table, no inline comments, no labels).
+        # Steer commands to the simplest render branches (no gfm table, no inline comments, no labels).
         return False
 
-    def get_diff_files(self) -> List[FilePatchInfo]:
+    def get_diff_files(self) -> list[FilePatchInfo]:
+        metadata_files, ignore_complete = filter_ignored_with_status(list(self.diff_files), platform="mosaico")
+        self.filtered_diff_file_names = partition_files_by_language_filter(metadata_files)[1] if ignore_complete else []
         return self.diff_files
 
     def get_files(self) -> list:
@@ -215,7 +247,7 @@ class DiffInputProvider(GitProvider):
     def get_pr_labels(self, update=False):
         return []
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> int | None:
         return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:

@@ -1,7 +1,9 @@
 """Match bad extensions case-insensitively, so 'logo.SVG' is dropped like 'logo.svg'."""
+from types import SimpleNamespace
+
 import pytest
 
-from pr_agent.algo.language_handler import filter_bad_extensions, is_valid_file
+from pr_agent.algo.language_handler import filter_bad_extensions, is_valid_file, partition_files_by_language_filter
 
 
 class _File:
@@ -15,19 +17,53 @@ def test_uppercase_bad_extension_is_dropped(filename):
     assert is_valid_file(filename) is False
 
 
-@pytest.mark.parametrize("filename", ["logo.svg", "report.csv", "photo.jpg", "bundle.zip"])
+@pytest.mark.parametrize("filename", ["logo.svg", "report.csv", "photo.jpg", "bundle.zip", "library.jar", "Main.class"])
 def test_lowercase_bad_extension_is_still_dropped(filename):
     """Keep the existing behaviour for the canonical spelling."""
     assert is_valid_file(filename) is False
 
 
-@pytest.mark.parametrize("filename", ["main.py", "Makefile", "app.SVGZ"])
+@pytest.mark.parametrize(
+    "filename", [
+        "main.py", "Makefile", "app.SVGZ", "app.MIN.JSX", "bundle.JS.MAP.backup", "PACKAGE-LOCK.JSON",
+        "build.gradle", "settings.gradle", "app/build.gradle", "build.gradle.kts",
+    ]
+)
 def test_reviewable_files_are_kept(filename):
     """Do not widen the filter: only the extension itself is compared."""
     assert is_valid_file(filename) is True
 
 
-@pytest.mark.parametrize("filename,configured", [("archive.TAR", ["tar"]), ("archive.tar", ["TAR"])])
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "app.min.js", "app.MIN.JS",
+        "style.min.css", "style.MiN.CsS",
+        "bundle.js.map", "bundle.JS.MAP",
+        "bundle.ts.map", "bundle.Ts.MaP",
+        "style.css.map", "style.CSS.MAP",
+        "package-lock.json",
+        "packages.lock.json",
+        "Package.resolved",
+    ],
+)
+def test_generated_files_are_dropped(filename):
+    assert is_valid_file(filename) is False
+
+
+def test_partition_preserves_original_generated_filename_and_valid_file_order():
+    first, last = _File("main.py"), _File("other.py")
+    files = [first, _File("assets/APP.MIN.JS"), last]
+
+    valid_files, filtered_names = partition_files_by_language_filter(files)
+
+    assert valid_files == [first, last]
+    assert filtered_names == ["assets/APP.MIN.JS"]
+
+
+@pytest.mark.parametrize("filename,configured", [
+    ("archive.TAR", ["tar"]), ("archive.tar", ["TAR"]), ("build.gradle", ["gradle"]),
+])
 def test_configured_extension_matches_either_case(filename, configured):
     """A user-supplied bad_extensions entry matches regardless of how it is spelled."""
     assert is_valid_file(filename, bad_extensions=configured) is False
@@ -38,3 +74,26 @@ def test_filter_bad_extensions_drops_uppercase_assets():
     files = [_File("logo.SVG"), _File("main.py")]
 
     assert [f.filename for f in filter_bad_extensions(files)] == ["main.py"]
+
+
+def test_filter_normalizes_once_without_mutating_configured_extensions(monkeypatch):
+    class CountingExtension:
+        calls = 0
+
+        def __str__(self):
+            self.calls += 1
+            return "ZIP"
+
+    extension = CountingExtension()
+    defaults = [extension]
+    settings = SimpleNamespace(
+        bad_extensions=SimpleNamespace(default=defaults, extra=["md"]),
+        config=SimpleNamespace(use_extra_bad_extensions=True),
+    )
+    monkeypatch.setattr("pr_agent.algo.language_handler.get_settings", lambda: settings)
+
+    files = [_File(name) for name in ["file.ZIP", "notes.md", "main.py"] * 20]
+
+    assert [file.filename for file in filter_bad_extensions(files)] == ["main.py"] * 20
+    assert extension.calls == 1
+    assert defaults == [extension]

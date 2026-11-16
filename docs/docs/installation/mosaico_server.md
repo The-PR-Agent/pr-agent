@@ -15,7 +15,7 @@ to find the latest PR URL or diff. Set `mosaico.context_history_max_tasks` (1 to
 this limit. Task history is kept in memory, so send the input again after a restart or
 when routing a follow-up to a different server replica.
 
-### What the mode is
+## What the mode is
 
 The A2A server exposes three endpoints:
 
@@ -28,12 +28,19 @@ The A2A server exposes three endpoints:
 Images with health-probe hardening return `Unhealthy: LLM probe failed` for provider
 failures; the health check's own warning records only the exception type.
 `mosaico.health_timeout_seconds` sets a finite positive deadline in seconds (default: 10)
-for cooperative asynchronous preparation and dispatch. Synchronous initialization and
-blocking SDK work can exceed this deadline. Older images may predate these protections.
+for cooperative asynchronous preparation, dispatch, stream consumption, and cleanup waiting.
+Stream cleanup can continue in the background after this deadline. Synchronous
+initialization and blocking SDK work can still exceed it.
+Older images may predate these protections.
 Set `MOSAICO__HEALTH_TIMEOUT_SECONDS` in the server's environment to override the default.
 Invalid values produce the generic unhealthy response (503), rather than using the default.
 When increasing the budget, also allow sufficient time in any external health-check client
 and container healthcheck; the bundled Compose probe uses a separate 25-second HTTP timeout.
+
+Chat and health-probe streams attempt cleanup on completion, failure, or cancellation.
+Consumer cancellation does not interrupt stream cleanup, which may continue after `/health`
+times out while the event loop remains active. Cleanup has no separate wait budget or
+configuration key and does not impose a local stream admission limit.
 
 The advertised agent card carries the skills `review`, `improve`, `describe`, and `ask`, the
 name `"PR-Agent Solution Agent"`, a `version` derived from the running build (never
@@ -42,7 +49,48 @@ hand-maintained), and the required
 advertised as disabled, which is load-bearing: the reference agent selects
 `message/send` vs `message/stream` from that capability.
 
-### Run the standalone container
+## Request limits and caller authentication
+
+MOSAICO uses the shared `config.max_webhook_request_body_bytes` limit (5 MiB by default),
+including streamed bodies without a valid Content-Length. Oversized requests return HTTP 413
+before JSON-RPC parsing or command execution. `mosaico.routing_scan_max_chars` (default: 65536,
+a positive integer) bounds PR URL and command detection per text segment. An incomplete token
+at the boundary is ignored; supplied diffs are still processed in full. Put the PR URL or
+command near the start of the message or its surrounding prose.
+
+Configure `mosaico.bearer_tokens` as a map of stable principal names to distinct opaque secrets
+in secret settings, or through Dynaconf's JSON environment syntax:
+
+```bash
+export MOSAICO__BEARER_TOKENS='@json {"reference-agent":"replace-with-generated-secret"}'
+```
+
+With a nonempty map, JSON-RPC and `/health` require `Authorization: Bearer <secret>`.
+Missing or invalid credentials return HTTP 401 before reading the body or running the LLM.
+The agent-card GET stays public and advertises the bearer requirement without exposing secrets.
+Use HTTPS at your ingress and configure the caller to send its credential. Tasks, artifacts,
+histories and context follow-ups are scoped to the configured principal; callers sharing a
+secret share that principal. Keep principal names stable when rotating secrets. Invalid
+credential maps, including duplicate secrets, fail app construction.
+
+The default empty map preserves anonymous access and shared task ownership for a trusted,
+single-tenant network. Configure authentication before exposing the service to other callers.
+The in-memory store retains up to `mosaico.task_store_max_tasks_per_owner` tasks per owner and
+evicts the oldest tasks beyond that limit; evicted tasks lose follow-up history. This is not a
+rate limit or concurrency quota, and retained tasks are still lost on restart. Each authorized
+health probe performs a live completion.
+
+Observability root/super task IDs must be canonical UUIDs. Invalid IDs are omitted independently;
+valid IDs are normalized to lowercase before producing Langfuse trace context. A metadata error
+does not fail the review.
+
+For the bundled smoke test, provide the client credential as `MOSAICO_BEARER_TOKEN` in the
+script's environment when the server map is configured. For the Compose overlay, supply
+`PR_AGENT_BEARER_TOKEN` for the healthcheck and add `MOSAICO__BEARER_TOKENS` to the service's
+`environment` mapping through your secret configuration. Configure the reference caller's
+credential separately. Both probes continue to work without a token in anonymous mode.
+
+## Run the standalone container
 
 The server boots from a bare `docker pull` in a couple of seconds — no repo clone, no build:
 
@@ -61,7 +109,7 @@ Pin a version tag in production (see the "Immutable releases and version tags" n
 [installation page](./index.md)); the plain `mosaico_agent`
 rolling tag moves to the newest build on every release.
 
-### Environment variables
+## Environment variables
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -91,7 +139,7 @@ curl -s http://<host>:<port>/.well-known/agent-card.json \
 If that prints a `localhost` URL, the deployment is wrong.
 :::
 
-### Deploy into the mosaico-demonstrator
+## Deploy into the mosaico-demonstrator
 
 The [`docker/mosaico/`](https://github.com/the-pr-agent/pr-agent/tree/main/docker/mosaico)
 directory is a full deployment bundle (compose overlay, registration template, env template,
@@ -117,7 +165,7 @@ should not be "fixed": the repository entry is `pr-agent-solution-agent` (what
 `register-agent.py` looks the agent up by), while the card's own `name` is
 `"PR-Agent Solution Agent"` (a display string).
 
-### Verify
+## Verify
 
 ```bash
 ./smoke_test.sh
@@ -131,7 +179,7 @@ in the bundle directory gives one of two outcomes:
   copied from `pr-agent.env.example`); the script additionally exercised `GET /health` and an
   A2A `SendMessage` review over an inline diff.
 
-### Troubleshooting
+## Troubleshooting
 
 - **The container stays `unhealthy` and registration never runs.** `/health` is a live LLM
   probe and returns `503` on bad or missing credentials — this is intended. Check
@@ -143,7 +191,7 @@ in the bundle directory gives one of two outcomes:
   inside the registration container on the Docker network. Set `PR_AGENT_HOST` explicitly to an
   address reachable from inside Docker (for example the host's LAN IP, or `host.docker.internal`).
 
-### Keep reading
+## Keep reading
 
 The [bundle README](https://github.com/the-pr-agent/pr-agent/blob/main/docker/mosaico/README.md)
 is the canonical deep dive for this surface and the source of the summary above; it covers the

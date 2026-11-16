@@ -1,15 +1,15 @@
 """Pydantic models for structured outputs described by prompt templates."""
 
-from enum import Enum
-from typing import List, Literal, Optional, Union
+from enum import StrEnum
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError, field_validator
 
 
 class SubPR(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    relevant_files: List[str]
+    relevant_files: list[str]
     title: str
 
 
@@ -21,6 +21,9 @@ class KeyIssuesComponentLink(BaseModel):
     issue_content: str
     start_line: int
     end_line: int
+    existing_code: str | None = None
+    improved_code: str | None = None
+    confidence: int | None = Field(default=None, ge=0, le=10)
 
 
 class TodoSection(BaseModel):
@@ -49,24 +52,128 @@ class ContributionTimeCostEstimate(BaseModel):
     worst_case: str
 
 
-class Review(BaseModel):
+class FailureMode(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    ticket_compliance_check: Optional[List[TicketCompliance]] = None
-    estimated_effort_to_review: Optional[StrictInt] = Field(
+    what: str
+    where: str
+    trigger: str
+    detected_by: str
+    covered_in_this_pr: StrictBool
+
+
+def parse_failure_modes(value: object) -> list[dict]:
+    """Keep at most three valid cases, including when review validation only warns."""
+    modes = []
+    for entry in value if isinstance(value, list) else []:
+        try:
+            modes.append(FailureMode.model_validate(entry).model_dump())
+        except ValidationError:
+            continue
+        if len(modes) == 3:
+            break
+    return modes
+
+
+ARTIFACT_FINDING_KINDS = ("destroy", "failure", "test_failure", "vulnerability", "warning")
+MAX_ARTIFACT_FINDINGS = 5
+MAX_ARTIFACT_FACT_WORDS = 20
+MAX_ARTIFACT_EVIDENCE_CHARS = 160
+# A shorter quote, such as "FAILED" or "error", appears in almost any CI log, so it counts only as a whole line.
+MIN_ARTIFACT_QUOTE_CHARS = 16
+
+
+class ArtifactFinding(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    kind: Literal[ARTIFACT_FINDING_KINDS]
+    fact: str
+    evidence: str
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _normalise_kind(cls, value):
+        return value.strip().lower().replace(" ", "_").replace("-", "_") if isinstance(value, str) else value
+
+
+def _squash(text: str) -> str:
+    return " ".join(text.split())
+
+
+def parse_artifact_findings(value: object, artifact_context: dict | None) -> list[dict]:
+    """Keep at most five findings, cap each fact, and mark evidence that is not quoted from the artifact."""
+    # Imported here: git_provider imports pr_agent.algo.utils, which imports this module.
+    from pr_agent.git_providers.git_provider import redact_credentials
+
+    contexts = (artifact_context or {}).get("artifacts", [artifact_context] if artifact_context else [])
+    artifact_text = "\n".join(_squash(context.get("content", "")) for context in contexts)
+    artifact_lines = {_squash(line) for context in contexts for line in context.get("content", "").splitlines()}
+    findings, seen = [], set()
+    for entry in value if isinstance(value, list) else []:
+        try:
+            finding = ArtifactFinding.model_validate(entry).model_dump()
+        except ValidationError:
+            continue
+        fact_words = _squash(redact_credentials(finding["fact"])).split(" ")
+        finding["fact"] = " ".join(fact_words[:MAX_ARTIFACT_FACT_WORDS]) + (
+            " …" if len(fact_words) > MAX_ARTIFACT_FACT_WORDS else ""
+        )
+        evidence = _squash(finding["evidence"])
+        if len(evidence) > 1 and evidence[0] == evidence[-1] and evidence[0] in "\"'`":
+            evidence = evidence[1:-1]
+        if (finding["kind"], evidence) in seen:
+            continue
+        seen.add((finding["kind"], evidence))
+        finding["quoted"] = bool(evidence) and evidence in artifact_text and (
+            len(evidence) >= MIN_ARTIFACT_QUOTE_CHARS or evidence in artifact_lines
+        )
+        # Redact before the cut, so a token split by the cut cannot slip past the patterns.
+        evidence = redact_credentials(evidence)
+        finding["evidence"] = evidence[:MAX_ARTIFACT_EVIDENCE_CHARS] + (
+            " …" if len(evidence) > MAX_ARTIFACT_EVIDENCE_CHARS else ""
+        )
+        findings.append(finding)
+        if len(findings) == MAX_ARTIFACT_FINDINGS:
+            break
+    return findings
+
+
+def finding_confidence(issue: object) -> float | None:
+    """Return a finding's confidence as a number in 0-10, or None when it is absent or unusable.
+
+    Filtering and rendering share this, so a finding is shown with a confidence exactly when
+    the filter compared it.
+    """
+    value = issue.get("confidence") if isinstance(issue, dict) else None
+    if isinstance(value, bool):
+        return None
+    try:
+        confidence = float(str(value).strip())
+    except ValueError:
+        return None
+    return confidence if 0 <= confidence <= 10 else None  # also rejects NaN
+
+
+class Review(BaseModel):
+    # extra_instructions and [artifacts] may request fields beyond the prompt schema
+    model_config = ConfigDict(extra="allow")
+
+    ticket_compliance_check: list[TicketCompliance] | None = None
+    estimated_effort_to_review: StrictInt | None = Field(
         default=None, alias="estimated_effort_to_review_[1-5]", ge=1, le=5
     )
-    risk_level: Optional[Literal["low", "medium", "high"]] = None
-    merge_recommendation: Optional[Literal["safe_to_merge", "merge_with_caution", "changes_required"]] = None
-    review_priority_files: Optional[List[str]] = None
-    contribution_time_cost_estimate: Optional[ContributionTimeCostEstimate] = None
-    score: Optional[StrictInt] = Field(default=None, ge=0, le=100)
-    relevant_tests: Optional[Literal["Yes", "No"]] = None
-    insights_from_user_answers: Optional[str] = None
-    key_issues_to_review: List[KeyIssuesComponentLink]
-    security_concerns: Optional[str] = None
-    todo_sections: Optional[Union[List[TodoSection], str]] = None
-    can_be_split: Optional[List[SubPR]] = Field(default=None, max_length=3)
+    risk_level: Literal["low", "medium", "high"] | None = None
+    merge_recommendation: Literal["no_concerns_found", "needs_review", "changes_required"] | None = None
+    failure_modes: list[FailureMode] | None = Field(default=None, max_length=3)
+    artifact_findings: list[ArtifactFinding] | None = None
+    review_priority_files: list[str] | None = None
+    contribution_time_cost_estimate: ContributionTimeCostEstimate | None = None
+    score: StrictInt | None = Field(default=None, ge=0, le=100)
+    relevant_tests: Literal["Yes", "No"] | None = None
+    key_issues_to_review: list[KeyIssuesComponentLink]
+    security_concerns: str | None = None
+    todo_sections: list[TodoSection] | str | None = None
+    can_be_split: list[SubPR] | None = Field(default=None, max_length=3)
 
     @field_validator("risk_level", "merge_recommendation", "relevant_tests", mode="before")
     @classmethod
@@ -91,7 +198,7 @@ class CodeSuggestion(BaseModel):
 
 
 class PRCodeSuggestions(BaseModel):
-    code_suggestions: List[CodeSuggestion]
+    code_suggestions: list[CodeSuggestion]
 
 
 class CodeSuggestionFeedback(BaseModel):
@@ -104,10 +211,10 @@ class CodeSuggestionFeedback(BaseModel):
 
 
 class PRCodeSuggestionsFeedback(BaseModel):
-    code_suggestions: List[CodeSuggestionFeedback]
+    code_suggestions: list[CodeSuggestionFeedback]
 
 
-class PRType(str, Enum):
+class PRType(StrEnum):
     BUG_FIX = "Bug fix"
     TESTS = "Tests"
     ENHANCEMENT = "Enhancement"
@@ -117,37 +224,58 @@ class PRType(str, Enum):
 
 class FileDescription(BaseModel):
     filename: str
-    changes_summary: Optional[str] = None
+    changes_summary: str | None = None
     changes_title: str
     label: str
 
 
 class PRDescription(BaseModel):
-    type: List[PRType] = Field(min_length=1)
-    description: Optional[str] = None
+    type: list[PRType] = Field(min_length=1)
+    description: str | None = None
     title: str
-    changes_diagram: Optional[str] = None
-    pr_files: Optional[List[FileDescription]] = Field(default=None, max_length=20)
+    changes_diagram: str | None = None
+    pr_files: list[FileDescription] | None = Field(default=None, max_length=20)
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _strip_type_items(cls, value):
+        # Block scalars (|, >) and quoted scalars keep trailing whitespace in
+        # parsed items (e.g. "Enhancement\n"), which PRType rejects. Strip
+        # string items so valid model output validates; non-string items pass
+        # through to the usual enum validation, and non-list input is untouched.
+        if isinstance(value, list):
+            return [item.strip() if isinstance(item, str) else item for item in value]
+        return value
 
 
 class PRDescriptionAssembled(PRDescription):
     """Validate the final description after file chunks and uncovered files are joined."""
 
-    pr_files: Optional[List[FileDescription]] = None
+    pr_files: list[FileDescription] | None = None
 
 
 class PRDescriptionHeaders(BaseModel):
-    type: List[PRType] = Field(min_length=1)
-    description: Optional[str] = None
+    type: list[PRType] = Field(min_length=1)
+    description: str | None = None
     title: str
-    changes_diagram: Optional[str] = None
+    changes_diagram: str | None = None
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _strip_type_items(cls, value):
+        # Same block-scalar whitespace problem as PRDescription: strip string
+        # items so valid model output validates, without touching non-list
+        # input or masking genuinely invalid values.
+        if isinstance(value, list):
+            return [item.strip() if isinstance(item, str) else item for item in value]
+        return value
 
 
 class PRFilesWalkthrough(BaseModel):
-    pr_files: List[FileDescription]
+    pr_files: list[FileDescription]
 
 
-class Label(str, Enum):
+class Label(StrEnum):
     BUG_FIX = "Bug fix"
     TESTS = "Tests"
     ENHANCEMENT = "Enhancement"
@@ -156,7 +284,7 @@ class Label(str, Enum):
 
 
 class Labels(BaseModel):
-    labels: List[str]
+    labels: list[str]
 
     @field_validator("labels", mode="before")
     @classmethod
@@ -204,7 +332,7 @@ class CodeDocumentationItem(BaseModel):
 class CodeDocumentation(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    code_documentation: List[CodeDocumentationItem] = Field(alias="Code Documentation")
+    code_documentation: list[CodeDocumentationItem] = Field(alias="Code Documentation")
 
     @field_validator("code_documentation", mode="after")
     @classmethod
@@ -230,8 +358,8 @@ class RelevantSection(BaseModel):
 class DocHelper(BaseModel):
     user_question: str
     response: str
-    relevant_sections: List[RelevantSection]
-    question_is_relevant: Optional[int] = Field(default=None, ge=0, le=1)
+    relevant_sections: list[RelevantSection]
+    question_is_relevant: int | None = Field(default=None, ge=0, le=1)
 
 
 class FileIdxAndPath(BaseModel):
@@ -241,4 +369,4 @@ class FileIdxAndPath(BaseModel):
 
 class DocHeadingsHelper(BaseModel):
     user_question: str
-    relevant_files_ranking: List[FileIdxAndPath]
+    relevant_files_ranking: list[FileIdxAndPath]

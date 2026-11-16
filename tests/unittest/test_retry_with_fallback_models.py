@@ -386,7 +386,7 @@ def test_local_errors_propagate_without_billing_fallback(error):
 
 @pytest.mark.parametrize("error", [
     openai.APIError("provider failed", request=httpx.Request("POST", "https://example.invalid"), body=None),
-    asyncio.TimeoutError("provider timed out"),
+    TimeoutError("provider timed out"),
 ])
 def test_provider_errors_and_timeouts_remain_fallback_eligible(error):
     snapshot = _snapshot_settings()

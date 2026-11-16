@@ -1,14 +1,19 @@
+import io
+import sys
+
 import pytest
+from git import Repo
 
 from pr_agent.algo.types import EDIT_TYPE
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import _GIT_PROVIDERS
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
 # Diff-mode settings keys these tests mutate on the process-wide singleton.
 _SETTINGS_KEYS = ["plain_diff.content", "plain_diff.output_path",
-                  "config.git_provider", "config.publish_output"]
+                  "plain_diff.title", "plain_diff.description",
+                  "config.git_provider", "config.publish_output", "ignore.glob", "ignore.regex"]
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +70,118 @@ def test_get_diff_files(cfg):
     assert files[0].edit_type == EDIT_TYPE.MODIFIED
 
 
+def test_optional_pr_context_updates_after_provider_creation(cfg):
+    cfg("plain_diff.content", DIFF)
+    cfg("plain_diff.title", None)
+    cfg("plain_diff.description", None)
+    provider = PlainDiffGitProvider(None)
+
+    assert provider.pr.title == provider.get_pr_title() == "Local diff review"
+    assert provider.get_pr_description_full() == ""
+    assert provider.get_user_description() == ""
+
+    provider.pr.title = "Manually changed title"
+    assert provider.pr.title == "Manually changed title"
+
+    cfg("plain_diff.title", "Require approval for invoices")
+    cfg("plain_diff.description", "Invoices above the limit need manager approval.")
+
+    assert provider.pr.title == provider.get_pr_title() == "Require approval for invoices"
+    assert provider.get_pr_description_full() == "Invoices above the limit need manager approval."
+    assert provider.get_user_description() == "Invoices above the limit need manager approval."
+
+    caller_markdown = "### **Description**\nRequire manager approval before payment."
+    cfg("plain_diff.description", caller_markdown)
+    assert provider.get_user_description() == caller_markdown
+    assert provider.get_request_policy_metadata({"title"})["title"] is None
+
+    caller_walkthrough = "Require displaying the label File Walkthrough in the UI"
+    cfg("plain_diff.description", caller_walkthrough)
+    assert provider.get_pr_description(split_changes_walkthrough=True) == (caller_walkthrough, [])
+
+
+@pytest.mark.parametrize("invalid", ["", "  ", 123, True, ["not text"]])
+def test_invalid_pr_context_uses_defaults(cfg, invalid):
+    cfg("plain_diff.content", DIFF)
+    cfg("plain_diff.title", "Previously configured title")
+    cfg("plain_diff.description", "Previously configured description")
+    provider = PlainDiffGitProvider(None)
+    assert provider.pr.title == "Previously configured title"
+
+    cfg("plain_diff.title", invalid)
+    cfg("plain_diff.description", invalid)
+
+    assert provider.pr.title == provider.get_pr_title() == "Local diff review"
+    assert provider.get_pr_description_full() == ""
+    assert provider.get_user_description() == ""
+
+
+def test_lf_framed_diff_preserves_crlf_payload(cfg, monkeypatch):
+    cfg("plain_diff.content", DIFF.replace("-line2\n", "-line2\r\n"))
+    cfg("plain_diff.output_path", None)
+    monkeypatch.setattr("pr_agent.git_providers.plain_diff_provider._find_repository_root", lambda: None)
+
+    provider = PlainDiffGitProvider(None)
+    files = provider.get_diff_files()
+
+    assert files[0].filename == "foo.py"
+    assert files[0].edit_type == EDIT_TYPE.MODIFIED
+    assert "-line2\r\n+line2-changed\n" in files[0].patch
+
+
+def test_crlf_diff_preserves_file_path_and_working_tree_context(cfg, tmp_path, monkeypatch):
+    head = "line1\r\nline2-changed\r\nline3\r\n"
+    Repo.init(tmp_path)
+    (tmp_path / "foo.py").write_text(head, newline="")
+    monkeypatch.chdir(tmp_path)
+    cfg("plain_diff.content", DIFF.replace("\n", "\r\n"))
+    cfg("plain_diff.output_path", None)
+
+    provider = PlainDiffGitProvider(None)
+    files = provider.get_diff_files()
+
+    assert len(files) == 1
+    assert files[0].filename == "foo.py"
+    assert files[0].edit_type == EDIT_TYPE.MODIFIED
+    assert files[0].base_file == "line1\nline2\nline3\n"
+    assert files[0].head_file == "line1\nline2-changed\nline3\n"
+    assert provider.get_languages() == {"Python": 100.0}
+
+
+def test_crlf_diff_with_several_files_keeps_every_path(cfg):
+    cfg("plain_diff.content", (DIFF + DIFF.replace("foo.py", "bar.py")).replace("\n", "\r\n"))
+    cfg("plain_diff.output_path", None)
+
+    files = PlainDiffGitProvider(None).get_diff_files()
+
+    assert [(f.filename, f.edit_type) for f in files] == [("foo.py", EDIT_TYPE.MODIFIED),
+                                                          ("bar.py", EDIT_TYPE.MODIFIED)]
+
+
+@pytest.mark.parametrize("quote_path", ["true", "false"])
+@pytest.mark.parametrize("filename", ["测试.py", 'quote"name.py', "tab\tname.py", "back\\slash.py"])
+def test_git_quoted_paths_preserve_working_tree_context(cfg, tmp_path, monkeypatch, filename, quote_path):
+    repo = Repo.init(tmp_path)
+    path = tmp_path / filename
+    path.write_text("before\n", encoding="utf-8")
+    repo.index.add([filename])
+    path.write_text("after\n", encoding="utf-8")
+    diff = repo.git.execute([
+        "git", "-c", f"core.quotePath={quote_path}", "diff", "--no-ext-diff", "--no-textconv", "--", filename,
+    ])
+    monkeypatch.chdir(tmp_path)
+    cfg("plain_diff.content", diff)
+    cfg("plain_diff.output_path", None)
+
+    provider = PlainDiffGitProvider(None)
+    file = provider.get_diff_files()[0]
+
+    assert provider.get_files() == [filename]
+    assert file.head_file == "after\n"
+    assert file.base_file == "before\n"
+    assert provider.get_languages() == {"Python": 100.0}
+
+
 _MULTI_LANG_DIFF = """diff --git a/foo.py b/foo.py
 --- a/foo.py
 +++ b/foo.py
@@ -84,6 +201,38 @@ diff --git a/weird.zzz b/weird.zzz
  p
 +q
 """
+
+
+def test_plain_diff_applies_ignore_rules_to_files_and_patches(cfg, monkeypatch):
+    diff = _MULTI_LANG_DIFF + DIFF.replace("foo.py", "yarn.lock") + DIFF.replace("foo.py", "generated/uv.lock")
+    cfg("plain_diff.content", diff)
+    cfg("ignore.glob", ["foo.py", "generated/**"])
+    cfg("ignore.regex", [])
+    monkeypatch.setattr("pr_agent.git_providers.plain_diff_provider._find_repository_root", lambda: None)
+
+    provider = PlainDiffGitProvider(None)
+    first = provider.get_diff_files()
+    assert provider.get_files() == ["app.js", "weird.zzz", "yarn.lock"]
+    assert provider.get_filtered_diff_file_names() == ["yarn.lock"]
+    assert provider.get_diff_files() is first
+    assert first[-1].patch == "@@ -1,3 +1,3 @@\n line1\n-line2\n+line2-changed\n line3\n"
+    assert first[-1].head_file == first[-1].base_file == ""
+
+    cfg("ignore.glob", ["*.lock"])
+    assert provider.get_diff_files() is first
+    assert provider.get_filtered_diff_file_names() == ["yarn.lock"]
+    cfg("ignore.glob", [])
+    cfg("ignore.regex", ["["])
+    provider.reset_diff_cache_for_command()
+    assert provider.get_files() == ["foo.py", "app.js", "weird.zzz", "yarn.lock", "generated/uv.lock"]
+    assert provider.get_filtered_diff_file_names() == []
+    cfg("ignore.glob", ["*.lock"])
+    cfg("ignore.regex", [])
+    provider.reset_diff_cache_for_command()
+    assert provider.get_files() == ["foo.py", "app.js", "weird.zzz"]
+    assert provider.get_diff_files() is not first
+    assert provider.get_filtered_diff_file_names() == []
+
 
 _FILENAME_MATCHING_DIFF = """diff --git a/upper.C b/upper.C
 --- a/upper.C
@@ -156,6 +305,33 @@ def test_publish_comment_to_file(cfg, tmp_path):
     provider = PlainDiffGitProvider(None)
     provider.publish_comment("# Review\nsaved")
     assert "saved" in out.read_text(encoding="utf-8")
+
+
+def test_publish_comment_strips_terminal_controls_from_stdout_and_file(cfg, capsys, tmp_path):
+    out = tmp_path / "review.md"
+    cfg("plain_diff.content", DIFF)
+    cfg("plain_diff.output_path", str(out))
+    provider = PlainDiffGitProvider(None)
+
+    provider.publish_comment("## Review\r\n\t\x1b[31mtext\x1b[0m\r\x08\x07\x00\nNext line")
+
+    expected = "## Review\n\t[31mtext[0m\nNext line"
+    assert capsys.readouterr().out == expected + "\n"
+    assert out.read_text(encoding="utf-8") == expected
+
+
+def test_publish_comment_survives_stdout_that_cannot_encode(cfg, tmp_path, monkeypatch):
+    # Simulate a redirected Windows stdout (cp1252) and check that emoji in command
+    # output neither abort publishing nor skip the --output file.
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="cp1252"))
+    out = tmp_path / "review.md"
+    cfg("plain_diff.content", DIFF)
+    cfg("plain_diff.output_path", str(out))
+    provider = PlainDiffGitProvider(None)
+    provider.publish_comment("## ✨ Review\nlooks good")
+    assert raw.getvalue().decode("utf-8") == "## ✨ Review\nlooks good\n"
+    assert out.read_text(encoding="utf-8") == "## ✨ Review\nlooks good"
 
 
 def test_empty_diff_raises(cfg):
@@ -254,7 +430,7 @@ def test_publish_code_suggestions_renders_to_stdout(cfg, capsys):
         {"body": "**Suggestion:** use a constant", "relevant_file": "foo.py",
          "relevant_lines_start": 2, "relevant_lines_end": 2},
     ]
-    # The 'improve' tool calls this unconditionally; it must not crash and must
+    # The 'improve' command calls this unconditionally; it must not crash and must
     # render the suggestions to stdout.
     assert provider.publish_code_suggestions(suggestions) is True
     out = capsys.readouterr().out
@@ -280,15 +456,15 @@ async def test_partial_improve_keeps_suggestions_and_coverage_in_one_output(cfg,
     cfg("plain_diff.output_path", str(output))
     provider = PlainDiffGitProvider(None)
     assert provider.supports_code_suggestions_artifact() is True
-    tool = object.__new__(PRCodeSuggestions)
-    tool.git_provider = provider
-    tool.failed_chunk_count = 1
-    tool.total_chunk_count = 2
-    tool.progress_response = None
-    tool._output_published = False
-    tool._validate_suggestion = lambda *args: (True, "", True)
+    command = object.__new__(PRCodeSuggestions)
+    command.git_provider = provider
+    command.failed_chunk_count = 1
+    command.total_chunk_count = 2
+    command.progress_response = None
+    command._output_published = False
+    command._validate_suggestion = lambda *args: (True, "", True)
 
-    await tool.push_inline_code_suggestions({"code_suggestions": [{
+    await command.push_inline_code_suggestions({"code_suggestions": [{
         "relevant_file": "foo.py",
         "relevant_lines_start": 2,
         "relevant_lines_end": 2,
@@ -314,12 +490,12 @@ async def test_partial_improve_without_suggestions_keeps_coverage_in_artifact(cf
     cfg("plain_diff.content", DIFF)
     cfg("plain_diff.output_path", str(output))
     provider = PlainDiffGitProvider(None)
-    tool = object.__new__(PRCodeSuggestions)
-    tool.git_provider = provider
-    tool.failed_chunk_count = 1
-    tool.total_chunk_count = 2
+    command = object.__new__(PRCodeSuggestions)
+    command.git_provider = provider
+    command.failed_chunk_count = 1
+    command.total_chunk_count = 2
 
-    await tool.publish_no_suggestions()
+    await command.publish_no_suggestions()
 
     content = output.read_text(encoding="utf-8")
     stdout = capsys.readouterr().out

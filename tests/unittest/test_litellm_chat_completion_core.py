@@ -1,4 +1,3 @@
-import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -8,6 +7,7 @@ import openai
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
+from pr_agent.algo import instruction_context
 
 
 @pytest.fixture(autouse=True)
@@ -59,9 +59,9 @@ class FakeSettings:
         return self._settings_values.get(key, default)
 
 
-def _mock_response(usage=None):
+def _mock_response(usage=None, content="ok"):
     mock = MagicMock()
-    response = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+    response = {"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}
     if usage is not None:
         response["usage"] = usage
         # run_details reads the litellm attribute, not the dict form
@@ -71,6 +71,49 @@ def _mock_response(usage=None):
     mock.__getitem__.side_effect = response.__getitem__
     mock.dict.return_value = response
     return mock
+
+
+class _FakeImageResponse:
+    def __init__(self, status):
+        self.status = status
+        self.headers = {}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+def _install_fake_image_probe(monkeypatch, status):
+    """Install a deterministic aiohttp session + DNS for the /ask image probe."""
+    from pr_agent.algo import url_safety
+
+    observed = {}
+    response = _FakeImageResponse(status)
+
+    class _FakeImageSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def request(self, method, url, allow_redirects=True, **kwargs):
+            observed.update(method=method, url=url, allow_redirects=allow_redirects, **kwargs)
+            return response
+
+    def _factory(*args, **kwargs):
+        observed["timeout"] = kwargs.get("timeout")
+        return _FakeImageSession()
+
+    monkeypatch.setattr(litellm_handler.aiohttp, "ClientSession", _factory)
+    monkeypatch.setattr(
+        url_safety.socket,
+        "getaddrinfo",
+        lambda *a, **k: [(2, 1, 6, "", ("140.82.121.4", 0))],
+    )
+    return observed
 
 
 @pytest.mark.asyncio
@@ -103,16 +146,9 @@ async def test_claude_empty_system_prompt_uses_public_request_normalization(monk
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_probes_images_off_loop_with_timeout(monkeypatch):
+async def test_chat_completion_probes_images_with_bounded_head(monkeypatch):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
-    loop_thread = threading.get_ident()
-    observed = {}
-
-    def fake_head(url, **kwargs):
-        observed.update(url=url, kwargs=kwargs, thread=threading.get_ident())
-        return SimpleNamespace(status_code=200)
-
-    monkeypatch.setattr(litellm_handler.requests, "head", fake_head)
+    observed = _install_fake_image_probe(monkeypatch, 200)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -125,9 +161,13 @@ async def test_chat_completion_probes_images_off_loop_with_timeout(monkeypatch):
             img_path="https://example.test/image.png",
         )
 
-    assert observed["url"] == "https://example.test/image.png"
-    assert observed["kwargs"] == {"allow_redirects": True, "timeout": 5}
-    assert observed["thread"] != loop_thread
+    # The probe is a bounded, non-redirecting HEAD with the configured timeout.
+    assert observed["method"] == "HEAD"
+    assert str(observed["url"]) == "https://140.82.121.4/image.png"
+    assert observed["allow_redirects"] is False
+    assert observed["headers"] == {"Host": "example.test"}
+    assert observed["server_hostname"] == "example.test"
+    assert observed["timeout"].total == 5
     assert mock_call.call_args.kwargs["messages"][1]["content"][1] == {
         "type": "image_url",
         "image_url": {"url": "https://example.test/image.png"},
@@ -137,11 +177,7 @@ async def test_chat_completion_probes_images_off_loop_with_timeout(monkeypatch):
 @pytest.mark.asyncio
 async def test_chat_completion_dead_image_uses_current_help_link(monkeypatch):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
-    monkeypatch.setattr(
-        litellm_handler.requests,
-        "head",
-        lambda *args, **kwargs: SimpleNamespace(status_code=404),
-    )
+    _install_fake_image_probe(monkeypatch, 404)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         handler = litellm_handler.LiteLLMAIHandler()
@@ -153,7 +189,7 @@ async def test_chat_completion_dead_image_uses_current_help_link(monkeypatch):
             img_path="https://example.test/missing.png",
         )
 
-    assert "https://docs.pr-agent.ai/tools/ask/#ask-on-images" in response
+    assert "https://docs.pr-agent.ai/commands/ask/#ask-on-images" in response
     assert "pr-agent-docs.codium.ai" not in response
     assert finish_reason == "error"
     mock_call.assert_not_awaited()
@@ -168,11 +204,9 @@ async def test_chat_completion_dead_image_uses_current_help_link(monkeypatch):
     ],
 )
 async def test_chat_completion_scopes_model_id_to_classic_bedrock(monkeypatch, model, expected_model_id):
-    monkeypatch.setattr(
-        litellm_handler,
-        "get_settings",
-        lambda: FakeSettings(settings_values={"litellm.model_id": "profile-123"}),
-    )
+    settings = FakeSettings(settings_values={"litellm.model_id": "profile-123"})
+    settings.config.model = model
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -189,6 +223,7 @@ async def test_chat_completion_scopes_model_id_to_classic_bedrock(monkeypatch, m
 @pytest.mark.asyncio
 async def test_health_probe_uses_snapshotted_classic_bedrock_model_id(monkeypatch):
     active_settings = FakeSettings(settings_values={"litellm.model_id": "profile-a"})
+    active_settings.config.model = "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
     handler = litellm_handler.LiteLLMAIHandler()
     active_settings = FakeSettings(settings_values={"litellm.model_id": "profile-b"})
@@ -320,9 +355,44 @@ async def test_chat_completion_strips_temperature_for_claude_opus_5_family(monke
         "bedrock/au.anthropic.claude-sonnet-5",
         "bedrock/eu.anthropic.claude-sonnet-5",
         "bedrock/jp.anthropic.claude-sonnet-5",
+        "anthropic/claude-sonnet-5-5",
+        "claude-sonnet-5-5",
+        "vertex_ai/claude-sonnet-5-5",
+        "bedrock/anthropic.claude-sonnet-5-5",
+        "bedrock/global.anthropic.claude-sonnet-5-5",
+        "bedrock/us.anthropic.claude-sonnet-5-5",
+        "bedrock/au.anthropic.claude-sonnet-5-5",
+        "bedrock/eu.anthropic.claude-sonnet-5-5",
     ],
 )
-async def test_chat_completion_strips_temperature_for_claude_sonnet_5(monkeypatch, model):
+async def test_chat_completion_strips_temperature_for_claude_sonnet_5_family(monkeypatch, model):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
+
+    assert "temperature" not in mock_call.call_args.kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model",
+    [
+        "anthropic/claude-haiku-5-5",
+        "claude-haiku-5-5",
+        "vertex_ai/claude-haiku-5-5",
+        "bedrock/anthropic.claude-haiku-5-5",
+        "bedrock/global.anthropic.claude-haiku-5-5",
+        "bedrock/us.anthropic.claude-haiku-5-5",
+        "bedrock/au.anthropic.claude-haiku-5-5",
+        "bedrock/eu.anthropic.claude-haiku-5-5",
+        "bedrock/jp.anthropic.claude-haiku-5-5",
+    ],
+)
+async def test_chat_completion_strips_temperature_for_claude_haiku_5_5(monkeypatch, model):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
@@ -420,7 +490,23 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_opus_5_
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_does_not_use_extended_thinking_for_claude_sonnet_5(monkeypatch):
+@pytest.mark.parametrize(
+    "model",
+    [
+        "claude-sonnet-5",
+        "anthropic/claude-sonnet-5-5",
+        "claude-sonnet-5-5",
+        "vertex_ai/claude-sonnet-5-5",
+        "bedrock/global.anthropic.claude-sonnet-5-5",
+        "bedrock/eu.anthropic.claude-sonnet-5-5",
+        "anthropic/claude-haiku-5-5",
+        "claude-haiku-5-5",
+        "vertex_ai/claude-haiku-5-5",
+        "bedrock/global.anthropic.claude-haiku-5-5",
+        "bedrock/eu.anthropic.claude-haiku-5-5",
+    ],
+)
+async def test_chat_completion_does_not_use_extended_thinking_for_claude_sonnet_5_and_haiku_5_5(monkeypatch, model):
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
@@ -431,7 +517,7 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_sonnet_
         mock_call.return_value = _mock_response()
         handler = litellm_handler.LiteLLMAIHandler()
 
-        await handler.chat_completion(model="claude-sonnet-5", system="sys", user="usr", temperature=0.2)
+        await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
 
     assert "thinking" not in mock_call.call_args.kwargs
     assert "max_tokens" not in mock_call.call_args.kwargs
@@ -507,6 +593,38 @@ async def test_chat_completion_strips_temperature_for_config_no_temperature_mode
 
 
 @pytest.mark.asyncio
+async def test_chat_completion_strips_temperature_for_kimi_and_glm_5_by_default(monkeypatch):
+    """Verify the shipped defaults drop temperature for Bedrock Kimi K3, Moonshot Kimi K3/K3.1 Pro,
+    and GLM-5, since these models reject temperature."""
+    import tomllib
+    from pathlib import Path
+
+    import pr_agent
+
+    with open(Path(pr_agent.__file__).parent / "settings" / "configuration.toml", "rb") as config_file:
+        defaults = tomllib.load(config_file)["config"]["no_temperature_models"]
+    monkeypatch.setattr(
+        litellm_handler, "get_settings", lambda: FakeSettings(config_values={"no_temperature_models": defaults})
+    )
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_litellm_supports_temperature",
+        staticmethod(lambda model, custom_llm_provider=None: True),
+    )
+    models = [f"bedrock/{route}{model}" for route in ("", "converse/")
+              for model in ("moonshotai.kimi-k3", "us.moonshotai.kimi-k3", "global.moonshotai.kimi-k3",
+                            "zai.glm-5")] + ["kimi-k3", "kimi-k3.1-pro", "openai/kimi-k3", "openai/kimi-k3.1-pro"]
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        for model in models:
+            await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
+
+    assert all("temperature" not in call.kwargs for call in mock_call.call_args_list)
+
+
+@pytest.mark.asyncio
 async def test_chat_completion_strips_temperature_when_probe_reports_unsupported(monkeypatch):
     """A model whose litellm metadata omits temperature must not receive it."""
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
@@ -550,14 +668,27 @@ def test_request_messages_recognize_routed_user_only_models(monkeypatch, model):
     assert messages == [{"role": "user", "content": "sys\n\n\nusr"}]
 
 
+def test_request_messages_append_protected_system_instructions(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    monkeypatch.setattr(
+        instruction_context,
+        "get_settings",
+        lambda: FakeSettings(config_values={"system_instructions": "TRUSTED POLICY"}),
+    )
+    handler = litellm_handler.LiteLLMAIHandler()
+
+    messages = handler.build_request_messages("gpt-4o", "command instructions", "usr")
+
+    assert messages == [
+        {"role": "system", "content": "command instructions\n\nTRUSTED POLICY"},
+        {"role": "user", "content": "usr"},
+    ]
+
+
 @pytest.mark.asyncio
 async def test_chat_completion_keeps_image_for_user_message_only_models(monkeypatch):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
-    monkeypatch.setattr(
-        litellm_handler.requests,
-        "head",
-        lambda *args, **kwargs: SimpleNamespace(status_code=200),
-    )
+    _install_fake_image_probe(monkeypatch, 200)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -589,11 +720,7 @@ async def test_chat_completion_keeps_image_for_custom_reasoning_models(monkeypat
     settings = FakeSettings()
     settings.config.custom_reasoning_model = True
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
-    monkeypatch.setattr(
-        litellm_handler.requests,
-        "head",
-        lambda *args, **kwargs: SimpleNamespace(status_code=200),
-    )
+    _install_fake_image_probe(monkeypatch, 200)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -624,6 +751,27 @@ def _timeout_error():
     return openai.APITimeoutError(request=httpx.Request("POST", "http://model.invalid"))
 
 
+def _answered(error):
+    # LiteLLM attaches the provider's response headers to an error the provider answered.
+    error.litellm_response_headers = httpx.Headers({})
+    return error
+
+
+def _connection_error(cause):
+    error = litellm.APIConnectionError("no answer", llm_provider="bedrock", model="m")
+    error.__cause__ = cause
+    return error
+
+
+def _empty_response(finish_reason, content=""):
+    mock = MagicMock()
+    response = {"choices": [{"message": {"content": content}, "finish_reason": finish_reason}]}
+    mock.usage = None
+    mock.__getitem__.side_effect = response.__getitem__
+    mock.dict.return_value = response
+    return mock
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "error, expected_attempts",
@@ -647,6 +795,24 @@ def _timeout_error():
             id="unprocessable-entity",
         ),
         pytest.param(
+            openai.AuthenticationError(
+                "invalid credentials",
+                response=httpx.Response(401, request=httpx.Request("POST", "http://model.invalid")),
+                body=None,
+            ),
+            1,
+            id="authentication-error",
+        ),
+        pytest.param(
+            openai.PermissionDeniedError(
+                "access denied",
+                response=httpx.Response(403, request=httpx.Request("POST", "http://model.invalid")),
+                body=None,
+            ),
+            1,
+            id="permission-denied",
+        ),
+        pytest.param(
             litellm.ContextWindowExceededError("context too long", model="gpt-4o", llm_provider="openai"),
             1,
             id="litellm-context-window",
@@ -655,6 +821,27 @@ def _timeout_error():
             openai.APIError("temporary failure", request=httpx.Request("POST", "http://model.invalid"), body=None),
             litellm_handler.MODEL_RETRIES,
             id="generic-api-error",
+        ),
+        pytest.param(
+            _answered(litellm.RateLimitError("throttled", llm_provider="bedrock", model="m")),
+            litellm_handler.DEFAULT_NUM_RETRIES + 1,
+            id="rate-limit",
+        ),
+        pytest.param(
+            _answered(litellm.ServiceUnavailableError("unavailable", llm_provider="bedrock", model="m")),
+            litellm_handler.DEFAULT_NUM_RETRIES + 1,
+            id="service-unavailable",
+        ),
+        pytest.param(
+            _connection_error(httpx.ConnectError("refused")),
+            litellm_handler.DEFAULT_NUM_RETRIES + 1,
+            id="connection-error",
+        ),
+        pytest.param(
+            # A 200 that failed to parse; LiteLLM reports it as a 500 with no response behind it.
+            litellm.InternalServerError("Expecting value", llm_provider="openai", model="m"),
+            litellm_handler.MODEL_RETRIES,
+            id="unparsed-response",
         ),
     ],
 )
@@ -673,8 +860,10 @@ async def test_chat_completion_retry_classification(monkeypatch, error, expected
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_passes_configured_retries_to_completion_call(monkeypatch):
-    monkeypatch.setattr(litellm_handler, "get_settings", lambda: FakeSettings(config_values={"num_retries": 0}))
+@pytest.mark.parametrize("config_values", [{}, {"num_retries": 0}, {"num_retries": 7}], ids=["unset", "zero", "set"])
+async def test_chat_completion_always_turns_off_client_retries(monkeypatch, config_values):
+    # The handler's retry is the only layer; config.num_retries never reaches the client.
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: FakeSettings(config_values=config_values))
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -687,17 +876,42 @@ async def test_chat_completion_passes_configured_retries_to_completion_call(monk
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_unset_num_retries_keeps_client_defaults(monkeypatch):
-    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+@pytest.mark.parametrize("num_retries,expected_attempts", [(0, 1), (2, 3)])
+async def test_chat_completion_num_retries_sets_rate_limit_attempts(monkeypatch, num_retries, expected_attempts):
+    settings = FakeSettings(config_values={"num_retries": num_retries})
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+    error = _answered(litellm.RateLimitError("throttled", llm_provider="bedrock", model="m"))
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.return_value = _mock_response()
+        mock_call.side_effect = error
         handler = litellm_handler.LiteLLMAIHandler()
 
-        await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+        with pytest.raises(litellm.RateLimitError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
 
-    assert "num_retries" not in mock_call.call_args.kwargs
-    assert "max_retries" not in mock_call.call_args.kwargs
+    assert mock_call.call_count == expected_attempts
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_waits_retry_after_between_rate_limit_retries(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    sleeps = []
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(litellm_handler.LiteLLMAIHandler._chat_completion_with_retry.retry, "sleep", record_sleep)
+    error = _answered(litellm.RateLimitError("throttled", llm_provider="bedrock", model="m"))
+    error.litellm_response_headers = httpx.Headers({"retry-after": "7"})
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.side_effect = error
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        with pytest.raises(litellm.RateLimitError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert sleeps == [7.0] * litellm_handler.DEFAULT_NUM_RETRIES
 
 
 @pytest.mark.asyncio
@@ -732,6 +946,129 @@ async def test_chat_completion_timeout_not_retried_same_model_when_disabled(monk
             await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
 
     assert mock_call.call_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["", " \t\n\u2003"])
+async def test_chat_completion_length_truncation_does_not_retry_same_model(monkeypatch, content):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _empty_response("length", content)
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        # Same request and cap reproduce the truncation, so the empty call is not replayed;
+        # the error surfaces to the caller's fallback-models loop after one attempt.
+        with pytest.raises(litellm_handler.EmptyTruncatedResponseError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["", " \t\n\u2003"])
+async def test_chat_completion_length_truncation_retries_same_model_when_enabled(monkeypatch, content):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: FakeSettings(config_values={"retry_same_model_on_length": True}),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _empty_response("length", content)
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        with pytest.raises(litellm_handler.EmptyTruncatedResponseError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_count == litellm_handler.MODEL_RETRIES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["", " \t\r\n", "\u2003\u3000"])
+async def test_chat_completion_empty_content_without_length_still_retries(monkeypatch, content):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _empty_response("stop", content)
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        # Without the deterministic "length" signal, an empty response can be transient.
+        with pytest.raises(openai.APIError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_count == litellm_handler.MODEL_RETRIES
+
+
+def _empty_stream(finish_reason, content=""):
+    async def _stream():
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content=content), finish_reason=finish_reason)],
+            usage=None,
+            _hidden_params=None,
+        )
+
+    return _stream()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["", " \t\n\u2003"])
+async def test_chat_completion_length_truncation_does_not_retry_same_model_streaming(monkeypatch, content):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.side_effect = lambda **_: _empty_stream("length", content)
+        handler = litellm_handler.LiteLLMAIHandler()
+        handler.streaming_required_models = ["gpt-4o"]
+
+        # An empty, length-truncated stream is deterministic for the same request, so it is not
+        # replayed; the error surfaces to the caller's fallback-models loop after one attempt.
+        with pytest.raises(litellm_handler.EmptyTruncatedResponseError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["", " \t\r\n", "\u2003\u3000"])
+async def test_chat_completion_streaming_empty_without_length_still_retries(monkeypatch, content):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.side_effect = lambda **_: _empty_stream("stop", content)
+        handler = litellm_handler.LiteLLMAIHandler()
+        handler.streaming_required_models = ["gpt-4o"]
+
+        # Without the deterministic "length" signal, an empty stream can be transient.
+        with pytest.raises(openai.APIError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_count == litellm_handler.MODEL_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_length_truncation_reaches_the_fallback_model(monkeypatch):
+    from pr_agent.algo import pr_processing
+
+    monkeypatch.setattr(pr_processing, "_get_all_models", lambda model_type: ["primary", "fallback"])
+    monkeypatch.setattr(pr_processing, "_get_all_deployments", lambda models: [None, None])
+    monkeypatch.setattr(pr_processing, "route_primary_model", lambda model_type, git_provider: None)
+
+    attempts = []
+
+    async def f(model):
+        attempts.append(model)
+        raise litellm_handler.EmptyTruncatedResponseError(
+            "Empty content in model response (finish_reason: length)",
+            request=httpx.Request("POST", "http://model.invalid"),
+            body=None,
+        )
+
+    with pytest.raises(Exception, match="Failed to generate prediction with any model") as raised:
+        await pr_processing.retry_with_fallback_models(f)
+
+    assert attempts == ["primary", "fallback"]
+    assert isinstance(raised.value.__cause__, litellm_handler.EmptyTruncatedResponseError)
 
 
 @pytest.mark.asyncio
@@ -805,15 +1142,16 @@ async def test_get_completion_raises_on_empty_content_for_non_streaming_model():
 
 
 @pytest.mark.asyncio
-async def test_get_completion_returns_non_empty_content_for_non_streaming_model():
+@pytest.mark.parametrize("content", ["ok", " \tvalid answer\u3000\n"])
+async def test_get_completion_returns_non_empty_content_for_non_streaming_model(content):
     handler = litellm_handler.LiteLLMAIHandler.__new__(litellm_handler.LiteLLMAIHandler)
     handler._sdk_header_defaults = {"organization": None, "project": None, "custom_headers": {}}
     handler.streaming_required_models = []
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.return_value = _mock_response()
+        mock_call.return_value = _mock_response(content=content)
 
         resp, finish_reason, response_obj = await handler._get_completion(model="gpt-4o", messages=[])
 
-    assert resp == "ok"
+    assert resp == content
     assert finish_reason == "stop"

@@ -4,9 +4,7 @@ from urllib.parse import urlparse
 
 import pytest
 
-from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import AzureDevopsProvider
-from pr_agent.tools.ticket_pr_compliance_check import (
+from pr_agent.commands.ticket_pr_compliance_check import (
     MAX_JIRA_FETCH_ATTEMPTS,
     MAX_TICKET_CHARACTERS,
     MAX_TICKETS,
@@ -18,11 +16,14 @@ from pr_agent.tools.ticket_pr_compliance_check import (
     extract_tickets,
     find_jira_tickets,
 )
+from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import AzureDevopsProvider
 
 # Keys the tests mutate via get_settings().set(...). Snapshot and restore them around
 # every test so values (e.g. JIRA_REQUIREMENTS_FIELD) don't leak between tests.
 _JIRA_KEYS = (
     "JIRA.JIRA_SITE",
+    "JIRA.CLOUD_ID",
     "JIRA.JIRA_API_EMAIL",
     "JIRA.JIRA_API_TOKEN",
     "JIRA.JIRA_REQUIREMENTS_FIELD",
@@ -95,6 +96,32 @@ class TestFindJiraTickets:
         )
         assert result == ["GHI-3", "ABC-1", "DEF-2"]
 
+    @pytest.mark.parametrize("text, expected", [
+        ("Fixes AB1-23", ["AB1-23"]),
+        ("feature/p2p-42-retry", ["P2P-42"]),
+        ("see https://acme.atlassian.net/browse/B2B-7 for details", ["B2B-7"]),
+        ("PROJ-12 and DEV2-5", ["PROJ-12", "DEV2-5"]),
+    ])
+    def test_project_key_with_digits(self, text, expected):
+        """Jira Cloud project keys may contain digits after the first letter (AB1, P2P, B2B)."""
+        assert find_jira_tickets(text) == expected
+
+    @pytest.mark.parametrize("text", ["A-1 should not match", "released 2026-11-03"])
+    def test_key_starts_with_a_letter_and_has_two_characters(self, text):
+        """A key is still a letter followed by 1-9 letters or digits, so a one-letter prefix
+        or a date is not a key."""
+        assert find_jira_tickets(text) == []
+
+    @pytest.mark.parametrize("text, expected", [
+        ("request id 4f3a9c1e-2716-4b9a-8e2f-0c6d5b7a9e31", []),
+        ("feature/authentication-2", []),
+        ("feature_abc-123", ["ABC-123"]),
+    ])
+    def test_key_does_not_start_inside_a_word(self, text, expected):
+        """A key cannot start in the middle of a run of letters and digits, so part of a hex ID
+        or of a long word is not a key, while an underscore still separates one."""
+        assert find_jira_tickets(text) == expected
+
 
 class TestExtractJiraTickets:
     """End-to-end extraction: find keys, fetch via the Jira client, map to ticket dicts."""
@@ -123,7 +150,7 @@ class TestExtractJiraTickets:
         """No Jira keys in the text -> return early without constructing a client, so a
         keyless PR pays no client-init cost (or noisy init-failure log)."""
         self._configure_jira()
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls:
+        with patch("atlassian.Jira") as jira_cls:
             result = extract_jira_tickets("nothing ticket-like here")
         assert result == []
         jira_cls.assert_not_called()
@@ -132,9 +159,9 @@ class TestExtractJiraTickets:
         """The whole point: a lowercased branch key is detected and fetched as upper."""
         self._configure_jira()
         client = self._fake_client()
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets("bugfix/abc-123-description-of-branch")
-        client.issue.assert_called_once_with("ABC-123")
+        client.issue.assert_called_once_with("ABC-123", fields="summary,description,labels")
         assert len(result) == 1
         assert result[0]["ticket_id"] == "ABC-123"
         assert result[0]["ticket_url"] == "https://acme.atlassian.net/browse/ABC-123"
@@ -150,8 +177,9 @@ class TestExtractJiraTickets:
             "summary": "T", "description": "B", "labels": [],
             "customfield_10127": "Acceptance criteria text",
         }}
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets("ABC-1")
+        client.issue.assert_called_once_with("ABC-1", fields="summary,description,labels,customfield_10127")
         assert result[0]["requirements"] == "Acceptance criteria text"
 
     def test_requirements_truncated_like_body(self):
@@ -164,24 +192,50 @@ class TestExtractJiraTickets:
             "summary": "T", "description": "B", "labels": [],
             "customfield_10127": "x" * 50,
         }}
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets("ABC-1", max_characters=10)
         assert result[0]["requirements"] == "x" * 10 + "..."
 
-    def test_requirements_empty_when_field_not_configured(self):
-        """With no requirements field configured, requirements stays empty."""
+    @pytest.mark.parametrize("requirements_field, requested_fields", [
+        ("", "summary,description,labels"),
+        ("customfield_10127", "summary,description,labels,customfield_10127"),
+    ])
+    def test_requirements_empty_when_field_not_available(self, requirements_field, requested_fields):
+        """Missing requirements leave the rest of the ticket intact."""
         self._configure_jira()
-        get_settings().set("JIRA.JIRA_REQUIREMENTS_FIELD", "")
+        get_settings().set("JIRA.JIRA_REQUIREMENTS_FIELD", requirements_field)
         client = self._fake_client()
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets("ABC-1")
+        client.issue.assert_called_once_with("ABC-1", fields=requested_fields)
         assert result[0]["requirements"] == ""
+        assert result[0]["title"] == "Title"
+        assert result[0]["body"] == "Body"
+        assert result[0]["labels"] == "a"
+
+    @pytest.mark.parametrize("requirements_field, requirements", [
+        ("environment", "Runtime details"),
+        ("-description", ""),
+        (123, ""),
+    ])
+    def test_other_requirements_fields_preserve_full_lookup(self, requirements_field, requirements):
+        """Existing field keys must not become Jira selectors or fail during concatenation."""
+        self._configure_jira()
+        get_settings().set("JIRA.JIRA_REQUIREMENTS_FIELD", requirements_field)
+        client = self._fake_client({
+            "summary": "Title", "description": "Body", "labels": ["a"], "environment": "Runtime details",
+        })
+        with patch("atlassian.Jira", return_value=client):
+            result = extract_jira_tickets("ABC-1")
+        client.issue.assert_called_once_with("ABC-1", fields="*all")
+        assert result[0]["requirements"] == requirements
+        assert result[0]["body"] == "Body"
 
     def test_checks_all_tickets_when_multiple(self):
         """When several distinct keys are present, each is fetched."""
         self._configure_jira()
         client = self._fake_client()
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets("ABC-1 DEF-2 GHI-3")
         fetched = {c.args[0] for c in client.issue.call_args_list}
         assert fetched == {"ABC-1", "DEF-2", "GHI-3"}
@@ -193,7 +247,7 @@ class TestExtractJiraTickets:
         self._configure_jira()
         client = self._fake_client()
         keys = " ".join(f"ABC-{i}" for i in range(1, MAX_TICKETS + 3))
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets(keys)
         assert client.issue.call_count == MAX_TICKETS
         assert len(result) == MAX_TICKETS
@@ -203,7 +257,7 @@ class TestExtractJiraTickets:
         before the fetch spends the budget on them and drops the ticket the PR names."""
         self._configure_jira()
 
-        def fake_issue(key):
+        def fake_issue(key, fields):
             if key == "PROJ-4242":
                 return {"fields": {"summary": "Real", "description": "Body", "labels": []}}
             raise Exception("404 not found")
@@ -212,7 +266,7 @@ class TestExtractJiraTickets:
         client.issue.side_effect = fake_issue
         text = ("Switch the digest from SHA-1 to SHA-256, normalise to UTF-8 and rotate "
                 "the AES-256 key. Implements PROJ-4242")
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets(text)
         assert [t["ticket_id"] for t in result] == ["PROJ-4242"]
 
@@ -221,7 +275,7 @@ class TestExtractJiraTickets:
         the cap is set to."""
         self._configure_jira()
 
-        def fake_issue(key):
+        def fake_issue(key, fields):
             if key == "PROJ-4242":
                 return {"fields": {"summary": "Real", "description": "Body", "labels": []}}
             raise Exception("404 not found")
@@ -229,7 +283,7 @@ class TestExtractJiraTickets:
         client = MagicMock()
         client.issue.side_effect = fake_issue
         noise = " ".join(f"AES-{i}" for i in range(1, MAX_TICKETS + 3))
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets(f"{noise} PROJ-4242")
         assert [t["ticket_id"] for t in result] == ["PROJ-4242"]
 
@@ -239,7 +293,7 @@ class TestExtractJiraTickets:
         client = MagicMock()
         client.issue.side_effect = Exception("404 not found")
         keys = " ".join(f"ABC-{i}" for i in range(1, MAX_JIRA_FETCH_ATTEMPTS + 6))
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets(keys)
         assert client.issue.call_count == MAX_JIRA_FETCH_ATTEMPTS
         assert result == []
@@ -252,7 +306,7 @@ class TestExtractJiraTickets:
             Exception("404 not found"),
             {"fields": {"summary": "Second", "description": "B", "labels": []}},
         ]
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets("ABC-1 ABC-2")
         assert len(result) == 1
         assert result[0]["title"] == "Second"
@@ -262,14 +316,14 @@ class TestExtractJiraTickets:
         leaving only the real ticket."""
         self._configure_jira()
 
-        def fake_issue(key):
+        def fake_issue(key, fields):
             if key == "ABC-123":
                 return {"fields": {"summary": "Real", "description": "Body", "labels": []}}
             raise Exception("404 not found")
 
         client = MagicMock()
         client.issue.side_effect = fake_issue
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets("abc-123 utf-8")
         assert [t["ticket_id"] for t in result] == ["ABC-123"]
 
@@ -279,9 +333,9 @@ class TestExtractJiraTickets:
         self._configure_jira()
         get_settings().set("JIRA.PROJECT_KEYS", ["PROJ"])
         client = self._fake_client()
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets("Switch SHA-256 digest per PROJ-4242")
-        client.issue.assert_called_once_with("PROJ-4242")
+        client.issue.assert_called_once_with("PROJ-4242", fields="summary,description,labels")
         assert [t["ticket_id"] for t in result] == ["PROJ-4242"]
 
     def test_project_keys_allowlist_drops_unlisted_prefixes_before_lookup(self):
@@ -290,7 +344,7 @@ class TestExtractJiraTickets:
         self._configure_jira()
         get_settings().set("JIRA.PROJECT_KEYS", ["PROJ", "OPS"])
         client = self._fake_client()
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets("PROJ-1 uses SHA-256 and UTF-8, see OPS-7 and ISO-8601")
         assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1", "OPS-7"]
         assert [t["ticket_id"] for t in result] == ["PROJ-1", "OPS-7"]
@@ -300,7 +354,7 @@ class TestExtractJiraTickets:
         built at all: same early-exit as having no keys in the text."""
         self._configure_jira()
         get_settings().set("JIRA.PROJECT_KEYS", ["PROJ"])
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls:
+        with patch("atlassian.Jira") as jira_cls:
             result = extract_jira_tickets("SHA-256 and UTF-8 only, no real ticket")
         assert result == []
         jira_cls.assert_not_called()
@@ -311,7 +365,7 @@ class TestExtractJiraTickets:
         self._configure_jira()
         get_settings().set("JIRA.PROJECT_KEYS", ["PROJ"])
         client = self._fake_client()
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets("bugfix/proj-12-x mentions SHA-256")
         assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-12"]
         assert [t["ticket_id"] for t in result] == ["PROJ-12"]
@@ -323,8 +377,8 @@ class TestExtractJiraTickets:
         rejected with a warning and no lookup happens at all."""
         self._configure_jira()
         get_settings().set("JIRA.PROJECT_KEYS", entries)
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls, \
-                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+        with patch("atlassian.Jira") as jira_cls, \
+                patch("pr_agent.commands.ticket_pr_compliance_check.get_logger") as get_logger:
             result = extract_jira_tickets("bugfix/proj-12-x mentions SHA-256")
         assert result == []
         jira_cls.assert_not_called()
@@ -337,14 +391,34 @@ class TestExtractJiraTickets:
         self._configure_jira()
         get_settings().set("JIRA.PROJECT_KEYS", "PROJ, OPS")
         client = self._fake_client()
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             extract_jira_tickets("OPS-3 SHA-256 PROJ-4")
         assert [call.args[0] for call in client.issue.call_args_list] == ["OPS-3", "PROJ-4"]
+
+    @pytest.mark.parametrize("entries, looked_up", [
+        (["B2B"], ["B2B-7"]),
+        (["B2B", "PROJ"], ["B2B-7", "PROJ-1"]),
+        ("B2B, PROJ", ["B2B-7", "PROJ-1"]),
+    ])
+    def test_project_keys_with_digits_are_valid_entries(self, entries, looked_up):
+        """Jira Cloud project keys may contain digits after the first letter, so "B2B" filters
+        like any other entry. It is not ignored as malformed, which would disable every lookup
+        when it is the only entry."""
+        self._configure_jira()
+        get_settings().set("JIRA.PROJECT_KEYS", entries)
+        client = self._fake_client()
+        with patch("atlassian.Jira", return_value=client), \
+                patch("pr_agent.commands.ticket_pr_compliance_check.get_logger") as get_logger:
+            result = extract_jira_tickets("B2B-7 uses SHA-256, see PROJ-1")
+        assert [call.args[0] for call in client.issue.call_args_list] == looked_up
+        assert [t["ticket_id"] for t in result] == looked_up
+        get_logger.return_value.warning.assert_not_called()
 
     @pytest.mark.parametrize("bad_entry", [
         "https://acme.atlassian.net/browse/PROJ",  # a URL, not a key
         "PROJ-123",                                # a ticket key, not a project key
         "P",                                       # too short to ever match a ticket
+        "2FA",                                     # starts with a digit, not a letter
         "PROJECT_KEY_TOO_LONG",                    # longer than the ticket pattern allows
         "pro j",                                   # whitespace
     ])
@@ -354,8 +428,8 @@ class TestExtractJiraTickets:
         self._configure_jira()
         get_settings().set("JIRA.PROJECT_KEYS", [bad_entry, "PROJ"])
         client = self._fake_client()
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client), \
-                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+        with patch("atlassian.Jira", return_value=client), \
+                patch("pr_agent.commands.ticket_pr_compliance_check.get_logger") as get_logger:
             extract_jira_tickets("PROJ-1 SHA-256")
         assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1"]
         warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
@@ -366,7 +440,7 @@ class TestExtractJiraTickets:
     def test_a_rejected_entry_is_never_echoed_into_the_log(self):
         """The warning names the entry's position and type, never its content.
 
-        project_keys is operator configuration this tool does not control. A value pasted
+        project_keys is operator configuration this command does not control. A value pasted
         into the wrong setting can be a credential, and one carrying newlines could forge
         whole log lines, so the rejected text is not quoted back.
         """
@@ -374,8 +448,8 @@ class TestExtractJiraTickets:
         secret = "hunter2-SECRET\nWARNING: Jira ticket lookup disabled by operator"
         get_settings().set("JIRA.PROJECT_KEYS", [secret, "PROJ"])
         client = self._fake_client()
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client), \
-                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+        with patch("atlassian.Jira", return_value=client), \
+                patch("pr_agent.commands.ticket_pr_compliance_check.get_logger") as get_logger:
             extract_jira_tickets("PROJ-1 SHA-256")
         # The valid entry still filters, so the rejection is not a silent drop.
         assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1"]
@@ -399,8 +473,8 @@ class TestExtractJiraTickets:
         get_settings().set("JIRA.PROJECT_KEYS", ["PROJ"])
         noise = [f"X{letter}-{index}" for index, letter in enumerate(ascii_uppercase, start=1)]
         client = self._fake_client()
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client), \
-                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+        with patch("atlassian.Jira", return_value=client), \
+                patch("pr_agent.commands.ticket_pr_compliance_check.get_logger") as get_logger:
             extract_jira_tickets(" ".join(["PROJ-1", *noise, "PROJ-2"]))
         assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1", "PROJ-2"]
         debug_calls = [str(c) for c in get_logger.return_value.debug.call_args_list]
@@ -416,8 +490,8 @@ class TestExtractJiraTickets:
         unfiltered default: nothing is looked up and no client is built until it is fixed."""
         self._configure_jira()
         get_settings().set("JIRA.PROJECT_KEYS", entries)
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls, \
-                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+        with patch("atlassian.Jira") as jira_cls, \
+                patch("pr_agent.commands.ticket_pr_compliance_check.get_logger") as get_logger:
             result = extract_jira_tickets("PROJ-1 SHA-256")
         assert result == []
         jira_cls.assert_not_called()
@@ -430,8 +504,8 @@ class TestExtractJiraTickets:
         list; it must not raise and must not re-enable lookups for every key."""
         self._configure_jira()
         get_settings().set("JIRA.PROJECT_KEYS", value)
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls, \
-                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+        with patch("atlassian.Jira") as jira_cls, \
+                patch("pr_agent.commands.ticket_pr_compliance_check.get_logger") as get_logger:
             result = extract_jira_tickets("PROJ-1 SHA-256")
         assert result == []
         jira_cls.assert_not_called()
@@ -445,23 +519,46 @@ class TestExtractJiraTickets:
         self._configure_jira()
         get_settings().set("JIRA.PROJECT_KEYS", [bad_entry, "PROJ"])
         client = self._fake_client()
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client), \
-                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+        with patch("atlassian.Jira", return_value=client), \
+                patch("pr_agent.commands.ticket_pr_compliance_check.get_logger") as get_logger:
             extract_jira_tickets("PROJ-1 TRUE-2 NONE-3 SHA-256")
         assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1"]
         warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
         assert any("project_keys" in c for c in warning_calls)
 
-    @pytest.mark.parametrize("value", [[], (), "", "   "])
-    def test_unsupplied_project_keys_keep_looking_up_every_key(self, value):
-        """The three ways of supplying nothing: the option missing (covered by the tests
-        above), the shipped empty list, and a blank top-level string, since
-        `jira__project_keys=""` is how a shell spells an unset environment variable. All
-        keep today's behaviour."""
+    @pytest.mark.parametrize("value", [["*"], ("*",), "*", " * ", ["PROJ", "*"]])
+    def test_wildcard_project_keys_look_up_every_key(self, value):
+        """The wildcard ["*"] (default) looks up every key found, preserving shipped behavior."""
         self._configure_jira()
         get_settings().set("JIRA.PROJECT_KEYS", value)
         client = self._fake_client()
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
+            result = extract_jira_tickets("PROJ-1 SHA-256")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1", "SHA-256"]
+        assert len(result) == 2
+
+    @pytest.mark.parametrize("value", [[], ()])
+    def test_empty_project_keys_disables_lookups(self, value):
+        """An empty list or tuple explicitly disables Jira ticket lookups without logging a warning."""
+        self._configure_jira()
+        get_settings().set("JIRA.PROJECT_KEYS", value)
+        with patch("atlassian.Jira") as jira_cls, \
+                patch("pr_agent.commands.ticket_pr_compliance_check.get_logger") as get_logger:
+            result = extract_jira_tickets("PROJ-1 SHA-256")
+        assert result == []
+        jira_cls.assert_not_called()
+        warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
+        assert not any("no valid entry" in c for c in warning_calls)
+
+    @pytest.mark.parametrize("value", [None, "", "   "])
+    def test_unsupplied_project_keys_keep_looking_up_every_key(self, value):
+        """When jira.project_keys is unconfigured (None) or set to a blank top-level string
+        (since `jira__project_keys=""` is how a shell spells an unset environment variable),
+        it defaults to the wildcard behavior and looks up every key."""
+        self._configure_jira()
+        get_settings().set("JIRA.PROJECT_KEYS", value)
+        client = self._fake_client()
+        with patch("atlassian.Jira", return_value=client):
             result = extract_jira_tickets("PROJ-1 SHA-256")
         assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1", "SHA-256"]
         assert len(result) == 2
@@ -473,8 +570,8 @@ class TestExtractJiraTickets:
         to unfiltered lookup there would let a broken override grant access it never named."""
         self._configure_jira()
         get_settings().set("JIRA.PROJECT_KEYS", entries)
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls, \
-                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+        with patch("atlassian.Jira") as jira_cls, \
+                patch("pr_agent.commands.ticket_pr_compliance_check.get_logger") as get_logger:
             result = extract_jira_tickets("PROJ-1 SHA-256")
         assert result == []
         jira_cls.assert_not_called()
@@ -485,20 +582,89 @@ class TestExtractJiraTickets:
 class TestGetJiraClient:
     """Cloud client construction: site-name -> base URL, email+token auth, v2 pin."""
 
-    def _set(self, site=None, email=None, token=None):
+    def _set(self, site=None, email=None, token=None, cloud_id=None):
         get_settings().set("JIRA.JIRA_SITE", site if site is not None else "")
+        get_settings().set("JIRA.CLOUD_ID", cloud_id if cloud_id is not None else "")
         get_settings().set("JIRA.JIRA_API_EMAIL", email if email is not None else "")
         get_settings().set("JIRA.JIRA_API_TOKEN", token if token is not None else "")
 
     def test_cloud_builds_url_from_site_and_pins_v2(self):
         """site name -> https://<site>.atlassian.net, email/token basic auth, v2 pinned."""
         self._set(site="acme", email="me@acme.com", token="token123")
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls:
+        with patch("atlassian.Jira") as jira_cls:
             _get_jira_client()
         jira_cls.assert_called_once_with(
             url="https://acme.atlassian.net", username="me@acme.com",
             password="token123", api_version="2",
         )
+
+    def test_scoped_token_builds_gateway_url(self):
+        self._set(
+            site="acme",
+            cloud_id="35273b54-3f06-40d2-880f-dd28cf8daafa",
+            email="me@acme.com",
+            token="token123",
+        )
+        with patch("atlassian.Jira") as jira_cls:
+            _get_jira_client()
+        jira_cls.assert_called_once_with(
+            url="https://api.atlassian.com/ex/jira/35273b54-3f06-40d2-880f-dd28cf8daafa",
+            username="me@acme.com",
+            password="token123",
+            api_version="2",
+        )
+
+    def test_scoped_token_keeps_site_ticket_url(self):
+        self._set(
+            site="acme",
+            cloud_id="35273b54-3f06-40d2-880f-dd28cf8daafa",
+            email="me@acme.com",
+            token="token123",
+        )
+        client = MagicMock()
+        client.issue.return_value = {"fields": {"summary": "Title", "description": "Body", "labels": []}}
+        with patch("atlassian.Jira", return_value=client):
+            result = extract_jira_tickets("ABC-123")
+        client.issue.assert_called_once_with("ABC-123", fields="summary,description,labels")
+        assert result[0]["ticket_url"] == "https://acme.atlassian.net/browse/ABC-123"
+
+    def test_numeric_site_keeps_ticket_url(self):
+        self._set(site=123, email="me@acme.com", token="token123")
+        client = MagicMock()
+        client.issue.return_value = {"fields": {"summary": "Title", "description": "Body", "labels": []}}
+        with patch("atlassian.Jira", return_value=client):
+            result = extract_jira_tickets("ABC-123")
+        assert result[0]["ticket_url"] == "https://123.atlassian.net/browse/ABC-123"
+
+    @pytest.mark.parametrize("cloud_id", ["not-a-uuid", 123, True])
+    def test_invalid_cloud_id_skips_lookup(self, cloud_id):
+        self._set(site="acme", cloud_id=cloud_id, email="me@acme.com", token="token123")
+        with patch("atlassian.Jira") as jira_cls, \
+                patch("pr_agent.commands.ticket_pr_compliance_check.get_logger") as get_log:
+            assert _get_jira_client() is None
+        jira_cls.assert_not_called()
+        assert "Invalid jira.cloud_id" in get_log.return_value.warning.call_args.args[0]
+
+    @pytest.mark.parametrize("site", ["", "bad.site"])
+    def test_cloud_id_still_requires_a_valid_site(self, site):
+        self._set(
+            site=site,
+            cloud_id="35273b54-3f06-40d2-880f-dd28cf8daafa",
+            email="me@acme.com",
+            token="token123",
+        )
+        with patch("atlassian.Jira") as jira_cls:
+            assert _get_jira_client() is None
+        jira_cls.assert_not_called()
+
+    def test_missing_atlassian_dependency_returns_none_with_install_hint(self):
+        self._set(site="acme", email="me@acme.com", token="token123")
+        with patch.dict("sys.modules", {"atlassian": None}), \
+                patch("pr_agent.commands.ticket_pr_compliance_check.get_logger") as get_log:
+            assert _get_jira_client() is None
+
+        warning = get_log.return_value.warning.call_args.args[0]
+        assert "pr-agent[bitbucket]" in warning
 
     def test_returns_none_when_not_configured(self):
         self._set()
@@ -507,14 +673,14 @@ class TestGetJiraClient:
     def test_returns_none_when_email_missing(self):
         """Cloud requires email; site + token alone is incomplete."""
         self._set(site="acme", token="token123")
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls:
+        with patch("atlassian.Jira") as jira_cls:
             assert _get_jira_client() is None
         jira_cls.assert_not_called()
 
     def test_no_warning_when_nothing_configured(self):
         """Jira simply not in use -> return None silently, no misconfiguration warning."""
         self._set()
-        with patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_log:
+        with patch("pr_agent.commands.ticket_pr_compliance_check.get_logger") as get_log:
             assert _get_jira_client() is None
         get_log.return_value.warning.assert_not_called()
 
@@ -522,7 +688,7 @@ class TestGetJiraClient:
         """Some [jira] value set but the required site + email + token are incomplete
         -> warn (likely a misconfiguration) and return None."""
         self._set(email="me@acme.com", token="token123")  # site missing
-        with patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_log:
+        with patch("pr_agent.commands.ticket_pr_compliance_check.get_logger") as get_log:
             assert _get_jira_client() is None
         get_log.return_value.warning.assert_called_once()
         msg = get_log.return_value.warning.call_args.args[0]
@@ -557,7 +723,7 @@ class TestJiraSiteInjection:
         get_settings().set("JIRA.JIRA_API_EMAIL", "me@acme.com")
         get_settings().set("JIRA.JIRA_API_TOKEN", "token123")
         # No client is built, and no base URL is produced for an invalid site.
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls:
+        with patch("atlassian.Jira") as jira_cls:
             assert _get_jira_client() is None
         jira_cls.assert_not_called()
         assert _jira_cloud_base_url() is None
@@ -613,7 +779,7 @@ class TestAddJiraTickets:
         client.issue.return_value = {"fields": {"summary": "T", "description": "B", "labels": []}}
         gp = self._provider(branch="feature/ABC-123-x")
         out = []
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             add_jira_tickets(gp, out)
         assert [t["ticket_id"] for t in out] == ["ABC-123"]
 
@@ -624,7 +790,7 @@ class TestAddJiraTickets:
         client.issue.return_value = {"fields": {"summary": "T", "description": "B", "labels": []}}
         gp = self._provider(title="ABC-123")
         existing = [{"ticket_url": "https://acme.atlassian.net/browse/ABC-123"}]
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             add_jira_tickets(gp, existing)
         assert len(existing) == 1
 
@@ -645,7 +811,7 @@ class TestAddJiraTickets:
         # Pre-fill with (MAX_TICKETS - 1) provider-native tickets, then offer several Jira keys.
         existing = [{"ticket_url": f"https://example/issues/{i}"} for i in range(MAX_TICKETS - 1)]
         gp = self._provider(description="ABC-1 DEF-2 GHI-3 JKL-4")
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+        with patch("atlassian.Jira", return_value=client):
             add_jira_tickets(gp, existing)
         assert len(existing) == MAX_TICKETS  # only one Jira ticket was appended
 
@@ -654,7 +820,7 @@ class TestAddJiraTickets:
         self._configure_jira()
         existing = [{"ticket_url": f"https://example/issues/{i}"} for i in range(MAX_TICKETS)]
         gp = self._provider(description="ABC-1 DEF-2")
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls:
+        with patch("atlassian.Jira") as jira_cls:
             add_jira_tickets(gp, existing)
         jira_cls.assert_not_called()
         assert len(existing) == MAX_TICKETS
@@ -675,7 +841,7 @@ class TestAzureRequirementsTruncation:
             "labels": [],
         }])
         # Isolate the Azure branch: keep the provider-agnostic Jira step a no-op.
-        with patch("pr_agent.tools.ticket_pr_compliance_check.add_jira_tickets",
+        with patch("pr_agent.commands.ticket_pr_compliance_check.add_jira_tickets",
                    side_effect=lambda gp, tc: tc):
             result = await extract_tickets(gp)
         assert result[0]["requirements"] == "x" * MAX_TICKET_CHARACTERS + "..."
@@ -687,7 +853,7 @@ class TestAzureRequirementsTruncation:
             "id": 2, "url": "u", "title": "t", "body": "b",
             "acceptance_criteria": {"unexpected": "dict"}, "labels": [],
         }])
-        with patch("pr_agent.tools.ticket_pr_compliance_check.add_jira_tickets",
+        with patch("pr_agent.commands.ticket_pr_compliance_check.add_jira_tickets",
                    side_effect=lambda gp, tc: tc):
             result = await extract_tickets(gp)
         assert result[0]["requirements"] == ""

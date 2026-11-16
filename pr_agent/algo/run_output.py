@@ -1,124 +1,122 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from importlib.metadata import PackageNotFoundError, version
-from urllib.parse import urlparse
 
-import requests
 import yaml
 
+from pr_agent.algo.i18n import t
+from pr_agent.algo.output_sinks import OUTPUT_SINK_TYPES, _selected_output_commands, create_output_sink
 from pr_agent.algo.run_details import get_run_details
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings
+from pr_agent.config_security import should_skip_config_key
+from pr_agent.git_providers.git_provider import redact_credentials
 from pr_agent.log import get_logger
 
 
 def github_action_output(output_data: dict, key_name: str):
     try:
         enable_output = get_settings().get("github_action_config.enable_output", False)
-        if isinstance(enable_output, str):
-            enable_output = enable_output.lower().strip() not in ("false", "0", "no", "")
-        if not enable_output:
+        if not _as_bool_setting(enable_output):
             return
 
         key_data = output_data.get(key_name, {})
-        with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
             print(f"{key_name}={json.dumps(key_data, indent=None, ensure_ascii=False)}", file=fh)
     except Exception as e:
         get_logger().error(f"Failed to write to GitHub Action output: {e}")
     return
 
 
-def _push_outputs_sink_url(cfg: dict, key: str) -> str:
-    """Return cfg[key] if it is an absolute https URL with a host, else "" (with a warning).
-
-    Requiring https keeps the review text, which can quote private code, off plaintext
-    transports. The host is not restricted: self-hosted collectors and Slack-compatible
-    endpoints (Mattermost, Rocket.Chat) are legitimate targets.
-    """
-    url = cfg.get(key) or ""
-    if not url:
-        return ""
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname:
-        # Log the key, never the value: a webhook URL is itself the credential.
-        get_logger().warning(f"push_outputs: ignoring {key}, expected an absolute https:// URL")
-        return ""
-    return url
+def _pr_identity(git_provider) -> dict | None:
+    if git_provider is None:
+        return None
+    try:
+        identity = git_provider.get_pr_identity()
+    except Exception:
+        return None
+    if not isinstance(identity, dict):
+        return None
+    identity = dict(identity)
+    identity["url"] = redact_credentials(identity.get("url", ""))
+    return identity
 
 
-def push_outputs(message_type: str, payload: dict | None = None, markdown: str | None = None) -> None:
-    """Emit a tool's output to external sinks, without calling any git-provider API.
+def push_outputs(
+    message_type: str,
+    payload: dict | None = None,
+    markdown: str | None = None,
+    git_provider=None,
+) -> None:
+    """Emit a command's output to external sinks, including its PR identity when available.
 
     Controlled by the [push_outputs] config section (disabled by default). Supported channels:
     "stdout" (one JSON line), "file" (append JSONL), "webhook" (POST the generic record),
-    "slack" (POST {"text": ...} to a Slack Incoming Webhook). Non-fatal: never raises.
+    "slack" (POST {"text": ...} to a Slack Incoming Webhook), and "telegram"
+    (sendMessage to a configured chat). Non-fatal: never raises.
     """
     try:
         cfg = get_settings().get("push_outputs", {}) or {}
         enable = cfg.get("enable", False)
-        # Treat environment-variable strings "false", "0", "no", and "" as disabled.
         if isinstance(enable, str):
-            enable = enable.lower().strip() not in ("false", "0", "no", "")
-        if not enable:
+            enable = enable.strip()
+        if not _as_bool_setting(enable, default=bool(enable)):
+            return
+
+        commands = _selected_output_commands(cfg)
+        if commands is None:
+            get_logger().warning("push_outputs: invalid push_outputs.commands setting")
+            return
+        if message_type not in commands:
             return
 
         channels = cfg.get("channels", []) or []
+        if isinstance(channels, str):
+            channels = normalize_setting_list(channels, split_commas=True)
         record = {
             "type": message_type,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "payload": payload or {},
         }
+        identity = _pr_identity(git_provider)
+        if identity is not None:
+            record["pr"] = identity
         if markdown is not None:
             record["markdown"] = markdown
 
-        if "stdout" in channels:
+        for channel in OUTPUT_SINK_TYPES:
+            if channel not in channels:
+                continue
             try:
-                print(json.dumps(record, ensure_ascii=False))
+                create_output_sink(channel).send(record, cfg)
             except Exception as e:
-                get_logger().warning(f"push_outputs: stdout failed: {type(e).__name__}")
-
-        if "file" in channels:
-            try:
-                file_path = cfg.get("file_path", "pr-agent-outputs/reviews.jsonl")
-                folder = os.path.dirname(file_path)
-                if folder:
-                    os.makedirs(folder, exist_ok=True)
-                with open(file_path, "a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-            except Exception as e:
-                get_logger().warning(f"push_outputs: file failed: {type(e).__name__}")
-
-        # Write local channels first and network last so a failed POST cannot drop a file write.
-        # Never follow a redirect from a configured sink to another host (allow_redirects=False).
-        if "webhook" in channels:
-            try:
-                webhook_url = _push_outputs_sink_url(cfg, "webhook_url")
-                if webhook_url:
-                    response = requests.post(webhook_url, json=record, timeout=5, allow_redirects=False)
-                    if not 200 <= response.status_code < 300:
-                        get_logger().warning(f"push_outputs: webhook failed with status {response.status_code}")
-            except Exception as e:
-                get_logger().warning(f"push_outputs: webhook failed: {type(e).__name__}")
-
-        # Post {"text": ...} directly to Slack Incoming Webhooks without a relay service.
-        if "slack" in channels:
-            try:
-                slack_webhook_url = _push_outputs_sink_url(cfg, "slack_webhook_url")
-                if slack_webhook_url:
-                    text = markdown if markdown is not None else json.dumps(payload or {}, ensure_ascii=False)
-                    response = requests.post(slack_webhook_url, json={"text": text}, timeout=5,
-                                             allow_redirects=False)
-                    if not 200 <= response.status_code < 300:
-                        get_logger().warning(f"push_outputs: slack failed with status {response.status_code}")
-            except Exception as e:
-                get_logger().warning(f"push_outputs: slack failed: {type(e).__name__}")
+                get_logger().warning(f"push_outputs: {channel} failed: {type(e).__name__}")
     except Exception as e:
         # Log only the exception type: requests errors embed the (secret-bearing) URL in their text.
         get_logger().warning(f"push_outputs failed: {type(e).__name__}")
+
+
+async def push_outputs_async(
+    message_type: str,
+    payload: dict | None = None,
+    markdown: str | None = None,
+    git_provider=None,
+) -> None:
+    """Emit a command's output to external sinks without blocking the event loop.
+
+    The sinks do blocking HTTP and file I/O, so the delivery runs in a worker thread.
+    Awaiting it keeps the event loop free for other work and still delivers the output
+    before the command returns.
+    """
+    await asyncio.to_thread(
+        push_outputs, message_type, payload=payload, markdown=markdown,
+        git_provider=git_provider,
+    )
 
 
 def _render_setting_value(value) -> str:
@@ -146,27 +144,23 @@ def show_relevant_configurations(relevant_section: str) -> str:
         "skip_keys", "app_id", "redirect", "trial_prefix_message", "no_eligible_message",
         "identity_provider", "ALLOWED_REPOS", "APP_NAME",
     ]
-    extra_skip_keys = get_settings().config.get("skip_keys", [])
-    if extra_skip_keys:
-        skip_keys.extend(extra_skip_keys)
-    skip_keys_lower = [str(key).lower() for key in skip_keys]
-
+    skip_keys.extend(normalize_setting_list(get_settings().config.get("skip_keys", [])))
     markdown_text = ""
     markdown_text += "\n<hr>\n<details> <summary><strong>🛠️ Relevant configurations:</strong></summary> \n\n"
     markdown_text += (
         "<br>These are the relevant [configurations]"
         "(https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml)"
-        " for this tool:\n\n"
+        " for this command:\n\n"
     )
     markdown_text += "**[config**]\n```yaml\n\n"
     for key, value in get_settings().config.items():
-        if key.lower() in skip_keys_lower:
+        if should_skip_config_key("config", key, skip_keys):
             continue
         markdown_text += f"{key}: {_render_setting_value(value)}\n"
     markdown_text += "\n```\n"
     markdown_text += f"\n**[{relevant_section}]**\n```yaml\n\n"
     for key, value in get_settings().get(relevant_section, {}).items():
-        if key.lower() in skip_keys_lower:
+        if should_skip_config_key(relevant_section, key, skip_keys):
             continue
         markdown_text += f"{key}: {_render_setting_value(value)}\n"
     markdown_text += "\n```"
@@ -192,36 +186,39 @@ def show_run_details(gfm_supported: bool) -> str:
     if details is None or not details.model_used:
         return ""
 
-    title = "⚙️ Agent run details"
+    title = f"⚙️ {t('run_details.title')}"
     if len(details.models_used) > 1:
-        lines = [f"- Models: {', '.join(details.models_used)}{' (includes fallback)' if details.fallback_used else ''}"]
+        fallback = f" ({t('run_details.includes_fallback')})" if details.fallback_used else ""
+        lines = [f"- {t('run_details.models')}: {', '.join(details.models_used)}{fallback}"]
     else:
-        lines = [f"- Model: {details.model_used}{' (fallback)' if details.fallback_used else ''}"]
+        fallback = f" ({t('run_details.fallback')})" if details.fallback_used else ""
+        lines = [f"- {t('run_details.model')}: {details.model_used}{fallback}"]
     if details.has_token_usage:
         # Drop zero-valued components because providers may omit their usage counts.
-        counts = [(details.prompt_tokens, "in"), (details.completion_tokens, "out"),
-                  (details.total_tokens, "total")]
-        reported = [f"{value:,} {label}" for value, label in counts if value]
-        lines.append(f"- Tokens: {' / '.join(reported)}")
+        counts = [(details.prompt_tokens, "tokens_in"), (details.completion_tokens, "tokens_out"),
+                  (details.total_tokens, "tokens_total")]
+        reported = [f"{value:,} {t(f'run_details.{label}')}" for value, label in counts if value]
+        lines.append(f"- {t('run_details.tokens')}: {' / '.join(reported)}")
     if details.has_cache_usage:
         # Prompt-cache activity proves whether the cache config is earning anything.
-        cache_counts = [(details.cache_read_tokens, "read"), (details.cache_creation_tokens, "written")]
-        cache_reported = [f"{value:,} {label}" for value, label in cache_counts if value]
-        lines.append(f"- Prompt cache: {' / '.join(cache_reported)}")
-    lines.append(f"- Time cost: {details.duration_seconds:.1f}s")
+        cache_counts = [(details.cache_read_tokens, "cache_read"), (details.cache_creation_tokens, "cache_written")]
+        cache_reported = [f"{value:,} {t(f'run_details.{label}')}" for value, label in cache_counts if value]
+        lines.append(f"- {t('run_details.prompt_cache')}: {' / '.join(cache_reported)}")
+    lines.append(f"- {t('run_details.time_cost')}: {details.duration_seconds:.1f}s")
     if details.num_ai_calls:
-        lines.append(f"- AI calls: {details.num_ai_calls}")
+        lines.append(f"- {t('run_details.ai_calls')}: {details.num_ai_calls}")
     if get_settings().get("config.output_run_cost", False) and details.num_ai_calls:
         if details.cost_status == "unavailable":
             # Report pricing as unavailable without asserting a cause: usage may be
             # missing (streaming without a final usage chunk) or uncollected by the handler.
-            lines.append("- Estimated API cost: unavailable (no calls could be priced)")
+            lines.append(f"- {t('run_details.estimated_cost')}: {t('run_details.cost_unavailable')}")
         else:
             partial = ""
             if details.cost_status == "partial":
-                partial = (f" (partial: {details.known_cost_call_count} of "
-                           f"{details.num_ai_calls} successful calls priced)")
-            lines.append(f"- Estimated API cost: {_format_usd(details.total_cost_usd)} USD{partial}")
+                cost_partial = t("run_details.cost_partial", priced=details.known_cost_call_count,
+                                 calls=details.num_ai_calls)
+                partial = f" ({cost_partial})"
+            lines.append(f"- {t('run_details.estimated_cost')}: {_format_usd(details.total_cost_usd)} USD{partial}")
             if len(details.model_costs_usd) > 1:
                 for model, cost in details.model_costs_usd.items():
                     lines.append(f"  - {model}: {_format_usd(cost)} USD")
@@ -233,26 +230,56 @@ def show_run_details(gfm_supported: bool) -> str:
     return f"\n___\n\n**{title}**\n\n{body}\n"
 
 
+def show_fallback_note() -> str:
+    """Render a visible one-line note naming the fallback model that produced the output.
+
+    Shown regardless of ``config.output_run_details``: that footer is off by default and
+    collapsed, yet a fallback answer can differ in quality from the configured model.
+    """
+    details = get_run_details()
+    if details is None or not details.fallback_used or not details.model_used:
+        return ""
+    if len(details.models_used) > 1:
+        models = ", ".join(f"`{model}`" for model in details.models_used)
+        note = t("run_details.fallback_note_partial", models=models)
+    else:
+        note = t("run_details.fallback_note", model=f"`{details.model_used}`")
+    return f"\n\n> {note}\n"
+
+
+def append_run_details(body: str, git_provider) -> str:
+    """Append the fallback note and the opt-in run-details section to a comment body.
+
+    The fallback note is added whenever a fallback model produced the output. The
+    run-details section is skipped when ``config.output_run_details`` is off, or when the
+    current run recorded no model (so a message that needed no AI call stays clean).
+    A provider without capability checks gets the plain-text section.
+    """
+    body += show_fallback_note()
+    if not get_settings().get("config.output_run_details", False):
+        return body
+    is_supported = getattr(git_provider, "is_supported", None)
+    gfm_supported = bool(callable(is_supported) and is_supported("gfm_markdown"))
+    return body + show_run_details(gfm_supported)
+
+
 def get_version() -> str:
     # First check pyproject.toml if running directly out of the pr-agent repository
     if os.path.exists("pyproject.toml"):
-        if sys.version_info >= (3, 11):
-            import tomllib
-            try:
-                with open("pyproject.toml", "rb") as f:
-                    data = tomllib.load(f)
-            except (OSError, ValueError) as e:  # tomllib raises TOMLDecodeError, or UnicodeDecodeError on non-UTF-8
-                get_logger().warning(f"Unable to read pyproject.toml, falling back to package metadata: {e}")
-            else:
-                # only trust this file when it is pr-agent's own pyproject.toml, otherwise an
-                # unrelated project in the current working directory would dictate our version
-                project = data.get("project", {})
-                if project.get("name") == "pr-agent":
-                    if "version" in project:
-                        return project["version"]
-                    get_logger().warning("Version not found in pyproject.toml")
+        import tomllib
+        try:
+            with open("pyproject.toml", "rb") as f:
+                data = tomllib.load(f)
+        except (OSError, ValueError) as e:  # tomllib raises TOMLDecodeError, or UnicodeDecodeError on non-UTF-8
+            get_logger().warning(f"Unable to read pyproject.toml, falling back to package metadata: {e}")
         else:
-            get_logger().warning("Unable to determine local version from pyproject.toml")
+            # only trust this file when it is pr-agent's own pyproject.toml, otherwise an
+            # unrelated project in the current working directory would dictate our version
+            project = data.get("project", {})
+            if project.get("name") == "pr-agent":
+                if "version" in project:
+                    return project["version"]
+                get_logger().warning("Version not found in pyproject.toml")
 
     # Otherwise get the installed pip package version
     try:

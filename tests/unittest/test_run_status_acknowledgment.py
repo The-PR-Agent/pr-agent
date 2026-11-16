@@ -2,8 +2,8 @@
 
 Automatic commands suppress the "Preparing review..." progress comment, so between opening a
 pull request and the model answering there is no sign PR-Agent picked it up. When
-`github.publish_as_check_run` is on, the tool's check run is opened as in_progress before the
-command runs and completed in place by the tool, so there is one signal on the commit.
+`github.publish_as_check_run` is on, the command's check run is opened as in_progress before the
+command runs and completed in place by the command, so there is one signal on the commit.
 """
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -11,12 +11,12 @@ from unittest.mock import MagicMock
 import pytest
 from requests.exceptions import RequestException
 
-import pr_agent.servers.github_app as github_app
 from pr_agent.algo.run_details import command_failed, init_run_details, record_command_failure
+from pr_agent.commands import pr_add_docs, pr_generate_labels, pr_help_message
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.github_provider import GithubProvider
-from pr_agent.tools import pr_add_docs, pr_generate_labels, pr_help_message
-from pr_agent.tools.pr_reviewer import PRReviewer
+from pr_agent.servers import github_app
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 API_URL = "https://api.github.com/repos/org/repo/pulls/1"
@@ -38,6 +38,8 @@ def _github(sha="abc123", existing=None):
     provider.last_commit_id = SimpleNamespace(sha=sha) if sha else None
     provider._check_run_ids = {}
     provider._check_runs_in_progress = set()
+    provider._check_run_base_summaries = {}
+    provider._check_runs_progress_blocked = set()
     requester = MagicMock()
 
     def request(method, url, **kwargs):
@@ -86,7 +88,81 @@ def test_start_check_run_reopens_the_run_already_on_the_commit():
     assert body["status"] == "in_progress"
 
 
-def test_the_tool_completes_the_run_the_runner_opened():
+def test_update_check_run_progress_appends_the_line_to_a_started_run():
+    provider = _github()
+    provider.start_check_run("review", "PR-Agent is running /review")
+
+    assert provider.update_check_run_progress("analyzed 2 of 3 chunks") is True
+
+    [(create_method, create_url, _created), (method, url, body)] = _requests(provider)
+    assert (create_method, create_url) == ("POST", CHECK_RUNS_URL)
+    assert (method, url) == ("PATCH", f"{CHECK_RUNS_URL}/101")
+    assert "status" not in body  # the run stays in_progress
+    assert body["output"]["summary"] == "PR-Agent is running /review analyzed 2 of 3 chunks"
+
+
+def test_update_check_run_progress_without_a_started_run_is_a_noop():
+    provider = _github()
+
+    assert provider.update_check_run_progress("analyzed 1 of 2 chunks") is False
+    assert _requests(provider) == []
+
+
+def test_update_check_run_progress_stops_retrying_a_failing_run():
+    provider = _github()
+    provider.start_check_run("review", "working")
+    provider.pr._requester.requestJsonAndCheck.side_effect = RequestException("api down")
+
+    assert provider.update_check_run_progress("analyzed 1 of 2 chunks") is False
+    # A failed progress write stops retrying, but the run must stay completable:
+    # finish_check_run completes runs by in-progress membership, and stranding a run
+    # in progress on GitHub is worse than missing interim progress lines.
+    assert provider._check_runs_in_progress == {"review"}
+    assert provider.update_check_run_progress("analyzed 2 of 2 chunks") is False
+    provider.pr._requester.requestJsonAndCheck.side_effect = None
+    assert provider.finish_check_run("review", "failure", "PR-Agent failed") is True
+    completed = _requests(provider)[-1][2]
+    assert completed["status"] == "completed"
+    assert completed["conclusion"] == "failure"
+
+
+def test_a_failed_progress_patch_never_opens_a_second_run():
+    provider = _github()
+    provider.start_check_run("review", "working")
+
+    def request(method, url, **kwargs):
+        if method == "PATCH":
+            raise RequestException("bad gateway")
+        return {}, {"id": 202}
+
+    provider.pr._requester.requestJsonAndCheck.side_effect = request
+
+    assert provider.update_check_run_progress("analyzed 1 of 2 chunks") is False
+    assert [method for method, _url, _body in _requests(provider)] == ["POST", "PATCH"]
+    assert provider._check_run_ids == {"review": 101}
+
+
+def test_a_reopened_run_is_not_blocked_by_the_previous_attempt():
+    """A failed progress write must not block a run of the same name reopened later.
+
+    Regression from review: progress PATCH fails, completion also fails, the API
+    recovers and the run is reopened - progress must flow again.
+    """
+    provider = _github()
+    provider.start_check_run("review", "first attempt")
+    request = provider.pr._requester.requestJsonAndCheck
+    original = request.side_effect
+    request.side_effect = RequestException("offline")
+
+    assert provider.update_check_run_progress("analyzed 1 of 2 chunks") is False
+    assert provider.finish_check_run("review", "failure", "failed") is False
+
+    request.side_effect = original
+    assert provider.start_check_run("review", "second attempt") is True
+    assert provider.update_check_run_progress("new chunk") is True
+
+
+def test_the_command_completes_the_run_the_runner_opened():
     provider = _github()
     provider.start_check_run("review", "working")
 
@@ -97,12 +173,12 @@ def test_the_tool_completes_the_run_the_runner_opened():
     assert completed["status"] == "completed"
     assert completed["conclusion"] == "neutral"
     assert completed["output"]["text"] == "## Review\n\nlooks fine"
-    # The tool owns the run now: the runner's completion must not overwrite its output.
+    # The command owns the run now: the runner's completion must not overwrite its output.
     assert provider.finish_check_run("review", "failure", "could not finish") is False
     assert len(_requests(provider)) == 2
 
 
-def test_finish_check_run_completes_a_run_the_tool_left_open():
+def test_finish_check_run_completes_a_run_the_command_left_open():
     provider = _github()
     provider.start_check_run("review", "working")
 
@@ -178,6 +254,8 @@ def _agent(outcome):
     events = []
 
     async def handle_request(api_url, command, notify=None):
+        if notify:
+            notify()
         events.append(("run", command))
         if isinstance(outcome, Exception):
             raise outcome
@@ -219,6 +297,22 @@ async def test_a_failed_command_completes_its_check_run_as_failure(check_runs_en
     assert result is False
 
 
+async def test_auto_command_check_run_uses_configured_bot_display_name(
+    check_runs_enabled, auto_commands, restored_config
+):
+    restored_config("bot_display_name", "Acme Bot")
+    agent, events = _agent(True)
+    _record(auto_commands, events)
+
+    await github_app._perform_auto_commands_github("pr_commands", agent, {}, API_URL, {})
+
+    assert events == [
+        ("start", "review", "Acme Bot is running /review"),
+        ("run", "/review"),
+        ("finish", "review", "success", "Acme Bot ran /review"),
+    ]
+
+
 async def test_a_raising_command_completes_its_check_run_as_failure(check_runs_enabled, auto_commands):
     agent, events = _agent(RuntimeError("boom"))
     _record(auto_commands, events)
@@ -240,7 +334,7 @@ async def test_each_command_gets_its_own_check_run(check_runs_enabled, auto_comm
     assert [e[:2] for e in events if e[0] != "run"] == [
         ("start", "describe"), ("finish", "describe"),
         ("start", "review"), ("finish", "review"),
-        ("start", "suggestions"), ("finish", "suggestions"),
+        ("start", "review"), ("finish", "review"),
     ]
 
 
@@ -308,13 +402,13 @@ async def test_a_provider_without_check_runs_is_left_alone(check_runs_enabled, a
 
 
 # --------------------------------------------------------------------------------------
-# A tool that swallows its own error must not be reported as a success.
+# A command that swallows its own error must not be reported as a success.
 #
-# `propagate_tool_errors` is false by default, so `PRReviewer.run()` logs the failure and
+# `propagate_command_errors` is false by default, so `PRReviewer.run()` logs the failure and
 # returns normally. `handle_request` therefore answers True, and without the run-details
 # verdict the check run would complete as a success on a pull request that got no review.
 # --------------------------------------------------------------------------------------
-async def test_a_swallowed_tool_error_completes_the_check_run_as_failure(check_runs_enabled, auto_commands):
+async def test_a_swallowed_command_error_completes_the_check_run_as_failure(check_runs_enabled, auto_commands):
     def swallow(command):
         init_run_details()
         record_command_failure()
@@ -337,7 +431,7 @@ async def test_a_verdict_does_not_leak_into_the_next_command(check_runs_enabled,
         if command == "/describe":
             init_run_details()
             record_command_failure()
-        # A tool that never installs a collector of its own must read no verdict.
+        # A command that never installs a collector of its own must read no verdict.
         return True
 
     agent, events = _agent(outcome)
@@ -355,7 +449,7 @@ async def test_a_verdict_does_not_leak_into_the_next_command(check_runs_enabled,
 
 
 async def test_a_clean_run_still_reports_success(check_runs_enabled, auto_commands):
-    """Control: a tool that installs a collector and records nothing is a success."""
+    """Control: a command that installs a collector and records nothing is a success."""
     def clean(command):
         init_run_details()
         return True
@@ -370,62 +464,62 @@ async def test_a_clean_run_still_reports_success(check_runs_enabled, auto_comman
 
 
 @pytest.mark.parametrize(
-    ("tool_name", "module"),
+    ("command_name", "module"),
     [
         pytest.param("add_docs", pr_add_docs, id="add_docs"),
         pytest.param("generate_labels", pr_generate_labels, id="generate_labels"),
         pytest.param("help", pr_help_message, id="help"),
     ],
 )
-@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+@pytest.mark.parametrize("propagate_command_errors", [False, True])
 @pytest.mark.asyncio
-async def test_swallowed_tool_failures_are_recorded(
-    tool_name, module, propagate_tool_errors, monkeypatch, restored_config
+async def test_swallowed_command_failures_are_recorded(
+    command_name, module, propagate_command_errors, monkeypatch, restored_config
 ):
     restored_config("publish_output", False)
-    restored_config("propagate_tool_errors", propagate_tool_errors)
+    restored_config("propagate_command_errors", propagate_command_errors)
 
     async def fail(*args, **kwargs):
-        raise RuntimeError("injected tool failure")
+        raise RuntimeError("injected command failure")
 
     monkeypatch.setattr(module, "retry_with_fallback_models", fail)
 
-    if tool_name == "add_docs":
-        tool = module.PRAddDocs.__new__(module.PRAddDocs)
-        tool.git_provider = MagicMock()
-    elif tool_name == "generate_labels":
-        tool = module.PRGenerateLabels.__new__(module.PRGenerateLabels)
-        tool.pr_id = "org/repo#1"
-        tool.git_provider = MagicMock()
+    if command_name == "add_docs":
+        command = module.PRAddDocs.__new__(module.PRAddDocs)
+        command.git_provider = MagicMock()
+    elif command_name == "generate_labels":
+        command = module.PRGenerateLabels.__new__(module.PRGenerateLabels)
+        command.pr_id = "org/repo#1"
+        command.git_provider = MagicMock()
     else:
-        monkeypatch.setattr(module, "_load_help_docs_prompt", lambda: ("docs", {"tools/review.md"}))
-        tool = module.PRHelpMessage.__new__(module.PRHelpMessage)
-        tool.question_str = "How does review work?"
-        tool.vars = {"question": tool.question_str, "snippets": ""}
-        tool.git_provider = SimpleNamespace(pr_url=API_URL)
+        monkeypatch.setattr(module, "_load_help_docs_prompt", lambda: ("docs", {"commands/review.md"}))
+        command = module.PRHelpMessage.__new__(module.PRHelpMessage)
+        command.question_str = "How does review work?"
+        command.vars = {"question": command.question_str, "snippets": ""}
+        command.git_provider = SimpleNamespace(pr_url=API_URL)
 
     init_run_details()
-    if propagate_tool_errors:
-        with pytest.raises(RuntimeError, match="injected tool failure"):
-            await tool.run()
+    if propagate_command_errors:
+        with pytest.raises(RuntimeError, match="injected command failure"):
+            await command.run()
     else:
-        await tool.run()
+        await command.run()
 
     assert command_failed() is True
 
 
 async def test_the_reviewer_records_a_swallowed_failure(monkeypatch, restored_config):
     """End to end through the real `PRReviewer.run()`, with the shipped default settings."""
-    restored_config("propagate_tool_errors", False)
+    restored_config("propagate_command_errors", False)
     restored_config("publish_output", False)
-    tool = PRReviewer.__new__(PRReviewer)
-    tool.git_provider = MagicMock()
-    tool.incremental = SimpleNamespace(is_incremental=False)
-    tool.pr_url = API_URL
+    command = PRReviewer.__new__(PRReviewer)
+    command.git_provider = MagicMock()
+    command.incremental = SimpleNamespace(is_incremental=False)
+    command.pr_url = API_URL
     monkeypatch.setattr(PRReviewer, "_prepare_prediction", MagicMock(side_effect=RuntimeError("boom")))
 
     init_run_details()
-    await tool.run()
+    await command.run()
 
     assert command_failed() is True
 

@@ -2,7 +2,7 @@
 
 import asyncio
 import copy
-from unittest.mock import AsyncMock, Mock, call
+from unittest.mock import ANY, AsyncMock, Mock, call
 
 import pytest
 from starlette_context import request_cycle_context
@@ -103,10 +103,10 @@ async def test_auto_commands_continue_after_failure_and_allow_retry(delivery_age
     await github_app.handle_request(body, event, delivery_id)
 
     assert agent.handle_request.await_args_list == [
-        call(PR_URL, ["/review"]),
-        call(PR_URL, ["/describe"]),
-        call(PR_URL, ["/review"]),
-        call(PR_URL, ["/describe"]),
+        call(PR_URL, ["/review"], notify=ANY),
+        call(PR_URL, ["/describe"], notify=ANY),
+        call(PR_URL, ["/review"], notify=ANY),
+        call(PR_URL, ["/describe"], notify=ANY),
     ]
 
 

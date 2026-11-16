@@ -3,12 +3,12 @@ title: "Extending PR-Agent"
 sidebar_position: 9
 ---
 
-Contributors extending a model, git provider, or tool start here. To only change
+Contributors extending a model, git provider, or command start here. To only change
 the model, use [Changing a Model](./changing_a_model.md).
 
 ## Adding a model
 
-Tool calls go through LiteLLM (`pr_agent/algo/ai_handlers/litellm_ai_handler.py`), the default handler. Most models need only configuration:
+Model calls go through LiteLLM (`pr_agent/algo/ai_handlers/litellm_ai_handler.py`), the default handler. Most models need only configuration:
 
 ```toml
 [config]
@@ -17,7 +17,7 @@ fallback_models=["<fallback-model-name>"]
 ```
 
 Set these under `[config]` in `pr_agent/settings/configuration.toml`.
-Keep model names in configuration, not in tool code.
+Keep model names in configuration, not in command code.
 
 Models that behave differently are registered in `pr_agent/algo/__init__.py`:
 `CLAUDE_EXTENDED_THINKING_MODELS` for Claude models that
@@ -31,13 +31,14 @@ Temperature support is decided at runtime by probing
 `_litellm_supports_temperature` in `pr_agent/algo/ai_handlers/litellm_ai_handler.py`).
 Models that must never receive the temperature parameter are listed in
 `config.no_temperature_models` in `configuration.toml`; adaptive-thinking Claude
-models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive it.
+models (Opus 4.7/4.8, Opus/Sonnet/Fable 5.x and Haiku 5.5) never receive it.
 
 Context windows are registered in `MAX_TOKENS` in `pr_agent/algo/__init__.py`:
 Claude model families declared in `_CLAUDE_MODEL_FAMILIES` populate their
 aliases automatically. For other models, add the model name and its
 context-window token count to `MAX_TOKENS`, or set `config.custom_model_max_tokens`
-in `configuration.toml`. Without either, `get_max_tokens()` raises.
+in `configuration.toml`. Without either, `get_max_tokens()` falls back to LiteLLM's
+`max_input_tokens` metadata and raises only if it cannot resolve a positive limit.
 
 Verify with `PYTHONPATH=. uv run pytest tests/unittest`.
 
@@ -66,12 +67,12 @@ register_git_provider("forge", ForgeProvider)
 
 Then select it with `git_provider="forge"` under `[config]`. The class must extend `GitProvider`. Registering the same class twice is a no-op, and registering a different class under an id that is already taken raises, so a package cannot silently replace a built-in provider.
 
-## Adding a tool
+## Adding a command
 
-1. Implement the tool class in `pr_agent/tools/pr_<name>.py` with an `async def run(self)` entry point (see `pr_reviewer.py`).
-2. Add a `[pr_<tool>]` section in `pr_agent/settings/configuration.toml` for the option keys the tool reads (`[pr_reviewer]` is the pattern to follow).
+1. Implement the command class in `pr_agent/commands/pr_<name>.py` with an `async def run(self)` entry point (see `pr_reviewer.py`).
+2. Add a `[pr_<command>]` section in `pr_agent/settings/configuration.toml` for the option keys the command reads (`[pr_reviewer]` is the pattern to follow).
 3. Add a prompt TOML under `pr_agent/settings/` and register it in the `settings_files=[...]` list in `pr_agent/config_loader.py` — it is not loaded otherwise.
-4. Match the TOML section name to the settings key the tool reads: `[pr_review_prompt]` in `pr_reviewer_prompts.toml` ↔ `get_settings().pr_review_prompt` in `pr_reviewer.py`.
-5. Register the tool in `command2class` in `pr_agent/agent/pr_agent.py` under a command name, e.g. `"my_tool": PRMyTool`. Then add it to the hardcoded help surfaces, or it will not show up in `/help`: `pr_agent/tools/pr_help_message.py`, `pr_agent/servers/help.py`, and the command list in `pr_agent/cli.py`.
-6. Add a row to the tool list in `docs/docs/tools/index.md`, a page `docs/docs/tools/<name>.md` (see [`review.md`](../tools/review.md)), and register the page under `Tools` in `docs/sidebars.js`.
+4. Match the TOML section name to the settings key the command reads: `[pr_review_prompt]` in `pr_reviewer_prompts.toml` ↔ `get_settings().pr_review_prompt` in `pr_reviewer.py`.
+5. Register the command in `COMMAND_SPECS` in `pr_agent/agent/command_registry.py` under a command name, e.g. `"my_command": CommandSpec(PRMyCommand)`. Add it to the hardcoded help surfaces in `pr_agent/commands/pr_help_message.py` and `pr_agent/servers/help.py`, and to the CLI usage text in `pr_agent/cli.py`.
+6. Add a row to the command list in `docs/docs/commands/index.md`, a page `docs/docs/commands/<name>.md` (see [`review.md`](../commands/review.md)), and register the page under `Main commands` or `More commands` in `docs/sidebars.js`.
 7. Add tests under `tests/unittest/` and verify with `PYTHONPATH=. uv run pytest tests/unittest`.

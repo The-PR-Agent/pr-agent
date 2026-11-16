@@ -142,7 +142,7 @@ def test_invalid_file_metadata_is_not_treated_as_a_missing_file(case, malformed_
 
 
 @pytest.mark.parametrize("missing", ["/describe", "/review", "/improve"])
-def test_missing_tool_output_times_out_with_its_name_and_cleans_up(case, missing):
+def test_missing_command_output_times_out_with_its_name_and_cleans_up(case, missing):
     http, sleep = case
     original_get = http.get.side_effect
 
@@ -206,7 +206,7 @@ def test_result_detection_accepts_no_suggestions_and_reads_comments_once(case):
 
     http.get.side_effect = get
 
-    assert gitea_e2e._missing_gitea_tool_results(REPO_API, 123, {"Authorization": "token test"}) == []
+    assert gitea_e2e._missing_gitea_command_results(REPO_API, 123, {"Authorization": "token test"}) == []
     pr_call = next(call for call in http.get.call_args_list if call.args[0] == f"{REPO_API}/pulls/123")
     comment_calls = [call for call in http.get.call_args_list if "/comments" in call.args[0]]
     assert pr_call.kwargs["timeout"] == 30
@@ -214,7 +214,7 @@ def test_result_detection_accepts_no_suggestions_and_reads_comments_once(case):
     assert comment_calls[0].kwargs["timeout"] == 30
 
 
-def test_result_detection_reports_missing_tools_without_comment_order_assumptions(case):
+def test_result_detection_reports_missing_commands_without_comment_order_assumptions(case):
     http, _ = case
 
     def get(url, **kwargs):
@@ -227,4 +227,4 @@ def test_result_detection_reports_missing_tools_without_comment_order_assumption
 
     http.get.side_effect = get
 
-    assert gitea_e2e._missing_gitea_tool_results(REPO_API, 123, {}) == ["/describe"]
+    assert gitea_e2e._missing_gitea_command_results(REPO_API, 123, {}) == ["/describe"]

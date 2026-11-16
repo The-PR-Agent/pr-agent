@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
 
@@ -20,3 +20,26 @@ def test_clone_keeps_bearer_token_out_of_process_arguments(tmp_path):
     assert captured["env"]["GIT_CONFIG_COUNT"] == "1"
     assert captured["env"]["GIT_CONFIG_KEY_0"] == "http.extraHeader"
     assert captured["env"]["GIT_CONFIG_VALUE_0"] == "Authorization: Bearer secret bearer token"
+
+
+def test_diff_files_expose_filtered_lockfile_after_ignore_rules():
+    provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+    provider.diff_files = None
+    provider.bitbucket_api_version = None
+    provider.pr = MagicMock()
+    provider.pr.fromRef = {"latestCommit": "head"}
+    provider.bitbucket_client = MagicMock()
+    provider.bitbucket_client.get_pull_requests_commits.return_value = [
+        {"parents": [{"id": "base"}]},
+    ]
+    lockfile = {"path": {"toString": "subdir/pnpm-lock.yaml"}}
+    ignored = {"path": {"toString": "vendor/ignored.py"}}
+    provider.bitbucket_client.get_pull_requests_changes.return_value = [lockfile, ignored]
+    provider.workspace_slug = "team"
+    provider.repo_slug = "repo"
+    provider.pr_num = 1
+
+    with patch("pr_agent.git_providers.bitbucket_server_provider.filter_ignored", return_value=[lockfile]):
+        assert provider.get_diff_files() == []
+
+    assert provider.get_filtered_diff_file_names() == ["subdir/pnpm-lock.yaml"]

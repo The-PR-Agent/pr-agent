@@ -2,7 +2,7 @@
 """Verify every docs URL referenced from the codebase resolves in the built site.
 
 PR-Agent posts absolute documentation links into real pull request comments
-(`pr_agent/tools/pr_help_message.py`, `pr_agent/servers/help.py`), and the README
+(`pr_agent/commands/pr_help_message.py`, `pr_agent/servers/help.py`), and the README
 and package metadata link into the site too. A docs restructure that silently
 breaks one of those is invisible until a user clicks it.
 
@@ -65,7 +65,7 @@ def resolve(url: str, build_dir: Path) -> tuple[Path | None, str]:
     return (page if page.is_file() else None), anchor
 
 
-ASSET_HREF_RE = re.compile(r'href="(/[^"#?]+\.[a-z0-9]{2,5}/?)"', re.I)
+ASSET_HREF_RE = re.compile(r'href="(/[^"#?]+\.[a-z0-9]{2,5}/?)"', re.IGNORECASE)
 # Routes are directories; these are file extensions that must resolve to a real file.
 ASSET_SUFFIXES = {
     ".png", ".webp", ".jpg", ".jpeg", ".gif", ".svg", ".ico",

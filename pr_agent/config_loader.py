@@ -1,11 +1,9 @@
+from contextlib import contextmanager
 from os.path import abspath, dirname, join
 from pathlib import Path
-from typing import Optional
 
 from dynaconf import Dynaconf
-from starlette_context import context
-
-PR_AGENT_TOML_KEY = 'pr-agent'
+from starlette_context import context, request_cycle_context
 
 current_dir = dirname(abspath(__file__))
 
@@ -42,7 +40,6 @@ global_settings = Dynaconf(
         "settings/code_suggestions/pr_code_suggestions_prompts.toml",
         "settings/code_suggestions/pr_code_suggestions_prompts_not_decoupled.toml",
         "settings/code_suggestions/pr_code_suggestions_reflect_prompts.toml",
-        "settings/pr_information_from_user_prompts.toml",
         "settings/pr_update_changelog_prompts.toml",
         "settings/pr_custom_labels.toml",
         "settings/pr_add_docs.toml",
@@ -57,20 +54,63 @@ global_settings = Dynaconf(
 )
 
 
-def get_settings(use_context=False):
+def get_settings(use_context=True):
     """
     Retrieves the current settings.
 
-    This function attempts to fetch the settings from the starlette_context's context object. If it fails,
-    it defaults to the global settings defined outside of this function.
+    By default, return request-scoped settings when a context exists. Callers that need
+    deployment-global settings can pass ``use_context=False``.
 
     Returns:
-        Dynaconf: The current settings object, either from the context or the global default.
+        Dynaconf: The request-scoped settings or the deployment-global settings.
     """
+    if use_context:
+        try:
+            return context["settings"]
+        except Exception:
+            pass
+    return global_settings
+
+
+@contextmanager
+def safe_request_cycle_context(initial_data: dict | None = None):
+    """Enter request_cycle_context and guarantee its ContextVar reset on any exit."""
+    cm = request_cycle_context(initial_data)
+    cm.__enter__()
     try:
-        return context["settings"]
-    except Exception:
-        return global_settings
+        yield
+    finally:
+        # starlette-context's bare yield skips reset() when an exception crosses the block.
+        cm.__exit__(None, None, None)
+
+
+DEFAULT_BOT_DISPLAY_NAME = "PR-Agent"
+MAX_BOT_DISPLAY_NAME_LENGTH = 80
+
+
+def resolve_bot_display_name(value) -> str:
+    """Return the configured display name, falling back to the default for invalid values."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        if (
+            stripped
+            and len(stripped) <= MAX_BOT_DISPLAY_NAME_LENGTH
+            and value.splitlines() == [value]
+            and not any(ord(ch) < 32 or 0x7F <= ord(ch) <= 0x9F for ch in value)
+        ):
+            return stripped
+    from pr_agent.log import get_logger
+    get_logger().warning(
+        f"Invalid config.bot_display_name ({value!r}), using {DEFAULT_BOT_DISPLAY_NAME!r}"
+    )
+    return DEFAULT_BOT_DISPLAY_NAME
+
+
+def get_bot_display_name(default: str = DEFAULT_BOT_DISPLAY_NAME) -> str:
+    name = resolve_bot_display_name(
+        get_settings().config.get("bot_display_name", DEFAULT_BOT_DISPLAY_NAME)
+    )
+    return default if name == DEFAULT_BOT_DISPLAY_NAME else name
 
 
 def get_verbosity_level() -> int:
@@ -88,8 +128,7 @@ def get_verbosity_level() -> int:
         return 0
 
 
-# Add local configuration from pyproject.toml of the project being reviewed
-def _find_repository_root() -> Optional[Path]:
+def _find_repository_root() -> Path | None:
     """
     Identify project root directory by recursively searching for the .git directory in the parent directories.
     """
@@ -101,22 +140,6 @@ def _find_repository_root() -> Optional[Path]:
             return cwd
         cwd = cwd.parent
     return None
-
-
-def _find_pyproject() -> Optional[Path]:
-    """
-    Search for file pyproject.toml in the repository root.
-    """
-    repo_root = _find_repository_root()
-    if repo_root:
-        pyproject = repo_root / "pyproject.toml"
-        return pyproject if pyproject.is_file() else None
-    return None
-
-
-pyproject_path = _find_pyproject()
-if pyproject_path is not None:
-    get_settings().load_file(pyproject_path, env=f'tool.{PR_AGENT_TOML_KEY}')
 
 
 def apply_secrets_manager_config():
@@ -145,7 +168,7 @@ def apply_secrets_manager_config():
         try:
             from pr_agent.log import get_logger
             get_logger().debug(f"Secret provider not configured: {e}")
-        except:
+        except ImportError:
             # Fail completely silently if log module is not available
             pass
 
@@ -157,7 +180,7 @@ def apply_secrets_to_config(secrets: dict):
     try:
         # Dynamic import to avoid potential circular dependency
         from pr_agent.log import get_logger
-    except:
+    except ImportError:
         def get_logger():
             class DummyLogger:
                 def debug(self, msg): pass

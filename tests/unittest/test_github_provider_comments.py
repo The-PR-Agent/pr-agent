@@ -9,12 +9,16 @@ These tests use ``GithubProvider.__new__(GithubProvider)`` to bypass network-bou
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from github import GithubException
+from github.PullRequest import PullRequest
+from github.PullRequestComment import PullRequestComment
 from requests.exceptions import RequestException
 
 from pr_agent.git_providers import github_provider as gh_module
+from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 
 
@@ -30,8 +34,18 @@ class _FakePR:
 
     def __init__(self, raise_on_first=None):
         self.create_review_calls = []
+        self.create_review_comment_calls = []
         self._raise_on_first = raise_on_first
         self._calls = 0
+
+    def create_review_comment(self, body, commit, path, subject_type=None):
+        self.create_review_comment_calls.append({
+            "body": body,
+            "commit": commit,
+            "path": path,
+            "subject_type": subject_type,
+        })
+        return SimpleNamespace(id=2)
 
     def create_review(self, commit=None, event=None, comments=None):
         self._calls += 1
@@ -53,6 +67,123 @@ def _make_provider(pr=None, max_chars=65000):
     p.diff_files = []
     p.base_url = "https://api.github.com"
     return p
+
+
+class _CommentPageRequester:
+    per_page = 100
+    is_not_lazy = False
+    url = "https://api.github.test/repos/owner/repo/issues/1/comments"
+
+    def __init__(self, count, page_size):
+        self.count = count
+        self.page_size = page_size
+        self.pages = []
+        self.bodies = {}
+
+    def requestJsonAndCheck(self, method, url, parameters=None, headers=None):
+        parsed = urlparse(url)
+        assert method == "GET" and parsed.path == urlparse(self.url).path
+        params = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
+        params.update(parameters or {})
+        assert int(params.get("per_page", 100)) == 100
+        page = int(params.get("page", 1))
+        self.pages.append(page)
+        last = max(1, (self.count + self.page_size - 1) // self.page_size)
+        links = [(last, "last")] if last > 1 else []
+        if page < last:
+            links.append((page + 1, "next"))
+        if page > 1:
+            links.append((page - 1, "prev"))
+        response_headers = {"link": ", ".join(
+            f'<{self.url}?per_page=100&page={number}>; rel="{relation}"'
+            for number, relation in links
+        )} if links else {}
+        start = (page - 1) * self.page_size + 1
+        end = min(page * self.page_size, self.count)
+        return response_headers, [
+            {"id": number, "url": f"{self.url}/{number}",
+             "body": self.bodies.get(number, "## Legacy review" if number == self.count else "ordinary")}
+            for number in range(start, end + 1)
+        ]
+
+
+def _make_comment_page_provider(reported, actual, page_size=100):
+    requester = _CommentPageRequester(actual, page_size)
+    attributes = {"issue_url": requester.url.removesuffix("/comments")}
+    if reported is not None:
+        attributes["comments"] = reported
+    provider = _make_provider(PullRequest(requester, {}, attributes, completed=True))
+    provider.github_client = SimpleNamespace(per_page=requester.per_page)
+    return provider, requester
+
+
+@pytest.mark.parametrize(
+    ("reported", "actual", "page_size", "max_gets"),
+    [
+        (0, 0, 100, 1),
+        (1, 1, 100, 1),
+        (10, 10, 100, 1),
+        (99, 99, 100, 1),
+        (100, 100, 100, 2),
+        (101, 101, 100, 2),
+        (1000, 1000, 100, 2),
+        (99, 101, 100, 3),
+        (50, 1000, 100, 3),
+        (None, 10, 100, 2),
+        (True, 10, 100, 2),
+        (-1, 10, 100, 2),
+        # Simulate short responses that still advertise a next link for per_page=100.
+        (10, 101, 30, 6),
+    ],
+)
+def test_newest_issue_comments_preserve_sdk_pagination(reported, actual, page_size, max_gets):
+    provider, requester = _make_comment_page_provider(reported, actual, page_size)
+
+    comments = provider.get_issue_comments_newest_first()
+    newest = next(iter(comments), None)
+
+    assert (newest.id if newest is not None else None) == (actual or None)
+    # Allow future SDK versions to reduce requests on the unchanged fallback path.
+    assert 1 <= len(requester.pages) <= max_gets
+    pages = list(requester.pages)
+    first_ids = [comment.id for comment in comments]
+    assert first_ids == list(range(actual, 0, -1))
+    if actual < 100:
+        # Repeat the traversal for the identity/legacy fallback contract.
+        assert [comment.id for comment in comments] == first_ids
+        assert requester.pages == pages
+
+
+@pytest.mark.parametrize(("older_has_identity", "expected_id"), [(False, 2), (True, 1)])
+def test_short_thread_preserves_persistent_identity_and_legacy_scans(older_has_identity, expected_id):
+    provider, requester = _make_comment_page_provider(2, 2)
+    identity = "<!-- pr-agent:review:full -->"
+    if older_has_identity:
+        requester.bodies[1] = f"## Legacy review\n\n{identity}"
+
+    comment, _ = next(GitProvider._iter_persistent_comments(
+        provider, [identity, "## Legacy review"], identity_marker=identity,
+    ))
+
+    assert comment.id == expected_id
+    assert requester.pages == [1]
+
+
+@pytest.mark.parametrize(("comment_id", "expected_ids"), [(1, [1, 2]), (2, [1, 2]), (99, [])])
+def test_get_review_thread_comments_uses_list_payload_without_refetching(comment_id, expected_ids):
+    requester = MagicMock()
+    requester.requestJsonAndCheck.side_effect = AssertionError("The list response already contains the thread IDs")
+    payloads = [{"id": 1}, {"id": 3}, {"id": 2, "in_reply_to_id": 1}, {"id": 4, "in_reply_to_id": 3}]
+    # List-built objects remain completable; root payloads deliberately omit in_reply_to_id.
+    comments = [PullRequestComment(requester, {}, {
+        **payload, "url": f"https://api.github.com/repos/owner/repo/pulls/comments/{payload['id']}",
+    }) for payload in payloads]
+    provider = _make_provider(SimpleNamespace(get_comments=lambda: comments))
+
+    thread = provider.get_review_thread_comments(comment_id)
+
+    assert [comment.id for comment in thread] == expected_ids
+    requester.requestJsonAndCheck.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -85,6 +216,33 @@ def test_edit_comment_returns_false_on_github_failure():
     comment.edit.side_effect = gh_module.GithubException(500, "edit failed", {})
 
     assert provider.edit_comment(comment, "updated body") is False
+
+
+def test_thread_reply_preserves_void_success_and_truncation():
+    provider = _make_provider(max_chars=10)
+    requester = MagicMock()
+    requester.requestJsonAndCheck.return_value = ({}, {})
+    provider.pr._requester = requester
+
+    assert provider.reply_to_comment_from_comment_id(42, "x" * 20) is None
+    requester.requestJsonAndCheck.assert_called_once_with(
+        "POST", "https://api.github.com/repos/owner/repo/pulls/1/comments/42/replies",
+        input={"body": "xxxxxxx..."},
+    )
+
+
+@pytest.mark.parametrize("error", [GithubException(500, "reply failed", {}), RequestException("network error")])
+def test_thread_reply_propagates_failure_without_retry(error):
+    provider = _make_provider()
+    requester = MagicMock()
+    requester.requestJsonAndCheck.side_effect = error
+    provider.pr._requester = requester
+
+    with pytest.raises(type(error)) as caught:
+        provider.reply_to_comment_from_comment_id(42, "answer")
+
+    assert caught.value is error
+    requester.requestJsonAndCheck.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -126,8 +284,8 @@ def test_create_inline_comment_returns_line_payload(monkeypatch):
     assert payload == {"body": "LGTM", "path": "src/foo.py", "position": 5}
 
 
-def test_create_inline_comment_returns_empty_when_position_unresolved(monkeypatch):
-    """If no position can be resolved (position == -1) current behavior returns {}."""
+def test_create_inline_comment_returns_file_payload_when_position_unresolved(monkeypatch):
+    """Keep unresolved findings visible as file-level review comments."""
     provider = _make_provider()
 
     monkeypatch.setattr(
@@ -137,18 +295,37 @@ def test_create_inline_comment_returns_empty_when_position_unresolved(monkeypatc
     )
 
     payload = provider.create_inline_comment("body", "src/foo.py", "x = 1")
-    assert payload == {}
+    assert payload == {
+        "body": "body",
+        "path": "src/foo.py",
+        "subject_type": "file",
+    }
 
 
-def test_create_inline_comment_lookup_strips_backticks_but_payload_preserves_them(monkeypatch):
-    """Backtick handling is asymmetric in current production code.
+def test_publish_inline_comment_uses_file_comment_endpoint_for_unresolved_position(monkeypatch):
+    """File-level fallbacks must not be sent through create_review."""
+    fake_pr = _FakePR()
+    provider = _make_provider(pr=fake_pr)
 
-    ``find_line_number_of_relevant_line_in_file`` is called with
-    ``relevant_file.strip('`')`` (so the *lookup* sees the un-backticked
-    path), but the payload ``path`` only has ``.strip()`` applied — so any
-    surrounding backticks survive into the resulting comment payload. This
-    test documents that asymmetry; it does not endorse it.
-    """
+    monkeypatch.setattr(
+        gh_module,
+        "find_line_number_of_relevant_line_in_file",
+        lambda *args, **kwargs: (-1, -1),
+    )
+
+    provider.publish_inline_comment("body", "src/foo.py", "x = 1")
+
+    assert fake_pr.create_review_calls == []
+    assert fake_pr.create_review_comment_calls == [{
+        "body": "body",
+        "commit": provider.last_commit_id,
+        "path": "src/foo.py",
+        "subject_type": "file",
+    }]
+
+
+def test_create_inline_comment_normalizes_backticked_file_path(monkeypatch):
+    """Use the repository path without Markdown wrapping for lookup and publication."""
     provider = _make_provider()
     recorded = {}
 
@@ -162,12 +339,28 @@ def test_create_inline_comment_lookup_strips_backticks_but_payload_preserves_the
         recording_resolver,
     )
 
-    payload = provider.create_inline_comment("b", "`src/foo.py`", "x = 1")
+    payload = provider.create_inline_comment("b", "  `src/foo.py`  ", "x = 1")
 
-    # Lookup arg has backticks stripped.
     assert recorded["rel_file"] == "src/foo.py"
-    # Payload path preserves backticks (only .strip() runs on it).
-    assert payload["path"] == "`src/foo.py`"
+    assert payload["path"] == "src/foo.py"
+
+
+def test_create_inline_comment_normalizes_backticked_file_level_fallback(monkeypatch):
+    """Use the normalized repository path when a backticked finding has no line anchor."""
+    provider = _make_provider()
+    monkeypatch.setattr(
+        gh_module,
+        "find_line_number_of_relevant_line_in_file",
+        lambda *a, **kw: (-1, -1),
+    )
+
+    payload = provider.create_inline_comment("body", "  `src/foo.py`  ", "x = 1")
+
+    assert payload == {
+        "body": "body",
+        "path": "src/foo.py",
+        "subject_type": "file",
+    }
 
 
 def test_create_inline_comment_payload_strips_surrounding_whitespace(monkeypatch):
@@ -397,6 +590,41 @@ def test_publish_code_suggestions_single_line_payload_shape():
         "side": "RIGHT",
     }
     assert "start_line" not in payload and "start_side" not in payload
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        pytest.param("**Suggestion:** fix\n```suggestion\n" + "A" * 100 + "\n```", "**Suggestion:** fix\n",
+                     id="drops-suggestion-block"),
+        pytest.param("A" * 100, "A" * 22 + "...", id="clamps-body-without-block"),
+    ],
+)
+def test_publish_code_suggestions_limits_body_length(body, expected):
+    """An oversized body drops its suggestion block before the clamp, so no truncated suggestion reaches GitHub."""
+    provider = _make_provider(max_chars=25)
+
+    payload = provider._build_code_suggestion_payload({
+        "body": body,
+        "relevant_file": "src/foo.py",
+        "relevant_lines_start": 7,
+        "relevant_lines_end": 7,
+    })
+
+    assert payload["body"] == expected
+
+
+def test_publish_code_suggestions_does_not_trim_short_body():
+    provider = _make_provider(max_chars=25)
+
+    payload = provider._build_code_suggestion_payload({
+        "body": "```suggestion\nfix\n```",
+        "relevant_file": "src/foo.py",
+        "relevant_lines_start": 7,
+        "relevant_lines_end": 7,
+    })
+
+    assert payload["body"] == "```suggestion\nfix\n```"
 
 
 def test_publish_code_suggestions_skips_invalid_ranges():
@@ -664,17 +892,31 @@ def _make_graphql_response(data, errors=None):
 class _FakeRequester:
     """Records GraphQL calls and returns canned responses."""
 
+    graphql_url = "https://api.github.com/graphql"
+
     def __init__(self, responses):
         self.calls = []
         self._responses = list(responses)
 
     def requestJsonAndCheck(self, method, url, input=None):
         self.calls.append(("check", method, url, input))
-        return ({}, self._responses.pop(0))
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return ({}, response)
 
     def requestJson(self, method, url, input=None):
         self.calls.append(("json", method, url, input))
         return self._responses.pop(0)
+
+    def graphql_query(self, query, variables):
+        response = self.requestJson("POST", self.graphql_url, input={"query": query, "variables": variables})
+        if isinstance(response, Exception):
+            raise response
+        data = json.loads(response[2])
+        if data.get("errors"):
+            raise GithubException(400, data, {})
+        return ({}, data)
 
 
 def _make_provider_with_graphql(rest_comment_data, graphql_responses):
@@ -702,6 +944,53 @@ def _make_threads_response(threads, has_next_page=False, end_cursor=None):
 
 
 class TestResolveCommentThread:
+    def test_resolves_reply_after_first_hundred_comments(self):
+        thread = {
+            "id": "PRRT_target", "isResolved": False,
+            "comments": {"nodes": [{"id": "PRR_root"}]},
+        }
+        resolved = _make_graphql_response({"resolveReviewThread": {"thread": {"isResolved": True}}})
+        provider, requester = _make_provider_with_graphql(
+            {"node_id": "PRR_reply101", "in_reply_to_id": 10},
+            [{"node_id": "PRR_root"}, _make_threads_response([thread]), resolved],
+        )
+
+        assert provider.resolve_comment_thread(123) is True
+        assert len(requester.calls) == 4
+        assert requester.calls[0][2].endswith("/pulls/comments/123")
+        assert requester.calls[1][:3] == ("check", "GET", "https://api.github.com/repos/owner/repo/pulls/comments/10")
+        assert "reviewThreads(first: 100, after: $cursor)" in requester.calls[2][3]["query"]
+        assert "comments(first: $comment_limit)" in requester.calls[2][3]["query"]
+        assert requester.calls[2][3]["variables"]["comment_limit"] == 1
+        assert 'threadId: "PRRT_target"' in requester.calls[3][3]["query"]
+
+    @pytest.mark.parametrize(
+        "root_error, expected_status",
+        [(GithubException(404, {"message": "missing root response"}, None), "404"),
+         (RequestException("private transport details"), "network error")],
+        ids=["deleted-root", "network-error"],
+    )
+    def test_root_lookup_failure_falls_back_to_original_reply(self, monkeypatch, root_error, expected_status):
+        logger = MagicMock()
+        monkeypatch.setattr(gh_module, "get_logger", lambda: logger)
+        thread = {
+            "id": "PRRT_target", "isResolved": False,
+            "comments": {"nodes": [{"id": "PRR_reply"}]},
+        }
+        resolved = _make_graphql_response({"resolveReviewThread": {"thread": {"isResolved": True}}})
+        provider, requester = _make_provider_with_graphql(
+            {"node_id": "PRR_reply", "in_reply_to_id": 10},
+            [root_error, _make_threads_response([thread]), resolved],
+        )
+
+        assert provider.resolve_comment_thread(123) is True
+        assert len(requester.calls) == 4
+        assert requester.calls[1][:3] == ("check", "GET", "https://api.github.com/repos/owner/repo/pulls/comments/10")
+        assert "reviewThreads(first: 100, after: $cursor)" in requester.calls[2][3]["query"]
+        assert requester.calls[2][3]["variables"]["comment_limit"] == 100
+        assert 'threadId: "PRRT_target"' in requester.calls[3][3]["query"]
+        logger.warning.assert_called_once_with(f"Could not fetch root of comment 123: status {expected_status}")
+
     def test_resolves_thread_successfully(self):
         rest_data = {"node_id": "PRR_comment1"}
         threads_response = _make_threads_response([
@@ -849,7 +1138,7 @@ class TestResolveCommentThread:
         result = provider.resolve_comment_thread(123)
 
         assert result is True
-        assert 'after: "cursor1"' in requester.calls[2][3]["query"]
+        assert requester.calls[2][3]["variables"]["cursor"] == "cursor1"
         assert "resolveReviewThread" in requester.calls[3][3]["query"]
 
     def test_handles_rest_api_exception(self):
@@ -980,6 +1269,93 @@ def test_validate_comments_inside_hunks_preserves_backslashes_in_fallback_diff()
     assert "```diff" in result["body"]
     assert r'-pattern = r"\1"' in result["body"]
     assert r'+pattern = r"\1\n\\x"' in result["body"]
+
+
+@pytest.mark.parametrize(
+    "start,end,expected_start,expected_end",
+    [
+        (9, 11, 10, 11),  # overlaps the hunk start
+        (5, 7, 10, 10),  # wholly above the hunk
+        (13, 15, 11, 11),  # wholly below the hunk
+        (8, 13, 10, 11),  # encloses the hunk
+    ],
+)
+def test_suggestion_near_a_hunk_is_published_inside_it(monkeypatch, start, end, expected_start, expected_end):
+    provider = _make_provider()
+    provider.max_comment_chars = 65000
+    provider.get_diff_files = lambda: [
+        SimpleNamespace(filename="src/example.py", patch="@@ -10,2 +10,2 @@\n-old\n+new\n ctx", language="python")
+    ]
+    published = []
+    monkeypatch.setattr(provider, "publish_inline_comments", lambda comments: published.extend(comments) or True)
+
+    assert provider.publish_code_suggestions([{
+        "body": "```suggestion\nnew\n```",
+        "relevant_file": "src/example.py",
+        "relevant_lines_start": start,
+        "relevant_lines_end": end,
+        "original_suggestion": {"existing_code": "old", "improved_code": "new"},
+    }]) is True
+
+    assert len(published) == 1
+    assert published[0].get("start_line", published[0]["line"]) == expected_start
+    assert published[0]["line"] == expected_end
+    assert "```suggestion" not in published[0]["body"]
+
+
+@pytest.mark.parametrize(
+    "start,end,expected_start,expected_end",
+    [
+        (5, 7, 10, 10),  # wholly above the hunk
+        (13, 15, 11, 11),  # wholly below the hunk
+    ],
+)
+def test_comment_near_a_hunk_is_moved_into_it_without_a_suggestion_block(
+    monkeypatch, start, end, expected_start, expected_end
+):
+    """A finding without diff code has no suggestion block to rewrite, so it is only re-anchored."""
+    provider = _make_provider()
+    provider.max_comment_chars = 65000
+    provider.get_diff_files = lambda: [
+        SimpleNamespace(filename="src/example.py", patch="@@ -10,2 +10,2 @@\n-old\n+new\n ctx", language="python")
+    ]
+    published = []
+    monkeypatch.setattr(provider, "publish_inline_comments", lambda comments: published.extend(comments) or True)
+    body = "The loop reads past the end of the buffer."
+
+    assert provider.publish_code_suggestions([{
+        "body": body,
+        "relevant_file": "src/example.py",
+        "relevant_lines_start": start,
+        "relevant_lines_end": end,
+    }]) is True
+
+    assert len(published) == 1
+    assert published[0].get("start_line", published[0]["line"]) == expected_start
+    assert published[0]["line"] == expected_end
+    assert published[0]["body"].startswith(body)
+
+
+def test_committable_block_without_diff_code_is_not_moved(monkeypatch):
+    """A suggestion block carries its own line, so moving it would apply it elsewhere."""
+    provider = _make_provider()
+    provider.max_comment_chars = 65000
+    provider.get_diff_files = lambda: [
+        SimpleNamespace(filename="src/example.py", patch="@@ -10,2 +10,2 @@\n-old\n+new\n ctx", language="python")
+    ]
+    published = []
+    monkeypatch.setattr(provider, "publish_inline_comments", lambda comments: published.extend(comments) or True)
+
+    assert provider.publish_code_suggestions([{
+        "body": "```suggestion\nnew\n```",
+        "relevant_file": "src/example.py",
+        "relevant_lines_start": 13,
+        "relevant_lines_end": 15,
+    }]) is True
+
+    assert len(published) == 1
+    assert published[0].get("start_line", published[0]["line"]) == 13
+    assert published[0]["line"] == 15
 
 
 def test_validate_comments_inside_hunks_does_not_partially_update_on_render_error(monkeypatch):

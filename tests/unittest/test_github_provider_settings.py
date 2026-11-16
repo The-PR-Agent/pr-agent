@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,6 +18,14 @@ def _clear_global_settings_cache():
     _gp._GLOBAL_SETTINGS_CACHE.clear()
 
 
+@pytest.fixture(autouse=True)
+def _named_global_settings_repo():
+    # Namespace-wide settings are off unless the host names the repository, so the tests
+    # below that exercise the global path set it explicitly.
+    with _global_settings_repo("pr-agent-settings"):
+        yield
+
+
 def _not_found(name):
     # Match PyGithub: a missing repo/file raises GithubException(404), which the provider
     # handles, rather than FileNotFoundError.
@@ -28,6 +38,12 @@ class FakeContent:
 
 
 class FakeRepo:
+    default_branch = "main"
+
+    def get_commit(self, ref):
+        return SimpleNamespace(sha="local-commit", commit=SimpleNamespace(tree=SimpleNamespace(sha="local-tree")),
+                               complete=lambda: None)
+
     def __init__(self, files=None):
         self.files = files or {}
 
@@ -57,6 +73,35 @@ def _provider(local_settings=None, global_settings=None):
         else {}
     )
     return provider
+
+
+@contextmanager
+def _global_settings_repo(repo):
+    """Point config.global_settings_repo at `repo` for the duration of the block."""
+    settings = get_settings()
+    original = getattr(settings.config, "global_settings_repo", "")
+    settings.config.global_settings_repo = repo
+    try:
+        yield
+    finally:
+        settings.config.global_settings_repo = original
+
+
+@pytest.mark.parametrize("configured, expected", [("", ""), ("acme-settings", b"[pr_reviewer]\n")])
+def test_global_settings_read_only_the_configured_repo(configured, expected):
+    provider = _provider()
+    provider.github_client.repos = {
+        "org/pr-agent-settings": FakeRepo({".pr_agent.toml": b"[config]\n"}),
+        "org/acme-settings": FakeRepo({".pr_agent.toml": b"[pr_reviewer]\n"}),
+    }
+    settings = get_settings()
+    original = settings.config.use_global_settings_file
+    settings.config.use_global_settings_file = True
+    try:
+        with _global_settings_repo(configured):
+            assert provider._get_global_repo_settings() == expected
+    finally:
+        settings.config.use_global_settings_file = original
 
 
 def test_get_global_repo_settings_repo_less_provider_does_not_crash():
@@ -173,6 +218,7 @@ def test_get_repo_settings_config_branch_non_404_error_propagates(monkeypatch):
     # A non-404 error loading the config branch must NOT be masked by a silent default-branch fallback.
     provider = _provider()  # no global settings repo -> _get_global returns "" quietly
     provider.repo_obj = MagicMock()
+    provider.repo_obj.get_commit.return_value = FakeRepo().get_commit("release")
     provider.repo_obj.get_contents.side_effect = GithubException(403, {"message": "Forbidden"}, {})
     monkeypatch.setenv("PR_AGENT_CONFIG_BRANCH", "release")
     settings = get_settings()

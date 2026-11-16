@@ -18,7 +18,7 @@ directions:
 Same shape as #3319/#3325 in `pr_add_docs.toml`, and the same test shape:
 parse the example the model is shown and hold it to the declared type. This
 covers ONE file; #3354's full ask is a real pydantic model per top-level class
-with a fixture per tool, which is a larger piece of work.
+with a fixture per command, which is a larger piece of work.
 
 Both example blocks are checked, not just the first: they drifted identically,
 so a test that read one would go green while the other still taught the wrong
@@ -34,7 +34,7 @@ from pr_agent.config_loader import get_settings
 # The declared type can be `int`, `List[Foo]` or `Union[List[Foo], str]`, and
 # `Field(` may be called positionally, so match up to the `= Field(`.
 _DECLARED = re.compile(
-    r"^\s*(?P<field>[\w\[\]\-]+):\s*(?P<type>[^=]+?)\s*=\s*Field\(", re.M
+    r"^\s*(?P<field>[\w\[\]\-]+):\s*(?P<type>[^=]+?)\s*=\s*Field\(", re.MULTILINE
 )
 
 
@@ -57,7 +57,7 @@ def _example_blocks() -> list[str]:
     The blocks are Jinja-conditional, so the raw text is not valid YAML; the
     `{%- ... %}` lines are control flow around the fields, never part of one.
     """
-    blocks = re.findall(r"```yaml\n(.*?)```", _prompt(), re.S)
+    blocks = re.findall(r"```yaml\n(.*?)```", _prompt(), re.DOTALL)
     return [
         "\n".join(line for line in b.splitlines() if not line.strip().startswith("{%"))
         for b in blocks
@@ -117,3 +117,16 @@ def test_every_field_the_examples_teach_is_one_the_schema_declares():
     for example in _review_examples():
         unknown = sorted(_taught_fields(example) - declared)
         assert not unknown, f"examples teach fields the schema does not declare: {unknown}"
+
+
+def test_example_fix_is_valid_yaml():
+    """The fix fields are block scalars, so code with `:` and `#` must stay one string."""
+    for example in _review_examples():
+        fixes = [
+            issue for issue in example["key_issues_to_review"]
+            if isinstance(issue, dict) and "improved_code" in issue
+        ]
+        assert fixes, "an example shows a finding with a fix"
+        for issue in fixes:
+            assert isinstance(issue["existing_code"], str) and issue["existing_code"].strip()
+            assert isinstance(issue["improved_code"], str) and issue["improved_code"].strip()

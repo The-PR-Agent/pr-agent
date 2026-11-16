@@ -38,15 +38,25 @@ _CLAUDE_MODEL_FAMILIES = [
         "bedrock_regions": _DEFAULT_BEDROCK_REGIONS,
     },
     {
+        "model_id": "claude-sonnet-5-5",
+        "max_tokens": 1000000,
+        "bedrock_regions": ("global", "us", "eu", "au"),
+    },
+    {
+        "model_id": "claude-haiku-5-5",
+        "max_tokens": 1000000,
+        "bedrock_regions": _DEFAULT_BEDROCK_REGIONS,
+    },
+    {
         "model_id": "claude-opus-4-7",
         "max_tokens": 1000000,
         "bedrock_regions": ("global", "us"),
         "extra_bedrock": ("anthropic.claude-opus-4-7-v1:0",),
     },
-    # ── 200K-context models with extended thinking ────────────────────────
+    # ── Models with extended thinking ────────────────────────────────────
     {
         "model_id": "claude-sonnet-4-6",
-        "max_tokens": 200000,
+        "max_tokens": 1000000,
         "bedrock_regions": ("us", "au", "eu", "jp", "apac", "global"),
         "extra_bedrock_regions": {
             "anthropic.claude-sonnet-4-6-v1:0": (
@@ -57,15 +67,15 @@ _CLAUDE_MODEL_FAMILIES = [
     },
     {
         "model_id": "claude-opus-4-6",
-        "max_tokens": 200000,
+        "max_tokens": 1000000,
         "bedrock_name": "claude-opus-4-6-v1:0",
         "bedrock_regions": ("global", "eu", "au", "jp", "apac", "us"),
         "extra_aliases": {
-            "claude-opus-4-6-20260120": 200000,
-            "anthropic/claude-opus-4-6-20260120": 200000,
-            "vertex_ai/claude-opus-4-6@20260120": 200000,
-            "bedrock/anthropic.claude-opus-4-6-20260120-v1:0": 200000,
-            "bedrock/us.anthropic.claude-opus-4-6-20260120-v1:0": 200000,
+            "claude-opus-4-6-20260120": 1000000,
+            "anthropic/claude-opus-4-6-20260120": 1000000,
+            "vertex_ai/claude-opus-4-6@20260120": 1000000,
+            "bedrock/anthropic.claude-opus-4-6-20260120-v1:0": 1000000,
+            "bedrock/us.anthropic.claude-opus-4-6-20260120-v1:0": 1000000,
         },
         "extended_thinking": True,
     },
@@ -103,6 +113,15 @@ _CLAUDE_MODEL_FAMILIES = [
         # EU/AU/JP geo inference IDs are not available.
         # Ref: https://platform.claude.com/docs/en/build-with-claude/claude-in-amazon-bedrock#regions
         "bedrock_regions": ("global", "us"),
+    },
+    {
+        "model_id": "claude-fable-5-2",
+        "max_tokens": 1000000,
+        "bedrock_regions": ("global", "us"),
+        "extra_aliases": {
+            "azure_ai/claude-fable-5-2": 1000000,
+            "bedrock/claude_platform/claude-fable-5-2": 1000000,
+        },
     },
 ]
 
@@ -214,8 +233,7 @@ def _generate_claude_registries(families=None):
                     thinking_regions = fam.get(
                         "thinking_bedrock_regions", ("us", "au", "eu", "jp", "global")
                     )
-                    for reg in thinking_regions:
-                        claude_extended_thinking.append(f"bedrock/{reg}.anthropic.{b_name}")
+                    claude_extended_thinking.extend(f"bedrock/{reg}.anthropic.{b_name}" for reg in thinking_regions)
 
     return claude_tokens, claude_extended_thinking
 
@@ -226,6 +244,20 @@ _claude_tokens, _claude_extended_thinking = (
 )
 
 
+GPT6_MODELS = ('gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol')
+GPT6_OPENROUTER_ROUTING_SUFFIXES = (":nitro", ":floor", ":online", ":exacto")
+# Sol-tier models share the OpenAI-compatible bridge: a non-native provider gets max_tokens
+# instead of max_completion_tokens. On such a provider the id is a custom model, so reasoning
+# needs an explicit additional_reasoning_effort_models opt-in and then rides as a top-level
+# reasoning_effort. The tier advances on its own cadence, so GPT-6.1 Sol revises GPT-6 Sol
+# rather than starting a new family.
+GPT6_SOL_TIER_MODELS = ('gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol')
+# GPT-6 models whose reasoning.effort omits "none", per their OpenAI model pages: their levels
+# are low, medium (default), high, xhigh and max, so a configured "none" is clamped to "low".
+GPT6_MODELS_WITHOUT_NONE_EFFORT = ('gpt-6-astra', 'gpt-6.1-sol')
+GPT6_MAX_INPUT_TOKENS = {"gpt-6-sol": 922000, "gpt-6-luna": 922000, "gpt-6.1-sol": 922000}
+
+
 # MAX_TOKENS holds only entries that deliberately deviate from (or are absent
 # from) LiteLLM's model registry. Exact LiteLLM duplicates were removed because
 # get_max_tokens() already falls back to litellm.get_model_info() with the same
@@ -233,11 +265,9 @@ _claude_tokens, _claude_extended_thinking = (
 # because they also drive the extended-thinking registry and their 1M-context
 # handling is a separate, deliberate judgement (issue #3196).
 MAX_TOKENS = {
-    'text-embedding-ada-002': 8000,
+    'text-embedding-ada-002': 8192,
     'gpt-3.5-turbo': 16000,
     'gpt-3.5-turbo-0125': 16000,
-    'gpt-3.5-turbo-1106': 16000,
-    'gpt-3.5-turbo-16k': 16000,
     'gpt-4': 8000,
     'gpt-4-0613': 8000,
     'gpt-5.2': 400000,  # 400K, but may be limited by config.max_model_tokens
@@ -255,67 +285,43 @@ MAX_TOKENS = {
     'gpt-5.6-terra': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'gpt-5.6-luna': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'gpt-6-astra': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
+    'gpt-6-sol': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
+    'gpt-6-luna': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
+    'gpt-6.1-sol': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'o1-mini': 128000,  # 128K, but may be limited by config.max_model_tokens
     'o1-mini-2024-09-12': 128000,  # 128K, but may be limited by config.max_model_tokens
     'o1-2024-12-17': 204800,  # 200K, but may be limited by config.max_model_tokens
     'o1': 204800,  # 200K, but may be limited by config.max_model_tokens
     'o3-mini': 204800,  # 200K, but may be limited by config.max_model_tokens
     'o3-mini-2025-01-31': 204800,  # 200K, but may be limited by config.max_model_tokens
-    'claude-instant-1': 100000,
-    'claude-2': 100000,
-    'deepseek/deepseek-chat': 128000,  # 128K, but may be limited by config.max_model_tokens
     'zai/glm-5.2': 1000000,  # 1M per LiteLLM (issue #3196); kept pinned: absent from LiteLLM's bundled cost map
     'openai/qwq-plus': 131072,  # 131K context length, but may be limited by config.max_model_tokens
     "openrouter/auto": 2000000,  # 2M context length, but may be limited by config.max_model_tokens
     "openrouter/free": 200000,  # 200K context length, but may be limited by config.max_model_tokens
     "openrouter/fusion": 1000000,  # 1M context length, but may be limited by config.max_model_tokens
     "openrouter/pareto-code": 2000000,  # 2M context length, but may be limited by config.max_model_tokens
-    'replicate/llama-2-70b-chat:2c1608e18606fad2812020dc541930f2d0495ce32eee50074220b87300bc16e1': 4096,
-    'meta-llama/Llama-2-7b-chat-hf': 4096,
-    'vertex_ai/codechat-bison': 6144,
-    'vertex_ai/codechat-bison-32k': 32000,
     # -- Vertex AI Claude --------------------------------------------------
-    'vertex_ai/claude-3-5-haiku@20241022': 100000,
-    'vertex_ai/claude-3-sonnet@20240229': 100000,
-    'vertex_ai/claude-3-opus@20240229': 100000,
-    'vertex_ai/claude-3-5-sonnet@20240620': 100000,
-    'vertex_ai/claude-3-5-sonnet-v2@20241022': 100000,
     'vertex_ai/claude-sonnet-4@20250514': 200000,
     # -- Vertex AI non-Claude / Gemini -------------------------------------
-    'vertex_ai/gemini-2.5-flash-preview-04-17': 1048576,
     'vertex_ai/gemini-3.1-flash': 1048576,
     'vertex_ai/gemini-3.1-pro': 1048576,
     'vertex_ai/gemini-3.5-pro': 1048576,
     'vertex_ai/gemini-3.8-flash': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
-    'vertex_ai/gemma2': 8200,
-    'gemini/gemini-2.5-flash-preview-04-17': 1048576,
+    'vertex_ai/gemini-4-argon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
+    'vertex_ai/gemini-4-carbon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
+    'vertex_ai/gemini-4-hydrogen': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'gemini/gemini-3.1-flash': 1048576,
     'gemini/gemini-3.1-pro': 1048576,
     'gemini/gemini-3.5-pro': 1048576,
     'gemini/gemini-3.8-flash': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
-    'codechat-bison': 6144,
-    'codechat-bison-32k': 32000,
-    # -- Anthropic Claude --------------------------------------------------
-    'anthropic.claude-v2': 100000,
-    'anthropic/claude-3-opus-20240229': 100000,
-    'anthropic/claude-3-5-sonnet-20240620': 100000,
-    'anthropic/claude-3-5-sonnet-20241022': 100000,
-    'anthropic/claude-sonnet-4-20250514': 200000,
-    # -- Bare Claude -------------------------------------------------------
-    # -- Haiku -------------------------------------------------------------
-    'anthropic/claude-3-5-haiku-20241022': 100000,
+    'gemini/gemini-4-argon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
+    'gemini/gemini-4-carbon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
+    'gemini/gemini-4-hydrogen': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     # -- Bedrock Claude ----------------------------------------------------
-    'bedrock/anthropic.claude-v2': 100000,
-    'bedrock/anthropic.claude-3-sonnet-20240229-v1:0': 100000,
-    'bedrock/anthropic.claude-3-5-haiku-20241022-v1:0': 100000,
-    'bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0': 100000,
-    'bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0': 100000,
     'bedrock/anthropic.claude-sonnet-4-20250514-v1:0': 200000,
     # -- Bedrock Claude (cross-region) -------------------------------------
-    "bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0": 100000,
     "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
     "bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
-    "bedrock/apac.anthropic.claude-3-5-sonnet-20241022-v2:0": 100000,
     "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
     # -- Non-Claude models -------------------------------------------------
     "bedrock_mantle/xai.grok-4.3": 1000000,
@@ -333,8 +339,11 @@ MAX_TOKENS = {
     'bedrock/converse/moonshotai.kimi-k3': 1000000,
     'bedrock/converse/us.moonshotai.kimi-k3': 1000000,
     'bedrock/converse/global.moonshotai.kimi-k3': 1000000,
-    'groq/moonshotai/kimi-k2-instruct': 131072,
-    'groq/deepseek-r1-distill-llama-70b': 128000,
+    # -- Kimi K3 / K3.1 Pro (Moonshot / OpenAI-compatible) --
+    'kimi-k3': 1000000,
+    'kimi-k3.1-pro': 1000000,
+    'openai/kimi-k3': 1000000,
+    'openai/kimi-k3.1-pro': 1000000,
     'groq/llama-3.3-70b-versatile': 128000,
     'groq/llama-3.1-8b-instant': 128000,
     'sambanova/MiniMax-M3': 192000,
@@ -343,13 +352,24 @@ MAX_TOKENS = {
     'sambanova/Meta-Llama-3.3-70B-Instruct': 128000,
     'sambanova/gpt-oss-120b': 128000,
     'sambanova/DeepSeek-V3.1': 128000,
-    'xai/grok-2': 131072,
-    'xai/grok-2-1212': 131072,
-    'xai/grok-2-latest': 131072,
     'xai/grok-3-fast': 131072,
     "xai/grok-build-latest": 500000,  # kept pinned: absent from LiteLLM's bundled cost map
     "openrouter/x-ai/grok-4.5": 500000,  # kept pinned: absent from LiteLLM's bundled cost map
     "openrouter/x-ai/grok-4.6": 500000,  # kept pinned: absent from LiteLLM's bundled cost map
+    "openrouter/anthropic/claude-sonnet-5": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-sonnet-5.5": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-sonnet-4.6": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-sonnet-4.5": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-opus-5.5": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-opus-5": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-opus-4.8": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-opus-4.7": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-opus-4.6": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-haiku-5.5": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-fable-5.2": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-fable-5.1": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/anthropic/claude-fable-5": 1000000,  # kept pinned: LiteLLM 1.108 reports 200000, OpenRouter lists 1M
+    "openrouter/deepseek/deepseek-chat": 163840,  # kept pinned: absent from LiteLLM's bundled cost map
     'watsonx/meta-llama/llama-3-8b-instruct': 4096,
     "watsonx/meta-llama/llama-3-70b-instruct": 4096,
     "watsonx/meta-llama/llama-3-405b-instruct": 16384,
@@ -402,7 +422,7 @@ GROK_REASONING_EFFORT_LEVELS = {
 # thinking={"type": "enabled", "budget_tokens": ...} request built by
 # LiteLLMAIHandler._configure_claude_extended_thinking(). Only models that
 # accept budget_tokens belong here. Adaptive-only models (Claude Opus 4.7/4.8,
-# Opus 5/5.5, Sonnet 5, Fable 5, Fable 5.1) reject budget_tokens with an HTTP 400 and must not be added
+# Opus 5/5.5, Sonnet 5/5.5, Haiku 5.5, Fable 5, Fable 5.1) reject budget_tokens with an HTTP 400 and must not be added
 # without also adding an adaptive-thinking code path. This list is the built-in
 # default; it can be replaced via the `claude_extended_thinking_models_override`
 # configuration option.

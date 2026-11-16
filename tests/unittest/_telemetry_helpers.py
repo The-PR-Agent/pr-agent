@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 
 from pr_agent.telemetry.types import TelemetryConfig
 
@@ -27,6 +28,8 @@ def clear_telemetry_caches():
     tracer.get_tracer.cache_clear()
     meter.get_meter.cache_clear()
     meter.get_commands_counter.cache_clear()
+    meter.get_tokens_counter.cache_clear()
+    meter.get_ai_calls_counter.cache_clear()
     shutdown.register_shutdown_handler.cache_clear()
     registry.provider_registry.reset()
 
@@ -70,10 +73,26 @@ def capture_loguru(level: str = "DEBUG"):
 def build_in_memory_tracer():
     """Return (tracer, exporter) backed by a local provider — not the global one.
 
+    Sample every test span regardless of the host's OTEL_TRACES_SAMPLER setting.
     SimpleSpanProcessor exports synchronously on span end, so finished spans
     are visible in the exporter without an explicit flush.
     """
     exporter = InMemorySpanExporter()
-    provider = TracerProvider(shutdown_on_exit=False)
+    provider = TracerProvider(sampler=ALWAYS_ON, shutdown_on_exit=False)
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     return provider.get_tracer("telemetry-test"), exporter
+
+
+def build_in_memory_meter():
+    """Return (meter, reader) backed by a local provider — not the global one.
+
+    ``InMemoryMetricReader`` collects synchronously on read, so counters added by
+    the code under test are visible via ``reader.get_metrics_data()`` without an
+    export interval or an explicit provider flush.
+    """
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader], shutdown_on_exit=False)
+    return provider.get_meter("telemetry-test"), reader

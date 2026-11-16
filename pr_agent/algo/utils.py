@@ -1,39 +1,73 @@
 from __future__ import annotations
 
+import bisect
 import copy
 import difflib
 import html
-import json
 import re
 import textwrap
-from datetime import datetime
-from enum import Enum
-from typing import Any, List, Tuple, TypedDict
+from enum import StrEnum
+from io import StringIO
+from itertools import islice
+from typing import Any, TypedDict
 from urllib.parse import quote, unquote
 
 import html2text
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
+from yaml.tokens import (
+    BlockEndToken,
+    BlockEntryToken,
+    BlockMappingStartToken,
+    BlockSequenceStartToken,
+    FlowMappingEndToken,
+    FlowMappingStartToken,
+    FlowSequenceEndToken,
+    FlowSequenceStartToken,
+    KeyToken,
+    ScalarToken,
+    TagToken,
+)
 
 import pr_agent.algo.comment_identity as _ci
+from pr_agent.algo.deterministic_risk import render_risk_checks
 from pr_agent.algo.git_patch_processing import (
     NO_NEWLINE_AT_EOF_MARKER,
     extract_hunk_headers,
     extract_hunk_lines_from_patch,
+    split_diff_lines,
     to_hunk_only_patch,
 )
+from pr_agent.algo.i18n import t
+from pr_agent.algo.language_handler import build_language_file_matcher
+from pr_agent.algo.merge_verdict import render_merge_recommendation_checks
+from pr_agent.algo.output_models import PRType, SubPR, finding_confidence, parse_failure_modes
+from pr_agent.algo.structural_reach import render_structural_reach
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.config_loader import get_settings, get_verbosity_level
+from pr_agent.config_loader import get_bot_display_name, get_settings, get_verbosity_level
 from pr_agent.log import get_logger
 
 _ENCODED_USER_TEXT_PREFIX = "__pr_agent_encoded_text__:"
+_YAML_C_SAFE_LOADER = getattr(yaml, "CSafeLoader", None)
+_YAML_MAX_C_NESTING = 256
+_YAML_BLOCK_PREFIX_RE = re.compile(r"(?:^|(?<=[\n\r\x85\u2028\u2029]))( *)((?:[-?] +)*)")
+_YAML_INDENTED_LINE_RE = re.compile(r"[\n\r\x85\u2028\u2029] ")
+_YAML_UNSEPARATED_BLOCK_SCALAR_COMMENT_RE = re.compile(r"[|>](?:[1-9][+-]?|[+-][1-9]?)?#")
+
+
+def _as_line(value: Any) -> int | None:
+    try:
+        line = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return line if line > 0 else None
 
 
 def encode_user_text_arg(value: str) -> str:
     return _ENCODED_USER_TEXT_PREFIX + quote(value, safe="")
 
 
-def decode_user_text_args(args: List[str] | None) -> str:
+def decode_user_text_args(args: list[str] | None) -> str:
     if not args:
         return ""
     return " ".join(
@@ -59,7 +93,7 @@ class Range(BaseModel):
     column_end: int = -1
 
 
-class ModelType(str, Enum):
+class ModelType(StrEnum):
     REGULAR = "regular"
     WEAK = "weak"
     REASONING = "reasoning"
@@ -67,11 +101,11 @@ class ModelType(str, Enum):
 
 class TodoItem(TypedDict):
     relevant_file: str
-    line_range: Tuple[int, int]
+    line_range: tuple[int, int]
     content: str
 
 
-class ReasoningEffort(str, Enum):
+class ReasoningEffort(StrEnum):
     MAX = "max"
     XHIGH = "xhigh"
     HIGH = "high"
@@ -113,11 +147,81 @@ def _get_fence(content: str) -> str:
     return "`" * backtick_len
 
 
+def get_suggestion_fence(code: str) -> str:
+    """Return the backtick fence (minimum 3) for a ``suggestion`` block around *code*.
+
+    A fence closes at the first run of its character at least as long as the
+    opener, so a ``` line inside the suggested code -- a code block in a
+    Markdown file, a doctest in a docstring -- would end the block there, and
+    committing the suggestion would apply only the lines before it. Unlike
+    ``_get_fence`` this never switches to tildes: suggestion blocks are
+    written, and matched by the providers, with backticks.
+    """
+    longest = max((len(m.group()) for m in re.finditer(r"`+", code)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+_SUGGESTION_OPENER_RE = re.compile(r"(?<!`)(`{3,})suggestion")
+
+
+def iter_suggestion_blocks(body: str):
+    """Yield ``(start, end, code)`` for every closed ```suggestion block in *body*.
+
+    ``start`` and ``end`` are the end-exclusive bounds of the whole block,
+    fences included. ``code`` is the text between the opening line and the
+    closing fence, or ``None`` when the block is closed on the opener line
+    itself. The opener is matched with a regex and its closer is the first run
+    of the same fence length, located with ``str.find``; a lazy regex scan
+    would run to the end of the body for every unclosed opener instead.
+    """
+    position = 0
+    while True:
+        opener = _SUGGESTION_OPENER_RE.search(body, position)
+        if opener is None:
+            return
+        fence = opener.group(1)
+        length = len(fence)
+        close = body.find(fence, opener.end())
+        if close == -1:
+            position = opener.start() + length
+            continue
+        code_start = body.find("\n", opener.end())
+        code = body[code_start + 1:close] if code_start != -1 and code_start < close else None
+        yield opener.start(), close + length, code
+        position = close + length
+
+
+def replace_suggestion_blocks(body: str, replacement: str) -> str:
+    """Replace every closed ```suggestion block in *body* with *replacement*.
+
+    Unclosed openers are left untouched, matching the previous lazy-regex
+    substitution without its repeated scan to the end of the body.
+    """
+    parts = []
+    position = 0
+    for start, end, _ in iter_suggestion_blocks(body):
+        parts.append(body[position:start])
+        parts.append(replacement)
+        position = end
+    parts.append(body[position:])
+    return "".join(parts)
+
+
+def get_min_finding_confidence() -> float:
+    """Return pr_reviewer.min_finding_confidence as a number; 0 (disabled) when unset, not numeric or outside 0-10."""
+    try:
+        threshold = float(get_settings().pr_reviewer.get("min_finding_confidence", 0))
+    except (TypeError, ValueError):
+        return 0
+    return threshold if 0 < threshold <= 10 else 0
+
+
 def convert_to_markdown_v2(output_data: dict,
                            gfm_supported: bool = True,
                            incremental_review=None,
                            git_provider=None,
-                           files=None) -> str:
+                           files=None,
+                           commit_review=None) -> str:
     """
     Convert a dictionary of data into markdown format.
     Args:
@@ -143,17 +247,22 @@ def convert_to_markdown_v2(output_data: dict,
         "Ticket compliance check": "🎫",
         "Risk level": "⚠️",
         "Merge recommendation": "✅",
+        "Failure modes": "🔎",
+        "Artifact findings": "📋",
         "Review priority files": "📂",
     }
     markdown_text = ""
-    markdown_text += f"{_ci.format_pr_review_header(incremental=bool(incremental_review))}\n\n"
-    if incremental_review:
-        markdown_text += f"⏮️ Review for commits since previous PR-Agent review {incremental_review}.\n\n"
+    markdown_text += f"{_ci.format_pr_review_header(incremental=bool(incremental_review or commit_review))}\n\n"
+    if commit_review:
+        markdown_text += f"🔂 Review of commit {commit_review}.\n\n"
+    elif incremental_review:
+        bot_display_name = get_bot_display_name()
+        markdown_text += f"⏮️ Review for commits since previous {bot_display_name} review {incremental_review}.\n\n"
     if not output_data or not output_data.get('review', {}):
         return ""
 
     if get_settings().get("pr_reviewer.enable_intro_text", False):
-        markdown_text += "Here are some key observations to aid the review process:\n\n"
+        markdown_text += f"{t('review.intro')}\n\n"
 
     if gfm_supported:
         markdown_text += "<table>\n"
@@ -161,12 +270,13 @@ def convert_to_markdown_v2(output_data: dict,
     review_data = {k: v for k, v in output_data["review"].items() if k != "todo_summary"}
     for key, value in review_data.items():
         if value is None or value == '' or value == {} or value == []:
-            if key.lower() not in ['can_be_split', 'key_issues_to_review', 'review_priority_files']:
+            if key.lower() not in ['can_be_split', 'key_issues_to_review', 'review_priority_files', 'failure_modes',
+                                   'artifact_findings']:
                 continue
         key_nice = key.replace('_', ' ').capitalize()
         emoji = emojis.get(key_nice, "")
         if 'Estimated effort to review' in key_nice:
-            key_nice = 'Estimated effort to review'
+            key_nice = t('review.estimated_effort')
             value = str(value).strip()
             if value.isnumeric():
                 value_int = int(value)
@@ -190,15 +300,14 @@ def convert_to_markdown_v2(output_data: dict,
             if gfm_supported:
                 markdown_text += "<tr><td>"
                 if is_value_no(value):
-                    markdown_text += f"{emoji}&nbsp;<strong>No relevant tests</strong>"
+                    markdown_text += f"{emoji}&nbsp;<strong>{t('review.no_relevant_tests')}</strong>"
                 else:
-                    markdown_text += f"{emoji}&nbsp;<strong>PR contains tests</strong>"
+                    markdown_text += f"{emoji}&nbsp;<strong>{t('review.contains_tests')}</strong>"
                 markdown_text += "</td></tr>\n"
+            elif is_value_no(value):
+                markdown_text += f"### {emoji} {t('review.no_relevant_tests')}\n\n"
             else:
-                if is_value_no(value):
-                    markdown_text += f'### {emoji} No relevant tests\n\n'
-                else:
-                    markdown_text += f"### {emoji} PR contains tests\n\n"
+                markdown_text += f"### {emoji} {t('review.contains_tests')}\n\n"
         elif 'ticket compliance check' in key_nice.lower():
             markdown_text = ticket_markdown_logic(emoji, markdown_text, value, gfm_supported)
         elif 'contribution time cost estimate' in key_nice.lower():
@@ -226,20 +335,25 @@ def convert_to_markdown_v2(output_data: dict,
             if gfm_supported:
                 markdown_text += "<tr><td>"
                 if is_value_no(value):
-                    markdown_text += f"{emoji}&nbsp;<strong>No security concerns identified</strong>"
+                    markdown_text += f"{emoji}&nbsp;<strong>{t('review.no_security_concerns')}</strong>"
                 else:
-                    markdown_text += f"{emoji}&nbsp;<strong>Security concerns</strong><br><br>\n\n"
+                    markdown_text += f"{emoji}&nbsp;<strong>{t('review.security_concerns')}</strong><br><br>\n\n"
                     value = _ci.emphasize_header(value.strip()) if isinstance(value, str) else _ci.as_review_text(value)
                     markdown_text += f"{value}"
                 markdown_text += "</td></tr>\n"
+            elif is_value_no(value):
+                markdown_text += f"### {emoji} {t('review.no_security_concerns')}\n\n"
             else:
-                if is_value_no(value):
-                    markdown_text += f'### {emoji} No security concerns identified\n\n'
-                else:
-                    markdown_text += f"### {emoji} Security concerns\n\n"
-                    value = _ci.emphasize_header(
-                        value.strip(), only_markdown=True) if isinstance(value, str) else _ci.as_review_text(value)
-                    markdown_text += f"{value}\n\n"
+                markdown_text += f"### {emoji} {t('review.security_concerns')}\n\n"
+                value = _ci.emphasize_header(
+                    value.strip(), only_markdown=True) if isinstance(value, str) else _ci.as_review_text(value)
+                markdown_text += f"{value}\n\n"
+        elif key.lower() == 'structural_reach':
+            markdown_text += render_structural_reach(value, gfm_supported)
+        elif key.lower() in ('risk_checks', 'deterministic_risk'):
+            markdown_text += render_risk_checks(value, gfm_supported)
+        elif key.lower() == 'merge_recommendation_checks':
+            markdown_text += render_merge_recommendation_checks(value, gfm_supported)
         elif 'risk level' in key_nice.lower():
             risk_value = str(value).strip().lower().replace("_", " ")
             risk_display = risk_value.capitalize() if risk_value else "Unknown"
@@ -258,6 +372,57 @@ def convert_to_markdown_v2(output_data: dict,
                 markdown_text += "</td></tr>\n"
             else:
                 markdown_text += f"### {emoji} Merge recommendation: {recommendation_display}\n\n"
+        elif key.lower() == 'failure_modes':
+            modes = parse_failure_modes(value)
+            heading = f"{emoji} Failure modes"
+            if gfm_supported:
+                markdown_text += f"<tr><td>{emoji}&nbsp;<strong>Failure modes</strong><br><br>\n"
+            else:
+                markdown_text += f"### {heading}\n\n"
+            if not modes:
+                markdown_text += "No failure modes identified.\n\n"
+            for mode in modes:
+                for field, label in (("what", "What"), ("where", "Where"), ("trigger", "Trigger"),
+                                     ("detected_by", "Detected by")):
+                    text = " ".join(mode[field].split())
+                    if not gfm_supported:
+                        text = re.sub(r"([\\`*_\[\]()!#|])", r"\\\1", text)
+                    text = html.escape(text)
+                    if gfm_supported:
+                        markdown_text += f"<strong>{label}:</strong> {text}<br>\n"
+                    else:
+                        markdown_text += f"- **{label}:** {text}\n"
+                coverage = "Yes" if mode["covered_in_this_pr"] else "No"
+                if gfm_supported:
+                    markdown_text += f"<strong>Covered in this PR:</strong> {coverage}<br><br>\n"
+                else:
+                    markdown_text += f"- **Covered in this PR:** {coverage}\n\n"
+            if gfm_supported:
+                markdown_text += "</td></tr>\n"
+        elif key.lower() == 'artifact_findings':
+            findings = [f for f in value if isinstance(f, dict)] if isinstance(value, list) else []
+            if gfm_supported:
+                markdown_text += f"<tr><td>{emoji}&nbsp;<strong>CI artifact findings</strong>"
+                markdown_text += "<br><br>\n" if findings else ": none\n"
+            else:
+                markdown_text += f"### {emoji} CI artifact findings" + ("\n\n" if findings else ": none\n\n")
+            for finding in findings:
+                kind = html.escape(str(finding.get("kind", "")).replace("_", " ").capitalize())
+                fact = " ".join(str(finding.get("fact", "")).split())
+                evidence = str(finding.get("evidence", ""))
+                note = "" if finding.get("quoted") else " (quote not found in the artifact)"
+                if gfm_supported:
+                    markdown_text += (f"<strong>{kind}:</strong> {html.escape(fact)}<br>\n"
+                                      f"<code>{html.escape(evidence)}</code>{note}<br><br>\n")
+                else:
+                    # Escape Markdown before HTML, as failure modes do; a code span shows entities verbatim.
+                    fact = html.escape(re.sub(r"([\\`*_\[\]()!#|])", r"\\\1", fact))
+                    evidence = evidence.replace("`", "'").replace("<!--", "<\\!--")
+                    markdown_text += f"- **{kind}:** {fact}\n  `{evidence}`{note}\n"
+            if gfm_supported:
+                markdown_text += "</td></tr>\n"
+            elif findings:
+                markdown_text += "\n"
         elif 'review priority files' in key_nice.lower():
             priority_files = []
             if isinstance(value, list):
@@ -273,14 +438,13 @@ def convert_to_markdown_v2(output_data: dict,
                         markdown_text += f"<li>{priority_file}</li>\n"
                     markdown_text += "</ul>\n"
                 markdown_text += "</td></tr>\n"
+            elif not priority_files:
+                markdown_text += f"### {emoji} Priority files: None\n\n"
             else:
-                if not priority_files:
-                    markdown_text += f"### {emoji} Priority files: None\n\n"
-                else:
-                    markdown_text += f"### {emoji} Priority files\n\n"
-                    for priority_file in priority_files:
-                        markdown_text += f"- {priority_file}\n"
-                    markdown_text += "\n"
+                markdown_text += f"### {emoji} Priority files\n\n"
+                for priority_file in priority_files:
+                    markdown_text += f"- {priority_file}\n"
+                markdown_text += "\n"
         elif 'todo sections' in key_nice.lower():
             if gfm_supported:
                 markdown_text += "<tr><td>"
@@ -291,35 +455,35 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"{emoji}&nbsp;<strong>TODO sections</strong>\n<br><br>\n"
                     markdown_text += markdown_todo_items
                 markdown_text += "</td></tr>\n"
+            elif is_value_no(value):
+                markdown_text += "### ✅ No TODO sections\n\n"
             else:
-                if is_value_no(value):
-                    markdown_text += "### ✅ No TODO sections\n\n"
-                else:
-                    markdown_todo_items = format_todo_items(value, git_provider, gfm_supported)
-                    markdown_text += f"### {emoji} TODO sections\n\n"
-                    markdown_text += markdown_todo_items
+                markdown_todo_items = format_todo_items(value, git_provider, gfm_supported)
+                markdown_text += f"### {emoji} TODO sections\n\n"
+                markdown_text += markdown_todo_items
         elif 'can be split' in key_nice.lower():
             if gfm_supported:
                 markdown_text += "<tr><td>"
-                markdown_text += process_can_be_split(emoji, value)
+            markdown_text += process_can_be_split(emoji, value, gfm_supported)
+            if gfm_supported:
                 markdown_text += "</td></tr>\n"
         elif 'key issues to review' in key_nice.lower():
             # value is a list of issues
             if is_value_no(value):
                 if gfm_supported:
                     markdown_text += "<tr><td>"
-                    markdown_text += f"{emoji}&nbsp;<strong>No major issues detected</strong>"
+                    markdown_text += f"{emoji}&nbsp;<strong>{t('review.no_major_issues')}</strong>"
                     markdown_text += "</td></tr>\n"
                 else:
-                    markdown_text += f"### {emoji} No major issues detected\n\n"
+                    markdown_text += f"### {emoji} {t('review.no_major_issues')}\n\n"
             else:
                 issues = value
                 if gfm_supported:
                     markdown_text += "<tr><td>"
                     # markdown_text += f"{emoji}&nbsp;<strong>{key_nice}</strong><br><br>\n\n"
-                    markdown_text += f"{emoji}&nbsp;<strong>Recommended focus areas for review</strong><br><br>\n\n"
+                    markdown_text += f"{emoji}&nbsp;<strong>{t('review.focus_areas')}</strong><br><br>\n\n"
                 else:
-                    markdown_text += f"### {emoji} Recommended focus areas for review\n\n#### \n"
+                    markdown_text += f"### {emoji} {t('review.focus_areas')}\n\n#### \n"
                 for issue in issues:
                     try:
                         if not issue or not isinstance(issue, dict):
@@ -332,16 +496,14 @@ def convert_to_markdown_v2(output_data: dict,
                         relevant_file = issue.get('relevant_file', '').strip()
                         issue_header = issue.get('issue_header', '').strip()
                         if issue_header.lower() == 'possible bug':
-                            issue_header = 'Possible Issue'  # Make the header less frightening
+                            issue_header = t('review.possible_issue')  # Make the header less frightening
                         issue_content = issue.get('issue_content', '').strip()
-                        try:
-                            start_line = int(str(issue.get('start_line', 0)).strip())
-                            end_line = int(str(issue.get('end_line', 0)).strip())
-                        except (TypeError, ValueError):
-                            start_line, end_line = 0, 0
-                        valid_lines = start_line > 0 and end_line >= start_line
-                        relevant_lines_str = extract_relevant_lines_str(
-                            end_line, files, relevant_file, start_line, dedent=True) if valid_lines else ""
+                        confidence = finding_confidence(issue) if get_min_finding_confidence() > 0 else None
+                        if confidence is not None:
+                            issue_header = f"{issue_header} (confidence: {confidence:g})"
+                        start_line = _as_line(issue.get('start_line')) or 0
+                        end_line = _as_line(issue.get('end_line')) or start_line
+                        valid_lines = 0 < start_line <= end_line
                         if git_provider and valid_lines:
                             reference_link = git_provider.get_line_link(relevant_file, start_line, end_line)
                         else:
@@ -349,6 +511,8 @@ def convert_to_markdown_v2(output_data: dict,
 
                         if gfm_supported:
                             if reference_link is not None and len(reference_link) > 0:
+                                relevant_lines_str = extract_relevant_lines_str(
+                                    end_line, files, relevant_file, start_line, dedent=True)
                                 if relevant_lines_str:
                                     issue_str = (
                                         f"<details><summary><a href='{reference_link}'>"
@@ -363,28 +527,71 @@ def convert_to_markdown_v2(output_data: dict,
                                     )
                             else:
                                 issue_str = f"<strong>{issue_header}</strong><br>{issue_content}"
+                        elif reference_link is not None and len(reference_link) > 0:
+                            issue_str = f"[**{issue_header}**]({reference_link})\n\n{issue_content}\n\n"
                         else:
-                            if reference_link is not None and len(reference_link) > 0:
-                                issue_str = f"[**{issue_header}**]({reference_link})\n\n{issue_content}\n\n"
+                            issue_str = f"**{issue_header}**\n\n{issue_content}\n\n"
+                        improved_code = issue.get('improved_code')
+                        if isinstance(improved_code, str) and improved_code.strip():
+                            fix = improved_code.rstrip()
+                            fence = get_suggestion_fence(fix)
+                            fix_block = f"{fence}text\n{fix}\n{fence}"
+                            if gfm_supported:
+                                issue_str += (
+                                    f"\n\n<details><summary>{t('review.suggested_fix')}</summary>\n\n"
+                                    f"{fix_block}\n\n</details>"
+                                )
                             else:
-                                issue_str = f"**{issue_header}**\n\n{issue_content}\n\n"
+                                issue_str += f"**{t('review.suggested_fix')}**\n\n{fix_block}\n\n"
                         markdown_text += f"{issue_str}\n\n"
                     except Exception as e:
                         get_logger().exception(f"Failed to process 'Recommended focus areas for review': {e}")
                 if gfm_supported:
                     markdown_text += "</td></tr>\n"
         else:
+            key_nice = html.escape(key_nice)
+            if isinstance(value, (dict, list)):
+                value_str = yaml.safe_dump(value, default_flow_style=False, allow_unicode=True).strip()
+            elif isinstance(value, (tuple, set)):
+                value_str = yaml.safe_dump(list(value), default_flow_style=False, allow_unicode=True).strip()
+            else:
+                value_str = str(value).strip()
+            value_str = html.escape(value_str)
             if gfm_supported:
+                value_display = "<br>".join(value_str.splitlines())
                 markdown_text += "<tr><td>"
-                markdown_text += f"{emoji}&nbsp;<strong>{key_nice}</strong>: {value}"
+                markdown_text += f"{emoji}&nbsp;<strong>{key_nice}</strong>: {value_display}"
                 markdown_text += "</td></tr>\n"
             else:
-                markdown_text += f"### {emoji} {key_nice}: {value}\n\n"
+                key_nice = key_nice.replace("[", r"\[").replace("]", r"\]")
+                value_str = value_str.replace("[", r"\[").replace("]", r"\]")
+                if "\n" in value_str:
+                    markdown_text += f"### {emoji} {key_nice}\n\n{value_str}\n\n"
+                else:
+                    markdown_text += f"### {emoji} {key_nice}: {value_str}\n\n"
 
     if gfm_supported:
         markdown_text += "</table>\n"
 
     return markdown_text
+
+
+def _extract_line_range(content: str, start_line: int, end_line: int) -> str:
+    """Extract LF-delimited lines without splitting unrelated file content."""
+    if start_line < 1 or end_line < start_line:
+        return "\n".join(split_diff_lines(content)[start_line - 1:end_line])
+
+    newlines = re.finditer("\n", content)
+    offset = 0
+    # Cap skipped matches to keep oversized line numbers within islice's limits.
+    if start_line > 1:
+        before = next(islice(newlines, min(start_line - 2, len(content)), None), None)
+        if before is None:
+            return ""
+        offset = before.end()
+    after = next(islice(newlines, min(end_line - start_line, len(content)), None), None)
+    stop = after.end() if after is not None else len(content)
+    return "\n".join(split_diff_lines(content[offset:stop]))
 
 
 def extract_relevant_lines_str(end_line, files, relevant_file, start_line, dedent=False) -> str:
@@ -410,13 +617,12 @@ def extract_relevant_lines_str(end_line, files, relevant_file, start_line, deden
                             return ""
                         # filter out '-' lines
                         relevant_lines_str = ""
-                        for line in selected_lines.splitlines():
+                        for line in split_diff_lines(selected_lines):
                             if line.startswith('-'):
                                 continue
                             relevant_lines_str += line[1:] + '\n'
                     else:
-                        relevant_file_lines = file.head_file.splitlines()
-                        relevant_lines_str = "\n".join(relevant_file_lines[start_line - 1:end_line])
+                        relevant_lines_str = _extract_line_range(file.head_file, start_line, end_line)
 
                     if dedent and relevant_lines_str:
                         # Remove the longest leading string of spaces and tabs common to all lines.
@@ -443,13 +649,14 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
     if isinstance(value, list):
         for ticket_analysis in value:
             try:
-                ticket_url = ticket_analysis.get('ticket_url', '').strip()
+                ticket_url = str(ticket_analysis.get('ticket_url') or '').strip()
                 explanation = ''
                 ticket_compliance_level = ''  # Individual ticket compliance
-                fully_compliant_str = ticket_analysis.get('fully_compliant_requirements', '').strip()
-                not_compliant_str = ticket_analysis.get('not_compliant_requirements', '').strip()
-                requires_further_human_verification = ticket_analysis.get('requires_further_human_verification',
-                                                                          '').strip()
+                # A model may leave an empty field as YAML null or answer a bullet list as a YAML list.
+                fully_compliant_str = _ci.as_review_text(ticket_analysis.get('fully_compliant_requirements') or '')
+                not_compliant_str = _ci.as_review_text(ticket_analysis.get('not_compliant_requirements') or '')
+                requires_further_human_verification = _ci.as_review_text(
+                    ticket_analysis.get('requires_further_human_verification') or '')
 
                 if not fully_compliant_str and not not_compliant_str and not requires_further_human_verification:
                     get_logger().debug("Ticket compliance has no requirements",
@@ -459,16 +666,15 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
                 # Calculate individual ticket compliance level
                 if fully_compliant_str:
                     if not_compliant_str:
-                        ticket_compliance_level = 'Partially compliant'
+                        ticket_compliance_level = "Partially compliant"
+                    elif not requires_further_human_verification:
+                        ticket_compliance_level = "Fully compliant"
                     else:
-                        if not requires_further_human_verification:
-                            ticket_compliance_level = 'Fully compliant'
-                        else:
-                            ticket_compliance_level = 'PR Code Verified'
+                        ticket_compliance_level = "PR Code Verified"
                 elif not_compliant_str:
-                    ticket_compliance_level = 'Not compliant'
+                    ticket_compliance_level = "Not compliant"
                 elif requires_further_human_verification:
-                    ticket_compliance_level = 'PR Code Verified'
+                    ticket_compliance_level = "PR Code Verified"
 
                 # Store the compliance level for aggregation
                 if ticket_compliance_level:
@@ -481,8 +687,10 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
                     explanation += f"Non-compliant requirements:\n\n{not_compliant_str}\n\n"
                 if requires_further_human_verification:
                     explanation += f"Requires further human verification:\n\n{requires_further_human_verification}\n\n"
+                ticket_title = ticket_url.split('/')[-1] if ticket_url else "Untracked ticket"
+                ticket_reference = f"[{ticket_title}]({ticket_url})" if ticket_url else ticket_title
                 ticket_compliance_str += (
-                    f"\n\n**[{ticket_url.split('/')[-1]}]({ticket_url}) - "
+                    f"\n\n**{ticket_reference} - "
                     f"{ticket_compliance_level}**\n\n{explanation}\n\n"
                 )
 
@@ -511,7 +719,10 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
                 compliance_emoji = '✅'
             elif any(level == 'Not compliant' for level in all_compliance_levels):
                 # If there's a mix of compliant and non-compliant tickets
-                if any(level in ['Fully compliant', 'PR Code Verified'] for level in all_compliance_levels):
+                if any(
+                    level in ['Fully compliant', 'PR Code Verified', 'Partially compliant']
+                    for level in all_compliance_levels
+                ):
                     compliance_level = 'Partially compliant'
                     compliance_emoji = '🔶'
                 else:
@@ -540,27 +751,45 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
     return markdown_text
 
 
-def process_can_be_split(emoji, value):
+def process_can_be_split(emoji, value, gfm_supported=True):
     try:
         # key_nice = "Can this PR be split?"
         key_nice = "Multiple PR themes"
         markdown_text = ""
-        if not value or isinstance(value, list) and len(value) == 1:
-            value = "No"
+        if isinstance(value, str) and value.strip().lower() in ("no", "none", "false"):
+            value = None
+        if not value or isinstance(value, dict) or isinstance(value, list) and len(value) <= 1:
             # markdown_text += f"<tr><td> {emoji}&nbsp;<strong>{key_nice}</strong></td><td>\n\n{value}\n\n</td></tr>\n"
             # markdown_text += f"### {emoji} No multiple PR themes\n\n"
-            markdown_text += f"{emoji} <strong>No multiple PR themes</strong>\n\n"
-        else:
-            markdown_text += f"{emoji} <strong>{key_nice}</strong><br><br>\n\n"
+            if gfm_supported:
+                markdown_text += f"{emoji} <strong>No multiple PR themes</strong>\n\n"
+        elif isinstance(value, list):
+            if not gfm_supported:
+                if len(value) > 3:
+                    return ""
+                try:
+                    value = [SubPR.model_validate(split).model_dump() for split in value]
+                except ValidationError:
+                    return ""
+            if gfm_supported:
+                markdown_text += f"{emoji} <strong>{key_nice}</strong><br><br>\n\n"
+            else:
+                markdown_text += f"### {emoji} {key_nice}\n\n"
             for split in value:
                 title = split.get('title', '')
                 relevant_files = split.get('relevant_files', [])
-                markdown_text += f"<details><summary>\nSub-PR theme: <b>{title}</b></summary>\n\n"
-                markdown_text += "___\n\nRelevant files:\n\n"
+                if gfm_supported:
+                    markdown_text += f"<details><summary>\nSub-PR theme: <b>{title}</b></summary>\n\n"
+                    markdown_text += "___\n\nRelevant files:\n\n"
+                else:
+                    markdown_text += f"#### Sub-PR theme: {title}\n\nRelevant files:\n\n"
                 for file in relevant_files:
                     markdown_text += f"- {file}\n"
-                markdown_text += "___\n\n"
-                markdown_text += "</details>\n\n"
+                if gfm_supported:
+                    markdown_text += "___\n\n"
+                    markdown_text += "</details>\n\n"
+                else:
+                    markdown_text += "\n"
 
                 # markdown_text += f"#### Sub-PR theme: {title}\n\n"
                 # markdown_text += f"Relevant files:\n\n"
@@ -600,171 +829,6 @@ def process_can_be_split(emoji, value):
     return markdown_text
 
 
-def parse_code_suggestion(code_suggestion: dict, i: int = 0, gfm_supported: bool = True) -> str:
-    """
-    Convert a dictionary of data into markdown format.
-
-    Args:
-        code_suggestion (dict): A dictionary containing data to be converted to markdown format.
-
-    Returns:
-        str: A string containing the markdown formatted text generated from the input dictionary.
-    """
-    markdown_text = ""
-    if gfm_supported and 'relevant_line' in code_suggestion:
-        markdown_text += '<table>'
-        for sub_key, sub_value in code_suggestion.items():
-            try:
-                if sub_key.lower() == 'relevant_file':
-                    relevant_file = sub_value.strip('`').strip('"').strip("'")
-                    markdown_text += f"<tr><td>relevant file</td><td>{relevant_file}</td></tr>"
-                    # continue
-                elif sub_key.lower() == 'suggestion':
-                    markdown_text += (f"<tr><td>{sub_key} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td>"
-                                      f"<td>\n\n<strong>\n\n{sub_value.strip()}\n\n</strong>\n</td></tr>")
-                elif sub_key.lower() == 'relevant_line':
-                    markdown_text += "<tr><td>relevant line</td>"
-                    sub_value_list = sub_value.split('](')
-                    relevant_line = sub_value_list[0].lstrip('`').lstrip('[')
-                    if len(sub_value_list) > 1:
-                        link = sub_value_list[1].rstrip(')').strip('`')
-                        markdown_text += f"<td><a href='{link}'>{relevant_line}</a></td>"
-                    else:
-                        markdown_text += f"<td>{relevant_line}</td>"
-                    markdown_text += "</tr>"
-            except Exception as e:
-                get_logger().exception(f"Failed to parse code suggestion: {e}")
-                pass
-        markdown_text += '</table>'
-        markdown_text += "<hr>"
-    else:
-        for sub_key, sub_value in code_suggestion.items():
-            if isinstance(sub_key, str):
-                sub_key = sub_key.rstrip()
-            if isinstance(sub_value,str):
-                sub_value = sub_value.rstrip()
-            if isinstance(sub_value, dict):  # "code example"
-                markdown_text += f"  - **{sub_key}:**\n"
-                for code_key, code_value in sub_value.items():  # 'before' and 'after' code
-                    code_str = f"```\n{code_value}\n```"
-                    code_str_indented = textwrap.indent(code_str, '        ')
-                    markdown_text += f"    - **{code_key}:**\n{code_str_indented}\n"
-            else:
-                if "relevant_file" in sub_key.lower():
-                    markdown_text += f"\n  - **{sub_key}:** {sub_value}  \n"
-                else:
-                    markdown_text += f"   **{sub_key}:** {sub_value}  \n"
-                if "relevant_line" not in sub_key.lower():  # nicer presentation
-                    # markdown_text = markdown_text.rstrip('\n') + "\\\n" # works for gitlab
-                    markdown_text = markdown_text.rstrip('\n') + "   \n"  # works for gitlab and bitbucker
-
-        markdown_text += "\n"
-    return markdown_text
-
-
-def try_fix_json(review, max_iter=10, code_suggestions=False):
-    """
-    Fix broken or incomplete JSON messages and return the parsed JSON data.
-
-    Args:
-    - review: A string containing the JSON message to be fixed.
-    - max_iter: An integer representing the maximum number of iterations to try and fix the JSON message.
-    - code_suggestions: A boolean indicating whether to try and fix JSON messages with code feedback.
-
-    Returns:
-    - data: A dictionary containing the parsed JSON data.
-
-    The function attempts to fix broken or incomplete JSON messages by parsing until the last valid code suggestion.
-    If the JSON message ends with a closing bracket, the function calls the fix_json_escape_char function to fix the
-    message.
-    If code_suggestions is True and the JSON message contains code feedback, the function tries to fix the JSON
-    message by parsing until the last valid code suggestion.
-    The function uses regular expressions to find the last occurrence of "}," with any number of whitespaces or
-    newlines.
-    It tries to parse the JSON message with the closing bracket and checks if it is valid.
-    If the JSON message is valid, the parsed JSON data is returned.
-    If the JSON message is not valid, the last code suggestion is removed and the process is repeated until a valid JSON
-    message is obtained or the maximum number of iterations is reached.
-    If a valid JSON message is not obtained, an error is logged and an empty dictionary is returned.
-    """
-
-    if review.endswith("}"):
-        return fix_json_escape_char(review)
-
-    data = {}
-    if code_suggestions:
-        closing_bracket = "]}"
-    else:
-        closing_bracket = "]}}"
-
-    if (review.rfind("'Code feedback': [") > 0 or review.rfind('"Code feedback": [') > 0) or \
-            (review.rfind("'Code suggestions': [") > 0 or review.rfind('"Code suggestions": [') > 0) :
-        last_code_suggestion_ind = [m.end() for m in re.finditer(r"\}\s*,", review)][-1] - 1
-        valid_json = False
-        iter_count = 0
-
-        while last_code_suggestion_ind > 0 and not valid_json and iter_count < max_iter:
-            try:
-                data = json.loads(review[:last_code_suggestion_ind] + closing_bracket)
-                valid_json = True
-                review = review[:last_code_suggestion_ind].strip() + closing_bracket
-            except json.decoder.JSONDecodeError:
-                review = review[:last_code_suggestion_ind]
-                last_code_suggestion_ind = [m.end() for m in re.finditer(r"\}\s*,", review)][-1] - 1
-                iter_count += 1
-
-        if not valid_json:
-            get_logger().error("Unable to decode JSON response from AI")
-            data = {}
-
-    return data
-
-
-def fix_json_escape_char(json_message=None):
-    """
-    Fix broken or incomplete JSON messages and return the parsed JSON data.
-
-    Args:
-        json_message (str): A string containing the JSON message to be fixed.
-
-    Returns:
-        dict: A dictionary containing the parsed JSON data.
-
-    Raises:
-        None
-
-    """
-    try:
-        result = json.loads(json_message)
-    except Exception as e:
-        # Find the offending character index:
-        idx_to_replace = int(str(e).split(' ')[-1].replace(')', ''))
-        # Remove the offending character:
-        json_message = list(json_message)
-        json_message[idx_to_replace] = ' '
-        new_message = ''.join(json_message)
-        return fix_json_escape_char(json_message=new_message)
-    return result
-
-
-def convert_str_to_datetime(date_str):
-    """
-    Convert a string representation of a date and time into a datetime object.
-
-    Args:
-        date_str (str): A string representation of a date and time in the format '%a, %d %b %Y %H:%M:%S %Z'
-
-    Returns:
-        datetime: A datetime object representing the input date and time.
-
-    Example:
-        >>> convert_str_to_datetime('Mon, 01 Jan 2022 12:00:00 UTC')
-        datetime.datetime(2022, 1, 1, 12, 0, 0)
-    """
-    datetime_format = '%a, %d %b %Y %H:%M:%S %Z'
-    return datetime.strptime(date_str, datetime_format)
-
-
 def load_large_diff(filename, new_file_content_str: str,
                     original_file_content_str: str, show_warning: bool = True) -> str:
     """
@@ -784,17 +848,27 @@ def load_large_diff(filename, new_file_content_str: str,
             new_file_content_str += "\n"
         if original_file_content_str == new_file_content_str:
             return ""
-        diff = difflib.unified_diff(original_file_content_str.splitlines(keepends=True),
-                                    new_file_content_str.splitlines(keepends=True))
         if get_verbosity_level() >= 2 and show_warning:
             get_logger().info(f"File was modified, but no patch was found. Manually creating patch: {filename}.")
+        if not original_file_content_str or not new_file_content_str:
+            content = new_file_content_str or original_file_content_str
+            line_count = content.count("\n")
+            line_range = "1" if line_count == 1 else f"1,{line_count}"
+            if new_file_content_str:
+                header, prefix = f"@@ -0,0 +{line_range} @@\n", "+"
+            else:
+                header, prefix = f"@@ -{line_range} +0,0 @@\n", "-"
+            return header + prefix + content.replace("\n", "\n" + prefix)[:-1]
+        original_lines = list(StringIO(original_file_content_str, newline="\n"))
+        new_lines = list(StringIO(new_file_content_str, newline="\n"))
+        diff = difflib.unified_diff(original_lines, new_lines)
         return to_hunk_only_patch(''.join(diff))
     except Exception:
         get_logger().exception(f"Failed to generate patch for file: {filename}")
         return ""
 
 
-def update_settings_from_args(args: List[str]) -> List[str]:
+def update_settings_from_args(args: list[str]) -> list[str]:
     """
     Update the settings of the Dynaconf object based on the arguments passed to the function.
 
@@ -813,25 +887,57 @@ def update_settings_from_args(args: List[str]) -> List[str]:
     other_args = []
     if args:
         for arg in args:
-            arg = arg.strip()
+            arg = arg.lstrip()
             if arg.startswith('--'):
-                arg = arg.strip('-').strip()
+                arg = arg.lstrip('-')
                 vals = arg.split('=', 1)
                 if len(vals) != 2:
                     if len(vals) > 2:  # --extended is a valid argument
                         get_logger().error(f'Invalid argument format: {arg}')
-                    other_args.append(arg)
+                    other_args.append(arg.strip())
                     continue
                 key, value = _fix_key_value(*vals)
-                get_settings().set(key, value)
-                get_logger().info(f'Updated setting {key} to: "{value}"')
+                if '.' not in key:
+                    # A section-level argument targets a whole settings table.
+                    existing = get_settings().as_dict().get(key, None)
+                    if isinstance(value, dict):
+                        # Merge a mapping into the existing section, as repository
+                        # settings do: a plain set() would replace the whole section
+                        # (e.g. 23 keys -> 1), dropping every other configured key.
+                        if isinstance(existing, dict):
+                            merged = copy.deepcopy(existing)
+                            for new_key, new_value in value.items():
+                                for old_key in [k for k in merged if k.lower() == new_key.lower()]:
+                                    del merged[old_key]
+                                merged[new_key] = new_value
+                            get_settings().unset(key)
+                            get_settings().set(key, merged, merge=False)
+                            get_logger().info(f'Merged keys {sorted(value.keys())} into section {key}')
+                        else:
+                            get_settings().set(key, value)
+                            get_logger().info(f'Updated setting {key} to: "{value}"')
+                    elif isinstance(existing, dict):
+                        # A non-mapping section value would replace the whole table
+                        # with a scalar, breaking every attribute read on it.
+                        raise ValueError(
+                            f"Invalid argument format: section-level setting '{key}' requires a mapping value"
+                        )
+                    else:
+                        get_settings().set(key, value)
+                        get_logger().info(f'Updated setting {key} to: "{value}"')
+                else:
+                    get_settings().set(key, value)
+                    get_logger().info(f'Updated setting {key} to: "{value}"')
             else:
-                other_args.append(arg)
+                other_args.append(arg.strip())
     return other_args
 
 
 def _fix_key_value(key: str, value: str):
     key = key.strip().upper()
+    # Keep FILE_NAME as a literal path, including filenames that contain quotes.
+    if key == "FILE_NAME":
+        return key, value
     value = value.strip()
     try:
         value = yaml.safe_load(value)
@@ -917,16 +1023,223 @@ def drop_sign_off_after_wrapper_fence(text: str) -> str:
     return text
 
 
-def load_yaml(response_text: str, keys_fix_yaml: List[str] | None = None, first_key="", last_key="") -> dict:
+def _has_yaml_c_loader_risk(response_text: str) -> bool:
+    """Detect inputs that should stay on Python SafeLoader for compatibility or stack safety."""
+    check_tag = "!" in response_text
+    flow_openers = response_text.count("[") + response_text.count("{")
+    check_flow_question = "?" in response_text and flow_openers > 0
+    check_nesting = flow_openers >= _YAML_MAX_C_NESTING
+    if not check_nesting and (
+        "- " in response_text
+        or "? " in response_text
+        or _YAML_INDENTED_LINE_RE.search(response_text)
+    ):
+        remaining_depth = _YAML_MAX_C_NESTING - flow_openers
+        for match in _YAML_BLOCK_PREFIX_RE.finditer(response_text):
+            block_prefix = match.group(2)
+            block_depth_hint = len(match.group(1)) + block_prefix.count("-") + block_prefix.count("?")
+            if block_depth_hint >= remaining_depth:
+                check_nesting = True
+                break
+    if not check_tag and not check_flow_question and not check_nesting:
+        return False
+
+    flow_depth = 0
+    nesting_depth = 0
+    block_stack = []
+    indentless_sequence_indents = []
+    loader = _YAML_C_SAFE_LOADER or yaml.SafeLoader
+    try:
+        for token in yaml.scan(response_text, Loader=loader):
+            if isinstance(token, KeyToken):
+                while indentless_sequence_indents and token.start_mark.column <= indentless_sequence_indents[-1]:
+                    indentless_sequence_indents.pop()
+
+            if isinstance(token, (BlockMappingStartToken, BlockSequenceStartToken)):
+                block_stack.append(token)
+                nesting_depth += 1
+            elif isinstance(token, BlockEntryToken):
+                entry_indent = token.start_mark.column
+                explicit_sequence = any(
+                    isinstance(block_token, BlockSequenceStartToken)
+                    and block_token.start_mark.column == entry_indent
+                    for block_token in block_stack
+                )
+                if not explicit_sequence:
+                    while indentless_sequence_indents and indentless_sequence_indents[-1] > entry_indent:
+                        indentless_sequence_indents.pop()
+                    if not indentless_sequence_indents or indentless_sequence_indents[-1] < entry_indent:
+                        indentless_sequence_indents.append(entry_indent)
+            elif isinstance(token, (FlowMappingStartToken, FlowSequenceStartToken)):
+                flow_depth += 1
+                nesting_depth += 1
+            elif isinstance(token, BlockEndToken):
+                if block_stack:
+                    block_stack.pop()
+                while (
+                    indentless_sequence_indents
+                    and token.start_mark.column <= indentless_sequence_indents[-1]
+                ):
+                    indentless_sequence_indents.pop()
+                nesting_depth = max(0, nesting_depth - 1)
+            elif isinstance(token, (FlowMappingEndToken, FlowSequenceEndToken)):
+                flow_depth = max(0, flow_depth - 1)
+                nesting_depth = max(0, nesting_depth - 1)
+
+            effective_nesting_depth = nesting_depth + len(indentless_sequence_indents)
+            if effective_nesting_depth > _YAML_MAX_C_NESTING:
+                return True
+            if check_tag and isinstance(token, TagToken):
+                return True
+            if check_flow_question and flow_depth:
+                if isinstance(token, ScalarToken) and token.plain and "?" in token.value:
+                    return True
+                if (
+                    isinstance(token, KeyToken)
+                    and response_text[token.start_mark.index:token.end_mark.index] == "?"
+                ):
+                    return True
+    except yaml.YAMLError:
+        return False
+    return False
+
+
+class _YamlScanWindow:
+    """Expose a bounded portion of a shared seekable stream to the YAML scanner."""
+
+    def __init__(self, stream, end):
+        self.stream = stream
+        self.end = end
+
+    def read(self, size=-1):
+        remaining = max(0, self.end - self.stream.tell())
+        return self.stream.read(remaining if size < 0 else min(size, remaining))
+
+
+def _extract_labelled_yaml_block(response_text: str) -> str | None:
+    """Extract the last nonempty mapping in a labelled YAML fence amid prose."""
+    lines = response_text.split('\n')
+    offsets = []
+    offset = 0
+    for line in lines:
+        offsets.append(offset)
+        offset += len(line) + 1
+    stream = StringIO(response_text)
+    text_end = len(response_text)
+    i = 0
+    last_candidate = None
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        stripped = line.strip()
+        if not (stripped.startswith('```yaml') or stripped.startswith('```yml')):
+            i += 1
+            continue
+
+        scan_offset = min(text_end, offsets[i] + len(line) + 1)
+        first_fence = i + 1
+        while first_fence < n and lines[first_fence].strip() != '```':
+            first_fence += 1
+        if first_fence < n:
+            window_end = min(text_end, offsets[first_fence] + len(lines[first_fence]) + 1)
+        else:
+            window_end = text_end
+
+        while True:
+            stream.seek(scan_offset)
+            scalar_spans = []
+            try:
+                scalar_spans.extend(
+                    (scan_offset + token.start_mark.index, scan_offset + token.end_mark.index)
+                    for token in yaml.scan(_YamlScanWindow(stream, window_end), Loader=yaml.SafeLoader)
+                    if isinstance(token, ScalarToken) and token.style in ('|', '>', "'", '"')
+                )
+            except yaml.YAMLError as error:
+                # An unfinished quoted scalar may contain the candidate fence. At a
+                # temporary boundary, keep it open until a wider scan decides it.
+                if (window_end < text_end and getattr(error, 'context', None) == 'while scanning a quoted scalar'
+                        and getattr(error, 'problem', None) == 'found unexpected end of stream'
+                        and getattr(error, 'context_mark', None) is not None):
+                    scalar_spans.append((scan_offset + error.context_mark.index, window_end + 1))
+                else:
+                    get_logger().debug("YAML scan ended at non-YAML content; keeping preceding scalar spans")
+
+            j = i + 1
+            fence_depth = 1
+            span_index = 0
+            while j < n and (offsets[j] < window_end or window_end == text_end):
+                j_stripped = lines[j].strip()
+                while span_index < len(scalar_spans) and offsets[j] >= scalar_spans[span_index][1]:
+                    span_index += 1
+                in_scalar = (span_index < len(scalar_spans)
+                             and scalar_spans[span_index][0] < offsets[j] < scalar_spans[span_index][1])
+                if j_stripped.startswith('```') and j_stripped != '```':
+                    fence_depth += 1
+                elif j_stripped == '```' and (fence_depth > 1 or not in_scalar):
+                    fence_depth -= 1
+                    if fence_depth == 0:
+                        break
+                j += 1
+            if j < n and offsets[j] < window_end and fence_depth == 0:
+                break
+            if window_end == text_end:
+                break
+            # Geometric growth keeps repeated scans linear even when thousands
+            # of fences are inside one long quoted or block scalar.
+            target = min(text_end, max(window_end + 1, scan_offset + 2 * (window_end - scan_offset)))
+            newline = response_text.find('\n', target)
+            window_end = text_end if newline < 0 else newline + 1
+
+        candidate = '\n'.join(lines[i + 1:j])
+        try:
+            parsed = yaml.safe_load(candidate)
+            if isinstance(parsed, dict) and parsed:
+                last_candidate = candidate
+        except Exception:
+            get_logger().debug("Labelled YAML block parse failed")
+        i = j + 1
+    return last_candidate
+
+
+def _load_yaml_initial(response_text: str) -> Any:
+    """Parse initial YAML with LibYAML while preserving SafeLoader edge-case semantics."""
+    if _YAML_C_SAFE_LOADER is None:
+        return yaml.safe_load(response_text)
+    # Keep non-initial BOMs on SafeLoader because LibYAML consumes them at document boundaries.
+    if response_text.find("\ufeff", 1) != -1:
+        return yaml.safe_load(response_text)
+    # Keep known parser divergences and unsafe native nesting on the original SafeLoader path.
+    if (
+        "\t" in response_text
+        or _YAML_UNSEPARATED_BLOCK_SCALAR_COMMENT_RE.search(response_text)
+        or _has_yaml_c_loader_risk(response_text)
+    ):
+        return yaml.safe_load(response_text)
+    try:
+        return yaml.load(response_text, Loader=_YAML_C_SAFE_LOADER)
+    except yaml.YAMLError:
+        # Keep the existing Python SafeLoader behavior as a compatibility fallback
+        # before handing malformed model output to the repair pipeline.
+        return yaml.safe_load(response_text)
+
+
+def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_key="", last_key="",
+              *, preserve_null: bool = False) -> Any:
+    """Parse model output, normalizing YAML null to {} unless preservation is requested."""
     if keys_fix_yaml is None:
         keys_fix_yaml = []
     response_text_original = copy.deepcopy(response_text)
     response_text = response_text.strip('\n')
     # strip the fence label only when it is a complete info string, so a key such as
     # "yml_config" is not truncated to "_config"
-    unfenced = re.sub(r'^```[ \t]*(?:(?i:yaml|yml))?[ \t]*(?=\r?\n)', '', response_text)
+    # the label and the blanks that follow it share a single optional group: two separate
+    # blank runs would let the engine try every way of splitting a long run of blanks
+    # when the fence is not followed by a line break, which backtracks quadratically
+    unfenced = re.sub(r'^```[ \t]*(?:(?i:yaml|yml)[ \t]*)?(?=\r?\n)', '', response_text)
     if unfenced == response_text:
-        unfenced = response_text.removeprefix('yaml')
+        # Strip an unfenced "yaml" label only when it is a complete line, so a key such as
+        # "yaml_config" is not truncated. A bare removeprefix('yaml') would shorten it to "_config".
+        unfenced = re.sub(r'^yaml(?:[ \t]*\r?\n|\Z)', '', response_text, count=1)
     response_text = unfenced.rstrip()
     response_text = drop_sign_off_after_wrapper_fence(response_text)
     if response_text.split('\n')[-1] == '```':
@@ -941,9 +1254,26 @@ def load_yaml(response_text: str, keys_fix_yaml: List[str] | None = None, first_
         # through the same exception handling as a normal parse failure instead.
         if response_text_original.strip() and not response_text.strip():
             raise ValueError("Preprocessing/sanitization removed all content from a non-empty AI prediction")
-        data = yaml.safe_load(response_text)
+        data = _load_yaml_initial(response_text)
     except Exception as e:
         get_logger().warning(f"Initial failure to parse AI prediction: {e}")
+        # The fence stripping above is anchored at the start of the response, so when
+        # the labelled YAML block sits mid-text (for example after a code example the
+        # model included for explanation), the surrounding prose and the other fence
+        # pairs defeat both the initial parse and the trailing-fence retry. Extract the
+        # labelled block's content directly before handing off to the repair pipeline.
+        labelled_block = _extract_labelled_yaml_block(response_text)
+        if labelled_block is not None:
+            try:
+                candidate = _load_yaml_initial(labelled_block)
+                if isinstance(candidate, dict) and candidate:
+                    get_logger().info("Recovered labelled YAML block embedded in prose")
+                    return candidate
+            except Exception as e:
+                get_logger().debug(f"Mid-text YAML block parse failed: {e}")
+        separators = str.maketrans({"\u2028": " ", "\u2029": " "})
+        response_text = response_text.translate(separators)
+        response_text_original_sanitized = response_text_original_sanitized.translate(separators)
         data = try_fix_yaml(response_text, keys_fix_yaml=keys_fix_yaml, first_key=first_key, last_key=last_key,
                             response_text_original=response_text_original_sanitized)
         if not data:
@@ -952,20 +1282,32 @@ def load_yaml(response_text: str, keys_fix_yaml: List[str] | None = None, first_
         else:
             get_logger().info("Successfully parsed AI prediction after fallbacks",
                               artifact={'response_text': response_text})
-    if data is None:
+    if data is None and not preserve_null:
         return {}
     return data
 
 
 
 def try_fix_yaml(response_text: str,
-                 keys_fix_yaml: List[str] | None = None,
+                 keys_fix_yaml: list[str] | None = None,
                  first_key="",
                  last_key="",
                  response_text_original="") -> dict:
     if keys_fix_yaml is None:
         keys_fix_yaml = []
     response_text_lines = response_text.split('\n')
+    failed_original_parse = False
+
+    def _parse_yaml(candidate):
+        nonlocal failed_original_parse
+        if candidate == response_text and failed_original_parse:
+            return None
+        try:
+            return yaml.safe_load(candidate)
+        except yaml.YAMLError:
+            if candidate == response_text:
+                failed_original_parse = True
+            raise
 
     keys_yaml = ['relevant line:', 'suggestion content:', 'relevant file:', 'existing code:',
                  'improved code:', 'label:', 'why:', 'suggestion_summary:']
@@ -979,22 +1321,22 @@ def try_fix_yaml(response_text: str,
                 response_text_lines_copy[i] = response_text_lines_copy[i].replace(f'{key}',
                                                                                   f'{key} |\n        ')
     try:
-        data = yaml.safe_load('\n'.join(response_text_lines_copy))
+        data = _parse_yaml('\n'.join(response_text_lines_copy))
         if data is not None:
             get_logger().info("Successfully parsed AI prediction after adding |-\n")
             return data
-    except:
+    except Exception:
         pass
 
     # 1.5 fallback - try to convert '|' to '|2'. Will solve cases of indent decreasing during the code
     response_text_copy = copy.deepcopy(response_text)
     response_text_copy = response_text_copy.replace('|\n', '|2\n')
     try:
-        data = yaml.safe_load(response_text_copy)
+        data = _parse_yaml(response_text_copy)
         if data is not None:
             get_logger().info("Successfully parsed AI prediction after replacing | with |2")
             return data
-    except:
+    except Exception:
         pass
     # try to add spaces to lines that are not indented properly, and contain '}'.
     # Moved out of the except block so it also runs when safe_load returned None (e.g. empty input).
@@ -1024,12 +1366,12 @@ def try_fix_yaml(response_text: str,
                     continue
             response_text_lines_copy[i] = '    ' + response_text_lines_copy[i].lstrip()
     try:
-        data = yaml.safe_load('\n'.join(response_text_lines_copy))
+        data = _parse_yaml('\n'.join(response_text_lines_copy))
         if data is not None:
             get_logger().info("Successfully parsed AI prediction after replacing | with |2 and adding spaces")
             return data
-    except:
-        pass
+    except Exception:
+        get_logger().debug("YAML spacing fallback failed; trying the next recovery method")
 
     # second fallback - try to extract only range from first ```yaml to the last ```
     snippet_pattern = r'```[ \t]*(?:(?i:yaml|yml)[ \t]*)?\r?\n([\s\S]*?)```(?=\s*$|")'
@@ -1040,7 +1382,7 @@ def try_fix_yaml(response_text: str,
         # group(1) is the snippet body, without the ``` fences or the optional yaml/yml language identifier
         snippet_text = snippet.group(1)
         try:
-            data = yaml.safe_load(snippet_text)
+            data = _parse_yaml(snippet_text)
             if data is not None:
                 get_logger().info("Successfully parsed AI prediction after extracting yaml snippet")
                 return data
@@ -1048,14 +1390,31 @@ def try_fix_yaml(response_text: str,
             get_logger().debug(f"Failed to parse AI prediction after extracting yaml snippet: {e}")
 
 
+    # A preceding code example can make the generic fence match start at its
+    # closing fence. Retry the final explicitly labelled YAML block in that case.
+    yaml_fences = list(re.finditer(r'(?im)^```(?:yaml|yml)[ \t]*\r?\n', response_text_original))
+    if yaml_fences and response_text_original.rstrip().endswith('```'):
+        # Extract content between the last YAML fence and the final ```
+        fence_start = yaml_fences[-1].end()
+        fence_end = response_text_original.rfind('```')
+        if fence_end > fence_start:
+            snippet_text = response_text_original[fence_start:fence_end].rstrip()
+            try:
+                data = _parse_yaml(snippet_text)
+                if isinstance(data, dict) and data:
+                    return data
+            except Exception as e:
+                get_logger().debug(f"Trailing labelled YAML fence retry failed: {e}")
+
+
     # third fallback - try to remove leading and trailing curly brackets
     response_text_copy = response_text.strip().rstrip().removeprefix('{').removesuffix('}').rstrip(':\n')
     try:
-        data = yaml.safe_load(response_text_copy)
+        data = _parse_yaml(response_text_copy)
         if data is not None:
             get_logger().info("Successfully parsed AI prediction after removing curly brackets")
             return data
-    except:
+    except Exception:
         pass
 
 
@@ -1078,11 +1437,11 @@ def try_fix_yaml(response_text: str,
         response_text_copy = response_text_copy.strip("`").strip()
         if response_text_copy:
             try:
-                data = yaml.safe_load(response_text_copy)
+                data = _parse_yaml(response_text_copy)
                 if data is not None:
                     get_logger().info("Successfully parsed AI prediction after extracting yaml snippet")
                     return data
-            except:
+            except Exception:
                 pass
 
     # fifth fallback - try to remove leading '+' (sometimes added by AI for 'existing code' and 'improved code')
@@ -1091,11 +1450,11 @@ def try_fix_yaml(response_text: str,
         if response_text_lines_copy[i].startswith('+'):
             response_text_lines_copy[i] = ' ' + response_text_lines_copy[i][1:]
     try:
-        data = yaml.safe_load('\n'.join(response_text_lines_copy))
+        data = _parse_yaml('\n'.join(response_text_lines_copy))
         if data is not None:
             get_logger().info("Successfully parsed AI prediction after removing leading '+'")
             return data
-    except:
+    except Exception:
         pass
 
     # 5.5 fallback - try to normalize diff-style removal markers ('-') within list items
@@ -1129,7 +1488,7 @@ def try_fix_yaml(response_text: str,
             modified = True
     if modified:
         try:
-            data = yaml.safe_load('\n'.join(response_text_lines_copy))
+            data = _parse_yaml('\n'.join(response_text_lines_copy))
             if data is not None:
                 get_logger().info("Successfully parsed AI prediction after normalizing diff removal markers")
                 return data
@@ -1142,11 +1501,11 @@ def try_fix_yaml(response_text: str,
         response_text_copy = copy.deepcopy(response_text)
         response_text_copy = response_text_copy.replace('\t', '    ')
         try:
-            data = yaml.safe_load(response_text_copy)
+            data = _parse_yaml(response_text_copy)
             if data is not None:
                 get_logger().info("Successfully parsed AI prediction after replacing tabs with spaces")
                 return data
-        except:
+        except Exception:
             pass
 
     # seventh fallback - add indent for sections of code blocks
@@ -1169,22 +1528,22 @@ def try_fix_yaml(response_text: str,
     response_text_copy = '\n'.join(response_text_copy_lines)
     response_text_copy = response_text_copy.replace(' |\n', ' |2\n')
     try:
-        data = yaml.safe_load(response_text_copy)
+        data = _parse_yaml(response_text_copy)
         if data is not None:
             get_logger().info("Successfully parsed AI prediction after adding indent for sections of code blocks")
             return data
-    except:
+    except Exception:
         pass
 
     # eighth fallback - try to remove pipe chars at the root-level dicts
     response_text_copy = copy.deepcopy(response_text)
     response_text_copy = response_text_copy.lstrip('|\n')
     try:
-        data = yaml.safe_load(response_text_copy)
+        data = _parse_yaml(response_text_copy)
         if data is not None:
             get_logger().info("Successfully parsed AI prediction after removing pipe chars")
             return data
-    except:
+    except Exception:
         pass
 
     # ninth fallback - try to decode the response text with different encodings.
@@ -1192,11 +1551,11 @@ def try_fix_yaml(response_text: str,
     encodings_to_try = ['latin-1', 'utf-16']
     for encoding in encodings_to_try:
         try:
-            data = yaml.safe_load(response_text.encode(encoding).decode("utf-8"))
+            data = _parse_yaml(response_text.encode(encoding).decode("utf-8"))
             if data:
                 get_logger().info(f"Successfully parsed AI prediction after decoding with {encoding} encoding")
                 return data
-        except:
+        except Exception:
             pass
 
     # # sixth fallback - try to remove last lines
@@ -1211,18 +1570,23 @@ def try_fix_yaml(response_text: str,
 
 
 
+_DEFAULT_CUSTOM_LABELS = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
+# Mirrors the hardcoded enum the prompts render when custom labels are disabled.
+_BUILTIN_LABELS = ['Bug fix', 'Tests', 'Enhancement', 'Documentation', 'Other']
+
+
 def set_custom_labels(variables, git_provider=None):
     if not get_settings().config.enable_custom_labels:
         return
 
     labels = get_settings().get('custom_labels', {})
     if not labels:
-        # set default labels
-        labels = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
-        labels_list = "\n      - ".join(labels) if labels else ""
-        labels_list = f"      - {labels_list}" if labels_list else ""
-        variables["custom_labels"] = labels_list
-        return
+        # No [custom_labels] section is configured, so fall back to the default set. The
+        # templates read custom_labels_class, so the enum has to be built here; writing a
+        # bullet list to an unused key left the prompt declaring `List[Label]` with no
+        # `Label` class at all. The loop below builds the same structure from a description
+        # map, so reuse it.
+        labels = {label: label for label in _DEFAULT_CUSTOM_LABELS}
 
     # Set custom labels
     variables["custom_labels_class"] = "class Label(str, Enum):"
@@ -1237,7 +1601,30 @@ def set_custom_labels(variables, git_provider=None):
         counter += 1
     variables["labels_minimal_to_labels_dict"] = labels_minimal_to_labels_dict
 
-def get_user_labels(current_labels: List[str] = None):
+def filter_generated_labels(labels: list[str]) -> list[str]:
+    """Keep model-generated labels within the enabled vocabulary, not user labels."""
+    names = [label.value for label in PRType]
+    if get_settings().config.get("enable_custom_labels", False):
+        custom_labels = get_settings().get("custom_labels", {}) or _DEFAULT_CUSTOM_LABELS
+        names.extend(str(label) for label in custom_labels)
+    allowed = {name.lower() for name in names}
+    # Resolve prompt enum keys (e.g. bug_fix) to allowed display names.
+    aliases = {name.lower().replace(" ", "_"): name for name in names}
+    accepted = []
+    dropped = []
+    for label in labels:
+        if isinstance(label, str) and label.strip().lower() in allowed:
+            accepted.append(label.strip())
+        elif isinstance(label, str) and label.strip().lower() in aliases:
+            accepted.append(aliases[label.strip().lower()])
+        else:
+            dropped.append(label)
+    if dropped:
+        get_logger().warning(f"Dropping model-generated labels outside the configured set: {dropped}", artifact=dropped)
+    return accepted
+
+
+def get_user_labels(current_labels: list[str] = None):
     """
     Only keep labels that has been added by the user
     """
@@ -1247,12 +1634,15 @@ def get_user_labels(current_labels: List[str] = None):
         if current_labels is None:
             current_labels = []
         user_labels = []
+        # /describe publishes the built-in PRType whatever the configuration, so those are
+        # always bot-owned. A configured set adds to them rather than replacing them, else a
+        # stale "Bug fix" would survive every /describe re-run.
+        bot_labels = {label.lower() for label in _BUILTIN_LABELS}
+        if enable_custom_labels:
+            bot_labels |= {str(label).lower() for label in custom_labels or _DEFAULT_CUSTOM_LABELS}
         for label in current_labels:
-            if label.lower() in ['bug fix', 'tests', 'enhancement', 'documentation', 'other']:
+            if label.lower() in bot_labels:
                 continue
-            if enable_custom_labels:
-                if label in custom_labels:
-                    continue
             user_labels.append(label)
         if user_labels:
             get_logger().debug(f"Keeping user labels: {user_labels}")
@@ -1264,19 +1654,42 @@ def get_user_labels(current_labels: List[str] = None):
 
 def replace_code_tags(text):
     """
-    Replace odd instances of ` with <code> and even instances of ` with </code>
+    Turn backtick code spans into <code> elements after HTML-escaping the text.
+
+    As in Markdown, a span opens with a run of backticks and closes at the next
+    run of the same length, so ``a`b`` keeps its inner backtick. A run with no
+    matching closer stays a literal backtick instead of turning the rest of the
+    text into code.
     """
     text = html.escape(text)
-    parts = text.split('`')
-    for i in range(1, len(parts), 2):
-        parts[i] = '<code>' + parts[i] + '</code>'
+    runs = list(re.finditer(r"`+", text))
+    runs_by_length = {}
+    for index, run in enumerate(runs):
+        runs_by_length.setdefault(len(run.group()), []).append(index)
+    parts = []
+    position = 0
+    i = 0
+    while i < len(runs):
+        opener = runs[i]
+        same_length = runs_by_length[len(opener.group())]
+        next_same = bisect.bisect_right(same_length, i)
+        if next_same == len(same_length):
+            i += 1
+            continue
+        closer_index = same_length[next_same]
+        closer = runs[closer_index]
+        parts.append(text[position:opener.start()])
+        parts.append('<code>' + text[opener.end():closer.start()] + '</code>')
+        position = closer.end()
+        i = closer_index + 1
+    parts.append(text[position:])
     return ''.join(parts)
 
 
-def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
+def find_line_number_of_relevant_line_in_file(diff_files: list[FilePatchInfo],
                                               relevant_file: str,
                                               relevant_line_in_file: str,
-                                              absolute_position: int = None) -> Tuple[int, int]:
+                                              absolute_position: int = None) -> tuple[int, int]:
     position = -1
     if absolute_position is None:
         absolute_position = -1
@@ -1289,7 +1702,7 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
     for file in diff_files:
         if file.filename and (file.filename.strip() == relevant_file):
             patch = file.patch
-            patch_lines = patch.splitlines()
+            patch_lines = split_diff_lines(patch)
             delta = 0
             start1, size1, start2, size2 = 0, 0, 0, 0
             if absolute_position != -1: # matching absolute to relative
@@ -1313,31 +1726,19 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                             continue
                     elif skip_hunk:
                         continue
+                    elif line.startswith((' ', '+')):
+                        delta += 1
+                        if start2 + delta - 1 == absolute_position:
+                            position = i
+                            break
                     elif not line.startswith('-'):
                         delta += 1
-
-                    #
-                    absolute_position_curr = start2 + delta - 1
-
-                    if absolute_position_curr == absolute_position:
-                        position = i
-                        break
             elif not relevant_line_in_file:
                 get_logger().warning("Cannot locate an empty relevant line in a patch",
                                      artifact={"relevant_file": relevant_file})
                 continue
             else:
-                # Skip fuzzy normalization when the raw patch line matches exactly.
-                fuzzy_match_candidates = [line for line in patch_lines if line != NO_NEWLINE_AT_EOF_MARKER]
-                if relevant_line_in_file not in fuzzy_match_candidates:
-                    matches_difflib: list[str | Any] = difflib.get_close_matches(
-                        relevant_line_in_file, fuzzy_match_candidates, n=3, cutoff=0.93
-                    )
-                    if len(matches_difflib) == 1 and matches_difflib[0].startswith('+'):
-                        relevant_line_in_file = matches_difflib[0]
-
-
-                def scan_patch_lines(is_match):
+                def scan_patch_lines(is_match, patch_lines=patch_lines, absolute_position=absolute_position):
                     scan_delta = 0
                     scan_start2 = 0
                     skip_hunk = False
@@ -1360,15 +1761,26 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                         elif not line.startswith('-'):
                             scan_delta += 1
 
-                        if not line.startswith('-') and is_match(line):
+                        if line.startswith((' ', '+')) and is_match(line):
                             return i, scan_start2 + scan_delta - 1
                     return -1, absolute_position
 
+                # Locate the original source line before fuzzy matching can rewrite it.
                 position, absolute_position = scan_patch_lines(
-                    lambda line: line == relevant_line_in_file or line[1:] == relevant_line_in_file)
+                    lambda line, rl=relevant_line_in_file: line == rl or line[1:] == rl)
+                if position == -1:
+                    fuzzy_match_candidates = [line for line in patch_lines if line.startswith((' ', '+'))]
+                    if relevant_line_in_file not in fuzzy_match_candidates:
+                        matches_difflib: list[str | Any] = difflib.get_close_matches(
+                            relevant_line_in_file, fuzzy_match_candidates, n=3, cutoff=0.93
+                        )
+                        if len(matches_difflib) == 1 and matches_difflib[0].startswith('+'):
+                            relevant_line_in_file = matches_difflib[0]
+                            position, absolute_position = scan_patch_lines(
+                                lambda line, rl=relevant_line_in_file: line == rl or line[1:] == rl)
                 if position == -1:
                     position, absolute_position = scan_patch_lines(
-                        lambda line: relevant_line_in_file in line)
+                        lambda line, rl=relevant_line_in_file: rl in line)
 
                 if position == -1 and relevant_line_in_file[0] == '+':
                     no_plus_line = relevant_line_in_file[1:].lstrip()
@@ -1392,7 +1804,7 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                         elif not line.startswith('-'):
                             delta += 1
 
-                        if no_plus_line in line and line[0] != '-':
+                        if line.startswith((' ', '+')) and no_plus_line in line:
                             # The model might add a '+' to the beginning of the relevant_line_in_file even if originally
                             # it's a context line
                             position = i
@@ -1410,41 +1822,252 @@ def is_value_no(value):
     return False
 
 
-def process_description(description_full: str) -> Tuple[str, List]:
+FILE_WALKTHROUGH_ESCAPED_MARKER = "<!-- pr-agent:file-walkthrough-escaped -->"
+_WALKTHROUGH_BLANK_LINE = re.compile(r"\r?\n\r?\n")
+
+
+class _WalkthroughFileMatch:
+    """Keep the capture offsets available to walkthrough readback consumers."""
+
+    lastindex = 4
+
+    def __init__(self, content: str, spans: tuple[tuple[int, int], ...]):
+        self.content = content
+        self.spans = spans
+
+    def group(self, index: int) -> str:
+        start, end = self.spans[index - 1]
+        return self.content[start:end]
+
+    def start(self, index: int) -> int:
+        return self.spans[index - 1][0]
+
+
+def _match_walkthrough_file(file_data: str) -> _WalkthroughFileMatch | None:
+    """Extract legacy and current file summaries by scanning fixed HTML delimiters."""
+    details_start = file_data.find("<details>")
+    while details_start != -1:
+        position = details_start + len("<details>")
+        while position < len(file_data) and file_data[position].isspace():
+            position += 1
+        if file_data.startswith("<summary><strong>", position):
+            break
+        details_start = file_data.find("<details>", details_start + len("<details>"))
+    if details_start == -1:
+        return None
+
+    filename_start = position + len("<summary><strong>")
+    strong_end = file_data.find("</strong>", filename_start)
+    title_start = -1
+    paragraph_allowed = False
+    while strong_end != -1:
+        position = strong_end + len("</strong>")
+        paragraph_allowed = position < len(file_data) and not file_data[position].isspace()
+        while position < len(file_data) and file_data[position].isspace():
+            position += 1
+        for opening in ("<dd><code>", "<br><span><code>"):
+            if file_data.startswith(opening, position):
+                title_start = position + len(opening)
+                break
+        if title_start != -1:
+            break
+        strong_end = file_data.find("</strong>", strong_end + len("</strong>"))
+    if title_start == -1:
+        return None
+
+    title_end = file_data.find("</code>", title_start)
+    if title_end == -1:
+        return None
+    summary_end = file_data.find("</summary>", title_end + len("</code>"))
+    body_start = -1
+    while summary_end != -1:
+        position = summary_end + len("</summary>")
+        while position < len(file_data) and file_data[position].isspace():
+            position += 1
+        if file_data.startswith("<hr>", position):
+            body_start = position + len("<hr>")
+            break
+        summary_end = file_data.find("</summary>", summary_end + len("</summary>"))
+    if body_start == -1:
+        return None
+
+    hr_end = body_start
+    while body_start < len(file_data) and file_data[body_start].isspace():
+        body_start += 1
+    # Treat closing tags inside Git paths as text, using the final row closer.
+    details_end = file_data.rfind("</details>", body_start)
+    if details_end == -1:
+        return None
+
+    # The original readback gives HTML list markers precedence over the fallbacks.
+    li_start = file_data.find("<li>", body_start, details_end)
+    bullet_start = file_data.find("•", body_start, details_end)
+    if li_start != -1 or bullet_start != -1:
+        marker = min(index for index in (li_start, bullet_start) if index != -1)
+        marker_end = marker + (len("<li>") if marker == li_start else len("•"))
+        detail_start = marker_end
+    else:
+        divider = _WALKTHROUGH_BLANK_LINE.search(file_data, body_start, details_end) if paragraph_allowed else None
+        if divider is None and paragraph_allowed:
+            # Recover the separator after <hr> when none follows the filename.
+            for match in _WALKTHROUGH_BLANK_LINE.finditer(file_data, hr_end, body_start):
+                divider = match
+        if divider is not None:
+            marker = divider.start()
+            detail_start = divider.end()
+        else:
+            marker = file_data.find("-", body_start, details_end)
+            if marker == -1:
+                return None
+            detail_start = marker + 1
+        while detail_start < details_end and file_data[detail_start].isspace():
+            detail_start += 1
+
+    return _WalkthroughFileMatch(file_data, (
+        (filename_start, strong_end), (title_start, title_end),
+        (min(body_start, marker), marker), (detail_start, details_end),
+    ))
+
+
+def _find_walkthrough_start(description: str) -> int | None:
+    """Find a walkthrough boundary, skipping fences, blockquotes, and single-line code."""
+    excluded = []
+    fence_char = ""
+    fence_length = 0
+    list_content_indent = 0
+    offset = 0
+    lines = description.split("\n")
+    # Ignore unclosed top-level fences so a following generated walkthrough remains readable.
+    closers = [{}] * len(lines)
+    longest = {"`": 0, "~": 0}
+    for index in range(len(lines) - 1, -1, -1):
+        closers[index] = dict(longest)
+        bare = lines[index].strip()
+        if bare[:1] in longest and not bare.strip(bare[0]):
+            longest[bare[0]] = max(longest[bare[0]], len(bare))
+    for line_index, line in enumerate(lines):
+        expanded_line = line.expandtabs(4)
+        delimiter = expanded_line.lstrip(" ")
+        indent = len(expanded_line) - len(delimiter)
+        nonblank = bool(delimiter.strip())
+        # End an unclosed fence when its enclosing list item ends.
+        if fence_char and list_content_indent and nonblank and indent < list_content_indent:
+            fence_char = ""
+            fence_length = 0
+            list_content_indent = 0
+        if not fence_char:
+            list_marker = re.match(r"(?:[-+*]|\d{1,9}[.)]) +", delimiter)
+            if list_marker and (indent <= 3 or 0 <= indent - list_content_indent <= 3):
+                list_content_indent = indent + list_marker.end()
+                delimiter = delimiter[list_marker.end():]
+                indent = list_content_indent
+            elif nonblank and indent < list_content_indent:
+                list_content_indent = 0
+        effective_indent = indent - list_content_indent if indent >= list_content_indent else indent
+        # Account for indentation inside list items and marker templates.
+        literal = bool(fence_char) or delimiter.startswith(">")
+        if effective_indent <= 3 and delimiter[:1] in ("`", "~"):
+            char = delimiter[0]
+            length = len(delimiter) - len(delimiter.lstrip(char))
+            if fence_char:
+                if char == fence_char and length >= fence_length and not delimiter[length:].strip():
+                    fence_char = ""
+            elif 3 <= length <= closers[line_index][char] and (char != "`" or "`" not in delimiter[length:]):
+                fence_char, fence_length = char, length
+                literal = True
+        if literal:
+            excluded.append((offset, offset + len(line) + 1))
+        else:
+            # Pair equal-length backtick runs, leaving unmatched runs as prose.
+            runs = list(re.finditer(r"`+", line))
+            runs_by_length = {}
+            for index, run in enumerate(runs):
+                runs_by_length.setdefault(len(run.group()), []).append(index)
+            index = 0
+            while index < len(runs):
+                opener = runs[index]
+                same_length = runs_by_length[len(opener.group())]
+                next_same = bisect.bisect_right(same_length, index)
+                if next_same == len(same_length):
+                    index += 1
+                    continue
+                closer_index = same_length[next_same]
+                excluded.append((offset + opener.start(), offset + runs[closer_index].end()))
+                index = closer_index + 1
+        offset += len(line) + 1
+
+    excluded_starts = [start for start, _ in excluded]
+    comments = []
+    # Keep outer comments around nested escaped-file markers without hiding a later real walkthrough.
+    comment_stack = []
+    comment_line_index = 0
+    comment_line_end = len(lines[0])
+    standalone_line = lines[0].strip() == "-->"
+    comment_start = description.find("<!--")
+    comment_end = description.find("-->")
+    while comment_start != -1 or comment_end != -1:
+        if comment_start != -1 and (comment_end == -1 or comment_start < comment_end):
+            if not comment_stack:
+                previous = bisect.bisect_right(excluded_starts, comment_start) - 1
+                if previous >= 0 and comment_start < excluded[previous][1]:
+                    comment_start = description.find("<!--", comment_start + 4)
+                    continue
+            if comment_stack:
+                comment_stack[-1][1] = True
+            comment_stack.append([comment_start, False])
+            comment_start = description.find("<!--", comment_start + 4)
+            continue
+        if comment_stack:
+            start, nested = comment_stack[-1]
+            # After a nested marker, require an explicit outer closer, not an arrow in file text.
+            if len(comment_stack) == 1 and nested:
+                # Advance once per line, including when many closers share one long line.
+                while comment_end > comment_line_end:
+                    comment_line_index += 1
+                    comment_line_end += len(lines[comment_line_index]) + 1
+                    standalone_line = lines[comment_line_index].strip() == "-->"
+            if len(comment_stack) > 1 or not nested or standalone_line:
+                comment_stack.pop()
+                if not comment_stack:
+                    previous = bisect.bisect_right(excluded_starts, start) - 1
+                    if previous < 0 or start >= excluded[previous][1]:
+                        comments.append((start, comment_end + 3))
+        comment_end = description.find("-->", comment_end + 3)
+    comment_starts = [start for start, _ in comments]
+    wrapper = (r"<details(?=[\s>])[^<>]*>\s*<summary>\s*<h3>\s*"
+               + re.escape(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value) + r"\s*</h3>\s*</summary>")
+    # Recognize marker templates by this table and a semantic file row without the outer wrapper.
+    table = (
+        re.escape('<table><thead><tr><th></th><th align="left">Relevant files</th></tr></thead><tbody>')
+        + r'<tr><td><strong>[^<>]*</strong></td><td>'
+        + r'(?:<details><summary>\d+ files</summary>)?<table>\s*<tr>\s*<td>\s*'
+        + r'(?:<details>\s*<summary>)?<strong>'
+    )
+    # Prefer the explicit wrapper; an earlier bare table may be user content.
+    # Keep the marker fallback at or after the former text boundary.
+    table_start = description.find(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value)
+    for pattern, start in ((wrapper, 0), (table, table_start)):
+        for match in re.compile(pattern).finditer(description, max(0, start)):
+            previous = bisect.bisect_right(excluded_starts, match.start()) - 1
+            comment_index = bisect.bisect_right(comment_starts, match.start()) - 1
+            if ((previous < 0 or match.start() >= excluded[previous][1]) and
+                    (comment_index < 0 or match.start() >= comments[comment_index][1])):
+                return match.start()
+    return None
+
+
+def process_description(description_full: str) -> tuple[str, list]:
     if not description_full:
         return "", []
+    if _ci.PRDescriptionHeader.FILE_WALKTHROUGH.value not in description_full:
+        return description_full.strip(), []
 
-    # description_split = description_full.split(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value)
-    if _ci.PRDescriptionHeader.FILE_WALKTHROUGH.value in description_full:
-        try:
-            # FILE_WALKTHROUGH are presented in a collapsible section in the description
-            regex_pattern = (r"<details.*?>\s*<summary>\s*<h3>\s*"
-                             + re.escape(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value) + r"\s*</h3>\s*</summary>")
-            description_split = re.split(regex_pattern, description_full, maxsplit=1, flags=re.DOTALL)
-
-            # If the regex pattern is not found, fallback to the previous method
-            if len(description_split) == 1:
-                get_logger().debug("Could not find regex pattern for file walkthrough, falling back to simple split")
-                description_split = description_full.split(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value, 1)
-        except Exception as e:
-            get_logger().warning(f"Failed to split description using regex, falling back to simple split: {e}")
-            description_split = description_full.split(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value, 1)
-
-        if len(description_split) < 2:
-            get_logger().error("Failed to split description into base and changes walkthrough",
-                               artifact={"description": description_full})
-            return description_full.strip(), []
-
-        base_description_str = description_split[0].strip()
-        changes_walkthrough_str = ""
-        files = []
-        if len(description_split) > 1:
-            changes_walkthrough_str = description_split[1]
-        else:
-            get_logger().debug("No changes walkthrough found")
-    else:
-        base_description_str = description_full.strip()
-        return base_description_str, []
+    walkthrough_start = _find_walkthrough_start(description_full)
+    if walkthrough_start is None:
+        return description_full.strip(), []
+    base_description_str = description_full[:walkthrough_start].strip()
+    changes_walkthrough_str = description_full[walkthrough_start:]
+    files = []
 
     try:
         if changes_walkthrough_str:
@@ -1467,23 +2090,27 @@ def process_description(description_full: str) -> Tuple[str, List]:
                 try:
                     if isinstance(file_data, tuple):
                         file_data = file_data[0]
-                    pattern = (r'<details>\s*<summary><strong>(.*?)</strong>\s*<dd><code>(.*?)</code>.*?'
-                               r'</summary>\s*<hr>\s*(.*?)\s*(?:<li>|•)(.*?)</details>')
-                    res = re.search(pattern, file_data, re.DOTALL)
-                    if not res or res.lastindex != 4:
-                        pattern_back = (r'<details>\s*<summary><strong>(.*?)</strong><dd><code>(.*?)</code>.*?'
-                                        r'</summary>\s*<hr>\s*(.*?)\n\n\s*(.*?)</details>')
-                        res = re.search(pattern_back, file_data, re.DOTALL)
-                    if not res or res.lastindex != 4:
-                        # looking for hyphen ('- ')
-                        pattern_back = (r'<details>\s*<summary><strong>(.*?)</strong>\s*<dd><code>(.*?)</code>.*?'
-                                        r'</summary>\s*<hr>\s*(.*?)\s*-\s*(.*?)\s*</details>')
-                        res = re.search(pattern_back, file_data, re.DOTALL)
+                    res = _match_walkthrough_file(file_data)
                     if res and res.lastindex == 4:
-                        short_filename = res.group(1).strip()
-                        short_summary = res.group(2).strip()
-                        long_filename = res.group(3).strip()
-                        if long_filename.endswith('<ul>'):
+                        raw_filename = res.group(3)
+                        marker_match = re.match(
+                            re.escape(FILE_WALKTHROUGH_ESCAPED_MARKER) + r"[ \t]*\r?\n", raw_filename
+                        )
+                        escaped = marker_match is not None
+                        if escaped:
+                            short_filename = html.unescape(res.group(1))
+                            short_summary = html.unescape(res.group(2))
+                            # New rows encode filename line breaks, so only the first physical line is a path.
+                            filename_end = raw_filename.find("\n", marker_match.end())
+                            if filename_end == -1:
+                                filename_end = len(raw_filename)
+                            encoded_filename = raw_filename[marker_match.end():filename_end].removesuffix("\r")
+                            long_filename = html.unescape(encoded_filename)
+                        else:
+                            short_filename = res.group(1).strip()
+                            short_summary = res.group(2).strip()
+                            long_filename = raw_filename.strip()
+                        if not escaped and long_filename.endswith('<ul>'):
                             long_filename = long_filename[:-4].strip()
                         long_summary =  res.group(4).strip()
                         long_summary = long_summary.replace('<br> *', '\n*').replace('<br>','').replace('\n','<br>')
@@ -1499,11 +2126,10 @@ def process_description(description_full: str) -> Tuple[str, List]:
                             'short_summary': short_summary,
                             'long_summary': long_summary
                         })
+                    elif '<code>...</code>' in file_data:
+                        pass # PR with many files. some did not get analyzed
                     else:
-                        if '<code>...</code>' in file_data:
-                            pass # PR with many files. some did not get analyzed
-                        else:
-                            get_logger().warning("Failed to parse description", artifact={'description': file_data})
+                        get_logger().warning("Failed to parse description", artifact={'description': file_data})
                 except Exception as e:
                     get_logger().exception(f"Failed to process description: {e}", artifact={'description': file_data})
 
@@ -1514,24 +2140,19 @@ def process_description(description_full: str) -> Tuple[str, List]:
     return base_description_str, files
 
 
-def set_file_languages(diff_files) -> List[FilePatchInfo]:
+def set_file_languages(diff_files) -> list[FilePatchInfo]:
     try:
         # if the language is already set, do not change it
         if hasattr(diff_files[0], 'language') and diff_files[0].language:
             return diff_files
 
-        # map file extensions to programming languages
-        language_extension_map_org = get_settings().language_extension_map_org
-        extension_to_language = {}
-        for language, extensions in language_extension_map_org.items():
-            for ext in extensions:
-                extension_to_language[ext] = language
+        # Reuse the shared classifier. Matching on the last suffix alone missed every
+        # multi-part key (Config.cmake.in -> ".in"), every wildcard key (module.bsl ->
+        # ".bsl" where the map stores "*.bsl") and every uppercase suffix (handler.PY).
+        get_language = build_language_file_matcher(get_settings().language_extension_map_org)
         for file in diff_files:
-            extension_s = '.' + file.filename.rsplit('.')[-1]
-            language_name = "txt"
-            if extension_s and (extension_s in extension_to_language):
-                language_name = extension_to_language[extension_s]
-            file.language = language_name.lower()
+            language_name = get_language(file.filename)
+            file.language = (language_name or "txt").lower()
     except Exception as e:
         get_logger().exception(f"Failed to set file languages: {e}")
 
@@ -1546,12 +2167,19 @@ def format_todo_item(todo_item: TodoItem | str, git_provider, gfm_supported) -> 
     if not isinstance(todo_item, dict):
         return str(todo_item).strip() if todo_item is not None else ""
     relevant_file = str(todo_item.get('relevant_file', '') or '').strip()
-    line_number = todo_item.get('line_number', '')
+    try:
+        line_number = int(str(todo_item.get('line_number')).strip())
+    except (TypeError, ValueError):
+        line_number = 0
     content = str(todo_item.get('content', '') or '')
     if not relevant_file:
         return content.strip()
-    reference_link = git_provider.get_line_link(relevant_file, line_number, line_number)
-    file_ref = f"{relevant_file} [{line_number}]"
+    if line_number < 1:
+        reference_link = git_provider.get_line_link(relevant_file, -1)
+        file_ref = relevant_file
+    else:
+        reference_link = git_provider.get_line_link(relevant_file, line_number, line_number)
+        file_ref = f"{relevant_file} [{line_number}]"
     if reference_link:
         if gfm_supported:
             file_ref = f"<a href='{reference_link}'>{file_ref}</a>"

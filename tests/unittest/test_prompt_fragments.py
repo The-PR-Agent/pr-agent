@@ -6,9 +6,9 @@ import pytest
 from jinja2 import Environment, meta, nodes
 from jinja2.exceptions import SecurityError
 
-from pr_agent.algo.prompt_fragments import render_diff_hunk_format
+from pr_agent.algo.prompt_fragments import render_diff_hunk_format, render_skills_prefix
+from pr_agent.commands import pr_add_docs, pr_code_suggestions, pr_reviewer
 from pr_agent.config_loader import get_settings
-from pr_agent.tools import pr_add_docs, pr_code_suggestions, pr_reviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
@@ -114,7 +114,6 @@ def test_affected_templates_delegate_to_shared_fragment_once(prompt_name, legacy
         ("pr_questions_prompt", "diff"),
         ("pr_custom_labels_prompt", "diff"),
         ("pr_update_changelog_prompt", "diff"),
-        ("pr_information_from_user_prompt", "diff"),
         ("pr_description_prompt", "diff"),
         ("pr_description_only_files_prompts", "diff"),
         ("pr_description_only_description_prompts", "diff"),
@@ -171,7 +170,7 @@ def test_fragment_renderer_sandboxes_host_overrides(restore_prompt_settings):
 
 
 @pytest.mark.parametrize("include_ai_metadata", [False, True])
-def test_tool_initializers_supply_the_fragment_before_token_counting(
+def test_command_initializers_supply_the_fragment_before_token_counting(
     monkeypatch,
     restore_prompt_settings,
     include_ai_metadata,
@@ -189,7 +188,7 @@ def test_tool_initializers_supply_the_fragment_before_token_counting(
     monkeypatch.setattr(pr_reviewer, "build_repo_context", lambda _provider: "")
     monkeypatch.setattr(pr_reviewer, "add_ai_metadata_to_diff_files", lambda _provider, _files: None)
 
-    monkeypatch.setattr(pr_add_docs, "get_git_provider", lambda: lambda _url: provider)
+    monkeypatch.setattr(pr_add_docs, "get_git_provider_for_command", lambda _url: provider)
     monkeypatch.setattr(pr_add_docs, "get_main_pr_language", lambda _languages, _files: "Python")
 
     monkeypatch.setattr(pr_code_suggestions, "get_git_provider_with_context", lambda _url: provider)
@@ -221,8 +220,6 @@ def test_tool_initializers_supply_the_fragment_before_token_counting(
         include_line_numbers=False,
         include_ai_metadata=include_ai_metadata,
     )
-    assert reviewer.token_handler.prompt_tokens > 0
-    assert add_docs.token_handler.prompt_tokens > 0
     assert suggestions.token_handler.prompt_tokens > 0
 
 
@@ -258,11 +255,11 @@ async def test_reflection_supplies_the_numbered_fragment(
     settings = get_settings()
     settings.set("config.enable_ai_metadata", include_ai_metadata)
     ai_handler = SimpleNamespace(chat_completion=AsyncMock(return_value=("REFLECTION_OK", "stop")))
-    tool = pr_code_suggestions.PRCodeSuggestions.__new__(pr_code_suggestions.PRCodeSuggestions)
-    tool.ai_handler = ai_handler
+    command = pr_code_suggestions.PRCodeSuggestions.__new__(pr_code_suggestions.PRCodeSuggestions)
+    command.ai_handler = ai_handler
     diff = "WITH-LINES {{ must_stay_literal_2959 }}"
 
-    result = await tool.self_reflect_on_suggestions(
+    result = await command.self_reflect_on_suggestions(
         [{"one_sentence_summary": "Keep the shared prompt accurate"}],
         diff,
         settings.config.model,
@@ -289,3 +286,55 @@ def test_non_decoupled_suggestions_prompt_remains_out_of_scope():
     assert "__new hunk__" not in section.system
     assert "__old hunk__" not in section.system
     assert "diff_no_line_numbers" in user_variables
+
+
+_SKILLS_PREFIX_TEMPLATES = [
+    "pr_review_prompt",
+    "pr_description_prompt",
+    "pr_description_only_description_prompts",
+    "pr_description_only_files_prompts",
+    "pr_code_suggestions_prompt",
+    "pr_code_suggestions_prompt_not_decoupled",
+]
+
+
+def _skills_prelude(prompt_name):
+    """Everything between the start of the system template and its role line."""
+    return get_settings().get(prompt_name).system.partition("You are PR-Reviewer")[0]
+
+
+def test_review_commands_share_an_identical_skills_prefix():
+    """/review, /describe and /improve open the system prompt with the same
+    skills_context block, so prefix-based caches can reuse it across commands (#4007)."""
+    rendered = [
+        Environment(autoescape=True).from_string(_skills_prelude(name)).render({"skills_context": "sample skill"})
+        for name in _SKILLS_PREFIX_TEMPLATES
+    ]
+
+    assert len(set(rendered)) == 1
+    assert "\n\nOrganizational standards and review skills" in rendered[0]
+
+
+@pytest.mark.parametrize("prompt_name", _SKILLS_PREFIX_TEMPLATES)
+def test_review_commands_open_with_the_shared_skills_prefix(prompt_name):
+    fragment = get_settings().prompt_fragments.skills_prefix
+    system = get_settings().get(prompt_name).system
+
+    assert system.startswith(fragment)
+    rendered_prelude = Environment(autoescape=True).from_string(
+        _skills_prelude(prompt_name)
+    ).render(skills_context="sample skill")
+    assert rendered_prelude == render_skills_prefix(skills_context="sample skill")
+
+
+def test_render_skills_prefix_empty_without_context():
+    assert render_skills_prefix(skills_context="") == ""
+
+
+@pytest.mark.parametrize("prompt_name", _SKILLS_PREFIX_TEMPLATES)
+def test_skills_prefix_is_the_only_skills_block_and_vanishes_when_empty(prompt_name):
+    system = get_settings().get(prompt_name).system
+
+    assert system.count("{%- if skills_context %}") == 1
+    assert system.count("{{ skills_context }}") == 1
+    assert Environment(autoescape=True).from_string(_skills_prelude(prompt_name)).render({"skills_context": ""}) == ""

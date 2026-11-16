@@ -4,18 +4,18 @@ from unittest.mock import MagicMock
 import pytest
 
 from pr_agent.algo.types import FilePatchInfo
+from pr_agent.commands import pr_code_suggestions as pr_code_suggestions_module
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.github_provider import GithubProvider
-from pr_agent.tools import pr_code_suggestions as pr_code_suggestions_module
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _TRACKED_SETTINGS = (
     "config.publish_output",
     "config.publish_output_progress",
     "config.is_auto_command",
-    "pr_code_suggestions.commitable_code_suggestions",
+    "pr_code_suggestions.committable_code_suggestions",
     "pr_code_suggestions.demand_code_suggestions_self_review",
     "pr_code_suggestions.enable_chat_text",
     "pr_code_suggestions.enable_help_text",
@@ -118,13 +118,13 @@ async def test_pr_chat_link_depends_on_provider_capability(monkeypatch, supports
             )
         ]
 
-        tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-        tool.pr_url = "https://example.invalid/pr/1"
-        tool.progress = "progress"
-        tool.progress_response = None
-        tool.git_provider = provider
-        tool.incremental = SimpleNamespace(is_incremental=False)
-        tool.generate_summarized_suggestions = MagicMock(return_value="## Suggestions")
+        command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+        command.pr_url = "https://example.invalid/pr/1"
+        command.progress = "progress"
+        command.progress_response = None
+        command.git_provider = provider
+        command.incremental = SimpleNamespace(is_incremental=False)
+        command.generate_summarized_suggestions = MagicMock(return_value="## Suggestions")
 
         async def _fake_retry(*_args, **_kwargs):
             return {"code_suggestions": [{"label": "style", "suggestion_content": "clean up",
@@ -137,14 +137,14 @@ async def test_pr_chat_link_depends_on_provider_capability(monkeypatch, supports
         settings.config.publish_output = True
         settings.config.publish_output_progress = False
         settings.config.is_auto_command = True
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.demand_code_suggestions_self_review = False
         settings.pr_code_suggestions.enable_chat_text = True
         settings.pr_code_suggestions.enable_help_text = False
         settings.pr_code_suggestions.persistent_comment = False
         settings.pr_code_suggestions.dual_publishing_score_threshold = 0
 
-        await tool.run()
+        await command.run()
 
         published_body = provider.publish_comment.call_args.args[0]
         provider.supports_pr_chat.assert_called_once_with()

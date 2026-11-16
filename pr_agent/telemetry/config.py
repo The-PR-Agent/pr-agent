@@ -1,4 +1,7 @@
+import os
+
 from pr_agent.algo.run_output import get_version
+from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 from pr_agent.telemetry.prometheus_multiproc import ensure_prometheus_multiproc_dir
@@ -11,7 +14,7 @@ VALID_OTLP_PROTOCOLS = {OtlpProtocol.HTTP, OtlpProtocol.GRPC}
 def get_otel_config() -> TelemetryConfig:
     """Read and validate telemetry configuration from settings"""
     settings = get_settings()
-    if not settings.get("OTEL.IS_ENABLED", False):
+    if not _as_bool_setting(settings.get("OTEL.IS_ENABLED", False), setting_name="OTEL.IS_ENABLED"):
         return TelemetryConfig()
 
     exporter_type = settings.get("OTEL.EXPORTER_TYPE", None)
@@ -52,11 +55,12 @@ def get_otel_config() -> TelemetryConfig:
         )
         return TelemetryConfig()
 
-    # A multiprocess scrape must write per-pid state files into a shared dir.
-    # The env var has to be set before prometheus_client is imported in any
-    # worker (gunicorn master also provisions it in `when_ready`).
+    # Gunicorn activates multiprocess mode before fork; custom launchers may
+    # signal it explicitly. Unsignaled direct servers keep process-local state.
     prometheus_multiproc_dir = None
-    if exporter_type == ExporterType.PROMETHEUS:
+    if exporter_type == ExporterType.PROMETHEUS and (
+        "PROMETHEUS_MULTIPROC_DIR" in os.environ or "prometheus_multiproc_dir" in os.environ
+    ):
         prometheus_multiproc_dir = ensure_prometheus_multiproc_dir(
             str(settings.get("OTEL.PROMETHEUS_MULTIPROC_DIR", "/tmp/pr-agent-prometheus"))
         )

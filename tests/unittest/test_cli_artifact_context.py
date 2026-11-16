@@ -35,8 +35,13 @@ def test_cli_disabled_ingress_does_not_reuse_a_calling_context_payload(monkeypat
 
     class FakeAgent:
         async def handle_request(self, *_args, **_kwargs):
-            artifacts.reapply_artifact_context()
-            observed.append(str(get_settings().pr_reviewer.extra_instructions))
+            settings = get_settings()
+            observed.append((
+                str(settings.pr_reviewer.extra_instructions),
+                artifacts.get_artifact_context("pr_reviewer"),
+                str(settings.pr_description.extra_instructions),
+                artifacts.get_artifact_context("pr_description"),
+            ))
             return True
 
     with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
@@ -53,7 +58,7 @@ def test_cli_disabled_ingress_does_not_reuse_a_calling_context_payload(monkeypat
 
             cli.run(inargs=["--pr_url=https://example.com/org/repo/pull/1", "review"])
 
-            assert observed == [""]
+            assert observed == [("", None, "", None)]
             assert artifacts._artifact_context.get() == payload
         finally:
             artifacts._artifact_context.reset(token)
@@ -73,7 +78,7 @@ def test_cli_artifact_survives_effective_instructions(monkeypatch, tmp_path, com
             return '''
 [artifacts]
 artifact_path = "replacement.txt"
-target_tools = ["pr_description"]
+target_commands = ["pr_description"]
 [pr_reviewer]
 extra_instructions = "Repository instructions"
 '''
@@ -82,12 +87,18 @@ extra_instructions = "Repository instructions"
 
     class RecordingReviewer:
         def __init__(self, *_args, **_kwargs):
-            observed.append((get_settings().pr_reviewer.extra_instructions,
-                             get_settings().pr_description.extra_instructions))
+            settings = get_settings()
+            observed.append((
+                settings.pr_reviewer.extra_instructions,
+                artifacts.get_artifact_context("pr_reviewer"),
+                settings.pr_description.extra_instructions,
+                artifacts.get_artifact_context("pr_description"),
+            ))
 
         async def run(self):
             pass
 
+    monkeypatch.setattr(agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(git_utils, "get_git_provider_with_context", lambda _url: Provider())
     monkeypatch.setitem(agent_module.command2class, "review", RecordingReviewer)
     monkeypatch.setattr(agent_module, "flush_telemetry", lambda: None)
@@ -97,7 +108,7 @@ extra_instructions = "Repository instructions"
 
     with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
         settings = get_settings()
-        settings.set("ARTIFACTS.TARGET_TOOLS", ["pr_reviewer"])
+        settings.set("ARTIFACTS.TARGET_COMMANDS", ["pr_reviewer"])
         settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "")
         settings.set("PR_DESCRIPTION.EXTRA_INSTRUCTIONS", "")
         settings.set("CONFIG.RESPONSE_LANGUAGE", "es")
@@ -107,10 +118,13 @@ extra_instructions = "Repository instructions"
         cli.run(argv)
 
     assert len(observed) == 1
-    reviewer, description = observed[0]
+    reviewer, reviewer_context, description, description_context = observed[0]
     assert reviewer.startswith("Command instructions" if command_override else "Repository instructions")
-    assert reviewer.count("CI_FAILURE_MARKER") == 1
+    assert reviewer_context["content"] == "CI_FAILURE_MARKER"
+    assert reviewer_context["label"] == "report.txt"
+    assert "CI_FAILURE_MARKER" not in reviewer
     assert "locale code: 'es'" in reviewer
-    assert "UNSELECTED_ARTIFACT" not in reviewer
+    assert "UNSELECTED_ARTIFACT" not in str(reviewer_context)
     assert "CI_FAILURE_MARKER" not in description
-    read.assert_called_once_with(report.resolve(), 50000)
+    assert description_context is None
+    read.assert_called_once_with(report.resolve(), 50000, "start")

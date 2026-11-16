@@ -11,6 +11,17 @@ import pytest
 from pr_agent.servers import github_polling
 
 
+@pytest.fixture(autouse=True)
+def allow_polling_repository(monkeypatch):
+    monkeypatch.setattr(
+        github_polling,
+        "global_settings",
+        SimpleNamespace(
+            get=lambda key, default: ["owner/repo"] if key == "github.polling_repositories" else default
+        ),
+    )
+
+
 @pytest.fixture
 def workers(monkeypatch):
     created = []
@@ -248,7 +259,7 @@ async def test_polling_loop_reaps_workers_on_idle_and_failed_polls(workers, monk
             pass
 
         async def json(self):
-            return [{"id": 1}] if polls == 1 else []
+            return [{"id": "1"}] if polls == 1 else []
 
     class Session:
         async def __aenter__(self):
@@ -281,6 +292,298 @@ async def test_polling_loop_reaps_workers_on_idle_and_failed_polls(workers, monk
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_polling_loop_keeps_drifted_notification_unread_for_unconditional_retry(monkeypatch):
+    settings = SimpleNamespace(
+        github=SimpleNamespace(deployment_type="user", user_token="test-token"), set=MagicMock()
+    )
+    monkeypatch.setattr(github_polling, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        github_polling,
+        "get_git_provider",
+        lambda: lambda: SimpleNamespace(get_user_id=lambda: "bot"),
+    )
+    mark_read = AsyncMock()
+    monkeypatch.setattr(github_polling, "mark_notification_as_read", mark_read)
+    monkeypatch.setattr(
+        github_polling,
+        "is_valid_notification",
+        AsyncMock(side_effect=[
+            (False, set(), github_polling._RETRY_POLLING_NOTIFICATION),
+            (False, set()),
+        ]),
+    )
+    notification = {"id": "1"}
+    requests = []
+    finished = asyncio.Event()
+
+    class Session:
+        status = 200
+        headers = {"Last-Modified": "retry-test"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def get(self, *args, **kwargs):
+            requests.append(kwargs)
+            return self
+
+        async def json(self):
+            return [notification]
+
+    async def sleep(_delay):
+        if len(requests) >= 2:
+            finished.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(github_polling, "aiohttp", SimpleNamespace(ClientSession=Session))
+    monkeypatch.setattr(github_polling, "asyncio", SimpleNamespace(sleep=sleep))
+    task = asyncio.create_task(github_polling.polling_loop())
+    try:
+        await asyncio.wait_for(finished.wait(), 2)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    mark_read.assert_awaited_once()
+    assert mark_read.await_args.args[1] == notification
+    assert len(requests) == 2
+    assert "If-Modified-Since" not in requests[1]["headers"]
+
+
+@pytest.mark.asyncio
+async def test_polling_loop_keeps_notification_unread_when_drift_retry_times_out(monkeypatch):
+    settings = SimpleNamespace(
+        github=SimpleNamespace(deployment_type="user", user_token="test-token"), set=MagicMock()
+    )
+    monkeypatch.setattr(github_polling, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        github_polling,
+        "get_git_provider",
+        lambda: lambda: SimpleNamespace(get_user_id=lambda: "bot"),
+    )
+    mark_read = AsyncMock()
+    monkeypatch.setattr(github_polling, "mark_notification_as_read", mark_read)
+    scan_calls = 0
+
+    async def scan(*args, **kwargs):
+        nonlocal scan_calls
+        scan_calls += 1
+        if scan_calls == 1:
+            return None
+        raise TimeoutError("retry deadline exhausted")
+
+    monkeypatch.setattr(github_polling, "_fetch_comment_history_scan", scan)
+    notification = {
+        "id": "1",
+        "reason": "mention",
+        "repository": {"full_name": "owner/repo"},
+        "subject": {
+            "type": "PullRequest",
+            "url": "https://example.test/repos/owner/repo/pulls/1",
+            "latest_comment_url": "https://example.test/latest",
+        },
+    }
+    notification_requests = []
+    finished = asyncio.Event()
+
+    class Response:
+        status = 200
+
+        def __init__(self, body, headers=None):
+            self.body = body
+            self.headers = headers or {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def json(self, **kwargs):
+            return self.body
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def get(self, url, **kwargs):
+            if url == github_polling._notifications_url():
+                notification_requests.append(kwargs)
+                return Response([notification], {"Last-Modified": "unchanged"})
+            assert url == notification["subject"]["latest_comment_url"]
+            return Response({"id": 99, "body": "Other discussion", "user": {"login": "human"}})
+
+    async def sleep(_delay):
+        if notification_requests:
+            finished.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(github_polling, "aiohttp", SimpleNamespace(ClientSession=Session))
+    monkeypatch.setattr(
+        github_polling,
+        "asyncio",
+        SimpleNamespace(
+            sleep=sleep,
+            get_running_loop=asyncio.get_running_loop,
+            TimeoutError=asyncio.TimeoutError,
+        ),
+    )
+    task = asyncio.create_task(github_polling.polling_loop())
+    try:
+        await asyncio.wait_for(finished.wait(), 2)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert scan_calls == 2
+    assert len(notification_requests) == 1
+    mark_read.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("comment_body", "expected_request"), [
+    ("@bot /review", "/review"),
+    ("No mention", None),
+    ("@bot /ask Why does @bot appear here?", "/ask Why does @bot appear here?"),
+    ('@bot /ask "Why does @bot appear here?"', '/ask "Why does @bot appear here?"'),
+], ids=["valid-command", "invalid-notification", "repeated-mention", "quoted-repeated-mention"])
+@pytest.mark.asyncio
+async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monkeypatch, comment_body, expected_request):
+    valid_command = expected_request is not None
+    settings = SimpleNamespace(
+        github=SimpleNamespace(deployment_type="user", user_token="test-token"), set=MagicMock()
+    )
+    monkeypatch.setattr(github_polling, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        github_polling,
+        "get_git_provider",
+        lambda: lambda: SimpleNamespace(get_user_id=lambda: "bot"),
+    )
+    monkeypatch.setattr(github_polling, "get_logger", MagicMock())
+    # Thread IDs are strings even when their digits match numeric comment IDs.
+    preexisting_notification = {"id": "100"}
+    pr_url = "https://api.github.com/repos/owner/repo/pulls/1"
+    latest_url = "https://api.github.com/repos/owner/repo/issues/comments/100"
+    notification = {
+        "id": "99", "reason": "mention",
+        "repository": {"full_name": "owner/repo"},
+        "subject": {"type": "PullRequest", "url": pr_url, "latest_comment_url": latest_url},
+    }
+    comment = {"id": 99, "body": comment_body, "user": {"login": "human"}}
+    latest_comment = {"id": 100, "body": "Other discussion", "user": {"login": "human"}}
+    expected_comment_ids = {99, 100} if valid_command else {100}
+    large_preexisting_ids = set(range(10_000, 20_000))
+    handled_at_validation = []
+    handled_references = []
+    added_at_validation = []
+    real_validate = github_polling.is_valid_notification
+    monkeypatch.setattr(
+        github_polling, "_fetch_comment_history", AsyncMock(return_value=[comment, latest_comment])
+    )
+
+    class NonCopyingSet(set):
+        def copy(self):
+            raise AssertionError("polling must not copy the full handled-ID history")
+
+    monkeypatch.setattr(github_polling, "set", NonCopyingSet, raising=False)
+
+    async def validate(
+        _notification, _headers, handled_ids, _session, _user_id, added_handled_ids=None
+    ):
+        if _notification is preexisting_notification:
+            handled_ids.update(large_preexisting_ids)
+            return False, handled_ids
+        handled_at_validation.append((len(handled_ids), large_preexisting_ids <= handled_ids))
+        handled_references.append(handled_ids)
+        assert comment["id"] not in handled_ids
+        assert latest_comment["id"] not in handled_ids
+        result = await real_validate(_notification, _headers, handled_ids, _session, _user_id, added_handled_ids)
+        added_at_validation.append(set(added_handled_ids))
+        return result
+
+    monkeypatch.setattr(github_polling, "is_valid_notification", validate)
+    mark_attempts = 0
+
+    async def mark_read(_headers, _notification, _session):
+        nonlocal mark_attempts
+        mark_attempts += 1
+        if mark_attempts == 2:
+            raise RuntimeError("temporary PATCH failure")
+
+    monkeypatch.setattr(github_polling, "mark_notification_as_read", mark_read)
+    requests = []
+    dispatched = []
+    finished = asyncio.Event()
+
+    class Response:
+        status = 200
+        headers = {"Last-Modified": "unchanged-notification"}
+
+        def __init__(self, notifications):
+            self.notifications = notifications
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def json(self):
+            return self.notifications
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def get(self, url, **kwargs):
+            if url == latest_url:
+                return Response(latest_comment)
+            assert url == github_polling._notifications_url()
+            requests.append(kwargs)
+            notifications = [preexisting_notification, notification] if len(requests) == 1 else [notification]
+            return Response(notifications)
+
+    async def start_queued(task_queue, _limit, _active_processes):
+        dispatched.extend(task_queue)
+        finished.set()
+
+    async def sleep(_delay):
+        if len(requests) >= 2:
+            if not valid_command:
+                finished.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(github_polling, "_start_queued_processes", start_queued)
+    monkeypatch.setattr(github_polling, "aiohttp", SimpleNamespace(ClientSession=Session))
+    monkeypatch.setattr(github_polling, "asyncio", SimpleNamespace(sleep=sleep))
+    task = asyncio.create_task(github_polling.polling_loop())
+    try:
+        await asyncio.wait_for(finished.wait(), 2)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert handled_at_validation == [(len(large_preexisting_ids), True)] * 2
+    assert added_at_validation == [expected_comment_ids] * 2
+    assert mark_attempts == 3
+    assert len(requests) == 2
+    assert "If-Modified-Since" not in requests[1]["headers"]
+    expected_dispatch = [(github_polling.process_comment_sync, (pr_url, expected_request, 99))] if valid_command else []
+    assert dispatched == expected_dispatch
+    assert large_preexisting_ids <= handled_references[-1]
+    assert expected_comment_ids <= handled_references[-1]
+    assert {preexisting_notification["id"], notification["id"]}.isdisjoint(handled_references[-1])
 
 
 @pytest.mark.asyncio
@@ -342,7 +645,7 @@ async def test_polling_loop_shares_capacity_between_batches(workers, monkeypatch
             return self
 
         async def json(self):
-            return [{"id": i} for i in range(10 if polls == 1 else 2)]
+            return [{"id": str(i)} for i in range(10 if polls == 1 else 2)]
 
     async def sleep(delay):
         if delay == 0.25:
@@ -369,6 +672,83 @@ async def test_polling_loop_shares_capacity_between_batches(workers, monkeypatch
         task.cancel()
         result, = await asyncio.gather(task, return_exceptions=True)
     assert isinstance(result, asyncio.CancelledError)
+
+
+@pytest.mark.asyncio
+async def test_polling_loop_preserves_queued_work_when_mark_read_fails(workers, monkeypatch):
+    created, _ = workers
+    settings = SimpleNamespace(
+        github=SimpleNamespace(deployment_type="user", user_token="test-token"), set=MagicMock()
+    )
+    monkeypatch.setattr(github_polling, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        github_polling, "get_git_provider", lambda: lambda: SimpleNamespace(get_user_id=lambda: "bot")
+    )
+    requests = []
+    marked = set()
+    mark_attempts = []
+    worker_counts_at_mark = []
+    pr_url = "https://api.github.com/repos/owner/repo/pulls"
+
+    class Session:
+        headers = {"Last-Modified": "unchanged-notifications"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def get(self, url, **kwargs):
+            self.status = 200
+            if url == github_polling._notifications_url():
+                requests.append(kwargs)
+                self.body = [
+                    {
+                        "id": str(number), "reason": "mention", "repository": {"full_name": "owner/repo"},
+                        "subject": {
+                            "type": "PullRequest", "url": f"{pr_url}/{number}",
+                            "latest_comment_url": (
+                                f"https://api.github.com/repos/owner/repo/issues/comments/{100 + number}"
+                            ),
+                        },
+                    }
+                    for number in (1, 2, 3) if number not in marked
+                ]
+            else:
+                self.body = {
+                    "id": int(url.rsplit("/", 1)[1]), "body": "@bot /review", "user": {"login": "human"}
+                }
+            return self
+
+        def patch(self, url, **kwargs):
+            number = int(url.rsplit("/", 1)[1])
+            mark_attempts.append(number)
+            worker_counts_at_mark.append(sum(process.pid is not None for process in created))
+            if mark_attempts == [1, 2]:
+                raise ConnectionError("temporary PATCH failure")
+            marked.add(number)
+            self.status = 205
+            return self
+
+        async def json(self):
+            return self.body
+
+    sleep = AsyncMock(side_effect=[None, None, None, asyncio.CancelledError])
+    monkeypatch.setattr(github_polling, "aiohttp", SimpleNamespace(ClientSession=Session))
+    monkeypatch.setattr(github_polling, "asyncio", SimpleNamespace(sleep=sleep))
+    with pytest.raises(asyncio.CancelledError):
+        await github_polling.polling_loop()
+
+    assert [process.args for process in created] == [
+        (f"{pr_url}/{number}", "/review", 100 + number) for number in (1, 2, 3)
+    ]
+    assert all(process.target is github_polling.process_comment_sync for process in created)
+    assert all(process.pid is not None for process in created)
+    assert mark_attempts == [1, 2, 2, 3]
+    assert worker_counts_at_mark == [0, 0, 1, 1]
+    assert "If-Modified-Since" not in requests[1]["headers"]
+    assert requests[2]["headers"]["If-Modified-Since"] == "unchanged-notifications"
 
 
 @pytest.mark.asyncio
@@ -412,7 +792,7 @@ async def test_polling_loop_logs_accepted_work_cancelled_before_dispatch(workers
             return self
 
         async def json(self):
-            return [{"id": 1}, {"id": 2}]
+            return [{"id": "1"}, {"id": "2"}]
 
     async def sleep(delay):
         await asyncio.sleep(0)
@@ -464,7 +844,7 @@ async def test_polling_loop_stops_after_worker_start_failure(workers, monkeypatc
             return self
 
         async def json(self):
-            return [{"id": 1}]
+            return [{"id": "1"}]
 
     async def sleep(delay):
         await asyncio.sleep(0)

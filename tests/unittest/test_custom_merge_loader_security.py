@@ -59,6 +59,15 @@ class FakeDynaconf:
         self._store[key] = value
 
 
+class FakeDynaconfSettingsFile:
+    def __init__(self, settings_file):
+        self.settings_file = settings_file
+        self._store = {}
+
+    def set(self, key, value):
+        self._store[key] = value
+
+
 # ---------------------------------------------------------------------------
 # validate_file_security: forbidden directives at varying positions
 # ---------------------------------------------------------------------------
@@ -148,7 +157,7 @@ def test_safe_pr_agent_config_does_not_raise():
         },
     }
     # Should not raise.
-    validate_file_security(data, "safe.toml")
+    assert validate_file_security(data, "safe.toml") is None
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +235,20 @@ def test_load_valid_toml_sets_expected_sections(tmp_path):
     assert obj._store["config"]["verbosity_level"] == 1
     assert "pr_reviewer" in obj._store
     assert obj._store["pr_reviewer"]["num_code_suggestions"] == 4
+
+
+def test_load_accepts_string_settings_file(tmp_path):
+    settings_file = _write(tmp_path, "settings.toml", "[config]\nmodel = \"gpt-4\"\n")
+    obj = FakeDynaconf(settings_files=settings_file)
+    load(obj)
+    assert obj._store["config"]["model"] == "gpt-4"
+
+
+def test_load_falls_back_to_settings_file_attribute(tmp_path):
+    settings_file = _write(tmp_path, "settings.toml", "[config]\nmodel = \"gpt-4\"\n")
+    obj = FakeDynaconfSettingsFile(settings_file)
+    load(obj)
+    assert obj._store["config"]["model"] == "gpt-4"
 
 
 def test_load_respects_single_key_loading(tmp_path):

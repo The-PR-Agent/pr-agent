@@ -1,5 +1,6 @@
 """Exercise MR diff retrieval through python-gitlab's HTTP and pagination code."""
 import json
+import re
 from types import SimpleNamespace
 from unittest.mock import Mock, call
 from urllib.parse import urlparse
@@ -10,8 +11,17 @@ import requests
 from requests.adapters import BaseAdapter
 
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.git_provider import IncrementalPR
+from pr_agent.git_providers import gitlab_provider
+from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError, IncrementalPR
 from pr_agent.git_providers.gitlab_provider import GitLabProvider, IncompleteGitLabDiffError
+
+
+@pytest.fixture(autouse=True)
+def diff_ready_sleep(monkeypatch):
+    """Make not-ready diff retries instant and record the delays they asked for."""
+    delays = []
+    monkeypatch.setattr(gitlab_provider, "_diff_ready_sleep", delays.append)
+    return delays
 
 
 def _change(path, **kwargs):
@@ -78,7 +88,9 @@ def provider_factory():
         provider.diff_files = None
         provider.incremental = IncrementalPR(False)
         provider._expand_submodule_changes = Mock(side_effect=lambda changes, diff_refs: changes)
-        provider.get_pr_file_content = Mock(side_effect=lambda path, ref: "old\n" if ref == "base" else "new\n")
+        provider.get_pr_file_content = Mock(
+            side_effect=lambda path, ref, **_kwargs: "old\n" if ref == "base" else "new\n"
+        )
         return provider, transport
 
     yield make
@@ -98,6 +110,87 @@ def _metadata_reads(*snapshots):
     return [(200, snapshot, {}) for snapshot in snapshots]
 
 
+def _prepare_suggestion_publication(provider, monkeypatch, refs):
+    settings = {
+        "gitlab.publish_code_suggestions_as_review": False,
+        "GITLAB.RESOLVE_OUTDATED_INLINE_THREADS": False,
+        "GITLAB.AUTO_RESOLVE_FIXED_INLINE_THREADS": False,
+        "config.persistent_inline_comments": False,
+    }
+    monkeypatch.setattr(gitlab_provider, "get_settings", lambda: settings)
+    provider.id_mr = 7
+    provider.last_diff = SimpleNamespace(
+        base_commit_sha="construction-base", start_commit_sha="construction-start", head_commit_sha="construction-head",
+    )
+    provider.mr.diffs.list = Mock(return_value=[SimpleNamespace(
+        **{f"{key}_commit_sha": refs[f"{key}_sha"] for key in ("base", "start", "head")},
+    )])
+    provider.mr.discussions.create = Mock()
+    provider.RE_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
+    return [{"body": "```suggestion\nfixed\n```", "relevant_file": "a.py",
+             "relevant_lines_start": 1, "relevant_lines_end": 1}]
+
+
+def test_reconstructed_patch_uses_the_reviewed_version_not_the_construction_version(provider_factory, monkeypatch):
+    provider, transport = provider_factory([(200, [_change("a.py", diff="")], {})], count="1")
+    suggestions = _prepare_suggestion_publication(provider, monkeypatch, _metadata()["diff_refs"])
+
+    assert provider.publish_code_suggestions(suggestions)
+
+    position = provider.mr.discussions.create.call_args.args[0]["position"]
+    assert {key: position[key] for key in ("base_sha", "start_sha", "head_sha")} == _metadata()["diff_refs"]
+    assert position["new_path"] == "a.py" and position["new_line"] == 1
+    assert len(transport.diff_requests) == 1
+
+
+def test_missing_position_ref_does_not_prevent_read_only_analysis(provider_factory, monkeypatch):
+    provider, transport = provider_factory([(200, [_change("a.py")], {})], count="1")
+    transport.metadata["diff_refs"].pop("start_sha")
+    assert provider.get_diff_files()[0].head_file == "new\n"
+    suggestions = _prepare_suggestion_publication(provider, monkeypatch, _metadata()["diff_refs"])
+
+    assert provider.publish_code_suggestions(suggestions) is False
+
+    provider.mr.discussions.create.assert_not_called()
+    provider.mr.diffs.list.assert_not_called()
+
+
+@pytest.mark.parametrize("changed_ref", ["head_sha", "base_sha", "start_sha"])
+@pytest.mark.parametrize("count", ["1", None], ids=["cached", "uncached"])
+def test_suggestions_reject_a_changed_version_after_analysis(provider_factory, monkeypatch, changed_ref, count):
+    provider, transport = provider_factory([(200, [_change("a.py")], {})] * 2, count=count)
+    provider.get_diff_files()
+    newer = _metadata(count=count, **{changed_ref: "newer-ref"})
+    transport.metadata = newer
+    suggestions = _prepare_suggestion_publication(provider, monkeypatch, newer["diff_refs"])
+
+    assert provider.publish_code_suggestions(suggestions) is False
+
+    provider.mr.discussions.create.assert_not_called()
+    assert len(transport.diff_requests) == 1
+
+
+@pytest.mark.parametrize("scope_available", [True, False])
+def test_incremental_positions_require_verified_mr_refs(provider_factory, monkeypatch, scope_available):
+    response = (200, [_change("a.py")], {}) if scope_available else (503, {"message": "unavailable"}, {})
+    provider, _ = provider_factory([response, (200, [_change("a.py")], {})], count="1")
+    _prepare_incremental(provider)
+    provider._get_incremental_commits()
+    files = provider.get_diff_files()
+    assert files and provider.incremental.is_incremental
+    suggestions = _prepare_suggestion_publication(provider, monkeypatch, _metadata()["diff_refs"])
+
+    assert provider.publish_code_suggestions(suggestions) is scope_available
+
+    if scope_available:
+        position = provider.mr.discussions.create.call_args.args[0]["position"]
+        assert position["base_sha"] == "base"
+        assert position["base_sha"] != provider.incremental.last_seen_commit_sha
+    else:
+        provider.mr.discussions.create.assert_not_called()
+        provider.mr.diffs.list.assert_not_called()
+
+
 def _pages(first, second):
     next_url = "https://gitlab.example/gitlab/api/v4/projects/group%2Fsub%2Frepo/merge_requests/7/diffs?page=2"
     return [(200, first, {"Link": f'<{next_url}>; rel="next"'}), (200, second, {})]
@@ -115,12 +208,54 @@ def test_collects_all_pages_using_the_configured_client(provider_factory):
         "/gitlab/api/v4/projects/group%2Fsub%2Frepo/merge_requests/7/diffs",
         "/gitlab/api/v4/projects/group%2Fsub%2Frepo/merge_requests/7/diffs",
     ]
-    assert urlparse(transport.diff_requests[1].url).query == "page=2"
+    assert urlparse(transport.diff_requests[1].url).query == "page=2&per_page=100"
     assert len(transport.requests) == 4
     assert all(urlparse(transport.requests[index].url).path.endswith("/merge_requests/7") for index in (0, 3))
     assert all(request.headers["PRIVATE-TOKEN"] == "offline-token" for request in transport.requests)
     assert provider.get_diff_files() is files
     assert len(transport.requests) == 4
+
+
+@pytest.mark.parametrize("line_ending,trailing_newline", [("\n", True), ("\r\n", True), ("\n", False)])
+def test_diff_line_counts_with_different_line_endings(provider_factory, line_ending, trailing_newline):
+    patch = line_ending.join(["@@ -1 +1 @@", "-old", "+new"])
+    if trailing_newline:
+        patch += line_ending
+    provider, _ = provider_factory([(200, [_change("a.py", diff=patch)], {})], count="1")
+
+    file = provider.get_diff_files()[0]
+
+    assert (file.num_plus_lines, file.num_minus_lines) == (1, 1)
+
+
+def test_diff_line_counts_keep_unicode_separators_in_source_lines(provider_factory):
+    patch = "@@ -1 +1 @@\n-value = 'old'\n+value = 'before\u2028+after\u2029-more'\n"
+    provider, _ = provider_factory([(200, [_change("a.py", diff=patch)], {})], count="1")
+
+    file = provider.get_diff_files()[0]
+
+    assert (file.num_plus_lines, file.num_minus_lines) == (1, 1)
+
+
+def test_diff_line_counts_ignore_unified_diff_file_headers(provider_factory):
+    # Older GitLab MRs carry the ---/+++ headers in /diffs (gitlab-org/gitlab !1
+    # still does today); newer ones start at @@. gitlab-org/gitlab#270960
+    # confirms the standard API diff field "already includes full headers".
+    patch = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+    provider, _ = provider_factory([(200, [_change("a.py", diff=patch)], {})], count="1")
+
+    file = provider.get_diff_files()[0]
+
+    assert (file.num_plus_lines, file.num_minus_lines) == (1, 1)
+
+
+def test_added_file_line_counts_ignore_dev_null_header(provider_factory):
+    patch = "--- /dev/null\n+++ b/a.py\n@@ -0,0 +1,2 @@\n+one\n+two\n"
+    provider, _ = provider_factory([(200, [_change("a.py", diff=patch)], {})], count="1")
+
+    file = provider.get_diff_files()[0]
+
+    assert (file.num_plus_lines, file.num_minus_lines) == (2, 0)
 
 
 @pytest.mark.parametrize("project_id", [123, "123"])
@@ -140,16 +275,55 @@ def test_pruned_patch_on_later_page_is_reconstructed_from_both_blobs(provider_fa
 
     assert [file.filename for file in files] == ["visible.py", "pruned.py"]
     assert "-old" in files[1].patch and "+new" in files[1].patch
-    provider.get_pr_file_content.assert_has_calls([call("pruned.py", "base"), call("pruned.py", "head")])
+    strict = {"propagate_errors": True, "missing_is_error": True}
+    provider.get_pr_file_content.assert_has_calls([
+        call("pruned.py", "base", **strict), call("pruned.py", "head", **strict)
+    ])
     assert len(transport.diff_requests) == 2
 
 
-@pytest.mark.parametrize("count", ["1000+", "1+", "3", "0", ""])
-def test_incomplete_or_unready_collection_is_not_cached(provider_factory, count):
-    provider, _ = provider_factory([(200, [_change("a.py"), _change("b.py")], {})], count)
-    with pytest.raises(IncompleteGitLabDiffError):
+@pytest.mark.parametrize("count", [""])
+def test_unready_collection_is_retried_then_raises_and_is_not_cached(provider_factory, count, diff_ready_sleep):
+    attempts = len(gitlab_provider._DIFF_READY_RETRY_DELAYS) + 1
+    provider, transport = provider_factory([(200, [_change("a.py"), _change("b.py")], {})] * attempts, count)
+    with pytest.raises(IncompleteGitLabDiffError, match="not ready.*re-run the command") as error:
         provider.get_files()
+    assert isinstance(error.value, IncompleteProviderPullRequestFilesError)
     assert provider.git_files is None
+    assert len(transport.diff_requests) == attempts
+    assert diff_ready_sleep == list(gitlab_provider._DIFF_READY_RETRY_DELAYS)
+
+
+@pytest.mark.parametrize("count,message", [("3", "but reported"), ("0", "but reported"), ("1000+", "diff limits")])
+def test_inconsistent_counts_fail_immediately_without_retries(provider_factory, count, message, diff_ready_sleep):
+    provider, transport = provider_factory([(200, [_change("a.py"), _change("b.py")], {})], count)
+    with pytest.raises(IncompleteGitLabDiffError, match=message) as error:
+        provider.get_files()
+    assert isinstance(error.value, IncompleteProviderPullRequestFilesError)
+    assert provider.git_files is None
+    assert len(transport.diff_requests) == 1
+    assert diff_ready_sleep == []
+
+
+def test_unready_collection_recovers_within_the_retry_budget(provider_factory, diff_ready_sleep):
+    unready, ready = _metadata(count=""), _metadata(count="1")
+    provider, transport = provider_factory(
+        [(200, [_change("a.py")], {})] * 2,
+        metadata_responses=_metadata_reads(unready, unready, ready, ready),
+    )
+    assert provider.get_files() == ["a.py"]
+    assert len(transport.diff_requests) == 2
+    assert diff_ready_sleep == list(gitlab_provider._DIFF_READY_RETRY_DELAYS[:1])
+
+
+def test_diff_refs_lag_recovers_within_the_retry_budget(provider_factory, diff_ready_sleep):
+    lagging = {**_metadata(count="1"), "diff_refs": None}
+    provider, _ = provider_factory(
+        [(200, [_change("a.py")], {})] * 2,
+        metadata_responses=_metadata_reads(lagging, lagging, _metadata(count="1"), _metadata(count="1")),
+    )
+    assert provider.get_files() == ["a.py"]
+    assert diff_ready_sleep == list(gitlab_provider._DIFF_READY_RETRY_DELAYS[:1])
 
 
 def test_absent_count_is_distinct_from_an_unready_empty_count(provider_factory):
@@ -157,9 +331,44 @@ def test_absent_count_is_distinct_from_an_unready_empty_count(provider_factory):
     assert provider.get_files() == ["a.py"]
 
 
-def test_complete_empty_merge_request(provider_factory):
-    provider, _ = provider_factory([(200, [], {})], count="0")
+@pytest.mark.parametrize("changes", [[], [_change("uv.lock")]], ids=["no-changes", "lockfile-only"])
+def test_empty_diff_result_is_cached_until_scope_reset(provider_factory, changes):
+    response = (200, changes, {})
+    provider, transport = provider_factory([response, response], count=str(len(changes)))
+
+    files = provider.get_diff_files()
+    assert files == []
+    assert provider.get_diff_files() is files
+    assert len(transport.diff_requests) == 1
+    assert len(transport.requests) == 3
+    provider.get_pr_file_content.assert_not_called()
+
+    provider.get_incremental_commits(IncrementalPR(False))
+    assert provider.diff_files is None
     assert provider.get_diff_files() == []
+    assert len(transport.diff_requests) == 2
+
+
+def test_unready_empty_diff_is_consistent_within_a_command_and_retryable_at_the_boundary(provider_factory):
+    pending = {**_metadata(count=None), "changes_count": None, "diff_refs": None}
+    ready = _metadata(count="1")
+    provider, transport = provider_factory(
+        [(200, [], {}), (200, [_change("ready.py")], {})],
+        count=None,
+        metadata_responses=_metadata_reads(pending, pending, ready, ready),
+    )
+
+    # Both calls in the command see the same provisional empty; one diff poll.
+    assert provider.get_diff_files() == []
+    assert provider.diff_files == []
+    assert provider.get_diff_files() == []
+    assert len(transport.diff_requests) == 1
+
+    # The command boundary (#4373) clears the diff and MR-changes caches together,
+    # so the next command re-polls and sees the ready diff.
+    provider.reset_diff_cache_for_command()
+    assert [file.filename for file in provider.get_diff_files()] == ["ready.py"]
+    assert len(transport.diff_requests) == 2
 
 
 def test_empty_patch_without_omission_flags_retains_reconstruction(provider_factory):
@@ -194,12 +403,37 @@ def test_missing_diffs_endpoint_propagates_without_fallback(provider_factory, me
     assert [urlparse(request.url).path.rsplit("/", 1)[-1] for request in transport.requests] == ["7", "diffs"]
 
 
-@pytest.mark.parametrize("status", [401, 403, 500])
+@pytest.mark.parametrize("status", [401, 403])
 def test_other_errors_do_not_probe_version_or_use_legacy(provider_factory, status):
     provider, transport = provider_factory([(status, {"message": "denied"}, {})])
     with pytest.raises((gitlab.GitlabHttpError, gitlab.GitlabAuthenticationError)):
         provider.get_files()
     assert len(transport.requests) == 2
+
+
+def test_server_error_on_large_pages_retries_with_the_default_page_size(provider_factory):
+    """GitLab before 17.11 answers HTTP 500 when per_page exceeds 30 on the MR diffs endpoint (#4793)."""
+    provider, transport = provider_factory([
+        (500, {"message": "500 Internal Server Error"}, {}),
+        *_pages([_change("a.py")], [_change("b.py")]),
+    ])
+
+    assert provider.get_files() == ["a.py", "b.py"]
+    assert [urlparse(request.url).query for request in transport.diff_requests] == [
+        "per_page=100", "per_page=20", "page=2&per_page=20"]
+
+
+def test_repeated_server_error_is_raised_after_one_retry(provider_factory):
+    provider, transport = provider_factory([
+        (500, {"message": "500 Internal Server Error"}, {}),
+        (500, {"message": "500 Internal Server Error"}, {}),
+    ])
+
+    with pytest.raises(gitlab.GitlabHttpError) as error:
+        provider.get_files()
+    assert error.value.response_code == 500
+    assert len(transport.diff_requests) == 2
+    assert provider.git_files is None
 
 
 def _prepare_incremental(provider):
@@ -281,7 +515,7 @@ def test_fresh_metadata_supplies_count_and_blob_refs_without_mutating_cached_mr(
     )
     cached_mr = provider.mr
     cached_refs = dict(cached_mr.diff_refs)
-    provider.get_pr_file_content.side_effect = lambda path, ref: "old\n" if ref == "fresh-base" else "new\n"
+    provider.get_pr_file_content.side_effect = lambda path, ref, **_kwargs: "old\n" if ref == "fresh-base" else "new\n"
 
     files = provider.get_diff_files()
 
@@ -290,9 +524,50 @@ def test_fresh_metadata_supplies_count_and_blob_refs_without_mutating_cached_mr(
     assert provider.mr is cached_mr
     assert provider.mr.changes_count == "1000+"
     assert provider.mr.diff_refs == cached_refs
-    assert provider.get_pr_file_content.call_args_list == [call("a.py", "fresh-base"), call("a.py", "fresh-head")]
+    strict = {"propagate_errors": True, "missing_is_error": True}
+    assert provider.get_pr_file_content.call_args_list == [
+        call("a.py", "fresh-base", **strict), call("a.py", "fresh-head", **strict)
+    ]
     assert provider._expand_submodule_changes.call_args.args[1] == fresh["diff_refs"]
     assert len(transport.requests) == 3
+
+
+@pytest.mark.parametrize("count", ["1", None], ids=["cached-changes", "uncached-changes"])
+def test_review_head_tracks_loaded_diff_until_scope_reset(provider_factory, count):
+    reviewed = _metadata(count=count, head_sha="reviewed-head")
+    newer = _metadata(count=count, head_sha="newer-head")
+    collections = 1 if count is not None else 2
+    provider, transport = provider_factory(
+        [(200, [_change("a.py")], {})] * (collections + 1),
+        count=count,
+        metadata_responses=_metadata_reads(*([reviewed] * (collections * 2) + [newer] * 3)),
+    )
+
+    assert provider.get_pr_head_sha() == "head"
+    assert provider.get_files() == ["a.py"]
+    assert provider.get_pr_head_sha() == "head"
+    files = provider.get_diff_files()
+
+    assert files[0].head_file == "new\n"
+    provider.get_pr_file_content.assert_any_call("a.py", "reviewed-head")
+    assert provider.get_pr_head_sha() == "reviewed-head"
+    assert len(transport.diff_requests) == collections
+    if count is None:
+        assert getattr(provider, "_merge_request_changes_cache", None) is None
+
+    provider.mr = provider._get_merge_request()
+    assert provider.mr.diff_refs["head_sha"] == "newer-head"
+    assert provider.get_diff_files() is files
+    assert provider.get_pr_head_sha() == "reviewed-head"
+
+    provider.get_incremental_commits(IncrementalPR(False))
+    assert provider.diff_files is None
+    assert provider.get_pr_head_sha() == "newer-head"
+    assert provider.get_diff_files() is not files
+    provider.get_pr_file_content.assert_any_call("a.py", "newer-head")
+    assert provider.get_pr_head_sha() == "newer-head"
+    assert len(transport.diff_requests) == collections + 1
+    assert len(transport.requests) == (collections + 1) * 3 + 1
 
 
 @pytest.mark.parametrize("field", ["sha", "head_sha", "base_sha", "start_sha", "changes_count"])
@@ -340,13 +615,16 @@ def test_continuous_movement_fails_before_use_and_can_recover(provider_factory, 
 @pytest.mark.parametrize("method", ["get_files", "get_diff_files", "get_pr_file_paths", "get_relevant_diff"])
 def test_nonempty_collection_requires_usable_fresh_refs(provider_factory, refs, method):
     metadata = {**_metadata(count="1"), "diff_refs": refs}
-    provider, _ = provider_factory(
-        [(200, [_change("a.py")], {})], metadata_responses=_metadata_reads(metadata, metadata),
+    attempts = len(gitlab_provider._DIFF_READY_RETRY_DELAYS) + 1
+    provider, transport = provider_factory(
+        [(200, [_change("a.py")], {})] * attempts,
+        metadata_responses=_metadata_reads(*[metadata, metadata] * attempts),
     )
     args = ["a.py", "new"] if method == "get_relevant_diff" else []
     with pytest.raises(IncompleteGitLabDiffError, match="diff refs are not ready"):
         getattr(provider, method)(*args)
     assert provider.git_files is None and provider.diff_files is None
+    assert len(transport.diff_requests) == attempts
     provider.get_pr_file_content.assert_not_called()
 
 
@@ -402,8 +680,10 @@ def test_incremental_ref_movement_falls_back_to_fresh_full_collection(provider_f
     assert provider.git_files is None and provider.diff_files is None
     assert provider.unreviewed_files_map == {}
     assert [file.filename for file in provider.get_diff_files()] == ["a.py", "b.py"]
+    strict = {"propagate_errors": True, "missing_is_error": True}
     provider.get_pr_file_content.assert_has_calls([
-        call("a.py", fresh["diff_refs"]["base_sha"]), call("a.py", fresh["diff_refs"]["head_sha"]),
+        call("a.py", fresh["diff_refs"]["base_sha"], **strict),
+        call("a.py", fresh["diff_refs"]["head_sha"], **strict),
     ])
     assert len(transport.diff_requests) == 2
     assert len(transport.requests) == 6

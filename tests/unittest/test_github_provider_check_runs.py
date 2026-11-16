@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from requests.exceptions import RequestException
 
 from pr_agent.git_providers.github_provider import GithubProvider
@@ -35,7 +36,59 @@ def _make_provider(last_commit_sha="deadbeef", requester=None):
     p.last_commit_id = SimpleNamespace(sha=last_commit_sha) if last_commit_sha else None
     p._check_run_ids = {}
     p._check_runs_in_progress = set()
+    p._check_run_base_summaries = {}
+    p._check_runs_progress_blocked = set()
     return p
+
+
+@pytest.mark.parametrize(
+    ("recommendation", "conclusion"),
+    [
+        ("no_concerns_found", "success"),
+        ("needs_review", "neutral"),
+        ("changes_required", "failure"),
+    ],
+)
+def test_publish_merge_recommendation_status_creates_sha_scoped_check(
+    recommendation, conclusion
+):
+    requester = _FakeRequester()
+    provider = _make_provider(requester=requester)
+    requester.set_response(
+        "GET",
+        f"{provider.base_url}/repos/{provider.repo}/commits/deadbeef/check-runs",
+        ({}, {"check_runs": []}),
+    )
+    requester.set_response(
+        "POST",
+        f"{provider.base_url}/repos/{provider.repo}/check-runs",
+        ({}, {"id": 101}),
+    )
+
+    assert provider.publish_merge_recommendation_status(recommendation) is True
+
+    post_call = next(call for call in requester.calls if call[0] == "POST")
+    body = post_call[2]["input"]
+    assert body["name"] == "PR Agent - Review"
+    assert body["head_sha"] == "deadbeef"
+    assert body["conclusion"] == conclusion
+    assert recommendation in body["output"]["summary"]
+
+
+def test_publish_merge_recommendation_status_preserves_existing_check_output():
+    requester = _FakeRequester()
+    provider = _make_provider(requester=requester)
+    provider._check_run_ids["review"] = 42
+    requester.set_response(
+        "PATCH",
+        f"{provider.base_url}/repos/{provider.repo}/check-runs/42",
+        ({}, {}),
+    )
+
+    assert provider.publish_merge_recommendation_status("needs_review") is True
+
+    patch_call = next(call for call in requester.calls if call[0] == "PATCH")
+    assert patch_call[2]["input"] == {"status": "completed", "conclusion": "neutral"}
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +260,28 @@ def test_find_existing_check_run_returns_id_on_match():
     result = provider._find_existing_check_run("PR Agent - Review", "deadbeef")
 
     assert result == 1
+    assert requester.calls[0][2] == {"parameters": {"check_name": "PR Agent - Review"}}
+
+
+def test_find_existing_check_run_follows_filtered_pagination_url():
+    requester = _FakeRequester()
+    provider = _make_provider(requester=requester)
+    first_url = f"{provider.base_url}/repos/{provider.repo}/commits/deadbeef/check-runs"
+    next_url = first_url + "?check_name=PR+Agent+-+Review&page=2"
+    requester.set_response(
+        "GET", first_url,
+        ({"Link": f'<{next_url}>; rel="next"'}, {"check_runs": []}),
+    )
+    requester.set_response(
+        "GET", next_url,
+        ({}, {"check_runs": [{"id": 42, "name": "PR Agent - Review"}]}),
+    )
+
+    assert provider._find_existing_check_run("PR Agent - Review", "deadbeef") == 42
+    assert requester.calls == [
+        ("GET", first_url, {"parameters": {"check_name": "PR Agent - Review"}}),
+        ("GET", next_url, {"parameters": None}),
+    ]
 
 
 def test_find_existing_check_run_returns_none_on_no_match():

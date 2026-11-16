@@ -1,6 +1,16 @@
-from pr_agent.algo.file_filter import filter_ignored
+import fnmatch
+
+import pytest
+
+from pr_agent.algo import file_filter
+from pr_agent.algo.file_filter import filter_ignored, filter_ignored_with_status
 from pr_agent.config_loader import global_settings
 from pr_agent.log import get_logger
+
+
+def translate_globs_to_regexes(globs):
+    """Adapt the live _translate_globs_to_regexes_with_status to the regexes-only shape."""
+    return file_filter._translate_globs_to_regexes_with_status(globs)[0]
 
 
 def _capture_logs(call):
@@ -17,6 +27,13 @@ def _capture_logs(call):
 
 def _capture_errors(call):
     return [line for line in _capture_logs(call).splitlines() if 'Could not filter file list' in line]
+
+
+def _capture_warnings(call):
+    return [
+        line for line in _capture_logs(call).splitlines()
+        if 'No ignore filtering is implemented for platform' in line
+    ]
 
 
 class _BitbucketSide:
@@ -52,7 +69,7 @@ class TestIgnoreFilter:
         """
         Test files are ignored when glob patterns are specified.
         """
-        monkeypatch.setattr(global_settings.ignore, 'glob', ['*.py'])
+        monkeypatch.setitem(global_settings.ignore, 'glob', ['*.py'])
 
         files = [
             type('', (object,), {'filename': 'file1.py'})(),
@@ -74,7 +91,7 @@ class TestIgnoreFilter:
 
     def test_glob_ignores_dict_values(self, monkeypatch):
         """Verify ignore filtering for GitHub incremental dict_values views."""
-        monkeypatch.setattr(global_settings.ignore, 'glob', ['*.py'])
+        monkeypatch.setitem(global_settings.ignore, 'glob', ['*.py'])
 
         files = [
             type('', (object,), {'filename': 'ignored.py'})(),
@@ -84,11 +101,159 @@ class TestIgnoreFilter:
 
         assert filter_ignored(incremental_files) == [files[1]]
 
+    @pytest.mark.parametrize(
+        ('pattern', 'filename', 'ignored'),
+        [
+            # '**' also matches zero directories, so the flattened form has to be matched too
+            ('src/**/generated_*.py', 'src/generated_pb.py', True),
+            ('src/**/generated_*.py', 'src/api/generated_pb.py', True),
+            ('src/**/generated_*.py', 'src/api/deep/generated_pb.py', True),
+            ('src/**/generated_*.py', 'src/handwritten.py', False),
+            ('src/**/generated_*.py', 'other/generated_pb.py', False),
+            # a leading globstar keeps matching files at the repository root
+            ('**/vendor/**', 'vendor/lib.py', True),
+            ('**/vendor/**', 'third_party/vendor/lib.py', True),
+            ('**/vendor/**', 'third_party/vendored/lib.py', False),
+            # every globstar collapses, so the fully flattened form is matched as well
+            ('**/a/**/b.py', 'a/b.py', True),
+            ('**/a/**/b.py', 'x/a/y/b.py', True),
+            # each globstar collapses on its own, so partial combinations are matched too
+            ('a/**/x/**/b.py', 'a/x/y/b.py', True),
+            ('a/**/x/**/b.py', 'a/y/x/b.py', True),
+            ('a/**/x/**/b.py', 'a/x/y/z/b.py', True),
+            ('a/**/x/**/b.py', 'a/y/x/z/b.py', True),
+            ('a/**/x/**/b.py', 'a/x/b.py', True),
+            ('a/**/x/**/b.py', 'b/x/a/b.py', False),
+            # a '**' that is not a whole path segment stays an ordinary '*'
+            ('generated**/schema.py', 'generatedXschema.py', False),
+            # the collapsed form a wrong scan would emit, which ignores this file
+            ('generated**/schema.py', 'generatedschema.py', False),
+            ('generated**/schema.py', 'generated_proto/schema.py', True),
+            # likewise a '**' inside a bracket expression, which is a literal
+            ('a[**/]/**/b.py', 'a/b.py', False),
+            ('a[**/]/**/b.py', 'a*/b.py', True),
+            ('[!x/**/]file.py', '*file.py', False),
+            ('[!x/**/]/file.py', '*/file.py', False),
+            ('src/**/*.[ch]', 'src/file.c', True),
+        ],
+    )
+    def test_globstar_patterns_also_match_zero_directories(self, monkeypatch, pattern, filename, ignored):
+        monkeypatch.setitem(global_settings.ignore, 'glob', [pattern])
+        monkeypatch.setitem(global_settings.ignore, 'regex', [])
+        monkeypatch.setitem(global_settings.config, 'ignore_language_framework', [])
+
+        files = [type('', (object,), {'filename': filename})()]
+
+        assert filter_ignored(files) == ([] if ignored else files)
+
+    @pytest.mark.parametrize(
+        'pattern',
+        ['*.py', 'vendor/**', 'src/generated_*.py', 'a[b/c]*', 'generated**/schema.py'],
+    )
+    def test_pattern_without_a_globstar_segment_keeps_fnmatch_semantics(self, pattern):
+        """Without a `**/` segment the translation stays exactly what fnmatch builds."""
+        assert translate_globs_to_regexes([pattern]) == [fnmatch.translate(pattern)]
+
+    @pytest.mark.parametrize(
+        ('pattern', 'expected_variants'),
+        [
+            ('src/**/generated_*.py', ['src/generated_*.py']),
+            ('**/vendor/**', ['vendor/**']),
+            ('**/a/**/b.py', ['**/a/b.py', 'a/**/b.py', 'a/b.py']),
+            ('a/**/x/**/b.py', ['a/**/x/b.py', 'a/x/**/b.py', 'a/x/b.py']),
+            ('**/**/a.py', ['**/a.py', 'a.py']),
+        ],
+    )
+    def test_globstar_combinations_become_separate_patterns(self, pattern, expected_variants):
+        """Each way the globstars can match zero directories is translated on its own."""
+        regexes = translate_globs_to_regexes([pattern])
+
+        assert regexes[0] == fnmatch.translate(pattern)
+        assert sorted(regexes[1:]) == sorted(fnmatch.translate(v) for v in expected_variants)
+
+    @pytest.mark.parametrize(
+        ('pattern', 'expected_offsets'),
+        [
+            ('src/**/generated_*.py', [4]),
+            ('**/a/**/b.py', [0, 5]),
+            # an embedded '**' is an ordinary '*', so the separator after it is not dropped
+            ('generated**/schema.py', []),
+            # a '**' inside a bracket expression is a literal, the one after it is a globstar
+            ('a[**/]/**/b.py', [7]),
+            ('[**/]x.py', []),
+            # fnmatch reads a ']' in first position as a member, so the class closes later
+            ('[]a/**/]src/*.py', []),
+            ('[!]a/**/]src/*.py', []),
+            # a '!' anywhere but first position is an ordinary member
+            ('[a]!**/**/x.py', [7]),
+            # a '!' first position skips the member, so ']' closes the expression
+            ('[!]]/**/x.py', [5]),
+            # fnmatch reads an unterminated '[' as a literal and keeps parsing after it, and every
+            # '[' of a pattern with no closing bracket at all is unterminated
+            ('a[b/**/c.py', [4]),
+            ('[' * 40 + '/**/x.py', [41]),
+            # ...while a later ']' closes the expression, so the '**/' inside it stays literal
+            ('a[b/**/c.py]', []),
+        ],
+    )
+    def test_globstar_offsets_ignore_embedded_and_bracketed_globstars(self, pattern, expected_offsets):
+        assert file_filter._globstar_offsets(pattern) == expected_offsets
+
+    def test_too_many_globstars_keep_fnmatch_translation_and_are_reported(self):
+        pattern = 'a/' + '**/part/' * 7 + 'x.py'
+
+        logs = _capture_logs(lambda: translate_globs_to_regexes([pattern]))
+
+        assert translate_globs_to_regexes([pattern]) == [fnmatch.translate(pattern)]
+        assert "Skipped zero-directory '**/' variants" in logs
+        assert file_filter._translate_globs_to_regexes_with_status([pattern]) == ([fnmatch.translate(pattern)], False)
+        assert _capture_logs(lambda: file_filter._translate_globs_to_regexes_with_status([pattern])) == logs
+
+    def test_too_many_globstars_keep_the_root_level_form(self):
+        """Over the limit, a glob still matches at the repository root as it did before."""
+        pattern = '**/a/**/b/**/c/**/d/**/e/**/f/**/g/**/h/x.py'
+        assert len(file_filter._globstar_offsets(pattern)) > file_filter._MAX_ENUMERATED_GLOBSTARS
+
+        logs = _capture_logs(lambda: translate_globs_to_regexes([pattern]))
+
+        assert translate_globs_to_regexes([pattern]) == [
+            fnmatch.translate(pattern),
+            fnmatch.translate(pattern[len('**/'):]),
+        ]
+        assert "Skipped zero-directory '**/' variants" in logs
+
+    @pytest.mark.parametrize(
+        ('glob', 'filename'),
+        [
+            # a glob at the limit still matches the shallowest file and a deeper one
+            ('**/**/**/**/**/**/x.py', 'x.py'),
+            ('**/**/**/**/**/**/x.py', 'a/b/c/x.py'),
+            ('**/a/**/b/**/c/**/d/**/e/x.py', 'a/b/c/d/e/x.py'),
+            ('**/a/**/b/**/c/**/d/**/e/x.py', 'z/a/b/c/d/e/x.py'),
+            # six globstars is the last count that gets enumerated, so the fully collapsed form of
+            # a glob with no leading '**/' exists at the limit and not one globstar above it
+            ('a/**/b/**/c/**/d/**/e/**/f/**/x.py', 'a/b/c/d/e/f/x.py'),
+        ],
+    )
+    def test_a_glob_at_the_globstar_limit_still_matches(self, monkeypatch, glob, filename):
+        monkeypatch.setitem(global_settings.ignore, 'glob', [glob])
+        monkeypatch.setitem(global_settings.ignore, 'regex', [])
+        monkeypatch.setitem(global_settings.config, 'ignore_language_framework', [])
+
+        files = [type('', (object,), {'filename': filename})()]
+
+        assert filter_ignored(files) == []
+
+    @pytest.mark.parametrize('glob', ['[]a/**/]src/*.py', '[!]a/**/]src/*.py', 'a[**/]/b.py'])
+    def test_a_globstar_inside_a_bracket_expression_adds_no_regex(self, glob):
+        """A `**/` inside a bracket expression is literal, so it must not produce a variant."""
+        assert translate_globs_to_regexes([glob]) == [fnmatch.translate(glob)]
+
     def test_regex_ignores(self, monkeypatch):
         """
         Test files are ignored when regex patterns are specified.
         """
-        monkeypatch.setattr(global_settings.ignore, 'regex', ['^file[2-4]\..*$'])
+        monkeypatch.setitem(global_settings.ignore, 'regex', [r'^file[2-4]\..*$'])
 
         files = [
             type('', (object,), {'filename': 'file1.py'})(),
@@ -112,7 +277,7 @@ class TestIgnoreFilter:
         """
         Test invalid patterns are quietly ignored.
         """
-        monkeypatch.setattr(global_settings.ignore, 'regex', ['(((||', '^file[2-4]\..*$'])
+        monkeypatch.setitem(global_settings.ignore, 'regex', ['(((||', r'^file[2-4]\..*$'])
 
         files = [
             type('', (object,), {'filename': 'file1.py'})(),
@@ -127,6 +292,7 @@ class TestIgnoreFilter:
         ]
 
         filtered_files = filter_ignored(files)
+        assert filter_ignored_with_status(files) == (expected, False)
         assert filtered_files == expected, (
             f"Expected {[file.filename for file in expected]}, "
             f"but got {[file.filename for file in filtered_files]}."
@@ -136,7 +302,7 @@ class TestIgnoreFilter:
         """
         Test files are ignored based on language/framework mapping (e.g., protobuf).
         """
-        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', ['protobuf', 'go_gen'])
+        monkeypatch.setitem(global_settings.config, 'ignore_language_framework', ['protobuf', 'go_gen'])
 
         files = [
             type('', (object,), {'filename': 'main.go'})(),
@@ -161,7 +327,7 @@ class TestIgnoreFilter:
         """
         Test skipping of generated code filtering when ignore_language_framework is not a list
         """
-        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', 'protobuf')
+        monkeypatch.setitem(global_settings.config, 'ignore_language_framework', 'protobuf')
 
         files = [
             type('', (object,), {'filename': 'main.go'})(),
@@ -177,17 +343,70 @@ class TestIgnoreFilter:
         ]
 
         filtered = filter_ignored(files)
+        assert filter_ignored_with_status(files) == (expected, False)
         assert filtered == expected, (
             f"Expected {[f.filename for f in expected]}, "
             f"but got {[f.filename for f in filtered]}"
         )
 
+    @pytest.mark.parametrize("source", ["regex", "configured", "generated"])
+    def test_malformed_patterns_preserve_best_effort_filter(self, monkeypatch, source):
+        pattern = r"^.*\.pb\.go$" if source == "regex" else "*.pb.go"
+        malformed = {pattern: "not a pattern list"}
+        monkeypatch.setitem(global_settings.ignore, "regex", malformed if source == "regex" else [])
+        monkeypatch.setitem(global_settings.ignore, "glob", malformed if source == "configured" else ["vendor/**"])
+        monkeypatch.setitem(global_settings.config, "ignore_language_framework", ["protobuf"])
+        monkeypatch.setitem(global_settings.generated_code, "protobuf",
+                            malformed if source == "generated" else ["vendor/**"])
+        files = [type("", (object,), {"filename": name})()
+                 for name in ("vendor/yarn.lock", "service.pb.go", "app.py", "package-lock.json")]
+        results = {}
+        legacy_logs = _capture_logs(lambda: results.setdefault("legacy", filter_ignored(list(files))))
+        status_logs = _capture_logs(lambda: results.setdefault("status", filter_ignored_with_status(list(files))))
+
+        assert results["legacy"] == files[2:]
+        assert results["status"] == (files[2:], False)
+        assert status_logs == legacy_logs == ""
+
+    @pytest.mark.parametrize("source", ["regex", "configured", "generated"])
+    def test_nonstring_patterns_report_incomplete_filtering(self, monkeypatch, source):
+        patterns = [None, r"^vendor/" if source == "regex" else "vendor/**"]
+        monkeypatch.setitem(global_settings.ignore, "regex", patterns if source == "regex" else [])
+        monkeypatch.setitem(global_settings.ignore, "glob", patterns if source == "configured" else [])
+        monkeypatch.setitem(global_settings.config, "ignore_language_framework", ["protobuf"])
+        monkeypatch.setitem(global_settings.generated_code, "protobuf", patterns if source == "generated" else [])
+        files = [type("", (object,), {"filename": name})()
+                 for name in ("vendor/yarn.lock", "app.py", "package-lock.json")]
+        results = {}
+        legacy_logs = _capture_logs(lambda: results.setdefault("legacy", filter_ignored(list(files))))
+        status_logs = _capture_logs(lambda: results.setdefault("status", filter_ignored_with_status(list(files))))
+
+        assert results["legacy"] == files[1:]
+        assert results["status"] == (files[1:], False)
+        assert status_logs == legacy_logs
+        assert "Skipping non-string ignore" in status_logs
+
+    def test_nonstring_framework_identifier_preserves_legacy_filter_but_reports_incomplete(self, monkeypatch):
+        monkeypatch.setitem(global_settings.ignore, "regex", [])
+        monkeypatch.setitem(global_settings.ignore, "glob", [])
+        monkeypatch.setitem(global_settings.config, "ignore_language_framework", [42, "protobuf"])
+        monkeypatch.setitem(global_settings.generated_code, "protobuf", ["vendor/**"])
+        files = [type("", (object,), {"filename": name})()
+                 for name in ("vendor/yarn.lock", "app.py", "package-lock.json")]
+        results = {}
+        legacy_logs = _capture_logs(lambda: results.setdefault("legacy", filter_ignored(list(files))))
+        status_logs = _capture_logs(lambda: results.setdefault("status", filter_ignored_with_status(list(files))))
+
+        assert results["legacy"] == files[1:]
+        assert results["status"] == (files[1:], False)
+        assert status_logs == legacy_logs == ""
+
     def test_repeated_filtering_does_not_mutate_regex_settings(self, monkeypatch):
         """Ensure repeated filtering does not append translated glob patterns to shared settings."""
         configured_regex = ['^docs/']
-        monkeypatch.setattr(global_settings.ignore, 'regex', configured_regex)
-        monkeypatch.setattr(global_settings.ignore, 'glob', ['vendor/**'])
-        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+        monkeypatch.setitem(global_settings.ignore, 'regex', configured_regex)
+        monkeypatch.setitem(global_settings.ignore, 'glob', ['vendor/**'])
+        monkeypatch.setitem(global_settings.config, 'ignore_language_framework', [])
 
         files = [
             type('', (object,), {'filename': 'src/app.py'})(),
@@ -201,6 +420,76 @@ class TestIgnoreFilter:
         assert configured_regex == ['^docs/']
 
 
+class TestStringGlobSetting:
+    """A string `ignore.glob` value holds the same patterns a list holds.
+
+    The value arrives as a string from a host or repo config file and from a CLI
+    argument. Splitting it must not touch the brackets of a pattern, because a
+    bracket expression is part of the glob.
+    """
+
+    @staticmethod
+    def _files(*names):
+        return [type('', (object,), {'filename': name})() for name in names]
+
+    @pytest.mark.parametrize(
+        ('value', 'expected'),
+        [
+            ('*.py', ['*.py']),
+            ('*.py,*.md', ['*.py', '*.md']),
+            ('[*.py]', ['*.py']),
+            ('[*.py,*.md]', ['*.py', '*.md']),
+            ('*.py[0-9]', ['*.py[0-9]']),
+            ('[*.py[0-9]]', ['*.py[0-9]']),
+            ('file[1,2].txt', ['file[1,2].txt']),
+            ('*.py[0-9],*.md', ['*.py[0-9]', '*.md']),
+            ('[a,[b]]', ['a', '[b]']),
+            ('', []),
+            ('[]', []),
+            ('[[]*.txt,*.env', ['[[]*.txt', '*.env']),
+            ('a[b,*.md', ['a[b', '*.md']),
+        ],
+    )
+    def test_string_value_splits_into_patterns(self, value, expected):
+        assert file_filter.split_glob_patterns(value) == expected
+
+    @pytest.mark.parametrize(
+        ('glob', 'ignored'),
+        [
+            ('*.py[0-9]', ['gen.py1', 'gen.py2']),
+            ('[*.py[0-9]]', ['gen.py1', 'gen.py2']),
+            ('file[1,2].txt', ['file1.txt', 'file2.txt']),
+            ('*.py[0-9],*.md', ['gen.py1', 'doc.md']),
+            ('[*.py,*.md]', ['a.py', 'a.md']),
+        ],
+    )
+    def test_string_value_ignores_the_matching_files(self, monkeypatch, glob, ignored):
+        monkeypatch.setitem(global_settings.ignore, 'glob', glob)
+        monkeypatch.setitem(global_settings.ignore, 'regex', [])
+        monkeypatch.setitem(global_settings.config, 'ignore_language_framework', [])
+
+        names = ignored + ['keep.txt']
+        files = self._files(*names)
+
+        kept = [file.filename for file in filter_ignored(files)]
+
+        assert kept == [name for name in names if name not in ignored]
+
+    def test_a_string_value_and_a_list_value_ignore_the_same_files(self, monkeypatch):
+        """The two forms of the setting have to behave the same."""
+        names = ['gen.py1', 'gen.py2', 'keep.py']
+
+        monkeypatch.setitem(global_settings.ignore, 'glob', '*.py[0-9]')
+        monkeypatch.setitem(global_settings.ignore, 'regex', [])
+        monkeypatch.setitem(global_settings.config, 'ignore_language_framework', [])
+        from_string = [file.filename for file in filter_ignored(self._files(*names))]
+
+        monkeypatch.setitem(global_settings.ignore, 'glob', ['*.py[0-9]'])
+        from_list = [file.filename for file in filter_ignored(self._files(*names))]
+
+        assert from_string == from_list == ['keep.py']
+
+
 class TestRenameFiltering:
     """A rename names one file by a destination and a source path.
 
@@ -212,9 +501,9 @@ class TestRenameFiltering:
 
     @staticmethod
     def _ignore(monkeypatch, regex):
-        monkeypatch.setattr(global_settings.ignore, 'regex', regex)
-        monkeypatch.setattr(global_settings.ignore, 'glob', [])
-        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+        monkeypatch.setitem(global_settings.ignore, 'regex', regex)
+        monkeypatch.setitem(global_settings.ignore, 'glob', [])
+        monkeypatch.setitem(global_settings.config, 'ignore_language_framework', [])
 
     def test_gitlab_rename_into_ignored_path_is_ignored(self, monkeypatch):
         self._ignore(monkeypatch, [r'.*\.lock$'])
@@ -324,9 +613,9 @@ class TestMultiplePatterns:
 
     @staticmethod
     def _ignore(monkeypatch, regex):
-        monkeypatch.setattr(global_settings.ignore, 'regex', regex)
-        monkeypatch.setattr(global_settings.ignore, 'glob', [])
-        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+        monkeypatch.setitem(global_settings.ignore, 'regex', regex)
+        monkeypatch.setitem(global_settings.ignore, 'glob', [])
+        monkeypatch.setitem(global_settings.config, 'ignore_language_framework', [])
 
     def test_gitlab_later_pattern_still_applies_after_an_earlier_one_drops_entries(self, monkeypatch):
         self._ignore(monkeypatch, [r'^vendor/', r'.*_generated\.py$', r'^secrets/'])
@@ -406,9 +695,9 @@ class TestNoPatternsConfigured:
 
     @staticmethod
     def _no_patterns(monkeypatch, regex=None):
-        monkeypatch.setattr(global_settings.ignore, 'regex', regex if regex is not None else [])
-        monkeypatch.setattr(global_settings.ignore, 'glob', [])
-        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+        monkeypatch.setitem(global_settings.ignore, 'regex', regex if regex is not None else [])
+        monkeypatch.setitem(global_settings.ignore, 'glob', [])
+        monkeypatch.setitem(global_settings.config, 'ignore_language_framework', [])
 
     def test_gitlab_pathless_entry_survives_when_no_pattern_is_configured(self, monkeypatch):
         self._no_patterns(monkeypatch)
@@ -450,3 +739,339 @@ class TestNoPatternsConfigured:
         files = [pathless, _gitlab_change('src/app.py', 'src/app.py')]
 
         assert filter_ignored(list(files), platform='gitlab') == [files[1]]
+
+    def test_azure_leading_slash_does_not_defeat_the_ignore_patterns(self, monkeypatch):
+        """Azure DevOps reports "/vendor/lib/x.js"; the anchored pattern must still match."""
+        self._no_patterns(monkeypatch, regex=[r'^vendor/'])
+
+        files = ['/vendor/lib/jquery.min.js', '/src/app.cs']
+
+        assert filter_ignored(list(files), platform='azure') == ['/src/app.cs']
+
+    def test_azure_paths_without_a_leading_slash_still_filter(self, monkeypatch):
+        self._no_patterns(monkeypatch, regex=[r'^vendor/'])
+
+        files = ['vendor/lib/jquery.min.js', 'src/app.cs']
+
+        assert filter_ignored(list(files), platform='azure') == ['src/app.cs']
+
+    def test_azure_keeps_unmatched_paths(self, monkeypatch):
+        self._no_patterns(monkeypatch, regex=[r'^vendor/'])
+
+        files = ['/src/app.cs', '/docs/readme.md']
+
+        assert filter_ignored(list(files), platform='azure') == files
+
+
+# A changed-file entry per platform, built so that each carries the same path twice over.
+_ENTRY_SHAPES = {
+    'github': lambda p: type('', (object,), {'filename': p})(),
+    'codecommit': lambda p: type('', (object,), {'filename': p})(),
+    'mosaico': lambda p: type('', (object,), {'filename': p})(),
+    'bitbucket': lambda p: _BitbucketDiffstat(p, p),
+    'bitbucket_server': lambda p: {'path': {'toString': p}},
+    'gitlab': lambda p: _gitlab_change(p, p),
+    'azure': lambda p: p,
+    'gitea': lambda p: {'filename': p},
+    'gerrit': lambda p: type('', (object,), {'b_path': p, 'a_path': p})(),
+}
+
+
+class TestUnfilteredPlatformIsReported:
+    """A platform the dispatch cannot read passes every file through, so say so.
+
+    The dispatch's `else` breaks out for a platform name it does not recognise, which
+    leaves the list untouched. That is the safe direction to fail -- dropping
+    files the user never asked to exclude would hide real changes -- but it is only safe
+    while it is visible, because an unfiltered list inflates the prompt and pushes the
+    run into the token budget and fallback-model paths.
+    """
+
+    @staticmethod
+    def _ignore(monkeypatch):
+        monkeypatch.setitem(global_settings.ignore, 'regex', [r'^vendor/'])
+        monkeypatch.setitem(global_settings.ignore, 'glob', [])
+        monkeypatch.setitem(global_settings.config, 'ignore_language_framework', [])
+
+    def test_unrecognised_platform_warns_that_nothing_was_filtered(self, monkeypatch):
+        self._ignore(monkeypatch)
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        warnings = _capture_warnings(lambda: filter_ignored(list(files), platform='giteaaa'))
+
+        assert len(warnings) == 1, f"Expected one warning, got {warnings}"
+
+    def test_unrecognised_platform_warning_names_the_platform(self, monkeypatch):
+        """The platform string is the only thing that identifies the bad call site.
+
+        It goes in the message rather than the artifact because the message is what a
+        reader scanning the log sees.
+        """
+        self._ignore(monkeypatch)
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        warnings = _capture_warnings(lambda: filter_ignored(list(files), platform='giteaaa'))
+
+        assert len(warnings) == 1
+        assert 'giteaaa' in warnings[0]
+
+    def test_unrecognised_platform_warns_once_per_call_not_once_per_pattern(self, monkeypatch):
+        """The `break` after the warning keeps N patterns from producing N warnings."""
+        monkeypatch.setitem(global_settings.ignore, 'regex', [r'^vendor/', r'^secrets/', r'.*\.pem$'])
+        monkeypatch.setitem(global_settings.ignore, 'glob', [])
+        monkeypatch.setitem(global_settings.config, 'ignore_language_framework', [])
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        warnings = _capture_warnings(lambda: filter_ignored(list(files), platform='giteaaa'))
+
+        assert len(warnings) == 1, f"Expected one warning, got {warnings}"
+
+    def test_unrecognised_platform_does_not_warn_when_there_is_nothing_to_filter(self, monkeypatch):
+        """No compiled pattern means no filter was skipped, so warning would be noise."""
+        monkeypatch.setitem(global_settings.ignore, 'regex', [])
+        monkeypatch.setitem(global_settings.ignore, 'glob', [])
+        monkeypatch.setitem(global_settings.config, 'ignore_language_framework', [])
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        warnings = _capture_warnings(lambda: filter_ignored(list(files), platform='giteaaa'))
+
+        assert warnings == []
+        assert filter_ignored_with_status(list(files), platform='giteaaa') == (files, False)
+
+    @pytest.mark.parametrize("platform, build", _ENTRY_SHAPES.items())
+    def test_every_supported_platform_actually_drops_a_matching_file(self, monkeypatch, platform, build):
+        """Each listed platform must reach its branch; an unreachable one is dead config."""
+        self._ignore(monkeypatch)
+
+        matching = build('vendor/lib.py')
+        kept = build('src/app.py')
+
+        assert filter_ignored_with_status([matching, kept], platform=platform) == ([kept], True)
+        assert filter_ignored([matching, kept], platform=platform) == [kept], (
+            f"platform {platform!r} did not apply the ignore pattern"
+        )
+
+    @pytest.mark.parametrize("platform, build", _ENTRY_SHAPES.items())
+    def test_supported_platforms_do_not_warn(self, monkeypatch, platform, build):
+        self._ignore(monkeypatch)
+
+        files = [build('vendor/lib.py')]
+
+        assert _capture_warnings(lambda p=platform, f=files: filter_ignored(list(f), platform=p)) == [], (
+            f"platform {platform!r} should not warn"
+        )
+
+
+class TestFilterFailureIsReported:
+    """A failure leaves the list in whatever state the last completed pass left it.
+
+    Each pattern pass rebinds `files` only once that pass completes, so an exception
+    on a later pass returns the earlier passes' result; an exception before the first
+    pass returns the caller's list untouched. Both states may hold files the [ignore]
+    rules should have excluded, which is what the report has to say -- and what it
+    must not overstate, since no pass may have run at all.
+    """
+
+    @staticmethod
+    def _exploding_settings(monkeypatch):
+        class _Exploding:
+            @property
+            def ignore(self):
+                raise RuntimeError('settings unavailable')
+
+        monkeypatch.setattr('pr_agent.algo.file_filter.get_settings', lambda: _Exploding())
+
+    def test_failure_states_that_the_list_may_still_contain_ignored_files(self, monkeypatch):
+        """The message has to say what the caller now has, not just what went wrong."""
+        self._exploding_settings(monkeypatch)
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        errors = _capture_errors(lambda: filter_ignored(list(files), platform='github'))
+
+        assert len(errors) == 1, f"Expected one error, got {errors}"
+        assert 'filtering did not complete' in errors[0]
+        assert 'may still' in errors[0]
+
+    def test_failure_returns_every_file_when_no_pattern_pass_has_run(self, monkeypatch):
+        """A failure before the passes leaves the caller's list untouched."""
+        self._exploding_settings(monkeypatch)
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        assert filter_ignored(list(files), platform='github') == files
+        assert filter_ignored_with_status(list(files), platform='github') == (files, False)
+
+    def test_failure_after_an_earlier_pass_returns_that_pass_s_result(self, monkeypatch):
+        """Pin the partly filtered state the message describes.
+
+        `filename` raises once two passes have read it, so the first pattern drops
+        `vendor/lib.py` and the second fails part-way. The result is the first pass's
+        list: shorter than the input, so "the unfiltered list is being used" would be
+        false, yet `vendor/lib.py` is gone, so it is not a safe list either.
+        """
+        monkeypatch.setitem(global_settings.ignore, 'regex', [r'^vendor/', r'^secrets/'])
+        monkeypatch.setitem(global_settings.ignore, 'glob', [])
+        monkeypatch.setitem(global_settings.config, 'ignore_language_framework', [])
+
+        class _FailsOnThirdRead:
+            def __init__(self):
+                self.reads = 0
+
+            @property
+            def filename(self):
+                self.reads += 1
+                if self.reads > 2:
+                    raise RuntimeError('boom')
+                return 'src/app.py'
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})(), _FailsOnThirdRead()]
+
+        captured = {}
+        errors = _capture_errors(
+            lambda: captured.setdefault('result', filter_ignored_with_status(list(files), 'github'))
+        )
+        result, complete = captured['result']
+        assert complete is False
+
+        assert len(result) == 1
+        assert result[0] is files[1]
+        assert len(errors) == 1, f"Expected the failure to be reported once, got {errors}"
+        assert 'filtering did not complete' in errors[0]
+
+
+class TestGlobstarLimits:
+    HEAVY = tuple(f"dir{i}/**/b/**/c/**/d/**/e/**/f/x.py" for i in range(12))
+
+    def test_variant_limit_keeps_every_configured_and_root_form(self):
+        globs = list(self.HEAVY) + ["**/private/report.py"]
+        regexes = translate_globs_to_regexes(globs)
+        configured = {fnmatch.translate(pattern) for pattern in globs}
+        configured.add(fnmatch.translate("private/report.py"))
+
+        assert file_filter._translate_globs_to_regexes_with_status(globs) == (regexes, False)
+        assert configured <= set(regexes)
+        assert len(set(regexes) - configured) == file_filter._MAX_IGNORE_GLOB_VARIANT_REGEXES
+        logs = _capture_logs(lambda: translate_globs_to_regexes(globs))
+        assert logs.count("Skipped zero-directory '**/' variants") == 1
+        assert _capture_logs(lambda: file_filter._translate_globs_to_regexes_with_status(globs)) == logs
+
+    def test_duplicate_variants_do_not_crowd_out_later_zero_directory_forms(self, monkeypatch):
+        globs = ["a/" + "**/" * 6 + f"file{i}.py" for i in range(5)]
+        monkeypatch.setitem(global_settings.ignore, "glob", globs)
+        monkeypatch.setitem(global_settings.ignore, "regex", [])
+        monkeypatch.setitem(global_settings.config, "ignore_language_framework", [])
+        files = [type("", (object,), {"filename": f"a/file{i}.py"})() for i in range(5)]
+
+        assert filter_ignored(files) == []
+        assert "Skipped" not in _capture_logs(lambda: translate_globs_to_regexes(globs))
+
+    @pytest.mark.parametrize("leading", [False, True])
+    @pytest.mark.parametrize("over_limit", [False, True])
+    def test_pattern_length_boundary_preserves_baseline_forms(self, leading, over_limit):
+        prefix = "**/src/**/" if leading else "src/**/"
+        size = file_filter._MAX_EXPANDED_GLOB_LENGTH + int(over_limit)
+        pattern = prefix + "x" * (size - len(prefix) - len(".py")) + ".py"
+        configured = {fnmatch.translate(pattern)}
+        if leading:
+            configured.add(fnmatch.translate(pattern[3:]))
+        legacy_regexes = translate_globs_to_regexes([pattern])
+        assert file_filter._translate_globs_to_regexes_with_status([pattern]) == (legacy_regexes, not over_limit)
+        regexes = set(legacy_regexes)
+
+        assert configured <= regexes
+        assert (regexes == configured) == over_limit
+        logs = _capture_logs(lambda: translate_globs_to_regexes([pattern]))
+        assert ("Skipped" in logs) == over_limit
+        assert _capture_logs(lambda: file_filter._translate_globs_to_regexes_with_status([pattern])) == logs
+
+    def test_overlong_glob_is_skipped_before_translation(self):
+        long_pattern = "x" * 20_000
+        regexes = translate_globs_to_regexes([long_pattern, "*.py"])
+
+        assert regexes == [fnmatch.translate("*.py")]
+        assert file_filter._translate_globs_to_regexes_with_status([long_pattern, "*.py"]) == (regexes, False)
+        logs = _capture_logs(lambda: translate_globs_to_regexes([long_pattern]))
+        assert "Skipped 1 ignore glob(s) longer than" in logs
+        assert _capture_logs(lambda: file_filter._translate_globs_to_regexes_with_status([long_pattern])) == logs
+
+    def test_generated_code_list_has_its_own_allowance(self, monkeypatch):
+        monkeypatch.setitem(global_settings.ignore, "glob", list(self.HEAVY))
+        monkeypatch.setitem(global_settings.ignore, "regex", [])
+        monkeypatch.setitem(global_settings.config, "ignore_language_framework", ["protobuf"])
+        monkeypatch.setitem(global_settings.generated_code, "protobuf", ["src/**/gen_pb2.py"])
+        files = [type("", (object,), {"filename": name})()
+                 for name in ("src/gen_pb2.py", "src/api/gen_pb2.py", "src/keep.py")]
+
+        assert filter_ignored(files) == [files[2]]
+
+    def test_each_exhausted_list_reports_its_own_warning(self, monkeypatch):
+        monkeypatch.setitem(global_settings.ignore, "glob", list(self.HEAVY))
+        monkeypatch.setitem(global_settings.ignore, "regex", [])
+        monkeypatch.setitem(global_settings.config, "ignore_language_framework", ["protobuf"])
+        monkeypatch.setitem(global_settings.generated_code, "protobuf", ["generated/" + p for p in self.HEAVY])
+        files = [type("", (object,), {"filename": "src/keep.py"})()]
+
+        logs = _capture_logs(lambda: filter_ignored(files))
+
+        assert logs.count("Skipped zero-directory '**/' variants") == 2
+
+    def test_repeated_globs_and_one_shot_iterables_keep_their_variants(self):
+        pattern = "a/**/b/**/c.py"
+        expected = translate_globs_to_regexes([pattern])
+
+        assert translate_globs_to_regexes(iter([pattern] * 50)) == expected
+        assert file_filter._translate_globs_to_regexes_with_status(iter([pattern] * 50)) == (expected, True)
+
+    @pytest.mark.parametrize("pattern", ["**/**/**/", "**/"])
+    def test_globstars_do_not_produce_an_empty_regex(self, pattern):
+        regexes = translate_globs_to_regexes([pattern])
+
+        assert regexes[0] == fnmatch.translate(pattern)
+        assert fnmatch.translate("") not in regexes
+
+    def test_over_cap_patterns_after_an_exhausted_allowance_are_still_reported(self):
+        over_cap = "a/" + "**/part/" * 7 + "x.py"
+        records = []
+        handler = get_logger().add(lambda message: records.append(message.record))
+        try:
+            translate_globs_to_regexes(self.HEAVY)
+            regexes = translate_globs_to_regexes(self.HEAVY + (over_cap,))
+        finally:
+            get_logger().remove(handler)
+
+        assert fnmatch.translate(over_cap) in regexes
+        warnings = [record for record in records if "Skipped zero-directory" in record["message"]]
+        assert len(warnings) == 2
+        assert warnings[1]["extra"]["artifact"]["globs"] == warnings[0]["extra"]["artifact"]["globs"] + 1
+
+
+@pytest.mark.parametrize("source", ["configured", "first_generated", "second_generated"])
+def test_ignore_status_aggregates_every_glob_source(monkeypatch, source):
+    patterns = ["x" * (file_filter._MAX_GLOB_LENGTH + 1)]
+    monkeypatch.setitem(global_settings.ignore, "regex", [])
+    monkeypatch.setitem(global_settings.ignore, "glob", patterns if source == "configured" else [])
+    monkeypatch.setitem(global_settings.config, "ignore_language_framework", ["protobuf", "go_gen"])
+    monkeypatch.setitem(global_settings.generated_code, "protobuf",
+                        patterns if source == "first_generated" else ["vendor/**"])
+    monkeypatch.setitem(global_settings.generated_code, "go_gen",
+                        patterns if source == "second_generated" else ["generated/**"])
+    files = [type("", (object,), {"filename": name})()
+             for name in ("vendor/yarn.lock", "generated/uv.lock", "package-lock.json", "app.py")]
+    results = {}
+    legacy_logs = _capture_logs(lambda: results.setdefault("legacy", filter_ignored(list(files), "mosaico")))
+    status_logs = _capture_logs(
+        lambda: results.setdefault("status", filter_ignored_with_status(list(files), "mosaico"))
+    )
+
+    assert results["status"] == (results["legacy"], False)
+    assert status_logs == legacy_logs
+    assert files[2:] == results["legacy"][-2:]
+    if source != "first_generated":
+        assert files[0] not in results["legacy"]
+    if source != "second_generated":
+        assert files[1] not in results["legacy"]

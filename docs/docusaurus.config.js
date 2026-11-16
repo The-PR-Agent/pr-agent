@@ -26,7 +26,7 @@ const config = {
   tagline: 'AI-powered code review agent',
   url: 'https://docs.pr-agent.ai',
   baseUrl: '/',
-  // The MkDocs site published directory URLs, and pr_agent/tools/pr_help_message.py
+  // The MkDocs site published directory URLs, and pr_agent/commands/pr_help_message.py
   // emits them with a trailing slash into PR comments. Keep them byte-identical.
   trailingSlash: true,
   onBrokenLinks: 'throw',
@@ -64,6 +64,22 @@ const config = {
   ],
 
   clientModules: [require.resolve('./src/fonts.js')],
+
+  // kapa.ai "Ask AI" widget: https://docs.kapa.ai/integrations/website-widget/installation/docusaurus
+  scripts: [
+    {
+      src: 'https://widget.kapa.ai/kapa-widget.bundle.js',
+      'data-website-id': '5c89c0b1-b2ee-43c9-8c6f-43ed762b3c1e',
+      'data-project-name': 'PR-Agent',
+      'data-project-color': '#2459db',
+      'data-project-logo': '/img/favicon.svg',
+      // The launcher is filled with the project colour, so the blue mark needs a white variant there.
+      'data-launcher-button-image': '/img/favicon-white.svg',
+      // Follow the navbar's light/dark toggle instead of the OS preference.
+      'data-color-scheme-selector': "[data-theme='dark']",
+      async: true,
+    },
+  ],
 
   plugins: [
     [
@@ -128,8 +144,8 @@ const config = {
           },
           {
             type: 'docSidebar',
-            sidebarId: 'tools',
-            label: 'Tools',
+            sidebarId: 'commands',
+            label: 'Commands',
             position: 'left',
           },
           {

@@ -15,50 +15,15 @@ from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.git_provider import GitProvider, get_reaction_setting
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-
-
-class _RecordingProvider(GitProvider):
-    """Minimal concrete provider: only the reaction primitive is real."""
-
-    def __init__(self):
-        self.reactions = []
-        self.removed = []
-
-    def add_reaction(self, issue_comment_id: int, reaction: str):
-        self.reactions.append((issue_comment_id, reaction))
-        return len(self.reactions)
-
-    # the abstract surface the base class declares
-    def is_supported(self, capability): return True
-    def get_files(self): return []
-    def get_diff_files(self): return []
-    def publish_description(self, pr_title, pr_body): pass
-    def publish_comment(self, pr_comment, is_temporary=False): pass
-    def publish_inline_comment(self, body, relevant_file, relevant_line_in_file, original_suggestion=None): pass
-    def publish_inline_comments(self, comments): pass
-    def remove_initial_comment(self): pass
-    def remove_comment(self, comment): pass
-    def get_languages(self): return {}
-    def get_pr_branch(self): return ""
-    def get_user_id(self): return ""
-    def get_pr_description_full(self): return ""
-    def get_issue_comments(self): return []
-    def get_repo_settings(self): return b""
-    def remove_reaction(self, issue_comment_id, reaction_id):
-        self.removed.append((issue_comment_id, reaction_id))
-        return True
-    def get_commit_messages(self) -> str: return ""
-    def publish_labels(self, labels): pass
-    def get_pr_labels(self, update=False): return []
-    def publish_code_suggestions(self, code_suggestions) -> bool: return True
+from tests.unittest._reaction_helpers import _RecordingProvider
 
 
 @pytest.fixture
 def reactions(monkeypatch):
     def _set(start="eyes", success="", failure=""):
-        monkeypatch.setattr(get_settings().config, "reaction_on_start", start, raising=False)
-        monkeypatch.setattr(get_settings().config, "reaction_on_success", success, raising=False)
-        monkeypatch.setattr(get_settings().config, "reaction_on_failure", failure, raising=False)
+        monkeypatch.setitem(get_settings().config, "reaction_on_start", start)
+        monkeypatch.setitem(get_settings().config, "reaction_on_success", success)
+        monkeypatch.setitem(get_settings().config, "reaction_on_failure", failure)
     _set()
     return _set
 
@@ -295,8 +260,8 @@ def _comment_event(body="/review"):
 @pytest.fixture
 def comment_handler(monkeypatch):
     """The real handle_comments_on_pr, with only the provider and the agent faked."""
-    import pr_agent.servers.github_app as github_app
     from pr_agent.identity_providers.identity_provider import Eligibility
+    from pr_agent.servers import github_app
 
     provider = _RecordingProvider()
     provider.add_eyes_reaction_calls = []
@@ -358,35 +323,36 @@ async def test_the_default_configuration_adds_only_the_start_reaction(reactions,
 
 
 @pytest.mark.asyncio
-async def test_a_swallowed_tool_failure_gets_a_failure_outcome(
+async def test_a_swallowed_command_failure_gets_a_failure_outcome(
     reactions, comment_handler, monkeypatch
 ):
-    """Keep compatibility-swallowed tool failures from becoming success reactions."""
+    """Keep compatibility-swallowed command failures from becoming success reactions."""
     import pr_agent.agent.pr_agent as pr_agent_module
 
     reactions(success="hooray", failure="confused")
-    monkeypatch.setattr(get_settings().config, "propagate_tool_errors", False, raising=False)
+    monkeypatch.setitem(get_settings().config, "propagate_command_errors", False)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
     monkeypatch.setattr(pr_agent_module.CliArgs, "validate_user_args", lambda _args: (True, None))
     monkeypatch.setattr(pr_agent_module, "update_settings_from_args", lambda args: args)
 
     observed_propagation = []
 
-    class SwallowingReviewTool:
+    class SwallowingReviewCommand:
         def __init__(self, _pr_url, ai_handler=None, args=None):
             pass
 
         async def run(self):
             observed_propagation.append(
-                get_settings().config.get("propagate_tool_errors", False)
+                get_settings().config.get("propagate_command_errors", False)
             )
             try:
                 raise RuntimeError("provider unavailable")
             except RuntimeError:
-                if get_settings().config.get("propagate_tool_errors", False):
+                if get_settings().config.get("propagate_command_errors", False):
                     raise
 
-    monkeypatch.setitem(pr_agent_module.command2class, "review", SwallowingReviewTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "review", SwallowingReviewCommand)
 
     github_app, provider = comment_handler
     agent = pr_agent_module.PRAgent(ai_handler="fake-ai")
@@ -398,7 +364,7 @@ async def test_a_swallowed_tool_failure_gets_a_failure_outcome(
     assert observed_propagation == [True]
     assert provider.reactions == [(4242, "eyes"), (4242, "confused")]
     assert provider.removed == [(4242, 1)]
-    assert get_settings().config.get("propagate_tool_errors") is False
+    assert get_settings().config.get("propagate_command_errors") is False
 
 
 @pytest.mark.asyncio
@@ -408,16 +374,17 @@ async def test_incomplete_files_constructor_failure_is_visible_and_marked_failed
     import pr_agent.agent.pr_agent as pr_agent_module
 
     reactions(failure="confused")
-    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
     monkeypatch.setattr(pr_agent_module.CliArgs, "validate_user_args", lambda _args: (True, None))
     monkeypatch.setattr(pr_agent_module, "update_settings_from_args", lambda args: args)
 
-    class IncompleteReviewTool:
+    class IncompleteReviewCommand:
         def __init__(self, _pr_url, ai_handler=None, args=None):
             raise pr_agent_module.IncompletePullRequestFilesError("private mismatch details")
 
-    monkeypatch.setitem(pr_agent_module.command2class, "review", IncompleteReviewTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "review", IncompleteReviewCommand)
 
     github_app, provider = comment_handler
     provider.publish_comment = MagicMock()
@@ -446,28 +413,29 @@ async def test_documentation_and_label_failures_get_failure_outcomes(
 ):
     """Verify that documentation and label command failures get failure reactions."""
     import pr_agent.agent.pr_agent as pr_agent_module
-    from pr_agent.tools import pr_add_docs, pr_generate_labels
+    from pr_agent.commands import pr_add_docs, pr_generate_labels
 
     reactions(success="hooray", failure="confused")
     settings = get_settings()
-    monkeypatch.setattr(settings.config, "propagate_tool_errors", False, raising=False)
-    monkeypatch.setattr(settings.config, "publish_output", False, raising=False)
+    monkeypatch.setitem(settings.config, "propagate_command_errors", False)
+    monkeypatch.setitem(settings.config, "publish_output", False)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
     monkeypatch.setattr(pr_agent_module.CliArgs, "validate_user_args", lambda _args: (True, None))
     monkeypatch.setattr(pr_agent_module, "update_settings_from_args", lambda args: args)
 
-    tool_module = pr_add_docs if command == "add_docs" else pr_generate_labels
-    tool_class = pr_agent_module.command2class[command]
+    command_module = pr_add_docs if command == "add_docs" else pr_generate_labels
+    command_class = pr_agent_module.command2class[command]
 
-    def init_tool(self, *_args, **_kwargs):
+    def init_command(self, *_args, **_kwargs):
         self.git_provider = MagicMock()
         self.pr_id = "org/repo#1"
 
     async def fail_before_publishing(*_args, **_kwargs):
         raise RuntimeError("provider unavailable")
 
-    monkeypatch.setattr(tool_class, "__init__", init_tool)
-    monkeypatch.setattr(tool_module, "retry_with_fallback_models", fail_before_publishing)
+    monkeypatch.setattr(command_class, "__init__", init_command)
+    monkeypatch.setattr(command_module, "retry_with_fallback_models", fail_before_publishing)
 
     github_app, provider = comment_handler
     agent = pr_agent_module.PRAgent(ai_handler="fake-ai")
@@ -478,7 +446,7 @@ async def test_documentation_and_label_failures_get_failure_outcomes(
 
     assert provider.reactions == [(4242, "eyes"), (4242, "confused")]
     assert provider.removed == [(4242, 1)]
-    assert get_settings().config.get("propagate_tool_errors") is False
+    assert get_settings().config.get("propagate_command_errors") is False
 
 
 @pytest.mark.asyncio
@@ -486,7 +454,8 @@ async def test_contextless_propagation_override_isolated_from_concurrent_request
     import pr_agent.agent.pr_agent as pr_agent_module
 
     assert get_settings() is global_settings
-    monkeypatch.setattr(global_settings.config, "propagate_tool_errors", False, raising=False)
+    monkeypatch.setitem(global_settings.config, "propagate_command_errors", False)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
     monkeypatch.setattr(pr_agent_module.CliArgs, "validate_user_args", lambda _args: (True, None))
     monkeypatch.setattr(pr_agent_module, "update_settings_from_args", lambda args: args)
@@ -495,27 +464,27 @@ async def test_contextless_propagation_override_isolated_from_concurrent_request
     default_observed = asyncio.Event()
     observed = {}
 
-    class WaitingTool:
+    class WaitingCommand:
         def __init__(self, pr_url, ai_handler=None, args=None):
             self.pr_url = pr_url
 
         async def run(self):
-            observed[self.pr_url] = get_settings().config.get("propagate_tool_errors", False)
+            observed[self.pr_url] = get_settings().config.get("propagate_command_errors", False)
             if self.pr_url == "override":
                 override_started.set()
                 await default_observed.wait()
             else:
                 await override_started.wait()
                 observed["default_during_override"] = get_settings().config.get(
-                    "propagate_tool_errors", False
+                    "propagate_command_errors", False
                 )
                 default_observed.set()
 
-    monkeypatch.setitem(pr_agent_module.command2class, "review", WaitingTool)
+    monkeypatch.setitem(pr_agent_module.command2class, "review", WaitingCommand)
     agent = pr_agent_module.PRAgent(ai_handler="fake-ai")
 
     override_result, default_result = await asyncio.gather(
-        agent.handle_request("override", ["review"], propagate_tool_errors=True),
+        agent.handle_request("override", ["review"], propagate_command_errors=True),
         agent.handle_request("default", ["review"]),
     )
 
@@ -526,4 +495,4 @@ async def test_contextless_propagation_override_isolated_from_concurrent_request
         "default": False,
         "default_during_override": False,
     }
-    assert global_settings.config.get("propagate_tool_errors") is False
+    assert global_settings.config.get("propagate_command_errors") is False

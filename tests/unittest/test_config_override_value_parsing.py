@@ -1,16 +1,15 @@
-"""A `--key=value` override must reach the tool whatever the value looks like.
+"""A `--key=value` override must reach the command whatever the value looks like.
 
 `update_settings_from_args` tries to read the value as YAML and falls back to the raw string.
-The fallback logs at DEBUG - the level every webhook server runs at, because
-`configuration.toml` ships `log_level="DEBUG"` - so the log call is on the hot path for any
-value YAML rejects.
+The fallback logs at DEBUG, so it is useful when troubleshooting values YAML rejects without
+being emitted at the shipped INFO level.
 """
 import pytest
 
 import pr_agent.agent.pr_agent as agent_module
 from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings
-from pr_agent.log import setup_logger
+from pr_agent.log import get_logger, setup_logger
 
 PR_URL = "https://github.com/org/repo/pull/1"
 
@@ -27,24 +26,25 @@ UNPARSEABLE_VALUES = [
 
 @pytest.fixture
 def debug_logging():
-    """The level every webhook server passes to setup_logger."""
-    setup_logger(level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
+    """Use the configured log level while testing raw-string fallback handling."""
+    setup_logger(level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
     yield
     setup_logger(level="INFO")
 
 
 @pytest.fixture
-def review_tool(monkeypatch):
+def review_command(monkeypatch):
     ran = {}
 
-    class FakeReviewTool:
+    class FakeReviewCommand:
         def __init__(self, pr_url, ai_handler=None, args=None):
             ran["args"] = args
 
         async def run(self):
             ran["ran"] = True
+            ran["publish_output"] = get_settings().config.publish_output
 
-    monkeypatch.setitem(agent_module.command2class, "review", FakeReviewTool)
+    monkeypatch.setitem(agent_module.command2class, "review", FakeReviewCommand)
     monkeypatch.setattr(agent_module, "apply_repo_settings", lambda pr_url: None)
     return ran
 
@@ -52,7 +52,7 @@ def review_tool(monkeypatch):
 @pytest.mark.parametrize("value", UNPARSEABLE_VALUES)
 def test_an_unparseable_value_is_stored_as_the_raw_string(monkeypatch, debug_logging, value):
     settings = get_settings()
-    monkeypatch.setattr(settings.pr_reviewer, "extra_instructions", "")
+    monkeypatch.setitem(settings.pr_reviewer, "extra_instructions", "")
 
     update_settings_from_args([f"--pr_reviewer.extra_instructions={value}"])
 
@@ -61,32 +61,68 @@ def test_an_unparseable_value_is_stored_as_the_raw_string(monkeypatch, debug_log
 
 def test_a_parseable_value_is_still_converted(monkeypatch, debug_logging):
     settings = get_settings()
-    monkeypatch.setattr(settings.pr_reviewer, "num_max_findings", 3)
+    monkeypatch.setitem(settings.pr_reviewer, "num_max_findings", 3)
 
     update_settings_from_args(["--pr_reviewer.num_max_findings=5"])
 
     assert settings.pr_reviewer.num_max_findings == 5
 
 
-async def test_a_braced_instruction_reaches_the_tool(monkeypatch, debug_logging, review_tool):
+def test_shipped_log_level_suppresses_debug_until_explicitly_enabled(capsys):
+    settings = get_settings(use_context=False)
+    default_level = settings.get("CONFIG.LOG_LEVEL", "INFO")
+    assert default_level == "INFO"
+
+    setup_logger(level=default_level)
+    get_logger().debug("Prompts")
+    assert "Prompts" not in capsys.readouterr().out
+
+    setup_logger(level="DEBUG")
+    get_logger().debug("Prompts")
+    assert "Prompts" in capsys.readouterr().out
+
+    setup_logger(level="INFO")
+
+
+async def test_a_braced_instruction_reaches_the_command(monkeypatch, debug_logging, review_command):
     settings = get_settings()
-    monkeypatch.setattr(settings.pr_reviewer, "extra_instructions", "")
+    monkeypatch.setitem(settings.pr_reviewer, "extra_instructions", "")
 
     handled = await agent_module.PRAgent().handle_request(
         PR_URL, '/review --pr_reviewer.extra_instructions="`{}` is preferred over dict()"')
 
     assert handled is True
-    assert review_tool.get("ran") is True
+    assert review_command.get("ran") is True
     assert settings.pr_reviewer.extra_instructions == "`{}` is preferred over dict()"
 
 
-async def test_a_plain_instruction_reaches_the_tool(monkeypatch, debug_logging, review_tool):
+async def test_a_plain_instruction_reaches_the_command(monkeypatch, debug_logging, review_command):
     """Control: the same request with a value YAML accepts always worked."""
     settings = get_settings()
-    monkeypatch.setattr(settings.pr_reviewer, "extra_instructions", "")
+    monkeypatch.setitem(settings.pr_reviewer, "extra_instructions", "")
 
     handled = await agent_module.PRAgent().handle_request(
         PR_URL, '/review --pr_reviewer.extra_instructions="focus on the retry loop"')
 
     assert handled is True
-    assert review_tool.get("ran") is True
+    assert review_command.get("ran") is True
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    ("false", False),
+    ("off", False),
+    ("", False),
+    ("true", True),
+    ("unexpected", True),
+])
+async def test_quoted_publish_output_is_normalized_before_command_dispatch(
+    monkeypatch, debug_logging, review_command, value, expected
+):
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
+
+    handled = await agent_module.PRAgent().handle_request(
+        PR_URL, f'/review --config.publish_output="{value}"'
+    )
+
+    assert handled is True
+    assert review_command["publish_output"] is expected

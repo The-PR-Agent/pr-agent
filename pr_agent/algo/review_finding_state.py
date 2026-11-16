@@ -5,11 +5,16 @@ from __future__ import annotations
 import copy
 import json
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Iterable, Mapping
+from datetime import UTC, datetime
+from typing import Any
 
+from pr_agent.algo.findings import Finding
+from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import key_issue_fingerprint
+from pr_agent.algo.markdown_span import _markdown_code_span
+from pr_agent.algo.utils import _as_line
 
 STATE_SCHEMA_VERSION = 1
 DEFAULT_MAX_RESOLVED_FINDINGS = 20
@@ -20,6 +25,9 @@ _STATE_MARKER_RE = re.compile(
 _STATE_MARKER_NAMESPACE = "<!-- pr-agent-review-state"
 _WHITESPACE_RE = re.compile(r"\s+")
 _VALID_STATES = {"ACTIVE", "RESOLVED"}
+_FINDING_HEADER_RE = re.compile(r"\*\*(?P<header>[^*\n]+)\*\*\n\n(?P<content>.*)", re.DOTALL)
+# The reviewer stores this header in English so a finding id does not depend on the response language.
+_STORED_POSSIBLE_ISSUE_HEADER = "**Possible Issue**\n\n"
 
 
 @dataclass(frozen=True)
@@ -40,46 +48,30 @@ class ReconciliationResult:
 def _timestamp(value: str | None) -> str:
     if value:
         return value
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-def _as_line(value: Any) -> int | None:
-    try:
-        line = int(str(value).strip())
-    except (TypeError, ValueError):
-        return None
-    return line if line > 0 else None
-
-
-def normalize_finding(finding: Mapping[str, Any]) -> dict[str, Any] | None:
+def normalize_finding(finding: Finding | Mapping[str, Any]) -> dict[str, Any] | None:
     """Return the stable, display-oriented fields needed for reconciliation."""
-    if not isinstance(finding, Mapping):
+    if isinstance(finding, Finding):
+        path = finding.path
+        body = finding.rendered_body.strip()
+        start = finding.line_start
+        end = finding.line_end
+    elif isinstance(finding, Mapping):
+        path = str(finding.get("path") or "").strip()
+        body = str(finding.get("body") or "").strip()
+        start = _as_line(finding.get("line_start"))
+        end = _as_line(finding.get("line_end"))
+    else:
         return None
-
-    path = str(finding.get("path") or finding.get("relevant_file") or "").strip()
     path = path.strip().strip(chr(96)).lstrip("/")
-    body = str(
-        finding.get("body")
-        or finding.get("issue_content")
-        or finding.get("description")
-        or ""
-    ).strip()
     if not path or not body:
         return None
 
     # The fingerprint ignores whitespace so re-wrapped prose stays the same finding, but the
     # body is what the resolved section renders, so it keeps the line breaks the reviewer used.
     finding_id = key_issue_fingerprint(path, _WHITESPACE_RE.sub(" ", body).lower())
-    start = _as_line(
-        finding.get("line_start")
-        or finding.get("relevant_lines_start")
-        or finding.get("start_line")
-    )
-    end = _as_line(
-        finding.get("line_end")
-        or finding.get("relevant_lines_end")
-        or finding.get("end_line")
-    )
     if start is not None and end is None:
         end = start
     if start is not None and end is not None and end < start:
@@ -98,7 +90,7 @@ def normalize_finding(finding: Mapping[str, Any]) -> dict[str, Any] | None:
     return normalized
 
 
-def normalize_findings(findings: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def normalize_findings(findings: Iterable[Finding | Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Normalize and de-duplicate current structured findings deterministically."""
     by_id: dict[str, dict[str, Any]] = {}
     for finding in findings or []:
@@ -128,8 +120,9 @@ def _is_valid_state(state: Any) -> bool:
         reopened_count = finding.get("reopened_count", 0)
         if type(reopened_count) is not int or reopened_count < 0:
             return False
-        if not finding.get("path") or not finding.get("body"):
-            return False
+        for key in ("path", "body"):
+            if not isinstance(finding.get(key), str) or not finding[key]:
+                return False
     return True
 
 
@@ -203,7 +196,7 @@ def _retained_findings(
 
 def reconcile_review_findings(
     previous_state: Mapping[str, Any] | None,
-    current_findings: Iterable[Mapping[str, Any]],
+    current_findings: Iterable[Finding | Mapping[str, Any]],
     *,
     allow_resolution: bool,
     excluded_files: Iterable[str] | None = None,
@@ -301,6 +294,63 @@ def reconcile_review_findings(
     )
 
 
+def _previous_finding_entry(finding: Mapping[str, Any]) -> dict[str, Any]:
+    match = _FINDING_HEADER_RE.fullmatch(finding["body"])
+    entry = {
+        "state": finding["state"].lower(),
+        "relevant_file": finding["path"],
+        "start_line": finding.get("line_start"),
+        "end_line": finding.get("line_end"),
+        "issue_header": match.group("header") if match else "",
+        "issue_content": match.group("content") if match else finding["body"],
+    }
+    if finding.get("reply"):
+        entry["reply"] = finding["reply"]
+    return entry
+
+
+def render_previous_findings(
+    state: Mapping[str, Any] | None,
+    max_chars: int,
+    dismissed: Iterable[Finding | Mapping[str, Any]] = (),
+) -> str:
+    """Return the stored findings as a JSON block for the /review prompt, empty when none fit.
+
+    Active findings come first, then dismissed ones (inline threads a human resolved without a fix, given as
+    findings with an optional `reply`), then resolved ones, each newest first. A dismissed finding replaces
+    the stored finding with the same id, and neither is rendered when the dismissed entry does not fit.
+    Each finding is split back into the `issue_header` and `issue_content` the model emitted, so it can
+    repeat a still-valid finding verbatim and keep its identity across runs. The block stays within
+    `max_chars` (0 disables it).
+    """
+    if max_chars <= 0:
+        return ""
+    dismissed_by_id = {}
+    for finding in dismissed:
+        normalized = normalize_finding(finding)
+        if normalized is not None:
+            normalized["state"] = "DISMISSED"
+            reply = finding.reply if isinstance(finding, Finding) else finding.get("reply")
+            if reply:
+                normalized["reply"] = reply
+            dismissed_by_id.setdefault(normalized["finding_id"], normalized)
+    findings = [finding for finding in (state or {}).get("findings", [])
+                if finding.get("finding_id") not in dismissed_by_id]
+    active = [finding for finding in findings if finding.get("state") == "ACTIVE"]
+    active.sort(key=lambda finding: str(finding.get("last_seen") or ""), reverse=True)
+    resolved = [finding for finding in findings if finding.get("state") == "RESOLVED"]
+    resolved.sort(key=lambda finding: str(finding.get("resolved_at") or ""), reverse=True)
+    entries = []
+    context_chars = 2  # JSON array brackets.
+    for finding in active + list(dismissed_by_id.values()) + resolved:
+        entry = _previous_finding_entry(finding)
+        entry_chars = len(json.dumps([entry], ensure_ascii=False, indent=2)) - 2
+        if context_chars + entry_chars <= max_chars:
+            entries.append(entry)
+            context_chars += entry_chars
+    return json.dumps(entries, ensure_ascii=False, indent=2) if entries else ""
+
+
 def _render_resolved_section(state: Mapping[str, Any]) -> str:
     resolved = [finding for finding in state.get("findings", []) if finding.get("state") == "RESOLVED"]
     if not resolved:
@@ -314,7 +364,7 @@ def _render_resolved_section(state: Mapping[str, Any]) -> str:
     )
     lines = [
         "<details>",
-        "<summary>✅ Resolved findings</summary>",
+        f"<summary>✅ {t('review.resolved_findings')}</summary>",
         "",
     ]
     for finding in resolved:
@@ -323,9 +373,94 @@ def _render_resolved_section(state: Mapping[str, Any]) -> str:
             location += f":{finding['line_start']}"
             if finding.get("line_end") and finding["line_end"] != finding["line_start"]:
                 location += f"-{finding['line_end']}"
-        lines.extend([f"### {location}", "", finding["body"], ""])
+        body = finding["body"]
+        if body.startswith(_STORED_POSSIBLE_ISSUE_HEADER):
+            body = f"**{t('review.possible_issue')}**\n\n{body.removeprefix(_STORED_POSSIBLE_ISSUE_HEADER)}"
+        lines.extend([f"### {location}", "", body, ""])
     lines.extend(["</details>", ""])
     return "\n".join(lines).rstrip()
+
+
+def _finding_location(finding: Mapping[str, Any]) -> str:
+    location = str(finding.get("path") or "")
+    start = finding.get("line_start")
+    if start:
+        location += f":{start}"
+        end = finding.get("line_end")
+        if end and end != start:
+            location += f"-{end}"
+    return location
+
+
+def _location_code_span(location: str) -> str:
+    # Keep repository-controlled filenames inside one Markdown code span, the way the
+    # review coverage footer does. A path containing the state-marker opener must not
+    # survive raw: append_review_state would treat it as the hidden marker and cut the
+    # rest of the review.
+    return _markdown_code_span(location.replace("<!--", "<\\!"))
+
+
+def render_lifecycle_summary(
+    previous_state: Mapping[str, Any] | None,
+    result: ReconciliationResult | None,
+) -> str:
+    """Render the 'since the last review' delta for the top of a review body.
+
+    Deterministic rendering of what reconciliation already computed: how many findings
+    were open on the previous HEAD, which the pushes since then addressed, which
+    reappeared after an earlier resolution, and how many remain open or are new. No
+    section on a first review or when nothing changed in either direction; zero-count
+    lines are omitted. Reconciled state keeps RESOLVED records for the resolved
+    section, so only ACTIVE records count as present here.
+    """
+    if previous_state is None or result is None:
+        return ""
+    previous_findings = [
+        finding for finding in (previous_state or {}).get("findings", []) if isinstance(finding, Mapping)
+    ]
+    previous_by_id = {finding.get("finding_id"): finding for finding in previous_findings}
+    previous_active_ids = [
+        finding.get("finding_id")
+        for finding in previous_findings
+        if finding.get("state") == "ACTIVE"
+    ]
+    current_ids = [
+        finding.get("finding_id")
+        for finding in result.state.get("findings", [])
+        if isinstance(finding, Mapping) and finding.get("state") == "ACTIVE"
+    ]
+    resolved = [finding_id for finding_id in result.resolved_ids if finding_id in previous_by_id]
+    reopened_ids = set(result.reopened_ids)
+    reopened = [finding_id for finding_id in result.reopened_ids if finding_id in previous_by_id]
+    new_ids = [finding_id for finding_id in current_ids if finding_id not in previous_by_id]
+    still_open = [
+        finding_id
+        for finding_id in previous_active_ids
+        if finding_id in current_ids and finding_id not in reopened_ids
+    ]
+    if not (resolved or reopened or new_ids):
+        return ""
+    lines = []
+    if previous_active_ids:
+        header_key = (
+            "review.lifecycle_header_single" if len(previous_active_ids) == 1 else "review.lifecycle_header"
+        )
+        lines.extend([t(header_key, count=len(previous_active_ids)), ""])
+    if resolved:
+        items = ", ".join(
+            _location_code_span(_finding_location(previous_by_id[f])) for f in resolved if f in previous_by_id
+        )
+        lines.append(t("review.lifecycle_addressed", count=len(resolved), items=items))
+    if reopened:
+        items = ", ".join(
+            _location_code_span(_finding_location(previous_by_id[f])) for f in reopened if f in previous_by_id
+        )
+        lines.append(t("review.lifecycle_reappeared", count=len(reopened), items=items))
+    if still_open:
+        lines.append(t("review.lifecycle_still_open", count=len(still_open)))
+    if new_ids:
+        lines.append(t("review.lifecycle_new", count=len(new_ids)))
+    return "\n".join(lines)
 
 
 def append_review_state(

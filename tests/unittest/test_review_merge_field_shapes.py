@@ -1,9 +1,8 @@
 """Merging chunked reviews must render the same shapes the single-call review accepts.
 
-`security_concerns` and `insights_from_user_answers` are declared as strings, but a model
-enumerating several findings answers with a list; `convert_to_markdown_v2` has rendered that
-since #2899. The chunk merger still stringified the value, so a chunked review printed a
-Python list repr into the PR.
+`security_concerns` is declared as a string, but a model enumerating several findings answers
+with a list; `convert_to_markdown_v2` has rendered that since #2899. The chunk merger still
+stringified the value, so a chunked review printed a Python list repr into the PR.
 """
 import pytest
 
@@ -70,9 +69,50 @@ def test_two_different_strings_are_still_unioned():
     assert merged == "First concern\n\nSecond concern"
 
 
-@pytest.mark.parametrize("field", ["security_concerns", "insights_from_user_answers"])
-def test_both_findings_fields_flatten(field):
-    merged = _merged(["A finding"], "No", field=field)
+def test_security_concerns_flatten():
+    merged = _merged(["A finding"], "No")
 
     assert "A finding" in merged
     assert "['" not in merged
+
+
+def test_artifact_findings_merge_across_chunks_without_duplicates():
+    def finding(evidence, kind="failure"):
+        return {"kind": kind, "fact": "A job failed.", "evidence": evidence}
+
+    lint, unit, destroy = finding("job lint failed"), finding("job unit failed"), finding("bucket destroyed", "destroy")
+    chunks = [{"review": {"artifact_findings": [lint, unit]}},
+              {"review": {"artifact_findings": [{**unit, "fact": "Reworded.", "evidence": " Job  UNIT failed "},
+                                                destroy]}}]
+    assert merge_review_chunks(chunks)["review"]["artifact_findings"] == [lint, unit, destroy]
+
+
+def test_failure_modes_merge_valid_cases_in_chunk_order_and_cap_at_three():
+    def mode(what):
+        return {"what": what, "where": "app.py:save", "trigger": "Write fails",
+                "detected_by": "Write failure test", "covered_in_this_pr": False}
+
+    first, second, third, fourth = [mode(name) for name in ("First", "Second", "Third", "Fourth")]
+    chunks = [{"review": {"failure_modes": [None, {"what": "bad"}, first, second]}},
+              {"review": {"failure_modes": "invalid"}},
+              {"review": {"failure_modes": [third, fourth]}}]
+    assert merge_review_chunks(chunks)["review"]["failure_modes"] == [first, second, third]
+    assert len(chunks[0]["review"]["failure_modes"]) == 4
+    assert _merged([first], [first], field="failure_modes") == [first, first]
+    assert _merged(None, [], field="failure_modes") == []
+    assert _merged([first] * 4, field="failure_modes") == [first] * 3
+
+
+@pytest.mark.parametrize("first, second", [
+    (["Add retry"], ["Log failures"]),
+    ("- Add retry", ["Log failures"]),
+    (["Add retry"], "- Log failures"),
+])
+def test_ticket_requirement_lists_from_several_chunks_are_unioned(first, second):
+    def chunk(not_met):
+        return {"review": {"ticket_compliance_check": [
+            {"ticket_url": "https://tracker/1", "not_compliant_requirements": not_met}]}}
+
+    [entry] = merge_review_chunks([chunk(first), chunk(second)])["review"]["ticket_compliance_check"]
+
+    assert entry["not_compliant_requirements"] == "- Add retry\n- Log failures"

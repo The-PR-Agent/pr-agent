@@ -3,6 +3,7 @@ import tempfile
 from urllib.error import HTTPError
 
 import pytest
+from starlette_context import request_cycle_context
 
 from pr_agent.cli import set_parser
 from pr_agent.config_loader import get_settings
@@ -185,6 +186,28 @@ def test_resolve_fetches_http_url_into_tempfile(urlopen_stub):
             os.remove(path)
 
 
+def test_resolve_reuses_http_payload_only_within_request(urlopen_stub, monkeypatch):
+    url = "https://config.example.test/shared.toml"
+    from unittest.mock import Mock
+
+    logger = Mock()
+    monkeypatch.setattr(git_utils, "get_logger", lambda: logger)
+    for expected in (SAMPLE_TOML, b'[config]\nmodel = "next-request"\n'):
+        urlopen_stub.body = expected
+        with request_cycle_context({}):
+            for _ in range(2):
+                path, is_temp = _resolve_extra_config_to_file(url)
+                try:
+                    assert is_temp
+                    with open(path, "rb") as stream:
+                        assert stream.read() == expected
+                finally:
+                    os.remove(path)
+                urlopen_stub.body = b'[config]\nmodel = "changed-mid-request"\n'
+    assert len(urlopen_stub.calls) == 2
+    assert logger.info.call_count == 2
+
+
 def test_resolve_injects_auth_header_from_env(urlopen_stub, monkeypatch):
     fake_token = "TEST-AUTH-TOKEN-NOT-REAL"
     urlopen_stub.required_header = ("Private-Token", fake_token)
@@ -248,6 +271,23 @@ def test_resolve_rejects_oversized_response(urlopen_stub):
     assert urlopen_stub.response.read_sizes
     assert all(size >= 0 for size in urlopen_stub.response.read_sizes)
     assert sum(urlopen_stub.response.read_sizes) <= git_utils._MAX_EXTRA_CONFIG_BYTES + 1
+
+
+def test_resolve_retries_oversized_response_within_request(urlopen_stub):
+    url = "https://config.example.test/shared.toml"
+    with request_cycle_context({}):
+        urlopen_stub.body = b"x" * (git_utils._MAX_EXTRA_CONFIG_BYTES + 1)
+        assert _resolve_extra_config_to_file(url) == (None, False)
+        urlopen_stub.body = SAMPLE_TOML
+        path, is_temp = _resolve_extra_config_to_file(url)
+        try:
+            assert is_temp
+            with open(path, "rb") as stream:
+                assert stream.read() == SAMPLE_TOML
+        finally:
+            if path:
+                os.remove(path)
+    assert len(urlopen_stub.calls) == 2
 
 
 def test_resolve_malformed_auth_header_warns_and_drops(urlopen_stub, monkeypatch):
@@ -465,6 +505,28 @@ alpha = "overwritten"
     assert get_settings().get(f"{_TEST_SECTION}.untouched") == "keep-me"
 
 
+def test_apply_settings_file_merges_keys_case_insensitively(tmp_path, settings_sandbox):
+    """A key from the extra file must replace an existing key with different
+    casing instead of sitting beside it. Dynaconf looks keys up
+    case-insensitively, so keeping both makes the effective value depend on
+    dict ordering — e.g. a file's 'extra_instructions' can be shadowed by a
+    default 'Extra_Instructions'."""
+    settings = get_settings()
+    settings.set(_TEST_SECTION, {"Extra_Instructions": "from-default"}, merge=False)
+
+    path = _write_toml(tmp_path, "extra.toml", f"""
+[{_TEST_SECTION}]
+extra_instructions = "from-file"
+""")
+    _apply_settings_from_file(path, label="extra")
+
+    assert settings.get(f"{_TEST_SECTION}.extra_instructions") == "from-file"
+    stored = settings.as_dict().get(_TEST_SECTION.upper(), {})
+    assert sum(key.lower() == "extra_instructions" for key in stored) == 1, (
+        "case-variant duplicates must be collapsed to a single key"
+    )
+
+
 def test_apply_settings_file_silently_skips_missing_path(settings_sandbox):
     # A canary value that must remain unchanged when the function is a no-op
     get_settings().set(f"{_TEST_SECTION}.canary", "untouched")
@@ -570,12 +632,12 @@ def test_precedence_repo_local_overrides_extra(tmp_path, settings_sandbox, mock_
     """Keys defined in both files: repo-local wins."""
     extra_path = _write_toml(tmp_path, "extra.toml", f"""
 [{_TEST_SECTION}]
-shared_key = "from-extra"
+shared_setting = "from-extra"
 extra_only = "extra-value"
 """)
     repo_toml = f"""
 [{_TEST_SECTION}]
-shared_key = "from-repo"
+shared_setting = "from-repo"
 repo_only = "repo-value"
 """.encode()
     mock_git_provider["provider"] = _FakeGitProvider(repo_toml)
@@ -585,7 +647,7 @@ repo_only = "repo-value"
     apply_repo_settings("https://example.com/pr/1")
 
     # repo wins on the shared key
-    assert get_settings().get(f"{_TEST_SECTION}.shared_key") == "from-repo"
+    assert get_settings().get(f"{_TEST_SECTION}.shared_setting") == "from-repo"
     # extra-only keys survive (extra was applied first, repo didn't touch this key)
     assert get_settings().get(f"{_TEST_SECTION}.extra_only") == "extra-value"
     # repo-only keys are present
@@ -611,7 +673,7 @@ def test_repo_settings_apply_when_extra_url_unset(tmp_path, settings_sandbox, mo
     """Sanity: with no --extra_config_url, only repo-local config is applied."""
     repo_toml = f"""
 [{_TEST_SECTION}]
-repo_key = "repo-only"
+repo_setting = "repo-only"
 """.encode()
     mock_git_provider["provider"] = _FakeGitProvider(repo_toml)
 
@@ -620,7 +682,7 @@ repo_key = "repo-only"
 
     apply_repo_settings("https://example.com/pr/1")
 
-    assert get_settings().get(f"{_TEST_SECTION}.repo_key") == "repo-only"
+    assert get_settings().get(f"{_TEST_SECTION}.repo_setting") == "repo-only"
 
 
 def test_unreachable_extra_url_does_not_block_repo_settings(
@@ -629,7 +691,7 @@ def test_unreachable_extra_url_does_not_block_repo_settings(
     """If the extra source fails to resolve, repo-local config still applies."""
     repo_toml = f"""
 [{_TEST_SECTION}]
-repo_key = "still-applied"
+repo_setting = "still-applied"
 """.encode()
     mock_git_provider["provider"] = _FakeGitProvider(repo_toml)
 
@@ -637,7 +699,7 @@ repo_key = "still-applied"
 
     apply_repo_settings("https://example.com/pr/1")
 
-    assert get_settings().get(f"{_TEST_SECTION}.repo_key") == "still-applied"
+    assert get_settings().get(f"{_TEST_SECTION}.repo_setting") == "still-applied"
 
 
 def test_env_var_overrides_extra_config(tmp_path, settings_sandbox, monkeypatch):
@@ -788,15 +850,14 @@ def test_resolve_warns_when_windows_path_missing(monkeypatch):
     )
     assert "Unsupported scheme" not in combined
 
-
-def test_resolve_rejects_non_string_source():
+@pytest.mark.parametrize("bad", [42, ["https://x.example/y"], {"url": "x"}, True])
+def test_resolve_rejects_non_string_source(bad):
     """CONFIG.EXTRA_CONFIG_URL set to a non-string must be rejected at the
     boundary, not bubble up an exception from urlparse()."""
-    for bad in [42, ["https://x.example/y"], {"url": "x"}, True]:
-        path, is_temp = _resolve_extra_config_to_file(bad)
-        assert path is None and is_temp is False, (
-            f"non-string source {bad!r} must be rejected"
-        )
+    path, is_temp = _resolve_extra_config_to_file(bad)
+    assert path is None and is_temp is False, (
+        f"non-string source {bad!r} must be rejected"
+    )
 
 
 def test_safe_url_for_log_strips_credentials():

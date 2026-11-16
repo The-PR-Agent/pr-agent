@@ -7,6 +7,7 @@ raises) so partial/absent metadata degrades gracefully rather than failing the
 A2A request."""
 import contextlib
 from collections.abc import Mapping
+from uuid import UUID
 
 from pr_agent.log import get_logger
 
@@ -18,14 +19,33 @@ _KEYS = ("mosaico-root-task-id", "mosaico-super-task-id", "mosaico-root-task-nam
 def parse_observability_metadata(raw) -> dict:
     """Tolerant partial-dict parse (mirrors docstring-agent/mosaico_utils.py).
 
-    Returns a dict containing ONLY the present, string-valued keys among _KEYS.
+    Keep string task names and canonical UUID task IDs; omit invalid fields independently.
     A non-Mapping ``raw`` yields ``{}`` (with a logged warning). Never raises."""
     if not isinstance(raw, Mapping):
         if raw is not None:
             get_logger().warning(
                 f"MOSAICO: observability metadata is not a mapping (got {type(raw).__name__}); ignoring.")
         return {}
-    return {k: raw[k] for k in _KEYS if k in raw and isinstance(raw[k], str)}
+    parsed = {}
+    for key in _KEYS:
+        value = raw.get(key)
+        if not isinstance(value, str):
+            continue
+        if key != "mosaico-root-task-name":
+            if len(value) != 36:
+                continue
+            try:
+                identifier = UUID(value)
+            except ValueError:
+                continue
+            if str(identifier) != value.lower() or not identifier.int:
+                continue
+            # W3C parent span IDs must also be nonzero after the 64-bit transform.
+            if key == "mosaico-super-task-id" and identifier.int & ((1 << 64) - 1) == 0:
+                continue
+            value = str(identifier)
+        parsed[key] = value
+    return parsed
 
 
 @contextlib.contextmanager

@@ -20,13 +20,30 @@ There are several ways to use PR-Agent:
 
 When GitHub polling needs to look back through PR comments, it reuses the polling
 HTTP session rather than blocking the event loop with a synchronous request.
-`github.polling_request_timeout` sets the total timeout for this fallback request
+`github.polling_request_timeout` sets the total timeout for the entire fallback
+comment-history scan, including any follow-up page requests
 (default: 10 seconds; positive values are capped at 60). Invalid values use the
 default with a warning. Set it in the host configuration or through
 `GITHUB__POLLING_REQUEST_TIMEOUT`; repository settings do not control this limit.
 This does not change the other polling requests or the sequential notification
 scan. The fallback now follows the existing aiohttp session's proxy and TLS
 behavior, not Requests-specific environment settings.
+
+GitHub polling only processes mention notifications from repositories listed in
+`github.polling_repositories` (for example `["org/repo"]`). The list is
+host-only; repository settings and comment arguments cannot widen it. The empty
+default ignores every polling notification and still marks it as read, so
+configure it in the host configuration or through `GITHUB__POLLING_REPOSITORIES`
+before enabling polling or upgrading.
+
+The command after the first mention of the polling account is kept intact,
+including later mentions in plain or double-quoted questions. Replace `@your-bot`
+with the polling account's username:
+
+```text
+@your-bot /ask Why does @your-bot appear in this workflow?
+@your-bot /ask "Why does @your-bot appear in this workflow?"
+```
 
 ## Sizing a self-hosted webhook server
 
@@ -38,7 +55,7 @@ The GitHub, GitLab, Gitea and Bitbucket Server webhook servers (the `github_app`
 | `GUNICORN_MAX_WORKERS` | `4`       | Upper bound on the automatically derived worker count.                                    |
 | `PORT`                 | `3000`    | Port the server binds to.                                                                 |
 
-When `GUNICORN_WORKERS` is unset, the worker count is derived from the CPUs actually available to the container (cgroup CPU limit, falling back to CPU affinity), clamped to between 2 and `GUNICORN_MAX_WORKERS`. Note that a CPU *request* without a *limit* leaves no cgroup quota to read, so the cap is what bounds the worker count there.
+When `GUNICORN_WORKERS` is unset, the worker count is derived from the CPUs actually available to the container (the stricter of the cgroup CPU limit and CPU affinity, using whichever is available), clamped to between 2 and `GUNICORN_MAX_WORKERS`, except that an explicit `GUNICORN_MAX_WORKERS=1` permits one worker. Note that a CPU *request* without a *limit* leaves no cgroup quota to read, so affinity and the cap are what bound the worker count there.
 
 **Sizing memory:** importing the application costs roughly 250MB. The app is imported once in the gunicorn master and workers are forked from it, so they share most of that baseline copy-on-write rather than each paying it in full — total memory grows with worker count, but by noticeably less than 250MB per worker. Start from about 1Gi for the default of 4 workers and adjust against your own metrics.
 
@@ -66,6 +83,8 @@ Completed children are joined without waiting and closed each iteration;
 live children are not terminated on cancellation. This is not a durable queue,
 a model-call deadline, or a host-wide memory limit.
 
+## Docker image names and version tags
+
 :::note[Docker Hub namespace migration]
 Releases **`0.34.2` and later** are published under [`pragent/pr-agent`](https://hub.docker.com/r/pragent/pr-agent). Older releases (up to and including `v0.31`) remain at the legacy [`codiumai/pr-agent`](https://hub.docker.com/r/codiumai/pr-agent) namespace as a frozen archive — no new images are pushed there. The examples on this site reference the new namespace; if you are pinning to a release before `0.34.2`, swap `pragent/pr-agent` for `codiumai/pr-agent` in your `image:` / `docker pull` / `uses: docker://` references.
 :::
@@ -74,7 +93,7 @@ Releases **`0.34.2` and later** are published under [`pragent/pr-agent`](https:/
 **What you pin is what you get.** Version-numbered artifacts can never change after publication:
 
 - **GitHub releases** — the Git tag cannot be moved or deleted, and attached assets cannot be added, replaced, or removed. The protection also survives repository deletion, so a tag from an immutable release can never be reused by a repository recreated under the same name. (Release titles and notes stay editable; immutability covers the tag and the assets.)
-- **Docker images** — version tags such as `0.40.0` and `0.40.0-github_app` always resolve to the same image. Once pushed, they cannot be overwritten or repointed.
+- **Docker images** — version tags such as `0.40.0` and `0.40.0-github_app` always resolve to the same image. Once pushed, they cannot be overwritten or repointed. Only the `cli` image installs the `pr-agent` console script; on service images run `python -m pr_agent.cli …` (or `python /app/pr_agent/cli.py …`) instead — see [CLI Health Check](../usage-guide/automations_and_usage.md#cli-health-check).
 
 **Rolling tags stay mutable by design.** `latest`, `github_action`, `github_lambda`, `gitlab_lambda`, `gitlab_webhook`, `gitea_app`, `mosaico_agent` and `bitbucket_server_webhook` move to the newest build on every release. They are convenient for trying things out, but a `docker pull` of the same rolling tag on two different days can give you two different images.
 

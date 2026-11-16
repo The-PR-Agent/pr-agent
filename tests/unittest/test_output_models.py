@@ -4,7 +4,7 @@ from types import UnionType
 from typing import get_args, get_origin
 
 import pytest
-from pydantic import StrictInt
+from pydantic import StrictBool, StrictInt
 
 from pr_agent.algo.output_models import (
     CodeDocumentation,
@@ -13,6 +13,7 @@ from pr_agent.algo.output_models import (
     ContributionTimeCostEstimate,
     DocHeadingsHelper,
     DocHelper,
+    FailureMode,
     FileDescription,
     FileIdxAndPath,
     KeyIssuesComponentLink,
@@ -32,6 +33,7 @@ from pr_agent.algo.output_models import (
     SubPR,
     TicketCompliance,
     TodoSection,
+    finding_confidence,
 )
 from pr_agent.algo.utils import load_yaml
 
@@ -44,16 +46,16 @@ def _review_fixture():
         "start_line": 10,
         "end_line": 12,
     }
+
     return {
         "review": {
             "estimated_effort_to_review_[1-5]": 3,
             "risk_level": "medium",
-            "merge_recommendation": "merge_with_caution",
+            "merge_recommendation": "needs_review",
             "review_priority_files": ["src/app.py"],
             "contribution_time_cost_estimate": {"best_case": "45m", "average_case": "2h", "worst_case": "5h"},
             "score": 89,
             "relevant_tests": "Yes",
-            "insights_from_user_answers": "The deployment target is Linux.",
             "key_issues_to_review": [issue],
             "security_concerns": "No",
             "todo_sections": [{"relevant_file": "src/app.py", "line_number": 20, "content": "Remove fallback."}],
@@ -67,6 +69,28 @@ def _review_fixture():
             }],
         }
     }
+
+
+def test_key_issue_model_accepts_fix_fields():
+    payload = {
+        "relevant_file": "src/app.py",
+        "issue_header": "Possible Bug",
+        "issue_content": "The lock is never released.",
+        "start_line": 4,
+        "end_line": 5,
+    }
+
+    plain = KeyIssuesComponentLink.model_validate(payload)
+    fixed = KeyIssuesComponentLink.model_validate(
+        {**payload, "existing_code": "lock.acquire()", "improved_code": "with lock: ..."}
+    )
+
+    assert (plain.existing_code, plain.improved_code) == (None, None)
+    assert (fixed.existing_code, fixed.improved_code) == ("lock.acquire()", "with lock: ...")
+
+
+def test_review_model_does_not_expose_user_answer_insights():
+    assert "insights_from_user_answers" not in Review.model_fields
 
 
 @pytest.mark.parametrize(
@@ -171,8 +195,9 @@ def test_review_alias_accepts_prompt_field_name():
         "key_issues_to_review": [],
         "estimated_effort_to_review_[1-5]": 3,
     }).estimated_effort_to_review == 3
-    with pytest.raises(ValueError):
-        Review.model_validate({"key_issues_to_review": [], "estimated_effort_to_review": 3})
+    review = Review.model_validate({"key_issues_to_review": [], "estimated_effort_to_review": 3})
+    assert review.estimated_effort_to_review is None
+    assert review.model_extra["estimated_effort_to_review"] == 3
 
 
 def test_review_rejects_coercible_numeric_types_and_strips_prompt_literals():
@@ -184,69 +209,66 @@ def test_review_rejects_coercible_numeric_types_and_strips_prompt_literals():
     review = Review.model_validate({
         "key_issues_to_review": [],
         "risk_level": "low\n",
-        "merge_recommendation": "safe_to_merge\n",
+        "merge_recommendation": "no_concerns_found\n",
         "relevant_tests": "No\n",
     })
     assert review.risk_level == "low"
-    assert review.merge_recommendation == "safe_to_merge"
+    assert review.merge_recommendation == "no_concerns_found"
     assert review.relevant_tests == "No"
 
 
-def test_required_label_and_list_constraints_are_enforced():
-    suggestion = {
+def test_review_accepts_extra_fields_while_nested_schemas_stay_strict():
+    payload = _review_fixture()
+    payload["review"]["pipeline_status"] = [{"job": "unit", "status": "failed"}]
+
+    review = Review.model_validate(payload["review"])
+    assert review.model_extra["pipeline_status"] == [{"job": "unit", "status": "failed"}]
+    PRReview.model_validate(payload)
+
+
+_INVALID_MODEL_PAYLOADS = [
+    (CodeSuggestion, {
         "relevant_file": "src/app.py", "language": "python", "existing_code": "return value",
         "suggestion_content": "Handle the missing value.", "improved_code": "return value or default",
         "one_sentence_summary": "Handle missing values",
-    }
-    with pytest.raises(ValueError):
-        CodeSuggestion.model_validate(suggestion)
-    with pytest.raises(ValueError):
-        PRRankResponses.model_validate({
-            "which_response_was_better": 3, "why": "No", "score_response1": 1, "score_response2": 1,
-        })
-    with pytest.raises(ValueError):
-        Review.model_validate({"key_issues_to_review": [], "can_be_split": [{"relevant_files": [], "title": "x"}] * 4})
-    with pytest.raises(ValueError):
-        PRDescription.model_validate({"type": ["Tests"], "title": "x", "pr_files": [{
-            "filename": "x", "changes_title": "x", "label": "x",
-        }] * 21})
-    with pytest.raises(ValueError):
-        Review.model_validate({"key_issues_to_review": [], "estimated_effort_to_review_[1-5]": 0})
-    with pytest.raises(ValueError):
-        Review.model_validate({"key_issues_to_review": [], "score": 101})
-    with pytest.raises(ValueError):
-        PRCodeSuggestionsFeedback.model_validate({"code_suggestions": [{
-            "suggestion_summary": "x", "relevant_file": "x", "relevant_lines_start": 1,
-            "relevant_lines_end": 1, "suggestion_score": 11, "why": "x",
-        }]})
-    with pytest.raises(ValueError):
-        PRRankResponses.model_validate({
-            "which_response_was_better": 1, "why": "x", "score_response1": 0, "score_response2": 11,
-        })
-    with pytest.raises(ValueError):
-        DocHelper.model_validate({
-            "user_question": "x", "response": "x", "relevant_sections": [], "question_is_relevant": 2,
-        })
-    with pytest.raises(ValueError):
-        DocHeadingsHelper.model_validate({
-            "user_question": "x", "relevant_files_ranking": [{"idx": -1, "file_name": "x"}],
-        })
-    with pytest.raises(ValueError):
-        Review.model_validate({"key_issues_to_review": [], "risk_level": "critical"})
-    with pytest.raises(ValueError):
-        Review.model_validate({"key_issues_to_review": [], "merge_recommendation": "approve"})
-    with pytest.raises(ValueError):
-        Review.model_validate({"key_issues_to_review": [], "relevant_tests": "Maybe"})
-    with pytest.raises(ValueError):
-        PRDescription.model_validate({"type": [], "title": "x"})
-    with pytest.raises(ValueError):
-        PRDescriptionHeaders.model_validate({"type": [], "title": "x"})
-    with pytest.raises(ValueError):
-        Review.model_validate({"key_issues_to_review": [{
-            "relevant_file": "x", "issue_header": "x", "issue_content": "x",
-            "start_line": 1, "end_line": 1, "unexpected": "x",
-        }]})
+    }),
+    (PRRankResponses, {
+        "which_response_was_better": 3, "why": "No", "score_response1": 1, "score_response2": 1,
+    }),
+    (Review, {"key_issues_to_review": [], "can_be_split": [{"relevant_files": [], "title": "x"}] * 4}),
+    (PRDescription, {"type": ["Tests"], "title": "x", "pr_files": [{
+        "filename": "x", "changes_title": "x", "label": "x",
+    }] * 21}),
+    (Review, {"key_issues_to_review": [], "estimated_effort_to_review_[1-5]": 0}),
+    (Review, {"key_issues_to_review": [], "score": 101}),
+    (PRCodeSuggestionsFeedback, {"code_suggestions": [{
+        "suggestion_summary": "x", "relevant_file": "x", "relevant_lines_start": 1,
+        "relevant_lines_end": 1, "suggestion_score": 11, "why": "x",
+    }]}),
+    (PRRankResponses, {
+        "which_response_was_better": 1, "why": "x", "score_response1": 0, "score_response2": 11,
+    }),
+    (DocHelper, {
+        "user_question": "x", "response": "x", "relevant_sections": [], "question_is_relevant": 2,
+    }),
+    (DocHeadingsHelper, {
+        "user_question": "x", "relevant_files_ranking": [{"idx": -1, "file_name": "x"}],
+    }),
+    (Review, {"key_issues_to_review": [], "risk_level": "critical"}),
+    (Review, {"key_issues_to_review": [], "merge_recommendation": "approve"}),
+    (Review, {"key_issues_to_review": [], "relevant_tests": "Maybe"}),
+    (PRDescription, {"type": [], "title": "x"}),
+    (PRDescriptionHeaders, {"type": [], "title": "x"}),
+    (Review, {"key_issues_to_review": [{
+        "relevant_file": "x", "issue_header": "x", "issue_content": "x",
+        "start_line": 1, "end_line": 1, "unexpected": "x",
+    }]}),
+]
 
+@pytest.mark.parametrize(("model", "payload"), _INVALID_MODEL_PAYLOADS)
+def test_required_label_and_list_constraints_are_enforced(model, payload):
+    with pytest.raises(ValueError):
+        model.model_validate(payload)
 
 def test_assembled_description_validates_all_files_without_changing_prompt_limit():
     files = [
@@ -263,6 +285,89 @@ def test_assembled_description_validates_all_files_without_changing_prompt_limit
     with pytest.raises(ValueError) as error:
         PRDescriptionAssembled.model_validate(data)
     assert error.value.errors()[0]["loc"] == ("pr_files", 20, "changes_title")
+
+
+@pytest.mark.parametrize(
+    "model",
+    [PRDescription, PRDescriptionHeaders, PRDescriptionAssembled],
+)
+@pytest.mark.parametrize(
+    "raw_item",
+    [
+        "Enhancement\n",    # literal block scalar (|)
+        "Enhancement\n\n",  # literal keep (|+)
+        "Enhancement ",     # single-quoted trailing space
+        "  Enhancement",    # leading whitespace
+        "  Enhancement\n",  # leading whitespace plus block-scalar newline
+        "Enhancement\t",    # trailing tab
+        "Bug fix\n",
+        "Tests\n",
+        "Documentation\n",
+        "Other\n",
+    ],
+)
+def test_description_type_items_strip_scalar_whitespace(model, raw_item):
+    assert model.model_validate({"type": [raw_item], "title": "x"}).type == [PRType(raw_item.strip())]
+
+
+def test_description_type_strips_each_item_in_multi_item_list():
+    for model in (PRDescription, PRDescriptionHeaders, PRDescriptionAssembled):
+        assert model.model_validate(
+            {"type": ["Bug fix\n", "Tests "], "title": "x"}
+        ).type == [PRType.BUG_FIX, PRType.TESTS]
+
+
+def test_description_type_accepts_block_scalar_item_from_load_yaml():
+    # The describe prompt asks for block scalars, so load_yaml reads a type
+    # item as "Enhancement\n"; the schema must accept that valid output.
+    data = load_yaml("type:\n- |\n  Enhancement\ntitle: |\n  Add retry\n", keys_fix_yaml=["title:"])
+    assert data == {"type": ["Enhancement\n"], "title": "Add retry"}
+    for model in (PRDescription, PRDescriptionHeaders, PRDescriptionAssembled):
+        assert model.model_validate(data).type == [PRType.ENHANCEMENT]
+
+
+@pytest.mark.parametrize(
+    "model",
+    [PRDescription, PRDescriptionHeaders, PRDescriptionAssembled],
+)
+@pytest.mark.parametrize("raw_item", ["NotAType", "NotAType\n", "   ", "", 123, None])
+def test_description_type_items_reject_invalid_values(model, raw_item):
+    with pytest.raises(ValueError):
+        model.model_validate({"type": [raw_item], "title": "x"})
+
+
+@pytest.mark.parametrize(
+    "model",
+    [PRDescription, PRDescriptionHeaders, PRDescriptionAssembled],
+)
+def test_description_type_leaves_non_list_input_untouched(model):
+    with pytest.raises(ValueError):
+        model.model_validate({"type": "Enhancement", "title": "x"})
+
+
+def test_review_failure_modes_are_optional_and_bounded():
+    mode = {"what": "Partial write", "where": "app.py:save", "trigger": "Disk full",
+            "detected_by": "Write failure test", "covered_in_this_pr": False}
+    assert Review.model_validate({"key_issues_to_review": []}).failure_modes is None
+    assert Review.model_validate({"key_issues_to_review": [], "failure_modes": []}).failure_modes == []
+    review = Review.model_validate({"key_issues_to_review": [], "failure_modes": [mode] * 3})
+    assert len(review.failure_modes) == 3
+    assert review.failure_modes[0].covered_in_this_pr is False
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "failure_modes": [mode] * 4})
+
+
+@pytest.mark.parametrize("invalid", [
+    {"covered_in_this_pr": "false"}, {"covered_in_this_pr": 1},
+    {"what": None}, {"trigger": []}, {"unexpected": "value"},
+])
+def test_review_failure_modes_reject_malformed_entries(invalid):
+    mode = {"what": "Partial write", "where": "app.py:save", "trigger": "Disk full",
+            "detected_by": "Write failure test", "covered_in_this_pr": False}
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "failure_modes": [{**mode, **invalid}]})
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "failure_modes": [{"what": "Partial write"}]})
 
 
 def _split_type_args(value):
@@ -307,11 +412,13 @@ def _model_type_signature(annotation):
         return _model_type_signature(get_args(annotation)[0])
     if annotation is StrictInt:
         return "int"
+    if annotation is StrictBool:
+        return "bool"
     if str(origin) == "typing.Literal":
-        return ("literal", tuple(str(value) for value in get_args(annotation)))
-    if origin in (list,):
-        return ("list", _model_type_signature(get_args(annotation)[0]))
-    if origin in (UnionType,):
+        return "literal", tuple(str(value) for value in get_args(annotation))
+    if origin is list:
+        return "list", _model_type_signature(get_args(annotation)[0])
+    if origin is UnionType:
         args = get_args(annotation)
     elif str(origin) == "typing.Union":
         args = get_args(annotation)
@@ -326,7 +433,8 @@ def _model_type_signature(annotation):
 PROMPT_MODELS = {
     "pr_reviewer_prompts.toml": {"SubPR": SubPR, "KeyIssuesComponentLink": KeyIssuesComponentLink,
                                   "TodoSection": TodoSection, "TicketCompliance": TicketCompliance,
-                                  "ContributionTimeCostEstimate": ContributionTimeCostEstimate, "Review": Review,
+                                  "ContributionTimeCostEstimate": ContributionTimeCostEstimate,
+                                  "FailureMode": FailureMode, "Review": Review,
                                   "PRReview": PRReview},
     "pr_description_prompts.toml": {"FileDescription": FileDescription, "PRDescription": PRDescription},
     "pr_description_only_description_prompts.toml": {"PRDescriptionHeaders": PRDescriptionHeaders},
@@ -422,3 +530,33 @@ def test_ranking_example_is_a_valid_numeric_payload():
     parsed = load_yaml(text)
     assert isinstance(parsed["which_response_was_better"], int)
     PRRankResponses.model_validate(parsed)
+
+
+@pytest.mark.parametrize("confidence", [-1, 11, 8.5])
+def test_key_issue_confidence_must_be_an_integer_from_0_to_10(confidence):
+    issue = dict(_review_fixture()["review"]["key_issues_to_review"][0], confidence=confidence)
+
+    with pytest.raises(ValueError):
+        KeyIssuesComponentLink.model_validate(issue)
+
+
+@pytest.mark.parametrize("confidence", [0, 8, 10])
+def test_key_issue_accepts_integer_confidence(confidence):
+    issue = dict(_review_fixture()["review"]["key_issues_to_review"][0], confidence=confidence)
+
+    assert KeyIssuesComponentLink.model_validate(issue).confidence == confidence
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(8, 8.0), (8.5, 8.5), (" 7 ", 7.0), ("8.0", 8.0), (0, 0.0), (10, 10.0),
+     (None, None), (True, None), ("very", None), (-1, None), (15, None), (float("nan"), None),
+     (float("inf"), None), ([8], None)],
+)
+def test_finding_confidence_normalises_one_value_for_filtering_and_rendering(value, expected):
+    assert finding_confidence({"confidence": value}) == expected
+
+
+def test_finding_confidence_of_a_non_finding_is_none():
+    assert finding_confidence("not a dict") is None
+    assert finding_confidence({}) is None

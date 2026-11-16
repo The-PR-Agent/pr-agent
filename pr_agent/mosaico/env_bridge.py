@@ -42,7 +42,7 @@ def apply_mosaico_env() -> None:
         settings.set("CONFIG.MODEL", model)
         settings.set("CONFIG.FALLBACK_MODELS", [])
         # MOSAICO models are not in pr-agent's built-in MAX_TOKENS table; declare a budget
-        # so reviews don't fail with "not defined in MAX_TOKENS". Overridable via env.
+        # so reviews don't fail because the model's input-token limit is unresolved. Overridable via env.
         max_tokens_env = os.getenv(ENV_MODEL_MAX_TOKENS)
         try:
             custom_max_tokens = int(max_tokens_env) if max_tokens_env else DEFAULT_CUSTOM_MODEL_MAX_TOKENS

@@ -1,6 +1,6 @@
 import pytest
 
-from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
+from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers, handle_patch_deletions
 from pr_agent.algo.types import FilePatchInfo
 
 
@@ -69,3 +69,37 @@ def test_many_hunks_preserve_complete_output(hunk_count):
     assert decouple_and_convert_to_hunks_with_lines_numbers("".join(patch_parts), None) == (
         "".join(expected_parts).rstrip()
     )
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\f", "\x85"])
+def test_line_separators_inside_a_line_do_not_shift_line_numbers(separator):
+    patch = (
+        "@@ -1,2 +1,2 @@\n"
+        f" const sep = 'x{separator}y';\n"
+        "-const b = 2;\n"
+        "+const b = 3;\n"
+    )
+    expected = (
+        "\n@@ -1,2 +1,2 @@\n"
+        "__new hunk__\n"
+        f"1  const sep = 'x{separator}y';\n"
+        "2 +const b = 3;\n"
+        "__old hunk__\n"
+        f" const sep = 'x{separator}y';\n"
+        "-const b = 2;"
+    )
+
+    assert decouple_and_convert_to_hunks_with_lines_numbers(patch, None) == expected
+
+
+@pytest.mark.parametrize("separator", [" ", "\f", "\x85"])
+def test_line_separators_survive_deletion_handling(separator):
+    patch = (
+        "@@ -1,2 +1,2 @@\n"
+        f" const sep = 'x{separator}y';\n"
+        "-const b = 2;\n"
+        "+const b = 3;\n"
+    )
+    handled = handle_patch_deletions(patch, "old", "new", "a.js")
+
+    assert "2 +const b = 3;" in decouple_and_convert_to_hunks_with_lines_numbers(handled, None)

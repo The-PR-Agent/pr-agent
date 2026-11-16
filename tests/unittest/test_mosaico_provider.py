@@ -5,7 +5,7 @@ artifact, no un-stubbed provider method raises, and the incremental path never f
 asyncio_mode=auto."""
 import pytest
 
-from pr_agent.algo.types import EDIT_TYPE
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.mosaico.diff_provider import DiffInputProvider, parse_unified_diff
 
@@ -38,11 +38,13 @@ class TestParseUnifiedDiff:
         added, existing = files[0], files[1]
         assert added.filename == "added.py"
         assert added.edit_type == EDIT_TYPE.ADDED
+        assert (added.num_plus_lines, added.num_minus_lines) == (3, 0)
         assert "def hello():" in added.patch
         assert added.patch.startswith("@@")
 
         assert existing.filename == "existing.py"
         assert existing.edit_type == EDIT_TYPE.MODIFIED
+        assert (existing.num_plus_lines, existing.num_minus_lines) == (1, 1)
         assert existing.patch.startswith("@@")
         assert "-x = 1" in existing.patch
         assert "+x = 2" in existing.patch
@@ -88,6 +90,49 @@ class TestParseUnifiedDiff:
         assert files[0].filename == "new.py"
         assert files[0].old_filename == "old.py"
         assert files[0].patch == ""
+        assert (files[0].num_plus_lines, files[0].num_minus_lines) == (0, 0)
+
+    def test_line_counts(self):
+        diff = (
+            "diff --git a/deleted.py b/deleted.py\n"
+            "deleted file mode 100644\n"
+            "index 4444444..0000000\n"
+            "--- a/deleted.py\n"
+            "+++ /dev/null\n"
+            "@@ -1,2 +0,0 @@\n"
+            "-first\n"
+            "--second\n"
+            "\\ No newline at end of file\n"
+            "diff --git a/multi_hunk.py b/multi_hunk.py\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/multi_hunk.py\n"
+            "+++ b/multi_hunk.py\n"
+            "@@ -1,3 +1,4 @@\n"
+            " context\n"
+            "-removed_one\n"
+            "+added_one\n"
+            "+++added_with_plus_prefix\n"
+            " tail\n"
+            "@@ -10,2 +11,1 @@\n"
+            "---removed_with_minus_prefix\n"
+            " end\n"
+            "\\ No newline at end of file\n"
+            "diff --git a/empty.py b/empty.py\n"
+            "new file mode 100644\n"
+            "index 0000000..e69de29\n"
+        )
+        files = parse_unified_diff(diff)
+        assert len(files) == 3
+
+        deleted, multi_hunk, empty = files
+        assert deleted.edit_type == EDIT_TYPE.DELETED
+        assert (deleted.num_plus_lines, deleted.num_minus_lines) == (0, 2)
+
+        assert multi_hunk.edit_type == EDIT_TYPE.MODIFIED
+        assert (multi_hunk.num_plus_lines, multi_hunk.num_minus_lines) == (2, 2)
+
+        assert empty.edit_type == EDIT_TYPE.ADDED
+        assert (empty.num_plus_lines, empty.num_minus_lines) == (0, 0)
 
     def test_git_quoted_paths_are_decoded(self):
         # `git diff --cached -M -U0` output with core.quotePath on
@@ -230,6 +275,41 @@ class TestDiffInputProviderBasics:
         assert p.pr.title == "test PR"
         assert p.pr.diff_files == p.get_diff_files()
 
+    def test_filtered_metadata_preserves_supplied_patches(self, mosaico_input, monkeypatch):
+        p = DiffInputProvider()
+        p.diff_files.extend(FilePatchInfo("old", "new", "patch", name)
+                            for name in ("yarn.lock", "generated/uv.lock"))
+        original = p.diff_files
+        original_elements = list(original)
+        contents = [(f.filename, f.base_file, f.head_file, f.patch) for f in original]
+        monkeypatch.setitem(global_settings.ignore, "glob", ["generated/**"])
+        monkeypatch.setitem(global_settings.ignore, "regex", [])
+        monkeypatch.setitem(global_settings.config, "ignore_language_framework", [])
+
+        assert p.get_diff_files() is original
+        assert p.pr.diff_files is original
+        assert p.get_filtered_diff_file_names() == ["yarn.lock"]
+        assert p.get_diff_files() is original
+        assert p.get_filtered_diff_file_names() == ["yarn.lock"]
+        monkeypatch.setitem(global_settings.ignore, "glob", [])
+        monkeypatch.setitem(global_settings.ignore, "regex", ["["])
+        assert p.get_diff_files() is original
+        assert p.get_filtered_diff_file_names() == []
+        monkeypatch.setitem(global_settings.ignore, "regex", [])
+        monkeypatch.setitem(global_settings.ignore, "glob", ["*.lock"])
+        assert p.get_diff_files() is original
+        assert p.get_filtered_diff_file_names() == []
+
+        monkeypatch.setitem(global_settings.ignore, "glob", [])
+        monkeypatch.setitem(global_settings.config, "ignore_language_framework", [42])
+        assert p.get_diff_files() is original
+        assert p.get_filtered_diff_file_names() == []
+
+        assert p.pr.diff_files is original
+        assert p.get_files() == [row[0] for row in contents]
+        assert all(actual is expected for actual, expected in zip(original, original_elements, strict=True))
+        assert [(f.filename, f.base_file, f.head_file, f.patch) for f in original] == contents
+
 
 _SENTINEL = object()
 
@@ -309,29 +389,6 @@ review:
   security_concerns: 'No'
 """
 
-CANNED_IMPROVE_YAML = """\
-code_suggestions:
-  - relevant_file: existing.py
-    language: python
-    existing_code: |
-      x = 2
-    suggestion_content: 'Consider a named constant instead of a magic number'
-    improved_code: |
-      X = 2
-    one_sentence_summary: 'Use a named constant'
-    label: 'best practice'
-"""
-
-# The /improve flow makes a mandatory second LLM call (self-reflection) that scores
-# each suggestion and injects relevant_lines_start/end. The mock returns this on call 2.
-CANNED_IMPROVE_REFLECTION_YAML = """\
-code_suggestions:
-  - suggestion_score: 8
-    why: 'Improves readability'
-    relevant_lines_start: 1
-    relevant_lines_end: 1
-"""
-
 
 def _setup_request_settings(verb_provider_input):
     """Mimic the per-request isolation the executor will do: deepcopy global_settings
@@ -366,8 +423,8 @@ def isolated_settings():
         global_settings.data = data_before
 
 
-async def _run_tool_via_spy(monkeypatch, isolated_settings, verb, canned_yaml, second_yaml=""):
-    """Patch the provider registry to a spy subclass, mock the LLM, run the tool with
+async def _run_command_via_spy(monkeypatch, isolated_settings, verb, canned_yaml, second_yaml=""):
+    """Patch the provider registry to a spy subclass, mock the LLM, run the command with
     publish_output=False, and return (captured_artifact, incremental_accessed_list)."""
     import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
     from pr_agent.git_providers import _GIT_PROVIDERS
@@ -380,9 +437,9 @@ async def _run_tool_via_spy(monkeypatch, isolated_settings, verb, canned_yaml, s
     _SpyProvider.incremental_access = incremental_access
     monkeypatch.setitem(_GIT_PROVIDERS, "mosaico_diff", _SpyProvider)
 
-    # The first LLM call is the tool's main prediction (return the canned YAML).
+    # The first LLM call is the command's main prediction (return the canned YAML).
     # Subsequent calls (e.g. /improve's self-reflection scoring) get an empty string,
-    # which makes the tool fall back to its default suggestion score (passes threshold).
+    # which makes the command fall back to its default suggestion score (passes threshold).
     call_count = {"n": 0}
 
     async def fake_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
@@ -404,7 +461,7 @@ async def _run_tool_via_spy(monkeypatch, isolated_settings, verb, canned_yaml, s
 class TestSpikeEndToEnd:
     @pytest.mark.asyncio
     async def test_review_end_to_end(self, monkeypatch, isolated_settings):
-        ok, artifact, incremental = await _run_tool_via_spy(
+        ok, artifact, incremental = await _run_command_via_spy(
             monkeypatch, isolated_settings, "review", CANNED_REVIEW_YAML)
         assert ok is True, "review handle_request returned False (swallowed exception)"
         assert artifact, "review produced empty artifact"
@@ -412,9 +469,21 @@ class TestSpikeEndToEnd:
 
     @pytest.mark.asyncio
     async def test_improve_end_to_end(self, monkeypatch, isolated_settings):
-        ok, artifact, incremental = await _run_tool_via_spy(
-            monkeypatch, isolated_settings, "improve", CANNED_IMPROVE_YAML,
-            second_yaml=CANNED_IMPROVE_REFLECTION_YAML)
+        # /improve runs /review, so it answers from the review prompt.
+        ok, artifact, incremental = await _run_command_via_spy(
+            monkeypatch, isolated_settings, "improve", CANNED_REVIEW_YAML)
         assert ok is True, "improve handle_request returned False (swallowed exception)"
         assert artifact, "improve produced empty artifact"
         assert incremental == [], f"incremental-only methods were accessed: {incremental}"
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x85", "\f", "\v", "\x1c", "\r"])
+def test_supplied_diff_preserves_non_lf_characters_inside_source_lines(separator):
+    patch = ("diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n"
+             "@@ -1 +1 @@\n" + f"-old{separator}continued\n+new{separator}continued\n")
+
+    files = parse_unified_diff(patch)
+
+    assert len(files) == 1
+    assert files[0].base_file == f"old{separator}continued\n"
+    assert files[0].head_file == f"new{separator}continued\n"

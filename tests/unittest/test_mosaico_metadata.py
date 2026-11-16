@@ -17,21 +17,21 @@ from pr_agent.mosaico.observability import langfuse_span, mosaico_log_context, p
 class TestParseObservabilityMetadata:
     def test_all_three(self):
         raw = {
-            "mosaico-root-task-id": "r",
-            "mosaico-super-task-id": "s",
+            "mosaico-root-task-id": "123e4567-e89b-12d3-a456-426614174000",
+            "mosaico-super-task-id": "00112233-4455-6677-8899-aabbccddeeff",
             "mosaico-root-task-name": "n",
         }
         assert parse_observability_metadata(raw) == raw
 
     def test_missing_one_is_partial(self):
-        raw = {"mosaico-root-task-id": "r", "mosaico-root-task-name": "n"}
+        raw = {"mosaico-root-task-id": "123e4567-e89b-12d3-a456-426614174000", "mosaico-root-task-name": "n"}
         out = parse_observability_metadata(raw)
-        assert out == {"mosaico-root-task-id": "r", "mosaico-root-task-name": "n"}
+        assert out == {"mosaico-root-task-id": "123e4567-e89b-12d3-a456-426614174000", "mosaico-root-task-name": "n"}
         assert out != {}
 
     def test_non_string_value_omitted(self):
-        raw = {"mosaico-root-task-id": "r", "mosaico-super-task-id": 5}
-        assert parse_observability_metadata(raw) == {"mosaico-root-task-id": "r"}
+        raw = {"mosaico-root-task-id": "123e4567-e89b-12d3-a456-426614174000", "mosaico-super-task-id": 5}
+        assert parse_observability_metadata(raw) == {"mosaico-root-task-id": "123e4567-e89b-12d3-a456-426614174000"}
 
     def test_non_mapping_returns_empty(self):
         for bad in (None, [], "x", 7, ("a",)):
@@ -40,7 +40,7 @@ class TestParseObservabilityMetadata:
     def test_never_raises(self):
         # Exhaustive no-raise check across odd inputs.
         for bad in (None, {}, {"x": "y"}, [1, 2], "str", 0, object()):
-            parse_observability_metadata(bad)
+            assert parse_observability_metadata(bad) == {}
 
 
 class TestLangfuseSpanNoOpSafety:
@@ -51,8 +51,10 @@ class TestLangfuseSpanNoOpSafety:
         assert ran["v"] is True
 
     def test_none_meta_is_noop(self):
+        ran = {"v": False}
         with langfuse_span(None, "ctx"):
-            pass  # must not raise
+            ran["v"] = True
+        assert ran["v"] is True
 
     def test_partial_meta_does_not_raise_when_langfuse_unavailable(self, monkeypatch):
         # Simulate langfuse import failure inside the CM; it must degrade to untraced.
@@ -71,10 +73,12 @@ class TestLangfuseSpanNoOpSafety:
         assert ran["v"] is True  # body still executed despite langfuse failure
 
     def test_log_context_partial_and_empty(self):
+        executed = []
         with mosaico_log_context({"mosaico-root-task-id": "r"}, "ctx"):
-            pass
+            executed.append("partial")
         with mosaico_log_context({}, None):
-            pass
+            executed.append("empty")
+        assert executed == ["partial", "empty"]
 
 
 class TestLangfuseSpanW3CTransform:
@@ -124,3 +128,24 @@ class TestLangfuseSpanW3CTransform:
         # A2A context id -> Langfuse session id
         assert captured["session_id"] == "ctx-id-42"
         assert captured["trace_name"] == "root-task"
+
+
+@pytest.mark.parametrize("bad_id", [
+    "", "not-a-uuid", "123e4567e89b12d3a456426614174000", "123e4567-e89b-12d3-a456-42661417400z",
+    "00000000-0000-0000-0000-000000000000", 123, None,
+])
+def test_invalid_observability_ids_are_omitted_independently(bad_id):
+    valid = "00112233-4455-6677-8899-aabbccddeeff"
+    assert parse_observability_metadata({
+        "mosaico-root-task-id": bad_id,
+        "mosaico-super-task-id": valid.upper(),
+        "mosaico-root-task-name": "review",
+    }) == {"mosaico-super-task-id": valid, "mosaico-root-task-name": "review"}
+    assert parse_observability_metadata({"mosaico-super-task-id": bad_id}) == {}
+
+
+def test_zero_w3c_parent_span_is_omitted():
+    assert parse_observability_metadata({
+        "mosaico-root-task-id": "123E4567-E89B-12D3-A456-426614174000",
+        "mosaico-super-task-id": "123e4567-e89b-12d3-0000-000000000000",
+    }) == {"mosaico-root-task-id": "123e4567-e89b-12d3-a456-426614174000"}

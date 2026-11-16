@@ -14,8 +14,10 @@ import inspect
 import json
 import os
 import re
+import secrets
 import shutil
 import sys
+import weakref
 from contextvars import ContextVar
 from functools import lru_cache, wraps
 from types import FunctionType, SimpleNamespace
@@ -84,7 +86,7 @@ PROVIDER_SETTING_ALIASES = {
     "text-completion-openai": "openai",
     "vertex_ai_beta": "vertex_ai",
 }
-# Keep chat-completion endpoint aliases in the same precedence order as LiteLLM 1.103.0.
+# Keep chat-completion endpoint aliases in LiteLLM's precedence order.
 # Native completion masks BASETEN_API_BASE, MISTRAL_API_BASE and ARK_API_BASE;
 # VERTEX_API_BASE belongs to embedding, not chat. Do not promote them to explicit routing.
 PROVIDER_API_BASE_ENV_VARS = {
@@ -152,6 +154,7 @@ PROVIDER_API_BASE_ENV_VARS = {
     "nlp_cloud": ("NLP_CLOUD_API_BASE",),
     "ollama": ("OLLAMA_API_BASE",),
     "openai_like": ("OPENAI_LIKE_API_BASE",),
+    "opencode_go": ("OPENCODE_GO_API_BASE",),
     "openrouter": ("OPENROUTER_API_BASE",),
     "ovhcloud": ("OVHCLOUD_API_BASE",),
     "perplexity": ("PERPLEXITY_API_BASE",),
@@ -208,7 +211,7 @@ PROVIDER_ROUTING_ENV_VARS = {
     "watsonx_text": dict(_WATSONX_ROUTING_ENV_VARS),
 }
 
-# Keep aliases in the same precedence order as LiteLLM 1.103.0.
+# Keep API key aliases in LiteLLM's precedence order.
 PROVIDER_API_KEY_ENV_VARS = {
     "ai21": ("AI21_API_KEY",),
     "ai21_chat": ("AI21_API_KEY",),
@@ -282,6 +285,7 @@ PROVIDER_API_KEY_ENV_VARS = {
     "ollama": ("OLLAMA_API_KEY",),
     "openai": ("OPENAI_API_KEY",),
     "openai_like": ("OPENAI_LIKE_API_KEY",),
+    "opencode_go": ("OPENCODE_GO_API_KEY", "OPENCODE_API_KEY"),
     "openrouter": ("OPENROUTER_API_KEY", "OR_API_KEY"),
     "ovhcloud": ("OVHCLOUD_API_KEY",),
     "perplexity": ("PERPLEXITYAI_API_KEY", "PERPLEXITY_API_KEY"),
@@ -442,6 +446,11 @@ def _exchange_azure_oidc_token(selector, environment, native=None):
     # and refresh/TTL behavior. Only the outer exchange's inputs are request-owned.
     native_globals["os"] = SimpleNamespace(getenv=captured_getenv)
     native_globals["azure_ad_cache"] = SimpleNamespace(get_cache=get_cache, set_cache=set_cache)
+    # The native exchange reads and fills the cache in module-level helpers.
+    for name in ("_cached_oidc_token", "_exchange_oidc_token"):
+        if not isinstance(native_globals.get(name), FunctionType):
+            raise RuntimeError("LiteLLM's Azure OIDC exchange interface is incompatible")
+        native_globals[name] = _rebind_to_globals(native_globals[name], native_globals)
     exchange = _rebind_to_globals(native, native_globals)
     return exchange(
         selector,
@@ -769,6 +778,69 @@ class _SDKHeaderSnapshot:
         return "<request-local SDK headers>"
 
 
+# LiteLLM validates request extra_headers as dict[str, str] (and coerces str subclasses to
+# plain str), so SDK-only header objects cross that boundary as strings and are restored
+# in the patched _build_headers. The sentinels are unguessable per process.
+_CAPTURED_HEADER_VALUE = f"pr-agent-captured-{secrets.token_hex(16)}"
+_OMITTED_HEADER_VALUE = f"pr-agent-omitted-{secrets.token_hex(16)}"
+_sdk_header_snapshots: dict[str, _SDKHeaderSnapshot] = {}
+
+
+def _sdk_header_to_wire(value):
+    if isinstance(value, _CapturedSDKHeader):
+        return _CAPTURED_HEADER_VALUE
+    if isinstance(value, openai.Omit):
+        return _OMITTED_HEADER_VALUE
+    return value
+
+
+def _sdk_header_from_wire(value):
+    if value == _CAPTURED_HEADER_VALUE:
+        return _CapturedSDKHeader()
+    if value == _OMITTED_HEADER_VALUE:
+        return openai.Omit()
+    return value
+
+
+def _register_sdk_snapshot(snapshot) -> str:
+    # The trailing newline is an illegal HTTP header value, so a token that no bridge
+    # consumed fails in the HTTP layer instead of reaching the provider.
+    token = f"{secrets.token_hex(16)}\n"
+    _sdk_header_snapshots[token] = _SDKHeaderSnapshot(snapshot)
+    return token
+
+
+def _release_sdk_snapshot_after(result, token):
+    """Drop the registered snapshot once the request, or its lazy stream, is finished."""
+    def release():
+        _sdk_header_snapshots.pop(token, None)
+
+    if inspect.isasyncgen(result):
+        async def stream():
+            try:
+                async for item in result:
+                    yield item
+            finally:
+                release()
+                await result.aclose()
+
+        wrapped = stream()
+    elif inspect.isawaitable(result):
+        async def call():
+            try:
+                return await result
+            finally:
+                release()
+
+        wrapped = call()
+    else:
+        release()
+        return result
+    # A wrapper that is never started or awaited still releases the snapshot when collected.
+    weakref.finalize(wrapped, release)
+    return wrapped
+
+
 def _merge_sdk_headers(*layers):
     """Merge before HTTPX so differently cased names cannot duplicate credentials."""
     result = {}
@@ -818,6 +890,7 @@ def _sdk_data_adapter(original, *, text=False, copilot=False):
         if snapshot is None:
             return original(*args, **kwargs)
         bound = signature.bind(*args, **kwargs)
+        token = None
         if copilot:
             if snapshot["provider"] != "github_copilot":
                 return original(*args, **kwargs)
@@ -831,15 +904,23 @@ def _sdk_data_adapter(original, *, text=False, copilot=False):
                 # LiteLLM also copies this auth argument into text request data.
                 # Keep it on the native client parameters, never in the SDK payload.
                 data.pop("azure_ad_token", None)
-            headers = dict(data.get("extra_headers") or {})
+            headers = {name: _sdk_header_to_wire(value) for name, value in (data.get("extra_headers") or {}).items()}
             _check_sdk_marker_collision(headers)
-            headers[_SDK_HEADER_MARKER] = _SDKHeaderSnapshot(snapshot)
+            token = _register_sdk_snapshot(snapshot)
+            headers[_SDK_HEADER_MARKER] = token
             data["extra_headers"] = headers
             bound.arguments["data"] = data
             if text and bound.arguments.get("logging_obj") is not None:
                 bound.arguments["logging_obj"] = _SDKHeaderLoggingProxy(bound.arguments["logging_obj"])
         # Capture before returning a lazy text streaming generator, not at first iteration.
-        return original(*bound.args, **bound.kwargs)
+        if token is None:
+            return original(*bound.args, **bound.kwargs)
+        try:
+            result = original(*bound.args, **bound.kwargs)
+        except BaseException:
+            _sdk_header_snapshots.pop(token, None)
+            raise
+        return _release_sdk_snapshot_after(result, token)
 
     scoped._pr_agent_sdk_headers_original = original
     scoped._pr_agent_sdk_headers_context = _sdk_request_headers
@@ -881,8 +962,13 @@ def _install_sdk_header_bridge():
         def build_headers(client, options, *, retries_taken=0):
             headers = dict(options.headers or {})
             marker = headers.get(_SDK_HEADER_MARKER)
+            if isinstance(marker, str):
+                marker = _sdk_header_snapshots.get(marker)
+                if marker is None:
+                    raise RuntimeError("The request-local SDK header snapshot is no longer available")
             if not isinstance(marker, _SDKHeaderSnapshot):
                 return sdk_build_headers(client, options, retries_taken=retries_taken)
+            headers = {name: _sdk_header_from_wire(value) for name, value in headers.items()}
             if type(client) not in (openai.OpenAI, openai.AsyncOpenAI, openai.AzureOpenAI, openai.AsyncAzureOpenAI):
                 raise ValueError("Custom SDK clients are incompatible with request header isolation")
             del headers[_SDK_HEADER_MARKER]
@@ -982,23 +1068,26 @@ def _get_bedrock_model_region(model: str, model_id=None) -> str | None:
     """Resolve only the region carried by the request, without ambient AWS discovery."""
     from litellm.llms.bedrock.common_utils import BedrockModelInfo
 
-    # LiteLLM 1.103.0 consumes model_id before Invoke resolves its region.
-    # Only Converse uses that separate ID or region/model path for routing.
-    is_converse = BedrockModelInfo.get_bedrock_route(model) == "converse"
+    # LiteLLM consumes model_id before Invoke resolves its region.
+    # Only Converse uses that separate ID; Converse and Chat Completions use region/model paths for routing.
+    route = BedrockModelInfo.get_bedrock_route(model, {"model_id": model_id})
+    is_converse = route == "converse"
     if not is_converse:
         model_id = None
     candidate = model_id or model
     if not isinstance(candidate, str):
         return None
     if not model_id:
-        for prefix in ("bedrock/converse/", "bedrock/", "converse/"):
+        for prefix in (
+            "bedrock/chat_completions/", "bedrock/converse/", "bedrock/", "chat_completions/", "converse/",
+        ):
             if candidate.startswith(prefix):
                 candidate = candidate[len(prefix):]
                 break
     arn_candidate = candidate
     if not model_id:
         arn_candidate = arn_candidate.removeprefix("invoke/")
-        # Match the native chat model prefixes in LiteLLM 1.103.0 without
+        # Match LiteLLM's native chat model prefixes without
         # decoding an ARN or changing Converse's region/model path grammar.
         for prefix in ("llama/", "deepseek_r1/", "openai/", "qwen2/", "qwen3/", "moonshot/", "nova-2/", "nova/"):
             if arn_candidate.startswith(prefix):
@@ -1007,8 +1096,8 @@ def _get_bedrock_model_region(model: str, model_id=None) -> str | None:
     arn = re.match(r"\Aarn:aws(?:-[a-z0-9-]+)?:bedrock:([a-z0-9-]+):", arn_candidate)
     if arn:
         return arn.group(1)
-    # Native Converse only recognizes region/model paths when model_id is absent.
-    if is_converse and not model_id:
+    # Native Converse/Chat Completions only recognize region/model paths when model_id is absent.
+    if route in ("converse", "chat_completions") and not model_id:
         region, separator, _ = candidate.partition("/")
         if separator and region in litellm.AmazonBedrockGlobalConfig().get_all_regions():
             return region
@@ -1068,7 +1157,7 @@ def _guard_request_routing_globals(provider: str | None, params: dict) -> dict:
             and parameter in params
             and live_value != params[parameter]
         ):
-            # LiteLLM 1.103.0's ChatGPT chat transformation ignores the request
+            # LiteLLM's ChatGPT chat transformation ignores the request
             # api_base and re-reads these variables when resolving provider info.
             raise ValueError("Refusing changed live api_base environment for provider chatgpt")
     return params
@@ -1343,6 +1432,15 @@ def _install_databricks_keyless_bridge():
     DatabricksBase.databricks_validate_environment = validate_environment
 
 
+def _google_cloud_sdk():
+    """Return Google Auth's Cloud SDK module, or None when the optional `google` extra is not installed."""
+    try:
+        from google.auth import _cloud_sdk
+    except ModuleNotFoundError:
+        return None
+    return _cloud_sdk
+
+
 def _snapshot_cloud_sdk_project(directory):
     """Capture Cloud SDK 583's project property without running a subprocess."""
     if "CLOUDSDK_CORE_PROJECT" in os.environ:
@@ -1586,7 +1684,7 @@ def _install_vertex_executable_guard():
         setattr(guarded, marker, original)
         return guarded
 
-    # LiteLLM 1.103.0 reads expired (sync) or token_state (async) on the
+    # LiteLLM reads expired (sync) or token_state (async) on the
     # actual cached credential before returning its token. Guarding the
     # descriptors also covers cache replacement during an async lock wait.
     for name in ("from_info", "refresh", "expired", "token_state"):
@@ -1613,7 +1711,13 @@ def _install_vertex_executable_guard():
 
 
 def _install_vertex_wif_project_bridge():
-    """Restore ADC project discovery for request-owned WIF JSON in LiteLLM 1.103.0."""
+    """Restore ADC project discovery for request-owned WIF JSON.
+
+    Remove this bridge when LiteLLM discovers WIF projects without ambient ADC
+    or quota overrides, binds each handler's captured AWS identity without
+    consulting later process AWS settings, and reuses the resulting WIF
+    credential for cache and refresh.
+    """
     from litellm.llms.vertex_ai.vertex_llm_base import VertexBase
 
     original = VertexBase.load_auth
@@ -1632,7 +1736,7 @@ def _install_vertex_wif_project_bridge():
         if json_obj != snapshot:
             return original(self, credentials, project_id)
 
-        # Preserve LiteLLM 1.103.0's WIF factories, including its explicit AWS
+        # Preserve LiteLLM's WIF factories, including its explicit AWS
         # supplier. Only project discovery is missing from its JSON load path.
         scopes = ["https://www.googleapis.com/auth/cloud-platform"]
         source = json_obj.get("credential_source", {})
@@ -1674,7 +1778,11 @@ def _install_vertex_wif_project_bridge():
 
 
 def _install_vertex_impersonated_credentials_bridge():
-    """Add LiteLLM 1.103.0's missing ADC type without replacing its refresh/cache path."""
+    """Load request-owned impersonated ADC without ambient quota overrides.
+
+    Remove this bridge when LiteLLM handles this ADC type from captured
+    credentials without reading live quota settings.
+    """
     from litellm.llms.vertex_ai.vertex_llm_base import VertexBase
 
     original = VertexBase._credentials_from_service_account
@@ -1814,11 +1922,11 @@ def _sign_bedrock_mantle_request(self, *args, **kwargs):
                     for index, parameter in enumerate(parameters)
                     if parameter.name == "api_key"
                 )
-            except (StopIteration, TypeError, ValueError):
+            except (StopIteration, TypeError, ValueError) as error:
                 raise RuntimeError(
                     "LiteLLM's Bedrock Mantle signer did not expose api_key; "
                     "request-local bearer isolation cannot be applied"
-                )
+                ) from error
             api_key_index, api_key_parameter = api_key_parameter
             if api_key_parameter.kind == api_key_parameter.KEYWORD_ONLY:
                 kwargs["api_key"] = ""

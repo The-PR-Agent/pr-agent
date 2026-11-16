@@ -56,13 +56,14 @@ class TestApplyRepoSettings:
     """
 
     def test_repo_settings_from_toml_are_applied(self, fresh_global_settings, monkeypatch):
+        provider = FakeGitProvider(REPO_A_TOML)
         monkeypatch.setattr(
             "pr_agent.git_providers.utils.get_git_provider_with_context",
-            lambda url: FakeGitProvider(REPO_A_TOML),
+            lambda url: provider,
         )
         with request_cycle_context({}):
             context["settings"] = copy.deepcopy(global_settings)
-            git_utils.apply_repo_settings("https://git.example/projects/A/repos/a/pull-requests/1")
+            assert git_utils.apply_repo_settings("https://git.example/projects/A/repos/a/pull-requests/1") is provider
             assert "MARKER-FROM-REPO-A" in _extra_instructions("pr_reviewer")
             assert "MARKER-FROM-REPO-A" in _extra_instructions("pr_code_suggestions")
 

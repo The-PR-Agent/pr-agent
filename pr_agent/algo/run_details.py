@@ -30,8 +30,8 @@ class RunDetails:
     # Model that produced the answer, which differs from `config.model` when a fallback
     # took over. Stays None when no prediction succeeded, which the renderer reads as
     # "nothing worth showing".
-    model_used: Optional[str] = None
-    # Retain every model contributing to a merged review; keep scalar output for other tools.
+    model_used: str | None = None
+    # Retain every model contributing to a merged review; keep scalar output for other commands.
     models_used: list[str] = field(default_factory=list)
     # Sticky: once a fallback has won, a later success on the primary model must not
     # clear this, or the comment would hide that a fallback ran at all.
@@ -57,13 +57,13 @@ class RunDetails:
     # price a successful response with a positive amount. Use the known-call count to
     # distinguish priced calls from missing pricing data. Retain per-model totals to
     # keep fallback and multi-call runs auditable.
-    total_cost_usd: Decimal = field(default_factory=lambda: Decimal("0"))
+    total_cost_usd: Decimal = field(default_factory=lambda: Decimal(0))
     known_cost_call_count: int = 0
     model_costs_usd: dict[str, Decimal] = field(default_factory=dict)
     # Monotonic reference taken when the collector is installed, i.e. at the top of the
-    # tool's run(). Monotonic so that wall-clock adjustments cannot yield a negative duration.
+    # command's run(). Monotonic so that wall-clock adjustments cannot yield a negative duration.
     start_time: float = field(default_factory=time.monotonic)
-    # Set when a tool caught its own error and, because `propagate_tool_errors` is false by
+    # Set when a command caught its own error and, because `propagate_command_errors` is false by
     # default, returned normally anyway. Without this a caller cannot tell a run that published
     # nothing because it failed from one that had nothing to say.
     command_failed: bool = False
@@ -101,13 +101,13 @@ def init_run_details() -> RunDetails:
     return details
 
 
-def get_run_details() -> Optional[RunDetails]:
+def get_run_details() -> RunDetails | None:
     """Return the collector for the current run, or None if not initialized."""
     return _run_details.get()
 
 
 def record_command_failure() -> None:
-    """Mark the current run as failed, for a tool that is about to swallow its own error."""
+    """Mark the current run as failed, for a command that is about to swallow its own error."""
     details = get_run_details()
     if details is None:
         return
@@ -136,7 +136,7 @@ def _read_token_field(usage, name: str) -> int:
         value = usage.get(name)
     else:
         value = getattr(usage, name, None)
-    return value if isinstance(value, int) else 0
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
 def _read_cache_token_field(usage, public_name: str, private_name: str) -> int:
@@ -175,7 +175,7 @@ def _read_cache_token_field(usage, public_name: str, private_name: str) -> int:
                     value = getattr(details, "cached_tokens", None)
                 if value is not None:
                     break
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
 def add_token_usage(usage) -> None:
@@ -199,7 +199,7 @@ def add_token_usage(usage) -> None:
     )
 
 
-def _as_decimal_cost(cost_usd) -> Optional[Decimal]:
+def _as_decimal_cost(cost_usd) -> Decimal | None:
     """Normalize a positive finite USD value without introducing float math.
 
     Zero is rejected on purpose: litellm.completion_cost returns 0.0 both for
@@ -218,7 +218,7 @@ def _as_decimal_cost(cost_usd) -> Optional[Decimal]:
     return cost
 
 
-def record_ai_call(usage=None, model: Optional[str] = None, cost_usd=None) -> None:
+def record_ai_call(usage=None, model: str | None = None, cost_usd=None) -> None:
     """Count one successful AI call and accumulate usage and known cost."""
     details = get_run_details()
     if details is None:
@@ -231,4 +231,4 @@ def record_ai_call(usage=None, model: Optional[str] = None, cost_usd=None) -> No
         details.total_cost_usd += cost
         details.known_cost_call_count += 1
         model_name = model or "unknown"
-        details.model_costs_usd[model_name] = details.model_costs_usd.get(model_name, Decimal("0")) + cost
+        details.model_costs_usd[model_name] = details.model_costs_usd.get(model_name, Decimal(0)) + cost

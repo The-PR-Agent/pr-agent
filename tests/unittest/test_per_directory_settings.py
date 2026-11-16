@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, call
 
 import pytest
 from github import GithubException
+from gitlab.exceptions import GitlabGetError
 from starlette_context import context, request_cycle_context
 
 from pr_agent.config_loader import get_settings, global_settings
@@ -17,6 +18,7 @@ num_max_findings = 10
 
 [config]
 model = "root-model"
+fallback_models = ["root-fallback-one", "root-fallback-two"]
 temperature = 0.1
 """
 
@@ -601,6 +603,7 @@ num_max_findings = 4
         config = b"""
 [pr_update_changelog]
 push_changelog_changes = true
+changelog_path = "services/CHANGELOG.md"
 add_pr_link = true
 extra_instructions = "keep-me"
 
@@ -614,7 +617,7 @@ enable_help_text = true
         monkeypatch.setattr(
             "pr_agent.git_providers.utils.get_git_provider_with_context",
             lambda url: _provider(
-                root_settings=ROOT_TOML,
+                root_settings=ROOT_TOML + b'\n[pr_update_changelog]\nchangelog_path = "docs/HISTORY.md"\n',
                 tree_paths=["services/.pr_agent.toml"],
                 contents={"services/.pr_agent.toml": config},
                 files=["services/api.py"],
@@ -624,6 +627,7 @@ enable_help_text = true
         git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
 
         assert get_settings().pr_update_changelog.push_changelog_changes is False
+        assert get_settings().pr_update_changelog.changelog_path == "docs/HISTORY.md"
         assert get_settings().get("pr_help_docs.repo_url", "") == ""
         # Collection scope is root-/host-controlled: a nested file cannot point /help_docs
         # at arbitrary repository paths or file extensions to read into the model prompt.
@@ -634,20 +638,21 @@ enable_help_text = true
         assert get_settings().pr_help_docs.exclude_root_readme is True
         assert get_settings().pr_help_docs.enable_help_text is True
 
-    def test_description_questions_and_similar_issue_host_only_keys_are_dropped(
-        self, per_dir_settings, monkeypatch
-    ):
-        config = b"""
+    _HOST_ONLY_KEYS_CONFIG = b"""
 [pr_reviewer]
 num_max_findings = 4
 enable_large_pr_chunking = true
 max_number_of_calls = 9999
-inline_key_issues = true
+per_commit_review = true
+max_commits_per_review = 2
+inline_key_issues = false
 enable_review_labels_security = false
 enable_review_labels_effort = false
 require_security_review = false
 require_estimate_effort_to_review = false
 require_ticket_analysis_review = false
+max_changed_lines = 9999
+sensitive_paths = []
 
 [pr_description]
 publish_labels = true
@@ -663,15 +668,20 @@ async_ai_calls = false
 resolve_threads = true
 static_questions = ["default"]
 use_conversation_history = true
+use_ticket_context = true
 
 [pr_code_suggestions]
+committable_code_suggestions = true
+# Deprecated alias of the key above: it must be denied per directory too, otherwise a nested
+# file could flip /improve to inline publishing through the spelling the fallback still reads.
 commitable_code_suggestions = true
+# Dual publishing posts suggestions inline through the same path, so it is denied per directory too.
+dual_publishing_score_threshold = 1
 num_code_suggestions_per_chunk = 2
 max_number_of_calls = 99
 parallel_calls = true
 max_discussion_context_chars = 999999
 demand_code_suggestions_self_review = true
-approve_pr_on_self_review = true
 
 [pr_similar_issue]
 force_update_dataset = true
@@ -680,23 +690,29 @@ max_issues_to_scan = 999999
 vectordb = "pinecone"
 use_original_title = false
 """
-        monkeypatch.setattr(
-            "pr_agent.git_providers.utils.get_git_provider_with_context",
-            lambda url: _provider(
-                root_settings=ROOT_TOML + b"""
+    _HOST_ONLY_KEYS_ROOT_SETTINGS = ROOT_TOML + b"""
 [pr_questions]
 use_conversation_history = false
 [pr_similar_issue]
 skip_comments = true
-""",
+[pr_code_suggestions]
+dual_publishing_score_threshold = 7
+"""
+
+    @pytest.fixture
+    def host_only_keys_applied(self, per_dir_settings, monkeypatch):
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                root_settings=self._HOST_ONLY_KEYS_ROOT_SETTINGS,
                 tree_paths=["services/.pr_agent.toml"],
-                contents={"services/.pr_agent.toml": config},
+                contents={"services/.pr_agent.toml": self._HOST_ONLY_KEYS_CONFIG},
                 files=["services/api.py"],
             ),
         )
-
         git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
 
+    def test_label_thread_and_index_refresh_keys_stay_trusted(self, host_only_keys_applied):
         # Label mutation, thread resolution and full issue-index refresh switches are
         # host-/root-controlled and must stay at their trusted defaults.
         assert get_settings().pr_description.publish_labels is False
@@ -705,40 +721,86 @@ skip_comments = true
         assert get_settings().pr_similar_issue.skip_comments is True
         assert get_settings().get("pr_similar_issue.max_issues_to_scan", 0) != 999999
         assert get_settings().pr_similar_issue.vectordb != "pinecone"
+
+    def test_pr_metadata_and_reviewer_label_controls_stay_trusted(self, host_only_keys_applied):
         # Pull-request metadata and reviewer label/inline controls stay trusted:
         # a nested file cannot rewrite PR titles/bodies, publish reviewer effort or
         # security labels, or open inline key-issue comments through the bot identity.
         assert get_settings().pr_description.generate_ai_title is False
         assert get_settings().pr_description.publish_description_as_comment is False
         assert get_settings().pr_description.publish_description_as_comment_persistent is True
-        assert get_settings().pr_reviewer.inline_key_issues is False
+        assert get_settings().pr_reviewer.inline_key_issues is True
         assert get_settings().pr_reviewer.enable_review_labels_security is True
         assert get_settings().pr_reviewer.enable_review_labels_effort is True
         assert get_settings().pr_reviewer.require_security_review is True
         assert get_settings().pr_reviewer.require_estimate_effort_to_review is True
         assert get_settings().pr_reviewer.require_ticket_analysis_review is True
+
+    def test_budget_and_call_count_controls_stay_trusted(self, host_only_keys_applied):
         # Budget/call-count controls stay at the host-trusted values: nested files must
         # not multiply AI calls on their own.
         assert get_settings().pr_reviewer.enable_large_pr_chunking is False
         assert get_settings().pr_reviewer.max_number_of_calls != 9999
+        assert get_settings().pr_reviewer.per_commit_review is False
+        assert get_settings().pr_reviewer.max_commits_per_review == 0
         assert get_settings().pr_description.enable_large_pr_handling != 999999
         assert get_settings().pr_description.max_ai_calls != 400
         assert get_settings().pr_description.async_ai_calls is True
         assert get_settings().pr_code_suggestions.max_number_of_calls != 99
         assert get_settings().pr_code_suggestions.parallel_calls is True
         assert get_settings().pr_code_suggestions.max_discussion_context_chars != 999999
-        # The self-review approval workflow stays root-controlled: a nested file cannot
-        # demand a self-review checklist and then auto-approve on the author's tick.
+
+    def test_merge_verdict_limits_stay_host_controlled(self, per_dir_settings, monkeypatch):
+        settings = get_settings()
+        settings.pr_reviewer.max_changed_lines = 250
+        settings.pr_reviewer.sensitive_paths = ["host-controlled/**"]
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": self._HOST_ONLY_KEYS_CONFIG},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        assert settings.pr_reviewer.max_changed_lines == 250
+        assert settings.pr_reviewer.sensitive_paths == ["host-controlled/**"]
+
+    def test_custom_risk_shapes_stay_host_controlled_per_directory(self, per_dir_settings, monkeypatch):
+        settings = get_settings()
+        settings.pr_reviewer.extra_risky_shapes = ["HOST_RISK"]
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": b'[pr_reviewer]\nextra_risky_shapes = ["CUSTOM_RISK"]\n'},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        assert settings.pr_reviewer.extra_risky_shapes == ["HOST_RISK"]
+
+    def test_self_review_demand_stays_root_controlled(self, host_only_keys_applied):
+        # The self-review workflow stays root-controlled: a nested file cannot make
+        # /improve demand a self-review checklist.
         assert get_settings().pr_code_suggestions.demand_code_suggestions_self_review is False
-        assert get_settings().pr_code_suggestions.approve_pr_on_self_review is False
-        # Thread-history collection for /ask is root-controlled: a nested file cannot
-        # re-enable sending private review-thread discussion bodies to the model.
+
+    def test_ask_context_collection_stays_root_controlled(self, host_only_keys_applied):
+        # A nested file cannot enable ticket reads or re-enable sending private thread bodies.
         assert get_settings().pr_questions.use_conversation_history is False
-        # Ordinary keys in the same sections still apply.
+        assert get_settings().pr_questions.use_ticket_context is False
+
+    def test_ordinary_keys_in_the_same_sections_still_apply(self, host_only_keys_applied):
         assert get_settings().pr_reviewer.num_max_findings == 4
         assert get_settings().pr_description.use_ai_title is True
         assert get_settings().pr_questions.static_questions == ["default"]
-        assert get_settings().pr_code_suggestions.commitable_code_suggestions is False
+        assert get_settings().pr_code_suggestions.committable_code_suggestions is False
+        assert get_settings().pr_code_suggestions.get("commitable_code_suggestions") is None
+        assert get_settings().pr_code_suggestions.dual_publishing_score_threshold == 7
         assert get_settings().pr_code_suggestions.num_code_suggestions_per_chunk == 2
         assert get_settings().pr_similar_issue.use_original_title is False
 
@@ -788,7 +850,7 @@ per_directory_settings_max_tree_pages = 999999
 
         git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
 
-        # Context-fetch knobs are root-/host-controlled; a nested file cannot make tools
+        # Context-fetch knobs are root-/host-controlled; a nested file cannot make commands
         # fetch arbitrary repo files in full when they build context for its directory.
         assert get_settings().get("config.repo_context_files", []) != [
             "huge.bin",
@@ -904,8 +966,10 @@ fallback_models = ["m-one", "m-two", "m-three", "m-four", "m-five"]
 
         # Fallback routing stays root-/host-controlled: the retry helper turns each
         # entry into one more routed attempt per failing model, so a nested file must
-        # not be able to multiply AI calls with an arbitrarily long list.
-        assert list(get_settings().config.fallback_models) == ["gpt-5.6-terra"]
+        # not be able to multiply AI calls with an arbitrarily long list. The root fixture
+        # carries its own list so this also fails if merging silently swaps a configured
+        # root or host fallback for the shipped default.
+        assert list(get_settings().config.fallback_models) == ["root-fallback-one", "root-fallback-two"]
         # Other model-routing and output knobs still apply.
         assert get_settings().config.model == "nested-model"
         assert get_settings().config.temperature == 0.5
@@ -986,7 +1050,12 @@ max_output_tokens = 999999
 def _github_provider(repo_obj):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo_obj = repo_obj
-    provider._resolved_config_branch = None
+    provider._repo_settings_snapshot = None
+    provider._repo_settings_acquired = False
+    repo_obj.default_branch = "main"
+    repo_obj.get_commit.side_effect = lambda ref: SimpleNamespace(
+        sha=f"{ref}-commit", commit=SimpleNamespace(tree=SimpleNamespace(sha=f"{ref}-tree")), complete=lambda: None,
+    )
     return provider
 
 
@@ -1004,35 +1073,37 @@ class TestGithubProviderPerDirectory:
 
         paths, resolved_ref = provider.get_repo_settings_tree()
 
-        assert resolved_ref == "main"
+        assert resolved_ref == "main-commit"
         assert paths == [".pr_agent.toml", "services/auth/.pr_agent.toml"]
-        repo_obj.get_git_tree.assert_called_once_with("main", recursive=True)
+        repo_obj.get_git_tree.assert_called_once_with("main-tree", recursive=True)
 
-    def test_get_repo_settings_tree_uses_resolved_config_branch(self):
+    def test_get_repo_settings_tree_uses_selected_snapshot(self):
         repo_obj = MagicMock()
         repo_obj.get_git_tree.return_value = SimpleNamespace(tree=[])
         provider = _github_provider(repo_obj)
-        provider._resolved_config_branch = "cfg-branch"
+        provider._repo_settings_snapshot = ("cfg-commit", "cfg-tree")
+        provider._repo_settings_acquired = True
 
         _, resolved_ref = provider.get_repo_settings_tree("")
 
-        assert resolved_ref == "cfg-branch"
-        repo_obj.get_git_tree.assert_called_once_with("cfg-branch", recursive=True)
+        assert resolved_ref == "cfg-commit"
+        repo_obj.get_git_tree.assert_called_once_with("cfg-tree", recursive=True)
 
-    def test_resolved_config_branch_beats_explicit_ref(self):
-        # get_repo_settings() stores the branch it actually read the root config
+    def test_selected_snapshot_beats_explicit_ref(self):
+        # get_repo_settings() stores the snapshot it actually read the root config
         # from (already fallback-resolved), so it must win over a CONFIG_BRANCH hint:
         # when that branch exists without a root .pr_agent.toml the tree must follow
         # the root config onto the default branch instead of reading a stale branch.
         repo_obj = MagicMock()
         repo_obj.get_git_tree.return_value = SimpleNamespace(tree=[], truncated=False)
         provider = _github_provider(repo_obj)
-        provider._resolved_config_branch = "resolved-default"
+        provider._repo_settings_snapshot = ("resolved-default-commit", "resolved-default-tree")
+        provider._repo_settings_acquired = True
 
         _, resolved_ref = provider.get_repo_settings_tree("stale-config-branch")
 
-        assert resolved_ref == "resolved-default"
-        repo_obj.get_git_tree.assert_called_once_with("resolved-default", recursive=True)
+        assert resolved_ref == "resolved-default-commit"
+        repo_obj.get_git_tree.assert_called_once_with("resolved-default-tree", recursive=True)
 
     def test_truncated_tree_skips_per_directory_settings(self):
         from loguru import logger as loguru_logger
@@ -1055,7 +1126,7 @@ class TestGithubProviderPerDirectory:
             loguru_logger.remove(sink_id)
 
         assert paths == []
-        assert resolved_ref == "big-branch"
+        assert resolved_ref == "big-branch-commit"
         assert any("truncated" in line for line in captured_lines)
 
     def test_get_repo_settings_tree_falls_back_to_default_on_404(self):
@@ -1071,11 +1142,11 @@ class TestGithubProviderPerDirectory:
 
         paths, resolved_ref = provider.get_repo_settings_tree("missing-branch")
 
-        assert resolved_ref == "main"
+        assert resolved_ref == "main-commit"
         assert paths == ["svc/.pr_agent.toml"]
         assert repo_obj.get_git_tree.call_args_list == [
-            call("missing-branch", recursive=True),
-            call("main", recursive=True),
+            call("missing-branch-tree", recursive=True),
+            call("main-tree", recursive=True),
         ]
 
     def test_get_repo_settings_tree_surfaces_unexpected_errors(self):
@@ -1123,6 +1194,50 @@ class TestGithubProviderPerDirectory:
         assert [entry.previous_filename for entry in result] == ["legacy/api.py", None]
 
 
+    def test_root_enabled_settings_stay_pinned_when_branch_moves(self, fresh_global_settings, monkeypatch):
+        repo = MagicMock()
+        provider = _github_provider(repo)
+        provider._get_global_repo_settings = lambda: ""
+        provider.get_pr_file_paths = lambda: ["svc/api.py"]
+        repo.get_git_tree.return_value = SimpleNamespace(
+            tree=[SimpleNamespace(path="svc/.pr_agent.toml", type="blob")], truncated=False,
+        )
+        current = "a"
+
+        def resolve(ref):
+            return SimpleNamespace(sha=current, commit=SimpleNamespace(tree=SimpleNamespace(sha=current + "-tree")),
+                                   complete=lambda: None)
+
+        def content(path, ref=None):
+            nonlocal current
+            selected = current if ref in (None, "main") else ref
+            if path == ".pr_agent.toml":
+                current = "b"
+                return SimpleNamespace(decoded_content=b"[config]\nenable_per_directory_settings = true\n"
+                                       b"[pr_reviewer]\nnum_max_findings = 9\n")
+            return SimpleNamespace(decoded_content=(
+                f"[pr_reviewer]\nextra_instructions = 'snapshot-{selected}'\n".encode()
+            ))
+
+        repo.get_commit.side_effect = resolve
+        repo.get_contents.side_effect = content
+        monkeypatch.setattr("pr_agent.git_providers.utils.get_git_provider_with_context", lambda url: provider)
+        monkeypatch.setattr("pr_agent.git_providers.github_provider.get_config_branch", lambda: "")
+        with request_cycle_context({}):
+            context["settings"] = copy.deepcopy(global_settings)
+            get_settings().config.enable_per_directory_settings = False
+            for _ in range(2):
+                git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+                assert get_settings().pr_reviewer.num_max_findings == 9
+                assert get_settings().pr_reviewer.extra_instructions == "snapshot-a"
+            repo.get_commit.assert_called_once_with("main")
+            repo.get_git_tree.assert_called_once_with("a-tree", recursive=True)
+            assert repo.get_contents.call_args_list[0] == call(".pr_agent.toml", ref="a")
+        provider.get_repo_settings()
+        assert repo.get_commit.call_count == 2
+        assert repo.get_contents.call_args == call(".pr_agent.toml", ref="b")
+
+
 def _gitlab_provider(gl, id_project="1"):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.gl = gl
@@ -1134,6 +1249,8 @@ class TestGitLabProviderPerDirectory:
     def test_get_repo_settings_tree_filters_blobs_on_default_branch(self):
         project = MagicMock()
         project.default_branch = "main"
+        project.commits.get.return_value = SimpleNamespace(id="a" * 40)
+        project.files.get.side_effect = GitlabGetError(response_code=404)
         project.repository_tree.return_value = [
             {"path": ".pr_agent.toml", "type": "blob"},
             {"path": "svc/.pr_agent.toml", "type": "blob"},
@@ -1146,13 +1263,15 @@ class TestGitLabProviderPerDirectory:
 
         paths, resolved_ref = provider.get_repo_settings_tree()
 
-        assert resolved_ref == "main"
+        assert resolved_ref == "a" * 40
         assert paths == [".pr_agent.toml", "svc/.pr_agent.toml"]
-        project.repository_tree.assert_called_once_with(ref="main", recursive=True, page=1, per_page=100)
+        project.repository_tree.assert_called_once_with(ref="a" * 40, recursive=True, page=1, per_page=100)
 
     def test_get_repo_settings_tree_reads_explicit_ref_when_root_did_not_resolve(self):
         project = MagicMock()
         project.default_branch = "main"
+        project.commits.get.return_value = SimpleNamespace(id="a" * 40)
+        project.files.get.side_effect = GitlabGetError(response_code=404)
         project.repository_tree.return_value = [{"path": "svc/.pr_agent.toml", "type": "blob"}]
         gl = MagicMock()
         gl.projects.get.return_value = project
@@ -1160,14 +1279,16 @@ class TestGitLabProviderPerDirectory:
 
         paths, resolved_ref = provider.get_repo_settings_tree("feature-config")
 
-        assert (paths, resolved_ref) == (["svc/.pr_agent.toml"], "feature-config")
-        project.repository_tree.assert_called_once_with(ref="feature-config", recursive=True, page=1, per_page=100)
+        assert (paths, resolved_ref) == (["svc/.pr_agent.toml"], "a" * 40)
+        project.repository_tree.assert_called_once_with(ref="a" * 40, recursive=True, page=1, per_page=100)
 
     @pytest.mark.parametrize("complete", [True, False])
     def test_tree_discovery_is_bounded_and_requires_complete_results(self, per_dir_settings, complete):
         get_settings().config.per_directory_settings_max_tree_pages = 2
         project = MagicMock()
         project.default_branch = "main"
+        project.commits.get.return_value = SimpleNamespace(id="a" * 40)
+        project.files.get.side_effect = GitlabGetError(response_code=404)
         full_page = [{"path": "svc/.pr_agent.toml", "type": "blob"}] * 100
         project.repository_tree.side_effect = [full_page, [] if complete else full_page]
         gl = MagicMock()
@@ -1175,11 +1296,11 @@ class TestGitLabProviderPerDirectory:
 
         paths, ref = _gitlab_provider(gl).get_repo_settings_tree()
 
-        assert ref == "main"
+        assert ref == "a" * 40
         assert paths == (["svc/.pr_agent.toml"] * 100 if complete else [])
         assert project.repository_tree.call_args_list == [
-            call(ref="main", recursive=True, page=1, per_page=100),
-            call(ref="main", recursive=True, page=2, per_page=100),
+            call(ref="a" * 40, recursive=True, page=1, per_page=100),
+            call(ref="a" * 40, recursive=True, page=2, per_page=100),
         ]
 
     def test_get_repo_settings_contents(self):
@@ -1238,7 +1359,7 @@ def test_directory_overrides_do_not_leak_between_commands(fresh_global_settings,
             tree_paths=["services/.pr_agent.toml", "services/auth/.pr_agent.toml"],
             contents={
                 "services/.pr_agent.toml": SERVICES_TOML,
-                "services/auth/.pr_agent.toml": b"[pr_reviewer]\nnum_max_findings = 3\nnew_test_key = 42\n",
+                "services/auth/.pr_agent.toml": b"[pr_reviewer]\nnum_max_findings = 3\nnew_test_setting = 42\n",
             },
             files=["services/auth/api.py"],
         ),
@@ -1248,10 +1369,42 @@ def test_directory_overrides_do_not_leak_between_commands(fresh_global_settings,
 
     git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
     assert settings.pr_reviewer.num_max_findings == 3
-    assert settings.pr_reviewer.new_test_key == 42
+    assert settings.pr_reviewer.new_test_setting == 42
     settings.pr_reviewer.extra_instructions = "later trusted change"
 
     git_utils.apply_repo_settings("https://github.com/org/repo/pull/2")
     assert settings.pr_reviewer.num_max_findings == (12 if next_root else 10)
-    assert "new_test_key" not in settings.pr_reviewer
+    assert "new_test_setting" not in settings.pr_reviewer
     assert settings.pr_reviewer.extra_instructions == "later trusted change"
+
+
+def test_gitlab_root_enables_nested_settings_on_same_cached_snapshot(per_dir_settings, monkeypatch):
+    settings = get_settings()
+    settings.config.enable_per_directory_settings = False
+    settings.config.use_repo_settings_file = True
+    project = MagicMock()
+    project.default_branch = "main"
+    root = b"[config]\nenable_per_directory_settings=true\nmodel='root'\n"
+    def file_at_revision(file_path, ref):
+        if file_path == ".pr_agent.toml":
+            assert ref == "main"
+            return SimpleNamespace(commit_id="a" * 40, last_commit_id="b" * 40, decode=lambda: root)
+        assert ref == "a" * 40  # The branch can move after reading the root.
+        return SimpleNamespace(decode=lambda: b"[config]\nmodel='nested'\n")
+    project.files.get.side_effect = file_at_revision
+    project.repository_tree.return_value = [{"type": "blob", "path": "svc/.pr_agent.toml"}]
+    gl = MagicMock()
+    gl.projects.get.return_value = project
+    provider = _gitlab_provider(gl)
+    monkeypatch.setattr(provider, "_get_global_repo_settings", lambda: "")
+    monkeypatch.setattr(provider, "get_pr_file_paths", lambda: ["svc/file.py"])
+    monkeypatch.setattr(git_utils, "get_git_provider_with_context", lambda url: provider)
+
+    git_utils.apply_repo_settings("https://gitlab.example/group/repo/-/merge_requests/1")
+    assert settings.config.model == "nested"
+    git_utils.apply_repo_settings("https://gitlab.example/group/repo/-/merge_requests/1")
+    assert settings.config.model == "nested"
+    root_reads = [c for c in project.files.get.call_args_list if c.kwargs["file_path"] == ".pr_agent.toml"]
+    assert len(root_reads) == 1
+    assert {c.kwargs["ref"] for c in project.repository_tree.call_args_list} == {"a" * 40}
+    project.commits.get.assert_not_called()

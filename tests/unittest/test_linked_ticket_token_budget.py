@@ -13,13 +13,13 @@ from pr_agent.algo.pr_processing import (
     generate_full_patch,
 )
 from pr_agent.algo.types import EDIT_TYPE
+from pr_agent.commands import pr_description as pr_description_module
+from pr_agent.commands import pr_reviewer as pr_reviewer_module
+from pr_agent.commands import ticket_pr_compliance_check as tickets_module
+from pr_agent.commands.pr_description import PRDescription
+from pr_agent.commands.pr_reviewer import PRReviewer
+from pr_agent.commands.ticket_pr_compliance_check import fit_related_tickets_to_prompt_budget
 from pr_agent.config_loader import get_settings
-from pr_agent.tools import pr_description as pr_description_module
-from pr_agent.tools import pr_reviewer as pr_reviewer_module
-from pr_agent.tools import ticket_pr_compliance_check as tickets_module
-from pr_agent.tools.pr_description import PRDescription
-from pr_agent.tools.pr_reviewer import PRReviewer
-from pr_agent.tools.ticket_pr_compliance_check import fit_related_tickets_to_prompt_budget
 
 
 class _PromptCountingTokenHandler:
@@ -64,6 +64,73 @@ def test_related_ticket_prompts_disclose_omitted_records(prompt_name):
     rendered = template.render(related_tickets=[], related_tickets_omitted=2)
 
     assert "2 additional related ticket(s) were omitted" in rendered
+
+
+@pytest.mark.parametrize(
+    "prompt_name",
+    [
+        "pr_description_prompt",
+        "pr_description_only_files_prompts",
+        "pr_description_only_description_prompts",
+        "pr_review_prompt",
+    ],
+)
+def test_related_ticket_prompts_preserve_parent_association(prompt_name):
+    handler = SimpleNamespace(system="", user=get_settings().get(prompt_name).user)
+    budget = token_budget_module.AttemptTokenBudget("test-model", handler, handler, 10000)
+    variables = {
+        "title": "Fixture PR",
+        "branch": "main",
+        "description": "",
+        "diff": "",
+        "date": "",
+        "previous_findings": [],
+        "duplicate_prompt_examples": "",
+        "num_max_findings": 3,
+        "related_tickets_omitted": 0,
+        "require_can_be_split_review": False,
+        "require_estimate_contribution_time_cost": False,
+        "require_estimate_effort_to_review": False,
+        "require_merge_recommendation": False,
+        "require_priority_files": False,
+        "require_risk_assessment": False,
+        "require_score": False,
+        "require_todo_scan": False,
+        "commit_messages_str": "",
+        "enable_pr_description": False,
+        "enable_pr_diagram": False,
+        "enable_semantic_files_types": False,
+        "include_file_summary_changes": False,
+    }
+
+    def render(related_tickets):
+        return budget.render_prompt_templates({**variables, "related_tickets": related_tickets})[1]
+    direct = [
+        {"ticket_url": "u/p1", "title": "Parent 1", "body": "Requirements 1"},
+        {"ticket_url": "u/p2", "title": "Parent 2", "body": "Requirements 2"},
+    ]
+    children = [
+        {"ticket_url": f"u/c{index}", "title": f"Child {index}", "body": "Child requirements",
+         "parent_ticket_url": "u/p1", "parent_ticket_title": "Parent 1"}
+        for index in (1, 2, 3)
+    ]
+    children[-1].update(parent_ticket_url="u/p2", parent_ticket_title="Parent 2")
+    first_family = render([*direct, *children])
+    moved_child = {**children[1], "parent_ticket_url": "u/p2", "parent_ticket_title": "Parent 2"}
+    second_family = render([*direct, children[0], moved_child, children[2]])
+
+    assert first_family != second_family
+    assert first_family.count("Parent Ticket: 'u/p1' — 'Parent 1'") == 2
+    assert second_family.count("Parent Ticket: 'u/p2' — 'Parent 2'") == 2
+    assert "Parent Ticket:" not in render(direct)
+    no_title = {**children[0], "parent_ticket_url": "u/<parent>?a=1&b=2"}
+    del no_title["parent_ticket_title"]
+    escaped = render([no_title])
+    assert "Parent Ticket: 'u/&lt;parent&gt;?a=1&amp;b=2'" in escaped
+    escaped_title = render([{
+        **children[0], "parent_ticket_title": "<Parent & title>"
+    }])
+    assert "&lt;Parent &amp; title&gt;" in escaped_title
 
 
 @pytest.fixture
@@ -131,6 +198,101 @@ def test_under_budget_ticket_payload_is_preserved_without_aliasing_raw_cache(pro
     assert raw_vars == raw_before
     assert handler.vars == raw_before
     assert handler.vars is not raw_vars
+
+
+@pytest.mark.parametrize(
+    ("raw_vars", "has_capacity"),
+    [({}, True), ({"related_tickets": []}, True), ({"related_tickets": None}, True),
+     ({"related_tickets": "ticket"}, True), ({"related_tickets": []}, False)],
+)
+def test_empty_ticket_payload_normalizes_and_checks_capacity(monkeypatch, raw_vars, has_capacity):
+    raw_before = copy.deepcopy(raw_vars)
+    budgets = []
+
+    def make_budget(model, pr, variables, system, user, **kwargs):
+        handler = _PromptCountingTokenHandler(pr, variables, system, user, model=model)
+        context_window = OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD + handler.prompt_tokens + int(has_capacity)
+        budget = token_budget_module.AttemptTokenBudget(
+            model, handler, handler, context_window, output_token_reserve=kwargs["output_token_reserve"]
+        )
+        budgets.append(budget)
+        return budget
+
+    monkeypatch.setattr(tickets_module.AttemptTokenBudget, "for_prompt_attempt", make_budget)
+    args = (object(), raw_vars, "system", "{{ related_tickets }}", "model")
+
+    def output_reserve(_model, _default):
+        return OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+
+    if has_capacity:
+        prompt_vars, handler = fit_related_tickets_to_prompt_budget(*args, output_token_reserve=output_reserve)
+        assert prompt_vars["related_tickets"] == []
+        assert handler.vars["related_tickets"] == []
+        assert handler.prompt_tokens > budgets[0].input_token_limit(
+            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            preserve_minimum=True,
+            additional_input_reserve=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+        )
+        prompt_vars["related_tickets"].append("changed")
+    else:
+        with pytest.raises(tickets_module.FallbackEligibleError):
+            fit_related_tickets_to_prompt_budget(*args, output_token_reserve=output_reserve)
+
+    assert raw_vars == raw_before
+    assert len(budgets) == 1
+
+
+def test_under_budget_tickets_build_prompt_budget_once(monkeypatch):
+    evaluated_vars = []
+
+    def make_budget(model, pr, variables, system, user, **_kwargs):
+        evaluated_vars.append(variables)
+        handler = _PromptCountingTokenHandler(pr, variables, system, user, model=model)
+        return SimpleNamespace(
+            token_handler=handler,
+            prompt_tokens=handler.prompt_tokens,
+            input_token_limit=lambda *_args, **_kwargs: 4000 - 2 * OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            require_input_capacity=lambda default_output_tokens, **_kw: (
+                4000 - default_output_tokens - handler.prompt_tokens
+            ),
+        )
+
+    monkeypatch.setattr(tickets_module.AttemptTokenBudget, "for_prompt_attempt", make_budget)
+
+    prompt_vars, handler = fit_related_tickets_to_prompt_budget(
+        object(), {"related_tickets": _tickets(3)}, "system", "{{ related_tickets }}", "model"
+    )
+
+    assert [len(v["related_tickets"]) for v in evaluated_vars] == [3]
+    assert len(prompt_vars["related_tickets"]) == 3
+    assert handler.prompt_tokens == 700
+
+
+def test_overflow_tickets_skip_redundant_empty_initial_probe(monkeypatch):
+    evaluated_vars = []
+
+    def make_budget(model, pr, variables, system, user, **_kwargs):
+        evaluated_vars.append(variables)
+        handler = _PromptCountingTokenHandler(pr, variables, system, user, model=model)
+        return SimpleNamespace(
+            token_handler=handler,
+            prompt_tokens=handler.prompt_tokens,
+            input_token_limit=lambda *_args, **_kwargs: 3525 - 2 * OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            require_input_capacity=lambda default_output_tokens, **_kw: (
+                3525 - default_output_tokens - handler.prompt_tokens
+            ),
+        )
+
+    monkeypatch.setattr(tickets_module.AttemptTokenBudget, "for_prompt_attempt", make_budget)
+
+    prompt_vars, handler = fit_related_tickets_to_prompt_budget(
+        object(), {"related_tickets": _tickets(3)}, "system", "{{ related_tickets }}", "model"
+    )
+
+    assert [len(v["related_tickets"]) for v in evaluated_vars] == [3, 1, 2]
+    assert [ticket["ticket_id"] for ticket in prompt_vars["related_tickets"]] == [0, 1]
+    assert prompt_vars["related_tickets_omitted"] == 1
+    assert handler.prompt_tokens == 525
 
 
 def test_oversized_ticket_payload_keeps_diff_budget_and_raw_cache(monkeypatch):
@@ -227,33 +389,33 @@ def test_fixed_prompt_capacity_is_rechecked_for_each_model_attempt(prompt_budget
     assert handler.model == "fallback"
 
 
-def _make_tool(tool_name):
+def _make_command(command_name):
     provider = MagicMock()
-    if tool_name == "review":
-        tool = PRReviewer.__new__(PRReviewer)
-        tool.pr_url = "https://example.test/pull/1"
-        tool.incremental = SimpleNamespace(is_incremental=False)
-        tool.remaining_files_list = []
+    if command_name == "review":
+        command = PRReviewer.__new__(PRReviewer)
+        command.pr_url = "https://example.test/pull/1"
+        command.incremental = SimpleNamespace(is_incremental=False)
+        command.remaining_files_list = []
         module = pr_reviewer_module
     else:
-        tool = PRDescription.__new__(PRDescription)
-        tool.pr_id = "1"
-        tool.user_description = ""
-        tool.keys_fix = []
+        command = PRDescription.__new__(PRDescription)
+        command.pr_id = "1"
+        command.user_description = ""
+        command.keys_fix = []
         module = pr_description_module
-    tool.git_provider = provider
-    tool.vars = {"related_tickets": _tickets(33)}
-    tool._raw_prompt_vars = copy.deepcopy(tool.vars)
-    tool.token_handler = SimpleNamespace(prompt_tokens=0)
-    tool.prediction = None
-    return tool, module
+    command.git_provider = provider
+    command.vars = {"related_tickets": _tickets(33)}
+    command._raw_prompt_vars = copy.deepcopy(command.vars)
+    command.token_handler = SimpleNamespace(prompt_tokens=0)
+    command.prediction = None
+    return command, module
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["review", "description"])
-async def test_tools_use_the_same_bounded_ticket_vars_for_packing_and_rendering(monkeypatch, tool_name):
-    tool, module = _make_tool(tool_name)
-    raw_snapshot = copy.deepcopy(tool._raw_prompt_vars)
+@pytest.mark.parametrize("command_name", ["review", "description"])
+async def test_commands_use_the_same_bounded_ticket_vars_for_packing_and_rendering(monkeypatch, command_name):
+    command, module = _make_command(command_name)
+    raw_snapshot = copy.deepcopy(command._raw_prompt_vars)
     prompt_vars = {"related_tickets": _tickets(2)}
     handler = SimpleNamespace(prompt_tokens=500)
     helper_calls = []
@@ -269,37 +431,37 @@ async def test_tools_use_the_same_bounded_ticket_vars_for_packing_and_rendering(
         return "@@ -1 +1 @@\n-old\n+new"
 
     async def get_prediction(_model, *_args, **_kwargs):
-        rendered_vars.append(tool.vars)
-        if tool_name == "review":
+        rendered_vars.append(command.vars)
+        if command_name == "review":
             return "review:\n  summary: prediction"
-        return "prediction"
+        return "description: prediction"
 
     monkeypatch.setattr(module, "fit_related_tickets_to_prompt_budget", fit_payload)
     monkeypatch.setattr(module, "get_pr_diff", get_diff)
-    monkeypatch.setattr(tool, "_get_prediction", get_prediction)
-    if tool_name == "description":
+    monkeypatch.setattr(command, "_get_prediction", get_prediction)
+    if command_name == "description":
         monkeypatch.setattr(module, "build_repo_context", lambda _provider: "")
 
     settings = get_settings()
     original_semantic_files_types = settings.pr_description.enable_semantic_files_types
     settings.pr_description.enable_semantic_files_types = False
     try:
-        await tool._prepare_prediction("fallback-model")
+        await command._prepare_prediction("fallback-model")
     finally:
         settings.pr_description.enable_semantic_files_types = original_semantic_files_types
 
-    assert helper_calls == [(tool.git_provider.pr, tool._raw_prompt_vars, "fallback-model")]
+    assert helper_calls == [(command.git_provider.pr, command._raw_prompt_vars, "fallback-model")]
     assert diff_handlers == [handler]
     assert rendered_vars == [prompt_vars]
-    assert tool.vars is prompt_vars
-    assert tool.token_handler is handler
-    assert tool._raw_prompt_vars == raw_snapshot
+    assert command.vars is prompt_vars
+    assert command.token_handler is handler
+    assert command._raw_prompt_vars == raw_snapshot
 
 
 @pytest.mark.asyncio
 async def test_description_large_pr_fits_each_prompt_from_raw_tickets(monkeypatch):
-    tool, module = _make_tool("description")
-    raw_snapshot = copy.deepcopy(tool._raw_prompt_vars)
+    command, module = _make_command("description")
+    raw_snapshot = copy.deepcopy(command._raw_prompt_vars)
     prompt_vars = [
         {"related_tickets": _tickets(33)},
         {"related_tickets": _tickets(2)},
@@ -321,10 +483,10 @@ async def test_description_large_pr_fits_each_prompt_from_raw_tickets(monkeypatc
 
     def get_multiple_patches(_provider, token_handler, _model, **_kwargs):
         packed_handlers.append(token_handler)
-        return ([["@@ -1 +1 @@\n-old\n+new"]], [10], [], [], {}, [[]])
+        return ([["@@ -1 +1 @@\n-old\n+new"]], [10], [], [], {}, [["src/app.py"]])
 
     async def get_prediction(_model, patches_diff=None, prompt=None):
-        prediction_calls.append((prompt, patches_diff, tool.vars))
+        prediction_calls.append((prompt, patches_diff, command.vars))
         if prompt == "pr_description_only_files_prompts":
             return ("pr_files:\n- filename: src/app.py\n  changes_title: Update app\n"
                     "  changes_summary: Updates app behavior.\n  label: enhancement")
@@ -333,23 +495,23 @@ async def test_description_large_pr_fits_each_prompt_from_raw_tickets(monkeypatc
     monkeypatch.setattr(module, "fit_related_tickets_to_prompt_budget", fit_payload)
     monkeypatch.setattr(module, "get_pr_diff", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(module, "get_pr_diff_multiple_patchs", get_multiple_patches)
-    monkeypatch.setattr(tool, "_get_prediction", get_prediction)
-    monkeypatch.setattr(tool, "extend_uncovered_files", lambda _prediction: _empty_string())
+    monkeypatch.setattr(command, "_get_prediction", get_prediction)
+    monkeypatch.setattr(command, "extend_uncovered_files", lambda _prediction: _empty_string())
 
     settings = get_settings()
     original_large_pr_handling = settings.pr_description.enable_large_pr_handling
     settings.pr_description.enable_large_pr_handling = True
     try:
-        await tool._prepare_prediction("fallback-model")
+        await command._prepare_prediction("fallback-model")
     finally:
         settings.pr_description.enable_large_pr_handling = original_large_pr_handling
 
     assert fit_calls == [
-        (tool._raw_prompt_vars, "fallback-model"),
-        (tool._raw_prompt_vars, "fallback-model"),
-        (tool._raw_prompt_vars, "fallback-model"),
+        (command._raw_prompt_vars, "fallback-model"),
+        (command._raw_prompt_vars, "fallback-model"),
+        (command._raw_prompt_vars, "fallback-model"),
     ]
-    assert tool._raw_prompt_vars == raw_snapshot
+    assert command._raw_prompt_vars == raw_snapshot
     assert packed_handlers == [handlers[1]]
     assert prediction_calls[0] == (
         "pr_description_only_files_prompts",

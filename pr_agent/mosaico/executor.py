@@ -1,7 +1,7 @@
 """MOSAICO A2A executor + the /health LLM probe (A2A 1.0).
 
 PRAgentExecutor.execute runs a single non-streaming path: it FIRST installs a
-request-scoped deepcopy of global_settings into starlette_context (so the tool run
+request-scoped deepcopy of global_settings into starlette_context (so the command run
 mutates only the per-request copy — load-bearing isolation under concurrency), routes
 the inbound text to a pr-agent command, and completes the Task with the rendered
 markdown.
@@ -45,6 +45,18 @@ class PRAgentExecutor(AgentExecutor):
     def __init__(self, task_store=None):
         self.task_store = task_store
         self._recent_task_ids: dict[tuple[str, str], deque[str]] = {}
+
+    def forget_task(self, owner: str, task_id: str, context_id: str) -> None:
+        """Remove an evicted task from the owner-scoped follow-up index."""
+        key = (owner, context_id)
+        task_ids = self._recent_task_ids.get(key)
+        if task_ids is None:
+            return
+        retained = deque((item for item in task_ids if item != task_id), maxlen=task_ids.maxlen)
+        if retained:
+            self._recent_task_ids[key] = retained
+        else:
+            self._recent_task_ids.pop(key, None)
 
     async def _history_for_context(self, context: RequestContext) -> list[str]:
         current = context.get_user_input() or ""
@@ -112,7 +124,7 @@ class PRAgentExecutor(AgentExecutor):
                     )
                 )
 
-            # Request-scoped settings: the tool run mutates ONLY this deepcopy, never the
+            # Request-scoped settings: the command run mutates ONLY this deepcopy, never the
             # shared global. get_settings() resolves to sctx["settings"] when present.
             sctx["settings"] = copy.deepcopy(global_settings)
 

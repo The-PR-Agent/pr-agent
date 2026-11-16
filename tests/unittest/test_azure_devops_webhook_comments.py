@@ -1,6 +1,6 @@
 import shlex
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import unquote
 
 import pytest
@@ -123,23 +123,25 @@ def test_addressed_comment_uses_available_line_position():
                        "--origin_comment_id=31 __pr_agent_encoded_text__:check%20this")
 
 
-def test_slash_ask_does_not_require_agent_identity_discovery():
+@pytest.mark.parametrize("ask_command", ["/ask", "/ask_question"])
+def test_slash_ask_does_not_require_agent_identity_discovery(ask_command):
     provider = MagicMock()
     provider.get_thread_context.return_value = None
 
-    command = webhook.handle_line_comment("/ask check this PR", 22, 31, provider)
+    command = webhook.handle_line_comment(f"{ask_command} check this PR", 22, 31, provider)
 
     assert command == ("/ask --comment_id=22 --origin_comment_id=31 "
                        "__pr_agent_encoded_text__:check%20this%20PR")
     provider.get_agent_mention_aliases.assert_not_called()
 
 
-def test_slash_ask_keeps_explicit_cli_overrides_out_of_the_question():
+@pytest.mark.parametrize("ask_command", ["/ask", "/ask_question"])
+def test_slash_ask_keeps_explicit_cli_overrides_out_of_the_question(ask_command):
     provider = MagicMock()
     provider.get_thread_context.return_value = None
 
     command = webhook.handle_line_comment(
-        '/ask --pr_questions.extra_instructions="be terse" what does this do?', 22, 31, provider
+        f'{ask_command} --pr_questions.extra_instructions="be terse" what does this do?', 22, 31, provider
     )
     lexer = shlex.shlex(command.replace("'", "\\'"), posix=True)
     lexer.whitespace_split = True
@@ -153,7 +155,8 @@ def test_slash_ask_keeps_explicit_cli_overrides_out_of_the_question():
                for call in settings.return_value.set.call_args_list)
 
 
-def test_slash_ask_line_keeps_explicit_cli_overrides_out_of_the_question():
+@pytest.mark.parametrize("ask_command", ["/ask", "/ask_question"])
+def test_slash_ask_line_keeps_explicit_cli_overrides_out_of_the_question(ask_command):
     provider = MagicMock()
     provider.get_thread_context.return_value = SimpleNamespace(
         file_path="/src/app.cs",
@@ -163,7 +166,9 @@ def test_slash_ask_line_keeps_explicit_cli_overrides_out_of_the_question():
         right_file_end=SimpleNamespace(line=8),
     )
 
-    command = webhook.handle_line_comment("/ask --pr_questions.extra_instructions=terse why?", 22, 31, provider)
+    command = webhook.handle_line_comment(
+        f"{ask_command} --pr_questions.extra_instructions=terse why?", 22, 31, provider
+    )
 
     assert "--pr_questions.extra_instructions=terse" in command
     assert command.endswith("__pr_agent_encoded_text__:why%3F")
@@ -292,13 +297,13 @@ def test_empty_slash_ask_is_preserved():
 
 class _SwallowingReview:
     """Stand-in for a command that hits its own error and returns normally anyway, which is what
-    the real tools do while `propagate_tool_errors` is false (see pr_reviewer.py:458-464)."""
+    the real commands do while `propagate_command_errors` is false (see pr_reviewer.py:458-464)."""
 
     def __init__(self, pr_url, ai_handler=None, args=None):
         self.observed_propagation = None
 
     async def run(self):
-        self.observed_propagation = get_settings().config.get("propagate_tool_errors", False)
+        self.observed_propagation = get_settings().config.get("propagate_command_errors", False)
         record_command_failure()
         if self.observed_propagation:
             raise RuntimeError("the model call failed")
@@ -312,45 +317,152 @@ class _CleanReview:
         self.ran = True
 
 
-async def _run_comment_command(body, tool_class, monkeypatch):
-    """Drive the comment endpoint through the real agent so the settings the tool sees are the
-    ones the handler asked for, and return the provider plus the tool instance."""
+async def _run_comment_command(body, command_class, monkeypatch):
+    """Drive the comment endpoint through the real agent so the settings the command sees are the
+    ones the handler asked for, and return the provider plus the command instance."""
     provider = MagicMock()
     provider.get_thread_context.return_value = None
     built = []
 
     def build(*args, **kwargs):
-        tool = tool_class(*args, **kwargs)
-        built.append(tool)
-        return tool
+        command = command_class(*args, **kwargs)
+        built.append(command)
+        return command
 
     monkeypatch.setitem(pr_agent_module.command2class, "review", build)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
-    monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
     with patch.object(webhook, "get_git_provider_with_context", return_value=provider):
         await webhook.handle_request_comment(URL, body, 7, 42, {})
     return provider, built[0]
 
 
-async def test_swallowed_tool_failure_does_not_resolve_the_thread(monkeypatch):
-    """Resolving the discussion on a run that raised inside the tool leaves the author a closed
+async def test_swallowed_command_failure_does_not_resolve_the_thread(monkeypatch):
+    """Resolving the discussion on a run that raised inside the command leaves the author a closed
     thread and no review, so the handler must demand an honest verdict the way the GitHub comment
     path does. The "On it!" reply is posted before the command runs, so it still has to be cleaned
-    up on that failed run, like the temporary comments the tools remove in their finally blocks."""
+    up on that failed run, like the temporary comments the commands remove in their finally blocks."""
 
-    provider, tool = await _run_comment_command("/review", _SwallowingReview, monkeypatch)
+    provider, command = await _run_comment_command("/review", _SwallowingReview, monkeypatch)
 
     provider.set_thread_status.assert_not_called()
     provider.remove_initial_comment.assert_called_once()
-    assert tool.observed_propagation is True
+    assert command.observed_propagation is True
 
 
 async def test_successful_command_still_resolves_the_thread(monkeypatch):
     """The companion guard: a run that raised nothing must keep closing the thread, so the fix is
     not just "never close"."""
 
-    provider, tool = await _run_comment_command("/review", _CleanReview, monkeypatch)
+    provider, command = await _run_comment_command("/review", _CleanReview, monkeypatch)
 
-    assert tool.ran is True
+    assert command.ran is True
     provider.set_thread_status.assert_called_once_with(7, "closed")
     provider.remove_initial_comment.assert_called_once()
+
+
+@pytest.fixture
+def created_event():
+    # Azure's documented sample has no web link and a misleading remoteUrl project segment.
+    return {
+        "eventType": "git.pullrequest.created",
+        "resource": {
+            "repository": {
+                "name": "Fabrikam", "project": {"name": "Fabrikam"},
+                "remoteUrl": "https://dev.azure.com/fabrikam/DefaultCollection/_git/Fabrikam",
+            },
+            "pullRequestId": 1,
+        },
+        "resourceContainers": {"collection": {"baseUrl": "https://dev.azure.com/fabrikam/"}},
+    }
+
+
+@pytest.mark.parametrize("links", [{}, {"_links": {}}, {"_links": {"web": {}}}, {"_links": {"web": {"href": ""}}}])
+async def test_created_event_without_web_link_dispatches_documented_identity(created_event, links):
+    created_event["resource"].update(links)
+    context = {}
+    with patch.object(webhook, "_perform_commands_azure", new_callable=AsyncMock) as perform, \
+            patch.object(webhook, "PRAgent") as agent:
+        response = await webhook.handle_request_azure(created_event, context)
+    expected = "https://dev.azure.com/fabrikam/Fabrikam/_git/Fabrikam/pullrequest/1"
+    perform.assert_awaited_once_with("pr_commands", agent.return_value, expected, context)
+    agent.assert_called_once_with()
+    assert webhook.AzureDevopsProvider._parse_pr_url(expected) == ("Fabrikam", "Fabrikam", 1)
+    assert context == {"event": "git.pullrequest.created", "api_url": expected}
+    assert response.status_code == 202
+
+
+async def test_created_event_fallback_preserves_structured_names_and_collection_prefix(created_event):
+    repository = created_event["resource"]["repository"]
+    repository.update(name="repo/part%20", project={"name": "Dev Project"}, remoteUrl="not-an-identity")
+    created_event["resourceContainers"]["collection"]["baseUrl"] = "http://azure.example.test:8080/tfs/Collection/"
+    with patch.object(webhook, "_perform_commands_azure", new_callable=AsyncMock) as perform, \
+            patch.object(webhook, "PRAgent"):
+        await webhook.handle_request_azure(created_event, {})
+    perform.assert_awaited_once()
+    url = perform.await_args.args[2]
+    assert url == "http://azure.example.test:8080/tfs/Collection/Dev%20Project/_git/repo%2Fpart%2520/pullrequest/1"
+    assert webhook.AzureDevopsProvider._parse_pr_url(url) == ("Dev Project", "repo/part%20", 1)
+
+
+async def test_created_event_nonempty_web_link_retains_legacy_precedence():
+    href = "https://dev.azure.com/org/Dev%20Project/_apis/git/repositories/repo/pullrequest/7"
+    data = {"eventType": "git.pullrequest.created", "resource": {
+        "_links": {"web": {"href": href}}, "repository": None, "pullRequestId": False,
+    }}
+    with patch.object(webhook, "_perform_commands_azure", new_callable=AsyncMock) as perform, \
+            patch.object(webhook, "PRAgent"):
+        await webhook.handle_request_azure(data, {})
+    perform.assert_awaited_once()
+    assert perform.await_args.args[2] == href.replace("_apis/git/repositories", "_git")
+
+
+@pytest.mark.parametrize(("path", "value"), [
+    ("resource", None),
+    ("resource._links", None),
+    ("resource._links", {"web": []}),
+    ("resource._links", {"web": {"href": 7}}),
+    ("resource.repository", {}),
+    ("resource.repository.project", None),
+    ("resource.repository.project.name", ""),
+    ("resource.repository.name", 7),
+    ("resource.repository.name", " "),
+    ("resource.pullRequestId", "1"),
+    ("resource.pullRequestId", True),
+    ("resource.pullRequestId", 0),
+    ("resource.pullRequestId", -1),
+    ("resourceContainers", {}),
+    ("resourceContainers.collection", None),
+    ("resourceContainers.collection.baseUrl", None),
+    ("resourceContainers.collection.baseUrl", ""),
+    ("resourceContainers.collection.baseUrl", "/collection/"),
+    ("resourceContainers.collection.baseUrl", "ftp://azure.example.test/collection/"),
+    ("resourceContainers.collection.baseUrl", "https://[broken/"),
+    ("resourceContainers.collection.baseUrl", "https://azure.example.test:/collection/"),
+    ("resourceContainers.collection.baseUrl", "https://azure.example.test/collection/?"),
+    ("resourceContainers.collection.baseUrl", "https://azure.example.test/collection/#"),
+    ("resourceContainers.collection.baseUrl", "https://azure.example.test:70000/collection/"),
+    ("resourceContainers.collection.baseUrl", "https://user:secret@azure.example.test/collection/"),
+    ("resourceContainers.collection.baseUrl", "https://azure.example.test/collection/?token=secret"),
+    ("resourceContainers.collection.baseUrl", "https://azure.example.test/collection/#secret"),
+])
+async def test_created_event_invalid_identity_does_not_dispatch_or_log_payload(created_event, path, value):
+    target = created_event
+    parts = path.split(".")
+    for part in parts[:-1]:
+        target = target[part]
+    target[parts[-1]] = value
+    context = {}
+    with patch.object(webhook, "_perform_commands_azure", new_callable=AsyncMock) as perform, \
+            patch.object(webhook, "PRAgent") as agent, patch.object(webhook, "get_logger") as logger:
+        result = await webhook.handle_request_azure(created_event, context)
+    perform.assert_not_awaited()
+    agent.assert_not_called()
+    logger.return_value.warning.assert_called_once_with(
+        "Ignoring Azure created event with invalid pull request identity"
+    )
+    assert logger.return_value.method_calls == [
+        ("warning", ("Ignoring Azure created event with invalid pull request identity",), {})
+    ]
+    assert context == {}
+    assert result is None

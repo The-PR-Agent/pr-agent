@@ -143,6 +143,62 @@ async def test_not_injected_for_non_anthropic_model(monkeypatch):
     assert "cache_control_injection_points" not in mock_call.call_args.kwargs
 
 
+# A Bedrock application inference profile ARN carries no model name, so the thinking overrides
+# tell PR-Agent to treat it as Claude for the prompt-caching pass-through (issue #3836).
+_PROFILE_ARN = "bedrock/converse/arn:aws:bedrock:eu-central-1:123456789012:application-inference-profile/abc"
+
+
+def _arn_settings(points, config_values=None):
+    return lambda: FakeSettings(
+        config_values=config_values or {},
+        settings_values={
+            "LITELLM.CACHE_CONTROL_INJECTION_POINTS": points,
+            "aws.AWS_ACCESS_KEY_ID": "test-access-key",
+            "aws.AWS_SECRET_ACCESS_KEY": "test-secret-key",
+            "aws.AWS_REGION_NAME": "eu-central-1",
+        },
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "config_values",
+    [
+        {"claude_adaptive_thinking_models_override": [_PROFILE_ARN]},
+        {"claude_extended_thinking_models_override": [_PROFILE_ARN]},
+    ],
+)
+async def test_arn_in_thinking_override_receives_cache_control_injection_points(monkeypatch, config_values):
+    points = [{"location": "message", "role": "system"}]
+    monkeypatch.setattr(litellm_handler, "get_settings", _arn_settings(points, config_values))
+    monkeypatch.setattr(litellm_handler.litellm.utils, "supports_prompt_caching", lambda model: False)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        await handler.chat_completion(model=_PROFILE_ARN, system="sys", user="usr")
+
+    assert mock_call.call_args.kwargs["cache_control_injection_points"] == points
+
+
+@pytest.mark.asyncio
+async def test_arn_not_in_thinking_override_does_not_receive_cache_control_injection_points(monkeypatch):
+    points = [{"location": "message", "role": "system"}]
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        _arn_settings(points, {"claude_adaptive_thinking_models_override": []}),
+    )
+    monkeypatch.setattr(litellm_handler.litellm.utils, "supports_prompt_caching", lambda model: False)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        await handler.chat_completion(model=_PROFILE_ARN, system="sys", user="usr")
+
+    assert "cache_control_injection_points" not in mock_call.call_args.kwargs
+
+
 def _warn_settings(points=None):
     return lambda: FakeSettings(
         settings_values={
@@ -299,9 +355,12 @@ async def test_no_warning_without_cache_metadata_but_call_proceeds(monkeypatch):
 
 
 def test_estimate_counts_prompt_prefix_up_to_targeted_message(monkeypatch):
+    encoded = []
+
     class _FakeEncoder:
         @staticmethod
         def encode(text, **kwargs):
+            encoded.append(text)
             return [1] * ((len(text) if text else 0) // 2 + 1)
 
     monkeypatch.setattr(
@@ -313,7 +372,9 @@ def test_estimate_counts_prompt_prefix_up_to_targeted_message(monkeypatch):
     system_only = handler._estimate_cached_prefix_tokens(
         "pineapple", "banana", [{"location": "message", "role": "system"}]
     )
+    assert encoded == ["pineapple"]
     user_only = handler._estimate_cached_prefix_tokens("pineapple", "banana", [{"location": "message", "role": "user"}])
+    assert encoded == ["pineapple", "pineapple", "banana"]
 
     # Caching the user message also caches the system message that precedes it, so its
     # estimate must be strictly larger than the system-only one.
@@ -326,3 +387,86 @@ def test_estimate_is_zero_without_targeted_role(monkeypatch):
     handler = litellm_handler.LiteLLMAIHandler()
     assert handler._estimate_cached_prefix_tokens("pineapple", "banana", [{"location": "message", "role": "none"}]) == 0
     assert handler._estimate_cached_prefix_tokens("pineapple", "banana", []) == 0
+
+
+# The review commands open their system prompt with an identical skills block, so the handler
+# splits it into its own text block and marks it as a cache breakpoint (#4007). The blocks
+# concatenate back to the original prompt.
+_SKILLS_CONTROL = {"type": "ephemeral", "ttl": "1h"}
+
+
+def _system_message(mock_call):
+    return next(message for message in mock_call.call_args.kwargs["messages"] if message["role"] == "system")
+
+
+async def _run_chat_completion(monkeypatch, points, model, system, skills_context="SKILL"):
+    monkeypatch.setattr(litellm_handler, "get_settings", _settings(points))
+    monkeypatch.setattr(litellm_handler, "get_skills_context", lambda: skills_context)
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        await handler.chat_completion(model=model, system=system, user="usr")
+    return mock_call
+
+
+@pytest.mark.asyncio
+async def test_claude_system_prompt_splits_at_the_shared_skills_prefix(monkeypatch):
+    points = [{"location": "message", "role": "system", "control": _SKILLS_CONTROL}]
+    prefix = litellm_handler.render_skills_prefix(skills_context="SKILL")
+    system = prefix + "You are PR-Reviewer, a language model"
+
+    mock_call = await _run_chat_completion(monkeypatch, points, "claude-sonnet-5", system)
+
+    assert _system_message(mock_call)["content"] == [
+        {"type": "text", "text": prefix, "cache_control": _SKILLS_CONTROL},
+        {"type": "text", "text": "You are PR-Reviewer, a language model", "cache_control": _SKILLS_CONTROL},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_split_defaults_to_ephemeral_control(monkeypatch):
+    points = [{"location": "message", "role": "system"}]
+    prefix = litellm_handler.render_skills_prefix(skills_context="SKILL")
+    system = prefix + "rest"
+
+    mock_call = await _run_chat_completion(monkeypatch, points, "claude-sonnet-5", system)
+
+    assert _system_message(mock_call)["content"] == [
+        {"type": "text", "text": prefix, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": "rest", "cache_control": {"type": "ephemeral"}},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_no_split_for_non_claude_model(monkeypatch):
+    points = [{"location": "message", "role": "system", "control": _SKILLS_CONTROL}]
+    prefix = litellm_handler.render_skills_prefix(skills_context="SKILL")
+    system = prefix + "rest"
+
+    mock_call = await _run_chat_completion(monkeypatch, points, "gpt-4o", system)
+
+    assert _system_message(mock_call)["content"] == system
+
+
+@pytest.mark.asyncio
+async def test_no_split_without_a_system_injection_point(monkeypatch):
+    points = [{"location": "message", "role": "user"}]
+    prefix = litellm_handler.render_skills_prefix(skills_context="SKILL")
+    system = prefix + "rest"
+
+    mock_call = await _run_chat_completion(monkeypatch, points, "claude-sonnet-5", system)
+
+    assert _system_message(mock_call)["content"] == system
+
+
+@pytest.mark.asyncio
+async def test_no_split_when_system_does_not_start_with_the_prefix(monkeypatch):
+    points = [{"location": "message", "role": "system", "control": _SKILLS_CONTROL}]
+    prefix = litellm_handler.render_skills_prefix(skills_context="SKILL")
+    system = prefix + "rest"
+
+    mock_call = await _run_chat_completion(
+        monkeypatch, points, "claude-sonnet-5", system, skills_context="A DIFFERENT SKILL"
+    )
+
+    assert _system_message(mock_call)["content"] == system

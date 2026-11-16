@@ -121,12 +121,6 @@ def test_key_issue_markers_use_bitbucket_hidden_form():
     assert d.marker_fingerprints(out) == {"aaaaaaaaaaaa", "bbbbbbbbbbbb"}
 
 
-def test_inline_comment_line_prefers_line():
-    assert d.inline_comment_line({"line": 5, "position": 9}) == 5
-    assert d.inline_comment_line({"position": 9}) == 9
-    assert d.inline_comment_line({}) is None
-
-
 # --------------------------------------------------------------------------- #
 # store
 # --------------------------------------------------------------------------- #
@@ -141,6 +135,7 @@ def _gh_provider(existing_bodies):
     p.pr = MagicMock()
     p.pr.get_comments.return_value = [_GHComment(b) for b in existing_bodies]
     p.last_commit_id = "deadbeef"
+    p.max_comment_chars = 65000
     return p
 
 
@@ -169,11 +164,8 @@ def test_store_load_failure_degrades_to_empty():
 def test_iter_unsupported_provider_raises():
     class FooProvider:
         pass
-    try:
+    with pytest.raises(NotImplementedError):
         list(d.iter_existing_inline_comment_bodies(FooProvider()))
-        raise AssertionError("expected NotImplementedError")
-    except NotImplementedError:
-        pass
 
 
 def test_iter_provider_with_persistent_comment_capability():
@@ -417,8 +409,8 @@ def test_gitlab_recent_inline_bodies_include_marked_posts():
 
 def test_gitlab_failed_create_does_not_record_a_recent_body():
     p = _gl_provider([])
-    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
-    p.mr.notes.create.side_effect = GitlabCreateError("note rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
+    p.mr.notes.create.side_effect = GitlabCreateError("note rejected", response_code=400)
     p.get_line_link = MagicMock(return_value="http://link")
     original = {
         "relevant_lines_start": 10, "relevant_lines_end": 11,
@@ -472,6 +464,8 @@ def _gl_review_provider():
     p = _gl_provider([])
     p.resolve_outdated_inline_threads = MagicMock(return_value=0)
     p.reconcile_code_suggestion_threads = MagicMock(return_value=None)
+    p.get_diff_files = MagicMock(return_value=[MagicMock(filename="a.py", head_file="line\n", patch="")])
+    p.send_inline_comment = MagicMock(return_value=True)
     return p
 
 
@@ -485,7 +479,9 @@ def test_gitlab_recent_inline_bodies_record_drafts_after_bulk_publish(_gl_review
     m = gs.start()
     m.return_value.get.side_effect = _gitlab_settings_get
     try:
-        assert p.publish_code_suggestions([]) is True
+        assert p.publish_code_suggestions([{
+            "body": "draft finding", "relevant_file": "a.py", "relevant_lines_start": 1, "relevant_lines_end": 1,
+        }]) is True
     finally:
         gs.stop()
 
@@ -504,7 +500,9 @@ def test_gitlab_failed_bulk_publish_does_not_record_drafts(_gl_review_provider):
     m = gs.start()
     m.return_value.get.side_effect = _gitlab_settings_get
     try:
-        assert p.publish_code_suggestions([]) is True
+        assert p.publish_code_suggestions([{
+            "body": "unpublished finding", "relevant_file": "a.py", "relevant_lines_start": 1, "relevant_lines_end": 1,
+        }]) is False
     finally:
         gs.stop()
 
@@ -512,7 +510,7 @@ def test_gitlab_failed_bulk_publish_does_not_record_drafts(_gl_review_provider):
 
 
 def test_gitlab_persistent_bodies_list_existing_mr_notes_without_duplicates():
-    p = _gl_provider(["discussion finding", "discussion finding"])
+    p = _gl_provider(["discussion finding", "discussion finding", "plain note finding"])
     note = MagicMock()
     note.body = "plain note finding"
     draft = MagicMock()
@@ -523,6 +521,7 @@ def test_gitlab_persistent_bodies_list_existing_mr_notes_without_duplicates():
     bodies = p.get_persistent_comment_bodies()
 
     assert bodies == ["discussion finding", "plain note finding", "pending draft finding"]
+    p.mr.notes.list.assert_not_called()
 
 
 def test_gitlab_persistent_bodies_include_recent_posts_only_once():
@@ -546,7 +545,7 @@ def test_gitlab_persistent_bodies_survive_draft_listing_failure():
 
 def test_gitlab_fallback_leaves_reduced_key_issue_in_summary():
     p = _gl_provider([])
-    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
     p.get_line_link = MagicMock(return_value="http://link")
     body = "**Possible Issue**\n\nfinding text"
     fingerprint = d.key_issue_fingerprint("a.py", body)
@@ -702,7 +701,7 @@ def test_gitlab_skips_when_existing_discussion_has_marker():
 
 def test_gitlab_fallback_note_carries_marker_and_records():
     p = _gl_provider([])
-    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
     p.get_line_link = MagicMock(return_value="http://link")
     original = {
         "relevant_lines_start": 10, "relevant_lines_end": 11,
@@ -735,20 +734,24 @@ def test_gitlab_fallback_note_carries_marker_and_records():
 
 
 def test_gitlab_skips_when_fallback_note_has_marker():
-    # a prior run posted via the general-note fallback (mr.notes.create); its
-    # marker must be found by scanning notes, not only discussions.
+    # GitLab includes ordinary fallback notes as individual-note discussions.
     body = "**Suggestion:** from fallback [possible issue, importance: 7]"
     seen_fp = d.body_fingerprint("a.py", 10, body)
     p = _gl_provider([])
     note = MagicMock()
     note.body = f"from fallback\n\n<!-- pr-agent-dedup: {seen_fp} -->"
     p.mr.notes.list.return_value = [note]
+    discussion = MagicMock()
+    discussion.attributes = {"individual_note": True, "notes": [{"type": None, "body": note.body}]}
+    p.mr.discussions.list.return_value = [discussion]
     gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
     m = gs.start()
     m.return_value.get.side_effect = _flag_side_effect(True)
     try:
         _send(p, body)
+        p.mr.discussions.list.assert_called_once_with(get_all=True, per_page=100)
         p.mr.discussions.create.assert_not_called()
+        p.mr.notes.list.assert_not_called()
     finally:
         gs.stop()
 

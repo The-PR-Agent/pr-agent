@@ -5,17 +5,21 @@ is passed, so `get_logger().error(f"... {e}", artifact=...)` re-formats text tha
 carries the exception. Every PyGithub error renders as `<status> <json body>` and LiteLLM
 wraps the provider's JSON, so the braces in that text turn the handler into the failure.
 """
+import os
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from github import GithubException, RateLimitExceededException
 
+from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.commands.pr_description import PRDescription
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.log import get_logger
 from pr_agent.servers.utils import RateLimitExceeded
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from pr_agent.tools.pr_description import PRDescription
 
 RATE_LIMITED = RateLimitExceededException(
     403,
@@ -79,6 +83,46 @@ def test_the_caller_module_is_still_recorded(captured_records):
     assert captured_records[-1]["name"] == __name__
 
 
+def test_exception_logs_do_not_include_local_variable_values(tmp_path):
+    repo_root = Path(__file__).resolve().parents[2]
+    script = tmp_path / "log_exception.py"
+    script.write_text(
+        "import os\n"
+        "\n"
+        "from pr_agent.log import get_logger, setup_logger\n"
+        "\n"
+        "setup_logger()\n"
+        "\n"
+        "\n"
+        "def fail(provider_key):\n"
+        "    raise RuntimeError(f\"boom {len(provider_key)}\")\n"
+        "\n"
+        "\n"
+        "try:\n"
+        "    fail(os.environ[\"DUMMY_PROVIDER_KEY\"])\n"
+        "except RuntimeError:\n"
+        "    get_logger().exception(\"command failed\")\n"
+    )
+    env = os.environ.copy()
+    env["DUMMY_PROVIDER_KEY"] = "sk-test-secret"
+    env["PYTHONPATH"] = str(repo_root)
+
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=repo_root,
+        timeout=60,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "Traceback (most recent call last)" in output
+    assert "RuntimeError" in output
+    assert "sk-test-secret" not in output
+
+
 # --------------------------------------------------------------------------------------
 # The three handlers whose contract the formatting failure broke.
 # --------------------------------------------------------------------------------------
@@ -90,20 +134,82 @@ def no_sleep(monkeypatch):
 @pytest.fixture
 def publishing(monkeypatch):
     settings = get_settings()
-    monkeypatch.setattr(settings.config, "publish_output", True)
-    monkeypatch.setattr(settings.config, "publish_output_progress", True)
-    monkeypatch.setattr(settings.config, "is_auto_command", False, raising=False)
-    monkeypatch.setattr(settings.config, "propagate_tool_errors", False, raising=False)
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.config, "publish_output_progress", True)
+    monkeypatch.setitem(settings.config, "is_auto_command", False)
+    monkeypatch.setitem(settings.config, "propagate_command_errors", False)
     return settings
 
 
-@pytest.mark.parametrize("rate_limit_error", [RATE_LIMITED, RATE_LIMITED_429], ids=["403", "429"])
-def test_a_rate_limited_diff_fetch_is_retried(monkeypatch, no_sleep, rate_limit_error):
-    """Verify one file-list request for each outer rate-limit retry."""
-    get_settings().set("GITHUB.RATELIMIT_RETRIES", 3)
+@pytest.fixture
+def github_three_retry_attempts():
+    settings = get_settings()
+    original = settings.get("GITHUB.RATELIMIT_RETRIES", 5)
+    settings.set("GITHUB.RATELIMIT_RETRIES", 3)
+    try:
+        yield
+    finally:
+        settings.set("GITHUB.RATELIMIT_RETRIES", original)
+
+
+@pytest.mark.parametrize(
+    "failure,expected_attempts,expected_http_calls,expected_type",
+    [
+        (GithubException(401, {"message": "Bad credentials"}, None), 1, 1, GithubException),
+        (NOT_ACCESSIBLE, 1, 1, GithubException),
+        (RATE_LIMITED, 3, 3, RateLimitExceeded),
+        (GithubException(403, {"message": "You have exceeded a secondary rate limit."}, None),
+         3, 3, RateLimitExceeded),
+        (GithubException(403, {"message": "Forbidden"}, {"X-RateLimit-Remaining": "0"}),
+         3, 3, RateLimitExceeded),
+        (GithubException(403, {"message": "Abuse detection mechanism triggered"}, None),
+         3, 3, RateLimitExceeded),
+        (GithubException(403, {"message": "Forbidden"}, {"Retry-After": "30"}),
+         3, 3, RateLimitExceeded),
+        (GithubException(403, {"message": "Resource not accessible"}, {"Retry-After": ""}),
+         1, 1, GithubException),
+        (GithubException(429, {"message": "Too many requests"}, None), 3, 3, RateLimitExceeded),
+        (GithubException(503, {"message": "Unavailable"}, None), 3, 6, RateLimitExceeded),
+        (GithubException(404, {"message": "Not found"}, None), 1, 1, GithubException),
+        (GithubException(422, {"message": "Unprocessable entity"}, None), 1, 1, GithubException),
+        (GithubException(408, {"message": "Request timeout"}, None), 3, 6, RateLimitExceeded),
+        (ValueError("malformed local data"), 1, 1, ValueError),
+    ],
+)
+def test_diff_retries_only_expected_api_failures(
+    monkeypatch, no_sleep, github_three_retry_attempts, failure,
+    expected_attempts, expected_http_calls, expected_type,
+):
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: MagicMock())
     provider = GithubProvider(pr_url=None)
     provider.pr = MagicMock()
+    provider.pr.head.sha = "head-sha"
+    provider.pr.base.sha = "base-sha"
+    provider.pr.base.ref = "main"
+    provider.pr.changed_files = 1
+    provider.pr.get_files.side_effect = failure
+    original_collect = provider._get_diff_files
+    provider._get_diff_files = MagicMock(wraps=original_collect)
+
+    with pytest.raises(expected_type):
+        provider.get_diff_files()
+
+    assert provider._get_diff_files.call_count == expected_attempts
+    assert provider.pr.get_files.call_count == expected_http_calls
+
+
+@pytest.mark.parametrize("rate_limit_error", [RATE_LIMITED, RATE_LIMITED_429], ids=["403", "429"])
+def test_a_rate_limited_diff_fetch_is_retried(
+    monkeypatch, no_sleep, github_three_retry_attempts, rate_limit_error
+):
+    """Verify one file-list request for each outer rate-limit retry."""
+    monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: MagicMock())
+    provider = GithubProvider(pr_url=None)
+    provider.pr = MagicMock()
+    provider.pr.head.sha = "head-sha"
+    provider.pr.base.sha = "base-sha"
+    provider.pr.base.ref = "main"
+    provider.pr.changed_files = 1
     attempts = []
 
     def rate_limited():
@@ -118,35 +224,35 @@ def test_a_rate_limited_diff_fetch_is_retried(monkeypatch, no_sleep, rate_limit_
 
 
 async def test_describe_swallows_a_provider_error(publishing):
-    """`propagate_tool_errors` is false by default, so `run()` logs and returns."""
+    """`propagate_command_errors` is false by default, so `run()` logs and returns."""
     provider = MagicMock()
     provider.publish_comment.side_effect = NOT_ACCESSIBLE
-    tool = PRDescription.__new__(PRDescription)
-    tool.git_provider = provider
-    tool.pr_id = "org/repo/1"
+    command = PRDescription.__new__(PRDescription)
+    command.git_provider = provider
+    command.pr_id = "org/repo/1"
 
-    await tool.run()
+    await command.run()
 
 
 async def test_improve_reports_a_provider_error_to_the_pr(publishing):
     provider = MagicMock()
     provider.supports_code_suggestion_state = lambda: False
     provider.get_files.side_effect = RATE_LIMITED
-    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    tool.git_provider = provider
-    tool.pr_url = "https://github.com/org/repo/pull/1"
-    tool.progress_response = None
+    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    command.git_provider = provider
+    command.pr_url = "https://github.com/org/repo/pull/1"
+    command.progress_response = None
 
-    await tool.run()
+    await command.run()
 
-    provider.publish_comment.assert_called_once_with("Failed to generate code suggestions for PR")
+    provider.publish_command_failure.assert_called_once_with("improve", "Failed to generate code suggestions for PR")
 
 
 async def test_one_unreadable_ticket_link_keeps_the_others(monkeypatch):
     """A 404 on one linked issue must not discard every extracted ticket."""
     from types import SimpleNamespace
 
-    from pr_agent.tools.ticket_pr_compliance_check import extract_tickets
+    from pr_agent.commands.ticket_pr_compliance_check import extract_tickets
 
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: MagicMock())
     provider = GithubProvider(pr_url=None)
@@ -159,6 +265,7 @@ async def test_one_unreadable_ticket_link_keeps_the_others(monkeypatch):
         return SimpleNamespace(number=number, title="Issue", body="Body", labels=[])
 
     provider.repo_obj.get_issue.side_effect = get_issue
+    provider.get_issue_content = lambda repository, number: repository.get_issue(number)
     provider.get_user_description = lambda: "Fixes #1 and closes #2"
     provider.get_pr_branch = lambda: "fix/retry"
     provider.fetch_sub_issues = lambda issue_url: []

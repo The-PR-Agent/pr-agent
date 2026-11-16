@@ -87,3 +87,21 @@ def get_commands_counter():
     return get_meter().create_counter(
         "pr_agent.commands", unit="{command}", description="PR-Agent commands executed"
     )
+
+
+@functools.lru_cache(maxsize=1)
+def get_tokens_counter():
+    return get_meter().create_counter(
+        "pr_agent.tokens",
+        unit="{token}",
+        description="Tokens consumed by PR-Agent commands, by token type",
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def get_ai_calls_counter():
+    return get_meter().create_counter(
+        "pr_agent.ai_calls",
+        unit="{call}",
+        description="Successful AI calls made by PR-Agent commands",
+    )

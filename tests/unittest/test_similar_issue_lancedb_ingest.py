@@ -3,10 +3,13 @@ import sys
 import time
 import types
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
+from github.GithubException import GithubException
+from github.Repository import Repository
 
-from pr_agent.tools.pr_similar_issue import PRSimilarIssue
+from pr_agent.commands.pr_similar_issue import PRSimilarIssue
 
 
 class FakeDB:
@@ -70,21 +73,20 @@ def _fake_issue(number=5):
     )
 
 
-def _make_tool(monkeypatch, fake_db):
+def _make_command(monkeypatch, fake_db):
     _install_fake_pandas(monkeypatch)
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue._embed_with_fallback", _fake_embed)
-    tool = PRSimilarIssue.__new__(PRSimilarIssue)
-    tool.db = fake_db
-    tool.index_name = "codium-ai-pr-agent-issues"
-    tool.max_issues_to_scan = 10
-    tool.token_handler = SimpleNamespace(count_tokens=lambda _: 0)
-    tool.table = fake_db.table
-    tool._process_issue = lambda issue: (
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue._embed_with_fallback", _fake_embed)
+    command = PRSimilarIssue.__new__(PRSimilarIssue)
+    command.db = fake_db
+    command.index_name = "codium-ai-pr-agent-issues"
+    command.max_issues_to_scan = 10
+    command.table = fake_db.table
+    command._process_issue = lambda issue: (
         f"title: {issue.title}\nbody: {issue.body}",
         [],
         issue.number,
     )
-    return tool
+    return command
 
 
 class _FakeSearch:
@@ -129,19 +131,41 @@ class _FakeLanceQuery:
     def __init__(self, table):
         self._table = table
         self._id_filter = None
+        self._repo_filter = None
+        self._columns = None
+        self._limit = None
 
     def limit(self, limit):
+        self._limit = limit
         return self
 
     def where(self, expr, prefilter=False):
-        if expr.startswith("id="):
-            self._id_filter = expr[expr.index("=") + 1 :].strip("'\"")
+        for condition in expr.split(" AND "):
+            if condition.startswith("id="):
+                self._id_filter = {condition.split("=", 1)[1].strip("'\"")}
+            elif condition.startswith("id IN ("):
+                self._id_filter = {
+                    value.strip().strip("'\"")
+                    for value in condition.removeprefix("id IN (").removesuffix(")").split(",")
+                }
+            elif condition.startswith("metadata.repo="):
+                self._repo_filter = condition.split("=", 1)[1].strip("'\"")
+        return self
+
+    def select(self, columns):
+        self._columns = columns
         return self
 
     def to_list(self):
-        if self._id_filter is None:
-            return list(self._table.rows)
-        return [row for row in self._table.rows if row["id"] == self._id_filter]
+        rows = [
+            row for row in self._table.rows
+            if (self._id_filter is None or row["id"] in self._id_filter)
+            and (self._repo_filter is None or row["metadata"]["repo"] == self._repo_filter)
+        ][:self._limit]
+        if self._columns is not None:
+            rows = [{column: row[column] for column in self._columns} for row in rows]
+        self._table.query_results.append(rows)
+        return rows
 
 
 class _FakeSearchableTable:
@@ -149,11 +173,14 @@ class _FakeSearchableTable:
         self.rows = rows
         self.add_calls = []
         self.delete_calls = []
+        self.search_calls = 0
+        self.query_results = []
 
     def __len__(self):
         return len(self.rows)
 
     def search(self, query=None):
+        self.search_calls += 1
         return _FakeLanceQuery(self)
 
     def add(self, df):
@@ -185,14 +212,14 @@ def test_initial_creation_overwrites_the_table(monkeypatch):
     )
     fake_db.table = None
 
-    tool = _make_tool(monkeypatch, fake_db)
-    tool.table = fake_db.table
+    command = _make_command(monkeypatch, fake_db)
+    command.table = fake_db.table
 
     monkeypatch.setattr(
         time, "sleep", lambda seconds: pytest.fail(f"unexpected sleep({seconds}) after create")
     )
 
-    tool._update_table_with_issues(
+    command._update_table_with_issues(
         [_fake_issue()],
         "utkarsh-demo",
         ingest=False,
@@ -207,13 +234,13 @@ def test_ingest_appends_rows_when_table_exists(monkeypatch):
     fake_table = _fake_table()
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
     monkeypatch.setattr(
         time, "sleep", lambda seconds: pytest.fail(f"unexpected sleep({seconds}) after add")
     )
 
-    tool._update_table_with_issues(
+    command._update_table_with_issues(
         [_fake_issue()],
         "utkarsh-demo",
         ingest=True,
@@ -229,20 +256,18 @@ def test_ingest_oversized_issues_do_not_burn_the_scan_budget(monkeypatch):
     fake_table = _fake_table()
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
-    tool.max_issues_to_scan = 2
-    tool.token_handler = SimpleNamespace(count_tokens=lambda _: 10 ** 6)
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_max_tokens", lambda model: 8192)
+    command = _make_command(monkeypatch, fake_db)
+    command.max_issues_to_scan = 2
 
     oversized = SimpleNamespace(
         number=1,
         title="oversized",
-        body="x" * 9000,
+        body="🧪" * 4000,
         pull_request=False,
         user=SimpleNamespace(login="tester"),
         created_at="2026-01-01T00:00:00Z",
     )
-    tool._update_table_with_issues(
+    command._update_table_with_issues(
         [oversized, _fake_issue(2), _fake_issue(3), _fake_issue(4)],
         "utkarsh-demo",
         ingest=True,
@@ -258,17 +283,17 @@ def test_ingest_fetches_table_when_table_handle_unset(monkeypatch):
     fake_table = _fake_table()
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
-    tool.table = None
+    command = _make_command(monkeypatch, fake_db)
+    command.table = None
 
-    tool._update_table_with_issues(
+    command._update_table_with_issues(
         [_fake_issue()],
         "utkarsh-demo",
         ingest=True,
     )
 
     assert fake_table.add_calls == [2]
-    assert tool.table is fake_table
+    assert command.table is fake_table
 
 
 def test_force_refresh_replaces_only_the_current_repo_rows(monkeypatch):
@@ -277,9 +302,9 @@ def test_force_refresh_replaces_only_the_current_repo_rows(monkeypatch):
     fake_table = _fake_table()
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    tool._update_table_with_issues(
+    command._update_table_with_issues(
         [_fake_issue()],
         "org/repo-a",
         ingest=True,
@@ -296,9 +321,9 @@ def test_ingest_warns_when_table_missing(monkeypatch):
     fake_table = _fake_table()
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    tool._update_table_with_issues(
+    command._update_table_with_issues(
         [_fake_issue()],
         "utkarsh-demo",
         ingest=True,
@@ -315,9 +340,9 @@ def test_ingest_finds_a_table_beyond_the_first_pagination_page(monkeypatch):
     fake_table = _fake_table()
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    tool._update_table_with_issues(
+    command._update_table_with_issues(
         [_fake_issue()],
         "utkarsh-demo",
         ingest=True,
@@ -331,16 +356,16 @@ def test_init_does_not_rebuild_when_the_table_sorts_past_the_first_ten(monkeypat
     names = [f"table-{i:02d}" for i in range(13)]
     names[10] = "codium-ai-pr-agent-issues"
 
-    tool = _make_tool(monkeypatch, FakeDB(names))
+    command = _make_command(monkeypatch, FakeDB(names))
 
-    assert tool._table_exists_in_db("codium-ai-pr-agent-issues")
+    assert command._table_exists_in_db("codium-ai-pr-agent-issues")
 
 
 def test_init_rebuilds_when_the_table_is_absent(monkeypatch):
     """A genuinely missing table is still treated as needing a full rebuild."""
-    tool = _make_tool(monkeypatch, FakeDB(["table-00"]))
+    command = _make_command(monkeypatch, FakeDB(["table-00"]))
 
-    assert not tool._table_exists_in_db("codium-ai-pr-agent-issues")
+    assert not command._table_exists_in_db("codium-ai-pr-agent-issues")
 def _capturing_table():
     fake_table = _fake_table()
     fake_table.added_rows = []
@@ -363,14 +388,30 @@ def _fake_issue_with_comments(comments):
     )
 
 
-def _tool_with_comments(monkeypatch, fake_db):
-    tool = _make_tool(monkeypatch, fake_db)
-    tool._process_issue = lambda issue: (
-        f"title: {issue.title}\nbody: {issue.body}",
-        list(issue.get_comments()),
-        issue.number,
-    )
-    return tool
+def _command_with_comments(monkeypatch, fake_db):
+    command = _make_command(monkeypatch, fake_db)
+    del command._process_issue
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_settings", lambda: SimpleNamespace(
+        pr_similar_issue=SimpleNamespace(skip_comments=False),
+    ))
+    return command
+
+
+def test_ingest_does_not_read_comments_for_oversized_issue(monkeypatch):
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_db.table = _capturing_table()
+    command = _command_with_comments(monkeypatch, fake_db)
+
+    class UnusedComments:
+        def __iter__(self):
+            pytest.fail("An oversized issue must not consume its comments")
+
+    issue = _fake_issue_with_comments(UnusedComments())
+    issue.body = "🧪" * 4000
+
+    command._update_table_with_issues([issue], "org/repo", ingest=True)
+
+    assert fake_db.table.added_rows == []
 
 
 def test_ingest_skips_null_comment_body_without_crashing(monkeypatch):
@@ -379,13 +420,13 @@ def test_ingest_skips_null_comment_body_without_crashing(monkeypatch):
     fake_table = _capturing_table()
     fake_db.table = fake_table
 
-    tool = _tool_with_comments(monkeypatch, fake_db)
+    command = _command_with_comments(monkeypatch, fake_db)
     issue = _fake_issue_with_comments([
         SimpleNamespace(body=_LONG_COMMENT),
         SimpleNamespace(body=None),
     ])
 
-    tool._update_table_with_issues([issue], "org/repo", ingest=True)
+    command._update_table_with_issues([issue], "org/repo", ingest=True)
 
     texts = [row["text"] for row in fake_table.added_rows]
     assert _LONG_COMMENT in texts
@@ -398,41 +439,44 @@ def test_ingest_skips_short_comments_and_indexes_long_ones(monkeypatch):
     fake_table = _capturing_table()
     fake_db.table = fake_table
 
-    tool = _tool_with_comments(monkeypatch, fake_db)
-    issue = _fake_issue_with_comments([
+    command = _command_with_comments(monkeypatch, fake_db)
+    issue = _fake_issue_with_comments(iter([
         SimpleNamespace(body="short"),
         SimpleNamespace(body=_LONG_COMMENT),
-    ])
+    ]))
 
-    tool._update_table_with_issues([issue], "org/repo", ingest=True)
+    command._update_table_with_issues([issue], "org/repo", ingest=True)
 
     texts = [row["text"] for row in fake_table.added_rows]
     assert "short" not in texts
     assert _LONG_COMMENT in texts
     assert len(fake_table.added_rows) == 3  # sentinel + issue + one comment
+    assert [row["id"] for row in fake_table.added_rows] == [
+        "issue_5.issue", "issue_5.comment_1", "example_issue_org/repo",
+    ]
 
 
 def test_second_repository_missing_sentinel_joins_instead_of_crashing(monkeypatch):
     """Detect a repo never indexed on an existing table and join it without an IndexError."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.table = _FakeSearchableTable([_lancedb_row("example_issue_org-repo-a", "org-repo-a")])
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    assert tool._lancedb_repo_already_indexed("org-repo-a") is True
-    assert tool._lancedb_repo_already_indexed("org-repo-b") is False
+    assert command._lancedb_repo_already_indexed("org-repo-a") is True
+    assert command._lancedb_repo_already_indexed("org-repo-b") is False
 
-    tool._update_table_with_issues([_fake_issue()], "org-repo-b", ingest=True)
+    command._update_table_with_issues([_fake_issue()], "org-repo-b", ingest=True)
 
-    assert tool._lancedb_repo_already_indexed("org-repo-b") is True
+    assert command._lancedb_repo_already_indexed("org-repo-b") is True
 
 
 def test_each_repository_gets_exactly_one_sentinel_row(monkeypatch):
     """Add the second repo's sentinel row without touching the first repo's rows."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.table = _FakeSearchableTable([_lancedb_row("example_issue_org-repo-a", "org-repo-a")])
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    tool._update_table_with_issues([_fake_issue()], "org-repo-b", ingest=True)
+    command._update_table_with_issues([_fake_issue()], "org-repo-b", ingest=True)
 
     sentinels = [
         row["id"] for row in fake_db.table.rows if row["id"].startswith("example_issue_")
@@ -492,30 +536,27 @@ def _install_fake_lancedb(monkeypatch, fake_db):
 
 def _stub_constructor_dependencies(monkeypatch, fake_db):
     _install_fake_lancedb(monkeypatch, fake_db)
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_settings", lambda: _LanceSettings)
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_git_provider", lambda: _FakeProvider)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_settings", lambda: _LanceSettings)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_git_provider", lambda: _FakeProvider)
     monkeypatch.setattr(
-        "pr_agent.tools.pr_similar_issue._provider_supports_issue_indexing",
+        "pr_agent.commands.pr_similar_issue._provider_supports_issue_indexing",
         lambda: True,
     )
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue._embed_with_fallback", _fake_embed)
-    monkeypatch.setattr(
-        "pr_agent.tools.pr_similar_issue.TokenHandler",
-        lambda *args, **kwargs: SimpleNamespace(count_tokens=lambda text: 0),
-    )
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue._embed_with_fallback", _fake_embed)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.time.sleep", lambda seconds: None)
 
 
-def test_constructor_second_repo_joins_existing_table(monkeypatch):
-    """Construct the tool for a second repo on an existing table and construct it again."""
+def test_constructor_second_repo_joins_existing_table(monkeypatch, github_issue_pages):
+    """Construct the command for a second repo on an existing table and construct it again."""
     _install_fake_pandas(monkeypatch)
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.table = _FakeSearchableTable([_lancedb_row("example_issue_org-repo-a", "org-repo-a")])
     _stub_constructor_dependencies(monkeypatch, fake_db)
+    monkeypatch.setattr(_FakeRepo, "get_issues", lambda self, state: github_issue_pages((5, 6)))
 
-    tool = PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
+    command = PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
 
-    assert tool.repo_name_for_index == "org-repo-b"
+    assert command.repo_name_for_index == "org-repo-b"
     assert fake_db.table.delete_calls == ["metadata.repo='org-repo-b'"]  # no-op first join
     assert fake_db.table.add_calls == [3]  # sentinel plus two issues
 
@@ -532,21 +573,18 @@ def test_constructor_backfills_an_older_index_gap(monkeypatch):
     """A normal constructor run re-adds an older issue missing below the newest indexed one."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.table = _FakeSearchableTable([
+        _lancedb_row("issue_5.issue", "org-repo-a"),
         _lancedb_row("issue_6.issue", "org-repo-b"),
         _lancedb_row("example_issue_org-repo-b", "org-repo-b"),
     ])
     _install_fake_pandas(monkeypatch)
     _install_fake_lancedb(monkeypatch, fake_db)
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_settings", lambda: _LanceSettings)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_settings", lambda: _LanceSettings)
     monkeypatch.setattr(
-        "pr_agent.tools.pr_similar_issue._provider_supports_issue_indexing", lambda: True
+        "pr_agent.commands.pr_similar_issue._provider_supports_issue_indexing", lambda: True
     )
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_git_provider", lambda: _FakeProvider)
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue._embed_with_fallback", _fake_embed)
-    monkeypatch.setattr(
-        "pr_agent.tools.pr_similar_issue.TokenHandler",
-        lambda *args, **kwargs: SimpleNamespace(count_tokens=lambda text: 0),
-    )
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue.get_git_provider", lambda: _FakeProvider)
+    monkeypatch.setattr("pr_agent.commands.pr_similar_issue._embed_with_fallback", _fake_embed)
 
     PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
 
@@ -554,22 +592,124 @@ def test_constructor_backfills_an_older_index_gap(monkeypatch):
     assert "issue_5.issue" in ids
     assert ids.count("example_issue_org-repo-b") == 1
     assert fake_db.table.add_calls == [1]
+    assert fake_db.table.search_calls == 3  # sentinel, one index scan, and ingest check
 
     PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
 
     ids = [row["id"] for row in fake_db.table.rows]
-    assert ids.count("issue_5.issue") == 1
+    own_issue_rows = [
+        row for row in fake_db.table.rows
+        if row["id"] == "issue_5.issue" and row["metadata"]["repo"] == "org-repo-b"
+    ]
+    assert len(own_issue_rows) == 1
     assert fake_db.table.add_calls == [1]  # gap filled, nothing new to add
+    assert fake_db.table.search_calls == 5
+
+
+@pytest.mark.parametrize("scan_limit, fail_extra_page, expected_pages, expected_new_issues", [
+    (-1, False, 0, []),
+    (0, False, 0, []),
+    (2, False, 1, [7]),
+    (2, True, 1, [7]),
+    (4, False, 3, [7, 6]),
+])
+def test_constructor_stops_github_pagination_at_scan_limit(
+    monkeypatch, scan_limit, fail_extra_page, expected_pages, expected_new_issues
+):
+    """Stop before unused pages, including PR-only pages, while retaining the scan window."""
+    repo_url = "https://api.github.com/repos/org/repo-b"
+    list_url = f"{repo_url}/issues"
+    payloads = [{
+        "url": f"{list_url}/{number}", "number": number,
+        "title": f"Issue {number}", "body": "Body",
+        "user": {"login": "tester"}, "created_at": "2020-01-01T00:00:00Z",
+    } for number in (8, 7, 100, 101, 6)]
+    for payload in payloads[2:4]:
+        payload["pull_request"] = {"url": f"{repo_url}/pulls/{payload['number']}"}
+    requester = Mock(per_page=2, base_url="https://api.github.com", is_not_lazy=False)
+
+    def request(method, url, **kwargs):
+        page = requester.requestJsonAndCheck.call_count - 1
+        assert method == "GET"
+        assert url == list_url + (f"?page={page + 1}" if page else "")
+        if fail_extra_page and page == 1:
+            raise GithubException(403, {"message": "API rate limit exceeded"})
+        end = (page + 1) * 2
+        headers = {"link": f'<{list_url}?page={page + 2}>; rel="next"'} if end < len(payloads) else {}
+        return headers, payloads[page * 2:end]
+
+    requester.requestJsonAndCheck.side_effect = request
+    repo = Repository(requester, {}, {"url": repo_url, "full_name": "org/repo-b"})
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_db.table = _FakeSearchableTable([
+        _lancedb_row("example_issue_org-repo-b", "org-repo-b"),
+        _lancedb_row("issue_8.issue", "org-repo-b"),
+    ])
+    _install_fake_pandas(monkeypatch)
+    _stub_constructor_dependencies(monkeypatch, fake_db)
+    monkeypatch.setattr(_FakeGithubClient, "get_repo", lambda self, name: repo)
+    monkeypatch.setattr(_LanceSettings.pr_similar_issue, "max_issues_to_scan", scan_limit)
+
+    PRSimilarIssue("https://github.com/org/repo-b/issues/7", None)
+
+    assert requester.requestJsonAndCheck.call_count == expected_pages
+    assert [row["id"] for row in fake_db.table.rows] == [
+        "example_issue_org-repo-b", "issue_8.issue",
+        *(f"issue_{number}.issue" for number in expected_new_issues),
+    ]
+
+
+def test_constructor_checks_many_indexed_issues_with_one_query(monkeypatch):
+    rows = [_lancedb_row("example_issue_org-repo-b", "org-repo-b")]
+    rows.extend(_lancedb_row(f"issue_{number}.issue", "org-repo-b") for number in range(1, 101))
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_db.table = _FakeSearchableTable(rows)
+    _stub_constructor_dependencies(monkeypatch, fake_db)
+    monkeypatch.setattr(_FakeRepo, "get_issues", lambda self, state="all": [
+        _fake_issue(number) for number in range(1, 101)
+    ])
+    monkeypatch.setattr(_LanceSettings.pr_similar_issue, "max_issues_to_scan", 100)
+
+    PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
+
+    assert fake_db.table.search_calls == 2  # sentinel lookup and one index scan
+    assert fake_db.table.add_calls == []
+
+
+def test_constructor_only_reads_candidate_ids_without_truncating_duplicates(monkeypatch):
+    rows = [_lancedb_row("issue_6.issue", "org-repo-b") for _ in range(4)]
+    rows.extend([
+        _lancedb_row("issue_5.issue", "org-repo-b"),
+        _lancedb_row("issue_7.issue", "org-repo-a"),
+        _lancedb_row("issue_7.comment_0", "org-repo-b"),
+        _lancedb_row("issue_1.issue", "org-repo-b"),
+        _lancedb_row("example_issue_org-repo-b", "org-repo-b"),
+    ])
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_db.table = _FakeSearchableTable(rows)
+    _stub_constructor_dependencies(monkeypatch, fake_db)
+    monkeypatch.setattr(_FakeRepo, "get_issues", lambda self, state="all": [
+        _fake_issue(number) for number in (5, 6, 7)
+    ])
+    missing_issues = []
+    monkeypatch.setattr(PRSimilarIssue, "_update_table_with_issues", lambda self, issues, *args, **kwargs:
+                        missing_issues.extend(issue.number for issue in issues))
+
+    PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
+
+    assert missing_issues == [7]
+    assert fake_db.table.search_calls == 2  # sentinel lookup and one candidate lookup
+    assert fake_db.table.query_results[1] == [{"id": "issue_6.issue"}] * 4 + [{"id": "issue_5.issue"}]
 
 
 def test_concurrent_first_runs_do_not_duplicate_rows(monkeypatch):
     """Overlapping first runs for the same repo leave a single set of rows."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.table = _FakeSearchableTable([_lancedb_row("example_issue_org-repo-a", "org-repo-a")])
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
     for _ in range(2):
-        tool._update_table_with_issues([_fake_issue()], "org-repo-b", ingest=True, force_refresh=True)
+        command._update_table_with_issues([_fake_issue()], "org-repo-b", ingest=True, force_refresh=True)
 
     ids = [row["id"] for row in fake_db.table.rows]
     assert ids.count("example_issue_org-repo-b") == 1
@@ -587,10 +727,10 @@ def test_sentinel_added_once_across_incremental_runs(monkeypatch):
     fake_table = _fake_table()
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    tool._update_table_with_issues([_fake_issue()], "utkarsh-demo", ingest=True)
-    tool._update_table_with_issues([_fake_issue(6)], "utkarsh-demo", ingest=True)
+    command._update_table_with_issues([_fake_issue()], "utkarsh-demo", ingest=True)
+    command._update_table_with_issues([_fake_issue(6)], "utkarsh-demo", ingest=True)
 
     assert fake_table.add_calls == [2, 1]
     sentinels = [row for row in fake_table.rows if row["id"] == "example_issue_utkarsh-demo"]
@@ -607,10 +747,10 @@ def test_initial_creation_with_empty_corpus_still_builds_table(monkeypatch):
     )
     fake_db.table = None
 
-    tool = _make_tool(monkeypatch, fake_db)
-    tool.table = fake_db.table
+    command = _make_command(monkeypatch, fake_db)
+    command.table = fake_db.table
 
-    tool._update_table_with_issues([], "utkarsh-demo", ingest=False)
+    command._update_table_with_issues([], "utkarsh-demo", ingest=False)
 
     name, mode, df = fake_db.created_with
     assert name == "codium-ai-pr-agent-issues"
@@ -627,9 +767,9 @@ def test_ingest_empty_corpus_skips_update(monkeypatch):
     ])
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    tool._update_table_with_issues([], "org/repo-a", ingest=True)
+    command._update_table_with_issues([], "org/repo-a", ingest=True)
 
     assert fake_table.add_calls == []
     assert fake_table.delete_calls == []
@@ -645,9 +785,9 @@ def test_force_refresh_keeps_a_single_sentinel(monkeypatch):
     ])
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    tool._update_table_with_issues(
+    command._update_table_with_issues(
         [_fake_issue()],
         "org/repo-a",
         ingest=True,
@@ -671,9 +811,9 @@ def test_force_refresh_empty_corpus_restores_the_sentinel(monkeypatch):
     ])
     fake_db.table = fake_table
 
-    tool = _make_tool(monkeypatch, fake_db)
+    command = _make_command(monkeypatch, fake_db)
 
-    tool._update_table_with_issues([], "org/repo-a", ingest=True, force_refresh=True)
+    command._update_table_with_issues([], "org/repo-a", ingest=True, force_refresh=True)
 
     assert fake_table.delete_calls == ["metadata.repo='org/repo-a'"]
     assert fake_table.add_calls == [1]

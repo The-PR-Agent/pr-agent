@@ -11,33 +11,37 @@ it is merged into `main` and ships in every release wheel and image starting at 
 This is not a fork and it never becomes one:
 
 - The MOSAICO A2A server is PR-Agent code, released in tags `v0.36.0` onwards. This bundle
-  holds zero Python — only a compose overlay, a registration template, an env template, a
-  smoke test, and this README.
-- **Staying current is one line**: bump the pinned tag in `docker-compose.pr-agent.yml`, then
-  re-run `./smoke_test.sh` to confirm the new image still boots and serves a valid card. That
-  is the entire upgrade procedure:
-  ```diff
-  -    image: pragent/pr-agent:0.41.0-mosaico_agent
-  +    image: pragent/pr-agent:0.42.0-mosaico_agent
-  ```
+  holds zero Python — a compose overlay, registration and env templates, a smoke test,
+  and this README.
 - The release workflow publishes `pragent/pr-agent:<version>-mosaico_agent` for every release,
   from the same CI matrix that builds its other images — the MOSAICO target cannot silently
   stop being built without the whole release failing.
-- Canonical source of every file in this bundle is `docker/mosaico/` in
-  `github.com/The-PR-Agent/pr-agent` — this directory. The GitLab deployment mirror holds
-  verbatim copies; edit here, and re-copy there. Never edit the mirror directly.
+- [Eclipse CI](https://gitlab.eclipse.org/eclipse-research-labs/mosaico-project/qodo-pr-agent)
+  republishes the existing `0.41.0-mosaico_agent` image, pinned by its upstream index digest,
+  as `registry.eclipse.org/eclipse-research-labs/mosaico-project/qodo-pr-agent:0.41.0-mosaico_agent`.
+  Same-project merge requests publish `mr-<iid>-<full-commit-sha>` previews. Only a push to
+  the default branch publishes the stable version tag, after the preceding CI checks.
+  The initial stable tag becomes available after the Eclipse CI change is merged and its
+  publication succeeds; validate its preview with `IMAGE=<preview-image> ./smoke_test.sh` meanwhile.
+- Shared deployment files are maintained here, under `docker/mosaico/` in
+  `github.com/The-PR-Agent/pr-agent`. Apply matching focused edits to the Eclipse deployment
+  mirror. Its root `Dockerfile` and `.gitlab-ci.yml` belong to Eclipse and are maintained there.
+- To upgrade, change the upstream version and index digest in Eclipse's `Dockerfile` and
+  the stable `IMAGE_TAG` in its `.gitlab-ci.yml`. Update the matching image references in
+  the compose overlay, smoke default, and README here and in Eclipse, then validate the
+  published preview with the existing smoke script before merging the release change.
 
 ## Quick start (standalone, no demonstrator)
 
 Boots from a bare `docker pull` in a couple of seconds — no repo clone, no build:
 
 ```bash
-docker pull pragent/pr-agent:0.41.0-mosaico_agent
+docker pull registry.eclipse.org/eclipse-research-labs/mosaico-project/qodo-pr-agent:0.41.0-mosaico_agent
 docker run -d --name pr-agent-mosaico -p 9000:9000 \
   -e API_BASE=https://your-openai-compatible-endpoint/v1 \
   -e API_KEY=sk-... \
   -e MODEL_NAME=openai/your-model-slug \
-  pragent/pr-agent:0.41.0-mosaico_agent
+  registry.eclipse.org/eclipse-research-labs/mosaico-project/qodo-pr-agent:0.41.0-mosaico_agent
 
 curl -s http://localhost:9000/.well-known/agent-card.json | python3 -m json.tool
 ```
@@ -63,6 +67,28 @@ Expect a card whose top level carries `name: "PR-Agent Solution Agent"` and `ver
 the image tag's version (it is derived from the running build, never hand-maintained), with
 skills `review`, `improve`, `describe`, `ask`, and the required
 `https://mosaico-project.eu/extensions/mosaico-observability` extension.
+
+### Caller authentication and request limits
+
+Configure `MOSAICO__BEARER_TOKENS='@json {"reference-agent":"replace-with-generated-secret"}'`
+in the agent's secret environment to require bearer authentication for JSON-RPC and the
+live `/health` probe. Each configured principal has a distinct secret and its own tasks,
+histories and artifacts. The public agent card advertises this requirement. Configure the
+reference caller to send `Authorization: Bearer <secret>` over your HTTPS ingress.
+The default empty map permits anonymous shared ownership; use it only on a trusted,
+single-tenant network.
+
+For `smoke_test.sh`, also set the client-side `MOSAICO_BEARER_TOKEN` in the script's environment.
+For the overlay, add the server's `MOSAICO__BEARER_TOKENS` to the service environment through
+your secret configuration, and set `PR_AGENT_BEARER_TOKEN` for its healthcheck. The reference
+caller needs its own credential configuration. Missing/invalid credentials produce HTTP 401;
+the agent-card GET remains public. Anonymous-mode probes need no token.
+
+The shared `config.max_webhook_request_body_bytes` cap defaults to 5 MiB and returns HTTP 413
+before parsing oversized bodies. `mosaico.routing_scan_max_chars` defaults to 65536 characters
+for PR URL and command detection per segment; put those near the start of a message or its
+surrounding prose. Diffs remain complete. Invalid observability UUIDs are ignored individually.
+These controls do not impose task eviction, request rates, concurrency quotas or health caching.
 
 ### `AGENT_CARD_HOST` / `AGENT_CARD_PORT` — the one thing to get right
 
@@ -143,9 +169,10 @@ Two outcomes:
   Set `MOSAICO__HEALTH_TIMEOUT_SECONDS` in the agent container's environment to override
   the default; with Compose, add it to the service's `environment` mapping.
   Invalid values make `/health` return the generic unhealthy response (503), not the default timeout.
-  The bundled Compose probe has its own 25-second HTTP timeout. For longer health budgets,
-  increase that HTTP timeout and Docker's `healthcheck.timeout` with sufficient margin;
-  otherwise the container can remain unhealthy and registration will not run.
+  The bundled Compose probe has its own 25-second HTTP timeout. Stream cleanup may continue
+  after `/health` times out without delaying its unhealthy response; it has no separate
+  wait budget or local stream admission limit. Allow a margin over the health timeout in
+  the HTTP timeout and Docker's `healthcheck.timeout` so registration can run.
   Check `API_BASE`/`API_KEY`/`MODEL_NAME`, not the compose file.
 - **Agent registers but the reference agent never reaches it.** The advertised card URL is
   `localhost`; see the `AGENT_CARD_HOST`/`AGENT_CARD_PORT` section above.

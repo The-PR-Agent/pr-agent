@@ -66,6 +66,34 @@ def test_empty_input_is_safe():
     assert redact_credentials("") == ""
 
 
+_BARE_TOKEN_CASES = [
+    ("github_token", "ghp_" + "aB12" * 9),                    # classic PAT (40 chars)
+    ("github_token", "ghs_" + "aB12" * 9),                    # GitHub App / Actions GITHUB_TOKEN
+    ("github_fine_grained_pat", "github_pat_" + "xY9" * 7 + "_" + "zQ7" * 20),
+    ("anthropic_key", "sk-ant-api03-" + "aB12" * 10),
+    ("openai_key", "sk-proj-" + "aB12" * 10),
+    ("openai_key", "sk-" + "aB12" * 12),                      # legacy 48-char key
+    ("google_api_key", "AIzaSy" + "aB12" * 9),
+    ("slack_token", "xoxb-123456789012-1234567890123-" + "aB12" * 6),
+    ("slack_token", "xapp-" + "1" * 12 + "-" + "aB12" * 6),
+]
+
+
+@pytest.mark.parametrize("kind, token", _BARE_TOKEN_CASES)
+def test_bare_provider_tokens_are_masked(kind, token):
+    counts = {}
+    redacted = redact_credentials(f"curl: 401 for token {token} (retry 3/5)", redaction_counts=counts)
+    assert token not in redacted
+    assert redacted == "curl: 401 for token <redacted> (retry 3/5)"
+    assert counts == {kind: 1}
+
+
+def test_short_prefixed_identifiers_are_unchanged():
+    """Minimum lengths keep ordinary identifiers that merely start like a token prefix."""
+    text = "ids: ghp_abc123 sk-ant-api03-x sk-proj-12 xoxb-abc AIzaSyA github_pat_1 disk-sk-shop projsk-0000"
+    assert redact_credentials(text) == text
+
+
 def test_clone_uses_clean_url_and_http_auth_header(tmp_path):
     provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
     destination = tmp_path / "checkout"
@@ -89,6 +117,29 @@ def test_clone_uses_clean_url_and_http_auth_header(tmp_path):
     assert captured["env"]["GIT_CONFIG_KEY_0"] == "http.extraHeader"
     assert captured["env"]["GIT_CONFIG_VALUE_0"] == expected_header
     assert "SECRET" not in captured["url"]
+
+
+@pytest.mark.parametrize("url", [
+    "https://example.test/team/repo.git?api_key=public&cache=1",
+    "https://example.test/api_token=public/repo.git",
+    "https://example.test/team/glpat-public-repo.git",
+    "https://example.test/team/AKIAIOSFODNN7EXAMPLE.git",
+])
+@pytest.mark.parametrize("userinfo", ["", "oauth2:SECRET@"])
+def test_clone_preserves_url_path_and_query_components(tmp_path, url, userinfo):
+    provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+    provider._prepare_clone_url_with_token = lambda _url: url.replace("https://", "https://" + userinfo)
+    provider._clone_inner = GitProvider._clone_inner.__get__(provider, BitbucketServerProvider)
+
+    with patch("pr_agent.git_providers.git_provider.get_git_ssl_env", return_value={}), \
+            patch("pr_agent.git_providers.git_provider.subprocess.run") as run:
+        result = provider.clone(url, str(tmp_path / "checkout"))
+
+    assert result is not None
+    assert run.call_args.args[0][-2] == url
+    if userinfo:
+        env = run.call_args.kwargs["env"]
+        assert env["GIT_CONFIG_VALUE_0"] == "Authorization: Basic " + base64.b64encode(b"oauth2:SECRET").decode("ascii")
 
 
 def test_clone_preserves_inherited_git_config_entries(tmp_path):

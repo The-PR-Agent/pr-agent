@@ -27,10 +27,10 @@ def load(obj, env=None, silent=True, key=None, filename=None):
         None
     """
 
-    # Get the list of files to load
-    # TODO: hasattr(obj, 'settings_files') for some reason returns False. Need to use 'settings_file'
-    settings_files = obj.settings_files if hasattr(obj, 'settings_files') else (
-        obj.settings_file) if hasattr(obj, 'settings_file') else []
+    # Get the list of files to load from either Dynaconf attribute.
+    settings_files = getattr(obj, "settings_files", None) or getattr(obj, "settings_file", None) or []
+    if isinstance(settings_files, str):
+        settings_files = [settings_files]
     if not settings_files or not isinstance(settings_files, list):
         get_logger().warning(
                              "No settings files specified, or missing keys "

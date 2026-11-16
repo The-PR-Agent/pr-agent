@@ -5,12 +5,15 @@ import re
 import secrets
 import time
 from collections import defaultdict
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable, Sequence
+from typing import Any
 
 from fastapi import HTTPException
 
+from pr_agent.algo.command_words import split_command_words
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -19,13 +22,11 @@ from pr_agent.log import get_logger
 _STANDARD_PR_COMMANDS = (
     "/describe --pr_description.final_update_message=false",
     "/review",
-    "/improve",
 )
-_PLAIN_PR_COMMANDS = ("/describe", "/review", "/improve")
+_PLAIN_PR_COMMANDS = ("/describe", "/review")
 _COMMITTABLE_PR_COMMANDS = (
     "/describe --pr_description.final_update_message=false",
-    "/review",
-    "/improve --pr_code_suggestions.commitable_code_suggestions=true",
+    "/review --pr_code_suggestions.committable_code_suggestions=true",
 )
 _DEFAULT_PR_COMMANDS_BY_PROVIDER = {
     "github_app": _STANDARD_PR_COMMANDS,
@@ -38,11 +39,122 @@ _DEFAULT_PR_COMMANDS_BY_PROVIDER = {
 _MISSING = object()
 
 
+def _ignore_patterns(value):
+    """Keep a scalar ignore setting as one pattern rather than its characters."""
+    return normalize_setting_list(value)
+
+
+def get_include_pr_labels() -> list[str]:
+    """Keep numeric label names (including zero) active when read from environment settings."""
+    value = get_settings().get("CONFIG.INCLUDE_PR_LABELS", [])
+    if value is None or value == "" or value == []:
+        return []
+    return [str(label) for label in value] if isinstance(value, (list, tuple, set)) else [str(value)]
+
+
+def payload_log_summary(data: object, identifying_fields: Sequence[str] = ()) -> dict:
+    """Return a webhook payload's top-level keys and identifying string fields, never its values."""
+    if not isinstance(data, dict):
+        return {"payload_type": type(data).__name__}
+
+    summary = {"payload_keys": sorted(data.keys())}
+    for name in identifying_fields:
+        value = data.get(name)
+        if isinstance(value, str):
+            summary[name] = value
+    return summary
+
+
+def is_command_comment(body) -> bool:
+    """Return True when a comment body is a slash-command comment.
+
+    A command comment must start with '/' after leading whitespace, matching the
+    check the GitHub app and action already apply. Plain sentences that merely
+    begin with a command word ("review looks good to me") must not dispatch a
+    command, because the dispatcher strips an optional leading slash.
+    """
+    return isinstance(body, str) and body.lstrip().startswith("/")
+
+
+def is_ask_command_comment(body) -> bool:
+    """Return True when a comment body starts with the /ask command.
+
+    Match the command token, not a bare prefix the way ``str.startswith`` would.
+    A line comment such as "/asking about retries" is not an ask command: the
+    dispatcher rejects the unknown "/asking" command, but prefix matching would
+    instead rewrite the comment into an /ask_line question whose text is
+    "ing about retries". "/ask_line" is the generated command name, so it is
+    accepted as well. Recognize aliases and case as the dispatcher does.
+    """
+    if not isinstance(body, str):
+        return False
+    stripped = body.lstrip()
+    if not stripped:
+        return False
+    return stripped.split(maxsplit=1)[0].lower() in ("/ask", "/ask_question", "/ask_line")
+
+
+def auto_feedback_disabled() -> bool:
+    """Whether config.disable_auto_feedback stops every auto command (pr_commands, push_commands, ...)."""
+    return _as_bool_setting(
+        get_settings().get("config.disable_auto_feedback", False),
+        default=True,
+        setting_name="config.disable_auto_feedback",
+    )
+
+
+_REVIEW_COMMAND_NAMES = frozenset({"review", "review_pr", "improve", "improve_code"})
+
+
+def _review_command_tokens(command) -> list[str]:
+    """Words of a /review, /improve or /improve_code entry, quoting kept, or [] for anything else.
+
+    An entry the command parser rejects (an unterminated quote, for instance) stays apart
+    instead of swallowing a valid review entry.
+    """
+    if not isinstance(command, str):
+        return []
+    try:
+        tokens = split_command_words(command)
+    except ValueError:
+        return []
+    return tokens if tokens and tokens[0].lstrip("/").lower() in _REVIEW_COMMAND_NAMES else []
+
+
+def dedupe_review_commands(commands: Sequence[str]) -> list[str]:
+    """Rewrite /improve and /improve_code to /review and keep a single /review entry.
+
+    /improve runs /review, so a list naming both would review twice. The first review entry stays in
+    place and takes the arguments of the removed ones, in order, without repeating an identical argument. Other
+    commands, and entries that are not strings, pass through untouched and in order.
+    """
+    result: list = []
+    review_tokens: list[str] | None = None
+    review_index = -1
+    for command in commands:
+        tokens = _review_command_tokens(command)
+        if not tokens:
+            result.append(command)
+            continue
+        if review_tokens is None:
+            slash = "/" if tokens[0].startswith("/") else ""
+            review_tokens = [f"{slash}review", *tokens[1:]]
+            review_index = len(result)
+            result.append(command)
+            continue
+        review_tokens.extend(token for token in tokens[1:] if token not in review_tokens[1:])
+    if review_tokens is not None:
+        result[review_index] = " ".join(review_tokens)
+    return result
+
+
 def get_pr_commands(provider: str) -> Sequence[str]:
     """Return an explicit provider override or a fresh copy of its default profile."""
     configured = get_settings().get(f"{provider}.pr_commands", _MISSING)
     if configured is not _MISSING:
-        return configured
+        if isinstance(configured, str):
+            configured = normalize_setting_list(configured)
+        return dedupe_review_commands(configured) if configured else configured
     return list(_DEFAULT_PR_COMMANDS_BY_PROVIDER[provider])
 
 
@@ -242,7 +354,10 @@ def _extract_pr_metadata(data: dict, provider: str | None = None):
         repo_full_name = data.get("project", {}).get("path_with_namespace") or ""
         source_branch = obj_attr.get("source_branch") or ""
         target_branch = obj_attr.get("target_branch") or ""
-        raw_labels = obj_attr.get("labels") or []
+        # GitLab merge request webhooks put labels at the payload root.
+        raw_labels = (data.get("labels") if "labels" in data else obj_attr.get("labels")) or []
+        if not isinstance(raw_labels, (list, tuple)):
+            raw_labels = []
         labels = [
             label.get("title", "") if isinstance(label, dict) else str(label)
             for label in raw_labels
@@ -287,6 +402,8 @@ def _extract_pr_metadata(data: dict, provider: str | None = None):
         source_branch = pull_request.get("head", {}).get("ref") or ""
         target_branch = pull_request.get("base", {}).get("ref") or ""
         pr_labels = pull_request.get("labels") or []
+        if not isinstance(pr_labels, (list, tuple)):
+            pr_labels = []
         labels = [
             label.get("name", "") if isinstance(label, dict) else str(label)
             for label in pr_labels
@@ -309,11 +426,13 @@ def should_process_pr_logic(
     labels: Sequence[str] | None = None,
     source_branch: str | None = None,
     target_branch: str | None = None,
+    check_include_labels: bool = True,
     raise_on_error: bool = False,
 ) -> bool:
     """Determine whether a pull/merge request should be processed based on configuration.
 
-    Evaluates ignore rules configured in settings:
+    Evaluates PR selection and ignore rules configured in settings:
+      - CONFIG.INCLUDE_PR_LABELS: require at least one exact matching PR/MR label when nonempty
       - CONFIG.IGNORE_REPOSITORIES: regex match on repo_full_name
       - CONFIG.IGNORE_PR_AUTHORS: regex match on sender/author
       - CONFIG.IGNORE_PR_TITLE: regex match on title (supports str or list[str])
@@ -323,6 +442,9 @@ def should_process_pr_logic(
 
     Can be called with a webhook payload dict (`data`), explicit keyword arguments, or both
     (explicit kwargs override extracted payload values).
+
+    Set `check_include_labels=False` only before repository settings have been loaded;
+    the caller must recheck the effective policy afterwards.
 
     When `raise_on_error` is True, exceptions raised during filtering are re-raised so callers
     can distinguish error fallbacks from successful evaluations. Otherwise, returns True.
@@ -355,8 +477,16 @@ def should_process_pr_logic(
         source_branch = source_branch or ""
         target_branch = target_branch or ""
 
+        if check_include_labels:
+            include_pr_labels = get_include_pr_labels()
+            if include_pr_labels:
+                if (not isinstance(labels, Sequence) or isinstance(labels, (str, bytes))
+                        or not any(label in include_pr_labels for label in labels)):
+                    get_logger().info("Skipping PR without a valid label in config.include_pr_labels")
+                    return False
+
         # Ignore PRs from specific repositories
-        ignore_repos = get_settings().get("CONFIG.IGNORE_REPOSITORIES", [])
+        ignore_repos = _ignore_patterns(get_settings().get("CONFIG.IGNORE_REPOSITORIES", []))
         if repo_full_name and ignore_repos:
             if any(re.search(regex, repo_full_name) for regex in ignore_repos):
                 get_logger().info(
@@ -365,7 +495,7 @@ def should_process_pr_logic(
                 return False
 
         # Ignore PRs from specific users
-        ignore_pr_users = get_settings().get("CONFIG.IGNORE_PR_AUTHORS", [])
+        ignore_pr_users = _ignore_patterns(get_settings().get("CONFIG.IGNORE_PR_AUTHORS", []))
         if sender and ignore_pr_users:
             if any(re.search(regex, sender) for regex in ignore_pr_users):
                 get_logger().info(f"Ignoring PR from user '{sender}' due to 'config.ignore_pr_authors' setting")
@@ -373,15 +503,13 @@ def should_process_pr_logic(
 
         # Ignore PRs with specific titles
         if title:
-            ignore_pr_title_re = get_settings().get("CONFIG.IGNORE_PR_TITLE", [])
-            if not isinstance(ignore_pr_title_re, list):
-                ignore_pr_title_re = [ignore_pr_title_re]
+            ignore_pr_title_re = _ignore_patterns(get_settings().get("CONFIG.IGNORE_PR_TITLE", []))
             if ignore_pr_title_re and any(re.search(regex, title) for regex in ignore_pr_title_re):
                 get_logger().info(f"Ignoring PR with title '{title}' due to config.ignore_pr_title setting")
                 return False
 
         # Ignore PRs with specific labels
-        ignore_pr_labels = get_settings().get("CONFIG.IGNORE_PR_LABELS", [])
+        ignore_pr_labels = _ignore_patterns(get_settings().get("CONFIG.IGNORE_PR_LABELS", []))
         if labels and ignore_pr_labels:
             if any(label in ignore_pr_labels for label in labels):
                 labels_str = ", ".join(labels)
@@ -389,8 +517,8 @@ def should_process_pr_logic(
                 return False
 
         # Ignore PRs with specific source or target branches
-        ignore_pr_source_branches = get_settings().get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", [])
-        ignore_pr_target_branches = get_settings().get("CONFIG.IGNORE_PR_TARGET_BRANCHES", [])
+        ignore_pr_source_branches = _ignore_patterns(get_settings().get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", []))
+        ignore_pr_target_branches = _ignore_patterns(get_settings().get("CONFIG.IGNORE_PR_TARGET_BRANCHES", []))
         if ignore_pr_source_branches or ignore_pr_target_branches:
             if source_branch and any(re.search(regex, source_branch) for regex in ignore_pr_source_branches):
                 get_logger().info(
@@ -406,6 +534,9 @@ def should_process_pr_logic(
         get_logger().error(f"Failed 'should_process_pr_logic': {e}")
         if raise_on_error:
             raise
+        # An opt-in allowlist must not be bypassed by malformed webhook metadata.
+        if check_include_labels and get_include_pr_labels():
+            return False
         return True
     return True
 

@@ -128,6 +128,11 @@ class TestDiscoverSkills:
         skills = discover_skills([str(tmp_path), "", None])  # type: ignore[list-item]
         assert len(skills) == 1
 
+    def test_string_paths_value_is_scanned_as_one_path(self, tmp_path):
+        _write_skill(tmp_path, "only")
+        skills = discover_skills(str(tmp_path))  # type: ignore[arg-type]
+        assert [s.name for s in skills] == ["only"]
+
 
 class TestFormatSkillsContext:
     def _mk(self, name: str, body: str = "guidance body") -> Skill:
@@ -195,6 +200,39 @@ class TestGetSkillsContext:
         # Should not raise; should still produce skills_context using the default budget.
         out = get_skills_context()
         assert "Skill: demo" in out
+
+    def test_string_paths_value_is_scanned_as_one_path(self, tmp_path, monkeypatch):
+        _write_skill(tmp_path, "demo", body="check the thing")
+        from pr_agent.config_loader import get_settings
+        get_settings().set("skills", {"enabled": True, "paths": str(tmp_path),
+                                       "max_skills_tokens": 4000})
+        discover_calls = []
+
+        def fake_discover(paths):
+            discover_calls.append(list(paths))
+            return []
+
+        monkeypatch.setattr(skills_loader, "discover_skills", fake_discover)
+        get_skills_context()
+        assert discover_calls == [[str(tmp_path)]]
+
+    def test_string_paths_value_does_not_scan_the_filesystem_root(self, tmp_path, monkeypatch):
+        _write_skill(tmp_path, "demo", body="check the thing")
+        from pr_agent.config_loader import get_settings
+        get_settings().set("skills", {"enabled": True, "paths": str(tmp_path),
+                                       "max_skills_tokens": 4000})
+        visited = []
+        real_walk = os.walk
+
+        def tracking_walk(top, *args, **kwargs):
+            visited.append(top)
+            return real_walk(top, *args, **kwargs)
+
+        monkeypatch.setattr(skills_loader.os, "walk", tracking_walk)
+        out = get_skills_context()
+        assert "Skill: demo" in out
+        assert str(tmp_path) in visited
+        assert all(root.startswith(str(tmp_path)) for root in visited)
 
     def test_request_cache_respects_effective_settings_changes(self, monkeypatch):
         settings = SimpleNamespace(

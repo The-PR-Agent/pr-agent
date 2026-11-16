@@ -1,4 +1,5 @@
 """Size every file before pr_generate_compressed_diff packs them largest-first."""
+
 from pr_agent.algo.pr_processing import pr_generate_compressed_diff
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
@@ -11,9 +12,8 @@ class FakeTokenHandler:
 
 
 def _file(name, body_lines):
-    patch = "@@ -1,1 +1,%d @@\n" % body_lines + "\n".join(f"+l{i}" for i in range(body_lines))
-    return FilePatchInfo(base_file="", head_file="x", patch=patch, filename=name,
-                         edit_type=EDIT_TYPE.MODIFIED)
+    patch = f"@@ -1,1 +1,{body_lines} @@\n" + "\n".join(f"+l{i}" for i in range(body_lines))
+    return FilePatchInfo(base_file="", head_file="x", patch=patch, filename=name, edit_type=EDIT_TYPE.MODIFIED)
 
 
 def test_token_counts_are_filled_in_before_sorting():

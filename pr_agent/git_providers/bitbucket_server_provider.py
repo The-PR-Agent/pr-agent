@@ -1,29 +1,34 @@
 import difflib
-import re
 import subprocess
-from collections import Counter
 from types import SimpleNamespace
-from typing import Optional, Tuple
 from urllib.parse import quote, quote_plus, urlparse
 
 from atlassian.bitbucket import Bitbucket
 from packaging.version import parse as parse_version
 from requests.exceptions import HTTPError
 
+from pr_agent.agent.request_policy import policy_metadata, policy_value
+
 from ..algo.file_filter import filter_ignored
-from ..algo.git_patch_processing import decode_if_bytes
-from ..algo.language_handler import build_language_file_matcher, is_valid_file
+from ..algo.git_patch_processing import count_patch_lines, decode_if_bytes
+from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE, FilePatchInfo
-from ..algo.utils import find_line_number_of_relevant_line_in_file, load_large_diff
+from ..algo.utils import find_line_number_of_relevant_line_in_file, load_large_diff, replace_suggestion_blocks
 from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
-from .git_provider import GitProvider, get_git_ssl_env
+from .git_provider import GitProvider, cache_languages, get_git_ssl_env
 
 
 class BitbucketServerProvider(GitProvider):
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        return policy_metadata(title=self.pr.title, sender=policy_value(self.pr, "author", "user", "name"),
+                               repo_full_name=f"{self.workspace_slug}/{self.repo_slug}",
+                               source_branch=policy_value(self.pr, "fromRef", "displayId"),
+                               target_branch=policy_value(self.pr, "toRef", "displayId"))
+
     def __init__(
-            self, pr_url: Optional[str] = None, incremental: Optional[bool] = False,
-            bitbucket_client: Optional[Bitbucket] = None,
+            self, pr_url: str | None = None, incremental: bool | None = False,
+            bitbucket_client: Bitbucket | None = None,
     ):
         self.bitbucket_server_url = None
         self.workspace_slug = None
@@ -35,6 +40,7 @@ class BitbucketServerProvider(GitProvider):
         self.temp_comments = []
         self.incremental = incremental
         self.diff_files = None
+        self._pr_changes = None
         self.bitbucket_pull_request_api_url = pr_url
         self.bearer_token = get_settings().get("BITBUCKET_SERVER.BEARER_TOKEN", None)
         # Get username and password from settings
@@ -84,7 +90,7 @@ class BitbucketServerProvider(GitProvider):
     # suffix: "?at=refs%2Fheads%2Fmy_branch"
     # In case git url is not provided, provider will use PR context (which includes branch) to
     # determine the prefix and suffix.
-    def get_canonical_url_parts(self, repo_git_url:str=None, desired_branch:str=None) -> Tuple[str, str]:
+    def get_canonical_url_parts(self, repo_git_url:str=None, desired_branch:str=None) -> tuple[str, str]:
         workspace_name = None
         project_name = None
         if not repo_git_url:
@@ -98,7 +104,7 @@ class BitbucketServerProvider(GitProvider):
                                    f"project_name={project_name}, default_branch_dict={default_branch_dict}")
                 return ("", "")
         elif '.git' in repo_git_url and 'scm/' in repo_git_url:
-            repo_path = repo_git_url.split('.git')[0].split('scm/')[-1]
+            repo_path = repo_git_url.rstrip('/').removesuffix('.git').split('scm/')[-1]
             if repo_path.count('/') == 1:  # Has to have the form <workspace>/<repo>
                 workspace_name, project_name = repo_path.split('/')
         if not workspace_name or not project_name:
@@ -129,15 +135,15 @@ class BitbucketServerProvider(GitProvider):
                 get_logger().info(f"Failed to load .pr_agent.toml file, error: {e}")
         except Exception as e:
             get_logger().info(f"Failed to load .pr_agent.toml file, error: {e}")
-        return settings_files if settings_files else ""
+        return settings_files or ""
 
     def _get_global_settings_cache_key(self, workspace: str) -> str:
-        return f"bitbucket-server:{getattr(self, 'bitbucket_server_url', '')}:{workspace}"
+        return f"bitbucket-server:{getattr(self, "bitbucket_server_url", "")}:{workspace}"
 
-    def _fetch_global_repo_settings(self, workspace):
-        # A missing pr-agent-settings repo/file (404) is an expected fallback -> return "" (cached).
+    def _fetch_global_repo_settings(self, workspace, settings_repo):
+        # A missing settings repo/file (404) is an expected fallback -> return "" (cached).
         try:
-            return self.bitbucket_client.get_content_of_file(workspace, "pr-agent-settings", ".pr_agent.toml")
+            return self.bitbucket_client.get_content_of_file(workspace, settings_repo, ".pr_agent.toml")
         except HTTPError as e:
             if e.response.status_code == 404:
                 return ""
@@ -150,7 +156,7 @@ class BitbucketServerProvider(GitProvider):
         ref = self.get_repo_context_ref(from_default_branch)
         return self.get_file(file_path, ref)
 
-    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> str | None:
         if from_default_branch:
             default_branch_dict = self.bitbucket_client.get_default_branch(self.workspace_slug, self.repo_slug)
             return default_branch_dict.get('displayId') or self.pr.toRef['latestCommit']
@@ -170,7 +176,7 @@ class BitbucketServerProvider(GitProvider):
                 patch_orig = "\n".join(diff)
                 patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
                 diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
-                body = re.sub(r'```suggestion.*?```', lambda _: diff_code, body, flags=re.DOTALL)
+                body = replace_suggestion_blocks(body, diff_code)
             except Exception as e:
                 get_logger().exception(f"Bitbucket failed to get diff code for publishing, error: {e}")
                 return None
@@ -203,11 +209,16 @@ class BitbucketServerProvider(GitProvider):
         get_logger().warning(message)
 
     def _log_code_suggestion_publish_error(self, error: Exception) -> None:
-        if get_verbosity_level() >= 2:
-            get_logger().error(f"Failed to publish code suggestion, error: {error}")
+        get_logger().error(f"Bitbucket Server failed to publish code suggestion, error: {error}")
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ['get_labels', 'gfm_markdown']:
+        if capability in [
+            'get_labels',
+            'gfm_markdown',
+            'head_ci_status',
+            'head_staleness',
+            'author_human_check',
+        ]:
             return False
         return True
 
@@ -219,24 +230,39 @@ class BitbucketServerProvider(GitProvider):
         self.workspace_slug, self.repo_slug, self.pr_num = self._parse_pr_url(pr_url)
         self.pr = self._get_pr()
 
-    def get_file(self, path: str, commit_id: str):
+    def get_file(self, path: str, commit_id: str, *, missing_is_error: bool = False):
         file_content = ""
         try:
+            # atlassian adds the path to the URL unescaped; quote it so "#", "?" and "%" stay part of the file name.
             file_content = self.bitbucket_client.get_content_of_file(self.workspace_slug,
                                                                      self.repo_slug,
-                                                                     path,
+                                                                     quote(path, safe="/"),
                                                                      commit_id)
         except HTTPError as e:
             if getattr(getattr(e, "response", None), "status_code", None) == 404:
+                if missing_is_error:
+                    raise
                 get_logger().debug(f"File {path} not found at commit id: {commit_id}")
                 return file_content
             raise
         return file_content
 
+    def _get_pull_request_changes(self):
+        """Return the pull request change list, fetching it at most once per provider instance.
+
+        Fetch it once for get_files(), get_languages() and get_diff_files() instead of once
+        per caller, or the paginated changes request is re-issued several times per command.
+        """
+        cached = getattr(self, "_pr_changes", None)
+        if cached is None:
+            cached = list(
+                self.bitbucket_client.get_pull_requests_changes(self.workspace_slug, self.repo_slug, self.pr_num)
+            )
+            self._pr_changes = cached
+        return cached
+
     def get_files(self):
-        changes = self.bitbucket_client.get_pull_requests_changes(self.workspace_slug, self.repo_slug, self.pr_num)
-        diffstat = [change["path"]['toString'] for change in changes]
-        return diffstat
+        return [change["path"]['toString'] for change in self._get_pull_request_changes()]
 
     #gets the best common ancestor: https://git-scm.com/docs/git-merge-base
     @staticmethod
@@ -251,85 +277,103 @@ class BitbucketServerProvider(GitProvider):
         return guaranteed_common_ancestor
 
     def get_diff_files(self) -> list[FilePatchInfo]:
-        if self.diff_files:
+        # `is not None`: an empty diff is a completed result and caches like any other,
+        # so repeated calls within a command make one round of API calls (#4860).
+        if self.diff_files is not None:
             return self.diff_files
 
         head_sha = self.pr.fromRef['latestCommit']
 
-        # if Bitbucket api version is >= 8.16 then use the merge-base api for 2-way diff calculation
-        if self.bitbucket_api_version is not None and self.bitbucket_api_version >= parse_version("8.16"):
-            try:
-                base_sha = self.bitbucket_client.get(self._get_merge_base())['id']
-            except Exception as e:
-                get_logger().error(f"Failed to get the best common ancestor for PR: {self.pr_url}, \nerror: {e}")
-                raise e
-        else:
-            source_commits_list = list(self.bitbucket_client.get_pull_requests_commits(
-                self.workspace_slug,
-                self.repo_slug,
-                self.pr_num
-            ))
-            # if Bitbucket api version is None or < 7.0 then do a simple diff with a guaranteed common ancestor
-            base_sha = source_commits_list[-1]['parents'][0]['id']
-            # if Bitbucket api version is 7.0-8.15 then use 2-way diff functionality for the base_sha
-            if self.bitbucket_api_version is not None and self.bitbucket_api_version >= parse_version("7.0"):
-                try:
-                    destination_commits = list(
-                        self.bitbucket_client.get_commits(self.workspace_slug, self.repo_slug, base_sha,
-                                                          self.pr.toRef['latestCommit']))
-                    base_sha = self.get_best_common_ancestor(source_commits_list, destination_commits, base_sha)
-                except Exception as e:
-                    get_logger().error(
-                        f"Failed to get the commit list for calculating best common ancestor "
-                        f"for PR: {self.pr_url}, \nerror: {e}"
-                    )
-                    raise e
-
         diff_files = []
+        invalid_files_names = []
         original_file_content_str = ""
         new_file_content_str = ""
 
-        changes_original = list(
-            self.bitbucket_client.get_pull_requests_changes(self.workspace_slug, self.repo_slug, self.pr_num)
-        )
+        changes_original = self._get_pull_request_changes()
         changes = filter_ignored(changes_original, 'bitbucket_server')
+        retained_changes = []
         for change in changes:
             file_path = change['path']['toString']
             if not is_valid_file(file_path.split("/")[-1]):
                 get_logger().info(f"Skipping a non-code file: {file_path}")
+                invalid_files_names.append(file_path)
                 continue
+            retained_changes.append(change)
 
+        if any(change['type'] != 'ADD' for change in retained_changes):
+            # if Bitbucket api version is >= 8.16 then use the merge-base api for 2-way diff calculation
+            if self.bitbucket_api_version is not None and self.bitbucket_api_version >= parse_version("8.16"):
+                try:
+                    base_sha = self.bitbucket_client.get(self._get_merge_base())['id']
+                except Exception as e:
+                    get_logger().error(f"Failed to get the best common ancestor for PR: {self.pr_url}, \nerror: {e}")
+                    raise e
+            else:
+                source_commits_list = list(self.bitbucket_client.get_pull_requests_commits(
+                    self.workspace_slug,
+                    self.repo_slug,
+                    self.pr_num
+                ))
+                # if Bitbucket api version is None or < 7.0 then do a simple diff with a guaranteed common ancestor
+                base_sha = source_commits_list[-1]['parents'][0]['id']
+                # if Bitbucket api version is 7.0-8.15 then use 2-way diff functionality for the base_sha
+                if self.bitbucket_api_version is not None and self.bitbucket_api_version >= parse_version("7.0"):
+                    try:
+                        destination_commits = list(
+                            self.bitbucket_client.get_commits(self.workspace_slug, self.repo_slug, base_sha,
+                                                              self.pr.toRef['latestCommit']))
+                        base_sha = self.get_best_common_ancestor(source_commits_list, destination_commits, base_sha)
+                    except Exception as e:
+                        get_logger().error(
+                            f"Failed to get the commit list for calculating best common ancestor "
+                            f"for PR: {self.pr_url}, \nerror: {e}"
+                        )
+                        raise e
+
+        for change in retained_changes:
+            file_path = change['path']['toString']
             old_filename = None
-            match change['type']:
-                case 'ADD':
-                    edit_type = EDIT_TYPE.ADDED
-                    new_file_content_str = self.get_file(file_path, head_sha)
-                    new_file_content_str = decode_if_bytes(new_file_content_str)
-                    original_file_content_str = ""
-                case 'DELETE':
-                    edit_type = EDIT_TYPE.DELETED
-                    new_file_content_str = ""
-                    original_file_content_str = self.get_file(file_path, base_sha)
-                    original_file_content_str = decode_if_bytes(original_file_content_str)
-                case 'MOVE' | 'RENAME':
-                    edit_type = EDIT_TYPE.RENAMED
-                    source_path = change.get('srcPath') or {}
-                    original_file_path = source_path.get('toString', file_path)
-                    old_filename = original_file_path if original_file_path != file_path else None
-                    original_file_content_str = self.get_file(original_file_path, base_sha)
-                    original_file_content_str = decode_if_bytes(original_file_content_str)
-                    new_file_content_str = self.get_file(file_path, head_sha)
-                    new_file_content_str = decode_if_bytes(new_file_content_str)
-                case _:
-                    edit_type = EDIT_TYPE.MODIFIED
-                    original_file_content_str = self.get_file(file_path, base_sha)
-                    original_file_content_str = decode_if_bytes(original_file_content_str)
-                    new_file_content_str = self.get_file(file_path, head_sha)
-                    new_file_content_str = decode_if_bytes(new_file_content_str)
+            content_fetch_failed = False
+            try:
+                match change['type']:
+                    case 'ADD':
+                        edit_type = EDIT_TYPE.ADDED
+                        new_file_content_str = self.get_file(file_path, head_sha, missing_is_error=True)
+                        new_file_content_str = decode_if_bytes(new_file_content_str)
+                        original_file_content_str = ""
+                    case 'DELETE':
+                        edit_type = EDIT_TYPE.DELETED
+                        new_file_content_str = ""
+                        original_file_content_str = self.get_file(file_path, base_sha, missing_is_error=True)
+                        original_file_content_str = decode_if_bytes(original_file_content_str)
+                    case 'MOVE' | 'RENAME':
+                        edit_type = EDIT_TYPE.RENAMED
+                        source_path = change.get('srcPath') or {}
+                        original_file_path = source_path.get('toString', file_path)
+                        old_filename = original_file_path if original_file_path != file_path else None
+                        original_file_content_str = self.get_file(original_file_path, base_sha, missing_is_error=True)
+                        original_file_content_str = decode_if_bytes(original_file_content_str)
+                        new_file_content_str = self.get_file(file_path, head_sha, missing_is_error=True)
+                        new_file_content_str = decode_if_bytes(new_file_content_str)
+                    case _:
+                        edit_type = EDIT_TYPE.MODIFIED
+                        original_file_content_str = self.get_file(file_path, base_sha, missing_is_error=True)
+                        original_file_content_str = decode_if_bytes(original_file_content_str)
+                        new_file_content_str = self.get_file(file_path, head_sha, missing_is_error=True)
+                        new_file_content_str = decode_if_bytes(new_file_content_str)
+            except HTTPError as e:
+                if getattr(getattr(e, "response", None), "status_code", None) != 404:
+                    raise
+                # An unreadable side would render as a whole-file add or delete, so keep the file
+                # as an unreadable-file notice instead of inventing changes.
+                get_logger().warning(f"Not emitting a patch for {file_path}: its content could not be read ({e})")
+                original_file_content_str = new_file_content_str = ""
+                content_fetch_failed = True
 
-            patch = load_large_diff(file_path, new_file_content_str, original_file_content_str, show_warning=False)
+            patch = "" if content_fetch_failed else load_large_diff(
+                file_path, new_file_content_str, original_file_content_str, show_warning=False)
 
-            patch_lines = patch.splitlines(keepends=True)
+            num_plus_lines, num_minus_lines = count_patch_lines(patch)
             diff_files.append(
                 FilePatchInfo(
                     original_file_content_str,
@@ -338,11 +382,13 @@ class BitbucketServerProvider(GitProvider):
                     file_path,
                     edit_type=edit_type,
                     old_filename=old_filename,
-                    num_plus_lines=len([line for line in patch_lines if line.startswith('+')]),
-                    num_minus_lines=len([line for line in patch_lines if line.startswith('-')]),
+                    num_plus_lines=num_plus_lines,
+                    num_minus_lines=num_minus_lines,
+                    content_fetch_failed=content_fetch_failed,
                 )
             )
 
+        self.filtered_diff_file_names = invalid_files_names
         self.diff_files = diff_files
         return diff_files
 
@@ -480,10 +526,12 @@ class BitbucketServerProvider(GitProvider):
         return True
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
+        # Build on the canonical PR URL: a pasted browser URL usually ends in /overview.
+        pr_web_url = self._get_pr_web_url()
         if relevant_line_start == -1:
-            link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}"
+            link = f"{pr_web_url}/diff#{quote_plus(relevant_file)}"
         else:
-            link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}?t={relevant_line_start}"
+            link = f"{pr_web_url}/diff#{quote_plus(relevant_file)}?t={relevant_line_start}"
         return link
 
     def publish_inline_comments(self, comments: list[dict]) -> bool:
@@ -509,24 +557,9 @@ class BitbucketServerProvider(GitProvider):
         # list, which would post the already-accepted suggestions a second time.
         return published_count > 0 or publishable_count == 0
 
-    def get_title(self):
-        return self.pr.title
-
+    @cache_languages
     def get_languages(self):
-        # Return {language name: percentage}, like the other providers.
-        lang_map = get_settings().get("language_extension_map_org", {}) or {}
-        get_language = build_language_file_matcher(lang_map)
-
-        lang_count = Counter()
-        for filename in self.get_files():
-            if not filename:
-                continue
-            language = get_language(filename)
-            if language:
-                lang_count[language] += 1
-
-        total = sum(lang_count.values()) or 1
-        return {lang: count / total * 100 for lang, count in lang_count.items()}
+        return self._language_percentages(self.get_files())
 
     def get_pr_branch(self):
         return self.pr.fromRef['displayId']
@@ -596,56 +629,58 @@ class BitbucketServerProvider(GitProvider):
             get_logger().warning(f"Failed to get head SHA, error: {e}")
             return ""
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
+    def get_pr_identity(self) -> dict:
+        repo = "/".join(
+            str(part) for part in (self.workspace_slug, self.repo_slug) if part
+        )
+        return {
+            "url": self.get_pr_url() or "",
+            "provider": "bitbucket_server",
+            "repo": repo,
+            "number": self.pr_num if self.pr_num is not None else "",
+            "head_sha": self.get_pr_head_sha(),
+        }
+
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> int | None:
         return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         return True
 
     @staticmethod
+    def _pr_path_index(path_parts: list[str]) -> int | None:
+        # Index of the segment that starts {projects|users}/{owner}/repos/{repo}/pull-requests/{id}, so a context
+        # path, project, user or repository named "projects" or "users" is not taken for it.
+        for index, part in enumerate(path_parts[:-5]):
+            if (part in ("projects", "users") and path_parts[index + 2] == "repos"
+                    and path_parts[index + 4] == "pull-requests"):
+                return index
+        return None
+
+    @staticmethod
     def _parse_bitbucket_server(url: str) -> str:
         # PR URLs use either projects/{project} or users/{user} after the Bitbucket Server base URL.
         parsed_url = urlparse(url)
-        server_path = parsed_url.path.split("/projects/", maxsplit=1)
-        if len(server_path) == 1:
-            server_path = parsed_url.path.split("/users/", maxsplit=1)
-        if len(server_path) > 1:
-            server_path = server_path[0].strip("/")
+        path_parts = parsed_url.path.split("/")
+        pr_path_index = BitbucketServerProvider._pr_path_index(path_parts)
+        if pr_path_index is not None:
+            server_path = "/".join(path_parts[:pr_path_index]).strip("/")
             return f"{parsed_url.scheme}://{parsed_url.netloc}/{server_path}".strip("/")
         return f"{parsed_url.scheme}://{parsed_url.netloc}"
 
     @staticmethod
-    def _parse_pr_url(pr_url: str) -> Tuple[str, str, int]:
+    def _parse_pr_url(pr_url: str) -> tuple[str, str, int]:
         # pr url format: f"{bitbucket_server}/projects/{project_name}/repos/{repository_name}/pull-requests/{pr_id}"
         parsed_url = urlparse(pr_url)
 
         path_parts = parsed_url.path.strip("/").split("/")
-
-        try:
-            projects_index = path_parts.index("projects")
-        except ValueError:
-            projects_index = -1
-
-        try:
-            users_index = path_parts.index("users")
-        except ValueError:
-            users_index = -1
-
-        if projects_index == -1 and users_index == -1:
+        pr_path_index = BitbucketServerProvider._pr_path_index(path_parts)
+        if pr_path_index is None:
             raise ValueError(f"The provided URL '{pr_url}' does not appear to be a Bitbucket PR URL")
 
-        if projects_index != -1:
-            path_parts = path_parts[projects_index:]
-        else:
-            path_parts = path_parts[users_index:]
-
-        if len(path_parts) < 6 or path_parts[2] != "repos" or path_parts[4] != "pull-requests":
-            raise ValueError(
-                f"The provided URL '{pr_url}' does not appear to be a Bitbucket PR URL"
-            )
-
+        path_parts = path_parts[pr_path_index:]
         workspace_slug = path_parts[1]
-        if users_index != -1:
+        if path_parts[0] == "users":
             workspace_slug = f"~{workspace_slug}"
         repo_slug = path_parts[3]
         try:

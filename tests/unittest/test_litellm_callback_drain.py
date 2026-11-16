@@ -10,6 +10,7 @@ we drain them first.
 """
 
 import asyncio
+import gc
 import importlib
 import inspect
 import time
@@ -94,6 +95,16 @@ def clean_litellm_callbacks():
         if value is not None:
             setattr(litellm, attr, value)
     global_settings.set("LITELLM.ENABLE_CALLBACKS", enable_callbacks)
+
+
+@pytest.fixture(autouse=True)
+def no_gc_pauses():
+    """Keep full collections, which take ~0.5 s late in the CI suite, out of the drain deadlines."""
+    enabled = gc.isenabled()
+    gc.disable()
+    yield
+    if enabled:
+        gc.enable()
 
 
 class _CountingLogger(litellm.integrations.custom_logger.CustomLogger):
@@ -350,7 +361,6 @@ def test_cancellation_cleanup_uses_remaining_callback_timeout(clean_litellm_call
         def get_worker():
             drain_start["time"] = loop.time()
             drain_started.set()
-            return None
 
         monkeypatch.setattr(litellm_helpers, "_get_global_logging_worker", get_worker)
         monkeypatch.setattr(litellm_helpers, "CANCELLATION_CLEANUP_SECONDS", 1.0)
@@ -418,7 +428,6 @@ def test_batch_cancellation_cleanup_uses_overall_callback_timeout(clean_litellm_
 
         def get_worker():
             drain_start["time"] = loop.time()
-            return None
 
         callback = BlockingBatchCallback()
         monkeypatch.setattr(litellm_helpers, "_get_global_logging_worker", get_worker)
@@ -2747,7 +2756,6 @@ def test_worker_introspection_failure_preserves_cancellation(
             def _worker_task(self):
                 if failing_attribute == "_worker_task":
                     raise RuntimeError("worker task failed")
-                return None
 
             @property
             def _running_tasks(self):

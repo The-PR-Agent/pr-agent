@@ -36,6 +36,10 @@ _ALLOWLIST = {
         "artifacts",
         "artifact_label",
     ): "artifacts_settings.get('artifact_label', '') in pr_agent/algo/artifacts.py",
+    (
+        "artifacts",
+        "truncate_from",
+    ): "artifacts_settings.get('truncate_from', 'start') in pr_agent/algo/artifacts.py",
     # [config] helpers that re-index the section from a variable or expression
     (
         "config",
@@ -46,12 +50,7 @@ _ALLOWLIST = {
         "config",
         "output_relevant_configurations",
     ): "get_settings().get('config', {}).get('output_relevant_configurations', False) in "
-    "pr_agent/tools/pr_description.py",
-    (
-        "config",
-        "enable_claude_adaptive_thinking",
-    ): "settings.config.get(key, default) in the thinking-controls loop in "
-    "pr_agent/algo/ai_handlers/litellm_ai_handler.py",
+    "pr_agent/commands/pr_description.py",
     (
         "config",
         "enable_claude_extended_thinking",
@@ -67,6 +66,12 @@ _ALLOWLIST = {
         "extended_thinking_max_output_tokens",
     ): "settings.config.get(key, default) in the thinking-controls loop in "
     "pr_agent/algo/ai_handlers/litellm_ai_handler.py",
+    # [bitbucket_app] commands_conf is passed in as "push_commands" and read with get_settings().get(commands_conf)
+    (
+        "bitbucket_app",
+        "push_commands",
+    ): "get_settings().get(f'bitbucket_app.{commands_conf}') in _perform_commands_bitbucket, "
+    "pr_agent/servers/bitbucket_app.py",
     # [gerrit] read as gerrit_settings = get_settings().get("gerrit", {})
     (
         "gerrit",
@@ -118,11 +123,11 @@ _ALLOWLIST = {
         "pr_description",
         "pr_diagram_direction",
     ): "description_settings = get_settings().pr_description then "
-    "description_settings.pr_diagram_direction in pr_agent/tools/pr_description.py",
+    "description_settings.pr_diagram_direction in pr_agent/commands/pr_description.py",
     (
         "pr_description",
         "pr_diagram_direction_threshold",
-    ): "description_settings.pr_diagram_direction_threshold in pr_agent/tools/pr_description.py",
+    ): "description_settings.pr_diagram_direction_threshold in pr_agent/commands/pr_description.py",
     # [push_outputs] read as cfg = get_settings().get("push_outputs", {}) or {}
     (
         "push_outputs",
@@ -134,16 +139,32 @@ _ALLOWLIST = {
     ): "cfg.get(\"channels\", []) in pr_agent/algo/run_output.py",
     (
         "push_outputs",
+        "commands",
+    ): "cfg.get(\"commands\", [\"review\", \"describe\", \"improve\"]) in pr_agent/algo/output_sinks.py",
+    (
+        "push_outputs",
         "file_path",
-    ): "cfg.get(\"file_path\", \"pr-agent-outputs/reviews.jsonl\") in pr_agent/algo/run_output.py",
+    ): "cfg.get(\"file_path\", \"pr-agent-outputs/reviews.jsonl\") in pr_agent/algo/output_sinks.py",
     (
         "push_outputs",
         "webhook_url",
-    ): "_push_outputs_sink_url(cfg, \"webhook_url\") in pr_agent/algo/run_output.py",
+    ): "_push_outputs_sink_url(cfg, \"webhook_url\") in pr_agent/algo/output_sinks.py",
     (
         "push_outputs",
         "slack_webhook_url",
-    ): "_push_outputs_sink_url(cfg, \"slack_webhook_url\") in pr_agent/algo/run_output.py",
+    ): "_push_outputs_sink_url(cfg, \"slack_webhook_url\") in pr_agent/algo/output_sinks.py",
+    (
+        "push_outputs",
+        "teams_webhook_url",
+    ): "_push_outputs_sink_url(cfg, \"teams_webhook_url\") in pr_agent/algo/output_sinks.py",
+    (
+        "push_outputs",
+        "telegram_bot_token",
+    ): "cfg.get(\"telegram_bot_token\") in pr_agent/algo/output_sinks.py",
+    (
+        "push_outputs",
+        "telegram_chat_id",
+    ): "cfg.get(\"telegram_chat_id\") in pr_agent/algo/output_sinks.py",
 }
 
 
@@ -167,7 +188,7 @@ def _key_is_read(section: str, key: str, sources: str) -> bool:
         return True
     # 2. quoted dotted paths: "SECTION.KEY" or "section.key"
     for dotted in (f"{section.upper()}.{key.upper()}", f"{section}.{key}"):
-        if re.search(re.escape(f"\"{dotted}\"") + r"|" + re.escape(f"'{dotted}'"), sources):
+        if f'"{dotted}"' in sources or f"'{dotted}'" in sources:
             return True
     # 3. settings.<section>.get("KEY")
     if re.search(

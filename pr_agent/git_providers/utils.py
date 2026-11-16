@@ -14,12 +14,13 @@ from dynaconf import Dynaconf
 from dynaconf.loaders import env_loader
 from starlette_context import context
 
-from pr_agent.config_loader import get_settings
+from pr_agent.algo.review_json_output import hosted_markdown_config_error, hosted_markdown_export
+from pr_agent.config_loader import DEFAULT_BOT_DISPLAY_NAME, get_bot_display_name, get_settings
 from pr_agent.config_security import (
     PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION,
-    REPO_HOST_ONLY_KEYS_BY_SECTION,
     REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION,
     REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS,
+    is_repo_host_only_key,
 )
 from pr_agent.custom_merge_loader import MAX_TOML_SIZE_IN_BYTES, validate_file_security
 from pr_agent.git_providers import get_git_provider_with_context
@@ -130,22 +131,41 @@ def _resolve_extra_config_to_file(source):
             )
 
     try:
-        req = Request(source, headers=headers, method="GET")
-        with urlopen(req, timeout=_FETCH_TIMEOUT_SECONDS) as resp:
-            data = resp.read(_MAX_EXTRA_CONFIG_BYTES + 1)
+        # Reuse remote payloads within a request; each replay still uses a fresh tempfile.
+        fetched = context.setdefault("extra_config_payloads", {}) if context.exists() else {}
+        cache_hit = source in fetched
+        if cache_hit:
+            data = fetched[source]
+        else:
+            req = Request(source, headers=headers, method="GET")
+            with urlopen(req, timeout=_FETCH_TIMEOUT_SECONDS) as resp:
+                data = resp.read(_MAX_EXTRA_CONFIG_BYTES + 1)
         if len(data) > _MAX_EXTRA_CONFIG_BYTES:
             get_logger().warning(
                 f"Extra config exceeds {_MAX_EXTRA_CONFIG_BYTES} bytes, skipping: {safe_url}"
             )
             return None, False
+        fetched[source] = data
         fd, tmp_path = tempfile.mkstemp(suffix=".toml")
         with os.fdopen(fd, "wb") as f:
             f.write(data)
-        get_logger().info(f"Fetched extra config from {safe_url} ({len(data)} bytes)")
+        if not cache_hit:
+            get_logger().info(f"Fetched extra config from {safe_url} ({len(data)} bytes)")
         return tmp_path, True
     except Exception as e:
         get_logger().warning(f"Failed to fetch extra config from {safe_url}: {e}")
         return None, False
+
+
+def _restore_authenticated_provider_settings():
+    """Keep verified request credentials authoritative over host and repository layers."""
+    if context.exists():
+        for key, value in context.get("authenticated_provider_settings", {}).items():
+            section, name = key.split(".")
+            section_settings = get_settings().get(section, {})
+            for shadow in [k for k in section_settings if k.lower() == name and k != name]:
+                del section_settings[shadow]
+            get_settings().set(key, value)
 
 
 def _reapply_env_overrides():
@@ -165,6 +185,21 @@ def _reapply_env_overrides():
         # Never let a precedence-restoration error block apply_repo_settings;
         # log and continue with whatever state the merge left.
         get_logger().warning(f"Failed to re-apply env-var overrides: {e}")
+    finally:
+        _restore_authenticated_provider_settings()
+
+
+def _merge_section_keys(section_dict: dict, contents: dict):
+    """Merge contents into section_dict, replacing keys case-insensitively.
+
+    Dynaconf looks keys up case-insensitively, so a key that differs only in
+    casing from an existing one must replace it instead of sitting beside it
+    (the effective value would otherwise depend on dict ordering).
+    """
+    for key, value in contents.items():
+        for existing_key in [k for k in section_dict if k.lower() == key.lower()]:
+            del section_dict[existing_key]
+        section_dict[key] = value
 
 
 def _apply_settings_from_file(path: str, label: str):
@@ -219,8 +254,7 @@ def _apply_settings_from_file(path: str, label: str):
             if not contents:
                 continue
             section_dict = copy.deepcopy(get_settings().as_dict().get(section, {}))
-            for key, value in contents.items():
-                section_dict[key] = value
+            _merge_section_keys(section_dict, contents)
             get_settings().unset(section)
             get_settings().set(section, section_dict, merge=False)
             merged_sections.append(section)
@@ -239,37 +273,37 @@ def _apply_settings_from_file(path: str, label: str):
         get_logger().warning(f"Failed to apply {label} settings from {path}: {e}")
 
 
+def apply_host_settings():
+    """Merge CONFIG.EXTRA_CONFIG_URL before provider initializers read connection settings."""
+    os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
+    extra_source = get_settings().get("CONFIG.EXTRA_CONFIG_URL", None)
+    # The loaded file may clear its own URL; keep the original selection for this request.
+    if context.exists() and isinstance(extra_source, str) and extra_source.strip():
+        context["extra_config_source_seen"] = True
+    try:
+        if isinstance(extra_source, str) and extra_source.strip():
+            extra_path, extra_is_temp = _resolve_extra_config_to_file(extra_source)
+            if extra_path:
+                try:
+                    _apply_settings_from_file(extra_path, label="extra")
+                finally:
+                    if extra_is_temp:
+                        try:
+                            os.remove(extra_path)
+                        except Exception as error:
+                            get_logger().error(f"Failed to remove temp extra config {extra_path}: {error}")
+        elif extra_source is not None and not isinstance(extra_source, str):
+            get_logger().warning(f"Ignoring CONFIG.EXTRA_CONFIG_URL: expected str, got {type(extra_source).__name__}")
+    finally:
+        _restore_authenticated_provider_settings()
+
+
 def apply_repo_settings(pr_url):
+    """Apply repository overrides and return the provider that loaded them."""
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
     _restore_per_directory_settings()
 
-    # Apply external/shared config FIRST, before constructing the git provider:
-    # provider initialisers (e.g. GitLabProvider reads GITLAB.PERSONAL_ACCESS_TOKEN
-    # at __init__) need to see any provider-critical settings that come from the
-    # extra file. Repo-local .pr_agent.toml is still applied later and overrides
-    # the extra file on conflicting keys.
-    extra_source = get_settings().get("CONFIG.EXTRA_CONFIG_URL", None)
-    if isinstance(extra_source, str) and extra_source.strip():
-        extra_path, extra_is_temp = _resolve_extra_config_to_file(extra_source)
-        if extra_path:
-            try:
-                # _apply_settings_from_file() re-applies env-var overrides
-                # itself, so env precedence is restored before the provider
-                # is constructed below.
-                _apply_settings_from_file(extra_path, label="extra")
-            finally:
-                if extra_is_temp:
-                    try:
-                        os.remove(extra_path)
-                    except Exception as e:
-                        get_logger().error(
-                            f"Failed to remove temp extra config {extra_path}: {e}"
-                        )
-    elif extra_source is not None and not isinstance(extra_source, str):
-        get_logger().warning(
-            "Ignoring CONFIG.EXTRA_CONFIG_URL: expected str, got "
-            f"{type(extra_source).__name__}"
-        )
+    apply_host_settings()
 
     git_provider = get_git_provider_with_context(pr_url)
 
@@ -324,6 +358,7 @@ def apply_repo_settings(pr_url):
                     os.remove(repo_settings_file)
                 except Exception as e:
                     get_logger().error(f"Failed to remove temporary settings file {repo_settings_file}: {e}")
+    return git_provider
 
 
 def _restore_per_directory_settings():
@@ -391,6 +426,15 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
         if not isinstance(contents, dict) or not contents:
             get_logger().debug(f"Skipping non-table or empty section: {section}")
             continue
+        if "__" in section or "." in section:
+            get_logger().warning(f"Ignoring section [{section}] from repo settings: '__' and '.' are not allowed here")
+            continue
+        dunder_keys = [key for key in contents if "__" in key]
+        if dunder_keys:
+            get_logger().warning(f"Ignoring key(s) {dunder_keys} in section [{section}]: '__' is not allowed here")
+            contents = {key: value for key, value in contents.items() if key not in dunder_keys}
+            if not contents:
+                continue
         if repo_settings_scope == "per_directory":
             if section.lower() not in REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS:
                 get_logger().warning(
@@ -484,13 +528,12 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
             if not contents:
                 continue
         else:
-            host_only_keys = REPO_HOST_ONLY_KEYS_BY_SECTION.get(section.lower(), frozenset())
-            rejected = [k for k in contents if k.lower() in host_only_keys]
+            rejected = [k for k in contents if is_repo_host_only_key(section, k)]
             if rejected:
                 get_logger().warning(
                     f"Ignoring host-only key(s) {rejected} in section [{section}] from repo settings"
                 )
-                contents = {k: v for k, v in contents.items() if k.lower() not in host_only_keys}
+                contents = {k: v for k, v in contents.items() if not is_repo_host_only_key(section, k)}
                 if not contents:
                     continue
         section_dict = copy.deepcopy(get_settings().as_dict().get(section.upper(), {}))
@@ -501,14 +544,7 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
             for key in contents:
                 original_values.setdefault(
                     key.lower(), (key.lower() in normalized, copy.deepcopy(normalized.get(key.lower()))))
-        for key, value in contents.items():
-            # Dynaconf looks up keys case-insensitively, so replacing the existing key
-            # (whatever its casing) keeps the newer value from a nearer/sibling config
-            # deterministic instead of leaving an "canonical-cased" duplicate beside it.
-            for existing_key in list(section_dict):
-                if existing_key.lower() == key.lower():
-                    del section_dict[existing_key]
-            section_dict[key] = value
+        _merge_section_keys(section_dict, contents)
         get_settings().unset(section)
         get_settings().set(section, section_dict, merge=False)
     # Same precedence-restoration rationale as the extra-config path: env-sourced values
@@ -778,20 +814,33 @@ def handle_configurations_errors(config_errors, git_provider):
 
         for err in config_errors:
             if err:
-                err_message = err['error']
                 config_type = err['category']
-                header = f"❌ **PR-Agent failed to apply '{config_type}' repo settings**"
+                # Parser/security diagnostics can contain private table names or values,
+                # even when the shared file body is omitted from the comment.
+                err_message = (
+                    "Invalid shared configuration; check the settings repository and server logs for details."
+                    if config_type in {"global", "group"} else err['error']
+                )
+                if hosted_markdown_export.get():
+                    # Preserve local diagnostics without writing to the hosting platform.
+                    hosted_markdown_config_error.set(True)
+                    get_logger().warning(
+                        "Configuration error during unpublished hosted review export",
+                        artifact={"category": config_type, "error": err_message},
+                    )
+                    continue
+                bot_display_name = get_bot_display_name()
+                header = f"❌ **{bot_display_name} failed to apply '{config_type}' repo settings**"
                 body = (
                     f"{header}\n\nThe configuration file needs to be a valid "
                     "[TOML](https://docs.pr-agent.ai/usage-guide/configuration_options/), please fix it.\n\n"
                 )
                 body += f"___\n\n**Error message:**\n`{err_message}`\n\n"
-                if config_type == "global":
-                    # Global content is redacted, so we never render it — skip decoding it entirely.
-                    # Global settings live in a `pr-agent-settings` repo scoped per platform
-                    # (GitHub organization, GitLab group, or Bitbucket workspace).
-                    body += ("\n\nThe invalid configuration came from the global "
-                             "`pr-agent-settings` settings repository.")
+                if config_type in {"global", "group"}:
+                    # Shared settings may contain private values: never render their contents
+                    # into a reviewed repository, including GitLab subgroup configuration.
+                    body += (f"\n\nThe invalid configuration came from the {config_type} settings "
+                             "repository (`config.global_settings_repo`).")
                 else:
                     settings_content = err['settings']
                     configuration_file_content = (
@@ -805,7 +854,11 @@ def handle_configurations_errors(config_errors, git_provider):
                         )
                     else:
                         body += f"\n\n**Configuration content:**\n\n```toml\n{configuration_file_content}\n```\n\n"
-                get_logger().warning("Sending a 'configuration error' comment to the PR", artifact={'body': body})
+
+                # Build a minimal log body that excludes raw configuration content
+                log_body = f"{header}\n\n**Error message:**\n`{err_message}`"
+
+                get_logger().warning("Sending a 'configuration error' comment to the PR", artifact={'body': log_body})
                 # git_provider.publish_comment(body)
                 if hasattr(git_provider, 'publish_persistent_comment'):
                     # Use a per-scope name so multiple settings errors (e.g. global + local) don't
@@ -815,7 +868,10 @@ def handle_configurations_errors(config_errors, git_provider):
                                                             initial_header=header,
                                                             update_header=False,
                                                             final_update_message=False,
-                                                            name=f"config-errors-{config_type}")
+                                                            name=f"config-errors-{config_type}",
+                                                            legacy_initial_header=(
+                                                                f"❌ **{DEFAULT_BOT_DISPLAY_NAME} failed to apply "
+                                                                f"'{config_type}' repo settings**"))
                 else:
                     git_provider.publish_comment(body)
     except Exception as e:

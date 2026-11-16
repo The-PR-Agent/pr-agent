@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Literal
+from typing import Literal
 
 from jinja2 import StrictUndefined
 from jinja2.sandbox import SandboxedEnvironment
 
-from pr_agent.algo import MAX_TOKENS
+from pr_agent.algo import (
+    GPT6_MAX_INPUT_TOKENS,
+    GPT6_MODELS,
+    GPT6_OPENROUTER_ROUTING_SUFFIXES,
+    GPT6_SOL_TIER_MODELS,
+    MAX_TOKENS,
+)
 from pr_agent.algo.token_handler import TokenEncoder, TokenHandler
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -41,30 +48,64 @@ def _as_int(value, default: int = 0) -> int:
         return default
 
 
-def get_max_tokens(model, ignore_max_model_tokens=False):
+def _gpt6_budget_model(model: str, settings, custom_llm_provider: str | None = None) -> tuple[str, bool]:
+    """Resolve a GPT-6 budget alias and identify its native provider route."""
+    if custom_llm_provider is None:
+        custom_llm_provider = getattr(getattr(settings, "litellm", None), "custom_llm_provider", "")
+    custom_llm_provider = str(custom_llm_provider or "").strip().lower()
+    openrouter_route = custom_llm_provider == "openrouter" or (
+        not custom_llm_provider and model.startswith("openrouter/")
+    )
+    model_base = model.removeprefix("openrouter/")
+    if model_base.startswith(("azure_ai/", "aiohttp_openai/")):
+        provider_model_base = model_base.split("/", 1)[1].removesuffix("_thinking")
+        if provider_model_base in GPT6_SOL_TIER_MODELS:
+            model_base = provider_model_base
+    while model_base.startswith(("openai/", "azure/")):
+        model_base = model_base.removeprefix("openai/").removeprefix("azure/")
+    if openrouter_route and model_base.endswith(GPT6_OPENROUTER_ROUTING_SUFFIXES):
+        model_base = model_base.rsplit(":", 1)[0]
+    model_base = model_base.removesuffix("_thinking")
+    native_gpt6_route = openrouter_route or (
+        custom_llm_provider in ("", "openai", "aiohttp_openai", "azure", "azure_ai")
+        and not model.startswith("openrouter/")
+    )
+    return model_base, native_gpt6_route
+
+
+def get_max_input_tokens(model: str, *, custom_llm_provider: str | None = None) -> int | None:
+    """Return a maintained native input ceiling independently of the total context window."""
+    model_base, native_route = _gpt6_budget_model(model, get_settings(), custom_llm_provider)
+    return GPT6_MAX_INPUT_TOKENS.get(model_base) if native_route else None
+
+
+def get_max_tokens(model, ignore_max_model_tokens=False, *, custom_llm_provider: str | None = None):
     """
     Get the maximum number of tokens allowed for a model.
     logic:
-    (1) If the model is in './pr_agent/algo/__init__.py', use the value from there.
-    (2) else if 'config.custom_model_max_tokens' is set to a positive value, use it.
-    (3) else if it is a GPT-5.x _thinking alias registered under its base name, use that value.
-    (4) else, query LiteLLM for provider-qualified and bare alias bases before the original model.
-    (5) else, raise an error.
+    (1) Honor a positive custom limit for Sol-tier GPT-6 models on non-native custom providers.
+    (2) If the model is in './pr_agent/algo/__init__.py', use the value from there.
+    (3) else if 'config.custom_model_max_tokens' is set to a positive value, use it.
+    (4) Resolve a supported GPT-5.x/GPT-6 alias to its registered base-model value.
+    (5) else, query LiteLLM for provider-qualified and bare alias bases before the original model.
+    (6) else, raise an error.
 
     For all cases, we further limit the number of tokens to 'config.max_model_tokens' if it is set.
-    This aims to improve the algorithmic quality, as the AI model degrades in performance when the input is too long.
+    The clamp keeps the smaller of that value and the model's own limit, so a model with a larger
+    window is not pruned to a smaller budget than it can use. The default (256000) reflects that no
+    degradation was observed at prompt sizes up to 57k tokens in a local /review replay.
     Pass ignore_max_model_tokens=True to keep the unreduced value, for sites that deliberately use the
     raw model context size rather than the conservative clamp.
     """
     settings = get_settings()
     custom_max_tokens = _as_int(settings.config.custom_model_max_tokens)
-    # Resolve GPT-6 Astra aliases before diff token accounting, just as the handler does.
-    # Preserve explicit custom limits for provider aliases that were not in the registry.
-    model_base = model
-    while model_base.startswith(("openai/", "azure/")):
-        model_base = model_base.removeprefix("openai/").removeprefix("azure/")
-    if custom_max_tokens <= 0 and model_base.removesuffix("_thinking") == "gpt-6-astra":
-        model = "gpt-6-astra"
+    model_base, native_gpt6_route = _gpt6_budget_model(model, settings, custom_llm_provider)
+    # Resolve supported aliases while preserving custom limits on non-native routes.
+    if (
+        custom_max_tokens <= 0 and model_base in GPT6_MODELS
+        and (model_base == "gpt-6-astra" or native_gpt6_route)
+    ):
+        model = model_base
     # Normalize GPT-5.x _thinking aliases before token-limit lookup to match
     # LiteLLMAIHandler request normalization.
     model_for_max_tokens = model
@@ -86,7 +127,9 @@ def get_max_tokens(model, ignore_max_model_tokens=False):
                 provider_prefix = "openai/"
             provider_model = provider_prefix + model_for_max_tokens
             litellm_lookup_models = tuple(dict.fromkeys((provider_model, model_for_max_tokens, model)))
-    if model in MAX_TOKENS:
+    if model in GPT6_MAX_INPUT_TOKENS and not native_gpt6_route and custom_max_tokens > 0:
+        max_tokens_model = custom_max_tokens
+    elif model in MAX_TOKENS:
         max_tokens_model = MAX_TOKENS[model]
     elif custom_max_tokens > 0:
         max_tokens_model = custom_max_tokens
@@ -118,14 +161,13 @@ def get_max_tokens(model, ignore_max_model_tokens=False):
                     break
 
         if max_tokens_model <= 0:
-            get_logger().error(
-                f"Model {model} is not defined in MAX_TOKENS in ./pr_agent/algo/__init__.py"
-                f" and no custom_model_max_tokens is set"
+            message = (
+                f"Unable to resolve a positive input-token limit for model '{model}' from PR-Agent's built-in limits"
+                " or LiteLLM metadata. Set config.custom_model_max_tokens to a verified positive input-token limit."
+                " config.max_model_tokens only caps a resolved limit; it cannot supply a missing model limit."
             )
-            raise Exception(
-                f"Ensure {model} is defined in MAX_TOKENS in ./pr_agent/algo/__init__.py"
-                f" or set a positive value for it in config.custom_model_max_tokens"
-            )
+            get_logger().error(message)
+            raise Exception(message)
 
     max_model_tokens = _as_int(settings.config.max_model_tokens) if settings.config.max_model_tokens else 0
     if max_model_tokens > 0 and not ignore_max_model_tokens:
@@ -259,6 +301,7 @@ class AttemptTokenBudget:
     token_handler: object
     context_window: int
     output_token_reserve: Callable[[str, int], int] | None = None
+    max_input_tokens: int | None = None
 
     @classmethod
     def for_attempt(
@@ -273,12 +316,22 @@ class AttemptTokenBudget:
         bound_token_handler = (
             token_handler.for_model(model) if isinstance(token_handler, TokenHandler) else token_handler
         )
+        ai_handler = getattr(bound_token_handler, "ai_handler", None)
+        resolve_limits = getattr(type(ai_handler), "get_model_token_limits", None)
+        if callable(resolve_limits):
+            context_window, max_input_tokens = resolve_limits(
+                ai_handler, model, ignore_max_model_tokens=ignore_max_model_tokens,
+            )
+        else:
+            context_window = get_max_tokens(model, ignore_max_model_tokens=ignore_max_model_tokens)
+            max_input_tokens = get_max_input_tokens(model)
         return cls(
             model=model,
             source_token_handler=token_handler,
             token_handler=bound_token_handler,
-            context_window=get_max_tokens(model, ignore_max_model_tokens=ignore_max_model_tokens),
+            context_window=context_window,
             output_token_reserve=output_token_reserve,
+            max_input_tokens=max_input_tokens,
         )
 
     @classmethod
@@ -302,6 +355,8 @@ class AttemptTokenBudget:
             system_template,
             user_template,
             model=model,
+            count_prompt_tokens=False,
+            ai_handler=ai_handler,
         )
         budget = cls.for_attempt(
             model,
@@ -360,7 +415,10 @@ class AttemptTokenBudget:
             default_output_tokens,
             preserve_minimum=preserve_minimum,
         )
-        available = self.context_window - output_reserve - fixed_prompt_tokens
+        input_capacity = self.context_window - output_reserve
+        if self.max_input_tokens is not None:
+            input_capacity = min(input_capacity, self.max_input_tokens)
+        available = input_capacity - fixed_prompt_tokens
         return max(available, 0) if clamp else available
 
     def input_token_limit(
@@ -377,7 +435,10 @@ class AttemptTokenBudget:
         )
         if not isinstance(additional_input_reserve, int) or isinstance(additional_input_reserve, bool):
             additional_input_reserve = 0
-        return max(self.context_window - output_reserve - max(additional_input_reserve, 0), 0)
+        input_capacity = self.context_window - output_reserve
+        if self.max_input_tokens is not None:
+            input_capacity = min(input_capacity, self.max_input_tokens)
+        return max(input_capacity - max(additional_input_reserve, 0), 0)
 
     def require_input_capacity(
         self,
@@ -535,6 +596,7 @@ class AttemptTokenBudget:
         image_path: str | None = None,
         keep: Literal["prefix", "suffix"] = "prefix",
         truncation_marker: str = DEFAULT_TRUNCATION_MARKER,
+        require_full_text: bool = False,
     ) -> FittedPrompt:
         """Fit one optional prompt field and verify the exact normalized request."""
         if keep not in {"prefix", "suffix"}:
@@ -560,6 +622,9 @@ class AttemptTokenBudget:
         if full_prompt.input_tokens <= input_limit:
             return full_prompt
 
+        if require_full_text:
+            raise FallbackEligibleError(f"The required prompt exceeds the token limit for {self.model}")
+
         empty_prompt = prepare("")
         if empty_prompt.input_tokens > input_limit:
             raise FallbackEligibleError(f"The required prompt exceeds the token limit for {self.model}")
@@ -579,9 +644,12 @@ class AttemptTokenBudget:
         if callable(encode) and callable(decode):
             encoded = encode(optional_text, disallowed_special=())
 
+            # A multi-byte character can span several BPE tokens, so cutting the
+            # token list can end mid-character; drop the dangling bytes instead
+            # of decoding them into U+FFFD replacement characters in the prompt.
             def retain(count: int) -> str:
                 retained = encoded[-count:] if keep == "suffix" else encoded[:count]
-                return decode(retained)
+                return decode(retained, errors="ignore")
         else:
             encoded = list(optional_text)
 
@@ -628,6 +696,7 @@ class AttemptTokenBudget:
         image_path: str | None = None,
         keep: Literal["prefix", "suffix"] = "prefix",
         truncation_marker: str = DEFAULT_TRUNCATION_MARKER,
+        require_full_text: bool = False,
     ) -> FittedPrompt:
         """Fit one prompt variable without mutating retry-shared state."""
         environment = SandboxedEnvironment(undefined=StrictUndefined)
@@ -649,6 +718,7 @@ class AttemptTokenBudget:
             image_path=image_path,
             keep=keep,
             truncation_marker=truncation_marker,
+            require_full_text=require_full_text,
         )
 
     def matches(self, model: str, source_token_handler: object) -> bool:

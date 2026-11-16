@@ -1,7 +1,13 @@
-from unittest.mock import MagicMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from pr_agent.commands.ticket_pr_compliance_check import (
+    _provider_supports,
+    extract_and_cache_pr_tickets,
+    extract_tickets,
+)
 from pr_agent.git_providers import (
     AzureDevopsProvider,
     BitbucketProvider,
@@ -15,7 +21,6 @@ from pr_agent.git_providers import (
     LocalGitProvider,
     PlainDiffGitProvider,
 )
-from pr_agent.tools.ticket_pr_compliance_check import _provider_supports, extract_tickets
 
 
 class _BaseStubProvider(GitProvider):
@@ -98,6 +103,9 @@ class _CustomGitHubSubstitute(_BaseStubProvider):
     def supports_issue_url_tickets(self) -> bool:
         return True
 
+    def get_issue_content(self, repo_obj, issue_number):
+        return repo_obj.get_issue(issue_number)
+
     def get_user_description(self) -> str:
         return self._description
 
@@ -125,8 +133,9 @@ class _CustomGitLabSubstitute(_BaseStubProvider):
             title="GitLab Issue 55",
             description="GitLab Description 55",
             labels=["backend", "p1"],
+            confidential=False,
         )
-        project = MagicMock()
+        project = MagicMock(visibility="public", issues_access_level="enabled")
         project.issues.get.return_value = issue
         self.gl.projects.get.return_value = project
 
@@ -138,7 +147,8 @@ class _CustomGitLabSubstitute(_BaseStubProvider):
 
 
 class _CustomAzureSubstitute(_BaseStubProvider):
-    def __init__(self, work_items=None):
+    def __init__(self, work_items=None, error=None):
+        self._error = error
         self._work_items = (
             work_items
             if work_items is not None
@@ -149,7 +159,7 @@ class _CustomAzureSubstitute(_BaseStubProvider):
                     "title": "Work Item 999",
                     "body": "Work item body 999",
                     "acceptance_criteria": "AC 999",
-                    "labels": ["azure-label"],
+                    "tags": ["azure-label"],
                 }
             ]
         )
@@ -158,6 +168,8 @@ class _CustomAzureSubstitute(_BaseStubProvider):
         return True
 
     def get_linked_work_items(self) -> list:
+        if self._error is not None:
+            raise self._error
         return self._work_items
 
 
@@ -285,13 +297,15 @@ async def test_extract_tickets_routes_to_azure_capability():
 async def test_extract_tickets_supports_duck_typed_substitutes(route):
     provider = _IndependentDuckTypedSubstitute(route)
     if route == "github":
+        provider.get_issue_content = lambda repo_obj, number: repo_obj.get_issue(number)
         provider.repo_obj.get_issue.return_value = MagicMock(
             number=42, title="GH 42", body="GH Body", labels=[], pull_request=None
         )
     elif route == "gitlab":
-        mock_proj = MagicMock()
+        mock_proj = MagicMock(visibility="public", issues_access_level="enabled")
         mock_proj.issues.get.return_value = MagicMock(
-            iid=42, web_url="https://gitlab.com/duck/repo/-/issues/42", title="GL 42", description="GL Body", labels=[]
+            iid=42, web_url="https://gitlab.com/duck/repo/-/issues/42", title="GL 42", description="GL Body", labels=[],
+            confidential=False,
         )
         provider.gl.projects.get.return_value = mock_proj
 
@@ -318,7 +332,7 @@ async def test_extract_tickets_unsupported_provider_preserves_asana_results(monk
         assert urls == ["https://app.asana.com/0/99/123456789012"]
         return [{"ticket_id": "123456789012", "ticket_url": urls[0]}]
 
-    monkeypatch.setattr("pr_agent.tools.ticket_pr_compliance_check._fetch_asana_ticket_contents", fake_fetch)
+    monkeypatch.setattr("pr_agent.commands.ticket_pr_compliance_check._fetch_asana_ticket_contents", fake_fetch)
     tickets = await extract_tickets(provider)
     assert tickets == [{"ticket_id": "123456789012", "ticket_url": "https://app.asana.com/0/99/123456789012"}]
 
@@ -340,11 +354,103 @@ async def test_extract_tickets_gitlab_substitute_handles_project_error():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tags", "expected"),
+    [
+        (["backend", "security"], "backend, security"),
+        (["ünïcode", "c++"], "ünïcode, c++"),
+        ([], ""),
+    ],
+)
+async def test_extract_tickets_azure_tags_become_labels(tags, expected):
+    work_item = {"id": 1, "url": "u", "title": "t", "body": "b", "tags": tags}
+    provider = _CustomAzureSubstitute(work_items=[work_item])
+    tickets = await extract_tickets(provider)
+    assert tickets[0]["labels"] == expected
+
+
+@pytest.mark.asyncio
 async def test_extract_tickets_azure_substitute_handles_item_error():
     provider = _CustomAzureSubstitute(work_items=[{"invalid": "data"}])
     tickets = await extract_tickets(provider)
     assert len(tickets) == 1
     assert tickets[0]["ticket_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_extract_tickets_linked_work_item_failure_preserves_other_context(monkeypatch):
+    provider = _CustomAzureSubstitute(error=RuntimeError("provider detail"))
+    asana_ticket = {"ticket_id": "asana"}
+    jira_ticket = {"ticket_id": "jira"}
+    linear_ticket = {"ticket_id": "linear"}
+    logger = MagicMock()
+
+    def add_jira(provider_arg, tickets):
+        assert provider_arg is provider
+        assert tickets == [asana_ticket]
+        tickets.append(jira_ticket)
+        return tickets
+
+    jira = MagicMock(side_effect=add_jira)
+    module = "pr_agent.commands.ticket_pr_compliance_check"
+    monkeypatch.setattr(f"{module}._fetch_asana_ticket_contents", AsyncMock(return_value=[asana_ticket]))
+    monkeypatch.setattr(f"{module}._fetch_linear_ticket_contents", AsyncMock(return_value=[linear_ticket]))
+    monkeypatch.setattr(f"{module}.add_jira_tickets", jira)
+    monkeypatch.setattr(f"{module}.get_logger", lambda: logger)
+
+    assert await extract_tickets(provider) == [asana_ticket, jira_ticket, linear_ticket]
+
+    jira.assert_called_once()
+    logger.warning.assert_called_once_with("Failed to get linked work items; continuing without them")
+    logger.error.assert_not_called()
+    assert "provider detail" not in str(logger.mock_calls)
+
+
+@pytest.mark.asyncio
+async def test_extract_and_cache_linked_failure_leaves_ticket_context_empty(monkeypatch):
+    provider = _CustomAzureSubstitute(error=RuntimeError("provider detail"))
+    fetch = MagicMock(wraps=provider.get_linked_work_items)
+    monkeypatch.setattr(provider, "get_linked_work_items", fetch)
+    vars_ = {}
+    cached = []
+    settings = MagicMock()
+    settings.get.side_effect = lambda key, default=None: {
+        "pr_reviewer.require_ticket_analysis_review": True,
+        "related_tickets": cached,
+    }.get(key, default)
+    monkeypatch.setattr("pr_agent.commands.ticket_pr_compliance_check.get_settings", lambda use_context=True: settings)
+
+    assert await extract_and_cache_pr_tickets(provider, vars_) is None
+
+    assert cached == []
+    assert vars_ == {}
+    settings.set.assert_not_called()
+    fetch.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_extract_tickets_linked_empty_is_normal_empty_success(monkeypatch):
+    provider = _CustomAzureSubstitute(work_items=[])
+    jira = MagicMock(side_effect=lambda _, tickets: tickets)
+    monkeypatch.setattr("pr_agent.commands.ticket_pr_compliance_check.add_jira_tickets", jira)
+
+    assert await extract_tickets(provider) == []
+    jira.assert_called_once_with(provider, [])
+
+
+@pytest.mark.asyncio
+async def test_extract_tickets_does_not_translate_cancellation():
+    provider = _CustomAzureSubstitute(error=asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        await extract_tickets(provider)
+
+
+@pytest.mark.asyncio
+async def test_extract_tickets_keeps_later_linked_item_formatting_fail_soft():
+    provider = _CustomAzureSubstitute(work_items=[{"id": 1, "body": object()}])
+
+    assert await extract_tickets(provider) == []
 
 
 @pytest.mark.asyncio
