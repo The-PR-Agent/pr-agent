@@ -255,3 +255,28 @@ def test_another_tools_skip_notice_stays_while_it_still_applies(enabled):
     assert UnchangedDiffGuard("review", provider).should_skip() is True
 
     assert "`/describe` skipped" in provider.record_body()
+
+
+def test_a_file_without_a_patch_disables_the_diff_check(enabled):
+    provider = FakeProvider()
+    provider.files.append(FilePatchInfo("", "", "", "logo.png"))  # binary, or content the provider could not read
+    _reviewed(provider)
+
+    provider.head = NEW_HEAD  # the binary changed; nothing else did
+    assert UnchangedDiffGuard("review", provider).should_skip() is False
+
+
+def test_a_file_without_a_patch_keeps_the_commit_check(enabled):
+    provider = FakeProvider()
+    provider.files.append(FilePatchInfo("", "", "", "logo.png"))
+    _reviewed(provider)
+
+    assert UnchangedDiffGuard("review", provider).should_skip() is True
+
+
+def test_an_unknown_target_branch_disables_the_commit_check(enabled):
+    provider = FakeProvider(target="")
+    _reviewed(provider)
+
+    provider.files = [FilePatchInfo("a", "c", "@@ -1 +1 @@\n-a\n+c\n", "x.py")]  # retargeted, so the diff changed
+    assert UnchangedDiffGuard("review", provider).should_skip() is False

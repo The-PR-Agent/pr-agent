@@ -58,8 +58,8 @@ def _render(records: dict[str, RunState], skipped: dict[str, str]) -> str:
     lines = [
         _IDENTITY,
         "",
-        "PR-Agent skips an automatic `/review` or `/describe` run when the PR has not changed since that "
-        "command last ran.",
+        ("PR-Agent skips an automatic `/review` or `/describe` run when the PR has not changed since that "
+         "command last ran."),
         "",
         *(format_unchanged_diff_marker(tool, records[tool]) for tool in sorted(records)),
     ]
@@ -106,6 +106,7 @@ class UnchangedDiffGuard:
         self.tool = tool
         self.git_provider = git_provider
         self._state: RunState | None = None
+        self._diff_comparable = False
 
     def should_skip(self) -> bool:
         if not _enabled(self.git_provider):
@@ -116,6 +117,9 @@ class UnchangedDiffGuard:
                 return False
             target = self.git_provider.get_request_policy_metadata(set()).get("target_branch") or ""
             self._state = RunState(_diff_fingerprint(files), self.git_provider.get_pr_head_sha() or "", target)
+            # A file without a patch (binary, or content the provider could not read) can change without
+            # changing the fingerprint.
+            self._diff_comparable = all(file.patch for file in files)
             records, skipped = self._read()
             reason = self._skip_reason(records.get(self.tool))
             if reason or self.tool in skipped:
@@ -147,9 +151,10 @@ class UnchangedDiffGuard:
         if stored is None:
             return None
         current = self._state
-        if current.head_sha and current.head_sha == stored.head_sha and current.target_branch == stored.target_branch:
+        if (current.head_sha and current.target_branch
+                and current.head_sha == stored.head_sha and current.target_branch == stored.target_branch):
             return "commit"
-        if current.diff_hash == stored.diff_hash:
+        if self._diff_comparable and current.diff_hash == stored.diff_hash:
             return "diff"
         return None
 
