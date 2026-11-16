@@ -513,6 +513,7 @@ class GerritProvider(GitProvider):
             'head_ci_status',
             'head_staleness',
             'author_human_check',
+            'refresh_description_markers',
         ]:
             return False
         return True

@@ -21,6 +21,8 @@ from pr_agent.commands.pr_description import (
     with_generated_marker,
 )
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.gerrit_provider import GerritProvider
+from pr_agent.git_providers.local_git_provider import LocalGitProvider
 
 KEYS_FIX = ["filename:", "language:", "changes_summary:", "changes_title:", "description:", "title:"]
 
@@ -36,6 +38,7 @@ def _make_instance(prediction_yaml: str):
     obj.prediction = prediction_yaml
     obj.keys_fix = KEYS_FIX
     obj.user_description = ""
+    obj.git_provider = MagicMock()
     return obj
 
 
@@ -790,6 +793,45 @@ class TestPRDescriptionCore:
         assert second == "<!-- pr_agent:summary:start -->\nSecond\n<!-- pr_agent:summary:end -->\nOutro\n"
 
     @patch('pr_agent.commands.pr_description.get_settings')
+    def test_refresh_markers_do_not_nest_when_generated_text_quotes_another_marker(self, mock_get_settings):
+        obj, settings = self._marker_instance(refresh=True)
+        mock_get_settings.return_value = settings
+        obj.data["description"] = "See the pr_agent:diagram marker"
+        obj.data["changes_diagram"] = "graph"
+        obj.user_description = "pr_agent:summary\n\npr_agent:diagram\n"
+
+        _title, first = obj._prepare_pr_answer_with_markers()
+        obj.user_description = first
+        obj.data["description"] = "Second"
+        obj.data["changes_diagram"] = "graph 2"
+        _title, second = obj._prepare_pr_answer_with_markers()
+
+        assert first == ("<!-- pr_agent:summary:start -->\nSee the pr_agent:diagram marker\n"
+                         "<!-- pr_agent:summary:end -->\n\n"
+                         "<!-- pr_agent:diagram:start -->\ngraph\n<!-- pr_agent:diagram:end -->\n")
+        assert second == ("<!-- pr_agent:summary:start -->\nSecond\n<!-- pr_agent:summary:end -->\n\n"
+                          "<!-- pr_agent:diagram:start -->\ngraph 2\n<!-- pr_agent:diagram:end -->\n")
+
+    @patch('pr_agent.commands.pr_description.get_settings')
+    def test_refresh_markers_are_off_for_a_provider_that_cannot_reload_its_published_description(
+            self, mock_get_settings):
+        obj, settings = self._marker_instance(refresh=True)
+        mock_get_settings.return_value = settings
+        obj.git_provider.is_supported.side_effect = lambda capability: capability != "refresh_description_markers"
+        obj.user_description = "pr_agent:summary\n"
+
+        assert obj._refresh_markers_enabled() is False
+        _title, body = obj._prepare_pr_answer_with_markers()
+        assert body == "Fixes the cache invalidation bug.\n"
+
+    @pytest.mark.parametrize("provider_class", [LocalGitProvider, GerritProvider])
+    def test_local_and_gerrit_providers_do_not_support_refreshing_description_markers(self, provider_class):
+        provider = provider_class.__new__(provider_class)
+
+        assert provider.is_supported("refresh_description_markers") is False
+        assert provider.is_supported("get_diff_files") is True
+
+    @patch('pr_agent.commands.pr_description.get_settings')
     def test_refresh_markers_keep_refreshing_when_generated_text_quotes_an_html_marker(self, mock_get_settings):
         obj, settings = self._marker_instance(refresh=True)
         mock_get_settings.return_value = settings
@@ -932,10 +974,15 @@ class TestPRDescriptionCore:
     def test_load_user_description_uses_the_full_description_only_when_refreshing(self, mock_get_settings):
         obj, settings = self._marker_instance(refresh=True)
         mock_get_settings.return_value = settings
-        obj.git_provider.get_pr_description_full.return_value = "  <!-- pr-agent-generated -->\nfull body\n"
+        obj.git_provider.get_pr_description_full.return_value = (
+            "  <!-- pr-agent-generated -->\nIntro ABC-12\n<!-- pr_agent:summary:start -->\nold\n"
+            "<!-- pr_agent:summary:end -->\n")
         obj.git_provider.get_user_description.return_value = ""
 
-        assert obj._load_user_description() == "<!-- pr-agent-generated -->\nfull body"
+        assert obj._load_user_description() == (
+            "<!-- pr-agent-generated -->\nIntro ABC-12\n<!-- pr_agent:summary:start -->\nold\n"
+            "<!-- pr_agent:summary:end -->")
+        assert obj.git_provider.user_description == "Intro ABC-12"
 
         settings.pr_description.get.side_effect = lambda key, default=None: {
             "use_description_markers": True,

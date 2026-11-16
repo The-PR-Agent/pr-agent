@@ -1,4 +1,5 @@
 import asyncio
+import bisect
 import copy
 import html
 import re
@@ -113,8 +114,19 @@ def _replace_spans(text: str, spans: list[tuple[int, int]], replacement: str) ->
     return "".join(parts)
 
 
+def _inside_any(spans: list[tuple[int, int]], position: int) -> bool:
+    """Return whether `position` falls inside one of the sorted, non-overlapping `spans`."""
+    index = bisect.bisect_right(spans, (position, float("inf"))) - 1
+    return index >= 0 and position < spans[index][1]
+
+
 def _strip_marker_blocks(text: str, wanted: Callable[[str], bool]) -> str:
     return _replace_spans(text, _marker_block_spans(text, wanted), "")
+
+
+def _user_owned_text(body: str) -> str:
+    """Return the body without the delimited generated sections and the recognition comment."""
+    return _strip_marker_blocks(body or "", lambda _name: True).replace(GENERATED_MARKER, "").strip()
 
 
 def has_content_markers(text: str) -> bool:
@@ -1047,10 +1059,14 @@ class PRDescription:
             )
         return ""
 
-    @staticmethod
-    def _refresh_markers_enabled() -> bool:
+    def _refresh_markers_enabled(self) -> bool:
+        """Return whether generated sections are delimited and regenerated in place.
+
+        Off for providers that cannot reload what publish_description() wrote (local and Gerrit publish to a
+        file or a comment, and read the commit messages back), since there is no published body to refresh."""
         return bool(get_settings().pr_description.get("use_description_markers", False)
-                    and get_settings().pr_description.get("refresh_description_markers", False))
+                    and get_settings().pr_description.get("refresh_description_markers", False)
+                    and self.git_provider.is_supported("refresh_description_markers"))
 
     def _append_run_footers(self, pr_body: str, refresh_markers: bool) -> str:
         """Append the optional relevant-configurations section, the fallback-model note and the run details.
@@ -1071,8 +1087,7 @@ class PRDescription:
         sections and the recognition comment."""
         if not self._refresh_markers_enabled():
             return self.user_description
-        user_owned = _strip_marker_blocks(self.user_description or "", lambda _name: True)
-        return user_owned.replace(GENERATED_MARKER, "").strip()
+        return _user_owned_text(self.user_description)
 
     def _template_has_markers(self) -> bool:
         """Return whether the loaded template still asks for generated content."""
@@ -1097,10 +1112,13 @@ class PRDescription:
         """Load the marker template from the full description when marker refresh is enabled.
 
         The generated sections are then delimited and replaced in place, so the pr-agent-generated heuristics
-        of get_user_description() must not strip the body down to an empty string on the second run."""
-        if self._refresh_markers_enabled():
-            return (self.git_provider.get_pr_description_full() or "").strip()
-        return self.git_provider.get_user_description()
+        of get_user_description() must not strip the body down to an empty string on the second run. Cache the
+        user-owned text on the provider too, because ticket extraction reads get_user_description()."""
+        if not self._refresh_markers_enabled():
+            return self.git_provider.get_user_description()
+        body = (self.git_provider.get_pr_description_full() or "").strip()
+        self.git_provider.user_description = _user_owned_text(body)
+        return body
 
     def _replace_marker(self, body: str, name: str, content: str, pattern: re.Pattern | None = None) -> str:
         """Substitute the `pr_agent:<name>` marker (or `pattern`) with `content`.
@@ -1115,12 +1133,16 @@ class PRDescription:
         bare_re = pattern if pattern is not None else _bare_marker_re(name)
         # Locate every existing delimited section and every bare marker outside one in the original body, then
         # replace them in one rebuild. Never rescan inserted content: generated text quoting the marker would
-        # nest a block.
+        # nest a block. A marker quoted inside another section (a summary mentioning pr_agent:diagram) is text
+        # of that section, not a slot.
+        other_blocks = _marker_block_spans(body, lambda block_name: block_name != name)
         spans = _marker_block_spans(body, lambda block_name: block_name == name)
         spans.extend(match.span() for match in bare_re.finditer(body))
         spans.sort()
         outside_blocks: list[tuple[int, int]] = []
         for span in spans:
+            if _inside_any(other_blocks, span[0]):
+                continue
             if not outside_blocks or span[0] >= outside_blocks[-1][1]:
                 outside_blocks.append(span)
         return _replace_spans(body, outside_blocks, _wrap_marker_block(name, content))
