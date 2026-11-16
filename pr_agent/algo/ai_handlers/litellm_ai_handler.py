@@ -2723,7 +2723,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             kwargs["headers"] = headers
 
     def _get_request_session_id(self) -> str:
-        """Build a stable LiteLLM session id for the current PR.
+        """Build a stable LiteLLM session id.
 
         LiteLLM stores this value in the session_id column of its spend logs, so
         every command run against the same PR shares one session. The header only

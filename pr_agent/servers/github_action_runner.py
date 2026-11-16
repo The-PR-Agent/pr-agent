@@ -173,7 +173,7 @@ async def _run_auto_command(command_class, pr_url):
     _normalize_publish_output_setting()
     try:
         # Like PRAgent.handle_request: the LiteLLM handler reads pr_url from the log
-        # context to build the session id (OpenCode Go's x-opencode-session).
+        # context to build the session id.
         with response_language_instructions(), get_logger().contextualize(pr_url=pr_url):
             result = await command_class(pr_url).run()
     except IncompletePullRequestFilesError as error:
