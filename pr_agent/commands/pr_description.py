@@ -3,6 +3,7 @@ import copy
 import html
 import re
 import traceback
+from collections.abc import Callable
 from functools import partial
 from graphlib import TopologicalSorter
 
@@ -67,25 +68,61 @@ def _build_unprocessed_files_block(file_list: list, label: str, max_files: int =
     return block
 
 
-def _marker_block_re(name: str) -> re.Pattern:
-    """Match a generated section delimited by <!-- pr_agent:<name>:start --> ... <!-- pr_agent:<name>:end -->."""
-    return re.compile(rf"<!--\s*pr_agent:{name}:start\s*-->.*?<!--\s*pr_agent:{name}:end\s*-->", re.DOTALL)
-
-
+_DELIMITER_RE = re.compile(r"<!--\s*pr_agent:(\w+):(start|end)\s*-->")
 _DELIMITER_LIKE_RE = re.compile(r"<!--\s*pr_agent:\w+(?::(?:start|end))?\s*-->")
-_ANY_MARKER_BLOCK_RE = re.compile(r"<!--\s*pr_agent:\w+:start\s*-->.*?<!--\s*pr_agent:\w+:end\s*-->", re.DOTALL)
+_CONTENT_MARKER_NAMES = frozenset({"type", "summary", "walkthrough", "diagram"})
 _CONTENT_MARKER_RE = re.compile(r"pr_agent:(?:type|summary|walkthrough|diagram)\b")
-_NON_CONTENT_BLOCK_RE = re.compile(
-    r"<!--\s*pr_agent:(?!(?:type|summary|walkthrough|diagram):)\w+:start\s*-->.*?<!--\s*pr_agent:\w+:end\s*-->",
-    re.DOTALL,
-)
+
+
+def _marker_block_spans(text: str, wanted: Callable[[str], bool]) -> list[tuple[int, int]]:
+    """Return the sorted, non-overlapping (start, end) offsets of every generated section whose name `wanted`
+    accepts: a <!-- pr_agent:<name>:start --> comment up to the first <!-- pr_agent:<name>:end --> after it.
+
+    One pass over the delimiter comments keeps this linear in the text length. A lazy `.*?` between the two
+    delimiters rescans to the end of the text for every unterminated opener, which is quadratic on a body full
+    of them. An opener without a closer is left alone, so a hand-deleted end comment never swallows the rest of
+    the description."""
+    open_starts: dict[str, int] = {}
+    spans: list[tuple[int, int]] = []
+    for match in _DELIMITER_RE.finditer(text):
+        name, kind = match.groups()
+        if kind == "start":
+            if wanted(name):
+                open_starts.setdefault(name, match.start())
+        elif name in open_starts:
+            spans.append((open_starts.pop(name), match.end()))
+    spans.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _replace_spans(text: str, spans: list[tuple[int, int]], replacement: str) -> str:
+    """Rebuild `text` with each of the sorted, non-overlapping `spans` replaced by `replacement`."""
+    parts = []
+    last = 0
+    for start, end in spans:
+        parts.append(text[last:start])
+        parts.append(replacement)
+        last = end
+    parts.append(text[last:])
+    return "".join(parts)
+
+
+def _strip_marker_blocks(text: str, wanted: Callable[[str], bool]) -> str:
+    return _replace_spans(text, _marker_block_spans(text, wanted), "")
 
 
 def has_content_markers(text: str) -> bool:
     """Return whether `text` still carries a marker for a generated content section, in bare, HTML-comment or
     delimited form. Ignore the footer blocks (help, coverage, ...) that refresh mode adds, so a description whose
     content markers were all removed by hand no longer triggers a model call."""
-    return bool(_CONTENT_MARKER_RE.search(_NON_CONTENT_BLOCK_RE.sub("", text)))
+    footer_only = _strip_marker_blocks(text, lambda name: name not in _CONTENT_MARKER_NAMES)
+    return bool(_CONTENT_MARKER_RE.search(footer_only))
 
 
 def _bare_marker_re(name: str) -> re.Pattern:
@@ -98,7 +135,9 @@ def _wrap_marker_block(name: str, content: str) -> str:
 
     Drop any marker comment the content quotes: a delimiter-like one would end the block early on the next
     refresh, and a bare `<!-- pr_agent:<name> -->` would trip the whole-body guards and freeze the section."""
-    content = _DELIMITER_LIKE_RE.sub("", content)
+    stripped = _DELIMITER_LIKE_RE.sub("", content)
+    while stripped != content:  # removing a quoted comment can join the text around it into another one
+        content, stripped = stripped, _DELIMITER_LIKE_RE.sub("", stripped)
     return f"<!-- pr_agent:{name}:start -->\n{content}\n<!-- pr_agent:{name}:end -->"
 
 
@@ -108,10 +147,9 @@ def refresh_marker_block(body: str, name: str, content: str, append: bool = Fals
     Without an existing section, an empty `content` leaves `body` untouched and a non-empty one is appended
     when `append` is set. An existing section is removed when `content` is empty.
     """
-    block_re = _marker_block_re(name)
-    if block_re.search(body):
-        replacement = _wrap_marker_block(name, content) if content else ""
-        return block_re.sub(lambda _match: replacement, body)
+    spans = _marker_block_spans(body, lambda block_name: block_name == name)
+    if spans:
+        return _replace_spans(body, spans, _wrap_marker_block(name, content) if content else "")
     if content and append:
         return f"{body.rstrip()}\n\n{_wrap_marker_block(name, content)}\n"
     return body
@@ -1033,7 +1071,8 @@ class PRDescription:
         sections and the recognition comment."""
         if not self._refresh_markers_enabled():
             return self.user_description
-        return _ANY_MARKER_BLOCK_RE.sub("", self.user_description or "").replace(GENERATED_MARKER, "").strip()
+        user_owned = _strip_marker_blocks(self.user_description or "", lambda _name: True)
+        return user_owned.replace(GENERATED_MARKER, "").strip()
 
     def _template_has_markers(self) -> bool:
         """Return whether the loaded template still asks for generated content."""
@@ -1073,12 +1112,18 @@ class PRDescription:
             if pattern is not None:
                 return pattern.sub(lambda _match: content, body)
             return body.replace(f"pr_agent:{name}", content)
-        wrapped = _wrap_marker_block(name, content)
         bare_re = pattern if pattern is not None else _bare_marker_re(name)
-        # Match the original body in one pass, taking an existing delimited section or a bare marker, whichever
-        # comes first. Never rescan inserted content: generated text quoting the marker would nest a block.
-        combined_re = re.compile(f"(?:{_marker_block_re(name).pattern})|(?:{bare_re.pattern})", re.DOTALL)
-        return combined_re.sub(lambda _match: wrapped, body)
+        # Locate every existing delimited section and every bare marker outside one in the original body, then
+        # replace them in one rebuild. Never rescan inserted content: generated text quoting the marker would
+        # nest a block.
+        spans = _marker_block_spans(body, lambda block_name: block_name == name)
+        spans.extend(match.span() for match in bare_re.finditer(body))
+        spans.sort()
+        outside_blocks: list[tuple[int, int]] = []
+        for span in spans:
+            if not outside_blocks or span[0] >= outside_blocks[-1][1]:
+                outside_blocks.append(span)
+        return _replace_spans(body, outside_blocks, _wrap_marker_block(name, content))
 
     def _prepare_pr_answer_with_markers(self) -> tuple[str, str]:
         get_logger().info(f"Using description marker replacements {self.pr_id}")

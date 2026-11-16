@@ -1,4 +1,5 @@
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -963,6 +964,42 @@ class TestPRDescriptionCore:
         assert replaced == ("Intro\n\n<!-- pr_agent:coverage:start -->\n2 of 3 chunks failed\n"
                             "<!-- pr_agent:coverage:end -->\n")
         assert removed == "Intro\n\n\n"
+
+    def test_refresh_marker_block_leaves_an_unclosed_section_alone_and_replaces_every_closed_one(self):
+        body = ("<!-- pr_agent:summary:start -->\nno end\n"
+                "<!-- pr_agent:walkthrough:start -->\nold\n<!-- pr_agent:walkthrough:end -->\n"
+                "<!-- pr_agent:walkthrough:start -->\nold too\n<!-- pr_agent:walkthrough:end -->\n")
+
+        unclosed = refresh_marker_block(body, "summary", "new")
+        refreshed = refresh_marker_block(body, "walkthrough", "new")
+
+        assert unclosed == body
+        assert refreshed == ("<!-- pr_agent:summary:start -->\nno end\n"
+                             "<!-- pr_agent:walkthrough:start -->\nnew\n<!-- pr_agent:walkthrough:end -->\n"
+                             "<!-- pr_agent:walkthrough:start -->\nnew\n<!-- pr_agent:walkthrough:end -->\n")
+
+    def test_refresh_marker_block_strips_a_delimiter_split_by_a_quoted_comment(self):
+        body = "<!-- pr_agent:summary:start -->\nold\n<!-- pr_agent:summary:end -->\n"
+        content = "ends with <!-- pr_agent:summary:e<!-- pr_agent:x -->nd --> quoted"
+
+        once = refresh_marker_block(body, "summary", content)
+        twice = refresh_marker_block(once, "summary", "second")
+
+        assert once.count("<!-- pr_agent:summary:end -->") == 1
+        assert twice == "<!-- pr_agent:summary:start -->\nsecond\n<!-- pr_agent:summary:end -->\n"
+
+    def test_marker_helpers_stay_linear_on_many_unterminated_openers(self):
+        # 320k characters of openers without a closer: a lazy `.*?` block pattern took seconds here
+        body = "<!-- pr_agent:summary:start -->\n<!-- pr_agent:help:start -->\n" * 5000
+
+        started = time.perf_counter()
+        untouched = refresh_marker_block(body, "summary", "new")
+        still_marked = has_content_markers(body)
+        elapsed = time.perf_counter() - started
+
+        assert untouched == body
+        assert still_marked
+        assert elapsed < 2.0
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("missing_count", "include_summaries"), [(0, True), (1, True), (5, True), (6, False)])
