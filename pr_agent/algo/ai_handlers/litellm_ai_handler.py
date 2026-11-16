@@ -2713,14 +2713,18 @@ class LiteLLMAIHandler(BaseAiHandler):
         """
         if not get_settings().litellm.get("add_session_id_to_requests", False):
             return
-        session_id = self._get_request_session_id()
-        # The SDK derives provider session headers, such as OpenCode Go's
-        # required x-opencode-session, from this parameter, not the proxy header.
-        kwargs["litellm_session_id"] = session_id
         headers = dict(kwargs.get("headers") or {})
-        if not any(name.lower() == "x-litellm-session-id" for name in headers):
+        session_id = next(
+            (value for name, value in headers.items() if name.lower() == "x-litellm-session-id"), None,
+        )
+        if session_id is None:
+            session_id = self._get_request_session_id()
             headers["x-litellm-session-id"] = session_id
             kwargs["headers"] = headers
+        # The SDK derives provider session headers, such as OpenCode Go's
+        # required x-opencode-session, from this parameter, not the proxy header.
+        # Reusing an explicit header keeps the proxy and the provider on one session.
+        kwargs["litellm_session_id"] = session_id
 
     def _get_request_session_id(self) -> str:
         """Build a stable LiteLLM session id.

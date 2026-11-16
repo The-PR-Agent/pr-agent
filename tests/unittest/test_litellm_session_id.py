@@ -191,3 +191,4 @@ class TestSessionIdHeader:
             extra_headers='{"x-litellm-session-id": "operator-session"}',
         )
         assert kwargs["headers"]["x-litellm-session-id"] == "operator-session"
+        assert kwargs["litellm_session_id"] == "operator-session"
