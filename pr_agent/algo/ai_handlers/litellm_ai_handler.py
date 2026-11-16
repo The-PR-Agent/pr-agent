@@ -159,6 +159,9 @@ MAX_RETRY_AFTER_SECONDS = 30
 # Lowest config.max_output_tokens honored; Bedrock Claude with thinking needs this much to answer.
 MIN_MAX_OUTPUT_TOKENS = 4096
 _IMAGE_HEAD_TIMEOUT_SECONDS = 5
+FIREWORKS_REASONING_BUDGET_MODELS = frozenset({
+    "fireworks_ai/accounts/fireworks/models/deepseek-v4p1-flash-1017",
+})
 _IMAGE_NOT_ALIVE_MESSAGE = (
     "The image link is not [alive](img_path).\n"
     "Please repost the original image as a comment, and send the question again with 'quote reply' "
@@ -2220,8 +2223,15 @@ class LiteLLMAIHandler(BaseAiHandler):
                 )
             return reasoning_effort
 
-    def _resolve_reasoning_effort(self, model: str, configured_effort) -> str:
+    def _resolve_reasoning_effort(self, model: str, configured_effort) -> str | int:
         """Validate a configured reasoning effort and clamp it to this model's Grok levels."""
+        if type(configured_effort) is int:
+            if model not in FIREWORKS_REASONING_BUDGET_MODELS:
+                raise ValueError(f"Numeric reasoning_effort is not supported for {model}")
+            output_limit = get_settings().config.get("max_output_tokens", None)
+            if type(output_limit) is not int or not 0 < configured_effort < output_limit:
+                raise ValueError("Numeric reasoning_effort must be positive and less than config.max_output_tokens")
+            return configured_effort
         reasoning_effort = self._validate_reasoning_effort(configured_effort)
         clamped_effort = self._clamp_grok_reasoning_effort(model, reasoning_effort)
         clamped_effort = self._clamp_gemini_reasoning_effort(model, clamped_effort)
@@ -3227,6 +3237,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 )
                 if not (is_gpt5_model or is_gpt6_model) and (
                     self._grok_reasoning_levels_for(reasoning_model) is not None
+                    or reasoning_model in FIREWORKS_REASONING_BUDGET_MODELS
                     or not non_native_gpt6_model
                     and not preserved_gpt6_alias
                     and not self._is_claude_family_model(reasoning_model)
