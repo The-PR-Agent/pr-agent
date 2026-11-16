@@ -1508,6 +1508,17 @@ class GitProvider(ABC):
         suffix = suffix[:max_chars]
         return output[:max_chars - len(suffix)] + suffix
 
+    def limit_title_characters(self, title: str, max_chars: int) -> str:
+        """Fit a /describe title into the platform's title limit of max_chars characters."""
+        if len(title) <= max_chars:
+            return title
+        get_logger().warning(
+            f"PR title of {len(title)} characters is over the limit of "
+            f"{max_chars}; truncated"
+        )
+        suffix = "..."
+        return title[:max_chars - len(suffix)] + suffix
+
     def limit_description_characters(self, pr_body: str, max_chars: int) -> str:
         """Fit a /describe body into the platform's description limit of max_chars characters.
 
