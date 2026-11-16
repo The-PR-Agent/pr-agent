@@ -1093,6 +1093,27 @@ def test_generate_labels_policy_skip_only_fails_when_json_is_required(
     assert "Usage:" not in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("command", ["review", "improve", "describe"])
+@pytest.mark.parametrize("json_requested", [False, True])
+def test_plain_diff_policy_skip_only_fails_when_json_is_required(
+    command, json_requested, monkeypatch, tmp_path, capsys,
+):
+    class SkippedAgent:
+        async def handle_request(self, target, request, notify=None):
+            return RequestOutcome.SKIPPED
+
+    monkeypatch.setattr("pr_agent.cli.PRAgent", SkippedAgent)
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+    output = tmp_path / "result.json"
+    args = ["--stdin"]
+    if json_requested:
+        args.extend(["--json-output", str(output)])
+
+    assert run(inargs=[*args, command]) == (1 if json_requested else None)
+    assert not output.exists()
+    assert "Usage:" not in capsys.readouterr().out
+
+
 def test_plain_diff_generate_labels_failure_does_not_write_success_json(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     monkeypatch.setattr(
