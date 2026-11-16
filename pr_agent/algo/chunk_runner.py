@@ -41,6 +41,7 @@ async def run_chunk_batch[T, R](
     call: Callable[[T], Awaitable[R]],
     *,
     parallel: bool = True,
+    stagger_first: bool = False,
     reporter: ChunkProgressSink | None = None,
 ) -> list[R | Exception]:
     """Run one model call per chunk and return the results aligned with the chunks.
@@ -49,6 +50,13 @@ async def run_chunk_batch[T, R](
     chunk never aborts the batch. Set `parallel=False` to run the chunks one at a
     time, in order, still continuing past a failed chunk. Every settled chunk
     advances `reporter` when one is given.
+
+    Set ``stagger_first=True`` to dispatch the first chunk alone and gather the rest
+    only after it settles. The callers use this when the shared-prefix prompt cache
+    will apply: an Anthropic cache entry only becomes readable once the first
+    response begins, so concurrent siblings each write their own entry — running
+    the first chunk ahead lets the siblings read the entry it wrote (#4876). A
+    failed first chunk does not stop the rest, matching the gather semantics.
     """
 
     async def _run_one(item: T) -> R:
@@ -58,8 +66,14 @@ async def run_chunk_batch[T, R](
             if reporter is not None:
                 await reporter.record_settled()
 
+    items = list(items)
     if parallel:
-        results = list(await asyncio.gather(*[_run_one(item) for item in items], return_exceptions=True))
+        if stagger_first and len(items) > 1:
+            (first,) = await asyncio.gather(_run_one(items[0]), return_exceptions=True)
+            rest = await asyncio.gather(*[_run_one(item) for item in items[1:]], return_exceptions=True)
+            results = [first, *rest]
+        else:
+            results = list(await asyncio.gather(*[_run_one(item) for item in items], return_exceptions=True))
     else:
         results = []
         for item in items:
