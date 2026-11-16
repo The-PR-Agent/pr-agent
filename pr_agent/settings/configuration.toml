@@ -157,9 +157,7 @@ claude_adaptive_thinking_models_override = []
 # When non-empty, this list fully replaces the built-in defaults (see CLAUDE_EXTENDED_THINKING_MODELS
 # in pr_agent/algo/__init__.py). Leave empty to use the defaults.
 claude_extended_thinking_models_override = []
-# Extract issue number from PR source branch name (e.g. feature/1-auth-google -> issue #1). When true, branch-derived
-# issue URLs are merged with tickets from the PR description for compliance. Set to false to restore description-only behaviour.
-# Note: Branch-name extraction is GitHub-only for now; other providers planned for later.
+# Infer branch issues on GitHub and same-project GitLab (`123-...`); false disables. See https://docs.pr-agent.ai/core-abilities/fetching_ticket_context/.
 extract_issue_from_branch = true
 # Optional: custom regex with one or more capturing groups for the issue number (validated at runtime); only the
 # first group is used. If the regex has no capturing group, the default pattern is used; if it does not compile,
