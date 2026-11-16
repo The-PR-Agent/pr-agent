@@ -43,7 +43,40 @@ def catalog_dir(tmp_path, monkeypatch):
 
 
 def _placeholders(text):
-    return {name for _, name, _, _ in string.Formatter().parse(text) if name is not None}
+    fields = set()
+    for _, name, format_spec, conversion in string.Formatter().parse(text):
+        if name is None:
+            continue
+        if name.isidentifier():  # t() already stringifies direct replacements.
+            format_spec = "" if format_spec == "s" else format_spec
+            conversion = None if conversion == "s" else conversion
+        fields.add((name, format_spec, conversion))
+    return fields
+
+
+@pytest.mark.parametrize(("english", "translation"), [
+    ("{count}", "{count:.2}"),
+    ("{count}", "{count!r}"),
+    ("{count}", "{count:d}"),
+    ("{count}", "{count:{width}}"),
+    ("{count:{width}}", "{count:{w}}"),
+    ("{count} {count}", "{count} {count!r}"),
+    ("{name.__class__}", "{name.__class__:s}"),
+])
+def test_placeholder_formatting_differences_are_detected(english, translation):
+    assert _placeholders(english) != _placeholders(translation)
+
+
+@pytest.mark.parametrize(("english", "translation"), [
+    ("{name} {count}", "{count} {name}"),
+    ("{name}", "{name} {name}"),
+    ("{name!r} {count:.2}", "{count:.2} {name!r}"),
+    ("{name}", "{name!s}"),
+    ("{name}", "{name:s}"),
+    ("{name!r}", "{name!r:s}"),
+])
+def test_placeholder_reordering_and_repetition_are_allowed(english, translation):
+    assert _placeholders(english) == _placeholders(translation)
 
 
 def _flatten(path):
