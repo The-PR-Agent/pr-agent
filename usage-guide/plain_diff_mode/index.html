@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">Plain-diff local mode | PR-Agent</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" property="og:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.pr-agent.ai/usage-guide/plain_diff_mode/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Plain-diff local mode | PR-Agent"><meta data-rh="true" name="description" content="Run PR-Agent against a raw unified diff with no platform API token and no PR URL."><meta data-rh="true" property="og:description" content="Run PR-Agent against a raw unified diff with no platform API token and no PR URL."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.pr-agent.ai/usage-guide/plain_diff_mode/"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/usage-guide/plain_diff_mode/" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/usage-guide/plain_diff_mode/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Plain-diff mode","item":"https://docs.pr-agent.ai/usage-guide/plain_diff_mode"}]}</script><script src="https://widget.kapa.ai/kapa-widget.bundle.js" data-website-id="5c89c0b1-b2ee-43c9-8c6f-43ed762b3c1e" data-project-name="PR-Agent" data-project-color="#2459db" data-project-logo="/img/favicon.svg" data-launcher-button-image="/img/favicon-white.svg" data-color-scheme-selector="[data-theme=&#39;dark&#39;]" async></script><link rel="stylesheet" href="/assets/css/styles.0fa13089.css">
-<script src="/assets/js/runtime~main.48958a44.js" defer="defer"></script>
+<script src="/assets/js/runtime~main.6e4b3c8e.js" defer="defer"></script>
 <script src="/assets/js/main.8d9b03df.js" defer="defer"></script>
 </head>
 <body>
@@ -107,7 +107,10 @@ With <code>--json-output &lt;path&gt;</code>, <code>review</code>/<code>review_p
 <code>describe</code>/<code>describe_pr</code> writes the parsed description and <code>usage</code>.
 <code>ask</code>/<code>ask_question</code> writes the <code>question</code>, <code>answer</code>, and <code>usage</code>, including a note when no diff is analyzable.
 <code>generate_labels</code> writes the filtered <code>labels</code> list and <code>usage</code>; it never
-combines existing user labels into that list.</p>
+combines existing user labels into that list.
+With <code>--json-output</code>, a run whose command fails or that the request policy skips exits with status 1;
+parser errors, such as an unreadable diff file or empty input, exit with status 2.
+A skipped run (for example, <code>config.include_pr_labels</code> is set and a diff has no labels) writes no JSON file.</p>
 </li>
 </ol>
 <p>No platform token, no PR URL, and no internet access are required for the diff processing
