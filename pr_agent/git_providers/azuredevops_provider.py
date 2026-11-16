@@ -2049,8 +2049,11 @@ class AzureDevopsProvider(GitProvider):
             raise ValueError("Azure work item response is incomplete")
 
         def _get_work_item_url(item):
-            if hasattr(item, "_links") and item._links:
-                links = getattr(item._links, "links", item._links)
+            _links = getattr(item, "_links", None)
+            if _links:
+                links = getattr(_links, "additional_properties", None)
+                if not isinstance(links, dict):
+                    links = getattr(_links, "links", None) or (_links if isinstance(_links, dict) else None)
                 if isinstance(links, dict):
                     html_link = links.get("html")
                     if isinstance(html_link, dict) and html_link.get("href"):

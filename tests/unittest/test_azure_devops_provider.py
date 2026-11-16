@@ -373,19 +373,31 @@ def test_get_work_items_resolves_html_url_from_links_and_fallback():
         id=10,
         url="https://dev.azure.com/my-org/proj-guid/_apis/wit/workItems/10",
         fields={"System.Title": "With links dict"},
-        _links={"html": {"href": "https://dev.azure.com/my-org/my-project/_workitems/edit/10"}},
+        _links={"html": {"href": "https://dev.azure.com/my-org/custom-project/_workitems/edit/10"}},
     )
+    # Azure DevOps SDK ReferenceLinks stores link relations in additional_properties with links=None
     item_with_reference_links = SimpleNamespace(
         id=20,
         url="https://dev.azure.com/my-org/proj-guid/_apis/wit/workItems/20",
         fields={"System.Title": "With reference links"},
-        _links=SimpleNamespace(links={"html": {"href": "https://dev.azure.com/my-org/my-project/_workitems/edit/20"}}),
+        _links=SimpleNamespace(
+            links=None,
+            additional_properties={
+                "html": {"href": "https://dev.azure.com/my-org/custom-board/_workitems/edit/20"}
+            },
+        ),
     )
     item_without_links = SimpleNamespace(
         id=30,
         url="https://dev.azure.com/my-org/proj-guid/_apis/wit/workItems/30",
         fields={"System.Title": "Without links"},
         _links=None,
+    )
+    item_with_empty_reference_links = SimpleNamespace(
+        id=35,
+        url="https://dev.azure.com/my-org/proj-guid/_apis/wit/workItems/35",
+        fields={"System.Title": "Empty reference links"},
+        _links=SimpleNamespace(links=None, additional_properties={}),
     )
     item_fallback_to_url = SimpleNamespace(
         id=40,
@@ -398,11 +410,15 @@ def test_get_work_items_resolves_html_url_from_links_and_fallback():
         item_with_links_dict,
         item_with_reference_links,
         item_without_links,
+        item_with_empty_reference_links,
     ]
-    items = provider.get_work_items([10, 20, 30])
-    assert items[0]["url"] == "https://dev.azure.com/my-org/my-project/_workitems/edit/10"
-    assert items[1]["url"] == "https://dev.azure.com/my-org/my-project/_workitems/edit/20"
+    items = provider.get_work_items([10, 20, 30, 35])
+    # Resolves directly from _links (dict or ReferenceLinks) rather than relying on pr_url fallback
+    assert items[0]["url"] == "https://dev.azure.com/my-org/custom-project/_workitems/edit/10"
+    assert items[1]["url"] == "https://dev.azure.com/my-org/custom-board/_workitems/edit/20"
+    # Fallback to pr_url when _links is missing or lacks html
     assert items[2]["url"] == "https://dev.azure.com/my-org/my-project/_workitems/edit/30"
+    assert items[3]["url"] == "https://dev.azure.com/my-org/my-project/_workitems/edit/35"
 
     # Fallback to item.url when pr_url is unset or does not contain '/_git/'
     provider.pr_url = None
