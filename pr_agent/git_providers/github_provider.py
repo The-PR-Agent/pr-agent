@@ -76,6 +76,8 @@ _GRAPHQL_BLOB_BATCH = 25
 _GRAPHQL_MIN_BLOBS = 3
 # The tree entry mode of a symlink, whose blob is its link target while the REST content read follows the link.
 _SYMLINK_MODE = 0o120000
+# GitHub rejects a pull request title longer than this (HTTP 422).
+MAX_PR_TITLE_GITHUB_LENGTH = 256
 
 
 def _graphql_error_types(response) -> list:
@@ -950,7 +952,11 @@ class GithubProvider(GitProvider):
     def publish_description(self, pr_title: str, pr_body: str):
         # GitHub refuses a body over 65,536 characters (HTTP 422), the limit its comments have too, and the
         # file walkthrough of a large PR can pass it.
+        # It similarly rejects a title over 256 characters. An overlong AI title
+        # would fail the whole publish, including a body that already fits.
         pr_body = self.limit_description_characters(pr_body, self.max_comment_chars)
+        if pr_title is not None:
+            pr_title = self.limit_title_characters(pr_title, MAX_PR_TITLE_GITHUB_LENGTH)
         if pr_title is None:
             self.pr.edit(body=pr_body)
         else:
