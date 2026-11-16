@@ -352,6 +352,9 @@ The same value is passed to LiteLLM as `litellm_session_id`, which LiteLLM forwa
 provider's session header where one exists, such as OpenCode Go's required `x-opencode-session`.
 The value includes the PR's host and repository path, so enabling the setting sends them to that provider.
 
+Requests without a PR, such as the `doctor` model ping and the MOSAICO health probe, use a random
+`pr-agent-<uuid>` value generated once per process instead.
+
 ## Integrating with Logging Observability Platforms
 
 Various logging observability tools can be used out-of-the box when using the default LiteLLM AI Handler. Simply configure the LiteLLM callback settings in `configuration.toml` and set environment variables according to the LiteLLM [documentation](https://docs.litellm.ai/docs/).

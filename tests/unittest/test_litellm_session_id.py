@@ -124,10 +124,25 @@ class TestSessionIdHeader:
         assert kwargs["litellm_session_id"] == kwargs["headers"]["x-litellm-session-id"]
 
     @pytest.mark.asyncio
-    async def test_enabled_without_context_is_noop(self, monkeypatch):
-        kwargs = await _run(monkeypatch, True)
-        assert "x-litellm-session-id" not in (kwargs.get("headers") or {})
-        assert "litellm_session_id" not in kwargs
+    async def test_enabled_without_context_uses_process_session(self, monkeypatch):
+        # OpenCode Go rejects requests without a session, so doctor pings and
+        # health probes need one even with no PR to derive it from.
+        first = await _run(monkeypatch, True)
+        second = await _run(monkeypatch, True)
+        assert first["litellm_session_id"] == litellm_handler._PROCESS_SESSION_ID
+        assert first["headers"]["x-litellm-session-id"] == litellm_handler._PROCESS_SESSION_ID
+        assert second["litellm_session_id"] == first["litellm_session_id"]
+
+    @pytest.mark.asyncio
+    async def test_probe_completion_passes_session_id(self, monkeypatch):
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings(True))
+        mock_call = AsyncMock(return_value=_mock_response())
+        handler = litellm_handler.LiteLLMAIHandler()
+        with get_logger().contextualize(pr_url=PR_URL):
+            await handler.probe_completion("gpt-4o", _completion=mock_call)
+        assert mock_call.call_args[1]["litellm_session_id"] == (
+            "pr-agent-github-com-owner-repo-pull-123-b065a0b1d1c7b721"
+        )
 
     @pytest.mark.asyncio
     async def test_value_uses_litellm_allowed_characters(self, monkeypatch):

@@ -10,6 +10,7 @@ import re
 import shutil  # noqa: F401  (module attribute asserted by tests)
 import stat
 import threading
+import uuid
 from urllib.parse import urlparse
 
 import aiohttp
@@ -158,6 +159,8 @@ DEFAULT_NUM_RETRIES = 4
 MAX_RETRY_AFTER_SECONDS = 30
 # Lowest config.max_output_tokens honored; Bedrock Claude with thinking needs this much to answer.
 MIN_MAX_OUTPUT_TOKENS = 4096
+# Session id for requests without PR context; random so no repository data is sent.
+_PROCESS_SESSION_ID = f"pr-agent-{uuid.uuid4().hex}"
 _IMAGE_HEAD_TIMEOUT_SECONDS = 5
 _IMAGE_NOT_ALIVE_MESSAGE = (
     "The image link is not [alive](img_path).\n"
@@ -2701,26 +2704,46 @@ class LiteLLMAIHandler(BaseAiHandler):
                 context[key] = value[:max_len]
         return json.dumps(context, separators=(",", ":"))
 
+    def _add_request_session_id(self, kwargs: dict) -> None:
+        """Group every command run against the same PR into one LiteLLM session.
+
+        Sends the proxy's session id header and passes the same value as
+        litellm_session_id. Explicitly configured headers win, so an operator
+        can override the value.
+        """
+        if not get_settings().litellm.get("add_session_id_to_requests", False):
+            return
+        session_id = self._get_request_session_id()
+        # The SDK derives provider session headers, such as OpenCode Go's
+        # required x-opencode-session, from this parameter, not the proxy header.
+        kwargs["litellm_session_id"] = session_id
+        headers = dict(kwargs.get("headers") or {})
+        if not any(name.lower() == "x-litellm-session-id" for name in headers):
+            headers["x-litellm-session-id"] = session_id
+            kwargs["headers"] = headers
+
     def _get_request_session_id(self) -> str:
         """Build a stable LiteLLM session id for the current PR.
 
         LiteLLM stores this value in the session_id column of its spend logs, so
         every command run against the same PR shares one session. The header only
         accepts alphanumerics, hyphens and underscores, so the URL is normalized
-        to that character set. Returns an empty string when no PR context exists.
+        to that character set. Without PR context (doctor pings, health probes)
+        returns a per-process id, since providers such as OpenCode Go reject
+        requests without one.
         """
         context = self._capture_log_context(
             "session_id_probe", "Capturing the request context for the session id",
         )
         pr_url = context.get("pr_url")
         if not isinstance(pr_url, str) or not pr_url:
-            return ""
+            return _PROCESS_SESSION_ID
         parsed = urlparse(pr_url)
         raw = f"{parsed.netloc.rpartition('@')[2]}{parsed.path}" if parsed.netloc else pr_url
         slug = re.sub(r"[^A-Za-z0-9_-]+", "-", raw)
         slug = re.sub(r"-{2,}", "-", slug).strip("-_").lower()
         if not slug:
-            return ""
+            return _PROCESS_SESSION_ID
         # Different URLs can normalize to the same slug, and long repository
         # paths can push the PR number past the cutoff. Append a digest of the
         # raw URL and reserve room for it before truncating the readable part,
@@ -3326,20 +3349,6 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # Support for custom OpenAI body fields (e.g., Flex Processing)
                 kwargs = _process_litellm_extra_body(kwargs)
 
-                # Group every command run against the same PR into one LiteLLM
-                # session by sending the proxy's session id header. Explicitly
-                # configured headers win, so an operator can override the value.
-                if get_settings().litellm.get("add_session_id_to_requests", False):
-                    session_id = self._get_request_session_id()
-                    if session_id:
-                        # The SDK derives provider session headers, such as OpenCode Go's
-                        # required x-opencode-session, from this parameter, not the proxy header.
-                        kwargs["litellm_session_id"] = session_id
-                        headers = dict(kwargs.get("headers") or {})
-                        if not any(name.lower() == "x-litellm-session-id" for name in headers):
-                            headers["x-litellm-session-id"] = session_id
-                            kwargs["headers"] = headers
-
                 # Optional provider-side request attribution: when config.add_user_to_requests
                 # is enabled, send the current command and PR URL in the OpenAI-compatible
                 # "user" field, so provider logs and usage exports can be attributed to a
@@ -3625,6 +3634,8 @@ class LiteLLMAIHandler(BaseAiHandler):
     ):
         """Call LiteLLM with any provider compatibility context scoped to this task."""
         _completion = _completion or acompletion
+        # Every completion, including health probes and doctor pings, passes here.
+        self._add_request_session_id(kwargs)
         if getattr(self, "_drop_params", None):
             kwargs.setdefault("drop_params", self._drop_params)
         custom_llm_provider = str(kwargs.get("custom_llm_provider") or "").strip().lower()
