@@ -527,6 +527,7 @@ See [Changing a model](../usage-guide/changing_a_model.md#changing-a-model-in-pr
 | `failure_callback` | [] | process-wide, set like success_callback |
 | `service_callback` | [] | process-wide, set like success_callback |
 | `turn_off_message_logging` | false | set true to keep prompt/response content (the whole PR diff) out of callback payloads; strongly recommended with the "otel" callback |
+| `suppress_debug_info` | true | hide LiteLLM's "Give Feedback / Get Help" stdout banner on provider errors; process-wide, set like success_callback |
 | `custom_llm_provider` | "" | Optional: forward a fixed custom_llm_provider to LiteLLM, so a raw hosted model id (e.g. "claude-sonnet-4-5") reaches the provider unchanged instead of being rewritten by LiteLLM's prefix inference. Empty = let LiteLLM infer the provider from the model name. |
 | `force_streaming_custom_llm_provider` | "" | Force streaming when the request matches this provider AND its api_base contains one of the substrings below. Some OpenAI-compatible endpoints return a response that LiteLLM cannot normalize in non-streaming mode. Both must be set for the workaround to apply. |
 | `force_streaming_api_base_substrings` | [] |  |

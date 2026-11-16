@@ -582,6 +582,12 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         if global_settings.get("LITELLM.DISABLE_AIOHTTP", False):
             litellm.disable_aiohttp_transport = True
+        # LiteLLM prints a "Give Feedback / Get Help" banner to stdout for every mapped provider error.
+        if _as_bool_setting(
+            global_settings.get("LITELLM.SUPPRESS_DEBUG_INFO", True),
+            default=True, setting_name="LITELLM.SUPPRESS_DEBUG_INFO",
+        ):
+            litellm.suppress_debug_info = True
         self._initialize_aws_request_credentials(settings)
         # LiteLLM callbacks are process globals, so only deployment settings may set them.
         if global_settings.get("LITELLM.SUCCESS_CALLBACK", None):
