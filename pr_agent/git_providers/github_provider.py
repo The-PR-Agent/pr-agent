@@ -45,7 +45,7 @@ from ..algo.inline_comment_dedup import (
     strip_markers,
 )
 from ..algo.language_handler import is_valid_file
-from ..algo.mentions import neutralize_mentions
+from ..algo.mentions import neutralize_github_mentions
 from ..algo.token_budget import clip_tokens
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (
@@ -957,9 +957,9 @@ class GithubProvider(GitProvider):
         # file walkthrough of a large PR can pass it.
         # It similarly rejects a title over 256 characters. An overlong AI title
         # would fail the whole publish, including a body that already fits.
-        pr_body = self.limit_description_characters(neutralize_mentions(pr_body), self.max_comment_chars)
+        pr_body = self.limit_description_characters(neutralize_github_mentions(pr_body), self.max_comment_chars)
         if pr_title is not None:
-            pr_title = self.limit_title_characters(neutralize_mentions(pr_title), MAX_PR_TITLE_GITHUB_LENGTH)
+            pr_title = self.limit_title_characters(neutralize_github_mentions(pr_title), MAX_PR_TITLE_GITHUB_LENGTH)
         if pr_title is None:
             self.pr.edit(body=pr_body)
         else:
@@ -1327,7 +1327,7 @@ class GithubProvider(GitProvider):
         if is_temporary and not get_settings().config.publish_output_progress:
             get_logger().debug(f"Skipping publish_comment for temporary comment: {pr_comment}")
             return None
-        pr_comment = self.limit_output_characters(neutralize_mentions(pr_comment), self.max_comment_chars)
+        pr_comment = self.limit_output_characters(neutralize_github_mentions(pr_comment), self.max_comment_chars)
 
         # In case this is an issue, can publish the comment on the issue.
         if self.issue_main:
@@ -1459,10 +1459,10 @@ class GithubProvider(GitProvider):
                 raise
 
     def _publishable_inline_body(self, body: str) -> str:
-        neutral = neutralize_mentions(body)
+        neutral = neutralize_github_mentions(body)
         if len(neutral) <= self.max_comment_chars:
             return neutral
-        text = self.limit_output_characters(neutralize_mentions(strip_markers(body)), self.max_comment_chars)
+        text = self.limit_output_characters(neutralize_github_mentions(strip_markers(body)), self.max_comment_chars)
         return body_with_carried_markers(text, body, self.max_comment_chars)
 
     def get_review_thread_comments(self, comment_id: int) -> list[dict]:
@@ -1841,7 +1841,7 @@ class GithubProvider(GitProvider):
 
     def edit_comment(self, comment, body: str):
         try:
-            body = self.limit_output_characters(neutralize_mentions(body), self.max_comment_chars)
+            body = self.limit_output_characters(neutralize_github_mentions(body), self.max_comment_chars)
             comment.edit(body=body)
         except GithubException as e:
             if hasattr(e, "status") and e.status == 403:
@@ -1859,7 +1859,7 @@ class GithubProvider(GitProvider):
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
         try:
             # self.pr.get_issue_comment(comment_id).edit(body)
-            body = self.limit_output_characters(neutralize_mentions(body), self.max_comment_chars)
+            body = self.limit_output_characters(neutralize_github_mentions(body), self.max_comment_chars)
             headers, data_patch = self.pr._requester.requestJsonAndCheck(
                 "POST", f"{self.base_url}/repos/{self.repo}/pulls/{self.pr_num}/comments/{comment_id}/replies",
                 input={"body": body}

@@ -9,6 +9,7 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_body_with_markers,
     marker_fingerprints,
 )
+from pr_agent.algo.mentions import neutralize_github_mentions
 from pr_agent.git_providers import github_provider as gh_module
 from pr_agent.git_providers.github_provider import MAX_PR_TITLE_GITHUB_LENGTH, GithubProvider
 
@@ -166,3 +167,85 @@ def test_inline_body_grown_by_neutralization_stays_within_the_limit(monkeypatch,
     assert len(published) <= max_chars
     assert published.startswith(f"@{ZWSP}a @{ZWSP}a ")
     assert marker_fingerprints(published) == ({"a" * 12, "b" * 12} if with_markers else set())
+
+
+def test_publish_comment_keeps_a_blockquoted_fence_intact():
+    provider = _make_provider()
+    text = "> ```python\n> @decorator\n> ```\n> cc @octocat"
+
+    provider.publish_comment(text)
+
+    provider.pr.create_issue_comment.assert_called_once_with(f"> ```python\n> @decorator\n> ```\n> cc @{ZWSP}octocat")
+
+
+@pytest.mark.parametrize("text", [
+    ">> ```\n>> @x\n>> ```",
+    "> > ~~~\n> > @x\n> > ~~~",
+    ">>>>```\n>>>>@x\n>>>>```",
+    "   > ```\n   >@x\n   > ```",
+    ">\t```\n>\t@x\n>\t```",
+    "> ```\n>\n> @x\n> ```",
+    "- ```\n  @x\n  ```",
+    "- > ```\n  > @x\n  > ```",
+    "1. > ```\n   > @x\n   > ```",
+    "> - ```\n>   @x\n>   ```",
+    "- a\n  - b\n\n    ```\n    @x\n    ```",
+    ">     @x",
+    "# h\n    @x",
+    "> ```\n> a\n```\n@x",
+    "| h | i |\n|---|---|\n    @x",
+])
+def test_code_inside_containers_is_left_untouched(text):
+    assert neutralize_github_mentions(text) == text
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("> ```\n> @x\n> ```\n@a", f"> ```\n> @x\n> ```\n@{ZWSP}a"),
+    ("> ```\n\n> @a", f"> ```\n\n> @{ZWSP}a"),
+    ("> ```\n@a", f"> ```\n@{ZWSP}a"),
+    ("> text\n>     @a", f"> text\n>     @{ZWSP}a"),
+    ("> a `x\n> @lit` b @a", f"> a `x\n> @lit` b @{ZWSP}a"),
+    ("> text\n> 2. @a", f"> text\n> 2. @{ZWSP}a"),
+    ("-\n\n    @x", "-\n\n    @x"),
+    ("-\n  \n    @a", f"-\n  \n    @{ZWSP}a"),
+    ("|---|---|\n    @a", f"|---|---|\n    @{ZWSP}a"),
+    ("| h |\n|---|---|\n    @a", f"| h |\n|---|---|\n    @{ZWSP}a"),
+])
+def test_container_boundaries_follow_commonmark(text, expected):
+    assert neutralize_github_mentions(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("cc @&#111;ctocat", f"cc @{ZWSP}&#111;ctocat"),
+    ("cc @&#x6F;ctocat", f"cc @{ZWSP}&#x6F;ctocat"),
+    ("cc &#64;&#111;ctocat", f"cc &#64;{ZWSP}&#111;ctocat"),
+    ("cc @&lowbar;x", f"cc @{ZWSP}&lowbar;x"),
+    ("a @&amp; b, @&#0;x and @&#38;#111;", "a @&amp; b, @&#0;x and @&#38;#111;"),
+    (f"cc @{ZWSP}&#111;ctocat", f"cc @{ZWSP}&#111;ctocat"),
+])
+def test_entity_encoded_handle_starts_are_neutralized(text, expected):
+    assert neutralize_github_mentions(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "see https://medium.com/@user",
+    "see HTTPS://medium.com/@user",
+    "see ftp://host.org/@user",
+    "see www.medium.com/@user",
+    "see (www.medium.com/@user)",
+    "see <custom://host/@user>",
+    "see <mailto:@user>",
+])
+def test_github_autolinks_keep_their_mentions(text):
+    assert neutralize_github_mentions(text) == text
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("custom://@octocat", f"custom://@{ZWSP}octocat"),
+    ("xhttps://host.org/@user", f"xhttps://host.org/@{ZWSP}user"),
+    ("https://@octocat", f"https://@{ZWSP}octocat"),
+    ("https://a.b_c.org/@user", f"https://a.b_c.org/@{ZWSP}user"),
+    ("awww.host.org/@user", f"awww.host.org/@{ZWSP}user"),
+])
+def test_text_github_does_not_autolink_is_neutralized(text, expected):
+    assert neutralize_github_mentions(text) == expected

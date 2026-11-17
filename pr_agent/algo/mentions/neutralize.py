@@ -1,19 +1,28 @@
+import html
 import re
 from bisect import bisect_left, bisect_right
+from collections.abc import Callable
 
+from .autolinks import github_autolinks, gitlab_autolinks
 from .blocks import line_flags
 
 # Mentions follow an ASCII boundary (Ruby \w) and entity decoding; leading underscores can open emphasis
-_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_])_*(?:@|&#0{0,5}64;|&#[xX]0{0,4}40;|&commat;)(?=[\w-])")
+_MENTION_RE = re.compile(
+    r"(?<![A-Za-z0-9_])_*(?:@|&#0{0,5}64;|&#[xX]0{0,4}40;|&commat;)"
+    r"(?=[\w-]|(?P<entity>&(?:#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});))"
+)
+_HANDLE_START_RE = re.compile(r"[\w-]")
 _ZERO_WIDTH_SPACE = "\u200b"
-# Autolinked URLs are never scanned for mentions; the span stops at Markdown delimiters
-_AUTOLINK_RE = re.compile(r"(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{1,31}://[^\s<>`()\[\]\"'*~|\\]+")
 _TICK_RUN_RE = re.compile(r"`+")
 
 
-def _autolink_spans(text: str) -> tuple[list[int], list[int]]:
-    spans = [(match.start(), match.end()) for match in _AUTOLINK_RE.finditer(text)]
+def _autolink_spans(spans: list[tuple[int, int]]) -> tuple[list[int], list[int]]:
     return [start for start, _ in spans], [end for _, end in spans]
+
+
+def _starts_handle(mention: re.Match) -> bool:
+    entity = mention.group("entity")
+    return not entity or bool(_HANDLE_START_RE.match(html.unescape(entity)))
 
 
 def _in_autolink(position: int, url_spans: tuple[list[int], list[int]]) -> bool:
@@ -22,7 +31,15 @@ def _in_autolink(position: int, url_spans: tuple[list[int], list[int]]) -> bool:
     return span_index >= 0 and position < ends[span_index]
 
 
-def neutralize_mentions(text: str) -> str:
+def neutralize_github_mentions(text: str) -> str:
+    return _neutralize(text, github_autolinks)
+
+
+def neutralize_gitlab_mentions(text: str) -> str:
+    return _neutralize(text, gitlab_autolinks)
+
+
+def _neutralize(text: str, autolinks: Callable[[str], list[tuple[int, int]]]) -> str:
     if not text:
         return text
 
@@ -31,7 +48,7 @@ def neutralize_mentions(text: str) -> str:
         tick_runs.setdefault(len(run.group()), []).append(run.start())
 
     code_by_start, boundaries, html_starts = line_flags(text)
-    url_spans = _autolink_spans(text)
+    url_spans = _autolink_spans(autolinks(text))
 
     output = []
     index = 0
@@ -103,7 +120,7 @@ def neutralize_mentions(text: str) -> str:
             search_start -= 1
         copied = index
         for mention in _MENTION_RE.finditer(text, search_start, next_special):
-            if _in_autolink(mention.start(), url_spans):
+            if _in_autolink(mention.start(), url_spans) or not _starts_handle(mention):
                 continue
             output.append(text[copied:mention.end()])
             output.append(_ZERO_WIDTH_SPACE)

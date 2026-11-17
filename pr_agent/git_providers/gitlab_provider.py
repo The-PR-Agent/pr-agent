@@ -57,7 +57,7 @@ from ..algo.inline_comment_dedup import (
     marker_fingerprints,
 )
 from ..algo.language_handler import is_valid_file
-from ..algo.mentions import neutralize_mentions as _neutralize_gitlab_mentions
+from ..algo.mentions import neutralize_gitlab_mentions as _neutralize_gitlab_mentions
 from ..algo.token_budget import clip_tokens
 from ..algo.utils import load_large_diff
 from ..config_loader import get_settings
