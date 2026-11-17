@@ -695,62 +695,99 @@ PR-Agent logs a warning and skips that pattern for the rest of the review.
 ### Merge recommendation
 
 When `require_merge_recommendation` is enabled, PR-Agent computes the published verdict from deterministic checks.
-The model can only veto a clean verdict and make it more cautious; it cannot override a failed deterministic check.
+The model can only make the verdict more cautious: it can lower a clean verdict, or raise `needs_review` to
+`changes_required`, but it cannot override a failed deterministic check.
 
 **Checks and sources**
 
-- `CI on reviewed head` (deterministic): requires passing CI for the reviewed head. Unavailable CI status fails closed.
-- `Head is current with its base` (deterministic): requires the reviewed head to be current with its base for reviewed files. Unavailable staleness status fails closed.
-- `Human authors` (deterministic): requires all authors to be human. Bot/unlinked or unavailable author data fails closed.
-- `No sensitive paths or risky changes` (deterministic): requires no findings from deterministic risk checks (`sensitive_paths`, risky diff shapes, deleted files). Unavailable risk-check data fails closed.
-- `Changed lines within cap` (deterministic): requires total added/removed lines within `pr_reviewer.max_changed_lines`. Unavailable line counts fail closed.
-- `Model merge recommendation` (model, veto only): if the model returns `needs_review` or `changes_required`, the verdict cannot be `no_concerns_found`.
-- `Model risk level` (model, veto only): if the model returns `medium` or `high` risk, the verdict cannot be `no_concerns_found`.
+- `CI on reviewed head` (deterministic): requires passing CI for the reviewed head. Unavailable CI status fails
+  closed.
+- `Head is current with its base` (deterministic): requires the reviewed head to be current with its base for
+  reviewed files. Unavailable staleness status fails closed.
+- `Human authors` (deterministic): requires all authors to be human. Bot/unlinked or unavailable author data fails
+  closed.
+- `No sensitive paths or risky changes` (deterministic): requires no findings from deterministic risk checks
+  (`sensitive_paths`, risky diff shapes, deleted files). Unavailable risk-check data fails closed.
+- `Changed lines within cap` (deterministic): requires total added/removed lines within
+  `pr_reviewer.max_changed_lines`. Unavailable line counts fail closed.
+- `Model merge recommendation` (model, veto only): if the model returns `needs_review` or `changes_required`, the
+  verdict cannot be `no_concerns_found`.
+- `Model risk level` (model, veto only): if the model returns `medium` or `high` risk, the verdict cannot be
+  `no_concerns_found`.
 
-`no_concerns_found` requires all deterministic checks to pass and no model veto. If any deterministic check cannot be evaluated, the verdict fails closed. The review includes each check and its result.
+`no_concerns_found` requires all deterministic checks to pass and no model veto. If any deterministic check cannot be
+evaluated, the verdict fails closed. The review includes each check and its result.
 
 **Configuration and status publishing**
 
-- `pr_reviewer.sensitive_paths`: glob patterns for files treated as sensitive by deterministic risk checks. Host-only.
-- `pr_reviewer.max_changed_lines`: host-only changed-line cap for `no_concerns_found`. Counts added and removed lines.
+- `pr_reviewer.sensitive_paths`: glob patterns for files treated as sensitive by deterministic risk checks.
+  Host-only.
+- `pr_reviewer.max_changed_lines`: host-only changed-line cap for `no_concerns_found`. Counts added and removed
+  lines.
 - `pr_reviewer.extra_risky_shapes`: host-only custom regex patterns scanned in added/modified diff lines.
-- `publish_merge_recommendation_status`: publishes the verdict for the exact reviewed head SHA. GitHub uses the `PR Agent - Review` check run; GitLab uses a commit status.
+- `publish_merge_recommendation_status`: publishes the verdict for the exact reviewed head SHA. GitHub uses the
+  `PR Agent - Review` check run; GitLab uses a commit status.
 
-`needs_review` publishes as neutral on GitHub and skipped on GitLab, so it does not block merges by itself. `changes_required` publishes as failure/failed and blocks merges when that status is required. To require it, add `PR Agent - Review` as a required status/check in your GitHub branch protection rule or ruleset, or require the PR-Agent commit status in your GitLab project's merge rules/approval settings as applicable. A new commit has no PR-Agent verdict status until it is reviewed.
+`needs_review` publishes as neutral on GitHub and skipped on GitLab, so it does not block merges by itself.
+`changes_required` publishes as failure/failed and blocks merges when that status is required. To require it, add
+`PR Agent - Review` as a required status/check in your GitHub branch protection rule or ruleset, or require the
+PR-Agent commit status in your GitLab project's merge rules. A new commit has no PR-Agent verdict status until it is
+reviewed.
 
-The line cap, sensitive-path patterns, and custom risky-shape patterns are host-only settings; repository, per-directory, and comment configuration cannot weaken or replace them. The verdict scans the complete PR diff, including ignored paths and files already reviewed by an incremental review. If the full diff or a trustworthy CI timestamp is unavailable, the verdict cannot be `no_concerns_found`.
+The verdict scans the complete PR diff, including ignored paths and files already reviewed by an incremental review.
+If the full diff or a trustworthy CI timestamp is unavailable, the verdict cannot be `no_concerns_found`.
 
 ### Gated auto-approval
 
 :::warning
 
-Off by default and host-only (`config.enable_auto_approval`). An approval can count toward required reviews on some repositories, so enable it only where an automated approval of small, clean changes is acceptable. PR-Agent never merges.
+Off by default and host-only (`config.enable_auto_approval`). An approval counts toward a protected branch's
+required reviews, so enable it only where an automated approval of small, clean changes is acceptable. PR-Agent
+never merges.
 
 :::
 
-When the host sets `config.enable_auto_approval` (for example `CONFIG__ENABLE_AUTO_APPROVAL=true`), `/review` on GitHub and GitLab approves the exact commit it reviewed only when all of these hold:
+When the host sets `config.enable_auto_approval` (for example `CONFIG__ENABLE_AUTO_APPROVAL=true`), `/review` on
+GitHub and GitLab approves the exact commit it reviewed only when all of these hold:
 
 - the computed merge recommendation is `no_concerns_found`;
-- the model returned both a merge recommendation and a risk level, so `require_merge_recommendation` and `require_risk_assessment` must be enabled;
-- the review covered the whole pull request: not an incremental review, no file left out or cut short to fit the model's context, and no part of the diff failed;
+- the model returned both a merge recommendation and a risk level, so `require_merge_recommendation` and
+  `require_risk_assessment` must be enabled;
+- the review covered the whole pull request: not an incremental review, no file left out or cut short to fit the
+  model's context, and no part of the diff failed;
 - the review completed and its finding state could be updated.
 
-Each `/review` run withdraws the approval PR-Agent gave when it starts, and approves again only when it ends with all of these holding, so a run that fails or finds a concern leaves no approval behind. On a push, the GitHub App, the GitHub Action, and the GitLab webhook dismiss it before any other event filter runs. A change of base branch also dismisses it, and on GitHub so does a reopen. On GitHub, PR-Agent only dismisses approvals it gave automatically; manual approvals from the same account are left alone. On GitLab, an approval belongs to the token's account, so use an account reserved for PR-Agent. With `publish_output` off, nothing is approved or dismissed.
+Each `/review` run withdraws the approval PR-Agent gave when it starts, and approves again only when it ends with all
+of these holding, so a run that fails or finds a concern leaves no approval behind. On a push, the GitHub App, the
+GitHub Action, and the GitLab webhook dismiss it before any other event filter runs. A change of base branch also
+dismisses it, and on GitHub so does a reopen. On GitHub, PR-Agent only dismisses approvals it gave automatically;
+manual approvals from the same account are left alone. On GitLab, an approval belongs to the token's account, so use
+an account reserved for PR-Agent. With `publish_output` off, nothing is approved or dismissed.
 
 `enable_auto_approval` is host-only: a repository `.pr_agent.toml` or a comment argument cannot turn it on.
 
-**Required repository settings**
+**Required repository settings.**
 
-- On GitHub, turn on "Dismiss stale pull request approvals when new commits are pushed" in the branch protection rule or ruleset. PR-Agent can miss a push (a failed webhook delivery, a polling deployment, or a workflow that does not listen to `synchronize`), and GitHub only removes a stale approval itself when this is on.
-- On GitLab, enable merge request approvals for the project and keep approvals reset on push in the project's approval settings, so a missed webhook does not leave a stale approval behind.
-- For the GitHub Action, allow "GitHub Actions to create and approve pull requests" in the repository's Actions settings. Pull requests from forks get a read-only token, so they cannot be approved.
-- If the rule restricts who can dismiss reviews, include PR-Agent's account; otherwise it cannot withdraw its own approval, and only logs an error.
+- On GitHub, turn on "Dismiss stale pull request approvals when new commits are pushed" in the branch protection
+  rule or ruleset. PR-Agent can miss a push (a failed webhook delivery, a polling deployment, or a workflow that
+  does not listen to `synchronize`), and GitHub only removes a stale approval itself when this is on.
+- On GitLab, enable merge request approvals for the project and keep approvals reset on push in the project's
+  approval settings, so a missed webhook does not leave a stale approval behind.
+- For the GitHub Action, allow "GitHub Actions to create and approve pull requests" in the repository's Actions
+  settings. Pull requests from forks get a read-only token, so they cannot be approved.
+- If the rule restricts who can dismiss reviews, include PR-Agent's account; otherwise it cannot withdraw its own
+  approval, and only logs an error.
 
-GitHub does not let an account approve a pull request it opened. GitLab can also reject approval by the merge request author according to the project's approval settings. Other git providers are not supported yet.
+GitHub does not let an account approve a pull request it opened. GitLab can also reject approval by the merge
+request author according to the project's approval settings. Other git providers are not supported yet.
 
 **Suggested rollout**
 
-1. Enable `require_merge_recommendation`, `require_risk_assessment`, and `publish_merge_recommendation_status` on the host. Tune `sensitive_paths` and `max_changed_lines` as needed.
-2. Require the published verdict status in branch protection or merge rules, and verify verdicts on representative PRs.
-3. Enable `config.enable_auto_approval` for a limited scope first (or a pilot environment), confirm approvals are dismissed on push/base changes, and monitor outcomes.
-4. Expand gradually once the behavior matches your repository's review policy. Keep PR-Agent's account permissions and stale-approval settings in place.
+1. Enable `require_merge_recommendation`, `require_risk_assessment`, and `publish_merge_recommendation_status` on
+   the host. Tune `sensitive_paths` and `max_changed_lines` as needed.
+2. Require the published verdict status in branch protection or merge rules, and verify verdicts on representative
+   PRs.
+3. Enable `config.enable_auto_approval` for a limited scope first (or a pilot environment), confirm approvals are
+   dismissed on push/base changes, and monitor outcomes.
+4. Expand gradually once the behavior matches your repository's review policy. Keep PR-Agent's account permissions
+   and stale-approval settings in place.
