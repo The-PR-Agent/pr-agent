@@ -1,5 +1,7 @@
 import subprocess
 import sys
+import tomllib
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -55,6 +57,8 @@ def test_normalize_file_path():
     [
         (".github/workflows/deploy.yml", True),
         (".github/workflows/sub/ci.yaml", True),
+        (".github/actions/setup/action.yml", True),
+        (".github/actions/deploy/action.yaml", True),
         (".gitlab-ci.yml", True),
         ("Jenkinsfile", True),
         ("Jenkinsfile.deploy", True),
@@ -94,6 +98,12 @@ def test_normalize_file_path():
 def test_matches_sensitive_path_defaults(path, expected_match):
     matched = dr.matches_sensitive_path(path)
     assert bool(matched) is expected_match
+
+
+def test_default_sensitive_paths_match_shipped_configuration():
+    config_path = Path(dr.__file__).parents[1] / "settings" / "configuration.toml"
+    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert config["pr_reviewer"]["sensitive_paths"] == list(dr.DEFAULT_SENSITIVE_PATHS)
 
 
 def test_matches_sensitive_path_custom():
