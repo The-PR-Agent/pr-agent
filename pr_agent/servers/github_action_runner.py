@@ -172,7 +172,9 @@ async def _run_auto_command(command_class, pr_url):
     _refresh_shared_provider(pr_url)
     _normalize_publish_output_setting()
     try:
-        with response_language_instructions():
+        # Like PRAgent.handle_request: the LiteLLM handler reads pr_url from the log
+        # context to build the session id.
+        with response_language_instructions(), get_logger().contextualize(pr_url=pr_url):
             result = await command_class(pr_url).run()
     except IncompletePullRequestFilesError as error:
         await asyncio.to_thread(publish_incomplete_files_comment, pr_url, error)

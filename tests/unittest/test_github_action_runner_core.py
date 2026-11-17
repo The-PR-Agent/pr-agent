@@ -116,6 +116,24 @@ async def test_direct_auto_command_normalizes_publish_output(value, expected):
 
 
 @pytest.mark.asyncio
+async def test_direct_auto_command_exposes_pr_url_for_session_id():
+    from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+
+    observed = []
+
+    class AutoCommand:
+        def __init__(self, _pr_url):
+            pass
+
+        async def run(self):
+            observed.append(LiteLLMAIHandler._capture_log_context("probe", "test probe").get("pr_url"))
+
+    await github_action_runner._run_auto_command(AutoCommand, "https://example/pr/1")
+
+    assert observed == ["https://example/pr/1"]
+
+
+@pytest.mark.asyncio
 async def test_direct_auto_command_publishes_and_preserves_error_when_comment_decode_fails(monkeypatch):
     error = IncompletePullRequestFilesError("private repository details")
     provider = Mock()
