@@ -128,7 +128,8 @@ COMMENT_OVERRIDABLE_KEYS = {
         "enable_semantic_files_types", "extra_instructions", "file_table_collapsible_open_by_default",
         "final_update_message", "generate_ai_title", "include_generated_by_header",
         "pr_diagram_direction", "pr_diagram_direction_threshold", "publish_description_as_comment",
-        "publish_description_as_comment_persistent", "publish_labels", "use_description_markers",
+        "publish_description_as_comment_persistent", "publish_labels", "refresh_description_markers",
+        "use_description_markers",
     }),
     "pr_help_docs": frozenset({
         "docs_path", "enable_help_text", "exclude_root_readme", "repo_default_branch", "supported_doc_exts",

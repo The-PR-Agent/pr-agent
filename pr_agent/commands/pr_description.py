@@ -1,8 +1,10 @@
 import asyncio
+import bisect
 import copy
 import html
 import re
 import traceback
+from collections.abc import Callable
 from functools import partial
 from graphlib import TopologicalSorter
 
@@ -29,7 +31,7 @@ from pr_agent.algo.review_json_output import review_json_output_path, write_revi
 from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure
 from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
 from pr_agent.algo.skills_loader import get_skills_context
-from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.algo.token_budget import AttemptTokenBudget, clip_tokens
 from pr_agent.algo.utils import (
     FILE_WALKTHROUGH_ESCAPED_MARKER,
     ModelType,
@@ -49,6 +51,7 @@ from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFil
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 
+GENERATED_MARKER = '<!-- pr-agent-generated -->'
 MAX_DESCRIPTION_COVERAGE_FILES = 50
 DESCRIBE_PROGRESS_COMMENT = "Preparing PR description..."
 
@@ -64,6 +67,111 @@ def _build_unprocessed_files_block(file_list: list, label: str, max_files: int =
             break
         block += f"\n- {file}"
     return block
+
+
+_DELIMITER_RE = re.compile(r"<!--\s*pr_agent:(\w+):(start|end)\s*-->")
+_DELIMITER_LIKE_RE = re.compile(r"<!--\s*pr_agent:\w+(?::(?:start|end))?\s*-->")
+_CONTENT_MARKER_NAMES = frozenset({"type", "summary", "walkthrough", "diagram"})
+_CONTENT_MARKER_RE = re.compile(r"pr_agent:(?:type|summary|walkthrough|diagram)\b")
+
+
+def _marker_block_spans(text: str, wanted: Callable[[str], bool]) -> list[tuple[int, int]]:
+    """Return the sorted, non-overlapping (start, end) offsets of every generated section whose name `wanted`
+    accepts: a <!-- pr_agent:<name>:start --> comment up to the first <!-- pr_agent:<name>:end --> after it.
+
+    One pass over the delimiter comments keeps this linear in the text length. A lazy `.*?` between the two
+    delimiters rescans to the end of the text for every unterminated opener, which is quadratic on a body full
+    of them. An opener without a closer is left alone, so a hand-deleted end comment never swallows the rest of
+    the description."""
+    open_starts: dict[str, int] = {}
+    spans: list[tuple[int, int]] = []
+    for match in _DELIMITER_RE.finditer(text):
+        name, kind = match.groups()
+        if kind == "start":
+            if wanted(name):
+                open_starts.setdefault(name, match.start())
+        elif name in open_starts:
+            spans.append((open_starts.pop(name), match.end()))
+    spans.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _replace_spans(text: str, spans: list[tuple[int, int]], replacement: str) -> str:
+    """Rebuild `text` with each of the sorted, non-overlapping `spans` replaced by `replacement`."""
+    parts = []
+    last = 0
+    for start, end in spans:
+        parts.append(text[last:start])
+        parts.append(replacement)
+        last = end
+    parts.append(text[last:])
+    return "".join(parts)
+
+
+def _inside_any(spans: list[tuple[int, int]], position: int) -> bool:
+    """Return whether `position` falls inside one of the sorted, non-overlapping `spans`."""
+    index = bisect.bisect_right(spans, (position, float("inf"))) - 1
+    return index >= 0 and position < spans[index][1]
+
+
+def _strip_marker_blocks(text: str, wanted: Callable[[str], bool]) -> str:
+    return _replace_spans(text, _marker_block_spans(text, wanted), "")
+
+
+def _user_owned_text(body: str) -> str:
+    """Return the body without the delimited generated sections and the recognition comment."""
+    return _strip_marker_blocks(body or "", lambda _name: True).replace(GENERATED_MARKER, "").strip()
+
+
+def has_content_markers(text: str) -> bool:
+    """Return whether `text` still carries a marker for a generated content section, in bare, HTML-comment or
+    delimited form. Ignore the footer blocks (help, coverage, ...) that refresh mode adds, so a description whose
+    content markers were all removed by hand no longer triggers a model call."""
+    footer_only = _strip_marker_blocks(text, lambda name: name not in _CONTENT_MARKER_NAMES)
+    return bool(_CONTENT_MARKER_RE.search(footer_only))
+
+
+def _bare_marker_re(name: str) -> re.Pattern:
+    """Match the plain `pr_agent:<name>` token, but not the token inside a start/end delimiter comment."""
+    return re.compile(rf"pr_agent:{name}(?![:\w])")
+
+
+def _wrap_marker_block(name: str, content: str) -> str:
+    """Wrap `content` in the start/end delimiter comments.
+
+    Drop any marker comment the content quotes: a delimiter-like one would end the block early on the next
+    refresh, and a bare `<!-- pr_agent:<name> -->` would trip the whole-body guards and freeze the section."""
+    stripped = _DELIMITER_LIKE_RE.sub("", content)
+    while stripped != content:  # removing a quoted comment can join the text around it into another one
+        content, stripped = stripped, _DELIMITER_LIKE_RE.sub("", stripped)
+    return f"<!-- pr_agent:{name}:start -->\n{content}\n<!-- pr_agent:{name}:end -->"
+
+
+def refresh_marker_block(body: str, name: str, content: str, append: bool = False) -> str:
+    """Replace the delimited `name` section of `body` with `content`, keeping the delimiters.
+
+    Without an existing section, an empty `content` leaves `body` untouched and a non-empty one is appended
+    when `append` is set. An existing section is removed when `content` is empty.
+    """
+    spans = _marker_block_spans(body, lambda block_name: block_name == name)
+    if spans:
+        return _replace_spans(body, spans, _wrap_marker_block(name, content) if content else "")
+    if content and append:
+        return f"{body.rstrip()}\n\n{_wrap_marker_block(name, content)}\n"
+    return body
+
+
+def with_generated_marker(body: str) -> str:
+    """Prepend the hidden recognition comment unless the body already carries it."""
+    if GENERATED_MARKER in body:
+        return body
+    return f"{GENERATED_MARKER}\n{body}"
 
 
 class PRDescription:
@@ -102,10 +210,12 @@ class PRDescription:
             get_settings().pr_description.get("enable_pr_diagram", False)
             and self.git_provider.is_supported("gfm_markdown")
         )
+        self.user_description = self._load_user_description()
+
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
-            "description": self.git_provider.get_pr_description(full=False),
+            "description": self._prompt_description(),
             "language": self.main_pr_language,
             "diff": "",  # empty diff for initial calculation
             "extra_instructions": get_settings().pr_description.extra_instructions,
@@ -123,8 +233,6 @@ class PRDescription:
             "enable_pr_diagram": enable_pr_diagram,
             "enable_pr_description": get_settings().pr_description.get("enable_pr_description", True),
         }
-
-        self.user_description = self.git_provider.get_user_description()
 
         # Initialize patches_diff and prediction attributes
         self.patches_diff = None
@@ -209,47 +317,22 @@ class PRDescription:
             else:
                 pr_title, pr_body, changes_walkthrough = self._prepare_pr_answer()
                 pr_body += "\n\n" + changes_walkthrough + "___\n\n"
-            pr_body += self._get_description_coverage_footer()
+            refresh_markers = self._refresh_markers_enabled()
+            if refresh_markers:
+                pr_body = refresh_marker_block(pr_body, "coverage", self._get_description_coverage_footer().strip(),
+                                               append=True)
+            else:
+                pr_body += self._get_description_coverage_footer()
             get_logger().debug("PR output", artifact={"title": pr_title, "body": pr_body})
 
             # Add help text if gfm_markdown is supported
-            if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_description.enable_help_text:
-                pr_body += (
-                    "<hr>\n\n<details> <summary><strong>✨ Describe command usage guide:</strong>"
-                    "</summary><hr> \n\n"
-                )
-                pr_body += HelpMessage.get_describe_usage_guide()
-                pr_body += "\n</details>\n"
-            elif get_settings().pr_description.enable_help_comment and self.git_provider.is_supported("gfm_markdown"):
-                bot_display_name = get_bot_display_name()
-                if self.git_provider.supports_inline_help_footer():
-                    pr_body += (
-                        '\n\n___\n\n> <details> <summary>  Need help?</summary>'
-                        '<li>Type <code>/help how to ...</code> in the comments thread '
-                        f'for any questions about {bot_display_name} usage.</li>'
-                        '<li>Check out the '
-                        '<a href="https://docs.pr-agent.ai/usage-guide/">documentation</a> '
-                        'for more information.</li></details>'
-                    )
-                else:  # bullets separated by <br>, for providers whose footer cannot inline a list
-                    pr_body += (
-                        "\n\n___\n\n<details><summary>Need help?</summary>"
-                        "- Type <code>/help how to ...</code> in the comments "
-                        f"thread for any questions about {bot_display_name} usage.<br>"
-                        "- Check out the "
-                        "<a href='https://docs.pr-agent.ai/usage-guide/'>documentation</a> "
-                        "for more information.</details>"
-                    )
-                # elif get_settings().pr_description.enable_help_comment:
-                #     pr_body += '\n\n___\n\n> 💡 **PR-Agent usage**: '
-                #     Comment `/help "your question"` on any pull request to receive relevant information'
+            help_footer = self._help_footer()
+            if refresh_markers:
+                pr_body = refresh_marker_block(pr_body, "help", help_footer.strip(), append=True)
+            else:
+                pr_body += help_footer
 
-            # Output the relevant configurations if enabled
-            if get_settings().get('config', {}).get('output_relevant_configurations', False):
-                pr_body += show_relevant_configurations(relevant_section='pr_description')
-
-            # Output the fallback-model note, and the agent run details (model, tokens, time cost) if enabled
-            pr_body = append_run_details(pr_body, self.git_provider)
+            pr_body = self._append_run_footers(pr_body, refresh_markers)
 
             if get_settings().config.publish_output:
                 # Emit to the optional external sinks before touching the provider, so a sink
@@ -306,7 +389,7 @@ class PRDescription:
                     # Prepend a hidden HTML comment so recognition can match it
                     # anywhere in the body without depending on visible section
                     # headers that a human might quote.
-                    pr_body = '<!-- pr-agent-generated -->\n' + pr_body
+                    pr_body = with_generated_marker(pr_body)
                     try:
                         self.git_provider.publish_description(title_to_publish, pr_body)
                     except Exception:
@@ -377,11 +460,18 @@ class PRDescription:
             # placeholder so a failing attempt's counts are not shown until new ones exist.
             await previous_progress.reset_to_base()
         self._chunk_progress = None
-        if get_settings().pr_description.use_description_markers and 'pr_agent:' not in self.user_description:
-            get_logger().info(
-                "Markers were enabled, but user description does not contain "
-                "markers. Skipping AI prediction"
-            )
+        if get_settings().pr_description.use_description_markers and not self._template_has_markers():
+            if self._refresh_markers_enabled():
+                get_logger().info(
+                    "Markers were enabled, but the description contains neither pr_agent:* markers nor delimited "
+                    "sections; a description filled before refresh_description_markers was enabled keeps its "
+                    "content until the markers are re-inserted. Skipping AI prediction"
+                )
+            else:
+                get_logger().info(
+                    "Markers were enabled, but user description does not contain "
+                    "markers. Skipping AI prediction"
+                )
             return None
 
         raw_prompt_vars = getattr(self, "_raw_prompt_vars", getattr(self, "vars", None))
@@ -854,9 +944,10 @@ class PRDescription:
                     self.data[field] = valid_values
 
         # A separate comment leaves the PR body untouched, so repeating the user text would duplicate it.
-        if (get_settings().pr_description.add_original_user_description and self.user_description
+        user_description = self._user_authored_description()
+        if (get_settings().pr_description.add_original_user_description and user_description
                 and not get_settings().pr_description.publish_description_as_comment):
-            self.data["User Description"] = self.user_description
+            self.data["User Description"] = user_description
 
         # re-order keys
         if 'User Description' in self.data:
@@ -935,6 +1026,127 @@ class PRDescription:
             get_logger().error(f"Error converting labels to original case {self.pr_id}: {e}")
         return filter_generated_labels(pr_labels)
 
+    def _help_footer(self) -> str:
+        """Return the describe usage guide or the short help footer, or "" when neither is enabled."""
+        if not self.git_provider.is_supported("gfm_markdown"):
+            return ""
+        if get_settings().pr_description.enable_help_text:
+            return (
+                "<hr>\n\n<details> <summary><strong>✨ Describe command usage guide:</strong>"
+                "</summary><hr> \n\n"
+                + HelpMessage.get_describe_usage_guide()
+                + "\n</details>\n"
+            )
+        if get_settings().pr_description.enable_help_comment:
+            bot_display_name = get_bot_display_name()
+            if self.git_provider.supports_inline_help_footer():
+                return (
+                    '\n\n___\n\n> <details> <summary>  Need help?</summary>'
+                    '<li>Type <code>/help how to ...</code> in the comments thread '
+                    f'for any questions about {bot_display_name} usage.</li>'
+                    '<li>Check out the '
+                    '<a href="https://docs.pr-agent.ai/usage-guide/">documentation</a> '
+                    'for more information.</li></details>'
+                )
+            # bullets separated by <br>, for providers whose footer cannot inline a list
+            return (
+                "\n\n___\n\n<details><summary>Need help?</summary>"
+                "- Type <code>/help how to ...</code> in the comments "
+                f"thread for any questions about {bot_display_name} usage.<br>"
+                "- Check out the "
+                "<a href='https://docs.pr-agent.ai/usage-guide/'>documentation</a> "
+                "for more information.</details>"
+            )
+        return ""
+
+    def _refresh_markers_enabled(self) -> bool:
+        """Return whether generated sections are delimited and regenerated in place.
+
+        Off for providers that cannot reload what publish_description() wrote (local and Gerrit publish to a
+        file or a comment, and read the commit messages back), since there is no published body to refresh."""
+        return bool(get_settings().pr_description.get("use_description_markers", False)
+                    and get_settings().pr_description.get("refresh_description_markers", False)
+                    and self.git_provider.is_supported("refresh_description_markers"))
+
+    def _append_run_footers(self, pr_body: str, refresh_markers: bool) -> str:
+        """Append the optional relevant-configurations section, the fallback-model note and the run details.
+
+        In refresh mode keep the configurations and the run notes in their own delimited blocks so later runs
+        replace them, or remove them when the option was switched off."""
+        config_section = ""
+        if get_settings().get('config', {}).get('output_relevant_configurations', False):
+            config_section = show_relevant_configurations(relevant_section='pr_description')
+        if not refresh_markers:
+            return append_run_details(pr_body + config_section, self.git_provider)
+        pr_body = refresh_marker_block(pr_body, "config", config_section.strip(), append=True)
+        run_details = append_run_details("", self.git_provider)
+        return refresh_marker_block(pr_body, "run_details", run_details.strip(), append=True)
+
+    def _user_authored_description(self) -> str:
+        """Return the user-owned part of the template: the loaded description without the generated
+        sections and the recognition comment."""
+        if not self._refresh_markers_enabled():
+            return self.user_description
+        return _user_owned_text(self.user_description)
+
+    def _template_has_markers(self) -> bool:
+        """Return whether the loaded template still asks for generated content."""
+        if self._refresh_markers_enabled():
+            return has_content_markers(self.user_description or "")
+        return 'pr_agent:' in self.user_description
+
+    def _prompt_description(self) -> str:
+        """Return the previous description for the prompt: the user-owned text only.
+
+        With marker refresh the published body carries delimited generated sections, and get_user_description()
+        would return "" for it; strip the generated sections and the recognition comment instead."""
+        if not self._refresh_markers_enabled():
+            return self.git_provider.get_pr_description(full=False)
+        description = self._user_authored_description()
+        max_tokens_description = get_settings().get("CONFIG.MAX_DESCRIPTION_TOKENS", None)
+        if max_tokens_description:
+            description = clip_tokens(description, max_tokens_description)
+        return description
+
+    def _load_user_description(self) -> str:
+        """Load the marker template from the full description when marker refresh is enabled.
+
+        The generated sections are then delimited and replaced in place, so the pr-agent-generated heuristics
+        of get_user_description() must not strip the body down to an empty string on the second run. Cache the
+        user-owned text on the provider too, because ticket extraction reads get_user_description()."""
+        if not self._refresh_markers_enabled():
+            return self.git_provider.get_user_description()
+        body = (self.git_provider.get_pr_description_full() or "").strip()
+        self.git_provider.user_description = _user_owned_text(body)
+        return body
+
+    def _replace_marker(self, body: str, name: str, content: str, pattern: re.Pattern | None = None) -> str:
+        """Substitute the `pr_agent:<name>` marker (or `pattern`) with `content`.
+
+        With refresh_description_markers the content is wrapped in start/end delimiter comments, and a section
+        already delimited from an earlier run is replaced in place instead of looking for the bare marker.
+        """
+        if not self._refresh_markers_enabled():
+            if pattern is not None:
+                return pattern.sub(lambda _match: content, body)
+            return body.replace(f"pr_agent:{name}", content)
+        bare_re = pattern if pattern is not None else _bare_marker_re(name)
+        # Locate every existing delimited section and every bare marker outside one in the original body, then
+        # replace them in one rebuild. Never rescan inserted content: generated text quoting the marker would
+        # nest a block. A marker quoted inside another section (a summary mentioning pr_agent:diagram) is text
+        # of that section, not a slot.
+        other_blocks = _marker_block_spans(body, lambda block_name: block_name != name)
+        spans = _marker_block_spans(body, lambda block_name: block_name == name)
+        spans.extend(match.span() for match in bare_re.finditer(body))
+        spans.sort()
+        outside_blocks: list[tuple[int, int]] = []
+        for span in spans:
+            if _inside_any(other_blocks, span[0]):
+                continue
+            if not outside_blocks or span[0] >= outside_blocks[-1][1]:
+                outside_blocks.append(span)
+        return _replace_spans(body, outside_blocks, _wrap_marker_block(name, content))
+
     def _prepare_pr_answer_with_markers(self) -> tuple[str, str]:
         get_logger().info(f"Using description marker replacements {self.pr_id}")
 
@@ -963,7 +1175,7 @@ class PRDescription:
             else:
                 pr_type = ai_type
             pr_type = f"{ai_header}{pr_type}"
-            body = body.replace('pr_agent:type', pr_type)
+            body = self._replace_marker(body, 'type', pr_type)
 
         enable_pr_description = get_settings().pr_description.get("enable_pr_description", True)
         if not enable_pr_description:
@@ -972,25 +1184,36 @@ class PRDescription:
         ai_summary = self.data.get('description')
         if ai_summary and not re.search(r'<!--\s*pr_agent:summary\s*-->', body):
             summary = f"{ai_header}{ai_summary}"
-            body = body.replace('pr_agent:summary', summary)
+            body = self._replace_marker(body, 'summary', summary)
         elif not enable_pr_description:
             # AI summary disabled by config - remove the marker instead of leaving it unreplaced
+            body = refresh_marker_block(body, 'summary', '')
             body = re.sub(r'<!--\s*pr_agent:summary\s*-->|pr_agent:summary', '', body)
+        elif not ai_summary:
+            # No summary this time: drop the one a previous refresh left behind
+            body = refresh_marker_block(body, 'summary', '')
 
         ai_walkthrough = self.data.get('pr_files')
         walkthrough_gfm = ""
         if ai_walkthrough and not re.search(r'<!--\s*pr_agent:walkthrough\s*-->', body):
             try:
                 walkthrough_gfm = self.process_pr_files_prediction(walkthrough_gfm, self.file_label_dict)
-                body = body.replace('pr_agent:walkthrough', walkthrough_gfm)
+                body = self._replace_marker(body, 'walkthrough', walkthrough_gfm)
             except Exception as e:
                 get_logger().error(f"Failing to process walkthrough {self.pr_id}: {e}")
-                body = body.replace('pr_agent:walkthrough', "")
+                body = self._replace_marker(body, 'walkthrough', "")
+        elif not ai_walkthrough:
+            # No walkthrough this time: drop the one a previous refresh left behind
+            body = refresh_marker_block(body, 'walkthrough', '')
 
         # Add support for pr_agent:diagram marker (plain and HTML comment formats)
         ai_diagram = self.data.get('changes_diagram')
         if ai_diagram:
-            body = re.sub(r'<!--\s*pr_agent:diagram\s*-->|pr_agent:diagram', lambda _match: ai_diagram, body)
+            body = self._replace_marker(body, 'diagram', ai_diagram,
+                                        pattern=re.compile(r'<!--\s*pr_agent:diagram\s*-->|pr_agent:diagram(?![:\w])'))
+        else:
+            # No diagram this time: drop the one a previous refresh left behind
+            body = refresh_marker_block(body, 'diagram', '')
 
         return title, body
 
