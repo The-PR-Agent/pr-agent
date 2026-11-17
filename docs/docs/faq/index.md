@@ -17,7 +17,7 @@ However, PR-Agent has built-in safeguards to ensure the developer remains in the
 
 1. Preserves user's original PR header
 2. Places user's description above the AI-generated PR description
-3. Won't approve PRs by default. [Gated auto-approval](../commands/review.md#gated-auto-approval) is an opt-in the host must enable, and it never merges
+3. Won't approve PRs by default. [Gated auto-approval](../commands/review.md#gated-auto-approval) is a host-only opt-in (`config.enable_auto_approval`). When enabled, `/review` can approve a reviewed commit on GitHub or GitLab only when deterministic verdict checks pass (CI, head freshness, human authors, no sensitive/risky changes, size cap) and the model does not veto with a stricter recommendation or risk level. PR-Agent withdraws its own approval on new runs/pushes and never merges.
 4. The code suggestions are optional, and aim to:
     - Encourage self-review and self-reflection
     - Highlight potential bugs or oversights
