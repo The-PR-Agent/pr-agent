@@ -131,7 +131,7 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | `bot_user_indicators` | ["codium", "bot_", "bot-", "_bot", "-bot"] | Substring indicators used to skip bot users on webhook events. Currently consumed by the GitLab webhook (`is_bot_user`); other providers may adopt this list in future. The match is case-insensitive against the sender's display name. Overriding this setting REPLACES the default list — include the entries below in your override if you want to keep them (e.g. `["codium", "bot_", "bot-", "_bot", "-bot", "renovate"]`). |
 | `restricted_mode` | false | when true, skip operations that require elevated permissions (e.g. pushing code to the repository) |
 | `is_auto_command` | false | will be auto-set to true if the command is triggered by an automation |
-| `skip_unchanged_diff` | false | skip an automatic or CLI /review or /describe when the PR has not changed since that command last succeeded. See docs/docs/usage-guide/automations_and_usage.md |
+| `skip_unchanged_diff` | false | skip automatic or CLI /review, /describe when head commit and target branch name, or the diff, are unchanged. See docs/docs/usage-guide/automations_and_usage.md |
 | `propagate_command_errors` | false | when true, a command re-raises instead of swallowing an internal error, so a caller can tell a failed run from an empty one |
 | `enable_ai_metadata` | false | will enable adding ai metadata |
 | `add_user_to_requests` | false | send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user") |

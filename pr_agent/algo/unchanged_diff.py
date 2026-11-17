@@ -20,7 +20,7 @@ _IDENTITY = PRCommandNoticeIdentity.UNCHANGED_DIFF.value
 _RECORD_RE = re.compile(r"<!-- pr-agent:unchanged-diff:([a-z_]+) ([0-9a-f]{64}) ([0-9a-f]{7,64}|-) (\S*) -->")
 _SKIPPED_RE = re.compile(r"<!-- pr-agent:unchanged-diff-skipped:([a-z_]+) (commit|diff) -->")
 _SKIP_REASONS = {
-    "commit": "the head commit and target branch have not changed since its last run",
+    "commit": "the head commit and target branch name have not changed since its last run",
     "diff": "the diff has not changed since its last run",
 }
 

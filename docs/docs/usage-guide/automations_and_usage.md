@@ -134,7 +134,7 @@ skip_unchanged_diff = true
 
 An automatic or CLI `/review` or `/describe` run is then skipped, with no model calls, when either is true since that command last succeeded on the PR:
 
-- the head commit and the target branch are the same, or
+- the head commit and the target branch name are the same. The target branch is compared by name, not by its latest commit, so a run after new commits land on the target branch is skipped too, or
 - the diff is the same (for example after a rebase that changed no content). This check is off when a file has no patch, such as a binary file, because its content can change without changing the diff.
 
 PR-Agent keeps its record in one comment on the PR, and edits it to say when a run was skipped and why. The record is written only after a command succeeds, so a failed run is retried next time.
