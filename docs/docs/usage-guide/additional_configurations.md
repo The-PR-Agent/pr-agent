@@ -198,7 +198,7 @@ harness. The Chinese catalogs (`zh-cn` and `zh-tw`) also received human review b
 The other 26 catalogs were machine-drafted and AI-reviewed, but have not undergone native-speaker human review.
 Corrections from native speakers are welcome.
 
-Use `zh-CN` or `zh-TW` for Chinese, and `pt-BR` or `pt-PT` for Portuguese. There is no shared `zh` or `pt` catalog, and script tags such as `zh-Hant` are not mapped to a regional catalog.
+Use `zh-CN` or `zh-TW` for Chinese, and `pt-BR` or `pt-PT` for Portuguese. There is no shared `zh` or `pt` catalog. Chinese and Mandarin script tags (`zh-Hans`, `zh-Hant`, `cmn-Hans`, `cmn-Hant`, and the extended `zh-cmn` forms) fall back to the corresponding `zh-cn` and `zh-tw` catalogs, including tags with other regions (for example, `zh-Hant-HK`). Other Chinese varieties without a shipped catalog (such as `zh-yue`) and the tag `zh` alone still fall back to English.
 
 In the `/review` comment, the intro line, the effort, tests, security and key-issue labels, the resolved-findings section, the finding lifecycle summary, the suggested-fix label, the persistent-review update lines and the "Preparing review..." message are translated. `/improve` and `/improve_code` now run `/review`; their one-line notice is also translated. The agent run details section is translated for every command. Other fixed text stays in U.S. English: the review heading (set it with `pr_reviewer.review_heading`), the other `/review` fields (ticket compliance, risk level, failure modes and the other opt-in fields), the review coverage footer, chunk progress, other commands' comments outside their run details, and the labels added to the PR. Numbers keep the U.S. format.
 
