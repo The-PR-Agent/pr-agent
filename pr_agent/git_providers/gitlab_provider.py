@@ -2946,7 +2946,14 @@ class GitLabProvider(GitProvider):
         attempt succeeded."""
         try:
             if as_draft:
-                self.mr.draft_notes.create({'note': body, 'position': pos_obj})
+                draft = self.mr.draft_notes.create({'note': body, 'position': pos_obj})
+                if self._is_unanchored_line_draft(draft):
+                    # draft_notes.create accepts a line position outside the diff (line_code null) where
+                    # discussions.create returns 400; bulk_publish then fails on it or leaves it pending.
+                    self._delete_unanchored_draft(draft)
+                    # A 4xx keeps _record_if_unconfirmed_suggestion_write from treating this as a landed write.
+                    raise GitlabCreateError("GitLab could not anchor the draft note to a diff line",
+                                            response_code=400)
                 self._code_suggestion_draft_queued = True
             else:
                 self.mr.discussions.create({'body': body, 'position': pos_obj})
@@ -3058,13 +3065,51 @@ class GitLabProvider(GitProvider):
             return None
         return latest_diff
 
+    @staticmethod
+    def _is_unanchored_line_draft(draft) -> bool:
+        if getattr(draft, 'line_code', '') is not None:
+            return False
+        position = getattr(draft, 'position', None)
+        return isinstance(position, dict) and (position.get('new_line') is not None
+                                               or position.get('old_line') is not None)
+
+    def _delete_unanchored_draft(self, draft) -> bool:
+        try:
+            draft.delete()
+            return True
+        except (GitlabError, RequestException) as e:
+            get_logger().error(f"Could not delete unanchored draft note {getattr(draft, 'id', None)} in MR "
+                               f"{self.id_mr}; it may stay pending: {e}")
+            return False
+
+    def _remember_published_draft(self, draft) -> None:
+        body = getattr(draft, "note", "") or ""
+        if body:
+            self._remember_published_inline_comment_body(body)
+
     def _publish_suggestion_drafts(self, pending) -> None:
-        if pending:
+        # Drafts GitLab could not anchor never publish, so drop them rather than record them as published.
+        unanchored = [draft for draft in pending if self._is_unanchored_line_draft(draft)]
+        all_deleted = all([self._delete_unanchored_draft(draft) for draft in unanchored])
+        pending = [draft for draft in pending if draft not in unanchored]
+        if not pending:
+            return
+        if all_deleted:
             self.mr.draft_notes.bulk_publish()
             for draft in pending:
-                body = getattr(draft, "note", "") or ""
-                if body:
-                    self._remember_published_inline_comment_body(body)
+                self._remember_published_draft(draft)
+            return
+        # bulk_publish would include the undeletable draft, and GitLab before 19.6 fails the whole batch on it.
+        first_error = None
+        for draft in pending:
+            try:
+                draft.publish()
+            except (GitlabError, RequestException) as e:
+                first_error = first_error or e
+                continue
+            self._remember_published_draft(draft)
+        if first_error is not None:
+            raise first_error
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         # Runs first so the fingerprints it frees are in the store before any dedup lookup.
@@ -3160,9 +3205,9 @@ class GitLabProvider(GitProvider):
                     if relevant_line_in_file is None:
                         get_logger().warning(f"Skipping suggestion: no source line for '{relevant_file}'")
                         continue
-                    # Keep the existing fallback path for anchors outside the diff. GitLab will
-                    # reject the optimistic addition position and _create_suggestion_note will
-                    # publish the general file note instead.
+                    # Keep the existing fallback path for anchors outside the diff. GitLab rejects
+                    # the optimistic addition position (a draft comes back without a line_code) and
+                    # _create_suggestion_note publishes the general file note instead.
                     source_line_no = -1
                     target_line_no = relevant_lines_start + 1
                     found = True
