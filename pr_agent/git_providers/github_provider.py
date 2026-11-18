@@ -1869,7 +1869,7 @@ class GithubProvider(GitProvider):
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
         try:
             # self.pr.get_issue_comment(comment_id).edit(body)
-            body = self._publishable_comment(body)
+            body = self.limit_output_characters(neutralize_github_mentions(body), self.max_comment_chars)
             headers, data_patch = self.pr._requester.requestJsonAndCheck(
                 "POST", f"{self.base_url}/repos/{self.repo}/pulls/{self.pr_num}/comments/{comment_id}/replies",
                 input={"body": body}
