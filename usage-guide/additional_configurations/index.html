@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">Additional Configurations | PR-Agent</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" property="og:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.pr-agent.ai/usage-guide/additional_configurations/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Additional Configurations | PR-Agent"><meta data-rh="true" name="description" content="Show possible configurations"><meta data-rh="true" property="og:description" content="Show possible configurations"><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.pr-agent.ai/usage-guide/additional_configurations/"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/usage-guide/additional_configurations/" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/usage-guide/additional_configurations/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Additional configurations","item":"https://docs.pr-agent.ai/usage-guide/additional_configurations"}]}</script><script src="https://widget.kapa.ai/kapa-widget.bundle.js" data-website-id="5c89c0b1-b2ee-43c9-8c6f-43ed762b3c1e" data-project-name="PR-Agent" data-project-color="#2459db" data-project-logo="/img/favicon.svg" data-launcher-button-image="/img/favicon-white.svg" data-color-scheme-selector="[data-theme=&#39;dark&#39;]" async></script><link rel="stylesheet" href="/assets/css/styles.0fa13089.css">
-<script src="/assets/js/runtime~main.83da2891.js" defer="defer"></script>
+<script src="/assets/js/runtime~main.5cc179cc.js" defer="defer"></script>
 <script src="/assets/js/main.8d9b03df.js" defer="defer"></script>
 </head>
 <body>
@@ -436,6 +436,20 @@ comment commands such as <code>/review</code> and <code>/ask</code>, and to CLI 
 <code>ignore_pr_authors</code> matches the <strong>PR author</strong>, not the person posting the command. An ignored CLI
 request exits successfully without running the command. Plain-diff CLI inputs (<code>--diff-file</code> and
 <code>--stdin</code>) have no PR metadata and are not excluded by these rules.</p>
+<p>For automatic PR/MR webhooks in GitHub App, GitLab, Gitea, and Bitbucket Cloud,
+host exclusions are evaluated before repository settings.
+A repository cannot clear a host exclusion already matched at this stage; it can still
+exclude additional requests. Manual commands and CLI runs use their effective repository policy.</p>
+<p>An automatic webhook may now read <code>CONFIG.EXTRA_CONFIG_URL</code> even when the host policy
+rejects the event, adding a configuration fetch that would previously have been skipped.
+On these webhooks, <code>ignore_pr_authors</code> checks the PR/MR author rather than the event actor;
+unavailable author metadata retains the existing best-effort policy behavior.
+GitLab may also make an extra MR-author API request for relevant events when Host author
+filtering is enabled and the event actor differs from the MR author.</p>
+<p>For GitHub App webhooks, <code>github_app.override_deployment_type</code> defaults to <code>true</code>
+to preserve App authentication after trusted external Host settings are loaded.
+Trusted Host settings may set it to <code>false</code> to retain their configured deployment
+type; repository settings cannot control this option.</p>
 <p>For GitHub Actions, matching PRs also skip automatic review, description, and improve commands
 on <code>pull_request</code>, <code>pull_request_target</code>, and <code>workflow_run</code> events.</p>
 <h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="ignoring-prs-with-specific-titles">Ignoring PRs with specific titles<a href="#ignoring-prs-with-specific-titles" class="hash-link" aria-label="Direct link to Ignoring PRs with specific titles" title="Direct link to Ignoring PRs with specific titles" translate="no">​</a></h3>
