@@ -2286,6 +2286,7 @@ class PRReviewer:
                 comment["body"] = key_issue_body_with_markers(
                     comment["body"], fingerprint, location_fingerprint,
                     max_chars, self.git_provider)
+                comment["_dedup_key_issue"] = True
                 candidate_comments[location_fingerprint] = comment
                 candidate_issues[location_fingerprint] = [issue]
                 candidate_fingerprints[location_fingerprint] = fingerprint
