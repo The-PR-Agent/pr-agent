@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 import gitlab
 import pytest
-from gitlab import GitlabCreateError, GitlabParsingError
+from gitlab import GitlabCreateError, GitlabHttpError, GitlabParsingError
 from requests import Response
 from requests.exceptions import ConnectionError, ConnectTimeout, InvalidURL, ReadTimeout, RequestException, SSLError
 from starlette_context import request_cycle_context
@@ -57,17 +57,20 @@ def _outside_diff_suggestion():
     return _suggestion(relevant_lines_start=8, relevant_lines_end=8, existing_code='line8')
 
 
-def _gl_provider(diff_new_lines=None, poster_is_bot=True):
+def _gl_provider(diff_new_lines=None, poster_is_bot=True, gitlab_before_19_6=False):
     """A GitLabProvider whose mr.draft_notes fake behaves like the real GitLab API: create()
     queues a pending draft, list() reflects whatever is currently pending, and bulk_publish()
     clears them - so tests exercise the same create -> list -> bulk_publish flow the real code
-    depends on, instead of asserting on call counts alone.
+    depends on, instead of asserting on call counts alone. A draft's publish() publishes just it.
 
     With diff_new_lines, line positions follow GitLab 19.6 (gitlab-org/gitlab!262051): outside those
     new-file lines, discussions.create returns 400 while draft_notes.create returns the draft with
     line_code None, and bulk_publish skips that draft, deleting it for a bot poster and leaving it
     pending otherwise. Positions are matched on new_line only. Without diff_new_lines, line_code is
-    a MagicMock, so every draft counts as anchored. Published drafts collect in draft_notes.published."""
+    a MagicMock, so every draft counts as anchored. Published drafts collect in draft_notes.published.
+
+    With gitlab_before_19_6, bulk_publish instead fails with a 500 while such a draft is pending,
+    after publishing the other drafts without clearing them from the queue."""
     p = GitLabProvider.__new__(GitLabProvider)
     p.RE_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
     p.id_mr = 1
@@ -94,6 +97,7 @@ def _gl_provider(diff_new_lines=None, poster_is_bot=True):
         if diff_new_lines is not None:
             note.line_code = None if 'file_path' in note.position or _outside_diff(note.position) else "line_code"
         note.delete.side_effect = lambda **kwargs: pending_drafts.remove(note)
+        note.publish.side_effect = lambda **kwargs: (pending_drafts.remove(note), published_drafts.append(note))
         pending_drafts.append(note)
         return note
 
@@ -103,6 +107,8 @@ def _gl_provider(diff_new_lines=None, poster_is_bot=True):
     def _bulk_publish():
         unresolvable = [n for n in pending_drafts if _outside_diff(n.position)]
         published_drafts.extend(n for n in pending_drafts if n not in unresolvable)
+        if gitlab_before_19_6 and unresolvable:
+            raise GitlabHttpError("500 Internal Server Error", response_code=500)
         pending_drafts[:] = [] if poster_is_bot else unresolvable
 
     def _create_discussion(payload):
@@ -331,23 +337,83 @@ def test_draft_outside_diff_left_by_an_earlier_run_is_discarded_not_published():
     assert "stale suggestion" not in p.get_recent_inline_comment_bodies()
 
 
-def test_draft_outside_diff_that_cannot_be_deleted_still_falls_back_and_is_not_recorded_as_published():
-    p = _gl_provider(diff_new_lines={1, 2, 3}, poster_is_bot=False)
-    p.get_diff_files.return_value = [_LongTargetFile()]
+def _make_drafts_undeletable(p):
     create = p.mr.draft_notes.create.side_effect
 
     def _create_undeletable(payload):
         note = create(payload)
-        note.delete.side_effect = GitlabCreateError("500 Internal Server Error", response_code=500)
+        note.delete.side_effect = GitlabHttpError("500 Internal Server Error", response_code=500)
         return note
 
     p.mr.draft_notes.create.side_effect = _create_undeletable
+
+
+def test_draft_outside_diff_that_cannot_be_deleted_still_falls_back_and_is_not_recorded_as_published():
+    p = _gl_provider(diff_new_lines={1, 2, 3}, poster_is_bot=False)
+    p.get_diff_files.return_value = [_LongTargetFile()]
+    _make_drafts_undeletable(p)
 
     _publish_as_review(p, [_outside_diff_suggestion()])
 
     assert _kinds(p.mr.draft_notes.published) == ['file note']
     assert _kinds(p.mr.draft_notes.list()) == ['inline']  # GitLab keeps it for human posters
     assert [_kind(body) for body in p.get_recent_inline_comment_bodies()] == ['file note']
+
+
+def test_undeletable_draft_before_gitlab_19_6_publishes_the_rest_one_by_one_instead_of_in_bulk():
+    p = _gl_provider(diff_new_lines={1, 2, 3}, poster_is_bot=False, gitlab_before_19_6=True)
+    p.get_diff_files.return_value = [_LongTargetFile()]
+    _make_drafts_undeletable(p)
+
+    _publish_as_review(p, [_suggestion(), _outside_diff_suggestion()])
+
+    p.mr.draft_notes.bulk_publish.assert_not_called()
+    assert sorted(_kinds(p.mr.draft_notes.published)) == ['file note', 'inline']
+    for draft in p.mr.draft_notes.published:
+        draft.publish.assert_called_once()
+    assert _kinds(p.mr.draft_notes.list()) == ['inline']  # the undeletable out-of-diff draft
+    assert sorted(_kind(body) for body in p.get_recent_inline_comment_bodies()) == ['file note', 'inline']
+
+
+def test_one_by_one_publish_failure_records_only_published_drafts_and_a_retry_publishes_the_rest_once():
+    p = _gl_provider(diff_new_lines={1, 2, 3}, poster_is_bot=False, gitlab_before_19_6=True)
+    p.get_diff_files.return_value = [_LongTargetFile()]
+    _make_drafts_undeletable(p)
+    create = p.mr.draft_notes.create.side_effect
+    publish_failures = []
+
+    def _create_failing_first_publish(payload):
+        note = create(payload)
+        if "y = 2" in note.note:
+            publish = note.publish.side_effect
+
+            def _publish_once_failing(**kwargs):
+                if not publish_failures:
+                    publish_failures.append(note)
+                    raise GitlabHttpError("502 Bad Gateway", response_code=502)
+                return publish(**kwargs)
+
+            note.publish.side_effect = _publish_once_failing
+        return note
+
+    p.mr.draft_notes.create.side_effect = _create_failing_first_publish
+    suggestions = [_suggestion(),
+                   _suggestion(body="**Suggestion:** other\n```suggestion\ny = 2\n```", relevant_lines_start=3,
+                               relevant_lines_end=3, existing_code='line3', improved_code='y = 2'),
+                   _outside_diff_suggestion()]
+    gs = _settings(as_review=True)
+    try:
+        assert p.publish_code_suggestions(suggestions) is False
+        recorded_after_failure = p.get_recent_inline_comment_bodies()
+        assert p.publish_code_suggestions(suggestions) is True
+    finally:
+        gs.stop()
+
+    assert not any("y = 2" in body for body in recorded_after_failure)
+    assert sorted(_kind(body) for body in recorded_after_failure) == ['file note', 'inline']
+    assert sorted(_kinds(p.mr.draft_notes.published)) == ['file note', 'inline', 'inline']
+    assert p.mr.draft_notes.create.call_count == 4  # the retry recreates nothing
+    p.mr.draft_notes.bulk_publish.assert_not_called()
 
 
 def test_draft_response_without_line_code_is_treated_as_anchored():

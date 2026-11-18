@@ -3073,25 +3073,43 @@ class GitLabProvider(GitProvider):
         return isinstance(position, dict) and (position.get('new_line') is not None
                                                or position.get('old_line') is not None)
 
-    def _delete_unanchored_draft(self, draft) -> None:
+    def _delete_unanchored_draft(self, draft) -> bool:
         try:
             draft.delete()
+            return True
         except (GitlabError, RequestException) as e:
             get_logger().error(f"Could not delete unanchored draft note {getattr(draft, 'id', None)} in MR "
                                f"{self.id_mr}; it may stay pending: {e}")
+            return False
+
+    def _remember_published_draft(self, draft) -> None:
+        body = getattr(draft, "note", "") or ""
+        if body:
+            self._remember_published_inline_comment_body(body)
 
     def _publish_suggestion_drafts(self, pending) -> None:
         # Drafts GitLab could not anchor never publish, so drop them rather than record them as published.
         unanchored = [draft for draft in pending if self._is_unanchored_line_draft(draft)]
-        for draft in unanchored:
-            self._delete_unanchored_draft(draft)
+        all_deleted = all([self._delete_unanchored_draft(draft) for draft in unanchored])
         pending = [draft for draft in pending if draft not in unanchored]
-        if pending:
+        if not pending:
+            return
+        if all_deleted:
             self.mr.draft_notes.bulk_publish()
             for draft in pending:
-                body = getattr(draft, "note", "") or ""
-                if body:
-                    self._remember_published_inline_comment_body(body)
+                self._remember_published_draft(draft)
+            return
+        # bulk_publish would include the undeletable draft, and GitLab before 19.6 fails the whole batch on it.
+        first_error = None
+        for draft in pending:
+            try:
+                draft.publish()
+            except (GitlabError, RequestException) as e:
+                first_error = first_error or e
+                continue
+            self._remember_published_draft(draft)
+        if first_error is not None:
+            raise first_error
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         # Runs first so the fingerprints it frees are in the store before any dedup lookup.
