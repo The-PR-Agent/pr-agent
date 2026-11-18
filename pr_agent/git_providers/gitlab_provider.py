@@ -3016,18 +3016,32 @@ class GitLabProvider(GitProvider):
                     body_fallback, body, getattr(self, "max_comment_chars", None))
                 # Create a general note on the file in the MR
                 fallback_position = {
-                    'base_sha': diff.base_commit_sha,
-                    'start_sha': diff.start_commit_sha,
-                    'head_sha': diff.head_commit_sha,
-                    'position_type': 'text',
-                    'file_path': f'{target_file.filename}',
+                    "base_sha": diff.base_commit_sha,
+                    "start_sha": diff.start_commit_sha,
+                    "head_sha": diff.head_commit_sha,
+                    "position_type": "file",
+                    "file_path": f"{target_file.filename}",
                 }
                 fallback_create_attempted = True
                 if as_draft:
-                    self.mr.draft_notes.create({'note': body_fallback, 'position': fallback_position})
+                    try:
+                        self.mr.draft_notes.create({"note": body_fallback, "position": fallback_position})
+                    except (GitlabError, RequestException) as position_error:
+                        if self._record_if_unconfirmed_suggestion_write(
+                            position_error, body_fallback, store, body_fp, code_fp, as_draft
+                        ):
+                            return True
+                        self.mr.draft_notes.create({"note": body_fallback})
                     self._code_suggestion_draft_queued = True
                 else:
-                    self.mr.notes.create({'body': body_fallback, 'position': fallback_position})
+                    try:
+                        self.mr.discussions.create({"body": body_fallback, "position": fallback_position})
+                    except (GitlabError, RequestException) as position_error:
+                        if self._record_if_unconfirmed_suggestion_write(
+                            position_error, body_fallback, store, body_fp, code_fp, as_draft
+                        ):
+                            return True
+                        self.mr.notes.create({"body": body_fallback})
                     self._remember_published_inline_comment_body(body_fallback)
                 get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
                 if store is not None:

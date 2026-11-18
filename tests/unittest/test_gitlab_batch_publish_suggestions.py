@@ -270,6 +270,7 @@ def test_flag_on_fallback_uses_draft_note_not_live_note():
     # first call: primary attempt (raises); second call: fallback general draft note
     assert len(calls) == 2
     assert 'note' in calls[1]
+    assert calls[1]["position"]["position_type"] == "file"
     p.mr.notes.create.assert_not_called()
     p.mr.discussions.create.assert_not_called()
     p.mr.draft_notes.bulk_publish.assert_called_once()
@@ -460,9 +461,43 @@ def test_live_note_fallback_repeats_the_score_why_disclosure():
     finally:
         gs.stop()
 
-    fallback_body = p.mr.notes.create.call_args.args[0]['body']
+    fallback_payload = p.mr.discussions.create.call_args_list[1].args[0]
+    assert fallback_payload["position"]["position_type"] == "file"
+    fallback_body = fallback_payload["body"]
     assert "importance: 7" in fallback_body
     assert "Why: Self-reflection unavailable; score not model-assigned" in fallback_body
+
+
+@pytest.mark.parametrize("as_review", [False, True])
+def test_file_fallback_rejection_uses_unpositioned_note(as_review):
+    p = _gl_provider()
+    create = p.mr.draft_notes.create if as_review else p.mr.discussions.create
+    original_create = create.side_effect
+
+    def _reject_positioned_note(payload):
+        if "position" in payload:
+            raise GitlabCreateError("position unsupported", response_code=400)
+        if as_review:
+            return original_create(payload)
+        return MagicMock()
+
+    create.side_effect = _reject_positioned_note
+    gs = _settings(as_review=as_review)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is True
+    finally:
+        gs.stop()
+
+    if as_review:
+        assert p.mr.draft_notes.create.call_count == 3
+        fallback_payload = p.mr.draft_notes.create.call_args_list[2].args[0]
+        assert "position" not in fallback_payload
+        p.mr.notes.create.assert_not_called()
+        p.mr.draft_notes.bulk_publish.assert_called_once()
+    else:
+        assert p.mr.discussions.create.call_count == 2
+        p.mr.notes.create.assert_called_once()
+        assert "position" not in p.mr.notes.create.call_args.args[0]
 
 
 @pytest.mark.parametrize("as_review", [False, True])
@@ -500,7 +535,10 @@ def test_unconfirmed_suggestion_create_is_not_retried_or_fallen_back(as_review, 
 
 def test_unconfirmed_general_note_fallback_is_not_retried():
     p = _gl_provider()
-    p.mr.discussions.create.side_effect = GitlabCreateError("invalid position", response_code=400)
+    p.mr.discussions.create.side_effect = [
+        GitlabCreateError("invalid inline position", response_code=400),
+        GitlabCreateError("unsupported file position", response_code=400),
+    ]
     p.mr.notes.create.side_effect = GitlabCreateError("server error after write", response_code=503)
     gs = _settings(as_review=False)
     try:
@@ -508,7 +546,7 @@ def test_unconfirmed_general_note_fallback_is_not_retried():
     finally:
         gs.stop()
 
-    p.mr.discussions.create.assert_called_once()
+    assert p.mr.discussions.create.call_count == 2
     p.mr.notes.create.assert_called_once()
     assert "fix it" in p.get_recent_inline_comment_bodies()[0]
 
@@ -535,7 +573,7 @@ def test_pre_write_connection_failure_can_use_general_note_fallback(error):
     finally:
         gs.stop()
 
-    p.mr.discussions.create.assert_called_once()
+    assert p.mr.discussions.create.call_count == 2
     p.mr.notes.create.assert_called_once()
     assert "fix it" in p.get_recent_inline_comment_bodies()[0]
 
