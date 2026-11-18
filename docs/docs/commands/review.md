@@ -677,8 +677,8 @@ When no findings are detected, the row is omitted completely so clean reviews st
 **Checks performed.**
 
 - **Sensitive paths**: Flags changes to files matching glob patterns in `sensitive_paths`. By default, this covers
-  CI/CD pipelines, package manager manifests and lockfiles, Dockerfiles, Terraform and infrastructure configs, and
-  database migrations.
+  CI/CD pipelines and local composite actions, package manager manifests and lockfiles, Dockerfiles, Terraform and
+  infrastructure configs, and database migrations.
 - **Risky change shapes**: Scans added or modified lines in diff hunks for destructive SQL (`DROP TABLE`, `ALTER ... RENAME`,
   `REVOKE ... ON/FROM`, `TRUNCATE`), authentication and secrets keywords, cache invalidations, and any custom patterns
   configured in `extra_risky_shapes`.
