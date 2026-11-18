@@ -101,7 +101,7 @@ from pr_agent.algo.suggestion_checks import (
     python_syntax_is_valid,
     validate_suggestion,
 )
-from pr_agent.algo.token_budget import AttemptTokenBudget, clip_tokens
+from pr_agent.algo.token_budget import AttemptTokenBudget, clip_tokens, prepare_model_token_limits
 from pr_agent.algo.unchanged_diff import UnchangedDiffGuard, skip_unchanged_diff_configured
 from pr_agent.algo.utils import (
     ModelType,
@@ -1360,6 +1360,7 @@ class PRReviewer:
         self.partial_files_list = []
         raw_prompt_vars = getattr(self, "_raw_prompt_vars", getattr(self, "vars", None))
         ai_handler = getattr(self, "ai_handler", None)
+        await prepare_model_token_limits(ai_handler, model)
         output_token_reserve = getattr(
             ai_handler, "get_output_token_reserve", None
         )

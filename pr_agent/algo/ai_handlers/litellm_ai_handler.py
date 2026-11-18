@@ -11,6 +11,7 @@ import shutil  # noqa: F401  (module attribute asserted by tests)
 import stat
 import threading
 import uuid
+from functools import partial
 from urllib.parse import urlparse
 
 import aiohttp
@@ -142,6 +143,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     _response_field,
     get_repetition_penalty,
 )
+from pr_agent.algo.ai_handlers.openrouter_model_info import MODEL_CONTEXT_TIMEOUT, fetch_model_context
 from pr_agent.algo.instruction_context import append_protected_system_instructions
 from pr_agent.algo.prompt_fragments import render_skills_prefix
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
@@ -533,6 +535,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                     ).hexdigest()
                     self._vertex_credentials = json.dumps(vertex_info)
         self._provider_request_params = self._snapshot_provider_request_params(settings)
+        self._model_context_cache = {}
+        self._model_context_failures = {}
+        self._model_context_lock = asyncio.Lock()
         self._snowflake_account_id = os.environ.get("SNOWFLAKE_ACCOUNT_ID", "")
         self._provider_environment_api_keys = self._snapshot_provider_environment_api_keys()
         self._volcengine_ark_api_key = os.environ.get("ARK_API_KEY")
@@ -2428,6 +2433,93 @@ class LiteLLMAIHandler(BaseAiHandler):
                     else openrouter_output_tokens
                 )
         return max(0, output_tokens)
+
+    def _openrouter_context_route(self, model: str) -> tuple[str, str] | None:
+        """Identify the captured official route without promoting gateways or late credentials."""
+        if type(self) is not LiteLLMAIHandler:
+            return None
+        params = getattr(self, "_provider_request_params", {}).get("openrouter", {})
+        base = params.get("api_base")
+        if not isinstance(base, str) or not re.fullmatch(r"(?ai:https://openrouter\.ai)(?::443)?/api/v1/?", base):
+            return None
+        provider_setting = self._custom_llm_provider
+        routed = self._route_model_for_request(model, provider_setting, self.deployment_id)
+        provider = self._resolve_configured_request_provider(routed, provider_setting)
+        completion_model = self._normalize_gpt5_model_for_request(routed, model, provider_setting)
+        canonical = self._canonical_openrouter_model(completion_model, provider)
+        return (base, canonical) if canonical is not None else None
+
+    async def _load_openrouter_context(self, model: str, route: tuple[str, str]) -> int | None:
+        from pr_agent.algo.token_budget import _resolve_max_tokens
+
+        base, canonical_model = route
+        lookup = partial(
+            litellm.get_model_info, custom_llm_provider="openrouter", api_base=base,
+            api_key=self._captured_api_key("openrouter"),
+        )
+        sdk_limit = await asyncio.to_thread(
+            _resolve_max_tokens, model, True, custom_llm_provider="openrouter", model_info_lookup=lookup,
+        )
+        if sdk_limit is not None:
+            return sdk_limit
+        return await fetch_model_context(canonical_model.removeprefix("openrouter/"))
+
+    async def prepare_model_token_limits(self, model: str) -> None:
+        """Prepare one request-scoped metadata result before synchronous budgeting."""
+        from pr_agent.algo.token_budget import FallbackEligibleError, _resolve_max_tokens
+
+        route = self._openrouter_context_route(model)
+        if route is None:
+            return
+        # Caller-specific SDK alias sequences can differ on the same request route.
+        cache_key = (*route, model)
+        # Built-in, custom and alias priorities remain first and require no metadata request.
+        local_limit = _resolve_max_tokens(
+            model, True, custom_llm_provider="openrouter", model_info_lookup=lambda _: None,
+        )
+        if local_limit is not None:
+            return
+        if cache_key in self._model_context_cache:
+            return
+        # Share a failed attempt with current waiters, while allowing a later call to retry.
+        failure_epoch = self._model_context_failures.get(cache_key, (0, None))[0]
+        async with self._model_context_lock:
+            if cache_key not in self._model_context_cache:
+                latest_epoch, failure = self._model_context_failures.get(cache_key, (0, None))
+                if latest_epoch != failure_epoch and failure is not None:
+                    raise failure
+                try:
+                    async with asyncio.timeout(MODEL_CONTEXT_TIMEOUT):
+                        window = await self._load_openrouter_context(model, route)
+                except (TimeoutError, FallbackEligibleError) as error:
+                    self._model_context_failures[cache_key] = (latest_epoch + 1, error)
+                    if isinstance(error, TimeoutError):
+                        get_logger().info("OpenRouter model context preparation timed out")
+                    raise
+                self._model_context_cache[cache_key] = window
+                self._model_context_failures.pop(cache_key, None)
+
+    def get_model_token_limits(self, model: str, *, ignore_max_model_tokens: bool = False) -> tuple[int, int | None]:
+        """Use prepared limits, retaining the legacy SDK lookup for unprepared callers."""
+        from pr_agent.algo import token_budget
+
+        route = self._openrouter_context_route(model)
+        provider_options = {"custom_llm_provider": "openrouter"} if route is not None else {}
+        cache_key = (*route, model) if route is not None else None
+        if cache_key is not None and cache_key in self._model_context_cache:
+            prepared_window = self._model_context_cache[cache_key]
+            # Reuse limit precedence and caps without querying SDK metadata again.
+            window = token_budget._resolve_max_tokens(
+                model, ignore_max_model_tokens, **provider_options,
+                model_info_lookup=lambda _: {"max_input_tokens": prepared_window},
+            )
+            if window is None:
+                token_budget._raise_unresolved_model_limit(model)
+        else:
+            window = token_budget.get_max_tokens(
+                model, ignore_max_model_tokens=ignore_max_model_tokens, **provider_options,
+            )
+        return window, token_budget.get_max_input_tokens(model, **provider_options)
 
     def get_output_token_limit(self, model: str) -> int:
         """Return the output cap that this handler will request for the supplied model."""
