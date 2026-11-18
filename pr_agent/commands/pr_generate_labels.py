@@ -15,7 +15,7 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
 from pr_agent.algo.run_details import get_run_details, record_command_failure
-from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.algo.token_budget import AttemptTokenBudget, prepare_model_token_limits
 from pr_agent.algo.utils import filter_generated_labels, get_user_labels, load_yaml, set_custom_labels
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_for_command
@@ -160,6 +160,7 @@ class PRGenerateLabels:
         variables = copy.deepcopy(self.vars)
         set_custom_labels(variables, self.git_provider)
         output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        await prepare_model_token_limits(self.ai_handler, model)
         budget = AttemptTokenBudget.for_prompt_attempt(
             model,
             getattr(self.git_provider, "pr", None),

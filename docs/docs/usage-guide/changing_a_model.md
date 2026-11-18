@@ -71,8 +71,9 @@ check that provider's API documentation. For OpenAI-compatible endpoints, the se
 be supplied as `OPENAI__API_BASE` and `OPENAI__KEY`. For Anthropic-compatible endpoints, set
 `ANTHROPIC_API_BASE` (or `ANTHROPIC_BASE_URL`) for the endpoint and `ANTHROPIC__KEY` for
 authentication.
-For models absent from PR-Agent's token-limit table, set `config.custom_model_max_tokens` to
-the endpoint's supported input limit.
+If no reliable model limit can be resolved, set `config.custom_model_max_tokens` to
+the endpoint's supported input limit. Official OpenRouter routes can also use
+[model context discovery](#openrouter-model-context-discovery).
 
 :::note[Model-specific environment variables]
 See [litellm documentation](https://litellm.vercel.app/docs/proxy/quick_start#supported-llms) for the environment variables needed per model, as they may vary and change over time. Our documentation per-model may not always be up-to-date with the latest changes.
@@ -838,6 +839,42 @@ for the [Auto](https://openrouter.ai/docs/guides/routing/routers/auto-router),
 [Free](https://openrouter.ai/docs/guides/routing/routers/free-router),
 [Fusion](https://openrouter.ai/docs/guides/routing/routers/fusion-router), and
 [Pareto](https://openrouter.ai/docs/guides/routing/routers/pareto-router) routers.
+
+#### OpenRouter model context discovery
+
+The built-in LiteLLM handler can fill context-window metadata gaps on its captured
+official OpenRouter global route. Existing built-in, custom, alias and SDK limits
+take precedence; positive SDK limits are not corrected. Gateways, unproven routes
+and custom handler subclasses keep their existing behavior.
+
+**Network requests:** If no positive limit is resolved, PR-Agent makes an anonymous
+GET to OpenRouter's [public single-model endpoint](https://openrouter.ai/docs/api_reference/models).
+It sends no inference keys or custom headers, follows no redirects, and is limited
+to five seconds and one MiB. Completed lookups are reused within a command, not across commands.
+
+**How to opt out:** `LITELLM_OFFLINE_MODE=true` disables this public lookup.
+A verified positive `config.custom_model_max_tokens` avoids metadata lookup.
+`LITELLM_LOCAL_MODEL_COST_MAP` selects LiteLLM's cost-map source; it does not disable public discovery.
+`config.max_model_tokens` caps a resolved window but cannot supply a missing one.
+`/help` ignores this cap when fitting documentation.
+
+**Limits and failures:** If other sources fail and no API record matches the exact
+model ID, set a verified positive `config.custom_model_max_tokens`. Suffixes such as
+`:nitro` or `:floor` are not stripped to inherit a base model's window.
+
+Transport failures, HTTP 408/429/5xx and preparation timeouts try configured fallback
+models; without a working fallback, the command fails.
+
+`context_length` is the total window, not an independent input ceiling or a backend
+guarantee. Output headroom is reserved separately.
+
+With `custom_llm_provider = "openrouter"` in `[litellm]`, native-looking IDs such as
+`openai/...` may need OpenRouter metadata or a verified custom limit rather than
+native-provider SDK fallback. Offline mode does not restore that fallback.
+
+Programmatic callers can await `pr_agent.algo.token_budget.prepare_model_token_limits(handler, model)`
+before using `handler.get_model_token_limits(model)` or a handler-backed `AttemptTokenBudget`.
+The standalone `get_max_tokens(model)` does not use the handler cache.
 
 #### Openrouter provider routing, reasoning and output cap
 

@@ -29,7 +29,7 @@ from pr_agent.algo.review_json_output import review_json_output_path, write_revi
 from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details, record_command_failure
 from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
 from pr_agent.algo.skills_loader import get_skills_context
-from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.algo.token_budget import AttemptTokenBudget, prepare_model_token_limits
 from pr_agent.algo.unchanged_diff import UnchangedDiffGuard, skip_unchanged_diff_configured
 from pr_agent.algo.utils import (
     FILE_WALKTHROUGH_ESCAPED_MARKER,
@@ -397,6 +397,7 @@ class PRDescription:
 
         raw_prompt_vars = getattr(self, "_raw_prompt_vars", getattr(self, "vars", None))
         ai_handler = getattr(self, "ai_handler", None)
+        await prepare_model_token_limits(ai_handler, model)
         output_token_reserve = getattr(
             ai_handler, "get_output_token_reserve", None
         )
