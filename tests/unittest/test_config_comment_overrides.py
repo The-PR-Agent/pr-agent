@@ -48,7 +48,7 @@ COMMENT_OVERRIDABLE_KEYS = {
         "extended_thinking_budget_tokens", "extended_thinking_max_output_tokens", "extract_issue_from_branch",
         "ignore_language_framework", "ignore_pr_authors", "ignore_pr_labels", "ignore_pr_source_branches",
         "ignore_pr_target_branches", "ignore_pr_title", "ignore_repositories", "image_input_token_allowance",
-        "is_auto_command", "large_patch_policy", "log_level", "max_commits_tokens", "max_description_tokens",
+        "large_patch_policy", "log_level", "max_commits_tokens", "max_description_tokens",
         "max_extra_lines_before_dynamic_context", "max_model_tokens", "max_output_tokens",
         "max_webhook_request_body_bytes", "model", "model_token_count_estimate_factor",
         "no_temperature_models", "output_run_cost", "output_run_details", "patch_extension_skip_types",

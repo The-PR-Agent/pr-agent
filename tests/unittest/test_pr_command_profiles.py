@@ -484,8 +484,9 @@ async def _run_bitbucket_push_webhook(
         calls.append(("commands", list(commands)))
 
     def should_process_pr_logic(_data):
-        calls.append("filter")
-        return repo_should_process
+        before_repo = "settings" not in calls
+        calls.append("host_filter" if before_repo else "filter")
+        return True if before_repo else repo_should_process
 
     monkeypatch.setattr(bitbucket_app, "is_bot_user", lambda _data: False)
     monkeypatch.setattr(bitbucket_app, "get_fork_safe_secret_provider", lambda: secret_provider)
@@ -532,7 +533,7 @@ async def test_bitbucket_app_push_applies_repo_settings_before_effective_gate(mo
     )
 
     assert result == "OK"
-    assert calls == ["settings", "filter", "validate", "slot", ("commands", ["/review"])]
+    assert calls == ["host_filter", "settings", "filter", "validate", "slot", ("commands", ["/review"])]
 
 
 async def test_bitbucket_app_push_event_applies_repo_ignore_filters(monkeypatch):
@@ -548,14 +549,14 @@ async def test_bitbucket_app_push_event_applies_repo_ignore_filters(monkeypatch)
     assert result == "OK"
     # The ignore filters must run after repo settings load and stop the push
     # commands before push validation and dispatch.
-    assert calls == ["settings", "filter"]
+    assert calls == ["host_filter", "settings", "filter"]
 
 
 @pytest.mark.parametrize(
     ("repo_trigger", "repo_commands", "expected_calls"),
     [
-        (False, ["/review"], ["settings"]),
-        (True, [], ["settings", "filter"]),
+        (False, ["/review"], ["host_filter", "settings"]),
+        (True, [], ["host_filter", "settings", "filter"]),
     ],
 )
 async def test_bitbucket_app_effective_push_config_skips_before_validation(

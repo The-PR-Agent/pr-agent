@@ -13,7 +13,7 @@ from starlette_context import request_cycle_context
 
 from pr_agent.config_loader import get_settings
 from pr_agent.identity_providers.identity_provider import Eligibility
-from pr_agent.servers import bitbucket_server_webhook, gitea_app, github_app
+from pr_agent.servers import bitbucket_app, bitbucket_server_webhook, gitea_app, github_app
 
 
 @pytest.fixture
@@ -66,6 +66,52 @@ class _StubRequest:
 
     async def body(self):
         return json.dumps(self._payload).encode()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ignored_author", "username", "nickname"),
+    [
+        ("blocked", None, "blocked"),
+        ("Alice Smith", None, "blocked"),
+        ("Alice Smith", "account", None),
+        ("blocked", "account", "blocked"),
+    ],
+)
+async def test_bitbucket_cloud_host_author_filter_checks_provider_identity(
+    monkeypatch, ignored_author, username, nickname,
+):
+    settings = copy.deepcopy(get_settings())
+    settings.set("CONFIG.EXTRA_CONFIG_URL", "")
+    settings.set("CONFIG.IGNORE_PR_AUTHORS", [f"^{ignored_author}$"])
+    monkeypatch.setattr(bitbucket_app, "global_settings", settings)
+    monkeypatch.setattr(bitbucket_app, "_verify_webhook_jwt", lambda *_args: ("client", "secret"))
+    oauth_calls = []
+
+    async def oauth(_secret, _client):
+        oauth_calls.append(True)
+        return "token"
+
+    monkeypatch.setattr(bitbucket_app, "get_bearer_token", oauth)
+    request = _StubRequest({
+        "event": "pullrequest:created",
+        "data": {
+            "actor": {"type": "user", "display_name": "collaborator"},
+            "pullrequest": {
+                "title": "Regular PR",
+                "author": {"username": username, "nickname": nickname, "display_name": "Alice Smith"},
+                "source": {"branch": {"name": "feature"}},
+                "destination": {"branch": {"name": "main"}, "repository": {"full_name": "org/repo"}},
+            },
+        },
+    })
+    request.headers["authorization"] = "JWT test-token"
+    tasks = BackgroundTasks()
+    with request_cycle_context({"settings": copy.deepcopy(settings)}):
+        assert await bitbucket_app.handle_github_webhooks(tasks, request) == "OK"
+        await tasks()
+
+    assert not oauth_calls, "both webhook and provider author identities must honor Host exclusions"
 
 
 @pytest.mark.asyncio

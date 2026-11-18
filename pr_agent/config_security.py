@@ -60,6 +60,9 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
         "agent_login", "deployment_type", "polling_repositories",
         "seconds_between_requests", "seconds_between_writes", "api_retries", "ratelimit_retries",
     }),
+    # The trusted Host may disable the App-mode override, but repository files
+    # must not switch authentication away from the verified installation.
+    "github_app": frozenset({"override_deployment_type"}),
     "gitlab": frozenset({"auth_type", "ssl_verify"}),
     "huggingface": frozenset({"api_base"}),
     # Jira lookups use the host's Atlassian credentials, so the reviewed repository must not
@@ -119,6 +122,8 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # comment argument must not be able to impersonate another service (e.g. "GitHub Security").
     # enable_auto_approval lets a reviewed repository switch on an approval action taken with
     # the host's credentials, so only the operator may enable it.
+    # is_auto_command is a trusted dispatch marker; repository settings and comment
+    # arguments must not impersonate or disable automatic webhook processing.
     # system_instructions is appended to every model system prompt. A repository or comment
     # must not be able to remove or replace an operator's mandatory policy.
     "config": frozenset({
@@ -127,6 +132,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
         "description_issue_regex",
         "enable_auto_approval",
         "enable_custom_labels",
+        "is_auto_command",
         "global_settings_repo",
         "use_group_settings_file",
         "http_request_timeout",
