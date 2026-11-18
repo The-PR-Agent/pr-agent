@@ -19,6 +19,7 @@ from pr_agent.algo.comment_identity import (
     add_comment_identity,
     add_pr_review_identity,
     comment_authorship_available,
+    comment_matches_identity,
     format_failed_commit_marker,
     format_reviewed_commit_marker,
     get_pr_review_comment_identifiers,
@@ -166,6 +167,9 @@ _REVIEW_FAILURE_REASONS = (
         "Every configured model attempt failed. Check the {bot_name} service logs for the provider error, then retry.",
     ),
 )
+_REVIEW_FAILURE_HEADING = "Failed to review PR"
+_REVIEW_FAILURE_REASON_PREFIX = "**Reason:** "
+_UNLOADED_COMMITS_DETAIL = "The changes of these commits could not be loaded: "
 _UNKNOWN_REVIEW_FAILURE_REASON = (
     "{bot_name} encountered an unexpected internal error. Check the {bot_name} service logs for details."
 )
@@ -195,7 +199,7 @@ def _as_bool(value) -> bool:
 def _review_failure_comment(error: Exception) -> str:
     """Build an optional deterministic failure explanation from an allowlist of safe messages."""
     if not _as_bool(get_settings().pr_reviewer.get("publish_error_details", False)):
-        return "Failed to review PR"
+        return _REVIEW_FAILURE_HEADING
 
     error_text = _exception_chain_text(error)
     reason = _UNKNOWN_REVIEW_FAILURE_REASON
@@ -204,7 +208,14 @@ def _review_failure_comment(error: Exception) -> str:
             reason = candidate
             break
     reason = reason.format(bot_name=get_bot_display_name())
-    return f"Failed to review PR\n\n**Reason:** {reason}"
+    return f"{_REVIEW_FAILURE_HEADING}\n\n{_REVIEW_FAILURE_REASON_PREFIX}{reason}"
+
+
+def _is_plain_review_failure_notice(lines: list[str]) -> bool:
+    """Whether a comment without the identity has exactly the form of a failure comment this command publishes."""
+    details = [line for line in lines[1:] if line.strip()]
+    return len(details) <= 2 and all(
+        line.startswith((_REVIEW_FAILURE_REASON_PREFIX, _UNLOADED_COMMITS_DETAIL)) for line in details)
 
 
 PER_COMMIT_MAX_AUTO_ATTEMPTS = 3
@@ -323,6 +334,7 @@ class PRReviewer:
     _review_fingerprint = ""
     _review_done = False
     _review_published = False
+    _keep_review_failure_notices = False
 
     def __init__(self, pr_url: str, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, alias_notice: str = ""):
@@ -478,9 +490,85 @@ class PRReviewer:
                 and _as_bool(get_settings().pr_reviewer.get("publish_review_failure_comment", True))
                 and not get_settings().config.get("is_auto_command", False)):
             try:
-                self.git_provider.publish_comment(_review_failure_comment(error) + detail)
+                self._publish_review_failure_notice(_review_failure_comment(error) + detail)
             except Exception as e:
                 get_logger().exception(f"Failed to publish review failure result, error: {e}")
+
+    def _review_failure_notice_managed(self) -> bool:
+        """Whether a failure notice can be found again, so it is updated in place and removed after a review."""
+        provider = getattr(self, "git_provider", None)
+        try:
+            return comment_authorship_available(provider) and provider.supports_comment_editing() is True
+        except Exception as e:
+            get_logger().warning(f"Review failure notices cannot be tracked on this provider, error: {e}")
+            return False
+
+    def _review_failure_notices(self):
+        """Yield the failure notices this agent wrote: the ones with the identity, then the plain ones without it.
+
+        Each group is newest first. Plain notices come from earlier versions and from runs that could not verify
+        the author, and count only in the exact form this command publishes. A comment that only quotes the
+        identity or the heading is not a notice.
+        """
+        identity = PRCommandNoticeIdentity.REVIEW_FAILURE.value
+        seen = {}
+        for comment, body in GitProvider._iter_persistent_comments(
+                self.git_provider, [identity, _REVIEW_FAILURE_HEADING], identity_marker=identity):
+            lines = body.splitlines()
+            if id(comment) in seen or lines[:1] != [_REVIEW_FAILURE_HEADING]:
+                continue
+            # The reference keeps the id from being reused by another comment while this scan runs.
+            seen[id(comment)] = comment
+            if not comment_matches_identity(body, identity) and not _is_plain_review_failure_notice(lines):
+                continue
+            # Each author is checked here, so a comment that cannot be verified is skipped, not the rest with it.
+            try:
+                authored = self.git_provider.is_comment_authored_by_pr_agent(comment)
+            except Exception as e:
+                get_logger().warning(f"Skipping a review failure notice whose author cannot be verified, error: {e}")
+                continue
+            if authored:
+                yield comment
+
+    def _publish_review_failure_notice(self, body: str, persistent_write_failed: bool = False) -> None:
+        if not self._review_failure_notice_managed():
+            self.git_provider.publish_comment(body)
+            return
+        body = add_comment_identity(body, PRCommandNoticeIdentity.REVIEW_FAILURE.value, self.git_provider)
+        # A reply belongs to the command that triggered it, and a persistent write that just failed is not
+        # retried. Both stay separate comments that carry the identity, so the next review removes them.
+        replies_to_trigger = (self.git_provider.should_reply_to_trigger_comment() is True
+                              and bool(get_settings().get("comment_id", "")))
+        if not (persistent_write_failed or replies_to_trigger):
+            try:
+                notice = next(self._review_failure_notices(), None)
+            except Exception as e:
+                get_logger().warning(f"Failed to look for an earlier review failure notice, error: {e}")
+                notice = None
+            if notice is not None:
+                # A notice that cannot be updated still reports the failure, so no second one is published.
+                try:
+                    if self.git_provider.edit_comment(notice, body) is False:
+                        get_logger().warning("Failed to update the review failure notice, keeping the earlier one")
+                except Exception as e:
+                    get_logger().warning(f"Failed to update the review failure notice, keeping the earlier one: {e}")
+                return
+        self.git_provider.publish_comment(body)
+
+    def _remove_review_failure_notices(self) -> None:
+        """Remove the failure notices of earlier runs once a review has completed."""
+        if not get_settings().config.publish_output or not self._review_failure_notice_managed():
+            return
+        try:
+            notices = list(self._review_failure_notices())
+        except Exception as e:
+            get_logger().warning(f"Failed to look for earlier review failure notices, error: {e}")
+            return
+        for comment in notices:
+            try:
+                self.git_provider.remove_comment(comment)
+            except Exception as e:
+                get_logger().warning(f"Failed to remove an earlier review failure notice, error: {e}")
 
     async def _run_per_commit(self) -> None:
         init_run_details()
@@ -532,6 +620,7 @@ class PRReviewer:
         cleared_failures = False
         reviewed_count = 0
         failed = False
+        unreviewed = False
         first_error = None
         unloaded = []
         cap_fallback = False
@@ -555,6 +644,7 @@ class PRReviewer:
                 if fingerprint in reviewed_fingerprints:
                     new_records[commit.sha] = fingerprint
                 elif is_auto and failures.get(fingerprint, 0) >= PER_COMMIT_MAX_AUTO_ATTEMPTS:
+                    unreviewed = True
                     get_logger().warning(f"Commit {commit.sha} failed to review {failures[fingerprint]} times, "
                                          f"leaving it to a manual /review")
                 elif fingerprint != NO_OWN_CHANGES_FINGERPRINT:
@@ -566,10 +656,15 @@ class PRReviewer:
                 if incremental_args:
                     self._deferred_previous_findings = True
                     self._deferred_commit_messages = True
-                await self._review_as_one(
-                    f"{len(pending)} commits to review exceed max_commits_per_review={max_commits}",
-                    f"There are {len(pending)} commits to review, more than the limit of {max_commits} for per "
-                    f"commit review, so the whole PR was reviewed in one review instead.")
+                # A commit that could not be loaded fails this run, which may publish no notice of its own.
+                self._keep_review_failure_notices = bool(unloaded)
+                try:
+                    await self._review_as_one(
+                        f"{len(pending)} commits to review exceed max_commits_per_review={max_commits}",
+                        f"There are {len(pending)} commits to review, more than the limit of {max_commits} for per "
+                        f"commit review, so the whole PR was reviewed in one review instead.")
+                finally:
+                    self._keep_review_failure_notices = False
                 if self._review_done and not command_failed():
                     new_records.update((commit.sha, fingerprint) for commit, fingerprint in pending)
                 else:
@@ -592,6 +687,7 @@ class PRReviewer:
                     reviewed_count += 1
                     failed = failed or command_failed()
                     done = self._review_done and not command_failed()
+                    unreviewed = unreviewed or bool(self.review_failed_chunk_count)
                 except IncompleteProviderPullRequestFilesError:
                     raise
                 except Exception as e:
@@ -599,6 +695,7 @@ class PRReviewer:
                     failed = True
                     first_error = first_error or e
                 if not done:
+                    unreviewed = True
                     new_failures[fingerprint] = failures.get(fingerprint, 0) + 1
                     continue
                 cleared_failures = cleared_failures or fingerprint in failures
@@ -620,7 +717,7 @@ class PRReviewer:
                 failed = True
                 first_error = first_error or unloaded[0][1]
                 self._publish_per_commit_failure(
-                    unloaded[0][1], "\n\nThe changes of these commits could not be loaded: "
+                    unloaded[0][1], f"\n\n{_UNLOADED_COMMITS_DETAIL}"
                     + ", ".join(f"`{sha}`" for sha, _ in unloaded))
             if (new_records or new_failures or cleared_failures) and get_settings().config.publish_output:
                 self._record_commit_reviews(commits, fingerprints, new_records, new_failures)
@@ -637,6 +734,8 @@ class PRReviewer:
                     get_logger().exception(f"Failed to publish the per commit review notice, error: {e}")
         if failed:
             record_command_failure()
+        elif not unreviewed:
+            self._remove_review_failure_notices()
         if first_error is not None and get_settings().config.get("propagate_command_errors", False):
             raise first_error
 
@@ -971,9 +1070,16 @@ class PRReviewer:
                 )
             ):
                 try:
-                    self.git_provider.publish_comment(_review_failure_comment(review_error))
+                    self._publish_review_failure_notice(
+                        _review_failure_comment(review_error), persistent_write_failed=persistent_write_failed)
                 except Exception as e:
                     get_logger().exception(f"Failed to publish review failure result, error: {e}")
+            # Failed chunks are a failure that a retry can fix, so the notices stay. Files left out for the
+            # token budget are not, and would keep the notices forever. A per commit run removes the notices
+            # itself, once every commit has been reviewed.
+            if (review_completed and not review_failed and not self.review_failed_chunk_count
+                    and self._review_commit is None and not self._keep_review_failure_notices):
+                self._remove_review_failure_notices()
             # Runs on failed and cancelled reviews too, so an earlier approval is withdrawn.
             self.auto_approve_logic(partial_review_error, review_completed=review_completed and not review_failed)
             if (partial_review_error is not None and not review_failed
