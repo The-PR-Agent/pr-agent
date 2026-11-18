@@ -46,6 +46,7 @@ from ..algo.inline_comment_dedup import (
 )
 from ..algo.language_handler import is_valid_file
 from ..algo.mentions import neutralize_github_mentions
+from ..algo.review_finding_state import split_review_state_marker
 from ..algo.token_budget import clip_tokens
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (
@@ -1327,7 +1328,7 @@ class GithubProvider(GitProvider):
         if is_temporary and not get_settings().config.publish_output_progress:
             get_logger().debug(f"Skipping publish_comment for temporary comment: {pr_comment}")
             return None
-        pr_comment = self.limit_output_characters(neutralize_github_mentions(pr_comment), self.max_comment_chars)
+        pr_comment = self._publishable_comment(pr_comment)
 
         # In case this is an issue, can publish the comment on the issue.
         if self.issue_main:
@@ -1457,6 +1458,15 @@ class GithubProvider(GitProvider):
             except Exception as e:
                 get_logger().error(f"Failed to publish inline code comments fallback, error: {e}")
                 raise
+
+    def _publishable_comment(self, body: str) -> str:
+        text, marker = split_review_state_marker(body)
+        text = neutralize_github_mentions(text)
+        if not marker:
+            return self.limit_output_characters(text, self.max_comment_chars)
+        # the state marker is hidden and must stay byte for byte, or the next run sees changed findings
+        text = self.limit_output_characters(text, max(self.max_comment_chars - len(marker) - 3, 0))
+        return "\n\n".join(part for part in (text, marker) if part) + "\n"
 
     def _publishable_inline_body(self, body: str) -> str:
         neutral = neutralize_github_mentions(body)
@@ -1841,7 +1851,7 @@ class GithubProvider(GitProvider):
 
     def edit_comment(self, comment, body: str):
         try:
-            body = self.limit_output_characters(neutralize_github_mentions(body), self.max_comment_chars)
+            body = self._publishable_comment(body)
             comment.edit(body=body)
         except GithubException as e:
             if hasattr(e, "status") and e.status == 403:
@@ -1859,7 +1869,7 @@ class GithubProvider(GitProvider):
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
         try:
             # self.pr.get_issue_comment(comment_id).edit(body)
-            body = self.limit_output_characters(neutralize_github_mentions(body), self.max_comment_chars)
+            body = self._publishable_comment(body)
             headers, data_patch = self.pr._requester.requestJsonAndCheck(
                 "POST", f"{self.base_url}/repos/{self.repo}/pulls/{self.pr_num}/comments/{comment_id}/replies",
                 input={"body": body}

@@ -10,6 +10,7 @@ from pr_agent.algo.inline_comment_dedup import (
     marker_fingerprints,
 )
 from pr_agent.algo.mentions import neutralize_github_mentions
+from pr_agent.algo.review_finding_state import append_review_state, parse_review_state, reconcile_review_findings
 from pr_agent.git_providers import github_provider as gh_module
 from pr_agent.git_providers.github_provider import MAX_PR_TITLE_GITHUB_LENGTH, GithubProvider
 
@@ -67,6 +68,65 @@ def test_edit_comment_neutralizes_mentions():
     provider.edit_comment(comment, TEXT)
 
     comment.edit.assert_called_once_with(body=NEUTRAL)
+
+
+def _review_with_state(body="Ask @octocat to release the lock."):
+    state = reconcile_review_findings(
+        None,
+        [{"body": body, "path": "app.py", "line_start": 3, "line_end": 3}],
+        allow_resolution=True,
+        head_sha="head-1",
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    return append_review_state(f"## Review\n\n{body}", state), state
+
+
+def _rerun_changes_state(published):
+    previous = parse_review_state(published).state
+    return reconcile_review_findings(
+        previous,
+        [{"body": finding["body"], "path": "app.py", "line_start": 3, "line_end": 3}
+         for finding in previous["findings"]],
+        allow_resolution=True,
+        head_sha="head-1",
+        timestamp="2026-01-01T00:00:00Z",
+    ).changed
+
+
+def test_publish_comment_keeps_the_review_state_marker_intact():
+    provider = _make_provider()
+    review, state = _review_with_state()
+
+    provider.publish_comment(review)
+
+    published = provider.pr.create_issue_comment.call_args.args[0]
+    assert published == review.replace("Ask @octocat", f"Ask @{ZWSP}octocat", 1)
+    assert parse_review_state(published).state == state
+    assert _rerun_changes_state(published) is False
+
+
+def test_edit_comment_keeps_the_review_state_marker_intact():
+    provider = _make_provider()
+    comment = MagicMock()
+    review, state = _review_with_state()
+
+    provider.edit_comment(comment, review)
+
+    published = comment.edit.call_args.kwargs["body"]
+    assert parse_review_state(published).state == state
+    assert _rerun_changes_state(published) is False
+
+
+def test_review_state_marker_survives_a_comment_grown_past_the_limit():
+    review, state = _review_with_state("@a " * 400)
+    provider = _make_provider(max_chars=len(review))
+
+    provider.publish_comment(review)
+
+    published = provider.pr.create_issue_comment.call_args.args[0]
+    assert len(published) <= len(review)
+    assert published.startswith(f"## Review\n\n@{ZWSP}a ")
+    assert parse_review_state(published).state == state
 
 
 def test_reply_neutralizes_mentions():
