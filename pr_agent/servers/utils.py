@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import hashlib
 import hmac
 import re
@@ -11,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import HTTPException
+from starlette_context import context
 
 from pr_agent.algo.command_words import split_command_words
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
@@ -50,6 +52,49 @@ def get_include_pr_labels() -> list[str]:
     if value is None or value == "" or value == []:
         return []
     return [str(label) for label in value] if isinstance(value, (list, tuple, set)) else [str(value)]
+
+
+def pin_host_settings_source_for_webhook() -> bool:
+    """Remember the trusted source before an earlier host load can change its URL."""
+    if not context.exists():
+        # Background work without an isolated request must not modify global settings.
+        return False
+    if context.get("automatic_host_settings_source"):
+        return True
+    source = get_settings().get("CONFIG.EXTRA_CONFIG_URL")
+    if not isinstance(source, str) or not source.strip():
+        return False
+
+    # Some webhook entry points create a request context without preloading
+    # settings. Never merge external host TOML into process-wide settings.
+    if context.get("settings") is None:
+        context["settings"] = copy.deepcopy(get_settings(use_context=False))
+    # Remember the selected trusted source even when its first read fails.
+    context["automatic_host_settings_source"] = source.strip()
+    return True
+
+
+async def load_host_settings_for_webhook() -> bool:
+    """Apply the trusted external host layer before automatic webhook exclusions."""
+    if context.exists() and context.get("automatic_host_settings_source"):
+        return True
+    if not pin_host_settings_source_for_webhook():
+        return False
+
+    from pr_agent.git_providers.utils import apply_host_settings
+
+    try:
+        await asyncio.to_thread(apply_host_settings)
+    except Exception as error:
+        # An invalid/unreachable external source must not stop approval revocation.
+        # Freeze the failure too, so later repository loads do not hit the same
+        # malformed source again or unexpectedly turn a skipped event into an error.
+        if context.exists():
+            source = context.get("automatic_host_settings_source")
+            if source:
+                context.setdefault("extra_config_payloads", {})[source] = None
+        get_logger().warning(f"Unable to preload Host settings for webhook ({type(error).__name__})")
+    return True
 
 
 def payload_log_summary(data: object, identifying_fields: Sequence[str] = ()) -> dict:
@@ -350,7 +395,13 @@ def _extract_pr_metadata(data: dict, provider: str | None = None):
         if not obj_attr or not isinstance(obj_attr, dict):
             return None
         title = obj_attr.get("title") or ""
-        sender = data.get("user", {}).get("username") or ""
+        actor = data.get("user") or {}
+        if not isinstance(actor, dict):
+            actor = {}
+        sender = actor.get("username") or ""
+        # The actor on an MR update is not necessarily the MR author.
+        if obj_attr.get("author_id") is not None and str(obj_attr["author_id"]) != str(actor.get("id")):
+            sender = ""
         repo_full_name = data.get("project", {}).get("path_with_namespace") or ""
         source_branch = obj_attr.get("source_branch") or ""
         target_branch = obj_attr.get("target_branch") or ""
@@ -372,9 +423,10 @@ def _extract_pr_metadata(data: dict, provider: str | None = None):
         source_branch = pr_data.get("source", {}).get("branch", {}).get("name") or ""
         target_branch = pr_data.get("destination", {}).get("branch", {}).get("name") or ""
         repo_full_name = pr_data.get("destination", {}).get("repository", {}).get("full_name") or ""
-        actor = data.get("data", {}).get("actor") or data.get("actor") or {}
-        if isinstance(actor, dict):
-            sender = actor.get("username") or actor.get("display_name") or actor.get("nickname") or ""
+        # The event actor can be a collaborator who pushed to someone else's PR.
+        author = pr_data.get("author") or {}
+        if isinstance(author, dict):
+            sender = author.get("username") or author.get("display_name") or author.get("nickname") or ""
         return title, sender, repo_full_name, labels, source_branch, target_branch
 
     # 3. Bitbucket Server payload
@@ -409,7 +461,9 @@ def _extract_pr_metadata(data: dict, provider: str | None = None):
             for label in pr_labels
             if label
         ]
-        sender = data.get("sender", {}).get("login") or ""
+        # The webhook sender may be a collaborator instead of the PR author.
+        pr_author = pull_request.get("user") or {}
+        sender = (pr_author.get("login") or "") if isinstance(pr_author, dict) else ""
         repo_full_name = data.get("repository", {}).get("full_name") or ""
         return title, sender, repo_full_name, labels, source_branch, target_branch
 

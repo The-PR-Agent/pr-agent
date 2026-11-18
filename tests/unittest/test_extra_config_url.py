@@ -1,12 +1,15 @@
+import copy
 import os
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import Mock
 from urllib.error import HTTPError
 
 import pytest
-from starlette_context import request_cycle_context
+from starlette_context import context, request_cycle_context
 
 from pr_agent.cli import set_parser
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import utils as git_utils
 from pr_agent.git_providers.utils import (
     _apply_settings_from_file,
@@ -208,6 +211,179 @@ def test_resolve_reuses_http_payload_only_within_request(urlopen_stub, monkeypat
     assert logger.info.call_count == 2
 
 
+@pytest.mark.asyncio
+async def test_webhook_prefilter_freezes_failed_remote_host_fetch_within_request(urlopen_stub):
+    from pr_agent.servers.utils import load_host_settings_for_webhook
+
+    url = "https://config.example.test/host.toml"
+    settings = copy.deepcopy(global_settings)
+    settings.set("CONFIG.EXTRA_CONFIG_URL", url)
+
+    with request_cycle_context({"settings": settings}):
+        urlopen_stub.status_code = 503
+        assert await load_host_settings_for_webhook() is True
+        assert len(urlopen_stub.calls) == 1
+
+        # An otherwise-successful retry cannot introduce a new host rule
+        # after the prefilter has already made its decision.
+        urlopen_stub.status_code = None
+        git_utils.apply_host_settings()
+        assert len(urlopen_stub.calls) == 1
+
+    with request_cycle_context({"settings": copy.deepcopy(settings)}):
+        git_utils.apply_host_settings()
+        assert len(urlopen_stub.calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote", [False, True])
+async def test_frozen_host_settings_need_no_writable_temp_directory(
+    tmp_path, urlopen_stub, monkeypatch, remote,
+):
+    from pr_agent.servers.utils import load_host_settings_for_webhook
+
+    policy = b'[config]\nignore_pr_title = ["^Host"]\n'
+    local = tmp_path / "host.toml"
+    local.write_bytes(policy)
+    source = "https://config.example.test/host.toml" if remote else str(local)
+    urlopen_stub.body = policy
+    settings = copy.deepcopy(global_settings)
+    settings.set("CONFIG.EXTRA_CONFIG_URL", source)
+    settings.set("CONFIG.IGNORE_PR_TITLE", [])
+
+    def no_tempfile(*_args, **_kwargs):
+        raise OSError("temporary directory unavailable")
+
+    monkeypatch.setattr(git_utils.tempfile, "mkstemp", no_tempfile)
+    with request_cycle_context({"settings": settings}):
+        assert await load_host_settings_for_webhook() is True
+        assert get_settings().get("CONFIG.IGNORE_PR_TITLE") == ["^Host"]
+        local.write_bytes(b'[config]\nignore_pr_title = ["^Changed"]\n')
+        get_settings().set("CONFIG.IGNORE_PR_TITLE", ["^Command"])
+        git_utils.apply_host_settings()
+        assert get_settings().get("CONFIG.IGNORE_PR_TITLE") == ["^Host"]
+    assert len(urlopen_stub.calls) == int(remote)
+
+
+@pytest.mark.asyncio
+async def test_webhook_host_loader_does_not_mutate_global_settings_without_request_settings(tmp_path):
+    from pr_agent.servers.utils import load_host_settings_for_webhook
+
+    host = tmp_path / "host.toml"
+    host.write_text('[config]\nignore_pr_title = ["^HostOnly"]\n')
+    original_url = global_settings.get("CONFIG.EXTRA_CONFIG_URL")
+    original_titles = copy.deepcopy(global_settings.get("CONFIG.IGNORE_PR_TITLE"))
+    try:
+        global_settings.set("CONFIG.EXTRA_CONFIG_URL", str(host))
+        with request_cycle_context({}):
+            assert await load_host_settings_for_webhook() is True
+            assert context["settings"] is not global_settings
+            assert get_settings().get("CONFIG.IGNORE_PR_TITLE") == ["^HostOnly"]
+        assert global_settings.get("CONFIG.IGNORE_PR_TITLE") == original_titles
+    finally:
+        global_settings.set("CONFIG.EXTRA_CONFIG_URL", original_url)
+        global_settings.set("CONFIG.IGNORE_PR_TITLE", original_titles)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["github", "gitlab"])
+async def test_invalid_host_url_does_not_skip_approval_revocation(monkeypatch, provider):
+    from pr_agent.servers import github_app, gitlab_webhook
+
+    settings = copy.deepcopy(global_settings)
+    settings.set("CONFIG.EXTRA_CONFIG_URL", "https://[invalid")
+    revoked = Mock()
+    host_loader = Mock(side_effect=ValueError("invalid Host URL"))
+    monkeypatch.setattr(git_utils, "apply_host_settings", host_loader)
+
+    if provider == "github":
+        monkeypatch.setattr(github_app, "revoke_auto_approval_on_push", revoked)
+        monkeypatch.setattr(github_app, "is_bot_user", lambda *_args: True)
+        body = {
+            "action": "synchronize", "sender": {"login": "bot", "type": "Bot", "id": 1},
+            "repository": {"full_name": "example/repo"},
+        }
+        dispatch = github_app._dispatch_request(body, "pull_request", "synchronize")
+    else:
+        monkeypatch.setattr(gitlab_webhook, "revoke_auto_approval_on_push", revoked)
+        monkeypatch.setattr(gitlab_webhook, "is_bot_user", lambda _data: True)
+        body = {"object_kind": "merge_request", "object_attributes": {"action": "update", "oldrev": "abc"}}
+        dispatch = gitlab_webhook.process_gitlab_event(body, {})
+
+    with request_cycle_context({"settings": settings}):
+        await dispatch
+        assert context["extra_config_payloads"]["https://[invalid"] is None
+        assert git_utils._resolve_extra_config_to_file("https://[invalid") == (None, False)
+    revoked.assert_called_once_with(body)
+    host_loader.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_gitlab_revokes_approval_when_host_preload_raises(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from pr_agent.servers import gitlab_webhook
+
+    payload = {"object_kind": "merge_request", "object_attributes": {"action": "update", "oldrev": "sha"}}
+    revoked = Mock()
+    monkeypatch.setattr(gitlab_webhook, "revoke_auto_approval_on_push", revoked)
+    monkeypatch.setattr(
+        gitlab_webhook, "load_host_settings_for_webhook", AsyncMock(side_effect=RuntimeError("unexpected")),
+    )
+    with request_cycle_context({"settings": copy.deepcopy(global_settings)}):
+        with pytest.raises(RuntimeError, match="unexpected"):
+            await gitlab_webhook.process_gitlab_event(payload, {})
+    revoked.assert_called_once_with(payload)
+
+
+@pytest.mark.asyncio
+async def test_github_revocation_pins_host_source_before_replay(tmp_path, monkeypatch):
+    from pr_agent.servers import github_app
+
+    other = tmp_path / "other.toml"
+    other.write_text('[config]\nignore_pr_title = []\n')
+    original = tmp_path / "original.toml"
+    original.write_text(f'[config]\nextra_config_url = "{other.as_posix()}"\nignore_pr_title = ["^Blocked"]\n')
+    settings = copy.deepcopy(global_settings)
+    settings.set("CONFIG.EXTRA_CONFIG_URL", str(original))
+    settings.set("CONFIG.IGNORE_PR_TITLE", [])
+    monkeypatch.setattr(github_app, "revoke_auto_approval_on_push", lambda _body: git_utils.apply_host_settings())
+    monkeypatch.setattr(github_app, "is_bot_user", lambda *_args: True)
+    payload = {
+        "action": "synchronize", "sender": {"login": "bot", "type": "Bot", "id": 1},
+        "repository": {"full_name": "example/repo"},
+    }
+    with request_cycle_context({"settings": settings}):
+        assert await github_app._dispatch_request(payload, "pull_request", "synchronize") == {}
+        assert context["automatic_host_settings_source"] == str(original)
+        git_utils.apply_host_settings()
+        assert get_settings().get("CONFIG.IGNORE_PR_TITLE") == ["^Blocked"]
+
+
+@pytest.mark.asyncio
+async def test_gitlab_auth_pins_host_source_before_loading_provider_token(tmp_path):
+    from pr_agent.servers import gitlab_webhook
+
+    other = tmp_path / "other.toml"
+    other.write_text('[config]\nignore_pr_title = []\n')
+    original = tmp_path / "original.toml"
+    original.write_text(
+        f'[config]\nextra_config_url = "{other.as_posix()}"\nignore_pr_title = ["^Blocked"]\n'
+        '[gitlab]\npersonal_access_token = "example-test-token"\n'
+    )
+    settings = copy.deepcopy(global_settings)
+    settings.set("CONFIG.EXTRA_CONFIG_URL", str(original))
+    settings.set("CONFIG.IGNORE_PR_TITLE", [])
+    settings.set("GITLAB.SHARED_SECRET", "example-shared-secret")
+    settings.set("GITLAB.PERSONAL_ACCESS_TOKEN", "")
+    request = SimpleNamespace(headers={"X-Gitlab-Token": "example-shared-secret"})
+    with request_cycle_context({"settings": settings}):
+        assert await gitlab_webhook.authenticate_gitlab_webhook(request, {}) is None
+        assert context["automatic_host_settings_source"] == str(original)
+        git_utils.apply_host_settings()
+        assert get_settings().get("CONFIG.IGNORE_PR_TITLE") == ["^Blocked"]
+
+
 def test_resolve_injects_auth_header_from_env(urlopen_stub, monkeypatch):
     fake_token = "TEST-AUTH-TOKEN-NOT-REAL"
     urlopen_stub.required_header = ("Private-Token", fake_token)
@@ -288,6 +464,25 @@ def test_resolve_retries_oversized_response_within_request(urlopen_stub):
             if path:
                 os.remove(path)
     assert len(urlopen_stub.calls) == 2
+
+
+def test_manual_host_lookup_retries_a_previous_frozen_failure(urlopen_stub):
+    source = "https://config.example.test/retry.toml"
+    with request_cycle_context({
+        "automatic_host_settings_source": source,
+        "extra_config_payloads": {source: None},
+    }):
+        assert _resolve_extra_config_to_file(source) == (None, False)
+        context.pop("automatic_host_settings_source")
+        path, is_temp = _resolve_extra_config_to_file(source)
+        try:
+            assert is_temp is True
+            with open(path, "rb") as stream:
+                assert stream.read() == SAMPLE_TOML
+        finally:
+            if path:
+                os.remove(path)
+    assert len(urlopen_stub.calls) == 1
 
 
 def test_resolve_malformed_auth_header_warns_and_drops(urlopen_stub, monkeypatch):

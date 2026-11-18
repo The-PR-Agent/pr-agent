@@ -36,6 +36,7 @@ from pr_agent.servers.utils import (
     get_include_pr_labels,
     get_pr_commands,
     is_command_comment,
+    load_host_settings_for_webhook,
     payload_log_summary,
     push_trigger_slot,
     shared_should_process_pr_logic,
@@ -374,12 +375,36 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
             if is_bot_user(data):
                 return "OK"
 
-            # Check if the PR should be processed
-            if data.get("event", "") == "pullrequest:created":
+            # Read trusted external host settings before applying a hard PR exclusion.
+            # Normal events keep the original no-clone fast path.
+            early_host_settings = False
+            if data.get("event", "") in ("pullrequest:created", "pullrequest:updated"):
+                extra_source = get_settings().get("CONFIG.EXTRA_CONFIG_URL")
+                if isinstance(extra_source, str) and extra_source.strip():
+                    installed_app_key = get_settings().get("BITBUCKET.APP_KEY")
+                    context["settings"] = copy.deepcopy(global_settings)
+                    await load_host_settings_for_webhook()
+                    # The OAuth issuer must remain the installed Connect app key,
+                    # when set, not a different value from external host config.
+                    if installed_app_key:
+                        get_settings().set("BITBUCKET.APP_KEY", installed_app_key)
+                    early_host_settings = True
                 prefilter_allowed = (
                     shared_should_process_pr_logic(data, provider="bitbucket_app", check_include_labels=False)
                     if get_include_pr_labels() else should_process_pr_logic(data)
                 )
+                if prefilter_allowed and get_settings().get("CONFIG.IGNORE_PR_AUTHORS"):
+                    pr_data = data.get("data") if isinstance(data.get("data"), dict) else {}
+                    pullrequest = pr_data.get("pullrequest")
+                    author = pullrequest.get("author") if isinstance(pullrequest, dict) else None
+                    if isinstance(author, dict):
+                        preferred = author.get("username") or author.get("display_name") or author.get("nickname")
+                        provider_author = author.get("nickname") or author.get("display_name")
+                        if provider_author and provider_author != preferred:
+                            # Also enforce BitbucketProvider's nickname-or-display-name identity.
+                            prefilter_allowed = shared_should_process_pr_logic(
+                                data, provider="bitbucket_app", sender=provider_author, check_include_labels=False
+                            )
                 if not prefilter_allowed:
                     return "OK"
 
@@ -399,7 +424,8 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
             log_context["sender_id"] = sender_id
             bearer_token = await get_bearer_token(shared_secret, client_key)
             context['bitbucket_bearer_token'] = bearer_token
-            context["settings"] = copy.deepcopy(global_settings)
+            if not early_host_settings:
+                context["settings"] = copy.deepcopy(global_settings)
             agent = PRAgent()
             if event == "pullrequest:created":
                 pr_url = data["data"]["pullrequest"]["links"]["html"]["href"]

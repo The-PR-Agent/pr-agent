@@ -663,6 +663,23 @@ comment commands such as `/review` and `/ask`, and to CLI `--pr_url` runs. In th
 request exits successfully without running the command. Plain-diff CLI inputs (`--diff-file` and
 `--stdin`) have no PR metadata and are not excluded by these rules.
 
+For automatic PR/MR webhooks in GitHub App, GitLab, Gitea, and Bitbucket Cloud,
+host exclusions are evaluated before repository settings.
+A repository cannot clear a host exclusion already matched at this stage; it can still
+exclude additional requests. Manual commands and CLI runs use their effective repository policy.
+
+An automatic webhook may now read `CONFIG.EXTRA_CONFIG_URL` even when the host policy
+rejects the event, adding a configuration fetch that would previously have been skipped.
+On these webhooks, `ignore_pr_authors` checks the PR/MR author rather than the event actor;
+unavailable author metadata retains the existing best-effort policy behavior.
+GitLab may also make an extra MR-author API request for relevant events when Host author
+filtering is enabled and the event actor differs from the MR author.
+
+For GitHub App webhooks, `github_app.override_deployment_type` defaults to `true`
+to preserve App authentication after trusted external Host settings are loaded.
+Trusted Host settings may set it to `false` to retain their configured deployment
+type; repository settings cannot control this option.
+
 For GitHub Actions, matching PRs also skip automatic review, description, and improve commands
 on `pull_request`, `pull_request_target`, and `workflow_run` events.
 
