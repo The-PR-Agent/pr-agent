@@ -1,4 +1,5 @@
 import re
+from bisect import bisect_left
 
 from .containers import QUOTE, THEMATIC_RE, continue_containers, indent_of, open_containers
 
@@ -66,6 +67,7 @@ def line_flags(text: str) -> tuple[dict[int, bool], list[int], set[int]]:
     html_starts: set[int] = set()
     boundaries: list[int] = []
     containers: list[int | None] = []
+    quotes: list[int] = []
     fence_char = None
     fence_size = 0
     html_ends: tuple[str, ...] | None = None
@@ -84,7 +86,7 @@ def line_flags(text: str) -> tuple[dict[int, bool], list[int], set[int]]:
         in_html = False
         boundary = boundary_next
         boundary_next = False
-        depth, rest = continue_containers(containers, line, empty_item)
+        depth, rest = continue_containers(containers, quotes, line, empty_item)
         leaf_continues = depth == len(containers)
         empty_item = empty_item and leaf_continues and not rest.strip()
 
@@ -108,7 +110,10 @@ def line_flags(text: str) -> tuple[dict[int, bool], list[int], set[int]]:
                 empty_item = opened[-1] is not QUOTE and not rest.strip()
             lazy = not leaf_continues and not opened and paragraph and _continues_paragraph(rest)
             if opened or not (leaf_continues or lazy):
-                containers = containers[:depth] + opened
+                del containers[depth:]
+                del quotes[bisect_left(quotes, depth):]
+                quotes.extend(depth + index for index, width in enumerate(opened) if width is QUOTE)
+                containers.extend(opened)
                 fence_char = html_ends = None
                 indented_code = in_table = paragraph = False
                 boundary = True

@@ -215,6 +215,19 @@ def test_container_boundaries_follow_commonmark(text, expected):
     assert neutralize_github_mentions(text) == expected
 
 
+@pytest.mark.parametrize("prefix", [
+    "- " * 50000,
+    "* " * 50000,
+    "1. " * 50000,
+    "> " * 50000,
+    "- " * 50000 + "x\n" + "  " * 50000,
+    "- " * 50000 + "x" + "\n" * 50000,
+    "- " * 50000 + "> x" + "\n" * 50000,
+])
+def test_deeply_nested_containers_stay_linear(prefix):
+    assert neutralize_github_mentions(prefix + "@a") == f"{prefix}@{ZWSP}a"
+
+
 @pytest.mark.parametrize(("text", "expected"), [
     ("cc @&#111;ctocat", f"cc @{ZWSP}&#111;ctocat"),
     ("cc @&#x6F;ctocat", f"cc @{ZWSP}&#x6F;ctocat"),
