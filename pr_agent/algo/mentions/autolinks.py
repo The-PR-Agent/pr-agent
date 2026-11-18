@@ -3,8 +3,8 @@ import string
 import unicodedata
 
 _GITLAB_URL_RE = re.compile(r"(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{1,31}://[^\s<>`()\[\]\"'*~|\\]+")
-_GITHUB_URL_RE = re.compile(r"(?<![A-Za-z])(?i:https?|ftp)://(?=\S)|(?<![^\s*_~(])www\.")
-_ANGLE_RE = re.compile(r"<[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\x00-\x20<>\x7f]*>")
+_GITHUB_URL_RE = re.compile(r"(?<![A-Za-z])(?i:https?)://(?=\S)|(?<![^\s*_~(])www\.")
+_ANGLE_RE = re.compile(r"<(?i:https?|mailto):[^\x00-\x20<>\x7f]*>")
 _TAIL_RE = re.compile(r"[^\s<>`()\[\]\"'*~|\\]*")
 
 

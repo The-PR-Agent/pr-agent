@@ -243,10 +243,10 @@ def test_entity_encoded_handle_starts_are_neutralized(text, expected):
 @pytest.mark.parametrize("text", [
     "see https://medium.com/@user",
     "see HTTPS://medium.com/@user",
-    "see ftp://host.org/@user",
     "see www.medium.com/@user",
     "see (www.medium.com/@user)",
-    "see <custom://host/@user>",
+    "see <https://host/@user>",
+    "see <HTTP://host/@user>",
     "see <mailto:@user>",
 ])
 def test_github_autolinks_keep_their_mentions(text):
@@ -255,6 +255,9 @@ def test_github_autolinks_keep_their_mentions(text):
 
 @pytest.mark.parametrize(("text", "expected"), [
     ("custom://@octocat", f"custom://@{ZWSP}octocat"),
+    ("ftp://x/@octocat", f"ftp://x/@{ZWSP}octocat"),
+    ("<ab://x/@octocat>", f"<ab://x/@{ZWSP}octocat>"),
+    ("<ftp://x/@octocat>", f"<ftp://x/@{ZWSP}octocat>"),
     ("xhttps://host.org/@user", f"xhttps://host.org/@{ZWSP}user"),
     ("https://@octocat", f"https://@{ZWSP}octocat"),
     ("https://a.b_c.org/@user", f"https://a.b_c.org/@{ZWSP}user"),
