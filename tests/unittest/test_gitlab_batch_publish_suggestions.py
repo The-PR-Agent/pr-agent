@@ -95,7 +95,8 @@ def _gl_provider(diff_new_lines=None, poster_is_bot=True, gitlab_before_19_6=Fal
         note.note = payload.get('note')
         note.position = payload.get('position')
         if diff_new_lines is not None:
-            note.line_code = None if 'file_path' in note.position or _outside_diff(note.position) else "line_code"
+            note.line_code = None if ('file_path' in note.position or note.position.get('position_type') == 'file'
+                                      or _outside_diff(note.position)) else "line_code"
         note.delete.side_effect = lambda **kwargs: pending_drafts.remove(note)
         note.publish.side_effect = lambda **kwargs: (pending_drafts.remove(note), published_drafts.append(note))
         pending_drafts.append(note)
@@ -273,6 +274,123 @@ def test_flag_on_fallback_uses_draft_note_not_live_note():
     p.mr.notes.create.assert_not_called()
     p.mr.discussions.create.assert_not_called()
     p.mr.draft_notes.bulk_publish.assert_called_once()
+
+
+def _first_call_rejected(p, create, error):
+    """Make the first call to `create` (the anchored attempt) fail with `error`, later calls pass."""
+    calls = []
+    original = create.side_effect
+
+    def _create(payload):
+        calls.append(payload)
+        if len(calls) == 1:
+            raise error
+        return original(payload) if original else MagicMock()
+
+    create.side_effect = _create
+    return calls
+
+
+def test_live_fallback_is_posted_as_a_resolvable_file_level_thread():
+    p = _gl_provider()
+    calls = _first_call_rejected(p, p.mr.discussions.create, GitlabCreateError("position rejected", response_code=400))
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is True
+    finally:
+        gs.stop()
+
+    assert len(calls) == 2
+    position = calls[1]['position']
+    assert position == {
+        'base_sha': 'base', 'start_sha': 'start', 'head_sha': 'head',
+        'position_type': 'file', 'new_path': 'a.py', 'old_path': 'a.py',
+    }
+    assert "Cannot implement directly" in calls[1]['body']
+    p.mr.notes.create.assert_not_called()
+    assert "fix it" in p.get_recent_inline_comment_bodies()[0]
+
+
+def test_file_level_thread_uses_the_old_path_for_a_renamed_file():
+    class _RenamedFile(_FakeTargetFile):
+        filename = "new_name.py"
+        old_filename = "old_name.py"
+
+    p = _gl_provider()
+    p.get_diff_files.return_value = [_RenamedFile()]
+    calls = _first_call_rejected(p, p.mr.discussions.create, GitlabCreateError("position rejected", response_code=400))
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion(relevant_file="new_name.py")]) is True
+    finally:
+        gs.stop()
+
+    assert calls[1]['position']['new_path'] == "new_name.py"
+    assert calls[1]['position']['old_path'] == "old_name.py"
+
+
+def test_live_fallback_posts_a_plain_note_when_gitlab_rejects_a_file_position():
+    p = _gl_provider()
+    p.mr.discussions.create.side_effect = GitlabCreateError("position_type file not supported", response_code=400)
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is True
+    finally:
+        gs.stop()
+
+    assert p.mr.discussions.create.call_count == 2
+    p.mr.notes.create.assert_called_once()
+    assert 'position' not in p.mr.notes.create.call_args.args[0]
+    assert "Cannot implement directly" in p.mr.notes.create.call_args.args[0]['body']
+
+
+def test_unconfirmed_file_level_thread_is_not_followed_by_a_plain_note():
+    p = _gl_provider()
+    _first_call_rejected(p, p.mr.discussions.create, GitlabCreateError("invalid position", response_code=400))
+    original = p.mr.discussions.create.side_effect
+    calls = []
+
+    def _create(payload):
+        calls.append(payload)
+        if len(calls) == 2:
+            raise GitlabCreateError("server error after write", response_code=503)
+        return original(payload)
+
+    p.mr.discussions.create.side_effect = _create
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is True
+    finally:
+        gs.stop()
+
+    assert len(calls) == 2
+    p.mr.notes.create.assert_not_called()
+
+
+def test_draft_fallback_uses_a_file_position_and_is_queued():
+    p = _gl_provider()
+    calls = _first_call_rejected(p, p.mr.draft_notes.create, GitlabCreateError("position rejected", response_code=400))
+    _publish_as_review(p, [_suggestion()])
+
+    assert len(calls) == 2
+    assert calls[1]['position']['position_type'] == 'file'
+    assert calls[1]['position']['new_path'] == 'a.py'
+    p.mr.draft_notes.bulk_publish.assert_called_once()
+    p.mr.notes.create.assert_not_called()
+
+
+def test_draft_fallback_posts_a_plain_draft_when_gitlab_rejects_a_file_position():
+    p = _gl_provider()
+    p.mr.draft_notes.create.side_effect = GitlabCreateError("position_type file not supported", response_code=400)
+    gs = _settings(as_review=True)
+    try:
+        p.publish_code_suggestions([_suggestion()])
+    finally:
+        gs.stop()
+
+    payloads = [c.args[0] for c in p.mr.draft_notes.create.call_args_list]
+    assert len(payloads) == 3  # anchored attempt, file position, plain draft
+    assert 'position' not in payloads[2]
 
 
 def _kind(body):
@@ -508,7 +626,7 @@ def test_unconfirmed_general_note_fallback_is_not_retried():
     finally:
         gs.stop()
 
-    p.mr.discussions.create.assert_called_once()
+    assert p.mr.discussions.create.call_count == 2  # the anchored attempt, then the file-level thread
     p.mr.notes.create.assert_called_once()
     assert "fix it" in p.get_recent_inline_comment_bodies()[0]
 
@@ -535,7 +653,7 @@ def test_pre_write_connection_failure_can_use_general_note_fallback(error):
     finally:
         gs.stop()
 
-    p.mr.discussions.create.assert_called_once()
+    assert p.mr.discussions.create.call_count == 2  # the anchored attempt, then the file-level thread
     p.mr.notes.create.assert_called_once()
     assert "fix it" in p.get_recent_inline_comment_bodies()[0]
 
