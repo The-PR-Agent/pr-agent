@@ -457,11 +457,11 @@ class PRReviewer:
         # Incremental review already reviews only what is new.
         if skip_unchanged_diff_configured() and not self.incremental.is_incremental:
             guard = UnchangedDiffGuard("review", self.git_provider)
-        if guard is not None and guard.should_skip():
+        if guard is not None and await asyncio.to_thread(guard.should_skip):
             return
         await self._run_review()
         if guard is not None and self._review_done and not command_failed():
-            guard.record()
+            await asyncio.to_thread(guard.record)
 
     async def _review_as_one(self, reason: str, notice: str) -> None:
         get_logger().warning(f"{reason}, skipping per commit review")

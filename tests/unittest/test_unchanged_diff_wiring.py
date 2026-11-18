@@ -57,9 +57,8 @@ def _review(reviewer, done=True, fail=False):
 @pytest.mark.parametrize("skip", [True, False])
 async def test_review_runs_only_when_not_skipped(guards, skip):
     reviewer = _reviewer()
-    run_review = MagicMock(side_effect=_review(reviewer))
     with patch("pr_agent.commands.pr_reviewer.UnchangedDiffGuard", _guard_factory(skip)), \
-            patch.object(reviewer, "_run_review", side_effect=run_review):
+            patch.object(reviewer, "_run_review", side_effect=_review(reviewer)) as run_review:
         await reviewer.run()
 
     assert run_review.called is not skip
@@ -128,4 +127,15 @@ async def test_review_builds_no_guard_when_the_setting_is_off(guards, monkeypatc
         await reviewer.run()
 
     assert run_review.called
+    assert guards == []
+
+
+async def test_describe_builds_no_guard_when_the_setting_is_off(guards, monkeypatch):
+    monkeypatch.setitem(get_settings().config, "skip_unchanged_diff", False)
+    describer = _describer()
+    with patch("pr_agent.commands.pr_description.UnchangedDiffGuard", _guard_factory(True)), \
+            patch.object(describer, "_run_describe", return_value="") as run_describe:
+        await describer.run()
+
+    assert run_describe.called
     assert guards == []

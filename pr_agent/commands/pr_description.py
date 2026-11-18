@@ -30,7 +30,7 @@ from pr_agent.algo.run_details import command_failed, get_run_details, init_run_
 from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
-from pr_agent.algo.unchanged_diff import UnchangedDiffGuard
+from pr_agent.algo.unchanged_diff import UnchangedDiffGuard, skip_unchanged_diff_configured
 from pr_agent.algo.utils import (
     FILE_WALKTHROUGH_ESCAPED_MARKER,
     ModelType,
@@ -148,13 +148,13 @@ class PRDescription:
         write_review_json_output({**data, "usage": usage})
 
     async def run(self):
-        guard = UnchangedDiffGuard("describe", self.git_provider)
-        if guard.should_skip():
+        guard = UnchangedDiffGuard("describe", self.git_provider) if skip_unchanged_diff_configured() else None
+        if guard is not None and await asyncio.to_thread(guard.should_skip):
             return ""
         result = await self._run_describe()
-        # Only a finished run returns "": an empty prediction returns None.
-        if result == "" and not command_failed():
-            guard.record()
+        # A run that stops early returns None; a failed run also returns "", hence command_failed().
+        if guard is not None and result == "" and not command_failed():
+            await asyncio.to_thread(guard.record)
         return result
 
     async def _run_describe(self):

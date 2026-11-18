@@ -8,7 +8,7 @@ from pr_agent.algo.unchanged_diff import (
     RunState,
     UnchangedDiffGuard,
     format_unchanged_diff_marker,
-    parse_unchanged_diff_records,
+    parse_unchanged_diff_comment,
 )
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
@@ -81,6 +81,9 @@ def enabled(monkeypatch):
     monkeypatch.setitem(get_settings().config, "is_auto_command", True)
     monkeypatch.setitem(get_settings().config, "cli_mode", False)
     monkeypatch.setitem(get_settings().config, "publish_output", True)
+    monkeypatch.setitem(get_settings().config, "enable_auto_approval", False)
+    monkeypatch.setitem(get_settings().pr_reviewer, "publish_merge_recommendation_status", False)
+    monkeypatch.setitem(get_settings().github, "publish_as_check_run", False)
     return get_settings()
 
 
@@ -90,11 +93,16 @@ def _reviewed(provider, tool="review"):
     guard.record()
 
 
+def _push_a_change(provider):
+    provider.head = NEW_HEAD
+    provider.files = [FilePatchInfo("a", "c", "@@ -1 +1 @@\n-a\n+c\n", "x.py")]
+
+
 def test_first_run_is_not_skipped_and_records_the_state(enabled):
     provider = FakeProvider()
     _reviewed(provider)
 
-    records = parse_unchanged_diff_records(provider.record_body())
+    records, _ = parse_unchanged_diff_comment(provider.record_body())
     assert set(records) == {"review"}
     assert records["review"].head_sha == HEAD
     assert records["review"].target_branch == "main"
@@ -104,10 +112,9 @@ def test_same_head_and_target_is_skipped_with_a_visible_notice(enabled):
     provider = FakeProvider()
     _reviewed(provider)
 
-    provider.files = [FilePatchInfo("a", "b", "@@ -5 +5 @@\n-a\n+b\n", "x.py")]  # target moved, context shifted
+    provider.files = [FilePatchInfo("a", "b", "@@ -5 +5 @@\n x\n-a\n+b\n", "x.py")]  # target moved, context changed
     assert UnchangedDiffGuard("review", provider).should_skip() is True
-    assert "`/review` skipped" in provider.record_body()
-    assert "head commit" in provider.record_body()
+    assert "<!-- pr-agent:unchanged-diff-skipped:review commit -->" in provider.record_body()
 
 
 def test_same_diff_on_a_new_head_is_skipped(enabled):
@@ -116,15 +123,32 @@ def test_same_diff_on_a_new_head_is_skipped(enabled):
 
     provider.head = NEW_HEAD  # a rebase that changed no content
     assert UnchangedDiffGuard("review", provider).should_skip() is True
-    assert "diff" in provider.record_body().split("`/review` skipped")[1]
+    assert "<!-- pr-agent:unchanged-diff-skipped:review diff -->" in provider.record_body()
+
+
+def test_a_rebase_that_only_moves_the_hunks_is_skipped(enabled):
+    provider = FakeProvider()
+    _reviewed(provider)
+
+    provider.head = NEW_HEAD  # the target gained lines above the change, so the hunk moved
+    provider.files = [FilePatchInfo("a", "b", "@@ -14 +14 @@\n-a\n+b\n", "x.py")]
+    assert UnchangedDiffGuard("review", provider).should_skip() is True
+
+
+def test_a_rename_alone_is_a_new_diff(enabled):
+    provider = FakeProvider()
+    _reviewed(provider)
+
+    provider.head = NEW_HEAD
+    provider.files = [FilePatchInfo("a", "b", "@@ -1 +1 @@\n-a\n+b\n", "x.py", old_filename="old.py")]
+    assert UnchangedDiffGuard("review", provider).should_skip() is False
 
 
 def test_new_commit_with_a_new_diff_runs(enabled):
     provider = FakeProvider()
     _reviewed(provider)
 
-    provider.head = NEW_HEAD
-    provider.files = [FilePatchInfo("a", "c", "@@ -1 +1 @@\n-a\n+c\n", "x.py")]
+    _push_a_change(provider)
     assert UnchangedDiffGuard("review", provider).should_skip() is False
 
 
@@ -150,13 +174,12 @@ def test_recording_keeps_other_tools_and_clears_the_skip_notice(enabled):
     _reviewed(provider, "describe")
     assert UnchangedDiffGuard("review", provider).should_skip() is True
 
-    provider.head = NEW_HEAD
-    provider.files = [FilePatchInfo("a", "c", "@@ -1 +1 @@\n-a\n+c\n", "x.py")]
+    _push_a_change(provider)
     _reviewed(provider, "review")
 
     body = provider.record_body()
     assert "skipped" not in body
-    records = parse_unchanged_diff_records(body)
+    records, _ = parse_unchanged_diff_comment(body)
     assert records["review"].head_sha == NEW_HEAD
     assert records["describe"].head_sha == HEAD
 
@@ -166,8 +189,7 @@ def test_a_run_clears_a_stale_skip_notice_before_it_starts(enabled):
     _reviewed(provider)
     assert UnchangedDiffGuard("review", provider).should_skip() is True
 
-    provider.head = NEW_HEAD
-    provider.files = [FilePatchInfo("a", "c", "@@ -1 +1 @@\n-a\n+c\n", "x.py")]
+    _push_a_change(provider)
     assert UnchangedDiffGuard("review", provider).should_skip() is False  # and then the review fails
     assert "skipped" not in provider.record_body()
 
@@ -175,9 +197,14 @@ def test_a_run_clears_a_stale_skip_notice_before_it_starts(enabled):
 def test_markers_in_a_comment_pr_agent_did_not_write_are_ignored(enabled):
     provider = FakeProvider()
     _reviewed(provider)
-    provider.foreign = {id(c) for c in provider.comments}
+    foreign = provider.comments[0]
+    provider.foreign = {id(foreign)}
+    foreign_body = foreign.body
 
-    assert UnchangedDiffGuard("review", provider).should_skip() is False
+    _reviewed(provider)  # not skipped, and records in a comment of its own
+
+    assert foreign.body == foreign_body
+    assert len(provider.comments) == 2
 
 
 @pytest.mark.parametrize("is_auto, cli_mode, skipped",
@@ -191,7 +218,7 @@ def test_only_automatic_and_cli_runs_are_skipped(enabled, monkeypatch, is_auto, 
     assert UnchangedDiffGuard("review", provider).should_skip() is skipped
 
 
-def test_off_by_default_and_writes_nothing(enabled, monkeypatch):
+def test_setting_off_writes_nothing(enabled, monkeypatch):
     monkeypatch.setitem(get_settings().config, "skip_unchanged_diff", False)
     provider = FakeProvider()
     _reviewed(provider)
@@ -230,7 +257,7 @@ def test_branch_names_cannot_break_the_marker():
     marker = format_unchanged_diff_marker("review", state)
     assert marker.count("-->") == 1
     body = f"{PRCommandNoticeIdentity.UNCHANGED_DIFF.value}\n{marker}"
-    assert parse_unchanged_diff_records(body) == {"review": state}
+    assert parse_unchanged_diff_comment(body)[0] == {"review": state}
 
 
 def test_another_tools_skip_notice_is_dropped_once_the_pr_changed(enabled):
@@ -239,11 +266,10 @@ def test_another_tools_skip_notice_is_dropped_once_the_pr_changed(enabled):
     _reviewed(provider, "describe")
     assert UnchangedDiffGuard("describe", provider).should_skip() is True
 
-    provider.head = NEW_HEAD
-    provider.files = [FilePatchInfo("a", "c", "@@ -1 +1 @@\n-a\n+c\n", "x.py")]
+    _push_a_change(provider)
     _reviewed(provider, "review")
 
-    assert "`/describe` skipped" not in provider.record_body()
+    assert "unchanged-diff-skipped:describe" not in provider.record_body()
 
 
 def test_another_tools_skip_notice_stays_while_it_still_applies(enabled):
@@ -254,7 +280,7 @@ def test_another_tools_skip_notice_stays_while_it_still_applies(enabled):
 
     assert UnchangedDiffGuard("review", provider).should_skip() is True
 
-    assert "`/describe` skipped" in provider.record_body()
+    assert "unchanged-diff-skipped:describe" in provider.record_body()
 
 
 def test_a_file_without_a_patch_disables_the_diff_check(enabled):
@@ -280,3 +306,38 @@ def test_an_unknown_target_branch_disables_the_commit_check(enabled):
 
     provider.files = [FilePatchInfo("a", "c", "@@ -1 +1 @@\n-a\n+c\n", "x.py")]  # retargeted, so the diff changed
     assert UnchangedDiffGuard("review", provider).should_skip() is False
+
+
+@pytest.mark.parametrize("section, key, tools", [
+    ("config", "enable_auto_approval", {"review"}),
+    ("pr_reviewer", "publish_merge_recommendation_status", {"review"}),
+    ("github", "publish_as_check_run", {"review", "describe"}),
+])
+def test_output_tied_to_the_head_commit_is_never_skipped(enabled, monkeypatch, section, key, tools):
+    # A skip would leave the approval, verdict status or check run on the previous head.
+    provider = FakeProvider()
+    _reviewed(provider, "review")
+    _reviewed(provider, "describe")
+
+    monkeypatch.setitem(enabled.get(section), key, True)
+    for tool in ("review", "describe"):
+        assert UnchangedDiffGuard(tool, provider).should_skip() is (tool not in tools)
+
+
+def test_the_setting_is_off_by_default():
+    assert get_settings().config.get("skip_unchanged_diff") is False
+
+
+@pytest.mark.parametrize("setting", ["publish_output", "html_markers"])
+def test_no_skip_and_no_record_without_published_output_or_hidden_markers(enabled, monkeypatch, setting):
+    provider = FakeProvider()
+    _reviewed(provider)
+    body = provider.record_body()
+    if setting == "publish_output":
+        monkeypatch.setitem(enabled.config, "publish_output", False)
+    else:
+        monkeypatch.setattr(provider, "supports_html_comment_markers", lambda: False)
+
+    _reviewed(provider)
+
+    assert provider.record_body() == body
