@@ -13,7 +13,7 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.run_details import record_command_failure
-from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.algo.token_budget import AttemptTokenBudget, prepare_model_token_limits
 from pr_agent.algo.utils import _as_line, get_suggestion_fence, load_yaml
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider_for_command
@@ -119,6 +119,7 @@ class PRAddDocs:
 
         variables = copy.deepcopy(self.vars)
         output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        await prepare_model_token_limits(self.ai_handler, model)
         budget = AttemptTokenBudget.for_prompt_attempt(
             model,
             getattr(self.git_provider, "pr", None),

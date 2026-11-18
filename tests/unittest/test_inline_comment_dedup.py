@@ -1,9 +1,13 @@
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from github import GithubException
 from gitlab import GitlabCreateError
 
 from pr_agent.algo import inline_comment_dedup as d
+from pr_agent.algo.types import FilePatchInfo
+from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
@@ -632,8 +636,145 @@ def test_github_preserves_code_fingerprint_when_hunk_validation_replaces_suggest
     p.pr.create_review.assert_not_called()
 
 
+def test_github_preserves_body_fingerprint_when_hunk_validation_rewrites_body():
+    # Keep the pre-rewrite body fingerprint when hunk validation rewrites the body.
+    original_body = (
+        "**Suggestion:** Proposed documentation\n"
+        "```suggestion\n"
+        "def handle_request(request: Request) -> Response:\n"
+        '    """Handle the incoming request."""\n'
+        "```"
+    )
+    body_fp = d.body_fingerprint("a.py", None, original_body)
+    code_fp = d.code_fingerprint("a.py", None, original_body)
+    p = _gh_provider([f"earlier run\n\n{d.build_markers(body_fp, code_fp)}"])
+    rerun_body = (
+        "**Suggestion:** Proposed documentation\n"
+        "```suggestion\n"
+        "def handle_request(request: Request) -> Response:\n"
+        '    """Process the incoming request."""\n'
+        "```"
+    )
+    rewritten_body = (
+        "**Suggestion:** Proposed documentation\n\n"
+        "<details><summary>New proposed code:</summary>\n\n"
+        "```diff\n"
+        " def handle_request(request: Request) -> Response:\n"
+        '+    """Process the incoming request."""\n'
+        "```\n\n</details>"
+    )
+    assert d.body_fingerprint("a.py", None, rewritten_body) != body_fp
+    assert d.code_fingerprint("a.py", None, rerun_body) != code_fp
+
+    def _replace_with_diff(suggestions):
+        transformed = suggestions[0].copy()
+        transformed["body"] = rewritten_body
+        return [transformed]
+
+    p.validate_comments_inside_hunks = MagicMock(side_effect=_replace_with_diff)
+    gs = _patch_flag(True)
+    try:
+        assert p.publish_code_suggestions([{
+            "body": rerun_body,
+            "relevant_file": "a.py",
+            "relevant_lines_start": 10,
+            "relevant_lines_end": 10,
+        }]) is True
+    finally:
+        gs.stop()
+
+    p.validate_comments_inside_hunks.assert_called_once()
+    p.pr.create_review.assert_not_called()
+
+
+def test_github_preserves_body_fingerprint_when_oversized_suggestion_is_trimmed():
+    p = _gh_provider([])
+    p.max_comment_chars = 120
+    p.limit_output_characters = lambda text, limit: text[:limit]
+    p.validate_comments_inside_hunks = MagicMock(side_effect=lambda suggestions: suggestions)
+    oversized_body = (
+        "**Suggestion:** Validate request\n"
+        "```suggestion\n"
+        "def validate_payload(payload: dict) -> bool:\n"
+        + ("    assert payload is not None\n" * 5)
+        + "```"
+    )
+    expected_fp = d.body_fingerprint("a.py", None, oversized_body)
+    gs = _patch_flag(True)
+    try:
+        assert p.publish_code_suggestions([{
+            "body": oversized_body,
+            "relevant_file": "a.py",
+            "relevant_lines_start": 20,
+            "relevant_lines_end": 20,
+        }]) is True
+    finally:
+        gs.stop()
+
+    p.pr.create_review.assert_called_once()
+    posted_body = p.pr.create_review.call_args.kwargs["comments"][0]["body"]
+    assert f"<!-- pr-agent-dedup: {expected_fp} -->" in posted_body
+
+
+def test_github_relocated_short_prose_suggestions_in_same_file_do_not_collide():
+    # Compute body fingerprints before hunk relocation wraps distinct suggestions in <details>.
+    p = _gh_provider([])
+    p.diff_files = [SimpleNamespace(
+        filename="app.py",
+        patch="@@ -2,2 +2,2 @@\n-    return a\n+    return a + 1\n     pass\n"
+              "@@ -12,2 +12,2 @@\n-    return b\n+    return b + 1\n     pass\n",
+        language="python",
+    )]
+    p.get_diff_files = MagicMock(return_value=p.diff_files)
+
+    alpha_body = '**Suggestion:** Proposed documentation\n```suggestion\ndef alpha(a):\n    """Add one."""\n```'
+    beta_body = '**Suggestion:** Proposed documentation\n```suggestion\ndef beta(b):\n    """Increment."""\n```'
+    expected_alpha_fp = d.body_fingerprint("app.py", None, alpha_body)
+    expected_beta_fp = d.body_fingerprint("app.py", None, beta_body)
+    assert expected_alpha_fp != expected_beta_fp
+
+    suggestions = [
+        {
+            "body": alpha_body,
+            "relevant_file": "app.py",
+            "relevant_lines_start": 1,
+            "relevant_lines_end": 1,
+            "original_suggestion": {
+                "existing_code": "def alpha(a):",
+                "improved_code": 'def alpha(a):\n    """Add one."""',
+            },
+        },
+        {
+            "body": beta_body,
+            "relevant_file": "app.py",
+            "relevant_lines_start": 11,
+            "relevant_lines_end": 11,
+            "original_suggestion": {
+                "existing_code": "def beta(b):",
+                "improved_code": 'def beta(b):\n    """Increment."""',
+            },
+        },
+    ]
+
+    gs = _patch_flag(True)
+    try:
+        assert p.publish_code_suggestions(suggestions) is True
+    finally:
+        gs.stop()
+
+    published = p.pr.create_review.call_args.kwargs["comments"]
+    assert len(published) == 2
+    assert "<details><summary>New proposed code:</summary>" in published[0]["body"]
+    assert "<details><summary>New proposed code:</summary>" in published[1]["body"]
+    assert "def alpha(a):" in published[0]["body"]
+    assert "def beta(b):" in published[1]["body"]
+    assert f"<!-- pr-agent-dedup: {expected_alpha_fp} -->" in published[0]["body"]
+    assert f"<!-- pr-agent-dedup: {expected_beta_fp} -->" in published[1]["body"]
+
+
 def test_github_does_not_send_pre_transform_fingerprint_to_api():
     original_body = "**Suggestion:** fix it\n```suggestion\nx = 1\n```"
+    expected_body_fp = d.body_fingerprint("a.py", None, original_body)
     p = _gh_provider([])
 
     def _replace_with_diff(suggestions):
@@ -654,7 +795,9 @@ def test_github_does_not_send_pre_transform_fingerprint_to_api():
         gs.stop()
 
     published = p.pr.create_review.call_args.kwargs["comments"]
+    assert "_dedup_body_fp" not in published[0]
     assert "_dedup_code_fp" not in published[0]
+    assert f"<!-- pr-agent-dedup: {expected_body_fp} -->" in published[0]["body"]
     assert "<!-- pr-agent-dedup-code:" in published[0]["body"]
 
 
@@ -673,8 +816,191 @@ def test_github_strips_pre_transform_fingerprint_when_feature_is_disabled():
         gs.stop()
 
     published = p.pr.create_review.call_args.kwargs["comments"]
+    assert "_dedup_body_fp" not in published[0]
     assert "_dedup_code_fp" not in published[0]
     assert "pr-agent-dedup" not in published[0]["body"]
+
+
+def test_github_pre_marked_key_issues_sharing_opening_do_not_collide():
+    shared_prefix = (
+        "Unchecked response payload when decoding incoming webhook JSON request body — "
+        "validation is bypassed before handler dispatch: "
+    )
+    first_issue = {
+        "relevant_file": "api.py",
+        "issue_header": "Bug",
+        "issue_content": f"{shared_prefix}first endpoint drops empty bodies.",
+        "start_line": 10,
+        "end_line": 10,
+    }
+    second_issue = {
+        "relevant_file": "api.py",
+        "issue_header": "Bug",
+        "issue_content": f"{shared_prefix}second endpoint drops malformed JSON.",
+        "start_line": 30,
+        "end_line": 30,
+        "existing_code": "payload = None",
+        "improved_code": "payload = {}",
+    }
+
+    head_lines = [f"line_{idx} = {idx}" for idx in range(1, 36)]
+    head_lines[29] = "payload = None"
+    p = _gh_provider([])
+    p.diff_files = [
+        FilePatchInfo(
+            base_file="",
+            head_file="\n".join(head_lines) + "\n",
+            patch=(
+                "@@ -10,2 +10,2 @@\n-line_10 = 0\n+line_10 = 10\n line_11 = 11\n"
+                "@@ -31,2 +31,2 @@\n-line_31 = 0\n+line_31 = 31\n line_32 = 32\n"
+            ),
+            filename="api.py",
+            head_file_is_complete=True,
+        )
+    ]
+    p.get_diff_files = MagicMock(return_value=p.diff_files)
+
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = p
+    reviewer.pr_url = "https://example/pr/1"
+    data = {"review": {"key_issues_to_review": [first_issue, second_issue]}}
+
+    gs = _patch_flag(True)
+    with patch("pr_agent.commands.pr_reviewer.get_committable_code_suggestions", return_value=True):
+        try:
+            result = reviewer._publish_key_issues_as_inline_comments(data)
+            same_run_store = d.get_inline_comment_store(p)
+        finally:
+            gs.stop()
+
+    published = p.pr.create_review.call_args.kwargs["comments"]
+    assert len(published) == 2
+    assert d.body_fingerprint("api.py", None, published[0]["body"]) == d.body_fingerprint(
+        "api.py", None, published[1]["body"]
+    )
+    assert not same_run_store.seen(d.body_fingerprint("api.py", None, published[0]["body"]))
+    assert "<details><summary>New proposed code:</summary>" in published[1]["body"]
+    assert published[0]["body"].count("pr-agent-dedup:") == 1
+    assert published[1]["body"].count("pr-agent-dedup:") == 1
+    assert "key_issues_to_review" not in result["review"]
+    for item in published:
+        assert "_dedup_key_issue" not in item
+        assert "_dedup_body_fp" not in item
+        assert "_dedup_code_fp" not in item
+
+
+def test_github_suggestion_ending_with_key_issue_markers_still_dedups():
+    suggestion_body = (
+        "**Suggestion:** remove stale marker fixtures\n"
+        "```suggestion\n"
+        "cleaned = raw\n"
+        "```\n\n"
+        "<!-- pr-agent-dedup: deadbeef1234 -->\n"
+        "<!-- pr-agent-key-issue-location: 0123456789ab -->"
+    )
+    expected_body_fp = d.body_fingerprint("a.py", None, suggestion_body)
+    expected_code_fp = d.code_fingerprint("a.py", None, suggestion_body)
+
+    first_provider = _gh_provider([])
+    first_provider.validate_comments_inside_hunks = MagicMock(side_effect=lambda suggestions: suggestions)
+    gs = _patch_flag(True)
+    try:
+        assert first_provider.publish_code_suggestions([{
+            "body": suggestion_body,
+            "relevant_file": "a.py",
+            "relevant_lines_start": 5,
+            "relevant_lines_end": 5,
+        }]) is True
+        posted_body = first_provider.pr.create_review.call_args.kwargs["comments"][0]["body"]
+        assert f"<!-- pr-agent-dedup: {expected_body_fp} -->" in posted_body
+        assert f"<!-- pr-agent-dedup-code: {expected_code_fp} -->" in posted_body
+
+        second_provider = _gh_provider([posted_body])
+        second_provider.validate_comments_inside_hunks = MagicMock(side_effect=lambda suggestions: suggestions)
+        assert second_provider.publish_code_suggestions([{
+            "body": suggestion_body,
+            "relevant_file": "a.py",
+            "relevant_lines_start": 5,
+            "relevant_lines_end": 5,
+        }]) is True
+    finally:
+        gs.stop()
+
+    second_provider.pr.create_review.assert_not_called()
+
+
+def test_github_marker_literals_in_suggestion_code_are_preserved():
+    other_body = "**Suggestion:** unrelated cleanup\n```suggestion\nclean = True\n```"
+    other_fp = d.body_fingerprint("tests/test_dedup.py", None, other_body)
+    code_block = (
+        "```suggestion\n"
+        f'marker = "<!-- pr-agent-dedup: {other_fp} -->"\n'
+        f"<!-- pr-agent-dedup: {other_fp} -->\n"
+        "<!-- pr-agent-key-issue-location: 0123456789ab -->\n"
+        "```"
+    )
+    suggestion_body = f"**Suggestion:** keep literal marker fixtures\n{code_block}"
+    expected_body_fp = d.body_fingerprint("tests/test_dedup.py", None, suggestion_body)
+    expected_code_fp = d.code_fingerprint("tests/test_dedup.py", None, suggestion_body)
+
+    p = _gh_provider([])
+    p.validate_comments_inside_hunks = MagicMock(side_effect=lambda suggestions: suggestions)
+    gs = _patch_flag(True)
+    try:
+        assert p.publish_code_suggestions([
+            {
+                "body": suggestion_body,
+                "relevant_file": "tests/test_dedup.py",
+                "relevant_lines_start": 5,
+                "relevant_lines_end": 5,
+            },
+            {
+                "body": other_body,
+                "relevant_file": "tests/test_dedup.py",
+                "relevant_lines_start": 20,
+                "relevant_lines_end": 20,
+            },
+        ]) is True
+    finally:
+        gs.stop()
+
+    published = p.pr.create_review.call_args.kwargs["comments"]
+    assert len(published) == 2
+    assert code_block in published[0]["body"]
+    assert f"<!-- pr-agent-dedup: {expected_body_fp} -->" in published[0]["body"]
+    assert f"<!-- pr-agent-dedup-code: {expected_code_fp} -->" in published[0]["body"]
+    assert "clean = True" in published[1]["body"]
+
+
+def test_github_trailing_marker_literals_in_prose_and_indented_code_get_marked():
+    seen_fp = "deadbeef1234"
+    quoted_marker_body = (
+        "**Suggestion:** remove copied marker comment\n"
+        f"<!-- pr-agent-dedup: {seen_fp} -->"
+    )
+    indented_code_body = (
+        "**Suggestion:** keep indented HTML comment fixture\n\n"
+        f"    <!-- pr-agent-dedup: {seen_fp} -->\n"
+        "    <!-- pr-agent-key-issue-location: 0123456789ab -->"
+    )
+    expected_quoted_fp = d.body_fingerprint("a.py", None, quoted_marker_body)
+    expected_indented_fp = d.body_fingerprint("a.py", None, indented_code_body)
+
+    p = _gh_provider([f"earlier body\n\n<!-- pr-agent-dedup: {seen_fp} -->"])
+    p.validate_comments_inside_hunks = MagicMock(side_effect=lambda suggestions: suggestions)
+    gs = _patch_flag(True)
+    try:
+        assert p.publish_code_suggestions([
+            {"body": quoted_marker_body, "relevant_file": "a.py", "relevant_lines_start": 5, "relevant_lines_end": 5},
+            {"body": indented_code_body, "relevant_file": "a.py", "relevant_lines_start": 9, "relevant_lines_end": 9},
+        ]) is True
+    finally:
+        gs.stop()
+
+    published = p.pr.create_review.call_args.kwargs["comments"]
+    assert len(published) == 2
+    assert f"<!-- pr-agent-dedup: {expected_quoted_fp} -->" in published[0]["body"]
+    assert f"<!-- pr-agent-dedup: {expected_indented_fp} -->" in published[1]["body"]
 
 
 def test_store_unsupported_provider_degrades():
@@ -867,6 +1193,84 @@ def test_github_truncated_fallback_comment_suppresses_the_next_run():
     store.add_body(fixed["body"])  # scan of the existing comment on the next run
     assert store.seen(body_fp)
     assert store.seen(code_fp)
+
+
+def test_github_422_fallback_records_embedded_fingerprints():
+    verified_orig = (
+        "**Suggestion:** keep valid\n```suggestion\ny = 2\n```\n"
+        "<!-- pr-agent-key-issue-location: 0123456789ab -->"
+    )
+    verified_body_fp = d.body_fingerprint("a.py", None, verified_orig)
+    verified_code_fp = d.code_fingerprint("a.py", None, verified_orig)
+
+    invalid_orig = (
+        "**Suggestion:** use the helper\n```suggestion\nx = 1\n```\n"
+        + ("extra context " * 12)
+    )
+    invalid_body_fp = d.body_fingerprint("a.py", None, invalid_orig)
+    invalid_code_fp = d.code_fingerprint("a.py", None, invalid_orig)
+
+    p = _gh_provider([])
+    p.pr.create_review.side_effect = [GithubException(422, {"message": "invalid"}), None, None]
+    p._verify_code_comments = lambda comments: (
+        [comments[0]],
+        [(comments[1], Exception("422"))],
+    )
+
+    gs = patch("pr_agent.git_providers.github_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = _flag_side_effect(True)
+    m.return_value.github = SimpleNamespace(try_fix_invalid_inline_comments=True)
+    try:
+        assert p.publish_inline_comments([
+            {"path": "a.py", "line": 2, "body": verified_orig},
+            {"path": "a.py", "line": 1, "body": invalid_orig},
+        ]) is True
+        same_run_store = d.get_inline_comment_store(p)
+        assert same_run_store.seen(verified_body_fp)
+        assert same_run_store.seen(verified_code_fp)
+        assert same_run_store.seen(invalid_body_fp)
+        assert same_run_store.seen(invalid_code_fp)
+    finally:
+        gs.stop()
+
+    fixed_body = p.pr.create_review.call_args_list[2].kwargs["comments"][0]["body"]
+    repaired_body_fp = d.body_fingerprint("a.py", None, fixed_body)
+    assert repaired_body_fp != invalid_body_fp
+    assert not same_run_store.seen(repaired_body_fp)
+
+
+def test_github_422_fallback_repaired_key_issue_is_not_double_marked():
+    marked_finding = d.key_issue_body_with_markers(
+        "**Possible Issue**\n\nLock is not released.\n\n```suggestion\nrelease()\n```",
+        "111111111111",
+        "aaaaaaaaaaaa",
+    )
+    p = _gh_provider([])
+    p.pr.create_review.side_effect = [GithubException(422, {"message": "invalid"}), None]
+    p._verify_code_comments = lambda comments: ([], [(comments[0], Exception("422"))])
+
+    gs = patch("pr_agent.git_providers.github_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = _flag_side_effect(True)
+    m.return_value.github = SimpleNamespace(try_fix_invalid_inline_comments=True)
+    try:
+        assert p.publish_inline_comments([{
+            "path": "a.py",
+            "start_line": 2,
+            "start_side": "RIGHT",
+            "line": 3,
+            "body": marked_finding,
+            "_dedup_key_issue": True,
+        }]) is True
+    finally:
+        gs.stop()
+
+    repaired = p.pr.create_review.call_args_list[1].kwargs["comments"][0]
+    assert "_dedup_key_issue" not in repaired
+    assert "```text fix\nrelease()\n```" in repaired["body"]
+    assert repaired["body"].count("pr-agent-dedup:") == 1
+    assert "<!-- pr-agent-key-issue-location: aaaaaaaaaaaa -->" in repaired["body"]
 
 
 def test_code_fingerprint_is_case_sensitive():

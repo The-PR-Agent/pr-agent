@@ -198,7 +198,7 @@ harness. The Chinese catalogs (`zh-cn` and `zh-tw`) also received human review b
 The other 26 catalogs were machine-drafted and AI-reviewed, but have not undergone native-speaker human review.
 Corrections from native speakers are welcome.
 
-Use `zh-CN` or `zh-TW` for Chinese, and `pt-BR` or `pt-PT` for Portuguese. There is no shared `zh` or `pt` catalog, and script tags such as `zh-Hant` are not mapped to a regional catalog.
+Use `zh-CN` or `zh-TW` for Chinese, and `pt-BR` or `pt-PT` for Portuguese. There is no shared `zh` or `pt` catalog. Chinese and Mandarin script tags (`zh-Hans`, `zh-Hant`, `cmn-Hans`, `cmn-Hant`, and the extended `zh-cmn` forms) fall back to the corresponding `zh-cn` and `zh-tw` catalogs, including tags with other regions (for example, `zh-Hant-HK`). Other Chinese varieties without a shipped catalog (such as `zh-yue`) and the tag `zh` alone still fall back to English.
 
 In the `/review` comment, the intro line, the effort, tests, security and key-issue labels, the resolved-findings section, the finding lifecycle summary, the suggested-fix label, the persistent-review update lines and the "Preparing review..." message are translated. `/improve` and `/improve_code` now run `/review`; their one-line notice is also translated. The agent run details section is translated for every command. Other fixed text stays in U.S. English: the review heading (set it with `pr_reviewer.review_heading`), the other `/review` fields (ticket compliance, risk level, failure modes and the other opt-in fields), the review coverage footer, chunk progress, other commands' comments outside their run details, and the labels added to the PR. Numbers keep the U.S. format.
 
@@ -668,6 +668,23 @@ comment commands such as `/review` and `/ask`, and to CLI `--pr_url` runs. In th
 `ignore_pr_authors` matches the **PR author**, not the person posting the command. An ignored CLI
 request exits successfully without running the command. Plain-diff CLI inputs (`--diff-file` and
 `--stdin`) have no PR metadata and are not excluded by these rules.
+
+For automatic PR/MR webhooks in GitHub App, GitLab, Gitea, and Bitbucket Cloud,
+host exclusions are evaluated before repository settings.
+A repository cannot clear a host exclusion already matched at this stage; it can still
+exclude additional requests. Manual commands and CLI runs use their effective repository policy.
+
+An automatic webhook may now read `CONFIG.EXTRA_CONFIG_URL` even when the host policy
+rejects the event, adding a configuration fetch that would previously have been skipped.
+On these webhooks, `ignore_pr_authors` checks the PR/MR author rather than the event actor;
+unavailable author metadata retains the existing best-effort policy behavior.
+GitLab may also make an extra MR-author API request for relevant events when Host author
+filtering is enabled and the event actor differs from the MR author.
+
+For GitHub App webhooks, `github_app.override_deployment_type` defaults to `true`
+to preserve App authentication after trusted external Host settings are loaded.
+Trusted Host settings may set it to `false` to retain their configured deployment
+type; repository settings cannot control this option.
 
 For GitHub Actions, matching PRs also skip automatic review, description, and improve commands
 on `pull_request`, `pull_request_target`, and `workflow_run` events.

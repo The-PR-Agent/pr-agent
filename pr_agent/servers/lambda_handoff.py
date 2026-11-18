@@ -165,6 +165,8 @@ async def _run_github_handoff(handoff: dict) -> dict:
         context["installation_id"] = body.get("installation", {}).get("id")
         context["settings"] = copy.deepcopy(global_settings)
         context["git_provider"] = {}
+        # Apply the final trusted Host policy after any external settings load.
+        context["authenticated_provider_settings"] = {"github.deployment_type": "app"}
         await github_app.handle_request(
             body,
             event=headers.get("x-github-event"),
