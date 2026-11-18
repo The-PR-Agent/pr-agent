@@ -411,7 +411,13 @@ failure_callback = ["otel"]
 turn_off_message_logging = true
 ```
 
-> **Set `turn_off_message_logging = true`.** LiteLLM attaches full prompt and response content to what its callbacks emit, which here means the entire PR diff. The default is `false` to preserve existing behavior for Langfuse and LangSmith users.
+> **Set `turn_off_message_logging = true`.** LiteLLM attaches full prompt and response content to what its
+> callbacks emit, which here means the entire PR diff. This also suppresses PR-Agent's own full prompt/response
+> diagnostics in the LiteLLM handler, even at `DEBUG` log level or verbosity level 2. It does not sanitize
+> unrelated application logs or third-party callback errors. The default is `false` to preserve existing
+> behavior for Langfuse and LangSmith users. A deployment-level opt-out cannot be disabled by repository
+> settings. Unpublished CLI commands with verbosity level 2 still print model responses to stdout, which
+> may be captured separately; treat that explicit output as sensitive.
 
 The integration is configured through environment variables:
 

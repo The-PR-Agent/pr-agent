@@ -15,6 +15,7 @@ from dynaconf.loaders import env_loader
 from starlette_context import context
 
 from pr_agent.algo.review_json_output import hosted_markdown_config_error, hosted_markdown_export
+from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.config_loader import DEFAULT_BOT_DISPLAY_NAME, get_bot_display_name, get_settings
 from pr_agent.config_security import (
     PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION,
@@ -286,6 +287,10 @@ def apply_host_settings():
             if extra_path:
                 try:
                     _apply_settings_from_file(extra_path, label="extra")
+                    # Retain a trusted logging opt-out before repository settings can override it.
+                    key = "LITELLM.TURN_OFF_MESSAGE_LOGGING"
+                    if context.exists() and _as_bool_setting(get_settings().get(key, False), setting_name=key):
+                        context["_pr_agent_host_message_logging_disabled"] = True
                 finally:
                     if extra_is_temp:
                         try:
