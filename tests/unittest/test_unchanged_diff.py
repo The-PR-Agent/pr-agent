@@ -341,3 +341,46 @@ def test_no_skip_and_no_record_without_published_output_or_hidden_markers(enable
     _reviewed(provider)
 
     assert provider.record_body() == body
+
+
+def _skipped_once(provider):
+    _reviewed(provider)
+    assert UnchangedDiffGuard("review", provider).should_skip() is True
+    assert "unchanged-diff-skipped:review" in provider.record_body()
+
+
+def _typed(monkeypatch, enabled):
+    monkeypatch.setitem(enabled.config, "is_auto_command", False)
+    monkeypatch.setitem(enabled.config, "cli_mode", False)
+
+
+def test_a_typed_run_never_skips_even_when_the_record_matches(enabled, monkeypatch):
+    provider = FakeProvider()
+    _reviewed(provider)
+    _typed(monkeypatch, enabled)
+
+    assert UnchangedDiffGuard("review", provider).should_skip() is False
+
+
+def test_a_typed_run_clears_the_skip_notice_and_refreshes_the_record(enabled, monkeypatch):
+    provider = FakeProvider()
+    _skipped_once(provider)
+    before, _ = parse_unchanged_diff_comment(provider.record_body())
+    _typed(monkeypatch, enabled)
+    provider.files = [FilePatchInfo("a", "b", "@@ -1 +1 @@\n x\n-a\n+b\n", "x.py")]  # target moved
+
+    _reviewed(provider)
+
+    assert "unchanged-diff-skipped:review" not in provider.record_body()
+    after, _ = parse_unchanged_diff_comment(provider.record_body())
+    assert after["review"].diff_hash != before["review"].diff_hash
+
+
+def test_a_head_commit_setting_turned_on_after_a_skip_clears_the_notice(enabled, monkeypatch):
+    provider = FakeProvider()
+    _skipped_once(provider)
+    monkeypatch.setitem(enabled.config, "enable_auto_approval", True)
+
+    _reviewed(provider)
+
+    assert "unchanged-diff-skipped:review" not in provider.record_body()

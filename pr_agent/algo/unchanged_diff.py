@@ -96,16 +96,18 @@ def _output_tied_to_head_commit(tool: str) -> bool:
     )
 
 
-def _enabled(git_provider, tool: str) -> bool:
-    config = get_settings().config
-    if not skip_unchanged_diff_configured() or _output_tied_to_head_commit(tool):
+def _record_usable(git_provider) -> bool:
+    if not skip_unchanged_diff_configured() or not get_settings().config.get("publish_output", True):
         return False
+    return comment_authorship_available(git_provider) and git_provider.supports_html_comment_markers() is not False
+
+
+def _may_skip(tool: str) -> bool:
+    config = get_settings().config
     # A command someone typed in a comment always runs.
     if not (config.get("is_auto_command", False) or config.get("cli_mode", False)):
         return False
-    if not config.get("publish_output", True) or not comment_authorship_available(git_provider):
-        return False
-    return git_provider.supports_html_comment_markers() is not False
+    return not _output_tied_to_head_commit(tool)
 
 
 class UnchangedDiffGuard:
@@ -118,7 +120,8 @@ class UnchangedDiffGuard:
         self._diff_comparable = False
 
     def should_skip(self) -> bool:
-        if not _enabled(self.git_provider, self.tool):
+        # A run that may not skip still reads the record: it takes down its own notice and records on success.
+        if not _record_usable(self.git_provider):
             return False
         try:
             files = self.git_provider.get_diff_files()
@@ -130,7 +133,7 @@ class UnchangedDiffGuard:
             # changing the fingerprint.
             self._diff_comparable = all(file.patch for file in files)
             records, skipped = self._read()
-            reason = self._skip_reason(records.get(self.tool))
+            reason = self._skip_reason(records.get(self.tool)) if _may_skip(self.tool) else None
             # A run takes its own old notice down first, so a run that then fails does not leave
             # the PR saying the last output still applies.
             had_notice = skipped.pop(self.tool, None) is not None

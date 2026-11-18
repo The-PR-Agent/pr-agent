@@ -139,7 +139,7 @@ An automatic or CLI `/review` or `/describe` run is then skipped, with no model 
 
 PR-Agent keeps its record in one comment on the PR, and edits it to say when a run was skipped and why. The record is written only after a command succeeds, so a failed run is retried next time.
 
-- A command typed in a PR comment, such as `/review`, always runs.
+- A command typed in a PR comment, such as `/review`, always runs. When it succeeds it updates the record and takes down that command's skip notice, so the next automatic run skips if nothing has changed since.
 - Incremental review (`/review -i`) and per commit review always run.
 - Output that belongs to one head commit is never left behind by a skip. `/review` always runs while `config.enable_auto_approval` or `pr_reviewer.publish_merge_recommendation_status` is on, and both commands always run while `github.publish_as_check_run` is on.
 - Some automatic runs are requested by a person: assigning PR-Agent as a GitLab reviewer (`gitlab.reviewer_commands`), a GitHub review request, or a GitHub review submitted with changes requested (`review_commands`). These are skipped too when nothing has changed; comment the command to run it.
