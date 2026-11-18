@@ -20,6 +20,7 @@ import litellm
 import openai
 from litellm import acompletion
 from litellm.exceptions import MidStreamFallbackError
+from starlette_context import context
 from tenacity import RetryCallState, retry, retry_if_exception, wait_random_exponential
 
 try:
@@ -154,6 +155,17 @@ from pr_agent.algo.url_safety import with_safe_redirects
 from pr_agent.algo.utils import ReasoningEffort
 from pr_agent.config_loader import get_settings, get_verbosity_level, global_settings
 from pr_agent.log import get_logger
+
+
+def _message_logging_disabled(settings) -> bool:
+    """Do not let repository settings weaken a deployment-level logging opt-out."""
+    key = "LITELLM.TURN_OFF_MESSAGE_LOGGING"
+    return (
+        _as_bool_setting(global_settings.get(key, False), setting_name=key)
+        or (context.exists() and context.get("_pr_agent_host_message_logging_disabled", False))
+        or _as_bool_setting(settings.get(key, False), setting_name=key)
+    )
+
 
 MODEL_RETRIES = 2
 DEFAULT_NUM_RETRIES = 4
@@ -605,7 +617,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         if global_settings.get("LITELLM.SERVICE_CALLBACK", None):
             litellm.service_callback = normalize_setting_list(global_settings.litellm.service_callback)
         # litellm callbacks attach full prompt and response content unless message logging is disabled.
-        if settings.get("LITELLM.TURN_OFF_MESSAGE_LOGGING", False):
+        if _message_logging_disabled(settings):
             litellm.turn_off_message_logging = True
         # Keep LiteLLM request spans separate from pr-agent command spans when both OTEL layers are enabled.
         if self._litellm_otel_callback_enabled() and _as_bool_setting(
@@ -3111,6 +3123,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         *,
         configured_deployment_id: str | None,
     ):
+        # This LiteLLM setting must cover PR-Agent's own diagnostics as well as
+        # LiteLLM callbacks; otherwise DEBUG logs still contain the full diff.
+        hide_message_logs = _message_logging_disabled(get_settings())
         # Validate config-derived kwargs before the try/except below, so a malformed value raises a
         # ValueError config error instead of being wrapped as openai.APIError and retried.
         cache_control_injection_points = self._resolve_cache_control_injection_points()
@@ -3516,11 +3531,12 @@ class LiteLLMAIHandler(BaseAiHandler):
                         openrouter_reasoning_effort,
                     )
 
-                get_logger().debug("Prompts", artifact={"system": system, "user": user})
+                if not hide_message_logs:
+                    get_logger().debug("Prompts", artifact={"system": system, "user": user})
 
-                if get_verbosity_level() >= 2:
-                    get_logger().info(f"\nSystem prompt:\n{system}")
-                    get_logger().info(f"\nUser prompt:\n{user}")
+                    if get_verbosity_level() >= 2:
+                        get_logger().info(f"\nSystem prompt:\n{system}")
+                        get_logger().info(f"\nUser prompt:\n{user}")
 
                 # Optional fixed provider override, so a raw hosted model id reaches the
                 # provider unchanged instead of being rewritten by LiteLLM's prefix inference.
@@ -3586,15 +3602,27 @@ class LiteLLMAIHandler(BaseAiHandler):
         # touches no os.environ credentials, and in IMDS mode the lock serializes
         # every concurrent call, so holding it through logging and cost pricing
         # would make each waiting coroutine pay for them serially.
-        get_logger().debug(f"\nAI response:\n{resp}")
+        if not hide_message_logs:
+            get_logger().debug(f"\nAI response:\n{resp}")
 
-        # log the full response for debugging
-        response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
-        get_logger().debug("Full_response", artifact=response_log)
+            # Log the full response only when diagnostic message logging is enabled.
+            response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
+            get_logger().debug("Full_response", artifact=response_log)
 
-        # for CLI debugging
-        if get_verbosity_level() >= 2:
-            get_logger().info(f"\nAI response:\n{resp}")
+            # for CLI debugging
+            if get_verbosity_level() >= 2:
+                get_logger().info(f"\nAI response:\n{resp}")
+        elif (
+            context.exists()
+            and context.get("_pr_agent_cli_invocation", False)
+            and get_verbosity_level() >= 2
+            and not _as_bool_setting(
+                get_settings().config.get("publish_output", True), default=True,
+                setting_name="CONFIG.PUBLISH_OUTPUT",
+            )
+        ):
+            # Keep trusted local CLI output separate from diagnostic logging sinks.
+            print(f"\nAI response:\n{resp}")
 
         self._record_completion_metadata(response_obj, model=model, display_model=user_model)
 

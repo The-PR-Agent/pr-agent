@@ -8,8 +8,9 @@ from urllib.error import HTTPError
 import pytest
 from starlette_context import context, request_cycle_context
 
+import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
 from pr_agent.cli import set_parser
-from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.config_loader import get_settings, global_settings, safe_request_cycle_context
 from pr_agent.git_providers import utils as git_utils
 from pr_agent.git_providers.utils import (
     _apply_settings_from_file,
@@ -847,6 +848,20 @@ repo_only = "repo-value"
     assert get_settings().get(f"{_TEST_SECTION}.extra_only") == "extra-value"
     # repo-only keys are present
     assert get_settings().get(f"{_TEST_SECTION}.repo_only") == "repo-value"
+
+
+def test_extra_logging_opt_out_survives_repo_override(tmp_path, monkeypatch, settings_sandbox, mock_git_provider):
+    extra_path = _write_toml(tmp_path, "extra.toml", "[litellm]\nturn_off_message_logging = true\n")
+    mock_git_provider["provider"] = _FakeGitProvider(b"[litellm]\nturn_off_message_logging = false\n")
+    monkeypatch.setattr(litellm_handler, "global_settings", {"LITELLM.TURN_OFF_MESSAGE_LOGGING": False})
+
+    with safe_request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        get_settings().set("CONFIG.EXTRA_CONFIG_URL", extra_path)
+        get_settings().set("CONFIG.USE_REPO_SETTINGS_FILE", True)
+        apply_repo_settings("https://example.com/pr/1")
+
+        assert get_settings().get("LITELLM.TURN_OFF_MESSAGE_LOGGING") is False
+        assert litellm_handler._message_logging_disabled(get_settings()) is True
 
 
 def test_extra_applied_when_repo_settings_empty(tmp_path, settings_sandbox, mock_git_provider):

@@ -68,6 +68,7 @@ def _cli_settings_scope():
     except Exception:
         scope_data = {}
     scope_data["settings"] = copy.deepcopy(get_settings())
+    scope_data["_pr_agent_cli_invocation"] = True  # Unlike config.cli_mode, this cannot come from a PR comment.
     for cache_key in _CLI_CONTEXT_CACHES:
         scope_data.pop(cache_key, None)
 

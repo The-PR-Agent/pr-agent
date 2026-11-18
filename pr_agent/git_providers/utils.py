@@ -355,6 +355,10 @@ def apply_host_settings():
             elif extra_path:
                 try:
                     _apply_settings_from_file(extra_path, label="extra")
+                    # Retain a trusted logging opt-out before repository settings can override it.
+                    key = "LITELLM.TURN_OFF_MESSAGE_LOGGING"
+                    if context.exists() and _as_bool_setting(get_settings().get(key, False), setting_name=key):
+                        context["_pr_agent_host_message_logging_disabled"] = True
                 finally:
                     if extra_is_temp:
                         try:
