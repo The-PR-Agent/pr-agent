@@ -190,6 +190,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
         "repo_context_files",
         "repo_context_max_glob_matches",
         "repo_context_expand_imports",
+        "skip_unchanged_diff",
         "system_instructions",
     }),
     "github_action_config": frozenset({"fail_on_command_errors"}),

@@ -45,7 +45,7 @@ dependencies = [
   # before 4.2.1. Declare the floor so pip installs get the patched lock as well; it follows
   # the >=patched,<next-major convention above.
   "filelock>=4.2.1,<5",
-  "loguru==0.7.3",
+  "loguru==0.8.0",
   "openai>=1.55.3",
   "PyJWT>=2.15.1,<3",
   "PyYAML==6.0.3",

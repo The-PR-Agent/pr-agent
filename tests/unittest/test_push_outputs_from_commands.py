@@ -64,7 +64,7 @@ def test_review_still_emits():
 
 
 def test_describe_emits_from_its_publish_path():
-    assert "push_outputs_async" in PRDescription.run.__code__.co_names
+    assert "push_outputs_async" in PRDescription._run_describe.__code__.co_names
 
 
 def test_improve_emits_from_its_publish_path():

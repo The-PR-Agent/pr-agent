@@ -21,6 +21,7 @@ _TRACKED_KEYS = (
     "config.model",
     "config.model_weak",
     "config.fallback_models",
+    "config.custom_model_max_tokens",
     "config.output_run_details",
     "config.output_run_cost",
     "config.output_relevant_configurations",
@@ -49,6 +50,7 @@ def command_run_settings():
     settings.set("config.model", PRIMARY)
     settings.set("config.model_weak", "")
     settings.set("config.fallback_models", [BACKUP])
+    settings.set("config.custom_model_max_tokens", -1)
     settings.set("config.output_run_details", True)
     settings.set("config.output_run_cost", False)
     settings.set("config.output_relevant_configurations", False)

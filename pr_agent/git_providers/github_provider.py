@@ -2860,15 +2860,19 @@ class GithubProvider(GitProvider):
             return None
 
     @staticmethod
-    def _is_current_action_run(run) -> bool:
+    def _is_current_action_run(run, *, jobs_only: bool = False) -> bool:
         current_run_id = os.environ.get("GITHUB_RUN_ID")
         if not current_run_id:
             return False
         html_url = getattr(run, "html_url", "") or ""
         details_url = getattr(run, "details_url", "") or ""
         pattern = f"/actions/runs/{current_run_id}/"
+        if jobs_only:
+            pattern += "job/"
         if pattern in html_url or pattern in details_url:
             return True
+        if jobs_only:
+            return False
         external_id = str(getattr(run, "external_id", "") or "")
         return bool(
             external_id and (external_id == str(current_run_id) or external_id.startswith(f"{current_run_id}_"))
@@ -3024,7 +3028,12 @@ class GithubProvider(GitProvider):
                             # timestamp.
                             if self._is_own_check_run(run, own_app_login):
                                 continue
-                            if self._is_current_action_run(run):
+                            status = (getattr(run, "status", "") or "").lower()
+                            # The published PR-Agent check also carries the run ID.
+                            # Only a completed Actions job should set this timestamp.
+                            if self._is_current_action_run(run) and not (
+                                status == "completed" and self._is_current_action_run(run, jobs_only=True)
+                            ):
                                 continue
 
                             run_dt = getattr(run, "completed_at", None) or getattr(run, "created_at", None)

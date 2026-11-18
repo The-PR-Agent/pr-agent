@@ -26,10 +26,11 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
-from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure
+from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details, record_command_failure
 from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.algo.unchanged_diff import UnchangedDiffGuard, skip_unchanged_diff_configured
 from pr_agent.algo.utils import (
     FILE_WALKTHROUGH_ESCAPED_MARKER,
     ModelType,
@@ -147,6 +148,16 @@ class PRDescription:
         write_review_json_output({**data, "usage": usage})
 
     async def run(self):
+        guard = UnchangedDiffGuard("describe", self.git_provider) if skip_unchanged_diff_configured() else None
+        if guard is not None and await asyncio.to_thread(guard.should_skip):
+            return ""
+        result = await self._run_describe()
+        # A run that stops early returns None; a failed run also returns "", hence command_failed().
+        if guard is not None and result == "" and not command_failed():
+            await asyncio.to_thread(guard.record)
+        return result
+
+    async def _run_describe(self):
         init_run_details()
         self.progress_response = None
         try:
@@ -339,7 +350,7 @@ class PRDescription:
             else:
                 get_logger().info('PR description, but not published since publish_output is False.')
                 get_settings().data = {"artifact": pr_body}
-                return
+                return None
         except Exception as e:
             get_logger().error(f"Error generating PR description {self.pr_id}: {e}",
                                artifact={"traceback": traceback.format_exc()})
