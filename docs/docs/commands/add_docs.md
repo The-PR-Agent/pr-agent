@@ -41,6 +41,7 @@ Under the section `[pr_add_docs]`, the following options are available:
 |--------|------|---------|-------------|
 | `extra_instructions` | string | `""` | Additional instructions for the AI model |
 | `docs_style` | string | `"Sphinx"` | Documentation style for Python. Options: `"Sphinx"`, `"Google Style with Args, Returns, Attributes...etc"`, `"Numpy Style"`, `"PEP257"`, `"reStructuredText"` |
+| `use_repo_context` | boolean | `true` | Apply conventions from configured repository instruction files (for example `AGENTS.md`); set to `false` to opt out |
 
 ### Example configuration
 
@@ -51,6 +52,23 @@ To customize the documentation style, add the following to your configuration fi
 docs_style = "Google Style with Args, Returns, Attributes...etc"
 extra_instructions = "Focus on documenting public methods and include usage examples"
 ```
+
+By default, `/add_docs` follows the shared `config.repo_context_files` selection (`["AGENTS.md"]` by default,
+read from the repository default branch). To disable repository instructions for `/add_docs` only:
+
+```toml
+[pr_add_docs]
+use_repo_context = false
+```
+
+Structured sibling-repository entries in `config.repo_context_files` are excluded from `/add_docs` to avoid publishing private sibling guidance in PR suggestions. Local repository entries remain in effect.
+
+Setting `config.repo_context_files = []` disables repository instructions across commands. Repository instructions
+are optional prompt context: if they do not fit the selected model's input budget, they are omitted without shortening
+the PR diff. Explicit `extra_instructions` and `docs_style` take precedence. Repository instructions may add file
+reads and prompt tokens, but do not introduce another model call.
+Repository instructions are appended to the rendered system prompt, including with custom `[pr_add_docs_prompt]`
+templates. Existing template variables and diff rendering are left unchanged.
 
 ### Command line options
 

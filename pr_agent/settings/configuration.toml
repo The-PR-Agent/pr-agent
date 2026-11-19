@@ -318,6 +318,7 @@ code_suggestions_self_review_text= "**Author self-review**: I have reviewed the 
 [pr_add_docs] # /add_docs #
 extra_instructions = ""
 docs_style = "Sphinx" # Docstring style: Google Style with Args, Returns, Attributes...etc; Numpy Style; Sphinx; PEP257; reStructuredText. See docs/docs/commands/add_docs.md.
+use_repo_context = true # Include repository instructions in /add_docs when they fit (true/false); see commands/add_docs.md.
 
 [pr_update_changelog] # /update_changelog #
 changelog_path="CHANGELOG.md" # Repository-relative Markdown changelog path. Root .pr_agent.toml or host settings only; see commands/update_changelog.md.
