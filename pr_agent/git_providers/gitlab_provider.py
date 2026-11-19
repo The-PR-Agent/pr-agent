@@ -58,6 +58,7 @@ from ..algo.inline_comment_dedup import (
     marker_fingerprints,
 )
 from ..algo.language_handler import is_valid_file
+from ..algo.review_finding_state import split_review_state_marker
 from ..algo.token_budget import clip_tokens
 from ..algo.utils import load_large_diff
 from ..config_loader import get_settings
@@ -2450,8 +2451,7 @@ class GitLabProvider(GitProvider):
         if is_temporary and not get_settings().config.publish_output_progress:
             get_logger().debug(f"Skipping publish_comment for temporary comment: {mr_comment}")
             return None
-        mr_comment = self.limit_output_characters(
-            _neutralize_gitlab_mentions(mr_comment), self.max_comment_chars)
+        note_body = self._publishable_note(mr_comment)
         # Reply to the triggering GitLab discussion only when explicitly enabled and available.
         if (not is_temporary and self.should_reply_to_trigger_comment()
                 and (comment_id := get_settings().get("comment_id", ""))):
@@ -2464,7 +2464,7 @@ class GitLabProvider(GitProvider):
         # thread (discussion) instead of a plain note. Temporary progress comments are never threaded.
         if as_thread and not is_temporary:
             try:
-                discussion = self.mr.discussions.create({'body': mr_comment})
+                discussion = self.mr.discussions.create({'body': note_body})
             except (GitlabError, RequestException) as e:
                 get_logger().warning(f"Failed to publish comment as a thread, falling back to a note: {e}")
             else:
@@ -2476,14 +2476,22 @@ class GitLabProvider(GitProvider):
                 except (GitlabError, RequestException, KeyError, IndexError, TypeError) as e:
                     get_logger().warning(f"Published review thread but failed to fetch its note: {e}")
                     return None
-        comment = self.mr.notes.create({'body': mr_comment})
+        comment = self.mr.notes.create({'body': note_body})
         if is_temporary:
             self.temp_comments.append(comment)
         return comment
 
     def edit_comment(self, comment, body: str):
-        body = self.limit_output_characters(_neutralize_gitlab_mentions(body), self.max_comment_chars)
-        self.mr.notes.update(comment.id,{'body': body} )
+        self.mr.notes.update(comment.id, {'body': self._publishable_note(body)})
+
+    def _publishable_note(self, body: str) -> str:
+        text, marker = split_review_state_marker(body)
+        text = _neutralize_gitlab_mentions(text)
+        if not marker:
+            return self.limit_output_characters(text, self.max_comment_chars)
+        # the state marker is hidden and must stay byte for byte, or the next run sees changed findings
+        text = self.limit_output_characters(text, max(self.max_comment_chars - len(marker) - 3, 0))
+        return "\n\n".join(part for part in (text, marker) if part) + "\n"
 
     def unresolve_comment_thread(self, comment):
         try:
@@ -2801,7 +2809,7 @@ class GitLabProvider(GitProvider):
         return comments
 
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
-        body = self.limit_output_characters(_neutralize_gitlab_mentions(body), self.max_comment_chars)
+        body = self._publishable_note(body)
         discussion = self.mr.discussions.get(comment_id)
         return discussion.notes.create({'body': body})
 
