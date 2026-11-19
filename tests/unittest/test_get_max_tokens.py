@@ -657,6 +657,8 @@ class TestGetMaxTokens:
         "vertex_ai/gemini-4-carbon",
         "gemini/gemini-4-hydrogen",
         "vertex_ai/gemini-4-hydrogen",
+        "gemini/gemini-4-neon",
+        "vertex_ai/gemini-4-neon",
     ])
     def test_gemini_4_x_models_max_tokens(self, monkeypatch, model):
         fake_settings = type("", (), {
@@ -1518,6 +1520,8 @@ class TestNoLiteLLMDuplicates:
         "vertex_ai/gemini-4-carbon",
         "gemini/gemini-4-hydrogen",
         "vertex_ai/gemini-4-hydrogen",
+        "gemini/gemini-4-neon",
+        "vertex_ai/gemini-4-neon",
         "openrouter/x-ai/grok-4.5",
         "openrouter/x-ai/grok-4.6",
         "openrouter/deepseek/deepseek-chat",
