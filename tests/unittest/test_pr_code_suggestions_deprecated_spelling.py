@@ -19,16 +19,16 @@ TRACKED = (CANONICAL, DEPRECATED)
 
 @pytest.fixture(autouse=True)
 def clean_spellings():
-    """Isolate both spellings and the process-wide warn-once flag between tests."""
+    """Isolate both spellings and the cached deprecation warning between tests."""
     snapshot = snapshot_settings(TRACKED)
-    suggestion_checks._deprecated_spellings_warned = False
+    suggestion_checks._warn_deprecated_alias.cache_clear()
     yield
     restore_settings(snapshot)
-    suggestion_checks._deprecated_spellings_warned = False
+    suggestion_checks._warn_deprecated_alias.cache_clear()
 
 
 def _warnings(monkeypatch):
-    """Capture logger warnings emitted by the resolver, and clear the warn-once flag."""
+    """Capture logger warnings emitted by the resolver, and clear the cached warning."""
     logger = MagicMock()
     monkeypatch.setattr("pr_agent.algo.suggestion_checks.get_logger", lambda: logger)
     return logger
@@ -137,3 +137,19 @@ def test_disabled_when_neither_spelling_is_set(canonical, monkeypatch):
 
     assert get_committable_code_suggestions() is canonical
     logger.warning.assert_not_called()
+
+
+@pytest.mark.parametrize(("setting", "value", "expected", "warns"), [
+    (CANONICAL, "false", False, False),
+    (CANONICAL, "true", True, False),
+    (DEPRECATED, "false", False, False),
+    (DEPRECATED, "true", True, True),
+])
+def test_string_valued_boolean_overrides_are_normalized(monkeypatch, setting, value, expected, warns):
+    logger = _warnings(monkeypatch)
+    get_settings().set(CANONICAL, False)
+    get_settings().set(DEPRECATED, False)
+    get_settings().set(setting, value)
+
+    assert get_committable_code_suggestions() is expected
+    assert logger.warning.call_count == (1 if warns else 0)
