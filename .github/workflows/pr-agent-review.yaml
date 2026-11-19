@@ -352,6 +352,19 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
 
+      # Grafana's OTLP header value encodes the space after "Basic" as %20, which neither
+      # PR-Agent's [otel] parser nor LiteLLM's decodes, so pass it on with a literal space.
+      - name: Prepare telemetry headers
+        env:
+          OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$OTLP_HEADERS" ]] || exit 0
+          headers=${OTLP_HEADERS//%20/ }
+          echo "::add-mask::$headers"
+          echo "PR_AGENT_OTLP_HEADERS=$headers" >> "$GITHUB_ENV"
+
       - name: Run sponsored PR-Agent
         uses: docker://pragent/pr-agent:github_action
         with:
@@ -399,21 +412,18 @@ jobs:
           GITHUB_ACTION_CONFIG__AUTO_REVIEW: 'true'
           GITHUB_ACTION_CONFIG__AUTO_IMPROVE: 'true'
           GITHUB_ACTION_CONFIG__FAIL_ON_COMMAND_ERRORS: 'true'
-          # Grafana Cloud telemetry stays off unless the GRAFANA_OTLP_ENDPOINT variable is set;
-          # the GRAFANA_OTLP_AUTH secret holds only the base64 "instanceID:token" value.
-          # Neither PR-Agent's [otel] parser nor LiteLLM's (which bypasses the OTel SDK's URL-decoding
-          # of OTEL_EXPORTER_OTLP_HEADERS) decodes %20, so both headers use a literal space.
-          OTEL__IS_ENABLED: ${{ vars.GRAFANA_OTLP_ENDPOINT != '' && 'true' || 'false' }}
+          # Grafana Cloud telemetry stays off unless the OTEL_EXPORTER_OTLP_ENDPOINT secret is set.
+          OTEL__IS_ENABLED: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT != '' && 'true' || 'false' }}
           OTEL__EXPORTER_TYPE: otlp
           OTEL__ENVIRONMENT: production
-          OTEL__OTLP_ENDPOINT: ${{ vars.GRAFANA_OTLP_ENDPOINT }}
-          OTEL__OTLP_HEADERS: ${{ vars.GRAFANA_OTLP_ENDPOINT != '' && format('Authorization=Basic {0}', secrets.GRAFANA_OTLP_AUTH) || '' }}
-          LITELLM__SUCCESS_CALLBACK: ${{ vars.GRAFANA_OTLP_ENDPOINT != '' && '["otel"]' || '' }}
-          LITELLM__FAILURE_CALLBACK: ${{ vars.GRAFANA_OTLP_ENDPOINT != '' && '["otel"]' || '' }}
+          OTEL__OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+          OTEL__OTLP_HEADERS: ${{ env.PR_AGENT_OTLP_HEADERS }}
+          LITELLM__SUCCESS_CALLBACK: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT != '' && '["otel"]' || '' }}
+          LITELLM__FAILURE_CALLBACK: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT != '' && '["otel"]' || '' }}
           # Keep prompts and completions (PR code and diffs) out of the exported spans.
           LITELLM__TURN_OFF_MESSAGE_LOGGING: 'true'
           OTEL_EXPORTER: otlp_http
-          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.GRAFANA_OTLP_ENDPOINT }}
-          OTEL_EXPORTER_OTLP_HEADERS: ${{ vars.GRAFANA_OTLP_ENDPOINT != '' && format('Authorization=Basic {0}', secrets.GRAFANA_OTLP_AUTH) || '' }}
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_HEADERS: ${{ env.PR_AGENT_OTLP_HEADERS }}
           OTEL_SERVICE_NAME: pr-agent
           LITELLM_OTEL_INTEGRATION_ENABLE_METRICS: 'true'
