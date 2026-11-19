@@ -40,7 +40,7 @@ COMMENT_OVERRIDABLE_KEYS = {
         "handle_push_trigger", "push_commands",
     }),
     "config": frozenset({
-        "add_user_to_requests", "additional_reasoning_effort_models", "allow_dynamic_context",
+        "additional_reasoning_effort_models", "allow_dynamic_context",
         "bot_user_indicators", "claude_adaptive_thinking_models_override",
         "claude_extended_thinking_models_override", "cli_mode", "custom_model_max_tokens",
         "custom_reasoning_model", "disable_auto_feedback", "duplicate_prompt_examples", "enable_ai_metadata",
@@ -55,7 +55,7 @@ COMMENT_OVERRIDABLE_KEYS = {
         "patch_extra_lines_after", "patch_extra_lines_before", "per_directory_settings_max_files",
         "per_directory_settings_max_tree_pages", "persistent_inline_comments", "progress_gif_url",
         "progress_gif_width", "propagate_command_errors", "publish_output", "publish_output_progress",
-        "reaction_on_failure", "reaction_on_start", "reaction_on_success", "reasoning_effort",
+        "reaction_on_failure", "reaction_on_start", "reaction_on_success",
         "repo_context_from_default_branch", "repo_context_max_lines", "response_language", "restricted_mode",
         "retry_same_model_on_length", "retry_same_model_on_timeout", "seed", "temperature",
         "use_extra_bad_extensions", "use_global_settings_file", "use_repo_settings_file", "verbosity_level",
@@ -85,10 +85,10 @@ COMMENT_OVERRIDABLE_KEYS = {
         "request_timeout",
     }),
     "litellm": frozenset({
-        "add_session_id_to_requests", "base_models", "cache_control_injection_points",
+        "base_models", "cache_control_injection_points",
         "callback_timeout_seconds", "custom_llm_provider", "enable_callbacks", "failure_callback",
         "force_streaming_api_base_substrings", "force_streaming_custom_llm_provider", "service_callback",
-        "success_callback", "turn_off_message_logging",
+        "success_callback",
     }),
     "model_routing": frozenset({
         "enable", "rules",
@@ -98,8 +98,7 @@ COMMENT_OVERRIDABLE_KEYS = {
         "task_store_max_tasks_per_owner",
     }),
     "openrouter": frozenset({
-        "allow_fallbacks", "max_tokens", "provider_only", "provider_order", "reasoning_effort",
-        "reasoning_max_tokens",
+        "allow_fallbacks", "max_tokens", "provider_only", "provider_order",
     }),
     "otel": frozenset({
         "environment", "exporter_type", "include_error_details", "is_enabled", "otlp_protocol",
@@ -150,7 +149,7 @@ COMMENT_OVERRIDABLE_KEYS = {
         "require_todo_scan", "review_heading", "show_previous_findings_summary",
     }),
     "pr_similar_issue": frozenset({
-        "max_issues_to_scan", "skip_comments", "vectordb",
+        "skip_comments", "vectordb",
     }),
     "pr_update_changelog": frozenset({
         "add_pr_link", "extra_instructions", "skip_ci_on_push",

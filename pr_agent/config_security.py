@@ -184,8 +184,13 @@ def should_skip_config_key(section: str, key: str, skip_keys=()) -> bool:
 # GitHub Action. The runner reads it after the command has applied its arguments, so a comment
 # such as `/review --github_action_config.fail_on_command_errors=false` could turn a failed review
 # into a green workflow; the workflow's operator sets it instead.
+# reasoning_effort, openrouter.reasoning_max_tokens and pr_similar_issue.max_issues_to_scan raise
+# model spend, and add_user_to_requests / litellm.add_session_id_to_requests send the PR's host and
+# repository path to the model provider. litellm.turn_off_message_logging sets a LiteLLM process
+# global, so one comment would silence callbacks for every later request on the server.
 CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "config": frozenset({
+        "add_user_to_requests",
         "branch_issue_regex",
         "ai_timeout",
         "enable_custom_labels",
@@ -193,6 +198,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
         "include_pr_labels",
         "num_retries",
         "output_relevant_configurations",
+        "reasoning_effort",
         "repo_context_files",
         "repo_context_max_glob_matches",
         "repo_context_expand_imports",
@@ -201,6 +207,8 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
     }),
     "github_action_config": frozenset({"fail_on_command_errors"}),
     "ignore": frozenset({"regex"}),
+    "litellm": frozenset({"add_session_id_to_requests", "turn_off_message_logging"}),
+    "openrouter": frozenset({"reasoning_effort", "reasoning_max_tokens"}),
     "pr_code_suggestions": frozenset({"parallel_calls", "max_number_of_calls"}),
     "pr_description": frozenset({"max_ai_calls"}),
     # PR comments must not enable ticket reads performed with the operator's credentials.
@@ -219,7 +227,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
         "sensitive_paths",
         "structural_reach_input_file",
     }),
-    "pr_similar_issue": frozenset({"force_update_dataset"}),
+    "pr_similar_issue": frozenset({"force_update_dataset", "max_issues_to_scan"}),
     "pr_update_changelog": frozenset({"push_changelog_changes", "changelog_path"}),
 }
 
