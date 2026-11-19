@@ -21,6 +21,7 @@ from pr_agent.algo.comment_identity import (
 )
 from pr_agent.algo.i18n import t
 from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
+from pr_agent.algo.run_output import _pr_identity
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.utils import _fix_key_value, update_settings_from_args
 from pr_agent.commands.pr_description import PRDescription
@@ -213,6 +214,25 @@ def prepare_command(command: str) -> list[str]:
     return [action] + kept
 
 
+_PR_IDENTITY_SPAN_ATTRIBUTES = {
+    "repo": "vcs.repository.name",
+    "number": "vcs.change.id",
+    "head_sha": "vcs.ref.head.revision",
+}
+
+
+def _record_pr_identity(span, git_provider) -> None:
+    """Attach the provider's PR identity to the command span using OTel VCS semantic conventions.
+
+    Span attributes only: repo and PR number would make metric labels high-cardinality.
+    """
+    identity = _pr_identity(git_provider) or {}
+    for key, attribute in _PR_IDENTITY_SPAN_ATTRIBUTES.items():
+        value = identity.get(key)
+        if value not in (None, ""):
+            span.set_attribute(attribute, str(value))
+
+
 def _record_token_metrics(action: str, git_provider: str) -> None:
     """Export the run's token usage through the OTel counters, if any was collected.
 
@@ -364,13 +384,17 @@ class PRAgent:
             record_exception=record_details,
             set_status_on_exception=record_details,
         ) as span:
-            if _as_bool_setting(get_settings().get("OTEL.INCLUDE_PR_URL", False), setting_name="OTEL.INCLUDE_PR_URL"):
+            include_pr_url = _as_bool_setting(
+                get_settings().get("OTEL.INCLUDE_PR_URL", False), setting_name="OTEL.INCLUDE_PR_URL"
+            )
+            if include_pr_url:
                 span.set_attribute("pr_agent.pr_url", pr_url)
             try:
                 if propagate_command_errors is None:
-                    return await self._run_command(pr_url, request, notify, span)
+                    return await self._run_command(pr_url, request, notify, span, include_pr_identity=include_pr_url)
                 return await self._run_command(
-                    pr_url, request, notify, span, propagate_command_errors=propagate_command_errors
+                    pr_url, request, notify, span, propagate_command_errors=propagate_command_errors,
+                    include_pr_identity=include_pr_url,
                 )
             except Exception as e:
                 get_logger().exception("Failed to process the command.")
@@ -386,7 +410,8 @@ class PRAgent:
                 return False
 
     async def _run_command(
-        self, pr_url, request, notify, span, propagate_command_errors: bool | None = None
+        self, pr_url, request, notify, span, propagate_command_errors: bool | None = None,
+        include_pr_identity: bool = False,
     ) -> bool | RequestOutcome:
         # Evaluate repository policy before command overrides, notifications or commands.
         apply_repo_settings(pr_url)
@@ -482,6 +507,8 @@ class PRAgent:
                     get_logger().warning(f"/{action} now runs /review")
                     command_kwargs["alias_notice"] = t("improve.alias_notice")
                 command = await self._create_command(command2class[action], pr_url, args=args, **command_kwargs)
+                if include_pr_identity:
+                    _record_pr_identity(span, getattr(command, "git_provider", None))
                 result = await command.run()
                 if action == "add_docs" and result is False:
                     span.set_status(StatusCode.ERROR)

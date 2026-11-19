@@ -500,6 +500,26 @@ otlp_protocol = "grpc" # default: "http"
 
 This is the recommended topology for fleets: point every PR-Agent instance at the same collector and aggregate there. Each process creates its own exporter connection; use the `service_name` and `environment` resource attributes to slice instances apart on the backend.
 
+### Linking telemetry to CI runs
+
+When PR-Agent runs as a CI job, each process handles a single pipeline run, so the standard `OTEL_RESOURCE_ATTRIBUTES` variable can tag every span and metric it exports with that run. Both the command telemetry and LiteLLM's LLM telemetry read it. Use the OpenTelemetry CI/CD attribute names so backends can link a trace to the run that produced it.
+
+GitHub Actions:
+
+```yaml
+env:
+  OTEL_RESOURCE_ATTRIBUTES: ${{ format('cicd.pipeline.run.id={0},cicd.pipeline.run.url.full={1}/{2}/actions/runs/{0}', github.run_id, github.server_url, github.repository) }}
+```
+
+GitLab CI:
+
+```yaml
+variables:
+  OTEL_RESOURCE_ATTRIBUTES: "cicd.pipeline.run.id=$CI_PIPELINE_ID,cicd.pipeline.run.url.full=$CI_PIPELINE_URL"
+```
+
+Other CI systems work the same way with their own run variables. Do not set per-PR values this way in the server apps: one server process handles many pull requests, so use `include_pr_url` (see [Privacy and lifecycle](#privacy-and-lifecycle)) to record each command's PR identity instead.
+
 ### Exposing native Prometheus metrics
 
 Instead of pushing to a collector, set `exporter_type = "prometheus"` to expose a native `GET /metrics` scrape endpoint on the server apps (`github_app`, `gitlab_webhook`, `azuredevops_server_webhook`, `gitea_app`). The command, token, and AI-call counters are translated into the Prometheus text format, and every gunicorn worker's values are merged at scrape time, so counters stay correct across the process workers:
@@ -535,7 +555,7 @@ prometheus_multiproc_dir = "/tmp/pr-agent-prometheus" # shared, writable by ever
 
 Privacy controls (both off by default):
 
-- `include_pr_url = true` attaches PR URLs to spans. Off by default because URLs expose private repo names.
+- `include_pr_url = true` attaches the PR URL and the PR identity reported by the git provider to command spans, as `vcs.repository.name`, `vcs.change.id` (the PR or MR number) and `vcs.ref.head.revision`. This works the same for every git provider and in both CI and server deployments. Off by default because these values expose private repo names. They are span attributes only and never metric labels, so they add no metric cardinality.
 - `include_error_details = true` attaches exception messages and rejected-command text to error spans. Off by default because that content can embed PR URLs, repo names, or other request-specific text. Bounded values (the exception class name and error category) are always attached.
 
 Notes:
