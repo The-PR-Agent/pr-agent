@@ -137,7 +137,7 @@ An automatic or CLI `/review` or `/describe` run is then skipped, with no model 
 - The head commit and the target branch name are the same. The branch is compared by name, not by its latest commit, so new commits on the target branch do not trigger a run. This check needs the provider to report the target branch.
 - The diff is the same, for example after a rebase that changed no content. Hunk line numbers are ignored, so a rebase that only moves the changes within their files counts as the same diff. This check is off when a file has no patch, such as a binary file, because its content can change without changing the diff.
 
-PR-Agent keeps its record in one comment on the PR, and edits it to say when a run was skipped and why. The record is written only after a command succeeds, so a failed run is retried next time.
+PR-Agent keeps its record in one comment on the PR, and edits it to say when a run was skipped and why. The record is written only after a command finishes cleanly, so a failed, partial, or degraded run is retried next time, and clears that command's earlier record if it attempted to update the PR's output or labels.
 
 - A command typed in a PR comment, such as `/review`, always runs. When it succeeds it updates the record and takes down that command's skip notice, so the next automatic run skips if nothing has changed since.
 - Incremental review (`/review -i`) and per commit review always run.
