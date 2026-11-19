@@ -898,7 +898,7 @@ def test_timeout_kills_git_wrapper_descendants(hostile, tmp_path):
         if proc_stat.exists():
             try:
                 assert proc_stat.read_text().split()[2] == "Z", "Git wrapper child is still running"
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 pass  # The system's parent reaper already removed it.
     finally:
         if childfile.exists():
@@ -1006,7 +1006,7 @@ def test_external_sigterm_terminates_builder_and_git(hostile, tmp_path):
             if proc_stat.exists():
                 try:
                     status = proc_stat.read_text().split()[2]
-                except FileNotFoundError:
+                except (FileNotFoundError, ProcessLookupError):
                     break
                 if status == "Z":
                     break  # Already killed, merely waiting for the system's parent reaper.
