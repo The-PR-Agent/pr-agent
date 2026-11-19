@@ -27,7 +27,6 @@ from ..algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
     body_with_markers,
     code_fingerprint,
-    extract_suggestion_code,
     full_body_fingerprint,
     get_inline_comment_store,
     has_marker,
@@ -1741,65 +1740,6 @@ class AzureDevopsProvider(GitProvider):
             ))
         return comments
 
-    def reconcile_code_suggestion_threads(self) -> int:
-        if not get_settings().get("config.persistent_inline_comments", False):
-            return 0
-
-        head = getattr(getattr(self.pr, "last_merge_commit", None), "commit_id", None)
-        if not head:
-            return 0
-
-        file_lines = {}
-        fixed = 0
-        for thread in self._get_threads():
-            if str(self._value(thread, "status") or "").lower() not in {"active", "closed"}:
-                continue
-            context = self._value(thread, "thread_context", "threadContext")
-            path = self._value(context, "file_path", "filePath")
-            position = self._value(context, "right_file_start", "rightFileStart")
-            start = self._value(position, "line")
-            if (not isinstance(path, str) or not path or not isinstance(start, int)
-                    or isinstance(start, bool) or start < 1):
-                continue
-            comments = self._value(thread, "comments") or []
-            body = next((self._value(comment, "content") for comment in comments
-                         if isinstance(self._value(comment, "content"), str)
-                         and self._value(comment, "content")), None)
-            if not isinstance(body, str) or "<!-- pr-agent-dedup-code:" not in body:
-                continue
-            suggestion_code = extract_suggestion_code(body)
-            if not suggestion_code or not suggestion_code.strip():
-                continue
-
-            if path not in file_lines:
-                try:
-                    version = GitVersionDescriptor(version=head, version_type="commit")
-                    item = self.azure_devops_client.get_item(
-                        repository_id=self.repo_slug,
-                        path=path,
-                        project=self.workspace_slug,
-                        version_descriptor=version,
-                        download=False,
-                        include_content=True,
-                    )
-                    content = getattr(item, "content", None)
-                    if not isinstance(content, str):
-                        raise TypeError("Azure DevOps returned non-string file content")
-                    file_lines[path] = split_diff_lines(content)
-                except Exception as e:
-                    get_logger().warning(f"Failed to read {path} while reconciling code suggestions: {e}")
-                    file_lines[path] = None
-            lines = file_lines[path]
-            if lines is None:
-                continue
-            suggested_lines = split_diff_lines(suggestion_code)
-            if lines[start - 1:start - 1 + len(suggested_lines)] != suggested_lines:
-                continue
-            thread_id = self._value(thread, "id")
-            if thread_id is not None and self.set_thread_status(thread_id, "fixed"):
-                fixed += 1
-        return fixed
-
     def get_issue_comments(self) -> list[Comment]:
         comment_list = []
         for thread in self._get_threads():
@@ -1968,10 +1908,9 @@ class AzureDevopsProvider(GitProvider):
         return self.get_pr_url() + "?discussionId=" + str(comment.thread_id)
 
     def get_pr_head_sha(self) -> str:
-        # Read the source revision from the same field `reconcile_code_suggestion_threads`
-        # already treats as head. `last_commit_id` is not always populated, so without
-        # this override the base hook returns "" and an Azure review cannot resolve
-        # absent findings after a head change, which is the defect #3431 was filed against.
+        # Read the source revision from `last_merge_commit`; `last_commit_id` is not always
+        # populated, so without this override the base hook returns "" and an Azure review
+        # cannot resolve absent findings after a head change, the defect #3431 was filed about.
         head = getattr(getattr(self.pr, "last_merge_commit", None), "commit_id", None)
         return head if isinstance(head, str) else ""
 

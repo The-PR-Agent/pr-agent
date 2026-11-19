@@ -55,7 +55,7 @@ COMMENT_OVERRIDABLE_KEYS = {
         "patch_extra_lines_after", "patch_extra_lines_before", "per_directory_settings_max_files",
         "per_directory_settings_max_tree_pages", "persistent_inline_comments", "propagate_command_errors",
         "publish_output", "publish_output_progress",
-        "reaction_on_failure", "reaction_on_start", "reaction_on_success", "reasoning_effort",
+        "reaction_on_failure", "reaction_on_start", "reaction_on_success",
         "repo_context_from_default_branch", "repo_context_max_lines", "response_language", "restricted_mode",
         "retry_same_model_on_length", "retry_same_model_on_timeout", "seed", "temperature",
         "use_extra_bad_extensions", "use_global_settings_file", "use_repo_settings_file", "verbosity_level",

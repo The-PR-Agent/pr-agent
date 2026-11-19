@@ -260,7 +260,7 @@ def test_deletion_anchored_thread_stays_open() -> None:
 
 
 def test_repeat_sweep_costs_no_api_calls() -> None:
-    # PRCodeSuggestions.run() and publish_code_suggestions share one provider;
+    # The review flow and publish_code_suggestions share one provider;
     # the second sweep must not list discussions again.
     discussion = _discussion(line=3)
     provider = _provider([discussion], [{"old_path": "app.py", "diff": PATCH}])
