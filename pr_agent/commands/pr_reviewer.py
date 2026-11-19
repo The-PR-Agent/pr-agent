@@ -2,6 +2,7 @@ import asyncio
 import copy
 import datetime
 import re
+import threading
 from dataclasses import replace
 from functools import partial
 
@@ -912,7 +913,7 @@ class PRReviewer:
             if not self.prediction:
                 return None
 
-            pr_review = self._prepare_pr_review()
+            pr_review = await self._run_prepare_pr_review()
             get_logger().debug("PR output", artifact=pr_review)
 
             # Deliver the review to the external sinks before anything else, so a sink
@@ -1090,7 +1091,7 @@ class PRReviewer:
                     self.git_provider.remove_comment(progress_response)
                 except Exception as e:
                     get_logger().exception(f"Failed to remove review progress comment, error: {e}")
-            if not review_failed:
+            if review_completed and not review_failed:
                 self._publish_merge_recommendation_status()
             if review_failed:
                 # Record the failure here, where `review_failed` is consumed: the branches above
@@ -1121,10 +1122,10 @@ class PRReviewer:
                 self._remove_review_failure_notices()
             # Runs on failed and cancelled reviews too, so an earlier approval is withdrawn.
             self.auto_approve_logic(partial_review_error, review_completed=review_completed and not review_failed)
-            if (partial_review_error is not None and not review_failed
+            if (review_completed and partial_review_error is not None and not review_failed
                     and get_settings().config.get("propagate_command_errors", False)):
                 raise partial_review_error
-            if not review_failed and self._structured_review_data is not None:
+            if review_completed and not review_failed and self._structured_review_data is not None:
                 write_review_json_output(self._structured_review_data)
 
     def _review_finding_state_enabled(self) -> bool:
@@ -1405,6 +1406,8 @@ class PRReviewer:
             return
 
         parsed = self._load_review_finding_state()
+        if self._prepare_cancelled():
+            return
         if parsed is not None and parsed.valid:
             self._review_finding_previous_state = parsed.state
         if parsed is None and self._review_state_block_reason != _STATE_BLOCK_INVALID_MARKER:
@@ -1981,6 +1984,8 @@ class PRReviewer:
             data["review"]["artifact_findings"] = parse_artifact_findings(
                 data["review"]["artifact_findings"], getattr(self, "vars", {}).get("artifact_context")
             )
+        if self._prepare_cancelled():
+            return ""
         github_action_output(data, 'review')
 
         if not isinstance(data, dict) or not isinstance(data.get('review'), dict) or not data['review']:
@@ -1996,6 +2001,8 @@ class PRReviewer:
             data["review"] = {"structural_reach": structural_reach, **data["review"]}
 
         diff_files = self.git_provider.get_diff_files()
+        if self._prepare_cancelled():
+            return ""
         require_merge_recommendation = getattr(self, "vars", {}).get("require_merge_recommendation", False)
         unfiltered_files = None
         verdict_diff_files = None
@@ -2007,6 +2014,8 @@ class PRReviewer:
                 get_logger().warning(f"Could not retrieve the complete PR diff for merge recommendation: {error}")
                 verdict_diff_files = None
             risk_diff_files = verdict_diff_files
+            if self._prepare_cancelled():
+                return ""
         else:
             risk_diff_files = diff_files
         incremental_scope = bool(
@@ -2025,6 +2034,8 @@ class PRReviewer:
                 unfiltered_files = self.git_provider.get_pr_file_paths()
             except Exception:
                 unfiltered_files = None
+            if self._prepare_cancelled():
+                return ""
         if not incremental_scope and not unfiltered_files and hasattr(self.git_provider, "get_files"):
             try:
                 unfiltered_files = self.git_provider.get_files()
@@ -2052,6 +2063,8 @@ class PRReviewer:
             data["review"] = {"risk_checks": risk_checks, **data["review"]}
 
         if require_merge_recommendation:
+            if self._prepare_cancelled():
+                return ""
             verdict = compute_merge_verdict(
                 self.git_provider,
                 verdict_diff_files,
@@ -2086,6 +2099,8 @@ class PRReviewer:
                 "files_partially_reviewed": list(self.partial_files_list or []),
             }
             self._structured_review_data = structured_data
+            if self._prepare_cancelled():
+                return ""
             if callable(structured_publisher):
                 structured_publisher(structured_data)
 
@@ -2094,11 +2109,17 @@ class PRReviewer:
             key_issues_to_review = data['review'].pop('key_issues_to_review')
             data['review']['key_issues_to_review'] = key_issues_to_review
 
+        if self._prepare_cancelled():
+            return ""
         self._prepare_review_finding_state(data)
         # Inline publication returns a pruned copy; the external sinks get the complete review, as /improve's do.
         complete_data = data
+        if self._prepare_cancelled():
+            return ""
         if get_settings().config.publish_output and get_settings().pr_reviewer.get('inline_key_issues', True):
             data = self._publish_key_issues_as_inline_comments(data)
+        if self._prepare_cancelled():
+            return ""
         issues = data['review'].get('key_issues_to_review')
         self._review_has_findings = isinstance(issues, list) and any(
             isinstance(issue, dict) and issue for issue in issues)
@@ -2232,6 +2253,8 @@ class PRReviewer:
         # publish_output gates it so a dry run makes no external calls. The "no major issues"
         # suppression deliberately does not: that only silences the PR comment.
         # The delivery itself is left to run(), which awaits it off the event loop.
+        if self._prepare_cancelled():
+            return ""
         if get_settings().config.publish_output:
             sink_markdown = markdown_text
             if complete_data is not data:
@@ -2239,6 +2262,8 @@ class PRReviewer:
                     complete_data, self.git_provider.is_supported("gfm_markdown"),
                     incremental_review_markdown_text, git_provider=self.git_provider,
                     files=self.git_provider.get_diff_files(), commit_review=commit_review_markdown_text)
+            if self._prepare_cancelled():
+                return ""
             self._pending_sink_output = ("review", complete_data.get('review', {}), sink_markdown)
 
         # Add custom labels from the review prediction (effort, security)
@@ -2248,6 +2273,79 @@ class PRReviewer:
             markdown_text = ""
 
         return markdown_text
+
+    def _prepare_cancelled(self) -> bool:
+        event = getattr(self, "_prepare_cancel_event", None)
+        return bool(event is not None and event.is_set())
+
+    async def _run_prepare_pr_review(self) -> str:
+        """Offload post-prediction preparation while draining the worker before cleanup on cancel."""
+        if get_settings() is get_settings(use_context=False):
+            return self._prepare_pr_review()
+        loop = asyncio.get_running_loop()
+        cancel_event = threading.Event()
+        state_lock = threading.Lock()
+        worker_started = False
+        worker_done = loop.create_future()
+
+        def _mark_worker_done() -> None:
+            if not worker_done.done():
+                worker_done.set_result(None)
+
+        def _run_prepare_sync() -> str:
+            nonlocal worker_started
+            with state_lock:
+                if cancel_event.is_set():
+                    return ""
+                worker_started = True
+            try:
+                return self._prepare_pr_review()
+            finally:
+                try:
+                    loop.call_soon_threadsafe(_mark_worker_done)
+                except RuntimeError:
+                    pass
+
+        self._prepare_cancel_event = cancel_event
+        task = asyncio.create_task(run_diff_preparation(_run_prepare_sync))
+        cancelled = None
+        try:
+            while True:
+                try:
+                    pr_review = await asyncio.shield(task)
+                    break
+                except asyncio.CancelledError as error:
+                    # A worker thread cannot be stopped by cancelling its awaiter. Signal it
+                    # to skip later writes and drain it only if it has already started.
+                    with state_lock:
+                        cancel_event.set()
+                        started = worker_started
+                    if not started:
+                        task.cancel()
+                        raise
+                    if task.cancelled():
+                        raise
+                    cancelled = error
+                except Exception:
+                    if cancelled is not None:
+                        raise cancelled from None
+                    raise
+            if cancelled is not None:
+                raise cancelled
+            return pr_review
+        finally:
+            with state_lock:
+                cancel_event.set()
+                need_drain = worker_started and not worker_done.done()
+            while need_drain and not worker_done.done():
+                try:
+                    await asyncio.shield(worker_done)
+                except asyncio.CancelledError:
+                    # Keep waiting until the already-started worker exits before finally cleanup runs.
+                    continue
+            if cancelled is not None or task.cancelled():
+                self._pending_sink_output = None
+            self._prepare_cancel_event = None
 
     async def _deliver_sink_output(self) -> None:
         """Deliver the prepared review to the external sinks, if there is one.
@@ -2400,6 +2498,8 @@ class PRReviewer:
             get_logger().warning("Inline key-issue publishing cannot verify existing provider comments; "
                                  "keeping findings in the review summary")
             return data
+        if self._prepare_cancelled():
+            return data
         remaining_issues = []
         candidate_comments = {}
         candidate_issues = {}
@@ -2442,6 +2542,8 @@ class PRReviewer:
                                      artifact={"issue": issue})
                 remaining_issues.append(issue)
 
+        if self._prepare_cancelled():
+            return data
         if candidate_comments:
             try:
                 batch = list(candidate_comments.values())
@@ -2452,11 +2554,17 @@ class PRReviewer:
                 except Exception as e:
                     get_logger().warning(f"Batch publication of review findings raised, error: {e}")
                     batch_published = False
+                    if self._prepare_cancelled():
+                        return data
                     # The batch may have posted some comments before it raised: retry only the others.
                     already_posted = self._published_inline_key_issue_fingerprints(store, set(candidate_comments))
                 if not batch_published:
+                    if self._prepare_cancelled():
+                        return data
                     get_logger().info("Failed to publish review findings, trying to publish each one separately")
                     for location_fingerprint, comment in candidate_comments.items():
+                        if self._prepare_cancelled():
+                            return data
                         if location_fingerprint in already_posted:
                             continue
                         try:
@@ -2475,6 +2583,8 @@ class PRReviewer:
                 get_logger().warning(
                     f"Failed to publish review findings as inline comments, error: {e}",
                     artifact={"locations": locations})
+            if self._prepare_cancelled():
+                return data
             verified_locations = self._published_inline_key_issue_fingerprints(store, set(candidate_comments))
             for location_fingerprint, comment in candidate_comments.items():
                 issues_for_location = candidate_issues[location_fingerprint]
@@ -2603,6 +2713,8 @@ class PRReviewer:
                     return
                 if not current_labels:
                     current_labels = []
+                if self._prepare_cancelled():
+                    return
                 get_logger().debug(f"Current labels:\n{current_labels}")
                 if current_labels:
                     current_labels_filtered = [label for label in current_labels if
