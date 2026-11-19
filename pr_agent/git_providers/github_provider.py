@@ -405,6 +405,8 @@ class GithubProvider(GitProvider):
             self._languages = None
         self.repo, self.pr_num = repo, pr_num
         self.pr = self._get_pr()
+        # The commits loaded for the previous PR object do not describe this one.
+        self.pr_commits = None
 
     def _get_incremental_commits(self):
         if not self.pr_commits:
@@ -2632,6 +2634,15 @@ class GithubProvider(GitProvider):
                 return None
         return label_names
 
+    def _loaded_commits_match_pr(self) -> bool:
+        """Whether the commits read with the PR still list its current revision completely."""
+        commits = getattr(self, "pr_commits", None)
+        if not commits or self._pr_revision(self.pr) != getattr(self, "_pr_revision_loaded", None):
+            return False
+        reported = getattr(self.pr, "commits", None)
+        # GitHub lists at most 250 commits, so the list of a longer PR never matches its count and is read again.
+        return isinstance(reported, int) and len(commits) == reported and commits[-1].sha == self.pr.head.sha
+
     def get_commit_messages(self) -> str:
         """
         Retrieves the commit messages of a pull request.
@@ -2641,7 +2652,8 @@ class GithubProvider(GitProvider):
         """
         max_tokens = get_settings().get("CONFIG.MAX_COMMITS_TOKENS", None)
         try:
-            commit_list = self.pr.get_commits()
+            # Reuse the commits read with the PR (re-read when it moves) instead of listing them again.
+            commit_list = self.pr_commits if self._loaded_commits_match_pr() else self.pr.get_commits()
             commit_messages = [commit.commit.message for commit in commit_list]
             commit_messages_str = "\n".join([f"{i + 1}. {message}" for i, message in enumerate(commit_messages)])
         except (GithubException, RequestException, AttributeError) as e:
