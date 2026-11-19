@@ -108,7 +108,7 @@ COMMENT_OVERRIDABLE_KEYS = {
         "cloud", "region",
     }),
     "pr_add_docs": frozenset({
-        "docs_style", "extra_instructions",
+        "docs_style", "extra_instructions", "use_repo_context",
     }),
     "pr_code_suggestions": frozenset({
         "committable_code_suggestions", "extra_instructions", "suggestions_heading",
