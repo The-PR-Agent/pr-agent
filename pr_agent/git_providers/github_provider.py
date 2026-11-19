@@ -2317,6 +2317,17 @@ class GithubProvider(GitProvider):
     # The reaction API accepts only this closed set; anything else is rejected with 422.
     SUPPORTED_REACTIONS = ("+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes")
 
+    def mark_review_comment(self, comment_id: int) -> None:
+        """Record that `comment_id` is a review comment, on a diff line or a file, rather than an issue comment.
+
+        Review comments have their own reactions endpoints: the issue comment ones answer 404 for their IDs.
+        """
+        self._review_comment_ids = getattr(self, "_review_comment_ids", set()) | {comment_id}
+
+    def _comment_reactions_url(self, comment_id: int) -> str:
+        comments = "pulls/comments" if comment_id in getattr(self, "_review_comment_ids", ()) else "issues/comments"
+        return f"{self.base_url}/repos/{self.repo}/{comments}/{comment_id}/reactions"
+
     def add_reaction(self, issue_comment_id: int, reaction: str) -> int | None:
         if reaction not in self.SUPPORTED_REACTIONS:
             get_logger().warning(
@@ -2325,8 +2336,7 @@ class GithubProvider(GitProvider):
             return None
         try:
             headers, data_patch = self.pr._requester.requestJsonAndCheck(
-                "POST", f"{self.base_url}/repos/{self.repo}/issues/comments/{issue_comment_id}/reactions",
-                input={"content": reaction}
+                "POST", self._comment_reactions_url(issue_comment_id), input={"content": reaction}
             )
         except (GithubException, RequestException) as e:
             get_logger().warning(f"Failed to add the {reaction} reaction, error: {e}")
@@ -2337,8 +2347,7 @@ class GithubProvider(GitProvider):
         try:
             # self.pr.get_issue_comment(issue_comment_id).delete_reaction(reaction_id)
             headers, data_patch = self.pr._requester.requestJsonAndCheck(
-                "DELETE",
-                f"{self.base_url}/repos/{self.repo}/issues/comments/{issue_comment_id}/reactions/{reaction_id}"
+                "DELETE", f"{self._comment_reactions_url(issue_comment_id)}/{reaction_id}"
             )
             return True
         except (GithubException, RequestException) as e:
