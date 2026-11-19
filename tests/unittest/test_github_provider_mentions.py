@@ -308,6 +308,14 @@ def test_entity_encoded_handle_starts_are_neutralized(text, expected):
     "see <https://host/@user>",
     "see <HTTP://host/@user>",
     "see <mailto:@user>",
+    "see [a](b) https://medium.com/@user",
+    "[x] https://medium.com/@user",
+    "- [ ] check https://medium.com/@user",
+    "[a\n\nhttps://medium.com/@user",
+    "`[` https://medium.com/@user",
+    "\\[https://medium.com/@user",
+    "[a <b>]</b> https://medium.com/@user",
+    "[a](<b c>) https://medium.com/@user",
 ])
 def test_github_autolinks_keep_their_mentions(text):
     assert neutralize_github_mentions(text) == text
@@ -322,6 +330,15 @@ def test_github_autolinks_keep_their_mentions(text):
     ("https://@octocat", f"https://@{ZWSP}octocat"),
     ("https://a.b_c.org/@user", f"https://a.b_c.org/@{ZWSP}user"),
     ("awww.host.org/@user", f"awww.host.org/@{ZWSP}user"),
+    ("[http://x.com/@octocat]", f"[http://x.com/@{ZWSP}octocat]"),
+    ("[see https://x.com/@octocat]", f"[see https://x.com/@{ZWSP}octocat]"),
+    ("[see www.x.com/@octocat]", f"[see www.x.com/@{ZWSP}octocat]"),
+    ("![see https://x.com/@octocat", f"![see https://x.com/@{ZWSP}octocat"),
+    ("> [a\n> https://x.com/@octocat", f"> [a\n> https://x.com/@{ZWSP}octocat"),
+    ('[[a](b "]") https://x.com/@octocat', f'[[a](b "]") https://x.com/@{ZWSP}octocat'),
+    ("[a `]` https://x.com/@octocat", f"[a `]` https://x.com/@{ZWSP}octocat"),
+    ('[a <b title="]"> https://x.com/@octocat', f'[a <b title="]"> https://x.com/@{ZWSP}octocat'),
+    ("[\\<https://x.com/@octocat>", f"[\\<https://x.com/@{ZWSP}octocat>"),
 ])
 def test_text_github_does_not_autolink_is_neutralized(text, expected):
     assert neutralize_github_mentions(text) == expected
