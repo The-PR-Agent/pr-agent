@@ -16,6 +16,7 @@ from github import Auth, Github, GithubException, GithubIntegration, GithubRetry
 from github.Commit import Commit
 from github.GithubObject import GithubObject
 from github.Issue import Issue
+from github.PullRequest import PullRequest
 from jwt.exceptions import PyJWTError
 from requests.exceptions import RequestException
 from starlette_context import context
@@ -2451,12 +2452,15 @@ class GithubProvider(GitProvider):
         else:
             raise ValueError("Could not authenticate to GitHub")
 
+    def _has_current_repo_obj(self) -> bool:
+        return hasattr(self, "repo_obj") and \
+            hasattr(self.repo_obj, "full_name") and \
+            isinstance(self.repo_obj.full_name, str) and \
+            isinstance(self.repo, str) and \
+            self.repo_obj.full_name.lower() == self.repo.lower()
+
     def _get_repo(self):
-        if hasattr(self, 'repo_obj') and \
-                hasattr(self.repo_obj, 'full_name') and \
-                isinstance(self.repo_obj.full_name, str) and \
-                isinstance(self.repo, str) and \
-                self.repo_obj.full_name.lower() == self.repo.lower():
+        if self._has_current_repo_obj():
             return self.repo_obj
         else:
             self.repo_obj = self.github_client.get_repo(self.repo)
@@ -2464,7 +2468,12 @@ class GithubProvider(GitProvider):
 
 
     def _get_pr(self):
-        return self._get_repo().get_pull(self.pr_num)
+        if self._has_current_repo_obj():
+            return self.repo_obj.get_pull(self.pr_num)
+        # The pull payload embeds its base repository, so skip the separate repository read.
+        pr = PullRequest(self.github_client.requester, url=f"/repos/{self.repo}/pulls/{self.pr_num}")
+        self.repo_obj = pr.base.repo
+        return pr
 
     def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = False,
                             *, missing_is_error: bool = False) -> str:
