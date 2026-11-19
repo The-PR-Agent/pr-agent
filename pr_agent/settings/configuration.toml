@@ -15,8 +15,7 @@ fallback_models=["gpt-6-luna"]
 git_provider="github"
 publish_output=true
 publish_output_progress=true
-progress_gif_url="" # optional, override for the progress loading gif url (example: 'https://.../spinner.gif').
-progress_gif_width=48 # optional, width (in px) of the progress loading gif.
+
 verbosity_level=0 # 0,1,2
 use_extra_bad_extensions=false
 # Log
@@ -275,45 +274,13 @@ resolve_threads=false
 extra_instructions = ""
 
 
-# Ignored since 0.51 except committable_code_suggestions and extra_instructions, which /review reads.
+# Settings still read by /review.
 [pr_code_suggestions] # /improve #
 # Deprecated alias still accepted until 1.0: pr_code_suggestions.commitable_code_suggestions
 committable_code_suggestions = false
-# Not settable from a per-directory .pr_agent.toml. -1 or 0 disables, [1-10] also publishes suggestions scoring >= it as committable, besides the table.
-dual_publishing_score_threshold=-1
-focus_only_on_problems=true
-#
 extra_instructions = ""
-# Visible base heading for summary-table /improve comments. Identity is tracked separately.
+# Visible base heading for code-suggestion comments. Identity is tracked separately.
 suggestions_heading = "PR Code Suggestions"
-enable_help_text=false
-enable_chat_text=false
-persistent_comment=true
-# Set to false to suppress /improve failure comments without changing the command's failure status.
-publish_failure_comment=true
-max_history_len=4 # Previous sets to retain; <=0 keeps latest only (same comment if editable).
-publish_output_no_suggestions=true
-enable_suggestions_coverage_footer=true # show failed chunks and files omitted by the token or AI-call budget
-# suggestions scoring
-suggestions_score_threshold=1 # [0-10]| 0 is treated as 1; recommend not to set this value above 8, since above it may clip highly relevant suggestions
-score_on_reflection_failure=7 # [0-10]| score assigned when self-reflection fails or its feedback cannot be parsed; set below suggestions_score_threshold to drop unvetted suggestions
-new_score_mechanism=true
-new_score_mechanism_th_high=9
-new_score_mechanism_th_medium=7
-# params for '/improve --extended' mode
-num_code_suggestions_per_chunk=3
-# Maximum suggestions retained per file after all chunks are merged; 0 disables the cap.
-# Skip unresolvable line locations before applying a positive cap to summarized output; leave inline selection unchanged.
-max_suggestions_per_file = 0
-# Character budget for prior code-suggestion threads given to /improve as context (GitLab, Azure DevOps); 0 disables it.
-max_discussion_context_chars = 24000
-max_number_of_calls = 3
-parallel_calls = true
-
-decouple_hunks = false
-# self-review checkbox
-demand_code_suggestions_self_review=false # add a checkbox for the author to self-review the code suggestions
-code_suggestions_self_review_text= "**Author self-review**: I have reviewed the PR code suggestions, and addressed the relevant ones."
 
 [pr_add_docs] # /add_docs #
 extra_instructions = ""
@@ -410,8 +377,6 @@ expand_submodule_diffs = false
 feedback_on_draft_pr = false
 # Post the /review summary as a resolvable thread (discussion) instead of a plain note.
 publish_review_as_thread = false
-# Ignored: /improve runs /review, so there is no suggestions comment. Use publish_review_as_thread.
-publish_improve_as_thread = false
 # Reply in the triggering GitLab discussion for `/review`, `/improve`, or `/ask` (true/false); see docs/docs/usage-guide/additional_configurations.md.
 reply_to_trigger_comment = false
 # When pr_code_suggestions.committable_code_suggestions is true, queue each suggestion as a GitLab draft

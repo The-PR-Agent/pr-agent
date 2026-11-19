@@ -1081,8 +1081,6 @@ class GitLabProvider(GitProvider):
             return False
         return True
 
-    def supports_incremental_kind(self, kind: str) -> bool:
-        return kind in self._INCREMENTAL_ANCHOR_PREFIXES
 
     def supports_issue_reference_tickets(self) -> bool:
         return True
@@ -2358,9 +2356,6 @@ class GitLabProvider(GitProvider):
     def should_publish_review_as_thread(self) -> bool:
         return _as_bool_setting(get_settings().get("GITLAB.PUBLISH_REVIEW_AS_THREAD", False))
 
-    def should_publish_improve_as_thread(self) -> bool:
-        return _as_bool_setting(get_settings().get("GITLAB.PUBLISH_IMPROVE_AS_THREAD", False))
-
     def should_reply_to_trigger_comment(self) -> bool:
         return _as_bool_setting(get_settings().get("GITLAB.REPLY_TO_TRIGGER_COMMENT", False))
 
@@ -2370,8 +2365,6 @@ class GitLabProvider(GitProvider):
     def supports_review_finding_state(self) -> bool:
         return True
 
-    def supports_code_suggestion_state(self) -> bool:
-        return True
 
     def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
         try:

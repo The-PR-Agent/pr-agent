@@ -491,14 +491,11 @@ class TestInjectArtifactContext:
         env = Environment(autoescape=True)
         review = env.from_string(get_settings().pr_review_prompt.user).render(
             artifact_context=get_artifact_context("pr_reviewer"))
-        improve = env.from_string(get_settings().pr_code_suggestions_prompt.user).render(
-            artifact_context=get_artifact_context("pr_code_suggestions"))
 
         assert "Label: Tests" in review
         assert "Label: Coverage" in review
         assert "FAILED: test_login" in review
         assert "COVERAGE_CONTEXT" in review
-        assert "Label:" not in improve
 
     def test_running_twice_does_not_duplicate_the_artifact(self, settings, report):
         with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(report.parent), "ARTIFACT_PATH": str(report)}):

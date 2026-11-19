@@ -1,4 +1,4 @@
-"""Regression tests for three defects that silently produced wrong output.
+"""Regression tests for two defects that silently produced wrong output.
 
 Each was found by running the affected code, and each is reproduced here against the real
 implementation rather than a stub, so the test fails on the pre fix code.
@@ -9,8 +9,6 @@ implementation rather than a stub, so the test fails on the pre fix code.
 2. ``github_provider.get_pr_labels`` reported a failed read as an empty list, which callers
    could not tell apart from an unlabeled PR. Because ``publish_labels`` replaces the entire
    label set, one API error deleted every label a human had added.
-3. ``generate_summarized_suggestions`` swallowed every rendering error and returned an empty
-   string, which the caller then used to overwrite the persistent review.
 """
 
 from types import SimpleNamespace
@@ -21,7 +19,6 @@ from github import GithubException
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import load_large_diff
-from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.commands.pr_generate_labels import PRGenerateLabels
 from pr_agent.commands.pr_reviewer import PRReviewer
@@ -29,7 +26,6 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
-from pr_agent.log import get_logger
 
 # ---------------------------------------------------------------------------
 # 1. Azure DevOps must not invent a whole file addition or deletion
@@ -376,79 +372,3 @@ async def test_describe_survives_an_unreadable_label_set(monkeypatch):
 
     provider.publish_description.assert_called_once()
     provider.publish_labels.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# 3. A rendering error must not overwrite the persistent review
-# ---------------------------------------------------------------------------
-
-
-def _suggestions_command():
-    patch = "@@ -1,3 +1,3 @@\n ctx\n-bad\n+good\n ctx2"
-    diff_file = FilePatchInfo("a.py", "b.py", patch=patch, filename="a.py",
-                              edit_type=EDIT_TYPE.MODIFIED)
-    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    command.git_provider = SimpleNamespace(diff_files=[diff_file], is_supported=lambda feature: False)
-    return command
-
-
-def _suggestion(**overrides):
-    suggestion = {
-        "relevant_file": "a.py",
-        "relevant_lines_start": 1,
-        "relevant_lines_end": 1,
-        "body": "fix this",
-        "score": 9,
-        "label": "bug",
-        "label_name": "bug",
-        "suggestion_content": "c",
-        "existing_code": "bad",
-        "improved_code": "good",
-        "one_sentence_summary": "s",
-    }
-    suggestion.update(overrides)
-    return {"code_suggestions": [suggestion]}
-
-
-def test_summary_renders_a_table_for_a_well_formed_suggestion():
-    out = _suggestions_command().generate_summarized_suggestions(_suggestion())
-
-    assert "<table" in out
-    assert "one sentence" not in out
-
-
-def test_non_numeric_score_is_not_swallowed_into_an_empty_review():
-    """Regression: this returned "", and the caller overwrote the persistent review with it."""
-    with pytest.raises(ValueError, match="summarized code suggestions"):
-        _suggestions_command().generate_summarized_suggestions(_suggestion(score="high"))
-
-
-def test_missing_field_is_not_swallowed_into_an_empty_review():
-    broken = _suggestion()
-    del broken["code_suggestions"][0]["suggestion_content"]
-
-    with pytest.raises(ValueError, match="summarized code suggestions"):
-        _suggestions_command().generate_summarized_suggestions(broken)
-
-
-def test_empty_suggestion_list_still_reports_no_suggestions():
-    """The legitimate no suggestions answer must keep working and is not an error."""
-    out = _suggestions_command().generate_summarized_suggestions({"code_suggestions": []})
-
-    assert "No suggestions found" in out
-
-
-def test_review_render_failure_is_logged_loudly():
-    """The log used to be info level, which is invisible at default verbosity."""
-    broken = _suggestion()
-    del broken["code_suggestions"][0]["improved_code"]
-
-    messages = []
-    sink_id = get_logger().add(lambda message: messages.append(str(message)), format="{message}")
-    try:
-        with pytest.raises(ValueError):
-            _suggestions_command().generate_summarized_suggestions(broken)
-    finally:
-        get_logger().remove(sink_id)
-
-    assert any("summarized code suggestions" in message for message in messages)

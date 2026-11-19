@@ -718,16 +718,6 @@ use_ticket_context = true
 
 [pr_code_suggestions]
 committable_code_suggestions = true
-# Deprecated alias of the key above: it must be denied per directory too, otherwise a nested
-# file could flip /improve to inline publishing through the spelling the fallback still reads.
-commitable_code_suggestions = true
-# Dual publishing posts suggestions inline through the same path, so it is denied per directory too.
-dual_publishing_score_threshold = 1
-num_code_suggestions_per_chunk = 2
-max_number_of_calls = 99
-parallel_calls = true
-max_discussion_context_chars = 999999
-demand_code_suggestions_self_review = true
 
 [pr_similar_issue]
 force_update_dataset = true
@@ -741,8 +731,6 @@ use_original_title = false
 use_conversation_history = false
 [pr_similar_issue]
 skip_comments = true
-[pr_code_suggestions]
-dual_publishing_score_threshold = 7
 """
 
     @pytest.fixture
@@ -792,9 +780,6 @@ dual_publishing_score_threshold = 7
         assert get_settings().pr_description.enable_large_pr_handling != 999999
         assert get_settings().pr_description.max_ai_calls != 400
         assert get_settings().pr_description.async_ai_calls is True
-        assert get_settings().pr_code_suggestions.max_number_of_calls != 99
-        assert get_settings().pr_code_suggestions.parallel_calls is True
-        assert get_settings().pr_code_suggestions.max_discussion_context_chars != 999999
 
     def test_merge_verdict_limits_stay_host_controlled(self, per_dir_settings, monkeypatch):
         settings = get_settings()
@@ -830,11 +815,6 @@ dual_publishing_score_threshold = 7
 
         assert settings.pr_reviewer.extra_risky_shapes == ["HOST_RISK"]
 
-    def test_self_review_demand_stays_root_controlled(self, host_only_keys_applied):
-        # The self-review workflow stays root-controlled: a nested file cannot make
-        # /improve demand a self-review checklist.
-        assert get_settings().pr_code_suggestions.demand_code_suggestions_self_review is False
-
     def test_ask_context_collection_stays_root_controlled(self, host_only_keys_applied):
         # A nested file cannot enable ticket reads or re-enable sending private thread bodies.
         assert get_settings().pr_questions.use_conversation_history is False
@@ -845,9 +825,6 @@ dual_publishing_score_threshold = 7
         assert get_settings().pr_description.use_ai_title is True
         assert get_settings().pr_questions.static_questions == ["default"]
         assert get_settings().pr_code_suggestions.committable_code_suggestions is False
-        assert get_settings().pr_code_suggestions.get("commitable_code_suggestions") is None
-        assert get_settings().pr_code_suggestions.dual_publishing_score_threshold == 7
-        assert get_settings().pr_code_suggestions.num_code_suggestions_per_chunk == 2
         assert get_settings().pr_similar_issue.use_original_title is False
 
     def test_per_directory_ignore_allows_only_glob(self, per_dir_settings, monkeypatch):

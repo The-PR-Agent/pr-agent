@@ -3,9 +3,8 @@ import pytest
 
 from pr_agent.algo.git_patch_processing import count_patch_lines
 from pr_agent.algo.token_handler import TokenEncoder
-from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.commands.pr_add_docs import PRAddDocs
-from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
@@ -329,44 +328,6 @@ def test_publish_code_suggestions_artifact_includes_partial_coverage(tmp_path):
     assert "1 of 2 analysis chunks failed" in content
 
 
-@pytest.mark.asyncio
-async def test_mixed_suggestions_stay_in_improve_artifact(tmp_path):
-    improve_path = tmp_path / "improve.md"
-    review_path = tmp_path / "review.md"
-    provider = object.__new__(LocalGitProvider)
-    provider.improve_path = improve_path
-    provider.review_path = review_path
-    provider.diff_files = [FilePatchInfo(
-        base_file="old()\n",
-        head_file="old()\n",
-        patch="",
-        filename="app.py",
-    )]
-    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    command.git_provider = provider
-    command.progress_response = None
-
-    suggestion = {
-        "label": "maintainability",
-        "relevant_file": "app.py",
-        "suggestion_content": "Use the helper.",
-        "existing_code": "old()",
-        "improved_code": "new()",
-        "score": 8,
-    }
-    await command.push_inline_code_suggestions({"code_suggestions": [
-        {**suggestion, "relevant_lines_start": 1, "relevant_lines_end": 1},
-        {**suggestion, "suggestion_content": "Keep this advice.",
-         "relevant_lines_start": 40, "relevant_lines_end": 40},
-    ]})
-
-    content = improve_path.read_text(encoding="utf-8")
-    assert content.index("Use the helper.") < content.index("Keep this advice.")
-    assert content.count("```suggestion") == 1
-    assert "because the anchored range is outside the file" in content
-    assert not review_path.exists()
-
-
 def test_publish_code_suggestions_uses_custom_heading_without_identity(tmp_path):
     snapshot = snapshot_settings(["pr_code_suggestions.suggestions_heading"])
     improve_path = tmp_path / "improve.md"
@@ -382,45 +343,6 @@ def test_publish_code_suggestions_uses_custom_heading_without_identity(tmp_path)
     content = improve_path.read_text()
     assert content.startswith("# Team Suggestions ✨\n\n")
     assert "<!-- pr-agent:improve" not in content
-
-
-@pytest.mark.asyncio
-async def test_publish_no_suggestions_routes_local_git_output_to_improve_file(tmp_path, monkeypatch):
-    snapshot = snapshot_settings([
-        "config.output_run_details",
-        "config.publish_output",
-        "pr_code_suggestions.publish_output_no_suggestions",
-        "pr_code_suggestions.suggestions_heading",
-    ])
-    improve_path = tmp_path / "improve.md"
-    review_path = tmp_path / "review.md"
-    provider = object.__new__(LocalGitProvider)
-    provider.improve_path = improve_path
-    provider.review_path = review_path
-    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    command.git_provider = provider
-    command.progress_response = None
-    try:
-        get_settings().set("config.output_run_details", True)
-        get_settings().set("config.publish_output", True)
-        get_settings().set("pr_code_suggestions.publish_output_no_suggestions", True)
-        get_settings().set("pr_code_suggestions.suggestions_heading", "Team Suggestions")
-        monkeypatch.setattr(
-            "pr_agent.algo.run_output.show_run_details",
-            lambda gfm_supported: "\n\nRun details" if not gfm_supported else "",
-        )
-
-        await command.publish_no_suggestions()
-    finally:
-        restore_settings(snapshot)
-
-    assert provider.supports_code_suggestions_artifact() is True
-    content = improve_path.read_text()
-    assert content.startswith("# Team Suggestions ✨\n\n")
-    assert "No code suggestions found for the PR." in content
-    assert "Run details" in content
-    assert "<!-- pr-agent:improve" not in content
-    assert not review_path.exists()
 
 
 def test_publish_comment_skips_temporary(tmp_path):

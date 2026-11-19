@@ -4,8 +4,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from pr_agent.algo.run_details import init_run_details, record_ai_call, record_model_used
-from pr_agent.algo.types import FilePatchInfo
-from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
@@ -29,25 +27,6 @@ _TRACKED_KEYS_DESCRIPTION = (
     "pr_description.use_description_markers",
     "pr_description.enable_help_text",
     "pr_description.enable_help_comment",
-)
-_TRACKED_KEYS_SUGGESTIONS = (
-    "config.output_run_details",
-    "config.publish_output",
-    "config.publish_output_progress",
-    "config.is_auto_command",
-    "pr_code_suggestions.committable_code_suggestions",
-    "pr_code_suggestions.demand_code_suggestions_self_review",
-    "pr_code_suggestions.enable_chat_text",
-    "pr_code_suggestions.enable_help_text",
-    "pr_code_suggestions.persistent_comment",
-    "pr_code_suggestions.dual_publishing_score_threshold",
-)
-_TRACKED_KEYS_NO_SUGGESTIONS = (
-    "config.output_run_details",
-    "config.publish_output",
-    "config.publish_output_progress",
-    "config.is_auto_command",
-    "pr_code_suggestions.publish_output_no_suggestions",
 )
 
 
@@ -162,119 +141,5 @@ async def test_pr_description_appends_run_details_only_when_enabled(monkeypatch)
 
         assert "⚙️ Agent run details" not in without_details
         assert "⚙️ Agent run details" in with_details
-    finally:
-        restore_settings(snapshot)
-
-
-@pytest.mark.asyncio
-async def test_pr_code_suggestions_appends_run_details_only_when_enabled(monkeypatch):
-    snapshot = snapshot_settings(_TRACKED_KEYS_SUGGESTIONS)
-    try:
-        suggestions = PRCodeSuggestions.__new__(PRCodeSuggestions)
-        suggestions.pr_url = "https://example/pr/1"
-        suggestions.progress = "progress"
-        suggestions.progress_response = None
-        suggestions.git_provider = MagicMock()
-        suggestions.git_provider.get_files.return_value = ["changed.py"]
-        suggestions.git_provider.is_supported.side_effect = lambda cap: cap == "gfm_markdown"
-        suggestions.git_provider.diff_files = [
-            FilePatchInfo(
-                base_file="old()\n",
-                head_file="new()\n",
-                patch="@@ -1,1 +1,1 @@\n-old()\n+new()\n",
-                filename="changed.py",
-            )
-        ]
-        suggestions.generate_summarized_suggestions = MagicMock(return_value="Base suggestions body")
-
-        async def _fake_retry(*_args, **_kwargs):
-            return {"code_suggestions": [
-                {"label": "style", "relevant_file": "changed.py",
-                 "relevant_lines_start": 1, "relevant_lines_end": 1},
-            ]}
-
-        monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.init_run_details", _seeded_init_run_details)
-        monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.retry_with_fallback_models", _fake_retry)
-
-        get_settings().set("config.publish_output", True)
-        get_settings().set("config.publish_output_progress", False)
-        get_settings().set("config.is_auto_command", False)
-        get_settings().pr_code_suggestions.committable_code_suggestions = False
-        get_settings().pr_code_suggestions.demand_code_suggestions_self_review = False
-        get_settings().pr_code_suggestions.enable_chat_text = False
-        get_settings().pr_code_suggestions.enable_help_text = False
-        get_settings().pr_code_suggestions.persistent_comment = False
-        get_settings().pr_code_suggestions.dual_publishing_score_threshold = 0
-
-        get_settings().set("config.output_run_details", False)
-        await suggestions.run()
-        without_details = suggestions.git_provider.publish_comment.call_args[0][0]
-
-        suggestions.git_provider.publish_comment.reset_mock()
-
-        get_settings().set("config.output_run_details", True)
-        await suggestions.run()
-        with_details = suggestions.git_provider.publish_comment.call_args[0][0]
-
-        assert "⚙️ Agent run details" not in without_details
-        assert "⚙️ Agent run details" in with_details
-    finally:
-        restore_settings(snapshot)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("gfm_supported", [True, False])
-async def test_pr_code_suggestions_appends_run_details_when_no_suggestions(monkeypatch, gfm_supported):
-    # When /improve finds nothing it still called the model, so the "No code
-    # suggestions found" comment must carry the run details when enabled.
-    #
-    # Unlike the has-suggestions summary path (only reachable when gfm_markdown is
-    # supported), publish_no_suggestions() runs for every provider, GFM or not, and
-    # show_run_details() renders different markup in each case (collapsible <details>
-    # vs. a plain fallback). Parametrizing over both locks in the non-GFM path too,
-    # e.g. for LocalGitProvider, which does not support gfm_markdown.
-    snapshot = snapshot_settings(_TRACKED_KEYS_NO_SUGGESTIONS)
-    try:
-        suggestions = PRCodeSuggestions.__new__(PRCodeSuggestions)
-        suggestions.pr_url = "https://example/pr/1"
-        suggestions.progress = "progress"
-        suggestions.progress_response = None
-        suggestions.git_provider = MagicMock()
-        suggestions.git_provider.get_files.return_value = ["changed.py"]
-        suggestions.git_provider.supports_code_suggestions_artifact.return_value = False
-        suggestions.git_provider.is_supported.side_effect = lambda cap: cap == "gfm_markdown" and gfm_supported
-
-        async def _fake_retry_empty(*_args, **_kwargs):
-            return {"code_suggestions": []}
-
-        monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.init_run_details", _seeded_init_run_details)
-        monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.retry_with_fallback_models", _fake_retry_empty)
-
-        get_settings().set("config.publish_output", True)
-        get_settings().set("config.publish_output_progress", False)
-        get_settings().set("config.is_auto_command", False)
-        get_settings().pr_code_suggestions.publish_output_no_suggestions = True
-
-        get_settings().set("config.output_run_details", False)
-        await suggestions.run()
-        without_details = suggestions.git_provider.publish_comment.call_args[0][0]
-
-        suggestions.git_provider.publish_comment.reset_mock()
-
-        get_settings().set("config.output_run_details", True)
-        await suggestions.run()
-        with_details = suggestions.git_provider.publish_comment.call_args[0][0]
-
-        assert "No code suggestions found for the PR." in without_details
-        assert "⚙️ Agent run details" not in without_details
-        assert "⚙️ Agent run details" in with_details
-        # Confirm the markup actually matches the branch under test, not just that
-        # some text landed: GFM gets the collapsible <details> block, non-GFM the
-        # plain fallback section.
-        if gfm_supported:
-            assert "<details>" in with_details
-        else:
-            assert "<details>" not in with_details
-            assert "___" in with_details
     finally:
         restore_settings(snapshot)

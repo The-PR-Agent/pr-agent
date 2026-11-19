@@ -47,10 +47,6 @@ _effective_fallback_chain: ContextVar[tuple[tuple[str, str | None], ...] | None]
 )
 
 
-def get_effective_fallback_chain() -> tuple[tuple[str, str | None], ...] | None:
-    """Return the model/deployment chain selected for the current retry invocation."""
-    return _effective_fallback_chain.get()
-
 
 def _count_raw_and_stripped_tokens(token_handler: TokenHandler, text: str) -> int:
     """Count both raw and stripped forms because either representation may be rendered."""

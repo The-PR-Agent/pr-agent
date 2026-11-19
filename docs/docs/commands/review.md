@@ -410,9 +410,9 @@ PR page. Otherwise the fix is shown as a text block in the comment. A finding th
 inline comments, `inline_key_issues` is off, or publishing failed) stays in the review summary, and its fix appears there as a text
 block. Findings are capped by `pr_reviewer.num_max_findings` (6 by default), and chunked reviews keep the same cap.
 
-Two `pr_code_suggestions` settings are honoured: `committable_code_suggestions` and `extra_instructions`
-(added to the review's extra instructions when it differs from `pr_reviewer.extra_instructions`).
-Every other `pr_code_suggestions` setting is ignored since 0.51.
+Three `pr_code_suggestions` settings are honoured: `committable_code_suggestions`, `extra_instructions`
+(added to the review's extra instructions when it differs from `pr_reviewer.extra_instructions`) and
+`suggestions_heading` (the base heading for code-suggestion comments). Other `pr_code_suggestions` keys have no effect.
 
 ```
 /review --pr_code_suggestions.committable_code_suggestions=true

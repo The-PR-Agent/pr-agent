@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pr_agent.algo.pr_processing import PackedPRDiffs
-from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.commands.pr_description import DESCRIBE_PROGRESS_COMMENT, PRDescription
 from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.commands.progress_comment import (
@@ -34,14 +33,6 @@ _REVIEW_KEYS = (
     "pr_reviewer.enable_large_pr_chunking",
     "pr_reviewer.max_number_of_calls",
     "pr_reviewer.persistent_comment",
-)
-_SUGGESTION_KEYS = (
-    "config.publish_output",
-    "config.publish_output_progress",
-    "config.is_auto_command",
-    "pr_code_suggestions.decouple_hunks",
-    "pr_code_suggestions.parallel_calls",
-    "pr_code_suggestions.max_number_of_calls",
 )
 
 CHUNK_A = """review:
@@ -65,29 +56,6 @@ CHUNK_B = """review:
   security_concerns: |
     SQL injection: the query is built by string concatenation
 """
-
-_SUGGESTION_CHUNK = {"code_suggestions": []}
-
-
-class _FakeBudget:
-    """Stand in for the token budget without clipping, so only the progress path is exercised."""
-
-    def __init__(self, *_args, **_kwargs):
-        self.token_handler = SimpleNamespace(prompt_tokens=0, count_tokens=len)
-
-    def require_input_capacity(self, *_args, **_kwargs):
-        return None
-
-    def render_prompt_templates(self, variables):
-        return "system", variables["diff_no_line_numbers"]
-
-    def prepare_request(self, _handler, system_prompt, user_prompt):
-        return SimpleNamespace(
-            input_tokens=0, system_prompt=system_prompt, user_prompt=user_prompt
-        )
-
-    def input_token_limit(self, *_args, **_kwargs):
-        return 1
 
 
 def _review_progress_editor(**overrides):
@@ -399,125 +367,6 @@ async def test_a_failing_progress_edit_does_not_affect_the_review_result(publish
     provider.publish_comment.assert_any_call("### PR Reviewer Guide\n\ntext")
 
 
-def _make_suggestion_command(provider, chunk_predictions):
-    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    command.git_provider = provider
-    command.pr_url = "https://example.invalid/pull/1"
-    command.progress_response = None
-    command._progress_base_body = None
-    command._chunk_progress = None
-    command.incremental = SimpleNamespace(is_incremental=False)
-    command._output_published = False
-    command.progress = "## Generating PR code suggestions\n\nWork in progress ..."
-    command.vars = {"diff": "", "diff_no_line_numbers": ""}
-    command.pr_code_suggestions_prompt_system = "system"
-    command.pr_code_suggestions_prompt_user = "user"
-    command.ai_handler = MagicMock()
-    # Keep the chunks on plain gather; see the reviewer factory above (#4876).
-    command.ai_handler.prompt_cache_active = MagicMock(return_value=False)
-    command._limit_suggestions_per_file = lambda suggestions: suggestions
-
-    remaining = list(chunk_predictions)
-
-    async def fake_get_prediction(model, numbered, unnumbered):
-        value = remaining.pop(0) if len(remaining) > 1 else remaining[0]
-        if isinstance(value, BaseException):
-            raise value
-        return value
-
-    command._get_prediction = fake_get_prediction
-    return command
-
-
-async def _run_chunked_suggestions(command, chunk_count=3, **overrides):
-    """Drive `prepare_prediction_main` over a split diff, which is where chunks are predicted."""
-    chunks = [f"chunk-{index}" for index in range(chunk_count)]
-    settings = get_settings()
-    settings.set("config.publish_output", True)
-    settings.set("config.publish_output_progress", True)
-    settings.set("config.is_auto_command", False)
-    settings.set("pr_code_suggestions.decouple_hunks", True)
-    settings.set("pr_code_suggestions.parallel_calls", True)
-    settings.set("pr_code_suggestions.max_number_of_calls", chunk_count)
-    with (
-        patch("pr_agent.algo.token_budget.get_max_tokens", return_value=10000),
-        patch(
-            "pr_agent.commands.pr_code_suggestions.get_pr_multi_diffs",
-            return_value=PackedPRDiffs(chunks, [], []),
-        ),
-        patch(
-            "pr_agent.commands.pr_code_suggestions.AttemptTokenBudget.for_prompt_attempt",
-            side_effect=lambda *_args, **_kwargs: _FakeBudget(),
-        ),
-        patch("pr_agent.commands.pr_code_suggestions.get_effective_fallback_chain",
-              return_value=overrides.get("fallback_chain")),
-    ):
-        return await command.prepare_prediction_main("gpt-4o")
-
-
-@pytest.fixture
-def published_suggestions():
-    snapshot = snapshot_settings(_SUGGESTION_KEYS)
-    yield
-    restore_settings(snapshot)
-
-
-@pytest.mark.asyncio
-async def test_suggestion_progress_comment_reports_each_settled_chunk(published_suggestions):
-    provider, edits = _review_progress_editor()
-    command = _make_suggestion_command(provider, [_SUGGESTION_CHUNK] * 3)
-    command._progress_base_body = command.progress
-    command.progress_response = SimpleNamespace(id=1, body=command.progress)
-
-    await _run_chunked_suggestions(command)
-
-    assert [body.splitlines()[-1] for body in edits] == [
-        "analyzed 1 of 3 chunks",
-        "analyzed 2 of 3 chunks",
-        "analyzed 3 of 3 chunks",
-    ]
-    # The GIF placeholder is preserved; only the progress line is appended to it.
-    assert all(body.startswith(command.progress) for body in edits)
-
-
-@pytest.mark.asyncio
-async def test_suggestion_progress_comment_reports_a_failed_chunk(published_suggestions):
-    provider, edits = _review_progress_editor()
-    command = _make_suggestion_command(
-        provider, [_SUGGESTION_CHUNK, RuntimeError("model refused"), _SUGGESTION_CHUNK])
-    command._progress_base_body = command.progress
-    command.progress_response = SimpleNamespace(id=1, body=command.progress)
-
-    await _run_chunked_suggestions(command)
-
-    assert command.failed_chunk_count == 1
-    assert edits[-1].splitlines()[-1] == "analyzed 3 of 3 chunks, 1 chunk failed"
-
-
-@pytest.mark.asyncio
-async def test_suggestion_retried_chunks_count_towards_the_total(published_suggestions):
-    """A recovered chunk is extra work, so the total grows with it instead of overflowing."""
-    provider, edits = _review_progress_editor()
-    command = _make_suggestion_command(
-        provider, [_SUGGESTION_CHUNK, RuntimeError("model refused"), _SUGGESTION_CHUNK])
-    command._progress_base_body = command.progress
-    command.progress_response = SimpleNamespace(id=1, body=command.progress)
-
-    # A live fallback chain is what lets the failed chunk be retried with another model.
-    with patch(
-        "pr_agent.commands.pr_code_suggestions.get_effective_fallback_chain",
-        return_value=[("gpt-4o", None), ("gpt-4.1", None)],
-    ):
-        data = await _run_chunked_suggestions(
-            command, fallback_chain=[("gpt-4o", None), ("gpt-4.1", None)])
-
-    assert data == {"code_suggestions": []}
-    assert command.failed_chunk_count == 0
-    # 3 chunks plus the 1 retried: the recovery round finishes the work rather than
-    # reporting more completions than there were chunks.
-    assert edits[-1].splitlines()[-1] == "analyzed 4 of 4 chunks"
-
-
 _DESCRIBE_KEYS = (
     "config.publish_output",
     "config.publish_output_progress",
@@ -716,25 +565,6 @@ async def test_a_failing_check_run_update_never_breaks_the_run(published_review)
 
 
 @pytest.mark.asyncio
-async def test_auto_suggestions_anchor_the_check_run_reporter(published_suggestions):
-    settings = get_settings()
-    settings.set("config.publish_output", True)
-    settings.set("config.publish_output_progress", True)
-    settings.set("config.is_auto_command", True)
-    command = _make_suggestion_command(MagicMock(), [])
-    seen = []
-
-    async def capture(*_args, **_kwargs):
-        seen.append(command._progress_base_body)
-        return {"code_suggestions": []}
-
-    with patch("pr_agent.commands.pr_code_suggestions.retry_with_fallback_models", side_effect=capture):
-        await command.run()
-
-    assert seen == ["Preparing suggestions..."]
-
-
-@pytest.mark.asyncio
 async def test_describe_progress_is_skipped_when_progress_output_is_off(published_describe):
     provider, edits = _review_progress_editor()
     provider.get_filtered_diff_file_names.return_value = []
@@ -787,130 +617,3 @@ async def test_describe_progress_is_skipped_for_a_single_chunk(published_describ
     await _run_chunked_describe(command, chunk_count=1)
 
     assert edits == []
-
-
-@pytest.mark.asyncio
-async def test_suggestion_progress_is_skipped_for_a_single_chunk(published_suggestions):
-    provider, edits = _review_progress_editor()
-    command = _make_suggestion_command(provider, [_SUGGESTION_CHUNK])
-    command._progress_base_body = command.progress
-    command.progress_response = SimpleNamespace(id=1, body=command.progress)
-
-    await _run_chunked_suggestions(command, chunk_count=1)
-
-    # A single chunk has no progress worth an extra provider write.
-    assert edits == []
-    assert command.total_chunk_count == 1
-
-
-@pytest.mark.asyncio
-async def test_suggestion_progress_counts_an_unparseable_chunk(published_suggestions):
-    """Malformed prediction output must count as a failed chunk in the progress line."""
-    provider, edits = _review_progress_editor()
-    command = _make_suggestion_command(provider, [_SUGGESTION_CHUNK] * 3)
-    command._progress_base_body = command.progress
-    command.progress_response = SimpleNamespace(id=1, body=command.progress)
-    original = command._get_prediction
-
-    async def with_unparseable_chunk(model, numbered, unnumbered):
-        if numbered == "chunk-1":
-            return command._prepare_pr_code_suggestions("code_suggestions: 5")
-        return await original(model, numbered, unnumbered)
-
-    command._get_prediction = with_unparseable_chunk
-
-    await _run_chunked_suggestions(command)
-
-    assert command.failed_chunk_count == 1
-    assert edits[-1].splitlines()[-1] == "analyzed 3 of 3 chunks, 1 chunk failed"
-
-
-@pytest.mark.asyncio
-async def test_suggestion_progress_extends_the_total_per_fallback_round(published_suggestions):
-    """A chunk that fails in one round and succeeds in the next counts every retry it costs."""
-    provider, edits = _review_progress_editor()
-    command = _make_suggestion_command(
-        provider,
-        [_SUGGESTION_CHUNK, RuntimeError("model refused"), _SUGGESTION_CHUNK,
-         RuntimeError("model refused"), _SUGGESTION_CHUNK],
-    )
-    command._progress_base_body = command.progress
-    command.progress_response = SimpleNamespace(id=1, body=command.progress)
-
-    await _run_chunked_suggestions(
-        command,
-        fallback_chain=[("gpt-4o", None), ("gpt-4.1", None), ("gpt-4.1-mini", None)],
-    )
-
-    assert command.failed_chunk_count == 0
-    # 3 chunks plus one retry in each of two fallback rounds. Extending the total only once
-    # up front would clamp the display while a retry was still running.
-    assert edits[-1].splitlines()[-1] == "analyzed 5 of 5 chunks"
-
-
-@pytest.mark.asyncio
-async def test_suggestion_progress_resets_between_outer_model_attempts(published_suggestions):
-    """A fallback preparation rewrites the placeholder before it reports new counts."""
-    provider, edits = _review_progress_editor()
-    command = _make_suggestion_command(
-        provider, [RuntimeError("model refused")] * 3 + [_SUGGESTION_CHUNK] * 3)
-    command._progress_base_body = command.progress
-    command.progress_response = SimpleNamespace(id=1, body=command.progress)
-
-    with pytest.raises(RuntimeError):
-        await _run_chunked_suggestions(command)
-    edits.clear()
-    await _run_chunked_suggestions(command)
-
-    assert edits[0] == command.progress
-    assert [body.splitlines()[-1] for body in edits[1:]] == [
-        "analyzed 1 of 3 chunks",
-        "analyzed 2 of 3 chunks",
-        "analyzed 3 of 3 chunks",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_suggestion_progress_is_skipped_when_the_provider_cannot_edit(published_suggestions):
-    provider, edits = _review_progress_editor(
-        is_supported=lambda capability: capability == "gfm_markdown")
-    command = _make_suggestion_command(provider, [_SUGGESTION_CHUNK] * 3)
-    command._progress_base_body = command.progress
-    command.progress_response = SimpleNamespace(id=1, body=command.progress)
-
-    await _run_chunked_suggestions(command)
-
-    assert edits == []
-    assert command.total_chunk_count == 3
-
-
-@pytest.mark.asyncio
-async def test_suggestion_progress_is_skipped_when_no_comment_was_published(published_suggestions):
-    """An auto command publishes no progress comment, so there is nothing to rewrite."""
-    provider, edits = _review_progress_editor()
-    command = _make_suggestion_command(provider, [_SUGGESTION_CHUNK] * 3)
-    command._progress_base_body = None
-    command.progress_response = None
-
-    await _run_chunked_suggestions(command)
-
-    assert edits == []
-    assert command.total_chunk_count == 3
-
-
-@pytest.mark.asyncio
-async def test_a_failing_suggestion_progress_edit_does_not_affect_the_result(published_suggestions):
-    provider = MagicMock()
-    provider.should_publish_improve_as_thread.return_value = False
-    provider.edit_comment.side_effect = RuntimeError("rate limited")
-    provider.is_supported.side_effect = lambda capability: capability in {
-        "edit_comment", "remove_comment"}
-    command = _make_suggestion_command(provider, [_SUGGESTION_CHUNK] * 3)
-    command._progress_base_body = command.progress
-    command.progress_response = SimpleNamespace(id=1, body=command.progress)
-
-    data = await _run_chunked_suggestions(command)
-
-    assert data == {"code_suggestions": []}
-    assert command.total_chunk_count == 3
-    assert command.failed_chunk_count == 0

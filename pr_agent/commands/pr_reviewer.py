@@ -99,6 +99,7 @@ from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.structural_reach import build_structural_reach
 from pr_agent.algo.suggestion_checks import (
     dedent_code_for_file,
+    get_committable_code_suggestions,
     is_line_range_in_diff,
     python_syntax_is_valid,
     validate_suggestion,
@@ -113,7 +114,6 @@ from pr_agent.algo.utils import (
     is_value_no,
     load_yaml,
 )
-from pr_agent.commands.pr_code_suggestions import get_committable_code_suggestions
 from pr_agent.commands.progress_comment import ChunkProgressReporter
 from pr_agent.commands.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,

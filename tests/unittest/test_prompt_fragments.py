@@ -1,13 +1,12 @@
 import re
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 from jinja2 import Environment, meta, nodes
 from jinja2.exceptions import SecurityError
 
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format, render_skills_prefix
-from pr_agent.commands import pr_add_docs, pr_code_suggestions, pr_reviewer
+from pr_agent.commands import pr_add_docs, pr_reviewer
 from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
@@ -45,7 +44,6 @@ def restore_prompt_settings():
         "config.enable_ai_metadata",
         "config.is_auto_command",
         "prompt_fragments.diff_hunk_format",
-        "pr_code_suggestions.decouple_hunks",
     ])
     yield
     restore_settings(snapshot)
@@ -88,11 +86,6 @@ def test_render_diff_hunk_format_variants(include_line_numbers, include_ai_metad
     [
         ("pr_review_prompt", "11  unchanged code line0\n12  unchanged code line1"),
         ("pr_add_docs_prompt", "12  code line1 that remained unchanged in the PR"),
-        ("pr_code_suggestions_prompt", "Important notes about the structured diff format above:"),
-        (
-            "pr_code_suggestions_reflect_prompt",
-            "If no code was added or removed in a specific chunk, the corresponding section will be omitted.",
-        ),
     ],
 )
 def test_affected_templates_delegate_to_shared_fragment_once(prompt_name, legacy_example):
@@ -117,9 +110,6 @@ def test_affected_templates_delegate_to_shared_fragment_once(prompt_name, legacy
         ("pr_description_prompt", "diff"),
         ("pr_description_only_files_prompts", "diff"),
         ("pr_description_only_description_prompts", "diff"),
-        ("pr_code_suggestions_reflect_prompt", "diff"),
-        ("pr_code_suggestions_prompt", "diff_no_line_numbers"),
-        ("pr_code_suggestions_prompt_not_decoupled", "diff_no_line_numbers"),
     ],
 )
 def test_diff_prompt_variables_do_not_use_content_trimming(prompt_name, variable):
@@ -127,36 +117,6 @@ def test_diff_prompt_variables_do_not_use_content_trimming(prompt_name, variable
 
     assert f"{{{{ {variable}|trim }}}}" not in user_prompt
     assert f"{{{{ {variable} }}}}" in user_prompt
-
-
-@pytest.mark.parametrize("prompt_name", [
-    "pr_code_suggestions_prompt",
-    "pr_code_suggestions_prompt_not_decoupled",
-])
-def test_suggestion_prompts_allow_dependencies_introduced_by_improved_code(prompt_name):
-    prompt = get_settings().get(prompt_name).system
-    variables = {
-        "focus_only_on_problems": True,
-        "num_code_suggestions": 3,
-        "diff_hunk_format": "diff",
-        "skills_context": "",
-        "extra_instructions": "",
-        "repo_context": "",
-    }
-
-    rendered = Environment().from_string(prompt).render(variables)
-
-    assert "If the suggested `improved_code` introduces a dependency" in rendered
-    assert "standalone or unrelated missing" in rendered
-
-
-def test_reflection_prompt_does_not_zero_required_imports():
-    prompt = get_settings().pr_code_suggestions_reflect_prompt.system
-
-    rendered = Environment().from_string(prompt).render({"diff_hunk_format": "diff"})
-
-    assert "- Add standalone or unrelated missing import statements" in rendered
-    assert "- Add missing import statements" not in rendered
 
 
 def test_fragment_renderer_sandboxes_host_overrides(restore_prompt_settings):
@@ -180,7 +140,6 @@ def test_command_initializers_supply_the_fragment_before_token_counting(
     settings = get_settings()
     settings.set("config.enable_ai_metadata", include_ai_metadata)
     settings.set("config.is_auto_command", include_ai_metadata)
-    settings.set("pr_code_suggestions.decouple_hunks", True)
 
     monkeypatch.setattr(pr_reviewer, "get_git_provider_with_context", lambda _url: provider)
     monkeypatch.setattr(pr_reviewer, "get_main_pr_language", lambda _languages, _files: "Python")
@@ -191,22 +150,8 @@ def test_command_initializers_supply_the_fragment_before_token_counting(
     monkeypatch.setattr(pr_add_docs, "get_git_provider_for_command", lambda _url: provider)
     monkeypatch.setattr(pr_add_docs, "get_main_pr_language", lambda _languages, _files: "Python")
 
-    monkeypatch.setattr(pr_code_suggestions, "get_git_provider_with_context", lambda _url: provider)
-    monkeypatch.setattr(pr_code_suggestions, "get_main_pr_language", lambda _languages, _files: "Python")
-    monkeypatch.setattr(pr_code_suggestions, "get_skills_context", lambda: "")
-    monkeypatch.setattr(pr_code_suggestions, "build_repo_context", lambda _provider: "")
-    monkeypatch.setattr(
-        pr_code_suggestions,
-        "add_ai_metadata_to_diff_files",
-        lambda _provider, _files: None,
-    )
-
     reviewer = pr_reviewer.PRReviewer("https://example/pr/1", ai_handler=lambda: SimpleNamespace())
     add_docs = pr_add_docs.PRAddDocs("https://example/pr/1", ai_handler=lambda: SimpleNamespace())
-    suggestions = pr_code_suggestions.PRCodeSuggestions(
-        "https://example/pr/1",
-        ai_handler=lambda: SimpleNamespace(),
-    )
 
     assert reviewer.vars["diff_hunk_format"] == render_diff_hunk_format(
         include_line_numbers=True,
@@ -216,76 +161,6 @@ def test_command_initializers_supply_the_fragment_before_token_counting(
         include_line_numbers=True,
         include_ai_metadata=False,
     )
-    assert suggestions.vars["diff_hunk_format"] == render_diff_hunk_format(
-        include_line_numbers=False,
-        include_ai_metadata=include_ai_metadata,
-    )
-    assert suggestions.token_handler.prompt_tokens > 0
-
-
-def test_non_decoupled_suggestions_render_without_the_shared_fragment(monkeypatch, restore_prompt_settings):
-    provider = FakeGitProvider()
-    settings = get_settings()
-    settings.set("config.enable_ai_metadata", False)
-    settings.set("config.is_auto_command", False)
-    settings.set("pr_code_suggestions.decouple_hunks", False)
-
-    monkeypatch.setattr(pr_code_suggestions, "get_git_provider_with_context", lambda _url: provider)
-    monkeypatch.setattr(pr_code_suggestions, "get_main_pr_language", lambda _languages, _files: "Python")
-    monkeypatch.setattr(pr_code_suggestions, "get_skills_context", lambda: "")
-    monkeypatch.setattr(pr_code_suggestions, "build_repo_context", lambda _provider: "")
-
-    suggestions = pr_code_suggestions.PRCodeSuggestions(
-        "https://example/pr/1",
-        ai_handler=lambda: SimpleNamespace(),
-    )
-
-    assert suggestions.pr_code_suggestions_prompt_system == (
-        settings.pr_code_suggestions_prompt_not_decoupled.system
-    )
-    assert suggestions.token_handler.prompt_tokens > 0
-
-
-@pytest.mark.parametrize("include_ai_metadata", [False, True])
-@pytest.mark.asyncio
-async def test_reflection_supplies_the_numbered_fragment(
-    include_ai_metadata,
-    restore_prompt_settings,
-):
-    settings = get_settings()
-    settings.set("config.enable_ai_metadata", include_ai_metadata)
-    ai_handler = SimpleNamespace(chat_completion=AsyncMock(return_value=("REFLECTION_OK", "stop")))
-    command = pr_code_suggestions.PRCodeSuggestions.__new__(pr_code_suggestions.PRCodeSuggestions)
-    command.ai_handler = ai_handler
-    diff = "WITH-LINES {{ must_stay_literal_2959 }}"
-
-    result = await command.self_reflect_on_suggestions(
-        [{"one_sentence_summary": "Keep the shared prompt accurate"}],
-        diff,
-        settings.config.model,
-    )
-
-    call = ai_handler.chat_completion.await_args.kwargs
-    expected_fragment = render_diff_hunk_format(
-        include_line_numbers=True,
-        include_ai_metadata=include_ai_metadata,
-    )
-    assert result == "REFLECTION_OK"
-    assert call["system"].count(expected_fragment) == 1
-    assert diff in call["user"]
-
-
-def test_non_decoupled_suggestions_prompt_remains_out_of_scope():
-    section = get_settings().pr_code_suggestions_prompt_not_decoupled
-    environment = Environment()
-
-    system_variables = meta.find_undeclared_variables(environment.parse(section.system))
-    user_variables = meta.find_undeclared_variables(environment.parse(section.user))
-
-    assert "diff_hunk_format" not in system_variables
-    assert "__new hunk__" not in section.system
-    assert "__old hunk__" not in section.system
-    assert "diff_no_line_numbers" in user_variables
 
 
 _SKILLS_PREFIX_TEMPLATES = [
@@ -293,8 +168,6 @@ _SKILLS_PREFIX_TEMPLATES = [
     "pr_description_prompt",
     "pr_description_only_description_prompts",
     "pr_description_only_files_prompts",
-    "pr_code_suggestions_prompt",
-    "pr_code_suggestions_prompt_not_decoupled",
 ]
 
 
