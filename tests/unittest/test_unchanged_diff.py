@@ -362,7 +362,8 @@ def test_a_typed_run_never_skips_even_when_the_record_matches(enabled, monkeypat
     assert UnchangedDiffGuard("review", provider).should_skip() is False
 
 
-def test_a_typed_run_clears_the_skip_notice_and_refreshes_the_record(enabled, monkeypatch):
+def test_a_typed_run_clears_the_skip_notice_but_never_writes_the_record(enabled, monkeypatch):
+    # Arguments typed with the command could narrow the review; it must not stand in for the automatic run.
     provider = FakeProvider()
     _skipped_once(provider)
     before, _ = parse_unchanged_diff_comment(provider.record_body())
@@ -373,7 +374,7 @@ def test_a_typed_run_clears_the_skip_notice_and_refreshes_the_record(enabled, mo
 
     assert "unchanged-diff-skipped:review" not in provider.record_body()
     after, _ = parse_unchanged_diff_comment(provider.record_body())
-    assert after["review"].diff_hash != before["review"].diff_hash
+    assert after == before
 
 
 def test_a_head_commit_setting_turned_on_after_a_skip_clears_the_notice(enabled, monkeypatch):
