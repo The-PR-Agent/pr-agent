@@ -132,8 +132,13 @@ credential.
 | `teams` | POSTs an Adaptive Card to `teams_webhook_url` with the command type, markdown output, and a button to the PR when its URL is present. The card is trimmed to Teams' 28 KB message size limit. |
 
 Local channels (`stdout`, `file`) run before network channels (`webhook`, `slack`, `telegram`, `teams`), and network
-posts never follow redirects. Each configured destination is attempted independently, so one failure
-does not prevent later destinations from receiving the output.
+posts never follow redirects. Commands send the built-in network outputs concurrently, with a separate worker pool
+per destination so a slow channel does not prevent healthy channels from delivering. The command still waits for
+every selected delivery to finish before returning, including in AWS Lambda; HTTP requests retain the original
+five-second connection/read timeout. Cancelling a caller does not discard work already being prepared or sent,
+though process termination can still interrupt delivery. When custom strategies or replacements are selected,
+the command uses the original sequential delivery order to preserve their shared record and request context.
+Delivery failures remain non-fatal, but there is no automatic retry or guarantee of delivery after a failed request.
 
 ### Telegram
 
@@ -164,14 +169,14 @@ type or status code, since request error messages can embed the (secret-bearing)
 ## Extending delivery
 
 `push_outputs()` in `pr_agent/algo/run_output.py` builds the record once and isolates failures
-for each selected destination. The commands deliver from an event loop, so they call
-`push_outputs_async()`, which runs the delivery in a worker thread and awaits it: a slow
-destination does not stall the other pull requests the server is handling, and the output
-still reaches the sink before the command returns. Delivery strategies live in
+for each selected destination. Commands call `push_outputs_async()`, which prepares the record
+and writes local outputs in a worker thread, then dispatches built-in network destinations concurrently to
+separate worker pools. Slow or failed HTTP destinations do not block the event loop or other network channels,
+and the command waits for all deliveries to finish before returning. Delivery strategies live in
 `pr_agent/algo/output_sinks.py`: each implements `OutputSink.send(record, cfg)`, and
-`create_output_sink()` selects the strategy from `OUTPUT_SINK_TYPES`. Registry order
-determines delivery order, with local writes first; duplicate channel entries still result
-in a single delivery.
+`create_output_sink()` selects the strategy from `OUTPUT_SINK_TYPES`. Direct synchronous calls, and commands with
+custom strategies, retain registry delivery order; other commands write local outputs first and send built-in
+HTTP outputs concurrently. Duplicate channel entries still result in a single delivery.
 
 To add a destination, implement its strategy and register it, then add any required host-only
 settings, documentation, and provider-specific tests. HTTP strategies must validate destinations
