@@ -97,6 +97,19 @@ async def load_host_settings_for_webhook() -> bool:
     return True
 
 
+def host_settings_unavailable() -> bool:
+    """Return True when this webhook's host settings source was pinned but could not be loaded.
+
+    Call it after ``load_host_settings_for_webhook()``. A failed load leaves ``None`` for the
+    source in the request's payload cache; a source that was never loaded is not a failure.
+    """
+    if not context.exists():
+        return False
+    source = context.get("automatic_host_settings_source")
+    payloads = context.get("extra_config_payloads") or {}
+    return bool(source) and source in payloads and payloads[source] is None
+
+
 def payload_log_summary(data: object, identifying_fields: Sequence[str] = ()) -> dict:
     """Return a webhook payload's top-level keys and identifying string fields, never its values."""
     if not isinstance(data, dict):
