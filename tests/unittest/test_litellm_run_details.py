@@ -33,7 +33,8 @@ class _Response:
 
 def _set_cost_collection(monkeypatch, enabled):
     settings = SimpleNamespace(
-        get=lambda key, default=None: enabled if key == "config.output_run_cost" else default
+        get=lambda key, default=None: enabled if key == "config.output_run_cost" else default,
+        litellm=SimpleNamespace(get=lambda key, default=None: default),
     )
     monkeypatch.setattr("pr_agent.algo.ai_handlers.litellm_ai_handler.get_settings", lambda: settings)
 

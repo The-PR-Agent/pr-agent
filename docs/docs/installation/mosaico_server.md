@@ -59,11 +59,15 @@ at the boundary is ignored; supplied diffs are still processed in full. Put the 
 command near the start of the message or its surrounding prose.
 
 Configure `mosaico.bearer_tokens` as a map of stable principal names to distinct opaque secrets
-in secret settings, or through Dynaconf's JSON environment syntax:
+in secret settings, or as a TOML inline table in the environment:
 
 ```bash
-export MOSAICO__BEARER_TOKENS='@json {"reference-agent":"replace-with-generated-secret"}'
+export MOSAICO__BEARER_TOKENS='{"reference-agent"="replace-with-generated-secret"}'
 ```
+
+The container does not inherit host exports; pass the map when you start it, for example with
+`-e MOSAICO__BEARER_TOKENS` or `--env-file`. An env file takes the value literally, so write it
+without the surrounding shell quotes.
 
 With a nonempty map, JSON-RPC and `/health` require `Authorization: Bearer <secret>`.
 Missing or invalid credentials return HTTP 401 before reading the body or running the LLM.
@@ -95,12 +99,12 @@ credential separately. Both probes continue to work without a token in anonymous
 The server boots from a bare `docker pull` in a couple of seconds — no repo clone, no build:
 
 ```bash
-docker pull pragent/pr-agent:0.41.0-mosaico_agent
+docker pull pragent/pr-agent:0.50.0-mosaico_agent
 docker run -d --name pr-agent-mosaico -p 9000:9000 \
   -e API_BASE=https://your-openai-compatible-endpoint/v1 \
   -e API_KEY=sk-... \
   -e MODEL_NAME=openai/your-model-slug \
-  pragent/pr-agent:0.41.0-mosaico_agent
+  pragent/pr-agent:0.50.0-mosaico_agent
 
 curl -s http://localhost:9000/.well-known/agent-card.json | python3 -m json.tool
 ```

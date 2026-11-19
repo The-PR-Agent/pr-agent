@@ -14,9 +14,10 @@ def write_review_json_output(review: dict, path: str | None = None) -> None:
     if not path:
         return
     try:
+        # Serialize before opening so a failure cannot truncate an existing file.
+        text = json.dumps(review, indent=2) + "\n"
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump(review, fh, indent=2)
-            fh.write("\n")
+            fh.write(text)
     except (OSError, TypeError, ValueError) as error:
         get_logger().error(f"Failed to write structured review to {path}: {error}")
         raise

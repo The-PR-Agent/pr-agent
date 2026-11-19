@@ -32,9 +32,9 @@ import copy
 import json
 import os
 
-from starlette_context import context, request_cycle_context
+from starlette_context import context
 
-from pr_agent.config_loader import global_settings
+from pr_agent.config_loader import global_settings, safe_request_cycle_context
 from pr_agent.log import get_logger
 
 HANDOFF_EVENT_KEY = "pr_agent_lambda_handoff"
@@ -159,12 +159,14 @@ async def _run_github_handoff(handoff: dict) -> dict:
     headers = handoff.get("headers") or {}
     get_logger().info("Processing a handed-off GitHub webhook",
                       artifact={"delivery": headers.get("x-github-delivery")})
-    with request_cycle_context({}):
+    with safe_request_cycle_context({}):
         # The request-scoped state the /api/v1/github_webhooks route sets up
         # before its background task, replicated for the second invocation.
         context["installation_id"] = body.get("installation", {}).get("id")
         context["settings"] = copy.deepcopy(global_settings)
         context["git_provider"] = {}
+        # Apply the final trusted Host policy after any external settings load.
+        context["authenticated_provider_settings"] = {"github.deployment_type": "app"}
         await github_app.handle_request(
             body,
             event=headers.get("x-github-event"),
@@ -181,7 +183,7 @@ async def _run_gitlab_handoff(handoff: dict) -> dict:
     headers = handoff.get("headers") or {}
     get_logger().info("Processing a handed-off GitLab webhook",
                       artifact={"delivery": headers.get("x-gitlab-event-uuid")})
-    with request_cycle_context({}):
+    with safe_request_cycle_context({}):
         # Only IAM-authorized direct invocations carry this envelope. The public
         # webhook already authenticated it; restore credentials by reference.
         context["settings"] = copy.deepcopy(global_settings)

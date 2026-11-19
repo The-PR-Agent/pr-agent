@@ -12,7 +12,7 @@ import pytest
 
 from pr_agent.algo import output_sinks
 from pr_agent.algo.run_output import push_outputs_async
-from pr_agent.commands import pr_code_suggestions, pr_description, pr_reviewer
+from pr_agent.commands import pr_description, pr_reviewer
 from pr_agent.config_loader import get_settings
 
 SINK_URL = 'https://example.test/webhook'
@@ -76,5 +76,5 @@ async def test_the_output_reaches_the_sink_before_the_caller_resumes(monkeypatch
 
 def test_the_commands_do_not_import_the_blocking_delivery():
     """The commands run in an event loop, so they must not call the blocking entry point."""
-    for module in (pr_description, pr_code_suggestions, pr_reviewer):
+    for module in (pr_description, pr_reviewer):
         assert "push_outputs" not in vars(module), f"{module.__name__} imports the blocking delivery"

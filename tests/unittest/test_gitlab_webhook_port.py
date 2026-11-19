@@ -2,7 +2,7 @@ import os
 from unittest import mock
 
 os.environ.setdefault("GITLAB__URL", "https://gitlab.example.com")
-import pr_agent.servers.gitlab_webhook as gitlab_webhook
+from pr_agent.servers import gitlab_webhook
 
 
 def test_start_uses_port_env(monkeypatch):

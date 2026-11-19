@@ -14,6 +14,8 @@ You can use our pre-built GitHub Action Docker image to run PR-Agent as a GitHub
    ```yaml
    on:
      pull_request:
+       # PR-Agent skips synchronize by default. Include it in github_action_config.pr_actions
+       # for auto commands, or enable github_action_config.handle_push_trigger for push_commands (takes precedence).
        types: [opened, reopened, ready_for_review, synchronize]
      issue_comment:
    jobs:
@@ -642,7 +644,6 @@ For better performance with large repositories:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Optimize for large PRs
         config.large_patch_policy: "clip"
-        config.max_model_tokens: "32000"
         config.patch_extra_lines_before: "3"
         config.patch_extra_lines_after: "1"
         github_action_config.auto_review: "true"
@@ -845,8 +846,7 @@ For example: `GITHUB.WEBHOOK_SECRET` --> `GITHUB__WEBHOOK_SECRET`
 
 4. Create a lambda function that uses the uploaded image. Add the IAM permission `lambda:InvokeFunction` on the function itself to the execution role: the webhook is acknowledged as soon as its signature is verified, and the review runs in a second, asynchronous invocation of the same function. Set the lambda timeout for the review length (for example 5m) — it no longer needs to cover the webhook acknowledgement. Lambda retries a timed-out or failed asynchronous invocation twice by default, which would run the review again; set the function's asynchronous invocation retry attempts to 0 if you do not want that.
 5. Configure the lambda function to have a Function URL.
-6. In the environment variables of the Lambda function, specify `AZURE_DEVOPS_CACHE_DIR` to a writable location such as /tmp. (see [link](https://github.com/the-pr-agent/pr-agent/pull/450#issuecomment-1840242269))
-7. Go back to steps 8-9 of [Method 5](#run-as-a-github-app) with the function url as your Webhook URL.
+6. Go back to steps 8-9 of [Method 5](#run-as-a-github-app) with the function url as your Webhook URL.
     The Webhook URL would look like `https://<LAMBDA_FUNCTION_URL>/api/v1/github_webhooks`
 
 #### Using AWS Secrets Manager

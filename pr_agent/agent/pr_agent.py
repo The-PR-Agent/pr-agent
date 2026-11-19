@@ -7,7 +7,7 @@ from functools import partial
 
 import dynaconf
 from opentelemetry.trace import StatusCode
-from starlette_context import context, request_cycle_context
+from starlette_context import context
 
 from pr_agent.agent.command_registry import COMMAND_SPECS
 from pr_agent.agent.request_policy import RequestOutcome, enforce_request_policy
@@ -23,11 +23,10 @@ from pr_agent.algo.i18n import t
 from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.utils import _fix_key_value, update_settings_from_args
-from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.commands.pr_questions import PRQuestions
 from pr_agent.commands.pr_reviewer import PRReviewer
-from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.config_loader import get_settings, global_settings, safe_request_cycle_context
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import (
     IncompleteBitbucketPullRequestFilesError as _IncompleteBitbucketPullRequestFilesError,
@@ -311,7 +310,7 @@ class PRAgent:
     async def _create_command(self, command_class, pr_url, **kwargs):
         """Offload eligible command setup while preserving its cancellation boundary."""
         if get_settings() is global_settings or command_class not in (
-            PRReviewer, PRDescription, PRCodeSuggestions, PRQuestions
+            PRReviewer, PRDescription, PRQuestions
         ):
             # Preserve shared settings and other commands' existing initialization
             # (some constructors also update external indexes).
@@ -345,6 +344,15 @@ class PRAgent:
     async def _handle_request(
         self, pr_url, request, notify=None, propagate_command_errors: bool | None = None
     ) -> bool | RequestOutcome:
+        if propagate_command_errors is not None:
+            try:
+                context["settings"]
+            except Exception:
+                # Create request-local settings before awaiting commands outside middleware.
+                with safe_request_cycle_context({"settings": copy.deepcopy(global_settings)}):
+                    return await self._handle_request(
+                        pr_url, request, notify, propagate_command_errors=propagate_command_errors
+                    )
         # Exceptions raised inside are caught below, but a BaseException (e.g. the
         # CancelledError a webhook timeout raises) still escapes the span, and the SDK
         # would auto-record its message and stacktrace — request content, so opt-in.
@@ -361,14 +369,6 @@ class PRAgent:
             try:
                 if propagate_command_errors is None:
                     return await self._run_command(pr_url, request, notify, span)
-                try:
-                    context["settings"]
-                except Exception:
-                    # Create request-local settings before awaiting commands outside middleware.
-                    with request_cycle_context({"settings": copy.deepcopy(global_settings)}):
-                        return await self._run_command(
-                            pr_url, request, notify, span, propagate_command_errors=propagate_command_errors
-                        )
                 return await self._run_command(
                     pr_url, request, notify, span, propagate_command_errors=propagate_command_errors
                 )

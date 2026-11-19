@@ -39,7 +39,9 @@ from pr_agent.servers.utils import (
     dedupe_review_commands,
     get_include_pr_labels,
     get_pr_commands,
+    host_settings_unavailable,
     is_ask_command_comment,
+    load_host_settings_for_webhook,
     push_trigger_slot,
     shared_should_process_pr_logic,
     verify_signature,
@@ -78,6 +80,8 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
     context["installation_id"] = installation_id
     context["settings"] = copy.deepcopy(global_settings)
     context["git_provider"] = {}
+    # The effective Host policy decides whether to restore App mode after external settings load.
+    context["authenticated_provider_settings"] = {"github.deployment_type": "app"}
     handed_off = lambda_handoff.handoff_enabled() and await lambda_handoff.try_handoff(
         "github", body, request.headers)
     if not handed_off:
@@ -415,13 +419,25 @@ async def _dispatch_request(body: dict[str, Any], event: str, action: str):
     agent = PRAgent()
     log_context, sender, sender_id, sender_type = get_log_context(body, event, action, build_number)
     if event == 'pull_request':
-        revoke_auto_approval_on_push(body)
+        # Approval revocation may read the external host layer before the PR
+        # prefilter. Pin that source first so both decisions see the same file.
+        try:
+            if (action in ('synchronize', 'reopened')
+                    or (action == 'edited' and 'base' in (body.get('changes') or {}))):
+                await load_host_settings_for_webhook()
+        finally:
+            # Even an unexpected preloader error must not skip revocation.
+            revoke_auto_approval_on_push(body)
 
     # logic to ignore PRs opened by bot, PRs with specific titles, labels, source branches, or target branches
     if is_bot_user(sender, sender_type) and 'check_run' not in body:
         get_logger().debug("Request ignored: bot user detected")
         return {}
     if action != 'created' and 'check_run' not in body:
+        if (event == 'pull_request' and (
+                action != 'closed' or get_settings().get("CONFIG.ANALYTICS_FOLDER", ""))
+                or event == 'pull_request_review' and action == 'submitted'):
+            await load_host_settings_for_webhook()
         # Defer the opt-in label gate until repository settings have been applied.
         prefilter_allowed = (
             shared_should_process_pr_logic(body, provider="github", check_include_labels=False)
@@ -429,6 +445,10 @@ async def _dispatch_request(body: dict[str, Any], event: str, action: str):
         )
         if not prefilter_allowed:
             get_logger().debug("Request ignored: PR logic filtering")
+            return {}
+        if action != 'closed' and host_settings_unavailable():
+            # Fail closed: without the host layer its exclusions would not apply.
+            get_logger().warning("Request ignored: host settings could not be loaded")
             return {}
 
     if 'check_run' in body:  # handle failed checks

@@ -1730,9 +1730,8 @@ class TestGiteaProviderInlineCommentStatus:
     """Regression tests for the ``/improve`` inline-comment path:
 
     1. ``publish_inline_comments``/``publish_code_suggestions`` never reported
-       success or failure, so ``PRCodeSuggestions.push_inline_code_suggestions``
-       always treated the call as failed and republished every suggestion a
-       second time, duplicating each one.
+       success or failure, so the caller always treated the call as failed and
+       republished every suggestion a second time, duplicating each one.
     2. ``RepoApi.create_inline_comment`` posted to ``pulls/{id}/reviews``
        without an ``event``, which Gitea/Forgejo defaults to a draft review
        (state ``PENDING``) invisible to everyone but its author - there is no
@@ -1776,8 +1775,7 @@ class TestGiteaProviderInlineCommentStatus:
 
     def test_publish_code_suggestions_does_not_republish_on_success(self):
         # Before the fix, a truthy result here was still treated as failure by
-        # PRCodeSuggestions.push_inline_code_suggestions, which republished
-        # every suggestion a second time.
+        # the caller, which republished every suggestion a second time.
         provider = self._provider(create_inline_comment_result=True)
         suggestions = [{"body": "**Suggestion:** fix it", "relevant_file": "a.py",
                         "relevant_lines_start": 3}]
@@ -1796,10 +1794,9 @@ class TestGiteaProviderInlineCommentStatus:
 
     def test_publish_code_suggestions_reports_success_on_partial_failure(self):
         # A partial failure must not report failure overall: the caller
-        # (PRCodeSuggestions.push_inline_code_suggestions) republishes the whole
-        # list on any falsy result, which would post the two already-accepted
-        # suggestions a second time. Exactly one create_inline_comment call per
-        # suggestion, no retries.
+        # republishes the whole list on any falsy result, which would post the
+        # two already-accepted suggestions a second time. Exactly one
+        # create_inline_comment call per suggestion, no retries.
         provider = self._provider()
         provider.repo_api.create_inline_comment.side_effect = [MagicMock(), None, MagicMock()]
         suggestions = [

@@ -1,11 +1,11 @@
-import asyncio
+import itertools
 import re
 from unittest.mock import MagicMock, patch
 from urllib.parse import urlparse
 
 import gitlab
 import pytest
-from gitlab import GitlabCreateError, GitlabParsingError
+from gitlab import GitlabCreateError, GitlabHttpError, GitlabParsingError
 from requests import Response
 from requests.exceptions import ConnectionError, ConnectTimeout, InvalidURL, ReadTimeout, RequestException, SSLError
 from starlette_context import request_cycle_context
@@ -15,7 +15,6 @@ from urllib3.exceptions import ProxyError as Urllib3ProxyError
 
 import pr_agent.git_providers as providers
 from pr_agent.algo import inline_comment_dedup as dedup
-from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 
 
@@ -48,11 +47,28 @@ def _suggestion(**overrides):
     return suggestion
 
 
-def _gl_provider():
+class _LongTargetFile(_FakeTargetFile):
+    head_file = "".join(f"line{n}\n" for n in range(1, 11))
+
+
+def _outside_diff_suggestion():
+    return _suggestion(relevant_lines_start=8, relevant_lines_end=8, existing_code='line8')
+
+
+def _gl_provider(diff_new_lines=None, poster_is_bot=True, gitlab_before_19_6=False):
     """A GitLabProvider whose mr.draft_notes fake behaves like the real GitLab API: create()
     queues a pending draft, list() reflects whatever is currently pending, and bulk_publish()
     clears them - so tests exercise the same create -> list -> bulk_publish flow the real code
-    depends on, instead of asserting on call counts alone."""
+    depends on, instead of asserting on call counts alone. A draft's publish() publishes just it.
+
+    With diff_new_lines, line positions follow GitLab 19.6 (gitlab-org/gitlab!262051): outside those
+    new-file lines, discussions.create returns 400 while draft_notes.create returns the draft with
+    line_code None, and bulk_publish skips that draft, deleting it for a bot poster and leaving it
+    pending otherwise. Positions are matched on new_line only. Without diff_new_lines, line_code is
+    a MagicMock, so every draft counts as anchored. Published drafts collect in draft_notes.published.
+
+    With gitlab_before_19_6, bulk_publish instead fails with a 500 while such a draft is pending,
+    after publishing the other drafts without clearing them from the queue."""
     p = GitLabProvider.__new__(GitLabProvider)
     p.RE_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
     p.id_mr = 1
@@ -64,10 +80,23 @@ def _gl_provider():
     p.get_line_link = MagicMock(return_value="http://link")
 
     pending_drafts = []
+    published_drafts = []
+    draft_ids = itertools.count(1)
+
+    def _outside_diff(position):
+        line = (position or {}).get('new_line')
+        return diff_new_lines is not None and line is not None and line not in diff_new_lines
 
     def _create(payload):
         note = MagicMock()
+        note.id = next(draft_ids)
         note.note = payload.get('note')
+        note.position = payload.get('position')
+        if diff_new_lines is not None:
+            note.line_code = None if ('file_path' in note.position or note.position.get('position_type') == 'file'
+                                      or _outside_diff(note.position)) else "line_code"
+        note.delete.side_effect = lambda **kwargs: pending_drafts.remove(note)
+        note.publish.side_effect = lambda **kwargs: (pending_drafts.remove(note), published_drafts.append(note))
         pending_drafts.append(note)
         return note
 
@@ -75,11 +104,24 @@ def _gl_provider():
         return list(pending_drafts)
 
     def _bulk_publish():
-        pending_drafts.clear()
+        unresolvable = [n for n in pending_drafts if _outside_diff(n.position)]
+        published_drafts.extend(n for n in pending_drafts if n not in unresolvable)
+        if gitlab_before_19_6 and unresolvable:
+            raise GitlabHttpError("500 Internal Server Error", response_code=500)
+        pending_drafts[:] = [] if poster_is_bot else unresolvable
+
+    def _create_discussion(payload):
+        if _outside_diff(payload.get('position')):
+            raise GitlabCreateError("400 Bad request - Note {:line_code=>[\"can't be blank\"]}",
+                                    response_code=400)
+        return MagicMock()
 
     p.mr.draft_notes.create.side_effect = _create
     p.mr.draft_notes.list.side_effect = _list
     p.mr.draft_notes.bulk_publish.side_effect = _bulk_publish
+    p.mr.draft_notes.published = published_drafts
+    if diff_new_lines is not None:
+        p.mr.discussions.create.side_effect = _create_discussion
     return p
 
 
@@ -122,37 +164,6 @@ def test_context_line_suggestion_sends_both_gitlab_line_numbers():
     position = p.mr.discussions.create.call_args.args[0]['position']
     assert position['old_line'] == 2
     assert position['new_line'] == 2
-
-
-@pytest.mark.parametrize("as_review", [False, True])
-@pytest.mark.parametrize("start,old_line", [(1, None), (2, 2)])
-def test_patch_only_suggestion_publishes_at_its_addition_or_context_line(as_review, start, old_line):
-    target = _FakeTargetFile()
-    target.head_file = ""
-    target.patch = "@@ -1,2 +1,2 @@\n-old line1\n+line1\n line2\n\\ No newline at end of file\n"
-    p = _gl_provider()
-    p.get_diff_files.return_value = [target]
-    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    command.git_provider = p
-    command.progress_response = None
-    suggestion = _suggestion(relevant_lines_start=start, relevant_lines_end=start, existing_code=f'line{start}')
-    gs = _settings(as_review=as_review)
-    try:
-        asyncio.run(command.push_inline_code_suggestions({"code_suggestions": [suggestion]},
-                                                     include_coverage_footer=False))
-    finally:
-        gs.stop()
-
-    create = p.mr.draft_notes.create if as_review else p.mr.discussions.create
-    create.assert_called_once()
-    assert '```suggestion:-0+0' in create.call_args.args[0]['note' if as_review else 'body']
-    position = create.call_args.args[0]['position']
-    assert position['new_line'] == start
-    assert position.get('old_line') == old_line
-    p.get_relevant_diff.assert_called_once_with('a.py', f'line{start}')
-    if as_review:
-        p.mr.draft_notes.bulk_publish.assert_called_once()
-        assert p.mr.draft_notes.list(get_all=True) == []
 
 
 @pytest.mark.parametrize("start, expected", [
@@ -232,6 +243,281 @@ def test_flag_on_fallback_uses_draft_note_not_live_note():
     p.mr.draft_notes.bulk_publish.assert_called_once()
 
 
+def _first_call_rejected(p, create, error):
+    """Make the first call to `create` (the anchored attempt) fail with `error`, later calls pass."""
+    calls = []
+    original = create.side_effect
+
+    def _create(payload):
+        calls.append(payload)
+        if len(calls) == 1:
+            raise error
+        return original(payload) if original else MagicMock()
+
+    create.side_effect = _create
+    return calls
+
+
+def test_live_fallback_is_posted_as_a_resolvable_file_level_thread():
+    p = _gl_provider()
+    calls = _first_call_rejected(p, p.mr.discussions.create, GitlabCreateError("position rejected", response_code=400))
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is True
+    finally:
+        gs.stop()
+
+    assert len(calls) == 2
+    position = calls[1]['position']
+    assert position == {
+        'base_sha': 'base', 'start_sha': 'start', 'head_sha': 'head',
+        'position_type': 'file', 'new_path': 'a.py', 'old_path': 'a.py',
+    }
+    assert "Cannot implement directly" in calls[1]['body']
+    p.mr.notes.create.assert_not_called()
+    assert "fix it" in p.get_recent_inline_comment_bodies()[0]
+
+
+def test_file_level_thread_uses_the_old_path_for_a_renamed_file():
+    class _RenamedFile(_FakeTargetFile):
+        filename = "new_name.py"
+        old_filename = "old_name.py"
+
+    p = _gl_provider()
+    p.get_diff_files.return_value = [_RenamedFile()]
+    calls = _first_call_rejected(p, p.mr.discussions.create, GitlabCreateError("position rejected", response_code=400))
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion(relevant_file="new_name.py")]) is True
+    finally:
+        gs.stop()
+
+    assert calls[1]['position']['new_path'] == "new_name.py"
+    assert calls[1]['position']['old_path'] == "old_name.py"
+
+
+def test_live_fallback_posts_a_plain_note_when_gitlab_rejects_a_file_position():
+    p = _gl_provider()
+    p.mr.discussions.create.side_effect = GitlabCreateError("position_type file not supported", response_code=400)
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is True
+    finally:
+        gs.stop()
+
+    assert p.mr.discussions.create.call_count == 2
+    p.mr.notes.create.assert_called_once()
+    assert 'position' not in p.mr.notes.create.call_args.args[0]
+    assert "Cannot implement directly" in p.mr.notes.create.call_args.args[0]['body']
+
+
+def test_unconfirmed_file_level_thread_is_not_followed_by_a_plain_note():
+    p = _gl_provider()
+    _first_call_rejected(p, p.mr.discussions.create, GitlabCreateError("invalid position", response_code=400))
+    original = p.mr.discussions.create.side_effect
+    calls = []
+
+    def _create(payload):
+        calls.append(payload)
+        if len(calls) == 2:
+            raise GitlabCreateError("server error after write", response_code=503)
+        return original(payload)
+
+    p.mr.discussions.create.side_effect = _create
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is True
+    finally:
+        gs.stop()
+
+    assert len(calls) == 2
+    p.mr.notes.create.assert_not_called()
+
+
+def test_draft_fallback_uses_a_file_position_and_is_queued():
+    p = _gl_provider()
+    calls = _first_call_rejected(p, p.mr.draft_notes.create, GitlabCreateError("position rejected", response_code=400))
+    _publish_as_review(p, [_suggestion()])
+
+    assert len(calls) == 2
+    assert calls[1]['position']['position_type'] == 'file'
+    assert calls[1]['position']['new_path'] == 'a.py'
+    p.mr.draft_notes.bulk_publish.assert_called_once()
+    p.mr.notes.create.assert_not_called()
+
+
+def test_draft_fallback_posts_a_plain_draft_when_gitlab_rejects_a_file_position():
+    p = _gl_provider()
+    p.mr.draft_notes.create.side_effect = GitlabCreateError("position_type file not supported", response_code=400)
+    gs = _settings(as_review=True)
+    try:
+        p.publish_code_suggestions([_suggestion()])
+    finally:
+        gs.stop()
+
+    payloads = [c.args[0] for c in p.mr.draft_notes.create.call_args_list]
+    assert len(payloads) == 3  # anchored attempt, file position, plain draft
+    assert 'position' not in payloads[2]
+
+
+def _kind(body):
+    if "Cannot implement directly" in body:
+        return 'file note'
+    return 'inline' if "```suggestion" in body else body
+
+
+def _kinds(drafts):
+    return [_kind(d.note) for d in drafts]
+
+
+def _publish_as_review(p, suggestions):
+    gs = _settings(as_review=True)
+    try:
+        assert p.publish_code_suggestions(suggestions) is True
+    finally:
+        gs.stop()
+
+
+@pytest.mark.parametrize("poster_is_bot", [True, False])
+def test_draft_outside_diff_is_published_as_file_note_not_left_pending(poster_is_bot):
+    p = _gl_provider(diff_new_lines={1, 2, 3}, poster_is_bot=poster_is_bot)
+    p.get_diff_files.return_value = [_LongTargetFile()]
+
+    _publish_as_review(p, [_outside_diff_suggestion()])
+
+    assert p.mr.draft_notes.list() == []
+    assert _kinds(p.mr.draft_notes.published) == ['file note']
+    p.mr.discussions.create.assert_not_called()
+    p.mr.notes.create.assert_not_called()
+
+
+def test_draft_inside_diff_is_published_inline_without_fallback():
+    p = _gl_provider(diff_new_lines={1, 2, 3})
+
+    _publish_as_review(p, [_suggestion()])
+
+    assert p.mr.draft_notes.list() == []
+    assert _kinds(p.mr.draft_notes.published) == ['inline']
+
+
+def test_mixed_batch_publishes_the_inline_suggestion_and_the_file_note_together():
+    p = _gl_provider(diff_new_lines={1, 2, 3}, poster_is_bot=False)
+    p.get_diff_files.return_value = [_LongTargetFile()]
+
+    _publish_as_review(p, [_suggestion(), _outside_diff_suggestion()])
+
+    assert p.mr.draft_notes.list() == []
+    assert sorted(_kinds(p.mr.draft_notes.published)) == ['file note', 'inline']
+    p.mr.draft_notes.bulk_publish.assert_called_once()
+
+
+def test_draft_outside_diff_left_by_an_earlier_run_is_discarded_not_published():
+    p = _gl_provider(diff_new_lines={1, 2, 3}, poster_is_bot=False)
+    p.mr.draft_notes.create({'note': "stale suggestion", 'position': {'new_path': 'a.py', 'new_line': 8}})
+
+    _publish_as_review(p, [_suggestion()])
+
+    assert p.mr.draft_notes.list() == []
+    assert _kinds(p.mr.draft_notes.published) == ['inline']
+    assert "stale suggestion" not in p.get_recent_inline_comment_bodies()
+
+
+def _make_drafts_undeletable(p):
+    create = p.mr.draft_notes.create.side_effect
+
+    def _create_undeletable(payload):
+        note = create(payload)
+        note.delete.side_effect = GitlabHttpError("500 Internal Server Error", response_code=500)
+        return note
+
+    p.mr.draft_notes.create.side_effect = _create_undeletable
+
+
+def test_draft_outside_diff_that_cannot_be_deleted_still_falls_back_and_is_not_recorded_as_published():
+    p = _gl_provider(diff_new_lines={1, 2, 3}, poster_is_bot=False)
+    p.get_diff_files.return_value = [_LongTargetFile()]
+    _make_drafts_undeletable(p)
+
+    _publish_as_review(p, [_outside_diff_suggestion()])
+
+    assert _kinds(p.mr.draft_notes.published) == ['file note']
+    assert _kinds(p.mr.draft_notes.list()) == ['inline']  # GitLab keeps it for human posters
+    assert [_kind(body) for body in p.get_recent_inline_comment_bodies()] == ['file note']
+
+
+def test_undeletable_draft_before_gitlab_19_6_publishes_the_rest_one_by_one_instead_of_in_bulk():
+    p = _gl_provider(diff_new_lines={1, 2, 3}, poster_is_bot=False, gitlab_before_19_6=True)
+    p.get_diff_files.return_value = [_LongTargetFile()]
+    _make_drafts_undeletable(p)
+
+    _publish_as_review(p, [_suggestion(), _outside_diff_suggestion()])
+
+    p.mr.draft_notes.bulk_publish.assert_not_called()
+    assert sorted(_kinds(p.mr.draft_notes.published)) == ['file note', 'inline']
+    for draft in p.mr.draft_notes.published:
+        draft.publish.assert_called_once()
+    assert _kinds(p.mr.draft_notes.list()) == ['inline']  # the undeletable out-of-diff draft
+    assert sorted(_kind(body) for body in p.get_recent_inline_comment_bodies()) == ['file note', 'inline']
+
+
+def test_one_by_one_publish_failure_records_only_published_drafts_and_a_retry_publishes_the_rest_once():
+    p = _gl_provider(diff_new_lines={1, 2, 3}, poster_is_bot=False, gitlab_before_19_6=True)
+    p.get_diff_files.return_value = [_LongTargetFile()]
+    _make_drafts_undeletable(p)
+    create = p.mr.draft_notes.create.side_effect
+    publish_failures = []
+
+    def _create_failing_first_publish(payload):
+        note = create(payload)
+        if "y = 2" in note.note:
+            publish = note.publish.side_effect
+
+            def _publish_once_failing(**kwargs):
+                if not publish_failures:
+                    publish_failures.append(note)
+                    raise GitlabHttpError("502 Bad Gateway", response_code=502)
+                return publish(**kwargs)
+
+            note.publish.side_effect = _publish_once_failing
+        return note
+
+    p.mr.draft_notes.create.side_effect = _create_failing_first_publish
+    suggestions = [_suggestion(),
+                   _suggestion(body="**Suggestion:** other\n```suggestion\ny = 2\n```", relevant_lines_start=3,
+                               relevant_lines_end=3, existing_code='line3', improved_code='y = 2'),
+                   _outside_diff_suggestion()]
+    gs = _settings(as_review=True)
+    try:
+        assert p.publish_code_suggestions(suggestions) is False
+        recorded_after_failure = p.get_recent_inline_comment_bodies()
+        assert p.publish_code_suggestions(suggestions) is True
+    finally:
+        gs.stop()
+
+    assert not any("y = 2" in body for body in recorded_after_failure)
+    assert sorted(_kind(body) for body in recorded_after_failure) == ['file note', 'inline']
+    assert sorted(_kinds(p.mr.draft_notes.published)) == ['file note', 'inline', 'inline']
+    assert p.mr.draft_notes.create.call_count == 4  # the retry recreates nothing
+    p.mr.draft_notes.bulk_publish.assert_not_called()
+
+
+def test_draft_response_without_line_code_is_treated_as_anchored():
+    p = _gl_provider()
+    create = p.mr.draft_notes.create.side_effect
+
+    def _create_without_line_code(payload):
+        note = create(payload)
+        del note.line_code
+        return note
+
+    p.mr.draft_notes.create.side_effect = _create_without_line_code
+
+    _publish_as_review(p, [_suggestion()])
+
+    p.mr.draft_notes.create.assert_called_once()
+    assert _kinds(p.mr.draft_notes.published) == ['inline']
+
+
 def test_draft_totally_unavailable_falls_back_to_a_live_comment_not_a_dropped_suggestion():
     # Both draft attempts (primary anchored + general-note fallback) fail outright, e.g. the
     # draft-notes endpoint is unsupported/erroring for this MR. The suggestion must still be
@@ -307,7 +593,7 @@ def test_unconfirmed_general_note_fallback_is_not_retried():
     finally:
         gs.stop()
 
-    p.mr.discussions.create.assert_called_once()
+    assert p.mr.discussions.create.call_count == 2  # the anchored attempt, then the file-level thread
     p.mr.notes.create.assert_called_once()
     assert "fix it" in p.get_recent_inline_comment_bodies()[0]
 
@@ -334,7 +620,7 @@ def test_pre_write_connection_failure_can_use_general_note_fallback(error):
     finally:
         gs.stop()
 
-    p.mr.discussions.create.assert_called_once()
+    assert p.mr.discussions.create.call_count == 2  # the anchored attempt, then the file-level thread
     p.mr.notes.create.assert_called_once()
     assert "fix it" in p.get_recent_inline_comment_bodies()[0]
 
@@ -422,6 +708,44 @@ def test_real_gitlab_client_invalid_success_response_does_not_retry():
     assert len(posted_paths) == 1
     assert posted_paths[0].endswith("/discussions")
     assert "fix it" in p.get_recent_inline_comment_bodies()[0]
+
+
+def test_rejected_position_fallback_keeps_review_markers_and_invents_no_score():
+    # /review key issues carry no score, and the reviewer finds its published findings by the
+    # location marker embedded in the body; the file-level fallback note must keep both intact.
+    p = _gl_provider()
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
+    location_marker = "<!-- pr-agent-key-issue-location: 0123456789ab -->"
+    body = ("**Possible Issue** The lock is never released.\n\n```suggestion\nx = 2\n```\n\n"
+            f"<!-- pr-agent-dedup: ba9876543210 -->\n{location_marker}")
+    suggestion = {'body': body, 'relevant_file': 'a.py', 'relevant_lines_start': 2, 'relevant_lines_end': 2,
+                  'original_suggestion': {'relevant_lines_start': 2, 'relevant_lines_end': 2,
+                                          'existing_code': 'x = 1', 'improved_code': 'x = 2',
+                                          'suggestion_content': 'The lock is never released.',
+                                          'label': 'Possible Issue'}}
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([suggestion]) is True
+    finally:
+        gs.stop()
+
+    note = p.mr.notes.create.call_args.args[0]['body']
+    assert "[Possible Issue]" in note
+    assert "importance" not in note
+    assert location_marker in note
+    assert note.count("pr-agent-dedup: ba9876543210") == 1
+
+
+def test_rejected_position_fallback_keeps_improve_score():
+    p = _gl_provider()
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected", response_code=400)
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion(score=9)]) is True
+    finally:
+        gs.stop()
+
+    assert "[possible issue, importance: 9]" in p.mr.notes.create.call_args.args[0]['body']
 
 
 def test_bulk_publish_failure_is_caught_and_does_not_propagate():
@@ -772,95 +1096,6 @@ def test_empty_draft_body_is_not_recorded_as_a_published_finding(publication_pro
     assert p.mr.draft_notes.list() == []
     assert len(p.get_recent_inline_comment_bodies()) == 1
     assert "fix it" in p.get_recent_inline_comment_bodies()[0]
-
-
-@pytest.mark.parametrize("failure", ["bulk", "list", "drafts-unsupported"])
-@pytest.mark.parametrize("count", [1, 2])
-def test_improve_caller_retries_queued_batch_but_not_live_fallback(publication_provider, failure, count):
-    p = publication_provider
-    if failure == "drafts-unsupported":
-        p.mr.draft_notes.create.side_effect = GitlabCreateError("drafts unsupported", response_code=400)
-        p.mr.draft_notes.list.side_effect = RequestException("cannot list")
-    else:
-        operation = p.mr.draft_notes.bulk_publish if failure == "bulk" else p.mr.draft_notes.list
-        original = operation.side_effect
-        failed = False
-
-        def fail_once_after_queue(*args, **kwargs):
-            nonlocal failed
-            if p.mr.draft_notes.create.called and not failed:
-                failed = True
-                raise RequestException("transient failure")
-            return original(*args, **kwargs)
-
-        operation.side_effect = fail_once_after_queue
-    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    command.git_provider = p
-    command.progress_response = None
-    command._validate_suggestion = lambda *args: (True, "", True)
-    command.dedent_code = lambda filename, line, code: code
-    command._validate_python_replacement_syntax = lambda *args: True
-    suggestions = [_suggestion()]
-    if count == 2:
-        suggestions.append(_suggestion(suggestion_content="second", improved_code="x = 3"))
-    asyncio.run(command.push_inline_code_suggestions({"code_suggestions": suggestions},
-                                                include_coverage_footer=False))
-    assert command._output_published is True
-    p.mr.notes.create.assert_not_called()  # no duplicate summary on top of delivered comments
-    assert p.get_recent_inline_comment_bodies()
-    if failure == "drafts-unsupported":
-        assert p.mr.discussions.create.call_count == count
-        p.mr.draft_notes.bulk_publish.assert_not_called()
-    else:
-        assert p.mr.draft_notes.create.call_count == count
-        assert p.mr.draft_notes.list() == []
-
-
-@pytest.mark.parametrize("unqueued_first", [False, True])
-@pytest.mark.parametrize("recovers", [False, True])
-def test_improve_caller_retries_unsettled_suggestion(publication_provider, unqueued_first, recovers):
-    p = publication_provider
-    manager = p.mr.draft_notes
-    create = manager.create.side_effect
-    publish = manager.bulk_publish.side_effect
-    reject = True
-    failed = False
-
-    def create_or_reject(payload):
-        if reject and "unqueued" in payload["note"]:
-            raise GitlabCreateError("cannot create draft", response_code=400)
-        return create(payload)
-
-    def fail_first_publish(*args, **kwargs):
-        nonlocal failed, reject
-        if not failed:
-            failed = True
-            reject = not recovers
-            raise RequestException("cannot publish batch")
-        return publish(*args, **kwargs)
-
-    manager.create.side_effect = create_or_reject
-    manager.bulk_publish.side_effect = fail_first_publish
-    p.mr.discussions.create.side_effect = GitlabCreateError("cannot create live discussion", response_code=400)
-    p.mr.notes.create.side_effect = GitlabCreateError("cannot create live note", response_code=400)
-    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    command.git_provider = p
-    command.progress_response = None
-    command._validate_suggestion = lambda *args: (True, "", True)
-    command.dedent_code = lambda filename, line, code: code
-    command._validate_python_replacement_syntax = lambda *args: True
-    queued = _suggestion(suggestion_content="queued", improved_code="x = 3")
-    unqueued = _suggestion(suggestion_content="unqueued", improved_code="x = 4")
-    suggestions = [unqueued, queued] if unqueued_first else [queued, unqueued]
-    asyncio.run(command.push_inline_code_suggestions({"code_suggestions": suggestions},
-                                                include_coverage_footer=False))
-    assert command._output_published is True
-    assert manager.list() == []
-    bodies = p.get_recent_inline_comment_bodies()
-    assert sum("queued" in body and "unqueued" not in body for body in bodies) == 1
-    assert sum("unqueued" in body for body in bodies) == int(recovers)
-    # Preserve the caller's existing partial-success policy, not a per-input summary guarantee.
-    p.mr.notes.create.assert_called()  # initial unqueued suggestion exhausted live fallback too
 
 
 def test_cached_provider_publishes_new_batch_without_retrying_previous_failure(publication_provider):

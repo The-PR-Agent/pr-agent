@@ -85,7 +85,7 @@ def run_comment(monkeypatch):
     ``outcome`` is what the agent reports, ``record_failure`` is a command that failed internally and
     therefore returned normally.
     """
-    import pr_agent.servers.gitlab_webhook as gitlab_webhook
+    from pr_agent.servers import gitlab_webhook
 
     monkeypatch.setattr(gitlab_webhook, "is_bot_user", lambda data: False)
     monkeypatch.setitem(get_settings().gitlab, "personal_access_token", "token")
@@ -162,7 +162,7 @@ def test_a_command_that_failed_internally_is_not_reported_as_success(run_comment
 
 @pytest.mark.asyncio
 async def test_outcome_reaction_preserves_settings_without_blocking_the_event_loop(monkeypatch):
-    import pr_agent.servers.gitlab_webhook as gitlab_webhook
+    from pr_agent.servers import gitlab_webhook
 
     provider = _RecordingProvider()
     started = threading.Event()
@@ -207,7 +207,7 @@ async def test_outcome_reaction_preserves_settings_without_blocking_the_event_lo
 
 def test_handle_request_hands_the_verdict_back_to_its_caller(monkeypatch):
     """The reaction is only as honest as this return value, so pin the value itself."""
-    import pr_agent.servers.gitlab_webhook as gitlab_webhook
+    from pr_agent.servers import gitlab_webhook
 
     class _Agent:
         async def handle_request(self, api_url, body, notify=None):

@@ -1,6 +1,5 @@
 import base64
 import hashlib
-import json
 import os
 import re
 import shutil
@@ -25,7 +24,6 @@ from pr_agent.algo.comment_identity import (
     render_hidden_marker,
 )
 from pr_agent.algo.i18n import t
-from pr_agent.algo.inline_comment_dedup import strip_markers
 from pr_agent.algo.language_handler import build_language_file_matcher, numeric_languages
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import process_description
@@ -74,9 +72,7 @@ def format_persistent_update_notice(name: str, comment_url: str, commit: str) ->
 
 MAX_FILES_ALLOWED_FULL = 50
 
-DEFAULT_DISCUSSION_CONTEXT_CHARS = 24000
 DISCUSSION_CONTEXT_MAX_REPLIES = 10
-DISCUSSION_CONTEXT_MAX_THREADS = 50
 DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS = 750
 
 # The /describe sections GitProvider.limit_description_characters drops, in this order, and the note it ends a
@@ -110,15 +106,6 @@ class CodeSuggestionThread:
         """Return the replies that have a non-blank text message, stripped."""
         return [(author, message.strip()) for author, message in self.replies
                 if isinstance(message, str) and message.strip()]
-
-
-def _discussion_context_budget() -> int:
-    value = get_settings().get("pr_code_suggestions.max_discussion_context_chars", DEFAULT_DISCUSSION_CONTEXT_CHARS)
-    try:
-        return int(value)
-    except (TypeError, ValueError, OverflowError):
-        get_logger().warning(f"Invalid pr_code_suggestions.max_discussion_context_chars: {value!r}")
-        return DEFAULT_DISCUSSION_CONTEXT_CHARS
 
 
 class IncompleteProviderPullRequestFilesError(RuntimeError):
@@ -429,15 +416,13 @@ class GitProvider(ABC):
         self._latest_commit_url = None
         if getattr(self, "incremental", None) is not None:
             self.incremental = IncrementalPR(False)
+        if hasattr(self, "_incremental_unfiltered_files"):
+            self._incremental_unfiltered_files = None
+        if hasattr(self, "unreviewed_rename_sources"):
+            self.unreviewed_rename_sources = []
         if context.exists():
             context.pop("diff_files", None)
 
-    def supports_incremental_kind(self, kind: str) -> bool:
-        """Whether `get_incremental_commits()` can scope an incremental run to `kind`
-        (e.g. "suggestions" for `/improve -i`). Providers implementing kind-aware
-        incremental anchoring override this; the default is no support, so commands
-        fall back to a full run."""
-        return False
 
     def supports_code_suggestions_artifact(self) -> bool:
         """Return whether `publish_code_suggestions()` writes a standalone output artifact."""
@@ -464,48 +449,10 @@ class GitProvider(ABC):
         """
         return self.publish_code_suggestions(code_suggestions)
 
-    def supports_code_suggestion_state(self) -> bool:
-        return False
-
-    def get_code_suggestion_thread_context(self) -> str:
-        """Return prior code-suggestion threads as a JSON block for the /improve prompt.
-
-        Threads come newest first from `_iter_code_suggestion_threads()`. The block stays within
-        `pr_code_suggestions.max_discussion_context_chars` (0 disables it) and is empty when no thread fits.
-        """
-        budget = _discussion_context_budget()
-        if budget <= 0:
-            return ""
-        discussions = []
-        # Reserve two characters for the outer JSON array brackets.
-        context_chars = 2
-        for thread in self._iter_code_suggestion_threads():
-            if thread.authored_by_agent is False:
-                continue
-            replies = thread.text_replies()
-            discussion = {
-                "thread_id": thread.thread_id,
-                "status": thread.status,
-                "file": thread.file,
-                "start_line": thread.start_line,
-                "end_line": thread.end_line,
-                "suggestion": strip_markers(thread.suggestion).strip()[:DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS],
-                "replies": [{"author": author or "Unknown", "message": message[:DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS]}
-                            for author, message in replies[-DISCUSSION_CONTEXT_MAX_REPLIES:]],
-            }
-            discussion_chars = len(json.dumps([discussion], ensure_ascii=False, indent=2)) - 2
-            if context_chars + discussion_chars > budget:
-                break
-            discussions.append(discussion)
-            context_chars += discussion_chars
-            if len(discussions) >= DISCUSSION_CONTEXT_MAX_THREADS:
-                break
-        return json.dumps(discussions, ensure_ascii=False, indent=2) if discussions else ""
 
     def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
-        """Yield prior code-suggestion threads, newest first. Providers with suggestion state override this.
+        """Yield review threads, newest first. Providers with thread state override this.
 
-        Inline /review key-issue threads carry the same dedup marker, so a provider may yield them too;
         /review reads them to learn which findings a human resolved."""
         return iter(())
 
@@ -513,7 +460,6 @@ class GitProvider(ABC):
         """Yield review threads with eligible dismissals reported as `resolved`.
 
         Default to the existing iterator so GitLab and unsupported providers keep their behavior.
-        Providers may override this without expanding the /improve discussion context.
         """
         return self._iter_code_suggestion_threads()
 
@@ -530,9 +476,6 @@ class GitProvider(ABC):
         support, so commands render commands as text instead."""
         return False
 
-    def supports_pr_chat(self) -> bool:
-        """Whether this provider is compatible with the linked PR-Agent browser-extension chat experience."""
-        return False
 
     @classmethod
     def supports_issue_indexing(cls) -> bool:
@@ -876,6 +819,13 @@ class GitProvider(ABC):
         headers = iter(self._iter_description_headers(description))
         start_position = next((end for header, _, end in headers if header == user_description_header), None)
         if start_position is None:
+            leading_text = self._get_text_before_first_header(description)
+            if leading_text:
+                get_logger().info("Existing description was generated by the pr-agent without a user "
+                                  "description header; keeping the text above the first section",
+                                  description=leading_text)
+                self.user_description = leading_text
+                return leading_text
             get_logger().info("Existing description was generated by the pr-agent, "
                               "but it doesn't contain a user description")
             return ""
@@ -949,6 +899,31 @@ class GitProvider(ABC):
         "### **pr labels**",
         "### \U0001f916 generated by pr agent",
     ))
+
+    # Rich-text editors rewrite the hidden marker and "___" separators, so match loosely.
+    _GENERATED_MARKER_LINE = re.compile(r"<!--\s*pr-agent-generated\s*-->", re.IGNORECASE)
+    _SEPARATOR_LINE = re.compile(r"_{3,}|-{3,}|\*{3,}")
+
+    def _get_text_before_first_header(self, description: str) -> str:
+        """Return author text left above the first pr-agent section after its header was removed."""
+        first_header = next(iter(self._iter_description_headers(description)), None)
+        # Marker mode interleaves "Generated by" sections with the user's template; text above
+        # the first one is a template fragment, and republishing it would drop the rest.
+        if first_header is None or first_header[0].startswith("### 🤖 generated by "):
+            return ""
+        lines = description[:first_header[1]].split("\n")
+
+        def is_edge(line: str) -> bool:
+            stripped = line.strip()
+            return (not stripped or bool(self._SEPARATOR_LINE.fullmatch(stripped))
+                    or bool(self._GENERATED_MARKER_LINE.fullmatch(stripped)))
+
+        start, end = 0, len(lines)
+        while start < end and is_edge(lines[start]):
+            start += 1
+        while end > start and is_edge(lines[end - 1]):
+            end -= 1
+        return "\n".join(lines[start:end]).strip()
 
     def _is_generated_by_pr_agent(self, description_lowercase: str) -> bool:
         # Keep the hidden marker as an unconditional anywhere fast path.
@@ -1143,9 +1118,6 @@ class GitProvider(ABC):
         return self.publish_comment(message)
 
     def should_publish_review_as_thread(self) -> bool:
-        return False
-
-    def should_publish_improve_as_thread(self) -> bool:
         return False
 
     def supports_html_comment_markers(self) -> bool:
@@ -1503,6 +1475,17 @@ class GitProvider(ABC):
         suffix = "..."
         suffix = suffix[:max_chars]
         return output[:max_chars - len(suffix)] + suffix
+
+    def limit_title_characters(self, title: str, max_chars: int) -> str:
+        """Fit a /describe title into the platform's title limit of max_chars characters."""
+        if len(title) <= max_chars:
+            return title
+        get_logger().warning(
+            f"PR title of {len(title)} characters is over the limit of "
+            f"{max_chars}; truncated"
+        )
+        suffix = "..."
+        return title[:max_chars - len(suffix)] + suffix
 
     def limit_description_characters(self, pr_body: str, max_chars: int) -> str:
         """Fit a /describe body into the platform's description limit of max_chars characters.

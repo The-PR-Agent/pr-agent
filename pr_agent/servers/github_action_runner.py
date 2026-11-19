@@ -7,7 +7,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 
 import dynaconf
-from starlette_context import context, request_cycle_context
+from starlette_context import context
 
 from pr_agent.agent.pr_agent import (
     PRAgent,
@@ -27,7 +27,7 @@ from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.commands.pr_reviewer import PRReviewer
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, safe_request_cycle_context
 from pr_agent.doctor import PROVIDER_AUTH_CORRECTIONS, missing_provider_key_env_vars
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
@@ -172,7 +172,9 @@ async def _run_auto_command(command_class, pr_url):
     _refresh_shared_provider(pr_url)
     _normalize_publish_output_setting()
     try:
-        with response_language_instructions():
+        # Like PRAgent.handle_request: the LiteLLM handler reads pr_url from the log
+        # context to build the session id.
+        with response_language_instructions(), get_logger().contextualize(pr_url=pr_url):
             result = await command_class(pr_url).run()
     except IncompletePullRequestFilesError as error:
         await asyncio.to_thread(publish_incomplete_files_comment, pr_url, error)
@@ -641,9 +643,7 @@ def _inject_ci_conclusion(conclusion):
 @contextmanager
 def _action_settings_scope():
     """Scope a copy of the settings to the run and reset it on any exit, even when the run raises."""
-    cm = request_cycle_context({})
-    cm.__enter__()
-    try:
+    with safe_request_cycle_context({}):
         # Apply the trusted host layer (CONFIG.EXTRA_CONFIG_URL) to the process-wide settings the copy is taken
         # from, so the options LiteLLM reads from them keep seeing it. Doing so inside the scope lets the run's
         # apply_repo_settings() calls reuse the fetched payload; repository overrides stay in the copy.
@@ -653,9 +653,6 @@ def _action_settings_scope():
             get_logger().warning(f"github action: failed to apply host settings: {type(e).__name__}")
         context["settings"] = copy.deepcopy(get_settings())
         yield
-    finally:
-        # request_cycle_context skips its reset when the body raises (starlette-context 0.5.1).
-        cm.__exit__(None, None, None)
 
 
 async def _run_action_and_drain():

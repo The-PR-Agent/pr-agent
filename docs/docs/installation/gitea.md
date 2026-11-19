@@ -51,7 +51,7 @@ sidebar_position: 8
     GITEA__WEB_URL=https://git.example.com # Optional: user-facing URL for links published in comments (see below)
     OPENAI__KEY=<your_openai_api_key>
     GITEA__SKIP_SSL_VERIFICATION=false
-    GITEA__SSL_CA_CERT=/path/to/cacert.pem
+    # GITEA__SSL_CA_CERT=/path/to/cacert.pem # Only for a custom CA certificate
     ```
 
     > **Note:** SSL verification can be disabled by setting `GITEA__SKIP_SSL_VERIFICATION=true`, although this is not

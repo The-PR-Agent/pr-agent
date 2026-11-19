@@ -2,8 +2,9 @@
 Tests for GitHub provider PR description publishing.
 
 GitHub refuses a pull request body over 65,536 characters with a 422 ("body is too long"), and the
-file walkthrough /describe renders for a large PR can pass that. ``publish_description`` fits the
-body into the limit instead of losing the whole description.
+file walkthrough /describe renders for a large PR can pass that. It also refuses a title over 256
+characters with a 422 ("title is too long"). ``publish_description`` fits both into those limits
+instead of losing the whole description.
 """
 
 import pytest
@@ -16,6 +17,7 @@ from pr_agent.git_providers.github_provider import GithubProvider
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 GITHUB_BODY_LIMIT = 65536
+GITHUB_TITLE_LIMIT = 256
 USAGE_GUIDE = (
     "<hr>\n\n<details> <summary><strong>✨ Describe command usage guide:</strong></summary><hr> \n\n"
     "Usage guide text.\n</details>\n"
@@ -23,12 +25,17 @@ USAGE_GUIDE = (
 
 
 class _FakePullRequest:
-    """Records edits, and refuses a body over the limit as GitHub does."""
+    """Records edits, and refuses a body or title over the limit as GitHub does."""
 
     def __init__(self):
         self.edits = []
 
     def edit(self, **fields):
+        title = fields.get("title")
+        if title is not None and len(title) > GITHUB_TITLE_LIMIT:
+            raise GithubException(422, {"message": "Validation Failed", "errors": [{
+                "resource": "Issue", "code": "custom", "field": "title",
+                "message": f"title is too long (maximum is {GITHUB_TITLE_LIMIT} characters)"}]}, {})
         body = fields.get("body")
         if body is not None and len(body) > GITHUB_BODY_LIMIT:
             raise GithubException(422, {"message": "Validation Failed", "errors": [{
@@ -138,3 +145,30 @@ def test_publish_description_cuts_a_long_body_without_a_file_walkthrough():
     suffix = " ... (description truncated due to length limit)"
     assert published == body[:provider.max_comment_chars - len(suffix)] + suffix
     assert len(published) == provider.max_comment_chars
+
+
+def test_publish_description_caps_a_title_over_the_api_limit():
+    # GitHub rejects a title longer than 256 characters (HTTP 422). An overlong
+    # AI title would fail the whole /describe publish, including a body that
+    # already fits the description limit.
+    provider = _make_provider(["src/app.py"])
+    title = "A" * 300
+    body = "### **Description**\n- Short change\n"
+
+    provider.publish_description(title, body)
+
+    published = provider.pr.edits[0]
+    assert published["body"] == body
+    assert len(published["title"]) == GITHUB_TITLE_LIMIT
+    assert published["title"].endswith("...")
+    assert published["title"].startswith("A")
+
+
+def test_publish_description_keeps_a_title_within_the_limit():
+    provider = _make_provider(["src/app.py"])
+    title = "A" * GITHUB_TITLE_LIMIT
+    body = "### **Description**\n- Short change\n"
+
+    provider.publish_description(title, body)
+
+    assert provider.pr.edits == [{"title": title, "body": body}]

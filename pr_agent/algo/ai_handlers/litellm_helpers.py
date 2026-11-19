@@ -382,7 +382,7 @@ def _resolve_litellm_callbacks(callback):
                 loggers.append(service_datadog_logger)
         return loggers
     try:
-        import litellm.litellm_core_utils.litellm_logging as litellm_logging
+        from litellm.litellm_core_utils import litellm_logging
     except ImportError:
         return []
     try:

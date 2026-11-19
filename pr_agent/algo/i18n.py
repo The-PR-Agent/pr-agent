@@ -48,7 +48,8 @@ def locale_chain(language) -> list[str]:
     """Return the shipped locales to try for a language tag, most specific first and always ending in English.
 
     Tags are matched case-insensitively with `-` or `_` separators, dropping subtags from the end (RFC 4647 lookup):
-    `es-AR` tries `es-ar`, then `es`, then `en`. A value that names no shipped locale resolves to English alone.
+    `es-AR` tries `es-ar`, then `es`, then `en`. Chinese and Mandarin script tags (such as `zh-Hant`,
+    `cmn-Hans`, and `zh-cmn-Hans-CN`) fall back to `zh-tw` or `zh-cn`. Unknown tags resolve to English alone.
     """
     shipped = _shipped_catalogs()
     chain = []
@@ -58,6 +59,12 @@ def locale_chain(language) -> list[str]:
             candidate = "-".join(subtags[:end])
             if candidate in shipped and candidate not in chain:
                 chain.append(candidate)
+        # The Mandarin extlang in zh-cmn-Hans precedes the script subtag.
+        if len(subtags) > 1 and subtags[0] in ("zh", "cmn"):
+            script_index = 2 if len(subtags) > 2 and subtags[:2] == ["zh", "cmn"] else 1
+            script_catalog = {"hans": "zh-cn", "hant": "zh-tw"}.get(subtags[script_index])
+            if script_catalog in shipped and script_catalog not in chain:
+                chain.append(script_catalog)
     if DEFAULT_LOCALE not in chain:
         chain.append(DEFAULT_LOCALE)
     return chain

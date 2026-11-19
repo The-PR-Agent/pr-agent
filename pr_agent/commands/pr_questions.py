@@ -23,7 +23,7 @@ from pr_agent.algo.run_details import get_run_details, init_run_details, record_
 from pr_agent.algo.run_output import append_run_details, push_outputs_async
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.skills_loader import get_skills_context
-from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.algo.token_budget import AttemptTokenBudget, ModelContextPreparationError, prepare_model_token_limits
 from pr_agent.algo.utils import ModelType, decode_user_text_args
 from pr_agent.commands.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
@@ -133,6 +133,7 @@ class PRQuestions:
         return decode_user_text_args(args)
 
     async def run(self):
+        self._model_context_preparation_failures: set[str] = set()
         # A fresh collector so the run-details section reports only this command's model.
         init_run_details()
         get_logger().info(f'Answering a PR question about the PR {self.pr_url} ')
@@ -154,9 +155,10 @@ class PRQuestions:
                 await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
             except Exception as error:
                 file_name = context.get("file_question_path") if context.exists() else None
-                # A fitted diff survives later retries, so transport failures remain errors.
+                # An exhausted chain with an unrecovered metadata failure is not fit-only.
                 if not (file_name and self.patches_diff is None
-                        and isinstance(error.__cause__, FallbackEligibleError)):
+                        and isinstance(error.__cause__, FallbackEligibleError)
+                        and not self._model_context_preparation_failures):
                     raise
                 if get_settings().config.publish_output:
                     await self._publish_answer_with_sinks(
@@ -276,6 +278,15 @@ class PRQuestions:
         return ''
 
     async def _prepare_prediction(self, model: str):
+        failures = getattr(self, "_model_context_preparation_failures", None)
+        try:
+            await prepare_model_token_limits(self.ai_handler, model)
+        except (ModelContextPreparationError, TimeoutError):
+            if failures is not None:
+                failures.add(model)
+            raise
+        if failures:
+            failures.discard(model)
         variables = copy.deepcopy(self.vars)
         repo_context_omitted = False
         # Select the same history, diff and repository instructions before spending room on tickets.

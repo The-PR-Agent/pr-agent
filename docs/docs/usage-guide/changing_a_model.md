@@ -71,8 +71,9 @@ check that provider's API documentation. For OpenAI-compatible endpoints, the se
 be supplied as `OPENAI__API_BASE` and `OPENAI__KEY`. For Anthropic-compatible endpoints, set
 `ANTHROPIC_API_BASE` (or `ANTHROPIC_BASE_URL`) for the endpoint and `ANTHROPIC__KEY` for
 authentication.
-For models absent from PR-Agent's token-limit table, set `config.custom_model_max_tokens` to
-the endpoint's supported input limit.
+If no reliable model limit can be resolved, set `config.custom_model_max_tokens` to
+the endpoint's supported input limit. Official OpenRouter routes can also use
+[model context discovery](#openrouter-model-context-discovery).
 
 :::note[Model-specific environment variables]
 See [litellm documentation](https://litellm.vercel.app/docs/proxy/quick_start#supported-llms) for the environment variables needed per model, as they may vary and change over time. Our documentation per-model may not always be up-to-date with the latest changes.
@@ -178,14 +179,14 @@ E.g. to use a new model locally via Ollama, set in `.secrets.toml` or in a confi
 [config]
 model = "ollama/qwen2.5-coder:32b"
 fallback_models=[]
-custom_model_max_tokens=128000 # set the maximal input tokens for the model
+custom_model_max_tokens=64000 # set the maximal input tokens for the model
 duplicate_prompt_examples=true # will duplicate the examples in the prompt, to help the model to generate structured output
 
 [ollama]
 api_base = "http://localhost:11434" # or whatever port you're running Ollama on
 ```
 
-By default, Ollama uses a context window size of 2048 tokens. In most cases this is not enough to cover pr-agent prompt and pull-request diff. Context window size can be overridden with the `OLLAMA_CONTEXT_LENGTH` environment variable. For example, to set the default context length to 8K, use: `OLLAMA_CONTEXT_LENGTH=8192 ollama serve`. More information you can find on the [official ollama faq](https://docs.ollama.com/faq#how-can-i-specify-the-context-window-size).
+Ollama's context window may be too small for PR-Agent prompts and pull-request diffs. Set `OLLAMA_CONTEXT_LENGTH` to suit your model and available memory; for example, `OLLAMA_CONTEXT_LENGTH=64000 ollama serve` sets a 64K window matching the example configuration above. This example follows [Ollama's context-length recommendation for coding and agent workloads](https://docs.ollama.com/context-length), not an Ollama default.
 
 Please note that the `custom_model_max_tokens` setting should be configured in accordance with the `OLLAMA_CONTEXT_LENGTH`. Failure to do so may result in unexpected model output.
 
@@ -321,6 +322,8 @@ gemini_api_key = "..."
 ```
 
 If you don't want to set the API key in the .secrets.toml file, you can set the `GOOGLE_AI_STUDIO.GEMINI_API_KEY` environment variable.
+
+Gemini 4 Argon is available as `gemini/gemini-4-argon` or `vertex_ai/gemini-4-argon`. It accepts the `config.reasoning_effort` levels `low`, `medium`, and `high`; `minimal` is normalized to `low` before the request is sent. Its 1,048,576-token context window is shared by input and output.
 
 ### Anthropic
 
@@ -611,10 +614,9 @@ deployment. This is required until the selected model's input limit is available
 in PR-Agent's registry or the installed LiteLLM metadata.
 CompactifAI's public model pages do not currently specify those limits.
 
-PR-Agent also caps the effective budget with `config.max_model_tokens`, which
-defaults to 32,000. To use a larger verified budget, raise both
-`config.custom_model_max_tokens` and `config.max_model_tokens`; the effective limit
-is the smaller of the two values.
+PR-Agent also caps the effective budget with `config.max_model_tokens`. To use a
+larger verified budget, raise both `config.custom_model_max_tokens` and
+`config.max_model_tokens` as needed; the effective limit is the smaller value.
 
 This budgeting limit is not the amount of space available for the changed-code diff.
 PR-Agent reserves output tokens and subtracts fixed prompt tokens before fitting
@@ -729,7 +731,12 @@ To use models from an [OpenCode Go](https://opencode.ai/docs/console/go/) subscr
 [config] # in configuration.toml
 model = "opencode_go/deepseek-v4.1-flash"
 fallback_models=[]
+
+[litellm] # in configuration.toml
+add_session_id_to_requests = true
 ```
+
+OpenCode Go rejects requests without an `x-opencode-session` header (`MissingSessionID`). `add_session_id_to_requests` sends one per PR, see [Grouping requests by PR in LiteLLM](./additional_configurations.md#grouping-requests-by-pr-in-litellm). To use a fixed session instead, set `extra_headers='{"x-opencode-session": "<session id>"}'` in the `[litellm]` section.
 
 and fill up your key
 
@@ -739,6 +746,10 @@ key = ...
 ```
 
 You can also set the `OPENCODE_API_KEY` (or `OPENCODE_GO_API_KEY`) environment variable instead.
+
+:::note[Reasoning models can stall on OpenCode Go]
+On large PRs, `deepseek-v4.1-flash` and `deepseek-v4-pro` have been seen streaming reasoning for over 10 minutes without returning an answer, so the request ends in `litellm.Timeout`. Using a different model such as `opencode_go/glm-5.3-flash`, or setting `reasoning_effort = "none"` in the `[config]` section, avoids it.
+:::
 
 ### DeepInfra
 
@@ -830,6 +841,42 @@ for the [Auto](https://openrouter.ai/docs/guides/routing/routers/auto-router),
 [Fusion](https://openrouter.ai/docs/guides/routing/routers/fusion-router), and
 [Pareto](https://openrouter.ai/docs/guides/routing/routers/pareto-router) routers.
 
+#### OpenRouter model context discovery
+
+The built-in LiteLLM handler can fill context-window metadata gaps on its captured
+official OpenRouter global route. Existing built-in, custom, alias and SDK limits
+take precedence; positive SDK limits are not corrected. Gateways, unproven routes
+and custom handler subclasses keep their existing behavior.
+
+**Network requests:** If no positive limit is resolved, PR-Agent makes an anonymous
+GET to OpenRouter's [public single-model endpoint](https://openrouter.ai/docs/api_reference/models).
+It sends no inference keys or custom headers, follows no redirects, and is limited
+to five seconds and one MiB. Completed lookups are reused within a command, not across commands.
+
+**How to opt out:** `LITELLM_OFFLINE_MODE=true` disables this public lookup.
+A verified positive `config.custom_model_max_tokens` avoids metadata lookup.
+`LITELLM_LOCAL_MODEL_COST_MAP` selects LiteLLM's cost-map source; it does not disable public discovery.
+`config.max_model_tokens` caps a resolved window but cannot supply a missing one.
+`/help` ignores this cap when fitting documentation.
+
+**Limits and failures:** If other sources fail and no API record matches the exact
+model ID, set a verified positive `config.custom_model_max_tokens`. Suffixes such as
+`:nitro` or `:floor` are not stripped to inherit a base model's window.
+
+Transport failures, HTTP 408/429/5xx and preparation timeouts try configured fallback
+models; without a working fallback, the command fails.
+
+`context_length` is the total window, not an independent input ceiling or a backend
+guarantee. Output headroom is reserved separately.
+
+With `custom_llm_provider = "openrouter"` in `[litellm]`, native-looking IDs such as
+`openai/...` may need OpenRouter metadata or a verified custom limit rather than
+native-provider SDK fallback. Offline mode does not restore that fallback.
+
+Programmatic callers can await `pr_agent.algo.token_budget.prepare_model_token_limits(handler, model)`
+before using `handler.get_model_token_limits(model)` or a handler-backed `AttemptTokenBudget`.
+The standalone `get_max_tokens(model)` does not use the handler cache.
+
 #### Openrouter provider routing, reasoning and output cap
 
 For `openrouter/...` models you can optionally restrict which upstream providers Openrouter uses, control reasoning, and cap the completion length. All keys live in the `[openrouter]` section of `configuration.toml`. Reasoning-capable models are those litellm's bundled reasoning metadata flags over the model id and its provider-prefixed/`xai/`-forms, the maintained Grok registry, or `config.additional_reasoning_effort_models`; they inherit `config.reasoning_effort` unless an Openrouter-specific effort or token budget is set.
@@ -845,7 +892,7 @@ For `openrouter/...` models you can optionally restrict which upstream providers
 # max_tokens = 16000                   # hard cap on completion tokens for the request
 ```
 
-`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. Because Openrouter treats effort and token budgets as mutually exclusive, an explicit Openrouter-specific `"none"` keeps reasoning disabled when the model supports disabling it. Grok 4.5/4.6, Gemini 3.7/3.8 Flash, and the GPT-6 models whose pages omit `"none"` (GPT-6 Astra and GPT-6.1 Sol) clamp it to `"low"` before precedence is applied, so a positive budget wins for those models; explicit Openrouter `"minimal"` remains unchanged for Gemini. Otherwise a positive `reasoning_max_tokens` value takes precedence over the global effort and other Openrouter-specific values. Invalid Openrouter-specific effort values are warned about and treated as unset, so registered reasoning models fall back to `config.reasoning_effort`. Openrouter normalizes `"max"` to `"xhigh"` in this path for LiteLLM/OpenRouter compatibility. Supported effort values vary by model. For models not covered by these clamps, do not assume `"none"` disables reasoning; check the selected model and provider's support. For Anthropic models using a reasoning budget, set the effective output `max_tokens` higher than `reasoning_max_tokens` so the final answer has output headroom. See the Openrouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) docs.
+`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. Because Openrouter treats effort and token budgets as mutually exclusive, an explicit Openrouter-specific `"none"` keeps reasoning disabled when the model supports disabling it. Grok 4.5/4.6, Gemini 3.7/3.8 Flash, Gemini 4 Argon, and the GPT-6 models whose pages omit `"none"` (GPT-6 Astra and GPT-6.1 Sol) clamp it to `"low"` before precedence is applied, so a positive budget wins for those models; explicit Openrouter `"minimal"` remains unchanged for Gemini. Otherwise a positive `reasoning_max_tokens` value takes precedence over the global effort and other Openrouter-specific values. Invalid Openrouter-specific effort values are warned about and treated as unset, so registered reasoning models fall back to `config.reasoning_effort`. Openrouter normalizes `"max"` to `"xhigh"` in this path for LiteLLM/OpenRouter compatibility. Supported effort values vary by model. For models not covered by these clamps, do not assume `"none"` disables reasoning; check the selected model and provider's support. For Anthropic models using a reasoning budget, set the effective output `max_tokens` higher than `reasoning_max_tokens` so the final answer has output headroom. See the Openrouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) docs.
 
 ### GitHub Copilot
 
@@ -857,7 +904,7 @@ model = "github_copilot/gpt-4o"
 fallback_models = ["github_copilot/gpt-4.1"]
 ```
 
-The GitHub identity behind the model needs an active Copilot subscription. The token budgets for these models are resolved automatically from litellm's model metadata, so `custom_model_max_tokens` is not required. However, `get_max_tokens` clamps the effective window to `config.max_model_tokens`, which defaults to 32000. To use the input limits recorded for these Copilot routes (e.g., 64000 for gpt-4o, 128000 for gpt-4.1), raise `config.max_model_tokens` accordingly.
+The GitHub identity behind the model needs an active Copilot subscription. LiteLLM resolves token budgets for these models automatically, so `custom_model_max_tokens` is not required. PR-Agent still caps the effective window at `config.max_model_tokens`; raise that setting only if it is below the selected model's supported input limit.
 
 Authentication uses the [GitHub Copilot provider](https://docs.litellm.ai/docs/providers/github_copilot) flow:
 
@@ -980,7 +1027,7 @@ The existing Chat Completions path is used; access depends on your OpenAI accoun
 
 ### Anthropic models
 
-PR-Agent registers existing Claude Sonnet 4.6 and Opus 4.6 aliases with a 1,000,000-token context window. `config.max_model_tokens` still caps the usable prompt budget unless a command explicitly bypasses that cap.
+PR-Agent registers existing Claude Sonnet 4.6, Opus 4.6, and Fable 5.2 aliases with a 1,000,000-token context window. `config.max_model_tokens` still caps the usable prompt budget unless a command explicitly bypasses that cap.
 
 ```toml
 [config]
@@ -1005,7 +1052,7 @@ built-in defaults.
 :::note[Only models that accept a thinking budget are supported]
 PR-Agent enables extended thinking through the manual
 `thinking={"type": "enabled", "budget_tokens": ...}` request. Adaptive-only Claude models
-(e.g. Opus 4.7/4.8, Opus 5/5.5, Sonnet 5/5.5, Haiku 5.5, Fable 5, Fable 5.1) reject `budget_tokens`, so they are
+(e.g. Opus 4.7/4.8, Opus 5/5.5, Sonnet 5/5.5, Haiku 5.5, Fable 5, Fable 5.1/5.2) reject `budget_tokens`, so they are
 intentionally excluded from the built-in defaults. If you add one to
 `claude_extended_thinking_models_override` anyway, PR-Agent skips the extended-thinking payload
 for it and logs a warning rather than sending a request the provider would reject — use
@@ -1045,7 +1092,7 @@ configured output limit.
 ## Routing small pull requests to a cheaper model
 
 Without routing, regular-model calls use `config.model`, however small the pull request. In this example,
-the first rule selects the cheaper Luna model; the second deliberately keeps the default Sol model.
+the first rule selects Luna for smaller pull requests; the second selects Sol for larger ones.
 `config.fallback_models` still apply after the selected primary:
 
 ```toml
@@ -1084,12 +1131,12 @@ The retry chain starts as `[config.model] + config.fallback_models`, with a depl
 A matched rule replaces the first pair. If the routed `(model, deployment)` pair also appears among the
 configured fallbacks, the effective chain removes duplicate pairs while preserving their order and adds
 the displaced configured primary pair at the end, unless it is already present. This avoids retrying the
-same endpoint while retaining the configured primary in this collision case. With
+same endpoint while retaining the configured primary in this collision case. For example, with
 `config.model = "gpt-6.1-sol"`, no deployment configured, and the first rule above:
 
 | `config.fallback_models` | retry order if earlier attempts fail |
 | --- | --- |
-| `["gpt-6-luna"]` (shipped default) | `gpt-6-luna`, `gpt-6.1-sol` |
+| `["gpt-6-luna"]` | `gpt-6-luna`, `gpt-6.1-sol` |
 | `["gpt-6-luna", "other-model"]` | `gpt-6-luna`, `other-model`, `gpt-6.1-sol` |
 
 The first successful attempt returns immediately; later entries are attempted only after fallback-eligible

@@ -67,7 +67,7 @@ def _run_with_result(monkeypatch, result, *, propagate_command_errors, recorded_
     [
         (True, False, None, False),
         (True, True, None, False),
-        (False, False, None, True),
+        (False, False, 1, True),
         (False, True, 1, True),
         (None, True, None, True),
         (0, True, None, True),
@@ -94,7 +94,7 @@ def test_run_maps_request_result_to_status(
 @pytest.mark.parametrize(
     ("propagate_command_errors", "expected_status"),
     [
-        (False, None),
+        (False, 1),
         (True, 1),
     ],
 )
@@ -181,7 +181,7 @@ def test_run_drains_callbacks_before_returning_failure_status(monkeypatch):
     [
         (False, True, 1),
         (True, None, 1),
-        (True, False, None),
+        (True, False, 1),
     ],
 )
 @pytest.mark.parametrize("recorded_failure", [False, True])
@@ -247,12 +247,12 @@ def test_real_request_failure_uses_effective_propagation_setting(
 @pytest.mark.parametrize(
     ("baseline", "override_source", "override", "first_succeeds", "expected_statuses"),
     [
-        (False, "repository", True, False, [1, None]),
-        (False, "command", True, False, [1, None]),
-        (True, "repository", False, False, [None, 1]),
-        (True, "command", False, False, [None, 1]),
-        (False, "repository", True, True, [None, None]),
-        (False, "command", True, True, [None, None]),
+        (False, "repository", True, False, [1, 1]),
+        (False, "command", True, False, [1, 1]),
+        (True, "repository", False, False, [1, 1]),
+        (True, "command", False, False, [1, 1]),
+        (False, "repository", True, True, [None, 1]),
+        (False, "command", True, True, [None, 1]),
         (True, "repository", False, True, [None, 1]),
         (True, "command", False, True, [None, 1]),
     ],
@@ -519,7 +519,7 @@ PRAgent.handle_request = controlled_handle_request
     ("request_result", "propagate_command_errors", "expected_status"),
     [
         ("false", "true", 1),
-        ("false", "false", 0),
+        ("false", "false", 1),
     ],
 )
 def test_process_entrypoints_map_request_status(

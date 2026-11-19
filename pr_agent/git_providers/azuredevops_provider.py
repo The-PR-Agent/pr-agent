@@ -27,7 +27,6 @@ from ..algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
     body_with_markers,
     code_fingerprint,
-    extract_suggestion_code,
     full_body_fingerprint,
     get_inline_comment_store,
     has_marker,
@@ -154,7 +153,7 @@ def _get_azure_change_path(change):
 
 
 def _get_azure_change_old_path(change):
-    additional = getattr(change, "additional_properties", None)
+    additional = change if isinstance(change, dict) else getattr(change, "additional_properties", None)
     if not isinstance(additional, dict):
         additional = {}
 
@@ -175,7 +174,7 @@ def _get_azure_change_old_path(change):
 
 
 def _get_azure_change_type(change):
-    additional = getattr(change, "additional_properties", None)
+    additional = change if isinstance(change, dict) else getattr(change, "additional_properties", None)
     if not isinstance(additional, dict):
         additional = {}
 
@@ -242,6 +241,7 @@ class AzureDevopsProvider(GitProvider):
         self.temp_comments = []
         self.incremental = incremental
         self.unreviewed_files_map = {}
+        self._incremental_unfiltered_files = None
         self.pr_commits = None
         self.previous_review = None
         self._published_inline_comment_bodies = []
@@ -601,11 +601,6 @@ class AzureDevopsProvider(GitProvider):
             return False
         return True
 
-    def supports_incremental_kind(self, kind: str) -> bool:
-        return kind in self._INCREMENTAL_ANCHOR_PREFIXES
-
-    def supports_code_suggestion_state(self) -> bool:
-        return True
 
     def supports_threaded_pr_questions(self) -> bool:
         return True
@@ -628,6 +623,7 @@ class AzureDevopsProvider(GitProvider):
         self.pr_commits = None
         self.previous_review = None
         self.unreviewed_files_map = {}
+        self._incremental_unfiltered_files = None
         self.temp_comments = []
         self._published_inline_comment_bodies = []
         self._inline_comment_store = None
@@ -639,12 +635,19 @@ class AzureDevopsProvider(GitProvider):
     def get_incremental_commits(self, incremental=None, kind: str = "review"):
         if incremental is None:
             incremental = IncrementalPR(False)
+        was_incremental = (
+            bool(getattr(getattr(self, "incremental", None), "is_incremental", False))
+            or bool(getattr(self, "unreviewed_files_map", None))
+            or getattr(self, "_incremental_unfiltered_files", None) is not None
+        )
         self.incremental = incremental
-        if self.incremental.is_incremental:
+        self._incremental_unfiltered_files = None
+        if self.incremental.is_incremental or was_incremental:
             # Recompute a diff cached for a different incremental scope.
             self.diff_files = None
             self._diff_path_map = None
             self.unreviewed_files_map = {}
+        if self.incremental.is_incremental:
             self._incremental_kind = kind
             self._get_incremental_commits()
 
@@ -671,6 +674,7 @@ class AzureDevopsProvider(GitProvider):
         if self.incremental.commits_range is None:
             return
         candidate_paths = []
+        unfiltered_paths = []
         had_errors = False
         non_merge_seen = False
         for commit in self.incremental.commits_range:
@@ -692,6 +696,11 @@ class AzureDevopsProvider(GitProvider):
                 path = _get_azure_change_path(change)
                 if path:
                     candidate_paths.append(path)
+                    unfiltered_paths.append(path)
+                if "rename" in _get_azure_change_type(change).lower():
+                    old_path = _get_azure_change_old_path(change)
+                    if old_path:
+                        unfiltered_paths.append(old_path)
 
         if had_errors:
             get_logger().warning(
@@ -711,6 +720,9 @@ class AzureDevopsProvider(GitProvider):
                 "Incremental range only contains merge commits; falling back to full review."
             )
             self.incremental.is_incremental = False
+            return
+
+        self._incremental_unfiltered_files = list(dict.fromkeys(unfiltered_paths))
 
     def _get_commit_range(self):
         last_review_time = _to_naive_utc(getattr(self.previous_review, "created_at", None))
@@ -1728,65 +1740,6 @@ class AzureDevopsProvider(GitProvider):
             ))
         return comments
 
-    def reconcile_code_suggestion_threads(self) -> int:
-        if not get_settings().get("config.persistent_inline_comments", False):
-            return 0
-
-        head = getattr(getattr(self.pr, "last_merge_commit", None), "commit_id", None)
-        if not head:
-            return 0
-
-        file_lines = {}
-        fixed = 0
-        for thread in self._get_threads():
-            if str(self._value(thread, "status") or "").lower() not in {"active", "closed"}:
-                continue
-            context = self._value(thread, "thread_context", "threadContext")
-            path = self._value(context, "file_path", "filePath")
-            position = self._value(context, "right_file_start", "rightFileStart")
-            start = self._value(position, "line")
-            if (not isinstance(path, str) or not path or not isinstance(start, int)
-                    or isinstance(start, bool) or start < 1):
-                continue
-            comments = self._value(thread, "comments") or []
-            body = next((self._value(comment, "content") for comment in comments
-                         if isinstance(self._value(comment, "content"), str)
-                         and self._value(comment, "content")), None)
-            if not isinstance(body, str) or "<!-- pr-agent-dedup-code:" not in body:
-                continue
-            suggestion_code = extract_suggestion_code(body)
-            if not suggestion_code or not suggestion_code.strip():
-                continue
-
-            if path not in file_lines:
-                try:
-                    version = GitVersionDescriptor(version=head, version_type="commit")
-                    item = self.azure_devops_client.get_item(
-                        repository_id=self.repo_slug,
-                        path=path,
-                        project=self.workspace_slug,
-                        version_descriptor=version,
-                        download=False,
-                        include_content=True,
-                    )
-                    content = getattr(item, "content", None)
-                    if not isinstance(content, str):
-                        raise TypeError("Azure DevOps returned non-string file content")
-                    file_lines[path] = split_diff_lines(content)
-                except Exception as e:
-                    get_logger().warning(f"Failed to read {path} while reconciling code suggestions: {e}")
-                    file_lines[path] = None
-            lines = file_lines[path]
-            if lines is None:
-                continue
-            suggested_lines = split_diff_lines(suggestion_code)
-            if lines[start - 1:start - 1 + len(suggested_lines)] != suggested_lines:
-                continue
-            thread_id = self._value(thread, "id")
-            if thread_id is not None and self.set_thread_status(thread_id, "fixed"):
-                fixed += 1
-        return fixed
-
     def get_issue_comments(self) -> list[Comment]:
         comment_list = []
         for thread in self._get_threads():
@@ -1955,10 +1908,9 @@ class AzureDevopsProvider(GitProvider):
         return self.get_pr_url() + "?discussionId=" + str(comment.thread_id)
 
     def get_pr_head_sha(self) -> str:
-        # Read the source revision from the same field `reconcile_code_suggestion_threads`
-        # already treats as head. `last_commit_id` is not always populated, so without
-        # this override the base hook returns "" and an Azure review cannot resolve
-        # absent findings after a head change, which is the defect #3431 was filed against.
+        # Read the source revision from `last_merge_commit`; `last_commit_id` is not always
+        # populated, so without this override the base hook returns "" and an Azure review
+        # cannot resolve absent findings after a head change, the defect #3431 was filed about.
         head = getattr(getattr(self.pr, "last_merge_commit", None), "commit_id", None)
         return head if isinstance(head, str) else ""
 

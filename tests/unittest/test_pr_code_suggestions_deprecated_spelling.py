@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 import pytest
 from loguru import logger as loguru_logger
 
-from pr_agent.commands import pr_code_suggestions as pr_code_suggestions_module
-from pr_agent.commands.pr_code_suggestions import get_committable_code_suggestions
+from pr_agent.algo import suggestion_checks
+from pr_agent.algo.suggestion_checks import get_committable_code_suggestions
 from pr_agent.config_loader import get_settings
 from pr_agent.config_security import PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION
 from pr_agent.git_providers import utils as git_utils
@@ -19,18 +19,18 @@ TRACKED = (CANONICAL, DEPRECATED)
 
 @pytest.fixture(autouse=True)
 def clean_spellings():
-    """Isolate both spellings and the process-wide warn-once flag between tests."""
+    """Isolate both spellings and the cached deprecation warning between tests."""
     snapshot = snapshot_settings(TRACKED)
-    pr_code_suggestions_module._deprecated_spellings_warned = False
+    suggestion_checks._warn_deprecated_alias.cache_clear()
     yield
     restore_settings(snapshot)
-    pr_code_suggestions_module._deprecated_spellings_warned = False
+    suggestion_checks._warn_deprecated_alias.cache_clear()
 
 
 def _warnings(monkeypatch):
-    """Capture logger warnings emitted by the resolver, and clear the warn-once flag."""
+    """Capture logger warnings emitted by the resolver, and clear the cached warning."""
     logger = MagicMock()
-    monkeypatch.setattr("pr_agent.commands.pr_code_suggestions.get_logger", lambda: logger)
+    monkeypatch.setattr("pr_agent.algo.suggestion_checks.get_logger", lambda: logger)
     return logger
 
 
@@ -137,3 +137,19 @@ def test_disabled_when_neither_spelling_is_set(canonical, monkeypatch):
 
     assert get_committable_code_suggestions() is canonical
     logger.warning.assert_not_called()
+
+
+@pytest.mark.parametrize(("setting", "value", "expected", "warns"), [
+    (CANONICAL, "false", False, False),
+    (CANONICAL, "true", True, False),
+    (DEPRECATED, "false", False, False),
+    (DEPRECATED, "true", True, True),
+])
+def test_string_valued_boolean_overrides_are_normalized(monkeypatch, setting, value, expected, warns):
+    logger = _warnings(monkeypatch)
+    get_settings().set(CANONICAL, False)
+    get_settings().set(DEPRECATED, False)
+    get_settings().set(setting, value)
+
+    assert get_committable_code_suggestions() is expected
+    assert logger.warning.call_count == (1 if warns else 0)

@@ -32,6 +32,8 @@ class PRCodeSuggestionsIdentity(StrEnum):
 class PRCommandNoticeIdentity(StrEnum):
     INCOMPLETE_BITBUCKET_FILES = "<!-- pr-agent:bitbucket-incomplete-files -->"
     REVIEWED_COMMITS = "<!-- pr-agent:review:commits -->"
+    UNCHANGED_DIFF = "<!-- pr-agent:unchanged-diff -->"
+    REVIEW_FAILURE = "<!-- pr-agent:review:failure -->"
 
 
 class PRDescriptionHeader(StrEnum):
@@ -55,6 +57,8 @@ _ALL_COMMENT_IDENTITIES = (
     PRCodeSuggestionsIdentity.UNANCHORED.value,
     PRCommandNoticeIdentity.INCOMPLETE_BITBUCKET_FILES.value,
     PRCommandNoticeIdentity.REVIEWED_COMMITS.value,
+    PRCommandNoticeIdentity.UNCHANGED_DIFF.value,
+    PRCommandNoticeIdentity.REVIEW_FAILURE.value,
     PRDescriptionIdentity.PERSISTENT.value,
     PRApprovalIdentity.AUTO.value,
 )
@@ -250,16 +254,15 @@ def emphasize_header(text: str, only_markdown=False, reference_link=None) -> str
                     )
                 else:
                     transformed_string = f"**{text[:colon_position + 1]}**\n" + text[colon_position + 1:]
+            elif reference_link:
+                transformed_string = (
+                    f"<strong><a href='{reference_link}'>{text[:colon_position + 1]}</a></strong><br>"
+                    + text[colon_position + 1:]
+                )
             else:
-                if reference_link:
-                    transformed_string = (
-                        f"<strong><a href='{reference_link}'>{text[:colon_position + 1]}</a></strong><br>"
-                        + text[colon_position + 1:]
-                    )
-                else:
-                    transformed_string = (
-                        "<strong>" + text[:colon_position + 1] + "</strong>" + "<br>" + text[colon_position + 1:]
-                    )
+                transformed_string = (
+                    "<strong>" + text[:colon_position + 1] + "</strong>" + "<br>" + text[colon_position + 1:]
+                )
         else:
             # Return the original string when no colon exists.
             transformed_string = text

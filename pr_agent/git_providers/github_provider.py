@@ -16,6 +16,7 @@ from github import Auth, Github, GithubException, GithubIntegration, GithubRetry
 from github.Commit import Commit
 from github.GithubObject import GithubObject
 from github.Issue import Issue
+from github.PullRequest import PullRequest
 from jwt.exceptions import PyJWTError
 from requests.exceptions import RequestException
 from starlette_context import context
@@ -40,7 +41,6 @@ from ..algo.inline_comment_dedup import (
     body_with_markers,
     code_fingerprint,
     get_inline_comment_store,
-    has_marker,
 )
 from ..algo.language_handler import is_valid_file
 from ..algo.token_budget import clip_tokens
@@ -76,6 +76,8 @@ _GRAPHQL_BLOB_BATCH = 25
 _GRAPHQL_MIN_BLOBS = 3
 # The tree entry mode of a symlink, whose blob is its link target while the REST content read follows the link.
 _SYMLINK_MODE = 0o120000
+# GitHub rejects a pull request title longer than this (HTTP 422).
+MAX_PR_TITLE_GITHUB_LENGTH = 256
 
 
 def _graphql_error_types(response) -> list:
@@ -219,6 +221,7 @@ class GithubProvider(GitProvider):
         if context.exists():
             context.pop("diff_files", None)
         self.incremental = incremental if incremental is not None else IncrementalPR(False)
+        self.unreviewed_rename_sources = []
         if getattr(self, "_pr_head_commit", None) is not None:
             self.last_commit_id, self._pr_head_commit = self._pr_head_commit, None
         if self.incremental.is_incremental:
@@ -282,8 +285,6 @@ class GithubProvider(GitProvider):
     def supports_inline_help_footer(self) -> bool:
         return True
 
-    def supports_pr_chat(self) -> bool:
-        return True
 
     @classmethod
     def supports_issue_indexing(cls) -> bool:
@@ -403,6 +404,8 @@ class GithubProvider(GitProvider):
             self._languages = None
         self.repo, self.pr_num = repo, pr_num
         self.pr = self._get_pr()
+        # The commits loaded for the previous PR object do not describe this one.
+        self.pr_commits = None
 
     def _get_incremental_commits(self):
         if not self.pr_commits:
@@ -448,9 +451,11 @@ class GithubProvider(GitProvider):
                 if is_merge_commit:
                     get_logger().info(f"Skipping merge commit {commit.commit.message}")
                     continue
-                self.unreviewed_files_map.update({
-                    file.filename: file for file in commit.get_files(commit_files_per_page=300)
-                })
+                for file in commit.get_files(commit_files_per_page=300):
+                    prev = getattr(file, "previous_filename", None)
+                    if prev and prev not in self.unreviewed_rename_sources:
+                        self.unreviewed_rename_sources.append(prev)
+                    self.unreviewed_files_map[file.filename] = file
         else:
             get_logger().info("No previous review found, will review the entire PR")
             self.incremental.is_incremental = False
@@ -501,15 +506,15 @@ class GithubProvider(GitProvider):
 
     def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> str | None:
         self.incremental = incremental
+        self.unreviewed_rename_sources = []
         self.diff_files = None
         if context.exists():
             context.pop("diff_files", None)
         self.unreviewed_files_map = {}
         loaded = vars(self).setdefault("_loaded_commits", {})
         if commit.sha not in loaded:
-            gh_commit = self._get_repo().get_commit(commit.sha)
-            loaded[commit.sha] = gh_commit, (list(gh_commit.get_files(commit_files_per_page=300))
-                                             if len(gh_commit.parents) == 1 else [])
+            gh_commit = self._get_repo().get_commit(commit.sha, commit_files_per_page=300)
+            loaded[commit.sha] = gh_commit, list(gh_commit.files) if len(gh_commit.parents) == 1 else []
         gh_commit, files = loaded[commit.sha]
         parents = gh_commit.parents
         if len(parents) != 1:
@@ -756,14 +761,13 @@ class GithubProvider(GitProvider):
                     if self.incremental.is_incremental and self.unreviewed_files_map:
                         original_file_content_str = self._get_pr_file_content(
                             file, self.incremental.last_seen_commit_sha, path=old_filename, **read_options)
+                    elif avoid_load or file.status == "added":
+                        original_file_content_str = ""
                     else:
-                        if avoid_load or file.status == "added":
-                            original_file_content_str = ""
-                        else:
-                            if merge_base_commit is None:
-                                merge_base_commit = self._get_merge_base_commit()
-                            original_file_content_str = self._get_pr_file_content(
-                                file, merge_base_commit.sha, path=old_filename, **read_options)
+                        if merge_base_commit is None:
+                            merge_base_commit = self._get_merge_base_commit()
+                        original_file_content_str = self._get_pr_file_content(
+                            file, merge_base_commit.sha, path=old_filename, **read_options)
 
                 if reconstruct_patch:
                     if original_file_content_str is None or new_file_content_str is None:
@@ -903,6 +907,7 @@ class GithubProvider(GitProvider):
             try:
                 status, _, body = self._post_graphql(query, variables)
                 response = json.loads(body) if status == 200 else None
+                del body
             except (GithubException, RequestException, ValueError) as e:
                 # Not `{e}`: a GithubException carries the whole response, which can hold blob contents.
                 get_logger().info(
@@ -947,7 +952,11 @@ class GithubProvider(GitProvider):
     def publish_description(self, pr_title: str, pr_body: str):
         # GitHub refuses a body over 65,536 characters (HTTP 422), the limit its comments have too, and the
         # file walkthrough of a large PR can pass it.
+        # It similarly rejects a title over 256 characters. An overlong AI title
+        # would fail the whole publish, including a body that already fits.
         pr_body = self.limit_description_characters(pr_body, self.max_comment_chars)
+        if pr_title is not None:
+            pr_title = self.limit_title_characters(pr_title, MAX_PR_TITLE_GITHUB_LENGTH)
         if pr_title is None:
             self.pr.edit(body=pr_body)
         else:
@@ -1070,10 +1079,14 @@ class GithubProvider(GitProvider):
         `<app-slug>[bot]` login.
         """
         try:
-            login = self.get_user_id()
+            login = "" if getattr(self, "_user_login_denied", False) else self.get_user_id()
         except (GithubException, RequestException) as e:
             get_logger().warning(f"Could not resolve the GitHub user login: {e}")
             login = ""
+            # Remember a refused `GET /user` so later checks skip it; retry other failures.
+            # PyGithub raises it from the lazy payload read in `get_user_id`.
+            if isinstance(e, GithubException) and _is_permanent_github_error(e):
+                self._user_login_denied = True
         if isinstance(login, str) and login.strip():
             return login.strip()
         # A GitHub App installation token cannot call `GET /user` either, but it posts as
@@ -1357,7 +1370,17 @@ class GithubProvider(GitProvider):
     def publish_inline_comments(self, comments: list[dict], disable_fallback: bool = False):
         store = None
         pending_fingerprints = []
+        fallback_fingerprints = {}
+        dedup_body_fp_key = "_dedup_body_fp"
         dedup_code_fp_key = "_dedup_code_fp"
+        dedup_marked_key = "_dedup_already_marked"
+        dedup_key_issue_key = "_dedup_key_issue"
+        internal_dedup_keys = (
+            dedup_body_fp_key,
+            dedup_code_fp_key,
+            dedup_marked_key,
+            dedup_key_issue_key,
+        )
         if get_settings().get("config.persistent_inline_comments", False):
             store = get_inline_comment_store(self)
             local_seen = set()
@@ -1369,33 +1392,40 @@ class GithubProvider(GitProvider):
                     continue
                 path = comment.get("path", "")
                 body = comment.get("body", "")
-                # GitHub committable comments are anchored by diff position, which
-                # shifts as the PR gains commits; anchor the fingerprint on the file
-                # path and comment content instead so it stays stable across runs.
-                body_fp = body_fingerprint(path, None, body)
-                pre_transform_code_fp = comment.get(dedup_code_fp_key)
-                code_fp = pre_transform_code_fp or code_fingerprint(path, None, body)
+                is_key_issue = bool(comment.get(dedup_key_issue_key))
+                already_marked = bool(comment.get(dedup_marked_key))
+                marked = {key: value for key, value in comment.items() if key not in internal_dedup_keys}
+                if is_key_issue:
+                    deduped.append(marked)
+                    fallback_fingerprints[id(marked)] = None
+                    continue
+                if already_marked:
+                    body_fp = comment.get(dedup_body_fp_key)
+                    code_fp = comment.get(dedup_code_fp_key)
+                else:
+                    # GitHub committable comments are anchored by diff position, which
+                    # shifts as the PR gains commits; anchor the fingerprint on the file
+                    # path and comment content instead so it stays stable across runs.
+                    body_fp = comment.get(dedup_body_fp_key) or body_fingerprint(path, None, body)
+                    code_fp = comment.get(dedup_code_fp_key) or code_fingerprint(path, None, body)
+                recorded_fps = [fp for fp in (body_fp, code_fp) if fp]
                 # A fallback re-publish (disable_fallback=True) is for a comment
                 # that has not been posted yet, so do not filter it; only the
                 # top-level call drops duplicates. The fallback still gets marked
                 # and recorded below so it dedups on later runs.
-                if not disable_fallback and (
-                        store.seen(body_fp) or store.seen(code_fp)
-                        or body_fp in local_seen or (code_fp and code_fp in local_seen)):
+                if not disable_fallback and any(
+                    store.seen(fp) or fp in local_seen for fp in recorded_fps
+                ):
                     skipped += 1
                     continue
-                marked = dict(comment)
-                marked.pop(dedup_code_fp_key, None)
-                if has_marker(body):
-                    pass  # already carries a marker from the first pass
-                else:
+                if not already_marked:
                     marked["body"] = body_with_markers(
-                        body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
+                        body, body_fp, code_fp, getattr(self, "max_comment_chars", None)
+                    )
                 deduped.append(marked)
-                local_seen.add(body_fp)
-                if code_fp:
-                    local_seen.add(code_fp)
-                pending_fingerprints.append((body_fp, code_fp))
+                fallback_fingerprints[id(marked)] = (body_fp, code_fp)
+                local_seen.update(recorded_fps)
+                pending_fingerprints.extend(recorded_fps)
             if skipped and not any(deduped):
                 get_logger().info(
                     f"Persistent inline comments: all {skipped} suggestion(s) "
@@ -1404,7 +1434,7 @@ class GithubProvider(GitProvider):
             comments = deduped
         else:
             comments = [
-                {key: value for key, value in comment.items() if key != dedup_code_fp_key}
+                {key: value for key, value in comment.items() if key not in internal_dedup_keys}
                 if comment else comment
                 for comment in comments
             ]
@@ -1417,9 +1447,8 @@ class GithubProvider(GitProvider):
             # posted bodies, so comments the fallback below drops stay unrecorded
             # and can be retried on a later run.
             if store is not None:
-                for body_fp, code_fp in pending_fingerprints:
-                    store.add(body_fp)
-                    store.add(code_fp)
+                for fp in pending_fingerprints:
+                    store.add(fp)
             return True
         except (GithubException, RequestException) as e:
             get_logger().info("Initially failed to publish inline comments as committable")
@@ -1429,12 +1458,15 @@ class GithubProvider(GitProvider):
             else:
                 raise e # will end up with publishing the comments one by one
 
+            self._fallback_fingerprints = fallback_fingerprints if store is not None else None
             try:
                 published_count = self._publish_inline_comments_fallback_with_verification(comments)
                 return bool(published_count)
             except Exception as e:
                 get_logger().error(f"Failed to publish inline code comments fallback, error: {e}")
                 raise
+            finally:
+                self._fallback_fingerprints = None
 
     def get_review_thread_comments(self, comment_id: int) -> list[dict]:
         """
@@ -1665,17 +1697,36 @@ class GithubProvider(GitProvider):
         For invalid comments, also try removing the suggestion part and posting the comment just on the first line.
         """
         published_count = 0
+        fallback_fps = getattr(self, "_fallback_fingerprints", None)
         verified_comments, invalid_comments = self._verify_code_comments(comments)
 
         # publish as a group the verified comments
         if verified_comments:
             self.pr.create_review(commit=self.last_commit_id, event="COMMENT", comments=verified_comments)
             self._remember_published_inline_comment_bodies(verified_comments)
+            if fallback_fps:
+                store = get_inline_comment_store(self)
+                for comment in verified_comments:
+                    for fp in fallback_fps.get(id(comment)) or ():
+                        store.add(fp)
             published_count += len(verified_comments)
 
         # try to publish one by one the invalid comments as a one-line code comment
         if invalid_comments and get_settings().github.try_fix_invalid_inline_comments:
-            invalid_comments_list = [comment for comment, _ in invalid_comments]
+            invalid_comments_list = []
+            for comment, _ in invalid_comments:
+                if fallback_fps is not None and comment and id(comment) in fallback_fps:
+                    fps = fallback_fps[id(comment)]
+                    if fps is None:
+                        comment = {**comment, "_dedup_key_issue": True}
+                    else:
+                        comment = {
+                            **comment,
+                            "_dedup_already_marked": True,
+                            "_dedup_body_fp": fps[0],
+                            "_dedup_code_fp": fps[1],
+                        }
+                invalid_comments_list.append(comment)
             fixed_comments_as_one_liner = self._try_fix_invalid_inline_comments(invalid_comments_list)
             for comment in fixed_comments_as_one_liner:
                 try:
@@ -1780,8 +1831,12 @@ class GithubProvider(GitProvider):
     def _prepare_code_suggestions(self, code_suggestions: list) -> list:
         code_suggestions_with_fingerprints = copy.deepcopy(code_suggestions)
         for suggestion in code_suggestions_with_fingerprints:
-            suggestion["_dedup_code_fp"] = code_fingerprint(
-                suggestion.get("relevant_file", ""), None, suggestion.get("body", ""))
+            if suggestion.get("_dedup_key_issue"):
+                continue
+            relevant_file = suggestion.get("relevant_file", "")
+            body = suggestion.get("body", "")
+            suggestion["_dedup_body_fp"] = body_fingerprint(relevant_file, None, body)
+            suggestion["_dedup_code_fp"] = code_fingerprint(relevant_file, None, body)
         if getattr(getattr(self, "incremental", None), "head_sha", None):
             return code_suggestions_with_fingerprints
         return self.validate_comments_inside_hunks(code_suggestions_with_fingerprints)
@@ -1794,21 +1849,26 @@ class GithubProvider(GitProvider):
         relevant_lines_start = suggestion["relevant_lines_start"]
         relevant_lines_end = suggestion["relevant_lines_end"]
         if relevant_lines_end > relevant_lines_start:
-            return {
+            payload = {
                 "body": body,
                 "path": relevant_file,
                 "line": relevant_lines_end,
                 "start_line": relevant_lines_start,
                 "start_side": "RIGHT",
-                "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
             }
-        return {
-            "body": body,
-            "path": relevant_file,
-            "line": relevant_lines_start,
-            "side": "RIGHT",
-            "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
-        }
+        else:
+            payload = {
+                "body": body,
+                "path": relevant_file,
+                "line": relevant_lines_start,
+                "side": "RIGHT",
+            }
+        if suggestion.get("_dedup_key_issue"):
+            payload["_dedup_key_issue"] = True
+        else:
+            payload["_dedup_body_fp"] = suggestion.get("_dedup_body_fp")
+            payload["_dedup_code_fp"] = suggestion.get("_dedup_code_fp")
+        return payload
 
     def edit_comment(self, comment, body: str):
         try:
@@ -2390,12 +2450,15 @@ class GithubProvider(GitProvider):
         else:
             raise ValueError("Could not authenticate to GitHub")
 
+    def _has_current_repo_obj(self) -> bool:
+        return hasattr(self, "repo_obj") and \
+            hasattr(self.repo_obj, "full_name") and \
+            isinstance(self.repo_obj.full_name, str) and \
+            isinstance(self.repo, str) and \
+            self.repo_obj.full_name.lower() == self.repo.lower()
+
     def _get_repo(self):
-        if hasattr(self, 'repo_obj') and \
-                hasattr(self.repo_obj, 'full_name') and \
-                isinstance(self.repo_obj.full_name, str) and \
-                isinstance(self.repo, str) and \
-                self.repo_obj.full_name.lower() == self.repo.lower():
+        if self._has_current_repo_obj():
             return self.repo_obj
         else:
             self.repo_obj = self.github_client.get_repo(self.repo)
@@ -2403,7 +2466,12 @@ class GithubProvider(GitProvider):
 
 
     def _get_pr(self):
-        return self._get_repo().get_pull(self.pr_num)
+        if self._has_current_repo_obj():
+            return self.repo_obj.get_pull(self.pr_num)
+        # The pull payload embeds its base repository, so skip the separate repository read.
+        pr = PullRequest(self.github_client.requester, url=f"/repos/{self.repo}/pulls/{self.pr_num}")
+        self.repo_obj = pr.base.repo
+        return pr
 
     def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = False,
                             *, missing_is_error: bool = False) -> str:
@@ -2573,6 +2641,15 @@ class GithubProvider(GitProvider):
                 return None
         return label_names
 
+    def _loaded_commits_match_pr(self) -> bool:
+        """Whether the commits read with the PR still list its current revision completely."""
+        commits = getattr(self, "pr_commits", None)
+        if not commits or self._pr_revision(self.pr) != getattr(self, "_pr_revision_loaded", None):
+            return False
+        reported = getattr(self.pr, "commits", None)
+        # GitHub lists at most 250 commits, so the list of a longer PR never matches its count and is read again.
+        return isinstance(reported, int) and len(commits) == reported and commits[-1].sha == self.pr.head.sha
+
     def get_commit_messages(self) -> str:
         """
         Retrieves the commit messages of a pull request.
@@ -2582,7 +2659,8 @@ class GithubProvider(GitProvider):
         """
         max_tokens = get_settings().get("CONFIG.MAX_COMMITS_TOKENS", None)
         try:
-            commit_list = self.pr.get_commits()
+            # Reuse the commits read with the PR (re-read when it moves) instead of listing them again.
+            commit_list = self.pr_commits if self._loaded_commits_match_pr() else self.pr.get_commits()
             commit_messages = [commit.commit.message for commit in commit_list]
             commit_messages_str = "\n".join([f"{i + 1}. {message}" for i, message in enumerate(commit_messages)])
         except (GithubException, RequestException, AttributeError) as e:
@@ -2831,15 +2909,19 @@ class GithubProvider(GitProvider):
             return None
 
     @staticmethod
-    def _is_current_action_run(run) -> bool:
+    def _is_current_action_run(run, *, jobs_only: bool = False) -> bool:
         current_run_id = os.environ.get("GITHUB_RUN_ID")
         if not current_run_id:
             return False
         html_url = getattr(run, "html_url", "") or ""
         details_url = getattr(run, "details_url", "") or ""
         pattern = f"/actions/runs/{current_run_id}/"
+        if jobs_only:
+            pattern += "job/"
         if pattern in html_url or pattern in details_url:
             return True
+        if jobs_only:
+            return False
         external_id = str(getattr(run, "external_id", "") or "")
         return bool(
             external_id and (external_id == str(current_run_id) or external_id.startswith(f"{current_run_id}_"))
@@ -2995,7 +3077,12 @@ class GithubProvider(GitProvider):
                             # timestamp.
                             if self._is_own_check_run(run, own_app_login):
                                 continue
-                            if self._is_current_action_run(run):
+                            status = (getattr(run, "status", "") or "").lower()
+                            # The published PR-Agent check also carries the run ID.
+                            # Only a completed Actions job should set this timestamp.
+                            if self._is_current_action_run(run) and not (
+                                status == "completed" and self._is_current_action_run(run, jobs_only=True)
+                            ):
                                 continue
 
                             run_dt = getattr(run, "completed_at", None) or getattr(run, "created_at", None)

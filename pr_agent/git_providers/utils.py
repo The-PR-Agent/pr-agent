@@ -15,6 +15,7 @@ from dynaconf.loaders import env_loader
 from starlette_context import context
 
 from pr_agent.algo.review_json_output import hosted_markdown_config_error, hosted_markdown_export
+from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.config_loader import DEFAULT_BOT_DISPLAY_NAME, get_bot_display_name, get_settings
 from pr_agent.config_security import (
     PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION,
@@ -83,29 +84,51 @@ def _resolve_extra_config_to_file(source):
     if not source:
         return None, False
 
+    frozen = context.get("automatic_host_settings_source") == source if context.exists() else False
+    cached = context.setdefault("extra_config_payloads", {}) if context.exists() else {}
+    if frozen and source in cached:
+        return None, False
+
     # Bare Windows drive-letter paths must be handled before urlparse() — it
     # would otherwise treat the drive letter as a URL scheme.
     if _WINDOWS_DRIVE_PATH_RE.match(source):
-        if os.path.isfile(source):
-            return source, False
-        get_logger().warning(f"Extra config not found at local path: {source}")
-        return None, False
+        local_path = source
+    else:
+        local_path = None
 
-    parsed = urlparse(source)
-    scheme = (parsed.scheme or "").lower()
+    parsed = urlparse(source) if local_path is None else None
+    scheme = (parsed.scheme or "").lower() if parsed else ""
 
-    # Local path (bare or file://)
+    # Local path (bare or file:// or a Windows drive path)
     if scheme in ("", "file"):
-        if scheme == "file":
-            # Preserve any non-localhost netloc (UNC-style file://host/share/...)
-            # and URL-decode percent-encoded path components via url2pathname.
-            netloc = parsed.netloc or ""
-            raw = parsed.path
-            if netloc and netloc.lower() != "localhost":
-                raw = f"//{netloc}{raw}"
-            local_path = url2pathname(raw)
-        else:
-            local_path = source
+        if local_path is None:
+            if scheme == "file":
+                # Preserve UNC-style paths and URL-decode percent escapes.
+                netloc = parsed.netloc or ""
+                raw = parsed.path
+                if netloc and netloc.lower() != "localhost":
+                    raw = f"//{netloc}{raw}"
+                local_path = url2pathname(raw)
+            else:
+                local_path = source
+        if frozen:
+            if os.path.splitext(local_path)[1].lower() != ".toml":
+                get_logger().warning(f"Only .toml files are allowed. Skipping: {local_path}")
+                cached[source] = None
+                return None, False
+            try:
+                with open(local_path, "rb") as stream:
+                    data = stream.read(MAX_TOML_SIZE_IN_BYTES + 1)
+                if len(data) > MAX_TOML_SIZE_IN_BYTES:
+                    get_logger().warning(f"Extra config exceeds {MAX_TOML_SIZE_IN_BYTES} bytes: {local_path}")
+                    cached[source] = None
+                    return None, False
+                cached[source] = data
+                return None, False
+            except OSError:
+                cached[source] = None
+                get_logger().warning(f"Extra config not found at local path: {local_path}")
+                return None, False
         if os.path.isfile(local_path):
             return local_path, False
         get_logger().warning(f"Extra config not found at local path: {local_path}")
@@ -113,6 +136,8 @@ def _resolve_extra_config_to_file(source):
 
     if scheme not in ("http", "https"):
         get_logger().warning(f"Unsupported scheme for extra config: {scheme}")
+        if frozen:
+            cached[source] = None
         return None, False
 
     # Fetch over HTTP(S)
@@ -132,10 +157,11 @@ def _resolve_extra_config_to_file(source):
 
     try:
         # Reuse remote payloads within a request; each replay still uses a fresh tempfile.
-        fetched = context.setdefault("extra_config_payloads", {}) if context.exists() else {}
-        cache_hit = source in fetched
+        # A failed frozen load stores None. Once a manual webhook command
+        # unpins the source, allow the original best-effort refetch behavior.
+        cache_hit = cached.get(source) is not None
         if cache_hit:
-            data = fetched[source]
+            data = cached[source]
         else:
             req = Request(source, headers=headers, method="GET")
             with urlopen(req, timeout=_FETCH_TIMEOUT_SECONDS) as resp:
@@ -144,16 +170,22 @@ def _resolve_extra_config_to_file(source):
             get_logger().warning(
                 f"Extra config exceeds {_MAX_EXTRA_CONFIG_BYTES} bytes, skipping: {safe_url}"
             )
+            if frozen:
+                cached[source] = None
             return None, False
-        fetched[source] = data
-        fd, tmp_path = tempfile.mkstemp(suffix=".toml")
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
+        cached[source] = data
         if not cache_hit:
             get_logger().info(f"Fetched extra config from {safe_url} ({len(data)} bytes)")
+        if frozen:
+            return None, False
+        fd, tmp_path = tempfile.mkstemp(suffix=".toml")
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
         return tmp_path, True
     except Exception as e:
         get_logger().warning(f"Failed to fetch extra config from {safe_url}: {e}")
+        if frozen:
+            cached[source] = None
         return None, False
 
 
@@ -161,6 +193,12 @@ def _restore_authenticated_provider_settings():
     """Keep verified request credentials authoritative over host and repository layers."""
     if context.exists():
         for key, value in context.get("authenticated_provider_settings", {}).items():
+            if (key.lower() == "github.deployment_type"
+                    and not _as_bool_setting(
+                        get_settings().get("GITHUB_APP.OVERRIDE_DEPLOYMENT_TYPE", True), default=True,
+                    )):
+                # An explicit trusted Host choice can disable the default App-mode override.
+                continue
             section, name = key.split(".")
             section_settings = get_settings().get(section, {})
             for shadow in [k for k in section_settings if k.lower() == name and k != name]:
@@ -273,19 +311,54 @@ def _apply_settings_from_file(path: str, label: str):
         get_logger().warning(f"Failed to apply {label} settings from {path}: {e}")
 
 
+def _apply_settings_from_bytes(data: bytes, label: str):
+    """Replay a trusted, frozen host TOML snapshot without needing a writable temp directory."""
+    try:
+        parsed = tomllib.loads(data.decode("utf-8"))
+        validate_file_security(parsed, "host configuration")
+        merged_sections = []
+        for section, contents in parsed.items():
+            if not isinstance(contents, dict) or not contents:
+                continue
+            section_name = section.upper()
+            section_dict = copy.deepcopy(get_settings().as_dict().get(section_name, {}))
+            _merge_section_keys(section_dict, contents)
+            get_settings().unset(section_name)
+            get_settings().set(section_name, section_dict, merge=False)
+            merged_sections.append(section_name)
+        _reapply_env_overrides()
+        get_logger().info(f"Applied {label} settings (sections merged: {sorted(merged_sections)})")
+    except Exception as e:
+        get_logger().warning(f"Failed to apply {label} settings from frozen host configuration: {e}")
+
+
 def apply_host_settings():
     """Merge CONFIG.EXTRA_CONFIG_URL before provider initializers read connection settings."""
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
-    extra_source = get_settings().get("CONFIG.EXTRA_CONFIG_URL", None)
+    extra_source = (
+        context.get("automatic_host_settings_source")
+        if context.exists() and context.get("automatic_host_settings_source")
+        else get_settings().get("CONFIG.EXTRA_CONFIG_URL", None)
+    )
+    if isinstance(extra_source, str):
+        extra_source = extra_source.strip()
     # The loaded file may clear its own URL; keep the original selection for this request.
     if context.exists() and isinstance(extra_source, str) and extra_source.strip():
         context["extra_config_source_seen"] = True
     try:
         if isinstance(extra_source, str) and extra_source.strip():
             extra_path, extra_is_temp = _resolve_extra_config_to_file(extra_source)
-            if extra_path:
+            if context.exists() and context.get("automatic_host_settings_source") == extra_source.strip():
+                payload = context.get("extra_config_payloads", {}).get(extra_source.strip())
+                if payload is not None:
+                    _apply_settings_from_bytes(payload, label="extra")
+            elif extra_path:
                 try:
                     _apply_settings_from_file(extra_path, label="extra")
+                    # Retain a trusted logging opt-out before repository settings can override it.
+                    key = "LITELLM.TURN_OFF_MESSAGE_LOGGING"
+                    if context.exists() and _as_bool_setting(get_settings().get(key, False), setting_name=key):
+                        context["_pr_agent_host_message_logging_disabled"] = True
                 finally:
                     if extra_is_temp:
                         try:
@@ -303,8 +376,12 @@ def apply_repo_settings(pr_url):
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
     _restore_per_directory_settings()
 
+    # The webhook marks automatic dispatch at runtime. Replaying a host TOML must
+    # not turn an already-running automatic command into a manual one.
+    is_auto_command = get_settings().get("CONFIG.IS_AUTO_COMMAND", False) is True
     apply_host_settings()
-
+    if is_auto_command:
+        get_settings().set("CONFIG.IS_AUTO_COMMAND", True)
     git_provider = get_git_provider_with_context(pr_url)
 
     if get_settings().config.use_repo_settings_file:

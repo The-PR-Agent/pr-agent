@@ -16,7 +16,7 @@ import openai
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
-import pr_agent.algo.ai_handlers.litellm_helpers as litellm_helpers
+from pr_agent.algo.ai_handlers import litellm_helpers
 from pr_agent.algo.ai_handlers.litellm_ai_handler import DUMMY_LITELLM_API_KEY, LiteLLMAIHandler
 
 
@@ -5912,6 +5912,7 @@ async def test_openai_sdk_request_blocks_residual_organization_and_headers(monke
         "openrouter/model",
         "deepseek/model",
         "groq/model",
+        "opencode_go/deepseek-v4.1-flash",
         "gpt-5-pro",
         "azure/codex-mini",
         "azure/responses/custom-deployment",
@@ -5941,6 +5942,7 @@ async def test_raw_http_request_rejects_residual_headers_without_omit_values(mon
         "openrouter/model",
         "deepseek/model",
         "groq/model",
+        "opencode_go/deepseek-v4.1-flash",
         "gpt-5-pro",
         "azure/codex-mini",
         "azure/responses/custom-deployment",

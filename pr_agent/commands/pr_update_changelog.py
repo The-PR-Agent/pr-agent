@@ -18,7 +18,7 @@ from pr_agent.algo.pr_processing import (
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
 from pr_agent.algo.setting_utils import _as_bool_setting
-from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.algo.token_budget import AttemptTokenBudget, prepare_model_token_limits
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_for_command
@@ -228,6 +228,7 @@ class PRUpdateChangelog:
         if get_settings().pr_update_changelog.add_pr_link:
             variables["pr_link"] = self.git_provider.get_pr_url()
         output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        await prepare_model_token_limits(self.ai_handler, model)
         budget = AttemptTokenBudget.for_prompt_attempt(
             model,
             getattr(self.git_provider, "pr", None),

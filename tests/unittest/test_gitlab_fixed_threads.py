@@ -190,7 +190,6 @@ def test_thread_on_current_head_is_not_compared() -> None:
     provider = _provider([discussion], [{"old_path": "app.py", "diff": PATCH}])
     provider.reconcile_code_suggestion_threads()
     provider.gl.projects.get.return_value.repository_compare.assert_not_called()
-    assert discussion.resolved is False
 
 
 def test_ineligible_threads_skip_compare() -> None:
@@ -261,7 +260,7 @@ def test_deletion_anchored_thread_stays_open() -> None:
 
 
 def test_repeat_sweep_costs_no_api_calls() -> None:
-    # PRCodeSuggestions.run() and publish_code_suggestions share one provider;
+    # The review flow and publish_code_suggestions share one provider;
     # the second sweep must not list discussions again.
     discussion = _discussion(line=3)
     provider = _provider([discussion], [{"old_path": "app.py", "diff": PATCH}])
@@ -541,11 +540,3 @@ def test_duplicate_mr_heads_cannot_authorize_divergent_cleanup() -> None:
     assert provider.reconcile_code_suggestion_threads() == 0
     discussion.save.assert_not_called()
     provider.gl.projects.get.return_value.repository_compare.assert_not_called()
-
-
-def test_supports_code_suggestion_state() -> None:
-    # PRCodeSuggestions.run() calls reconcile_code_suggestion_threads through
-    # the generic provider contract when this reports support.
-    provider = _provider([], [])
-    assert provider.supports_code_suggestion_state() is True
-    assert provider.reconcile_code_suggestion_threads() == 0

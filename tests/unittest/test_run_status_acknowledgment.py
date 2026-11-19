@@ -11,12 +11,12 @@ from unittest.mock import MagicMock
 import pytest
 from requests.exceptions import RequestException
 
-import pr_agent.servers.github_app as github_app
 from pr_agent.algo.run_details import command_failed, init_run_details, record_command_failure
 from pr_agent.commands import pr_add_docs, pr_generate_labels, pr_help_message
 from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.github_provider import GithubProvider
+from pr_agent.servers import github_app
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 API_URL = "https://api.github.com/repos/org/repo/pulls/1"

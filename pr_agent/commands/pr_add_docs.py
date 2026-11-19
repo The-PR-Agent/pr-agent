@@ -13,7 +13,8 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.run_details import record_command_failure
-from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.algo.setting_utils import normalize_setting_list
+from pr_agent.algo.token_budget import AttemptTokenBudget, prepare_model_token_limits
 from pr_agent.algo.utils import _as_line, get_suggestion_fence, load_yaml
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider_for_command
@@ -119,6 +120,7 @@ class PRAddDocs:
 
         variables = copy.deepcopy(self.vars)
         output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        await prepare_model_token_limits(self.ai_handler, model)
         budget = AttemptTokenBudget.for_prompt_attempt(
             model,
             getattr(self.git_provider, "pr", None),
@@ -137,6 +139,9 @@ class PRAddDocs:
             disable_extra_lines=False,
             return_remaining_files=True,
             output_token_reserve=output_token_reserve,
+            excluded_extensions=normalize_setting_list(
+                get_settings().get("docs_blacklist_extensions.docs_blacklist")
+            ),
         )
         patches_diff, remaining_files_list = output if isinstance(output, tuple) else (output, [])
         if not patches_diff and not remaining_files_list:
@@ -235,12 +240,29 @@ class PRAddDocs:
                     if new_code_snippet is None:
                         continue
 
+                    existing_code = (
+                        new_code_snippet.split("\n", 1)[0]
+                        if doc_placement == "after"
+                        else new_code_snippet.rsplit("\n", 1)[-1]
+                    )
                     fence = get_suggestion_fence(new_code_snippet)
                     body = (f"**Suggestion:** Proposed documentation\n{fence}suggestion\n"
                             + new_code_snippet + f"\n{fence}")
-                    docs.append({'body': body, 'relevant_file': relevant_file,
-                                 "relevant_lines_start": relevant_line,
-                                 "relevant_lines_end": relevant_line})
+                    docs.append({
+                        'body': body,
+                        'relevant_file': relevant_file,
+                        "relevant_lines_start": relevant_line,
+                        "relevant_lines_end": relevant_line,
+                        "original_suggestion": {
+                            "existing_code": existing_code,
+                            "improved_code": new_code_snippet,
+                            "relevant_file": relevant_file,
+                            "relevant_lines_start": relevant_line,
+                            "relevant_lines_end": relevant_line,
+                            "suggestion_content": "Proposed documentation",
+                            "label": "documentation",
+                        },
+                    })
             except Exception:
                 if get_verbosity_level() >= 2:
                     get_logger().info(f"Could not parse code docs: {d}")

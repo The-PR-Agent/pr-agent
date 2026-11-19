@@ -214,6 +214,24 @@ def test_prepare_prometheus_provisions_state_or_propagates_error(monkeypatch, tm
         assert gunicorn_config.os.environ["PROMETHEUS_MULTIPROC_DIR"] == str(state_dir)
 
 
+@pytest.mark.parametrize("exporter_type", ["Prometheus", " prometheus "])
+def test_prepare_prometheus_accepts_padded_or_capitalised_exporter_type(monkeypatch, tmp_path, exporter_type):
+    state_dir = tmp_path / "master-state"
+    settings = {
+        "OTEL.IS_ENABLED": True,
+        "OTEL.EXPORTER_TYPE": exporter_type,
+        "OTEL.PROMETHEUS_MULTIPROC_DIR": str(state_dir),
+    }
+    monkeypatch.setattr("pr_agent.config_loader.get_settings", lambda: SimpleNamespace(get=settings.get))
+    monkeypatch.setenv("PROMETHEUS_MULTIPROC_DIR", "")
+    monkeypatch.delenv("PROMETHEUS_MULTIPROC_DIR")
+
+    gunicorn_config._prepare_prometheus()
+
+    assert state_dir.is_dir()
+    assert gunicorn_config.os.environ["PROMETHEUS_MULTIPROC_DIR"] == str(state_dir)
+
+
 @pytest.mark.parametrize("is_enabled", [False, "FALSE", "off", "no"])
 def test_prepare_prometheus_skips_state_when_telemetry_is_off(monkeypatch, tmp_path, is_enabled):
     state_dir = tmp_path / "master-state"

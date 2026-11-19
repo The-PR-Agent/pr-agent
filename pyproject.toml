@@ -45,7 +45,7 @@ dependencies = [
   # before 4.2.1. Declare the floor so pip installs get the patched lock as well; it follows
   # the >=patched,<next-major convention above.
   "filelock>=4.2.1,<5",
-  "loguru==0.7.3",
+  "loguru==0.8.0",
   "openai>=1.55.3",
   "PyJWT>=2.15.1,<3",
   "PyYAML==6.0.3",
@@ -69,9 +69,9 @@ dependencies = [
   "html2text==2025.4.15",
   # pr_agent/telemetry imports these directly; already resolved transitively via
   # langfuse and litellm, pinned here to lock the version the code is tested against.
-  "opentelemetry-api==1.45.1",
-  "opentelemetry-sdk==1.45.1",
-  "opentelemetry-exporter-otlp-proto-http==1.45.1",
+  "opentelemetry-api==1.45.2",
+  "opentelemetry-sdk==1.45.2",
+  "opentelemetry-exporter-otlp-proto-http==1.45.2",
   # Prometheus scrape endpoint for [otel] command telemetry (native /metrics on
   # the webhook apps). Multiprocess-capable; see pr_agent/telemetry/prometheus.py.
   "prometheus-client==0.26.0",
@@ -131,7 +131,7 @@ all = ["pr-agent[github,gitlab,bitbucket,azure,codecommit,gitea,google,mosaico]"
 lambda = ["mangum==0.22.0"]
 # OTLP/gRPC transport for pr-agent telemetry (OTEL.OTLP_PROTOCOL = "grpc").
 # The default OTLP/HTTP transport needs no extra: its exporter is a base dependency.
-otel-grpc = ["opentelemetry-exporter-otlp-proto-grpc==1.45.1"]
+otel-grpc = ["opentelemetry-exporter-otlp-proto-grpc==1.45.2"]
 # LangChainOpenAIHandler. Install with: uv sync --extra langchain
 langchain = [
   "langchain",
@@ -162,7 +162,7 @@ dev = [
   "pytest-asyncio>=1.4.1",
   "pytest-cov==7.1.0",
   "httpx==0.28.1",
-  "ruff==0.17.4",
+  "ruff==0.17.5",
 ]
 
 [tool.uv]
@@ -183,6 +183,11 @@ lint.select = [
   "UP",     # pyupgrade
   "FURB",   # refurb
   "PERF",   # perflint
+  "PLE",    # pylint (error)
+  "PLR0402",  # manual-from-import
+  "PLR1711",  # useless-return
+  "PLR1716",  # boolean-chained-comparison
+  "PLR5501",  # collapsible-else-if
 ]
 
 lint.exclude = ["api/code_completions"]

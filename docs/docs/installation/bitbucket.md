@@ -73,10 +73,11 @@ url = "<full URL to your Bitbucket instance, e.g.: https://git.bitbucket.com>"
 
 ### Run it as CLI
 
-Modify `configuration.toml`:
+In `configuration.toml`, change `git_provider` in the `[config]` section:
 
 ```toml
-git_provider="bitbucket_server"
+[config]
+git_provider = "bitbucket_server"
 ```
 
 

@@ -119,6 +119,14 @@ result is posted.
 
 To trigger from an Azure webhook, you need to manually
 [add a webhook](https://learn.microsoft.com/en-us/azure/devops/service-hooks/services/webhooks?view=azure-devops).
+Build the webhook Docker image from the repository root and deploy it:
+
+```bash
+docker build . -t pr-agent:azure_devops_webhook --target azure_devops_webhook -f docker/Dockerfile
+```
+
+Point the webhook at the server's HTTPS root URL (for example, `https://pr-agent.example.com/`);
+the server receives requests at `POST /` and listens on the port set by `PORT` (default `3000`).
 Use the "Pull request created" type to trigger a review, or "Pull request commented on" to trigger a supported
 `/<command> <args>` comment. API v2.0 is required for comment events.
 

@@ -198,7 +198,7 @@ harness. The Chinese catalogs (`zh-cn` and `zh-tw`) also received human review b
 The other 26 catalogs were machine-drafted and AI-reviewed, but have not undergone native-speaker human review.
 Corrections from native speakers are welcome.
 
-Use `zh-CN` or `zh-TW` for Chinese, and `pt-BR` or `pt-PT` for Portuguese. There is no shared `zh` or `pt` catalog, and script tags such as `zh-Hant` are not mapped to a regional catalog.
+Use `zh-CN` or `zh-TW` for Chinese, and `pt-BR` or `pt-PT` for Portuguese. There is no shared `zh` or `pt` catalog. Chinese and Mandarin script tags (`zh-Hans`, `zh-Hant`, `cmn-Hans`, `cmn-Hant`, and the extended `zh-cmn` forms) fall back to the corresponding `zh-cn` and `zh-tw` catalogs, including tags with other regions (for example, `zh-Hant-HK`). Other Chinese varieties without a shipped catalog (such as `zh-yue`) and the tag `zh` alone still fall back to English.
 
 In the `/review` comment, the intro line, the effort, tests, security and key-issue labels, the resolved-findings section, the finding lifecycle summary, the suggested-fix label, the persistent-review update lines and the "Preparing review..." message are translated. `/improve` and `/improve_code` now run `/review`; their one-line notice is also translated. The agent run details section is translated for every command. Other fixed text stays in U.S. English: the review heading (set it with `pr_reviewer.review_heading`), the other `/review` fields (ticket compliance, risk level, failure modes and the other opt-in fields), the review coverage footer, chunk progress, other commands' comments outside their run details, and the labels added to the PR. Numbers keep the U.S. format.
 
@@ -348,6 +348,13 @@ The value is derived from the PR URL and normalized to the character set LiteLLM
 for example `pr-agent-github-com-owner-repo-pull-123-b065a0b1d1c7b721`. A header set explicitly through
 `LITELLM.EXTRA_HEADERS` takes precedence, and the setting is disabled by default.
 
+The same value is passed to LiteLLM as `litellm_session_id`, which LiteLLM forwards as the
+provider's session header where one exists, such as OpenCode Go's required `x-opencode-session`.
+The value includes the PR's host and repository path, so enabling the setting sends them to that provider.
+
+Requests without a PR, such as the `doctor` model ping and the MOSAICO health probe, use a random
+`pr-agent-<uuid>` value generated once per process instead.
+
 ## Integrating with Logging Observability Platforms
 
 Various logging observability tools can be used out-of-the box when using the default LiteLLM AI Handler. Simply configure the LiteLLM callback settings in `configuration.toml` and set environment variables according to the LiteLLM [documentation](https://docs.litellm.ai/docs/).
@@ -404,7 +411,13 @@ failure_callback = ["otel"]
 turn_off_message_logging = true
 ```
 
-> **Set `turn_off_message_logging = true`.** LiteLLM attaches full prompt and response content to what its callbacks emit, which here means the entire PR diff. The default is `false` to preserve existing behavior for Langfuse and LangSmith users.
+> **Set `turn_off_message_logging = true`.** LiteLLM attaches full prompt and response content to what its
+> callbacks emit, which here means the entire PR diff. This also suppresses PR-Agent's own full prompt/response
+> diagnostics in the LiteLLM and OpenAI handlers, even at `DEBUG` log level or verbosity level 2. It does not sanitize
+> unrelated application logs or third-party callback errors. The default is `false` to preserve existing
+> behavior for Langfuse and LangSmith users. A deployment-level opt-out cannot be disabled by repository
+> settings. Unpublished CLI commands with verbosity level 2 still print model responses to stdout, which
+> may be captured separately; treat that explicit output as sensitive.
 
 The integration is configured through environment variables:
 
@@ -499,8 +512,16 @@ prometheus_multiproc_dir = "/tmp/pr-agent-prometheus" # shared, writable by ever
 
 1. The exporter is metrics-only: command spans are not exported in this mode.
 2. `/metrics` is mounted only when this exporter is selected, so nothing is exposed by default. It does not depend on an OTLP collector or endpoint.
-3. gunicorn registers and deregisters workers' state files automatically (`when_ready`/`child_exit`); a worker that dies mid-scrape leaves only a stale file, which is ignored once it is marked dead.
-4. Metric families are created from the first data point's label set. Later attributes that do not fit the family are dropped, and missing ones are back-filled with an empty string, so a scrape never breaks on drifting label cardinality.
+3. gunicorn prepares the multiprocess state directory at `when_ready` and calls `mark_process_dead` from `child_exit`. The client removes live-gauge files, but retains counter and default-gauge files; retained values remain visible until the directory is cleared or replaced.
+4. With OpenTelemetry SDK 1.45.2, each metric stream tracks up to 2,000 distinct attribute sets by default; measurements for additional sets go into an overflow point. PR-Agent's synchronous DELTA counters start tracking attribute sets again after each collection, while exported Prometheus counters continue accumulating. The built-in counters use bounded labels; high-cardinality custom metrics using the same provider can reach this limit.
+
+   Normal series use the first normal data point's label set. Later attributes that do not fit are dropped, and missing ones are back-filled with an empty string. Overflow points use `otel_metric_overflow="true"`; normal attribute values still use their usual string representation, including `True` for a boolean. Normal labels whose Prometheus text output is `otel_metric_overflow` or starts with `pr_agent_escaped_` receive the prefix `pr_agent_escaped_`, including names containing `:` that the client renders as `_`. Update queries that use those labels.
+
+   Different attribute names that map to the same label can still collide. Prometheus treats an empty label value as equivalent to an absent label, including across workers. An attribute set identical to the SDK's `otel.metric.overflow = true` marker cannot be distinguished from overflow.
+
+   Gauge values, including overflow points, can remain visible after the SDK stops reporting them. This exporter does not currently expire stale gauge series.
+
+   Use the same exporter version across workers sharing a multiprocess state directory: older workers and their retained state files can still collide with overflow series when their final label values match, including through `:` label escaping. For example, an old normal boolean value `True` stays distinct from the new overflow value `true`, but an old string value `true` can collide. Stop all workers using the state directory before clearing it, or switch to a fresh directory as part of a coordinated worker restart; replacing the directory resets the stored counters. Even with a new directory, an old normal series and a new overflow series with the same metric name and labels share Prometheus history across the upgrade.
 5. The exporter ships with PR-Agent (it depends on `prometheus-client`); no extra package is required. Scrape it like any exporter:
 
    ```yaml
@@ -647,6 +668,23 @@ comment commands such as `/review` and `/ask`, and to CLI `--pr_url` runs. In th
 `ignore_pr_authors` matches the **PR author**, not the person posting the command. An ignored CLI
 request exits successfully without running the command. Plain-diff CLI inputs (`--diff-file` and
 `--stdin`) have no PR metadata and are not excluded by these rules.
+
+For automatic PR/MR webhooks in GitHub App, GitLab, Gitea, and Bitbucket Cloud,
+host exclusions are evaluated before repository settings.
+A repository cannot clear a host exclusion already matched at this stage; it can still
+exclude additional requests. Manual commands and CLI runs use their effective repository policy.
+
+An automatic webhook may now read `CONFIG.EXTRA_CONFIG_URL` even when the host policy
+rejects the event, adding a configuration fetch that would previously have been skipped.
+On these webhooks, `ignore_pr_authors` checks the PR/MR author rather than the event actor;
+unavailable author metadata retains the existing best-effort policy behavior.
+GitLab may also make an extra MR-author API request for relevant events when Host author
+filtering is enabled and the event actor differs from the MR author.
+
+For GitHub App webhooks, `github_app.override_deployment_type` defaults to `true`
+to preserve App authentication after trusted external Host settings are loaded.
+Trusted Host settings may set it to `false` to retain their configured deployment
+type; repository settings cannot control this option.
 
 For GitHub Actions, matching PRs also skip automatic review, description, and improve commands
 on `pull_request`, `pull_request_target`, and `workflow_run` events.

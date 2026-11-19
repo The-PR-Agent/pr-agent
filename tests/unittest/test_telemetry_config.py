@@ -99,11 +99,64 @@ def test_enabled_with_valid_console_settings(monkeypatch):
     assert config.service_version == get_version()
 
 
+@pytest.mark.parametrize("raw_exporter_type,expected", [
+    (" Console ", ExporterType.CONSOLE),
+    ("OTLP", ExporterType.OTLP),
+    ("Prometheus", ExporterType.PROMETHEUS),
+])
+def test_exporter_type_ignores_case_and_surrounding_whitespace(monkeypatch, raw_exporter_type, expected):
+    """A capitalised or padded type selects the same exporter as its lower-case form.
+
+    OTLP still needs an endpoint. The lower-case form fails closed without one,
+    so the capitalised form is given the same endpoint and must come back as
+    ``otlp`` rather than being rejected first.
+    """
+    settings = {**VALID_ENABLED_SETTINGS, "OTEL.EXPORTER_TYPE": raw_exporter_type}
+    if expected == ExporterType.OTLP:
+        settings["OTEL.OTLP_ENDPOINT"] = "http://collector:4318"
+    _use_settings(monkeypatch, settings)
+
+    config = get_otel_config()
+
+    assert config.is_enabled is True
+    assert config.exporter_type == expected
+
+
+def test_capitalised_otlp_without_endpoint_fails_closed(monkeypatch):
+    """``OTLP`` is the otlp exporter, so a missing endpoint fails closed instead of raising."""
+    _use_settings(monkeypatch, {**VALID_ENABLED_SETTINGS, "OTEL.EXPORTER_TYPE": "OTLP"})
+
+    with capture_loguru(level="WARNING") as captured:
+        config = get_otel_config()
+
+    assert config.is_enabled is False
+    assert config.exporter_type is None
+    assert "OTEL.OTLP_ENDPOINT is not configured" in "\n".join(captured)
+
+
+def test_missing_exporter_type_is_not_treated_as_none(monkeypatch):
+    """A missing type stays missing. It must not fold into the valid type ``none``."""
+    _use_settings(monkeypatch, {
+        "OTEL.IS_ENABLED": True,
+        "OTEL.SERVICE_NAME": "pr-agent",
+        "OTEL.ENVIRONMENT": "development",
+    })
+
+    with capture_loguru(level="WARNING") as captured:
+        config = get_otel_config()
+
+    assert config.is_enabled is False
+    assert config.exporter_type is None
+    assert "missing required configuration" in "\n".join(captured)
+
+
 @pytest.mark.parametrize("settings", [
     {**VALID_ENABLED_SETTINGS, "OTEL.EXPORTER_TYPE": "bogus"},
     # Validation order guarantee: the bad type must surface even when the config
     # would anyway fall back for missing fields.
     {"OTEL.IS_ENABLED": True, "OTEL.EXPORTER_TYPE": "bogus"},
+    # Folded before the closed-set check, so the reported value is the normalised one.
+    {**VALID_ENABLED_SETTINGS, "OTEL.EXPORTER_TYPE": " Bogus "},
 ])
 def test_invalid_exporter_type_raises_value_error(monkeypatch, settings):
     _use_settings(monkeypatch, settings)

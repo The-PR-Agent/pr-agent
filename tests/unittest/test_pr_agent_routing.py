@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from starlette_context import request_cycle_context
+from starlette_context import context, request_cycle_context
 
 import pr_agent.agent.pr_agent as pr_agent_module
 import pr_agent.git_providers.gitea_provider as gitea_module
@@ -401,12 +401,12 @@ def test_prepare_command_accepts_apostrophes_in_unquoted_arguments_and_values():
 
 def test_prepare_command_keeps_unquoted_value_type_when_key_is_quoted():
     settings = get_settings()
-    setting_key = "PR_CODE_SUGGESTIONS.NUM_CODE_SUGGESTIONS"
+    setting_key = "PR_REVIEWER.NUM_MAX_FINDINGS"
     original = settings.get(setting_key)
 
     try:
         command = pr_agent_module.prepare_command(
-            '/review --"pr_code_suggestions.num_code_suggestions"=3'
+            '/review --"pr_reviewer.num_max_findings"=3'
         )
 
         assert command[0] == "/review"
@@ -984,3 +984,56 @@ async def test_handle_request_restores_language_instructions_after_failure(monke
 
     assert len(observed) == (1 if failure_stage == "constructor" else 2)
     assert all("'fr-FR'" in instructions for instructions in observed)
+
+
+@pytest.mark.asyncio
+async def test_handle_request_resets_created_context_when_command_error_propagates(monkeypatch):
+    seen_in_notice = []
+    seen_in_next_request = []
+    provider = _incomplete_files_provider()
+    real_publish_notice = pr_agent_module.publish_incomplete_files_comment
+
+    class IncompleteOnFirstPR:
+        def __init__(self, pr_url, *_args, **_kwargs):
+            self.pr_url = pr_url
+
+        async def run(self):
+            if self.pr_url.endswith("/1"):
+                get_settings().pr_reviewer.extra_instructions = "PR1 repo override"
+                context["repo_settings"] = {"source": "pr1"}
+                raise IncompletePullRequestFilesError("incomplete files")
+            seen_in_next_request.append(
+                (
+                    get_settings().config.publish_output,
+                    get_settings().pr_reviewer.extra_instructions,
+                    context.get("repo_settings"),
+                )
+            )
+
+    def spy_publish_notice(pr_url, err):
+        seen_in_notice.append((context.exists(), get_settings().config.publish_output))
+        return real_publish_notice(pr_url, err)
+
+    _patch_request_dependencies(monkeypatch, update_settings_fn=pr_agent_module.update_settings_from_args)
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
+    monkeypatch.setattr(pr_agent_module, "publish_incomplete_files_comment", spy_publish_notice)
+    monkeypatch.setitem(pr_agent_module.command2class, "review", IncompleteOnFirstPR)
+
+    baseline_instructions = get_settings().pr_reviewer.extra_instructions
+    agent = pr_agent_module.PRAgent()
+
+    assert await agent.handle_request(
+        "https://example/pr/1",
+        "/review --config.publish_output=false",
+        propagate_command_errors=True,
+    ) is False
+    assert not context.exists()
+    assert seen_in_notice == [(True, False)]
+    provider.publish_comment.assert_not_called()
+
+    assert await agent.handle_request(
+        "https://example/pr/2", "/review", propagate_command_errors=True
+    ) is True
+    assert not context.exists()
+    assert seen_in_next_request == [(True, baseline_instructions, None)]

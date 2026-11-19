@@ -260,8 +260,8 @@ def _comment_event(body="/review"):
 @pytest.fixture
 def comment_handler(monkeypatch):
     """The real handle_comments_on_pr, with only the provider and the agent faked."""
-    import pr_agent.servers.github_app as github_app
     from pr_agent.identity_providers.identity_provider import Eligibility
+    from pr_agent.servers import github_app
 
     provider = _RecordingProvider()
     provider.add_eyes_reaction_calls = []

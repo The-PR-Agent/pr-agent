@@ -17,6 +17,14 @@ class BaseAiHandler(ABC):
     def deployment_id(self):
         pass
 
+    def prompt_cache_active(self, model: str, *, prompt_tokens: int | None = None) -> bool:
+        """Whether the handler expects Anthropic-style prompt caching for this call.
+
+        Only the LiteLLM Claude path can know; other handlers keep the plain
+        parallel chunk dispatch.
+        """
+        return False
+
     def build_request_messages(
         self,
         model: str,

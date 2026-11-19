@@ -33,7 +33,7 @@ REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
 
 _CONNECTION_KEY_SUFFIXES = ("url", "base_url", "endpoint", "org", "key", "token", "secret")
 _REPO_OVERRIDABLE_SUFFIX_KEYS_BY_SECTION = {
-    "config": frozenset({"progress_gif_url"}),
+
     "gitea": frozenset({"web_url"}),
 }
 _REPO_OVERRIDABLE_SUFFIX_SECTIONS = frozenset({"language_extension_map_org"})
@@ -60,6 +60,9 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
         "agent_login", "deployment_type", "polling_repositories",
         "seconds_between_requests", "seconds_between_writes", "api_retries", "ratelimit_retries",
     }),
+    # The trusted Host may disable the App-mode override, but repository files
+    # must not switch authentication away from the verified installation.
+    "github_app": frozenset({"override_deployment_type"}),
     "gitlab": frozenset({"auth_type", "ssl_verify"}),
     "huggingface": frozenset({"api_base"}),
     # Jira lookups use the host's Atlassian credentials, so the reviewed repository must not
@@ -67,7 +70,8 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "jira": frozenset({"cloud_id", "jira_api_email", "jira_site", "project_keys"}),
     # extra_headers is attached to every model request, so on a shared gateway that routes or
     # authenticates by header the reviewed repository must not choose the headers the operator sends.
-    "litellm": frozenset({"extra_headers"}),
+    # suppress_debug_info sets a LiteLLM process global, so one repository must not change it for the others.
+    "litellm": frozenset({"extra_headers", "suppress_debug_info"}),
     "moonshot": frozenset({"api_base"}),
     "ollama": frozenset({"api_base"}),
     "openai": frozenset({"api_base", "api_type", "api_version"}),
@@ -118,6 +122,8 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # comment argument must not be able to impersonate another service (e.g. "GitHub Security").
     # enable_auto_approval lets a reviewed repository switch on an approval action taken with
     # the host's credentials, so only the operator may enable it.
+    # is_auto_command is a trusted dispatch marker; repository settings and comment
+    # arguments must not impersonate or disable automatic webhook processing.
     # system_instructions is appended to every model system prompt. A repository or comment
     # must not be able to remove or replace an operator's mandatory policy.
     "config": frozenset({
@@ -126,6 +132,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
         "description_issue_regex",
         "enable_auto_approval",
         "enable_custom_labels",
+        "is_auto_command",
         "global_settings_repo",
         "use_group_settings_file",
         "http_request_timeout",
@@ -177,8 +184,13 @@ def should_skip_config_key(section: str, key: str, skip_keys=()) -> bool:
 # GitHub Action. The runner reads it after the command has applied its arguments, so a comment
 # such as `/review --github_action_config.fail_on_command_errors=false` could turn a failed review
 # into a green workflow; the workflow's operator sets it instead.
+# reasoning_effort, openrouter.reasoning_max_tokens and pr_similar_issue.max_issues_to_scan raise
+# model spend, and add_user_to_requests / litellm.add_session_id_to_requests send the PR's host and
+# repository path to the model provider. litellm.turn_off_message_logging sets a LiteLLM process
+# global, so one comment would silence callbacks for every later request on the server.
 CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "config": frozenset({
+        "add_user_to_requests",
         "branch_issue_regex",
         "ai_timeout",
         "enable_custom_labels",
@@ -186,18 +198,23 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
         "include_pr_labels",
         "num_retries",
         "output_relevant_configurations",
+        "reasoning_effort",
         "repo_context_files",
         "repo_context_max_glob_matches",
         "repo_context_expand_imports",
+        "skip_unchanged_diff",
         "system_instructions",
     }),
     "github_action_config": frozenset({"fail_on_command_errors"}),
     "ignore": frozenset({"regex"}),
-    "pr_code_suggestions": frozenset({"parallel_calls", "max_number_of_calls"}),
+    "litellm": frozenset({"add_session_id_to_requests", "turn_off_message_logging"}),
+    "openrouter": frozenset({"reasoning_effort", "reasoning_max_tokens"}),
+    "pr_description": frozenset({"max_ai_calls"}),
     # PR comments must not enable ticket reads performed with the operator's credentials.
     "pr_questions": frozenset({"resolve_threads", "use_ticket_context"}),
     # A commenter must not choose which host file the structural-reach row reads, or turn on quoting of CI output.
     "pr_reviewer": frozenset({
+        "enable_large_pr_chunking",
         "enable_risk_checks",
         "extra_risky_shapes",
         "max_changed_lines",
@@ -209,7 +226,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
         "sensitive_paths",
         "structural_reach_input_file",
     }),
-    "pr_similar_issue": frozenset({"force_update_dataset"}),
+    "pr_similar_issue": frozenset({"force_update_dataset", "max_issues_to_scan"}),
     "pr_update_changelog": frozenset({"push_changelog_changes", "changelog_path"}),
 }
 
@@ -225,9 +242,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
 # bypass the operator's choice of which PR fields the bot edits. Ticket extraction
 # (require_ticket_analysis_review, use_ticket_context) stays root-controlled too: enabling it from a nested
 # file would make the bot run authenticated Jira lookups the root config already disabled.
-# The self-review workflow control (demand_code_suggestions_self_review) stays
-# root-controlled as well: a nested file must not be able to make /improve demand a
-# checklist. Thread-history collection (pr_questions.use_conversation_history) is
+# Thread-history collection (pr_questions.use_conversation_history) is
 # also root-controlled so a nested file cannot re-enable sending private review-thread
 # discussion bodies to the model after the operator opted out.
 # Similarly, budget/call-count controls (max_number_of_calls, max_ai_calls, parallel_calls,
@@ -250,17 +265,12 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
     "pr_code_suggestions": frozenset({
         "committable_code_suggestions",
         # The deprecated pre-1.0 spelling stays host-only for the same reason: a nested file
-        # must not be able to flip /improve to inline publishing through the alias that
+        # must not be able to flip inline fixes to committable comments through the alias that
         # get_committable_code_suggestions() still accepts. This layer works by subtraction
         # (the whole section is overridable in REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS), and
         # an unrecognized key survives the merge, so leaving the alias out of this set would
         # hand a nested file the very control the canonical name is denied.
         "commitable_code_suggestions",
-        # Dual publishing posts every suggestion at or above the threshold through the same
-        # inline path, so a nested file must not be able to turn it on either.
-        "dual_publishing_score_threshold",
-        "max_number_of_calls", "parallel_calls", "max_discussion_context_chars",
-        "demand_code_suggestions_self_review",
     }),
     "pr_similar_issue": frozenset({"force_update_dataset", "max_issues_to_scan", "vectordb", "skip_comments"}),
 }
@@ -315,14 +325,9 @@ REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS = {
     "pr_description": None,
     "pr_questions": None,
     "pr_code_suggestions": None,
-    "pr_custom_prompt": None,
     "pr_add_docs": None,
     "pr_update_changelog": frozenset({"extra_instructions", "add_pr_link"}),
-    "pr_analyze": None,
-    "pr_test": None,
-    "pr_improve_component": None,
     "pr_help": None,
     "pr_help_docs": frozenset({"exclude_root_readme", "enable_help_text"}),
     "pr_similar_issue": None,
-    "pr_find_similar_component": None,
 }

@@ -303,8 +303,7 @@ def test_gitlab_lists_current_commits_oldest_first():
 def _github_provider(parents, files):
     provider = GithubProvider.__new__(GithubProvider)
     provider.diff_files = ["stale"]
-    gh_commit = MagicMock(parents=parents)
-    gh_commit.get_files.return_value = files
+    gh_commit = MagicMock(parents=parents, files=files)
     provider._get_repo = MagicMock(return_value=MagicMock(get_commit=MagicMock(return_value=gh_commit)))
     return provider
 
@@ -937,6 +936,196 @@ async def test_a_full_record_keeps_the_newest_commits(settings, monkeypatch):
     [record] = host.records()
     assert set(parse_commit_review_records(record.body)[0]) == {commit.sha for commit in commits[3:]}
     assert len(record.body) <= 200 + 5 * line
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "per_commit",
+        "unsupported_fallback",
+        "cap_fallback",
+        "incremental_active_fallback",
+        "incremental_full_fallback",
+        "retry_after_fetch_error",
+    ],
+)
+async def test_per_commit_init_defers_whole_pr_context_until_fallback(settings, monkeypatch, mode):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    findings_loader = MagicMock()
+
+    def load_findings(self):
+        findings_loader()
+        if mode == "retry_after_fetch_error" and findings_loader.call_count == 1:
+            raise RuntimeError("findings read failed")
+        return "" if self.incremental.is_incremental else "DEFERRED-FINDINGS"
+
+    monkeypatch.setattr(PRReviewer, "_load_previous_findings_context", load_findings)
+    if mode in ("cap_fallback", "retry_after_fetch_error"):
+        monkeypatch.setitem(get_settings().pr_reviewer, "max_commits_per_review", 1)
+
+    if mode in ("incremental_active_fallback", "incremental_full_fallback"):
+        provider = MagicMock()
+        provider.is_supported.return_value = True
+        provider.get_languages.return_value = {}
+        provider.get_files.return_value = ["a.py"]
+        provider.get_commit_messages.return_value = "DEFERRED-COMMIT-MESSAGES"
+        provider.get_pr_description.return_value = ("desc", [])
+        provider.get_pr_commits.return_value = None
+        provider.get_pr_url.return_value = "https://host/pr/1"
+        provider.get_pr_labels.return_value = []
+        provider.get_diff_files.return_value = [FilePatchInfo(base_file="", head_file="x\n", patch="", filename="a.py")]
+        provider.supports_review_comment_identity.return_value = True
+        provider.should_publish_review_as_thread.return_value = False
+        provider._inline_comment_store = None
+        provider.get_persistent_comment_bodies.return_value = []
+        provider.get_recent_inline_comment_bodies.return_value = []
+        if mode == "incremental_active_fallback":
+            def init_incremental(inc):
+                inc.commits_range = ["c1"]
+                inc.first_new_commit = SimpleNamespace(sha="c" * 40)
+                inc.last_seen_commit = None
+                provider.incremental = inc
+
+            provider.get_incremental_commits.side_effect = init_incremental
+            monkeypatch.setitem(get_settings().pr_reviewer, "minimal_commits_for_incremental_review", 0)
+            monkeypatch.setitem(get_settings().pr_reviewer, "minimal_minutes_for_incremental_review", 0)
+        monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
+        monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
+        monkeypatch.setattr(
+            pr_reviewer_module, "extract_and_cache_pr_tickets", MagicMock(side_effect=lambda *_: _noop())
+        )
+        monkeypatch.setattr(pr_reviewer_module, "add_pr_review_identity", lambda body, marker, _: f"{body}\n{marker}")
+        reviewer = PRReviewer(
+            "https://example/pr/1",
+            args=["-i"],
+            ai_handler=lambda: SimpleNamespace(main_pr_language=None),
+        )
+    else:
+        reviewer = _commit_reviewer(monkeypatch, CLEAN)
+        provider = reviewer.git_provider
+        provider.get_commit_messages.return_value = "DEFERRED-COMMIT-MESSAGES"
+
+    findings_loader.assert_not_called()
+    provider.get_commit_messages.assert_not_called()
+    assert reviewer.vars["previous_findings"] == ""
+    assert reviewer.vars["commit_messages_str"] == ""
+
+    if mode == "unsupported_fallback":
+        provider.get_pr_commits.return_value = None
+    elif mode in ("cap_fallback", "retry_after_fetch_error"):
+        provider.get_pr_commits.return_value = [A, B]
+        provider.set_commit_review_scope.side_effect = lambda commit, _: _fingerprint(commit.sha)
+
+    captured_vars = []
+
+    async def predict(prepare, **_):
+        captured_vars.append((reviewer.vars["previous_findings"], reviewer.vars["commit_messages_str"]))
+        reviewer.prediction = CLEAN
+
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", predict)
+    init_run_details()
+    if mode == "retry_after_fetch_error":
+        monkeypatch.setitem(get_settings().config, "propagate_command_errors", True)
+        provider.get_commit_messages.side_effect = [RuntimeError("commits read failed"), "DEFERRED-COMMIT-MESSAGES"]
+
+        with pytest.raises(RuntimeError, match="findings read failed"):
+            await reviewer.run()
+        assert reviewer._deferred_previous_findings is True
+        assert reviewer._deferred_commit_messages is True
+
+        with pytest.raises(RuntimeError, match="commits read failed"):
+            await reviewer.run()
+        assert reviewer._deferred_previous_findings is False
+        assert reviewer._deferred_commit_messages is True
+        assert reviewer.vars["previous_findings"] == "DEFERRED-FINDINGS"
+
+        await reviewer.run()
+        assert findings_loader.call_count == 2
+        assert provider.get_commit_messages.call_count == 2
+        assert captured_vars == [("DEFERRED-FINDINGS", "DEFERRED-COMMIT-MESSAGES")]
+    elif mode == "per_commit":
+        await reviewer.run()
+        findings_loader.assert_not_called()
+        provider.get_commit_messages.assert_not_called()
+        assert captured_vars == [("", "")]
+    elif mode == "incremental_active_fallback":
+        await reviewer.run()
+        findings_loader.assert_called_once()
+        provider.get_commit_messages.assert_not_called()
+        assert captured_vars == [("", "")]
+    else:
+        await reviewer.run()
+        findings_loader.assert_called_once()
+        provider.get_commit_messages.assert_called_once()
+        assert captured_vars == [("DEFERRED-FINDINGS", "DEFERRED-COMMIT-MESSAGES")]
+
+
+def test_github_commit_scope_uses_single_request_and_paginates_over_300_files():
+    from github.Repository import Repository
+
+    calls = []
+
+    def fake_request(verb, url, parameters=None, headers=None, input=None, cnx=None):
+        calls.append((verb, url, parameters))
+        if (parameters and str(parameters.get("page")) == "2") or "page=2" in url:
+            return (
+                {},
+                {
+                    "sha": "b" * 40,
+                    "parents": [{"sha": "p1"}],
+                    "files": [{"filename": "f301.py", "status": "modified", "additions": 1,
+                               "deletions": 0, "patch": "+b"}],
+                },
+            )
+        has_next = url.endswith("b" * 40)
+        hdrs = {"link": f'<https://api.github.com/repos/o/r/commits/{"b" * 40}?per_page=300&page=2>; rel="next"'} \
+            if has_next else {}
+        return (
+            hdrs,
+            {
+                "sha": url.rsplit("/", 1)[-1],
+                "parents": [{"sha": "p1"}],
+                "files": [{"filename": "f1.py", "status": "modified", "additions": 1,
+                           "deletions": 0, "patch": "+a"}],
+            },
+        )
+
+    req = MagicMock(base_url="https://api.github.com", per_page=30)
+    req.requestJsonAndCheck.side_effect = fake_request
+    repo = Repository(req, {}, {"url": "https://api.github.com/repos/o/r"}, completed=True)
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.diff_files = None
+    provider._get_repo = lambda: repo
+
+    assert provider.set_commit_review_scope(PRCommit("a" * 40, "msg"), IncrementalPR(True)) is not None
+    assert len(calls) == 1
+    assert calls[0] == ("GET", f"https://api.github.com/repos/o/r/commits/{'a' * 40}", {"page": 1, "per_page": 300})
+    assert list(provider.unreviewed_files_map) == ["f1.py"]
+
+    assert provider.set_commit_review_scope(PRCommit("b" * 40, "msg"), IncrementalPR(True)) is not None
+    assert len(calls) == 3
+    assert list(provider.unreviewed_files_map) == ["f1.py", "f301.py"]
+
+
+def test_gitlab_commit_scope_skips_commit_metadata_get_when_parents_are_listed():
+    import gitlab
+
+    gl = gitlab.Gitlab("https://gitlab.example.com", private_token="tok")
+    gl.http_get = MagicMock()
+    gl.http_list = MagicMock(return_value=[{"old_path": "a.py", "new_path": "a.py", "diff": "+x\n"}])
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.gl = gl
+    provider.id_project = 123
+
+    assert provider.set_commit_review_scope(
+        PRCommit("a" * 40, "msg", parents=("p" * 40,)), IncrementalPR(True)
+    ) is not None
+    gl.http_get.assert_not_called()
+    gl.http_list.assert_called_once()
+    assert list(provider.unreviewed_files_map) == ["a.py"]
+
 
 
 @pytest.mark.asyncio

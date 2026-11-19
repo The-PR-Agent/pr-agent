@@ -21,6 +21,11 @@ from ..algo.utils import load_large_diff
 from ..log import get_logger
 from .git_provider import GitProvider, cache_languages, format_persistent_update_header
 
+# UpdatePullRequestDescription rejects a description longer than this.
+MAX_PR_DESCRIPTION_CODECOMMIT_LENGTH = 10240
+# UpdatePullRequestTitle rejects a title longer than this (API length constraint).
+MAX_PR_TITLE_CODECOMMIT_LENGTH = 150
+
 
 class PullRequestCCMimic:
     """
@@ -244,11 +249,22 @@ class CodeCommitProvider(GitProvider):
         return self.diff_files
 
     def publish_description(self, pr_title: str, pr_body: str):
+        # UpdatePullRequestDescription rejects a description over 10,240 characters, and the
+        # newline doubling below can push a long description over it. Cap what CodeCommit
+        # receives, after the doubling.
+        # UpdatePullRequestTitle similarly rejects a title over 150 characters. The
+        # client sends the title first, so an overlong AI title would fail the
+        # whole publish, including a body that already fits.
+        pr_body = self.limit_description_characters(
+            CodeCommitProvider._add_additional_newlines(pr_body), MAX_PR_DESCRIPTION_CODECOMMIT_LENGTH
+        )
+        if pr_title is not None:
+            pr_title = self.limit_title_characters(pr_title, MAX_PR_TITLE_CODECOMMIT_LENGTH)
         try:
             self.codecommit_client.publish_description(
                 pr_number=self.pr_num,
                 pr_title=pr_title,
-                pr_body=CodeCommitProvider._add_additional_newlines(pr_body),
+                pr_body=pr_body,
             )
         except Exception as e:
             raise ValueError(f"CodeCommit Cannot publish description for PR: {self.pr_num}") from e

@@ -10,6 +10,8 @@ import re
 import shutil  # noqa: F401  (module attribute asserted by tests)
 import stat
 import threading
+import uuid
+from functools import partial
 from urllib.parse import urlparse
 
 import aiohttp
@@ -18,6 +20,7 @@ import litellm
 import openai
 from litellm import acompletion
 from litellm.exceptions import MidStreamFallbackError
+from starlette_context import context
 from tenacity import RetryCallState, retry, retry_if_exception, wait_random_exponential
 
 try:
@@ -141,6 +144,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     _response_field,
     get_repetition_penalty,
 )
+from pr_agent.algo.ai_handlers.openrouter_model_info import MODEL_CONTEXT_TIMEOUT, fetch_model_context
 from pr_agent.algo.instruction_context import append_protected_system_instructions
 from pr_agent.algo.prompt_fragments import render_skills_prefix
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
@@ -152,12 +156,25 @@ from pr_agent.algo.utils import ReasoningEffort
 from pr_agent.config_loader import get_settings, get_verbosity_level, global_settings
 from pr_agent.log import get_logger
 
+
+def _message_logging_disabled(settings) -> bool:
+    """Do not let repository settings weaken a deployment-level logging opt-out."""
+    key = "LITELLM.TURN_OFF_MESSAGE_LOGGING"
+    return (
+        _as_bool_setting(global_settings.get(key, False), setting_name=key)
+        or (context.exists() and context.get("_pr_agent_host_message_logging_disabled", False))
+        or _as_bool_setting(settings.get(key, False), setting_name=key)
+    )
+
+
 MODEL_RETRIES = 2
 DEFAULT_NUM_RETRIES = 4
 # Longest Retry-After honored; a longer one waits with jitter instead.
 MAX_RETRY_AFTER_SECONDS = 30
 # Lowest config.max_output_tokens honored; Bedrock Claude with thinking needs this much to answer.
 MIN_MAX_OUTPUT_TOKENS = 4096
+# Session id for requests without PR context; random so no repository data is sent.
+_PROCESS_SESSION_ID = f"pr-agent-{uuid.uuid4().hex}"
 _IMAGE_HEAD_TIMEOUT_SECONDS = 5
 _IMAGE_NOT_ALIVE_MESSAGE = (
     "The image link is not [alive](img_path).\n"
@@ -530,6 +547,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                     ).hexdigest()
                     self._vertex_credentials = json.dumps(vertex_info)
         self._provider_request_params = self._snapshot_provider_request_params(settings)
+        self._model_context_cache = {}
+        self._model_context_failures = {}
+        self._model_context_lock = asyncio.Lock()
         self._snowflake_account_id = os.environ.get("SNOWFLAKE_ACCOUNT_ID", "")
         self._provider_environment_api_keys = self._snapshot_provider_environment_api_keys()
         self._volcengine_ark_api_key = os.environ.get("ARK_API_KEY")
@@ -582,6 +602,12 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         if global_settings.get("LITELLM.DISABLE_AIOHTTP", False):
             litellm.disable_aiohttp_transport = True
+        # LiteLLM prints a "Give Feedback / Get Help" banner to stdout for every mapped provider error.
+        if _as_bool_setting(
+            global_settings.get("LITELLM.SUPPRESS_DEBUG_INFO", True),
+            default=True, setting_name="LITELLM.SUPPRESS_DEBUG_INFO",
+        ):
+            litellm.suppress_debug_info = True
         self._initialize_aws_request_credentials(settings)
         # LiteLLM callbacks are process globals, so only deployment settings may set them.
         if global_settings.get("LITELLM.SUCCESS_CALLBACK", None):
@@ -591,7 +617,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         if global_settings.get("LITELLM.SERVICE_CALLBACK", None):
             litellm.service_callback = normalize_setting_list(global_settings.litellm.service_callback)
         # litellm callbacks attach full prompt and response content unless message logging is disabled.
-        if settings.get("LITELLM.TURN_OFF_MESSAGE_LOGGING", False):
+        if _message_logging_disabled(settings):
             litellm.turn_off_message_logging = True
         # Keep LiteLLM request spans separate from pr-agent command spans when both OTEL layers are enabled.
         if self._litellm_otel_callback_enabled() and _as_bool_setting(
@@ -2111,16 +2137,20 @@ class LiteLLMAIHandler(BaseAiHandler):
 
     @staticmethod
     def _uses_gemini_low_reasoning_floor(model: str) -> bool:
-        """Return whether Gemini reasoning needs a supported-level floor."""
+        """Return whether a model needs a floor for unsupported Gemini thinking levels.
+
+        These ids document low/medium/high only: clamp "minimal" to "low" on the
+        direct path, and clamp "none" to "low" on the OpenRouter path.
+        """
         normalized_model = model.rsplit(":", 1)[0] if model.startswith("openrouter/") else model
         return any(
             normalized_model == gemini_id or normalized_model.endswith("/" + gemini_id)
-            for gemini_id in ("gemini-3.7-flash", "gemini-3.8-flash")
+            for gemini_id in ("gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon")
         )
 
     @classmethod
     def _clamp_gemini_reasoning_effort(cls, model: str, reasoning_effort: str) -> str:
-        """Map unsupported Gemini 3.x ``minimal`` effort to the nearest level."""
+        """Map unsupported Gemini ``minimal`` effort to the nearest level."""
         if cls._uses_gemini_low_reasoning_floor(model) and reasoning_effort == "minimal":
             return "low"
         return reasoning_effort
@@ -2420,6 +2450,93 @@ class LiteLLMAIHandler(BaseAiHandler):
                 )
         return max(0, output_tokens)
 
+    def _openrouter_context_route(self, model: str) -> tuple[str, str] | None:
+        """Identify the captured official route without promoting gateways or late credentials."""
+        if type(self) is not LiteLLMAIHandler:
+            return None
+        params = getattr(self, "_provider_request_params", {}).get("openrouter", {})
+        base = params.get("api_base")
+        if not isinstance(base, str) or not re.fullmatch(r"(?ai:https://openrouter\.ai)(?::443)?/api/v1/?", base):
+            return None
+        provider_setting = self._custom_llm_provider
+        routed = self._route_model_for_request(model, provider_setting, self.deployment_id)
+        provider = self._resolve_configured_request_provider(routed, provider_setting)
+        completion_model = self._normalize_gpt5_model_for_request(routed, model, provider_setting)
+        canonical = self._canonical_openrouter_model(completion_model, provider)
+        return (base, canonical) if canonical is not None else None
+
+    async def _load_openrouter_context(self, model: str, route: tuple[str, str]) -> int | None:
+        from pr_agent.algo.token_budget import _resolve_max_tokens
+
+        base, canonical_model = route
+        lookup = partial(
+            litellm.get_model_info, custom_llm_provider="openrouter", api_base=base,
+            api_key=self._captured_api_key("openrouter"),
+        )
+        sdk_limit = await asyncio.to_thread(
+            _resolve_max_tokens, model, True, custom_llm_provider="openrouter", model_info_lookup=lookup,
+        )
+        if sdk_limit is not None:
+            return sdk_limit
+        return await fetch_model_context(canonical_model.removeprefix("openrouter/"))
+
+    async def prepare_model_token_limits(self, model: str) -> None:
+        """Prepare one request-scoped metadata result before synchronous budgeting."""
+        from pr_agent.algo.token_budget import FallbackEligibleError, _resolve_max_tokens
+
+        route = self._openrouter_context_route(model)
+        if route is None:
+            return
+        # Caller-specific SDK alias sequences can differ on the same request route.
+        cache_key = (*route, model)
+        # Built-in, custom and alias priorities remain first and require no metadata request.
+        local_limit = _resolve_max_tokens(
+            model, True, custom_llm_provider="openrouter", model_info_lookup=lambda _: None,
+        )
+        if local_limit is not None:
+            return
+        if cache_key in self._model_context_cache:
+            return
+        # Share a failed attempt with current waiters, while allowing a later call to retry.
+        failure_epoch = self._model_context_failures.get(cache_key, (0, None))[0]
+        async with self._model_context_lock:
+            if cache_key not in self._model_context_cache:
+                latest_epoch, failure = self._model_context_failures.get(cache_key, (0, None))
+                if latest_epoch != failure_epoch and failure is not None:
+                    raise failure
+                try:
+                    async with asyncio.timeout(MODEL_CONTEXT_TIMEOUT):
+                        window = await self._load_openrouter_context(model, route)
+                except (TimeoutError, FallbackEligibleError) as error:
+                    self._model_context_failures[cache_key] = (latest_epoch + 1, error)
+                    if isinstance(error, TimeoutError):
+                        get_logger().info("OpenRouter model context preparation timed out")
+                    raise
+                self._model_context_cache[cache_key] = window
+                self._model_context_failures.pop(cache_key, None)
+
+    def get_model_token_limits(self, model: str, *, ignore_max_model_tokens: bool = False) -> tuple[int, int | None]:
+        """Use prepared limits, retaining the legacy SDK lookup for unprepared callers."""
+        from pr_agent.algo import token_budget
+
+        route = self._openrouter_context_route(model)
+        provider_options = {"custom_llm_provider": "openrouter"} if route is not None else {}
+        cache_key = (*route, model) if route is not None else None
+        if cache_key is not None and cache_key in self._model_context_cache:
+            prepared_window = self._model_context_cache[cache_key]
+            # Reuse limit precedence and caps without querying SDK metadata again.
+            window = token_budget._resolve_max_tokens(
+                model, ignore_max_model_tokens, **provider_options,
+                model_info_lookup=lambda _: {"max_input_tokens": prepared_window},
+            )
+            if window is None:
+                token_budget._raise_unresolved_model_limit(model)
+        else:
+            window = token_budget.get_max_tokens(
+                model, ignore_max_model_tokens=ignore_max_model_tokens, **provider_options,
+            )
+        return window, token_budget.get_max_input_tokens(model, **provider_options)
+
     def get_output_token_limit(self, model: str) -> int:
         """Return the output cap that this handler will request for the supplied model."""
         custom_llm_provider = self._custom_llm_provider
@@ -2695,26 +2812,50 @@ class LiteLLMAIHandler(BaseAiHandler):
                 context[key] = value[:max_len]
         return json.dumps(context, separators=(",", ":"))
 
+    def _add_request_session_id(self, kwargs: dict) -> None:
+        """Group every command run against the same PR into one LiteLLM session.
+
+        Sends the proxy's session id header and passes the same value as
+        litellm_session_id. Explicitly configured headers win, so an operator
+        can override the value.
+        """
+        if not get_settings().litellm.get("add_session_id_to_requests", False):
+            return
+        headers = dict(kwargs.get("headers") or {})
+        session_id = next(
+            (value for name, value in headers.items() if name.lower() == "x-litellm-session-id"), None,
+        )
+        if session_id is None:
+            session_id = self._get_request_session_id()
+            headers["x-litellm-session-id"] = session_id
+            kwargs["headers"] = headers
+        # The SDK derives provider session headers, such as OpenCode Go's
+        # required x-opencode-session, from this parameter, not the proxy header.
+        # Reusing an explicit header keeps the proxy and the provider on one session.
+        kwargs["litellm_session_id"] = session_id
+
     def _get_request_session_id(self) -> str:
-        """Build a stable LiteLLM session id for the current PR.
+        """Build a stable LiteLLM session id.
 
         LiteLLM stores this value in the session_id column of its spend logs, so
         every command run against the same PR shares one session. The header only
         accepts alphanumerics, hyphens and underscores, so the URL is normalized
-        to that character set. Returns an empty string when no PR context exists.
+        to that character set. Without PR context (doctor pings, health probes)
+        returns a per-process id, since providers such as OpenCode Go reject
+        requests without one.
         """
         context = self._capture_log_context(
             "session_id_probe", "Capturing the request context for the session id",
         )
         pr_url = context.get("pr_url")
         if not isinstance(pr_url, str) or not pr_url:
-            return ""
+            return _PROCESS_SESSION_ID
         parsed = urlparse(pr_url)
         raw = f"{parsed.netloc.rpartition('@')[2]}{parsed.path}" if parsed.netloc else pr_url
         slug = re.sub(r"[^A-Za-z0-9_-]+", "-", raw)
         slug = re.sub(r"-{2,}", "-", slug).strip("-_").lower()
         if not slug:
-            return ""
+            return _PROCESS_SESSION_ID
         # Different URLs can normalize to the same slug, and long repository
         # paths can push the PR number past the cutoff. Append a digest of the
         # raw URL and reserve room for it before truncating the readable part,
@@ -2732,6 +2873,36 @@ class LiteLLMAIHandler(BaseAiHandler):
         Returns the deployment ID for the OpenAI API.
         """
         return get_settings().get("OPENAI.DEPLOYMENT_ID", None)
+
+    def prompt_cache_active(self, model: str, *, prompt_tokens: int | None = None) -> bool:
+        """Whether the shared-prefix prompt cache will apply to this model's calls.
+
+        The chunk runners stagger their first call when it is, so sibling chunks read
+        the cache entry the first one writes instead of each writing their own (#4876).
+        Uses the same gates as the request path: injection points configured, a model
+        that honors them, and — when the caller knows the shared prompt's token count —
+        a prefix that clears the model's ``prompt_cache_min_tokens``. Below that
+        minimum Anthropic silently does not cache, so staggering would only add
+        latency. Best effort like the call-time warning: a missing token count or a
+        metadata gap skips the length check, never the call.
+        """
+        points = self._resolve_cache_control_injection_points()
+        # A role: user or index: -1 point caches through the chunk's own diff, so
+        # siblings can never read it and the stagger only adds latency; gate on a
+        # system point to keep it to the shared prefix.
+        if not any(isinstance(point, dict) and point.get("role") == "system" for point in points or []):
+            return False
+        if not self._is_claude_model(model):
+            return False
+        if prompt_tokens is not None:
+            try:
+                min_tokens = litellm.get_model_info(model).get("prompt_cache_min_tokens")
+            except Exception:
+                return True
+            if isinstance(min_tokens, int) and not isinstance(min_tokens, bool) and min_tokens > 0:
+                if prompt_tokens < min_tokens:
+                    return False
+        return True
 
     @staticmethod
     def _resolve_cache_control_injection_points():
@@ -2956,6 +3127,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         *,
         configured_deployment_id: str | None,
     ):
+        # This LiteLLM setting must cover PR-Agent's own diagnostics as well as
+        # LiteLLM callbacks; otherwise DEBUG logs still contain the full diff.
+        hide_message_logs = _message_logging_disabled(get_settings())
         # Validate config-derived kwargs before the try/except below, so a malformed value raises a
         # ValueError config error instead of being wrapped as openai.APIError and retried.
         cache_control_injection_points = self._resolve_cache_control_injection_points()
@@ -3290,17 +3464,6 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # Support for custom OpenAI body fields (e.g., Flex Processing)
                 kwargs = _process_litellm_extra_body(kwargs)
 
-                # Group every command run against the same PR into one LiteLLM
-                # session by sending the proxy's session id header. Explicitly
-                # configured headers win, so an operator can override the value.
-                if get_settings().litellm.get("add_session_id_to_requests", False):
-                    session_id = self._get_request_session_id()
-                    if session_id:
-                        headers = dict(kwargs.get("headers") or {})
-                        if not any(name.lower() == "x-litellm-session-id" for name in headers):
-                            headers["x-litellm-session-id"] = session_id
-                            kwargs["headers"] = headers
-
                 # Optional provider-side request attribution: when config.add_user_to_requests
                 # is enabled, send the current command and PR URL in the OpenAI-compatible
                 # "user" field, so provider logs and usage exports can be attributed to a
@@ -3372,11 +3535,12 @@ class LiteLLMAIHandler(BaseAiHandler):
                         openrouter_reasoning_effort,
                     )
 
-                get_logger().debug("Prompts", artifact={"system": system, "user": user})
+                if not hide_message_logs:
+                    get_logger().debug("Prompts", artifact={"system": system, "user": user})
 
-                if get_verbosity_level() >= 2:
-                    get_logger().info(f"\nSystem prompt:\n{system}")
-                    get_logger().info(f"\nUser prompt:\n{user}")
+                    if get_verbosity_level() >= 2:
+                        get_logger().info(f"\nSystem prompt:\n{system}")
+                        get_logger().info(f"\nUser prompt:\n{user}")
 
                 # Optional fixed provider override, so a raw hosted model id reaches the
                 # provider unchanged instead of being rewritten by LiteLLM's prefix inference.
@@ -3442,15 +3606,27 @@ class LiteLLMAIHandler(BaseAiHandler):
         # touches no os.environ credentials, and in IMDS mode the lock serializes
         # every concurrent call, so holding it through logging and cost pricing
         # would make each waiting coroutine pay for them serially.
-        get_logger().debug(f"\nAI response:\n{resp}")
+        if not hide_message_logs:
+            get_logger().debug(f"\nAI response:\n{resp}")
 
-        # log the full response for debugging
-        response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
-        get_logger().debug("Full_response", artifact=response_log)
+            # Log the full response only when diagnostic message logging is enabled.
+            response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
+            get_logger().debug("Full_response", artifact=response_log)
 
-        # for CLI debugging
-        if get_verbosity_level() >= 2:
-            get_logger().info(f"\nAI response:\n{resp}")
+            # for CLI debugging
+            if get_verbosity_level() >= 2:
+                get_logger().info(f"\nAI response:\n{resp}")
+        elif (
+            context.exists()
+            and context.get("_pr_agent_cli_invocation", False)
+            and get_verbosity_level() >= 2
+            and not _as_bool_setting(
+                get_settings().config.get("publish_output", True), default=True,
+                setting_name="CONFIG.PUBLISH_OUTPUT",
+            )
+        ):
+            # Keep trusted local CLI output separate from diagnostic logging sinks.
+            print(f"\nAI response:\n{resp}")
 
         self._record_completion_metadata(response_obj, model=model, display_model=user_model)
 
@@ -3586,6 +3762,8 @@ class LiteLLMAIHandler(BaseAiHandler):
     ):
         """Call LiteLLM with any provider compatibility context scoped to this task."""
         _completion = _completion or acompletion
+        # Every completion, including health probes and doctor pings, passes here.
+        self._add_request_session_id(kwargs)
         if getattr(self, "_drop_params", None):
             kwargs.setdefault("drop_params", self._drop_params)
         custom_llm_provider = str(kwargs.get("custom_llm_provider") or "").strip().lower()
