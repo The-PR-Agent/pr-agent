@@ -526,6 +526,11 @@ class PRDescription:
 
             # get the files prediction for each patch
             chunk_pairs = list(zip(patches_compressed_list, files_in_patches_list, strict=True))
+            chunk_diffs = ["\n".join(patches) for patches, _files_in_patch in chunk_pairs]
+            # Chunks an earlier model attempt described: a fallback re-sends only the others, as /review does.
+            described_chunks = getattr(self, "_described_chunks", None)
+            if described_chunks is None:
+                described_chunks = self._described_chunks = {}
             self.description_total_chunk_count = len(chunk_pairs)
             results = [None] * len(chunk_pairs)
             progress = self._chunk_progress = self._chunk_progress_reporter(total=len(chunk_pairs))
@@ -533,7 +538,7 @@ class PRDescription:
                 for i, (patches, _files_in_patch) in enumerate(chunk_pairs):  # sync calls
                     if not patches:
                         continue
-                    patches_diff = "\n".join(patches)
+                    patches_diff = chunk_diffs[i]
                     get_logger().debug(f"PR diff number {i + 1} for describe files")
                     try:
                         results[i] = await self._describe_chunk(
@@ -546,7 +551,7 @@ class PRDescription:
                 task_indices = []
                 for i, (patches, _files_in_patch) in enumerate(chunk_pairs):
                     if patches:
-                        patches_diff = "\n".join(patches)
+                        patches_diff = chunk_diffs[i]
                         get_logger().debug(f"PR diff number {i + 1} for describe files")
                         task = asyncio.create_task(
                             self._describe_chunk(
@@ -562,6 +567,7 @@ class PRDescription:
                 for chunk_index, result in zip(task_indices, task_results, strict=True):
                     results[chunk_index] = result
             file_description_chunks = []
+            chunk_models = []
             chunk_errors = []
             failed_files = []
             for i, (result, (_patches, files_in_patch)) in enumerate(zip(results, chunk_pairs, strict=True)):
@@ -589,15 +595,20 @@ class PRDescription:
                 required_fields = ['filename', 'changes_title', 'label']
                 if self.vars.get('include_file_summary_changes', True):
                     required_fields.append('changes_summary')
-                valid_file_descriptions = (
-                    isinstance(file_descriptions, list) and file_descriptions and
-                    any(isinstance(file_description, dict) and
-                        all(isinstance(file_description.get(field), str) and file_description[field].strip()
-                            for field in required_fields)
-                        for file_description in file_descriptions)
-                )
-                if valid_file_descriptions:
+                described_files = {
+                    file_description['filename'].strip()
+                    for file_description in (file_descriptions if isinstance(file_descriptions, list) else [])
+                    if isinstance(file_description, dict) and
+                    all(isinstance(file_description.get(field), str) and file_description[field].strip()
+                        for field in required_fields)
+                }
+                if described_files:
                     file_description_chunks.append(file_descriptions)
+                    # Reuse only a chunk that described every file in it: a fallback may complete the others.
+                    described = described_chunks.get(chunk_diffs[i])
+                    if described is None and described_files.issuperset(files_in_patch):
+                        described = described_chunks[chunk_diffs[i]] = (result, model)
+                    chunk_models.append(described[1] if described else model)
                 else:
                     chunk_errors.append(FallbackEligibleError(f"Description chunk {i + 1} returned invalid YAML"))
                     failed_files.extend(files_in_patch)
@@ -665,6 +676,11 @@ class PRDescription:
                 # inline code span.
                 prediction_headers = strip_wrapping_code_fence(prediction_headers.strip()).strip()
             self._require_usable_prediction(prediction_headers)
+            # Reused chunks come from the model that described them; name every model behind the output like /review.
+            models = list(dict.fromkeys([*chunk_models, model]))
+            details = get_run_details()
+            if details is not None and len(models) > 1:
+                details.models_used = models
             if not get_settings().pr_description.enable_semantic_files_types:
                 # Without semantic file types no file walkthrough is rendered, so keep only the headers, as the
                 # one-call path does: the chunks' file summaries serve only as input to the headers call above.
@@ -854,6 +870,9 @@ class PRDescription:
     async def _describe_chunk(self, progress, model: str, patches_diff: str) -> str:
         """Describe one file chunk, then advance the in-place progress comment it runs under."""
         try:
+            described = getattr(self, "_described_chunks", {}).get(patches_diff)
+            if described is not None:
+                return described[0]
             return await self._get_prediction(
                 model,
                 patches_diff,
