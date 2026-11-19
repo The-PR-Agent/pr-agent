@@ -55,6 +55,7 @@ def _github_body(fields):
             "labels": [{"name": label} for label in fields["labels"]],
             "head": {"ref": fields["source_branch"]},
             "base": {"ref": fields["target_branch"]},
+            "user": {"login": fields["sender"]},
         },
         "sender": {"login": fields["sender"]},
         "repository": {"full_name": fields["repo_full_name"]},
@@ -66,6 +67,7 @@ def _bitbucket_payload(fields):
         "data": {
             "pullrequest": {
                 "title": fields["title"],
+                "author": {"nickname": fields["sender"]},
                 "source": {"branch": {"name": fields["source_branch"]}},
                 "destination": {
                     "branch": {"name": fields["target_branch"]},
@@ -151,6 +153,169 @@ def _assert_all(providers, fields, expected, reason, only_with_labels=False):
             continue
         result = should_process(build_payload(fields))
         assert result is expected, f"{name}: expected {expected} for {reason}, got {result}"
+
+
+def test_github_and_gitea_ignore_pr_author_not_event_sender(ignore_settings):
+    ignore_settings.set("CONFIG.IGNORE_PR_AUTHORS", ["blocked"])
+    data = _github_body(_fields(sender="allowed"))
+    data["sender"]["login"] = "blocked"
+    assert github_app.should_process_pr_logic(data) is True
+    assert gitea_app.should_process_pr_logic(data) is True
+
+    data["pull_request"]["user"]["login"] = "blocked"
+    data["sender"]["login"] = "allowed"
+    assert github_app.should_process_pr_logic(data) is False
+    assert gitea_app.should_process_pr_logic(data) is False
+
+    # A malformed or incomplete webhook cannot turn the missing author into
+    # the update actor, or pass None to regex matching.
+    data["pull_request"]["user"]["login"] = None
+    data["sender"]["login"] = "blocked"
+    assert github_app.should_process_pr_logic(data) is True
+    assert gitea_app.should_process_pr_logic(data) is True
+
+
+def test_bitbucket_cloud_ignores_pr_author_not_event_actor(ignore_settings):
+    ignore_settings.set("CONFIG.IGNORE_PR_AUTHORS", ["blocked"])
+    data = _bitbucket_payload(_fields(sender="allowed"))
+    data["data"]["actor"] = {"nickname": "blocked"}
+    assert bitbucket_app.should_process_pr_logic(data) is True
+
+    data["data"]["pullrequest"]["author"]["nickname"] = "blocked"
+    data["data"]["actor"] = {"nickname": "allowed"}
+    assert bitbucket_app.should_process_pr_logic(data) is False
+
+
+def test_bitbucket_cloud_prefers_author_display_name_over_nickname(ignore_settings):
+    ignore_settings.set("CONFIG.IGNORE_PR_AUTHORS", ["Blocked Author"])
+    data = _bitbucket_payload(_fields(sender="allowed"))
+    data["data"]["pullrequest"]["author"] = {
+        "display_name": "Blocked Author", "nickname": "different-nickname"
+    }
+    data["data"]["actor"] = {"display_name": "allowed"}
+    assert bitbucket_app.should_process_pr_logic(data) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["github", "gitlab", "gitea"])
+async def test_webhook_external_host_rules_deny_before_repository_settings(
+    monkeypatch, gitlab_webhook_module, tmp_path, provider,
+):
+    from starlette_context import request_cycle_context
+
+    external = tmp_path / "operator.toml"
+    external.write_text('[config]\nignore_pr_title = ["^Blocked"]\n')
+    settings = copy.deepcopy(get_settings())
+    settings.set("CONFIG.EXTRA_CONFIG_URL", str(external))
+    settings.set("CONFIG.IGNORE_PR_TITLE", [])
+    settings.set("CONFIG.INCLUDE_PR_LABELS", [])
+    dispatched = AsyncMock()
+
+    if provider == "github":
+        body = _github_body(_fields(title="Blocked change"))
+        body["action"] = "opened"
+        monkeypatch.setattr(github_app, "get_log_context", lambda *_: ({}, "alice", 1, "User"))
+        monkeypatch.setattr(github_app, "is_bot_user", lambda *_: False)
+        monkeypatch.setattr(github_app, "revoke_auto_approval_on_push", lambda _: None)
+        monkeypatch.setattr(github_app, "handle_new_pr_opened", dispatched)
+        execute = github_app._dispatch_request(body, "pull_request", "opened")
+    elif provider == "gitlab":
+        body = _gitlab_payload(_fields(title="Blocked change"))
+        body["object_kind"] = "merge_request"
+        body["object_attributes"].update(action="open", url="https://gitlab.com/org/repo/-/merge_requests/1")
+        monkeypatch.setattr(gitlab_webhook_module, "is_bot_user", lambda _: False)
+        monkeypatch.setattr(gitlab_webhook_module, "apply_new_mr_repo_settings", dispatched)
+        execute = gitlab_webhook_module.process_gitlab_event(body, {})
+    else:
+        body = _github_body(_fields(title="Blocked change"))
+        body["action"] = "opened"
+        monkeypatch.setattr(gitea_app, "handle_pr_event", dispatched)
+        execute = gitea_app.handle_request(body, "pull_request")
+
+    with request_cycle_context({"settings": settings, "git_provider": {}}):
+        await execute
+        assert get_settings().get("CONFIG.IGNORE_PR_TITLE") == ["^Blocked"]
+    dispatched.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("author", "actor", "dispatch"), [
+    ("blocked", "allowed", False),
+    ("allowed", "blocked", True),
+])
+async def test_gitlab_host_author_check_uses_mr_author_on_open(
+    gitlab_webhook_module, ignore_settings, monkeypatch, author, actor, dispatch,
+):
+    from starlette_context import request_cycle_context
+
+    ignore_settings.set("CONFIG.IGNORE_PR_AUTHORS", ["blocked"])
+    body = _gitlab_payload(_fields(sender=actor))
+    body["object_kind"] = "merge_request"
+    body["user"]["id"] = 22
+    body["object_attributes"].update(
+        author_id=11, action="open", url="https://gitlab.com/org/repo/-/merge_requests/7"
+    )
+    provider = SimpleNamespace(get_request_policy_metadata=lambda fields: {"sender": author})
+    monkeypatch.setattr(gitlab_webhook_module, "is_bot_user", lambda _data: False)
+    monkeypatch.setattr(gitlab_webhook_module, "get_git_provider", lambda: lambda _url: provider)
+    settings_read = AsyncMock()
+    commands = AsyncMock()
+    monkeypatch.setattr(gitlab_webhook_module, "apply_new_mr_repo_settings", settings_read)
+    monkeypatch.setattr(gitlab_webhook_module, "_perform_commands_gitlab", commands)
+
+    with request_cycle_context({"settings": ignore_settings, "git_provider": {}}):
+        await gitlab_webhook_module.process_gitlab_event(body, {})
+
+    assert settings_read.await_count == int(dispatch)
+    assert commands.await_count == int(dispatch)
+
+
+@pytest.mark.parametrize(("author", "actor", "allowed"), [
+    ("blocked", "collaborator", False),
+    ("collaborator", "blocked", True),
+])
+def test_gitlab_post_repo_author_filter_uses_mr_author(
+    gitlab_webhook_module, ignore_settings, monkeypatch, author, actor, allowed,
+):
+    from starlette_context import request_cycle_context
+
+    # Simulate a repository-only exclusion: the earlier host prefilter did not fetch the author.
+    payload = _gitlab_payload(_fields(sender=actor))
+    payload["user"]["id"] = 22
+    payload["object_attributes"].update(
+        author_id=11, action="update", url="https://gitlab.com/org/repo/-/merge_requests/7"
+    )
+    provider = SimpleNamespace(get_request_policy_metadata=lambda _fields: {"sender": author})
+    get_provider = Mock(return_value=provider)
+    monkeypatch.setattr(gitlab_webhook_module, "get_git_provider_with_context", get_provider)
+
+    with request_cycle_context({"settings": ignore_settings, "git_provider": {}}):
+        ignore_settings.set("CONFIG.IGNORE_PR_AUTHORS", ["blocked"])
+        assert gitlab_webhook_module.should_process_pr_logic(payload) is allowed
+    get_provider.assert_called_once_with(pr_url=payload["object_attributes"]["url"])
+
+
+async def test_gitlab_author_prefilter_uses_uncached_provider(
+    gitlab_webhook_module, ignore_settings, monkeypatch,
+):
+    from starlette_context import context, request_cycle_context
+
+    ignore_settings.set("CONFIG.IGNORE_PR_AUTHORS", ["blocked"])
+    payload = _gitlab_payload(_fields(sender="collaborator"))
+    payload["object_kind"] = "merge_request"
+    payload["user"]["id"] = 22
+    payload["object_attributes"].update(
+        author_id=11, action="open", url="https://gitlab.com/org/repo/-/merge_requests/7"
+    )
+    provider = SimpleNamespace(get_request_policy_metadata=lambda _fields: {"sender": "blocked"})
+    cached_provider = Mock()
+    monkeypatch.setattr(gitlab_webhook_module, "is_bot_user", lambda _data: False)
+    monkeypatch.setattr(gitlab_webhook_module, "get_git_provider", lambda: lambda _url: provider)
+    monkeypatch.setattr(gitlab_webhook_module, "get_git_provider_with_context", cached_provider)
+    with request_cycle_context({"settings": ignore_settings, "git_provider": {}}):
+        await gitlab_webhook_module.process_gitlab_event(payload, {})
+        assert context.get("git_provider") == {}
+    cached_provider.assert_not_called()
 
 
 def test_unfiltered_pr_is_processed_by_every_server(providers, ignore_settings):

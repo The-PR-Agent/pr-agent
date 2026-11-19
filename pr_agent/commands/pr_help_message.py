@@ -15,7 +15,7 @@ from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
 from pr_agent.algo.run_details import init_run_details, record_command_failure
 from pr_agent.algo.run_output import append_run_details
-from pr_agent.algo.token_budget import get_max_input_tokens, get_max_tokens
+from pr_agent.algo.token_budget import get_max_input_tokens, get_max_tokens, prepare_model_token_limits
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.utils import ModelType, load_yaml
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
@@ -179,6 +179,7 @@ class PRHelpMessage:
             }
 
     async def _prepare_prediction(self, model: str) -> dict | str:
+        await prepare_model_token_limits(self.ai_handler, model)
         variables = copy.deepcopy(self.vars)
         system_prompt, user_prompt, fitted_snippets = self._fit_prompts(variables, model)
         response, finish_reason = await self.ai_handler.chat_completion(

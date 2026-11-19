@@ -20,7 +20,7 @@ from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.run_output import append_run_details
 from pr_agent.algo.skills_loader import get_skills_context
-from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.algo.token_budget import AttemptTokenBudget, prepare_model_token_limits
 from pr_agent.algo.utils import ModelType, decode_user_text_args
 from pr_agent.commands.pr_questions import REPO_CONTEXT_OMITTED_NOTE, _sanitize_slash_commands
 from pr_agent.config_loader import get_settings, get_verbosity_level
@@ -228,6 +228,8 @@ class PR_LineQuestions:
             return ""
 
     async def _get_prediction(self, model: str):
+        self._ensure_ai_handler()
+        await prepare_model_token_limits(self.ai_handler, model)
         variables = copy.deepcopy(self.vars)
         variables["full_hunk"] = self.patch_with_lines  # update diff
         variables["selected_lines"] = self.selected_lines

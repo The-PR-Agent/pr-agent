@@ -22,7 +22,7 @@ from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, _as_ssl_verify_setting, normalize_setting_list
 from pr_agent.config_loader import get_bot_display_name, get_settings, global_settings
-from pr_agent.git_providers import get_git_provider_with_context
+from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.git_providers.request_timeout import get_http_request_timeout, refresh_session_request_timeout
 from pr_agent.git_providers.utils import apply_host_settings, apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
@@ -36,7 +36,9 @@ from pr_agent.servers.utils import (
     get_pr_commands,
     is_ask_command_comment,
     is_command_comment,
+    load_host_settings_for_webhook,
     payload_log_summary,
+    pin_host_settings_source_for_webhook,
     push_trigger_slot,
     shared_should_process_pr_logic,
 )
@@ -101,7 +103,7 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
     if auto_feedback_disabled():
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}", **log_context)
         return
-    if not should_process_pr_logic(data): # Here we already updated the configurations
+    if not await asyncio.to_thread(should_process_pr_logic, data): # Here we already updated the configurations
         return
     commands = (
         get_pr_commands("gitlab")
@@ -131,6 +133,8 @@ def is_bot_user(data) -> bool:
     try:
         # logic to ignore bot users (unlike GitHub, no direct flag for bot users in gitlab)
         user = data.get("user") or {}
+        if not isinstance(user, dict):
+            user = {}
         # gitlab.ignore_user_ids may arrive as a list, a single int (GITLAB__IGNORE_USER_IDS=123)
         # or a string, including a comma-separated one (GITLAB__IGNORE_USER_IDS=123,456),
         # so split commas and compare every entry as a stripped string.
@@ -295,7 +299,33 @@ async def is_bot_assigned_as_reviewer(data) -> bool:
     return False
 
 def should_process_pr_logic(data) -> bool:
-    return shared_should_process_pr_logic(data, provider="gitlab")
+    """Use the MR author for effective repository exclusions, not the update actor."""
+    author = None
+    attributes = data.get("object_attributes") if isinstance(data, dict) else None
+    actor = data.get("user") if isinstance(data, dict) else None
+    if not isinstance(actor, dict):
+        actor = {}
+    if (
+        isinstance(attributes, dict)
+        and attributes.get("author_id") is not None
+        and str(attributes["author_id"]) != str(actor.get("id"))
+        and get_settings().get("CONFIG.IGNORE_PR_AUTHORS")
+    ):
+        # An unknown author must not fall back to the webhook actor. Keep
+        # unavailable author metadata best-effort, as with the host prefilter.
+        author = ""
+        if attributes.get("url"):
+            try:
+                # This post-settings path reuses the provider loaded by apply_repo_settings.
+                metadata = get_git_provider_with_context(
+                    pr_url=attributes["url"]
+                ).get_request_policy_metadata({"sender"})
+                author = metadata.get("sender") or ""
+            except Exception as error:
+                get_logger().warning(
+                    f"Unable to resolve GitLab MR author for repository exclusion ({type(error).__name__})"
+                )
+    return shared_should_process_pr_logic(data, provider="gitlab", sender=author)
 
 
 def _is_merge_request_not_found(error: Exception) -> bool:
@@ -362,6 +392,9 @@ async def authenticate_gitlab_webhook(request: Request, log_context: dict):
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
                                 content=jsonable_encoder({"message": "unauthorized"}))
     if not get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None):
+        # Authentication can be the first reader of external host settings.
+        # Pin the source before that read changes EXTRA_CONFIG_URL.
+        pin_host_settings_source_for_webhook()
         await asyncio.to_thread(apply_host_settings)
     gitlab_token = get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
     if not gitlab_token:
@@ -395,6 +428,7 @@ async def restore_gitlab_handoff_auth(auth: dict | None, log_context: dict):
         context["authenticated_provider_settings"] = {"gitlab.personal_access_token": gitlab_token}
         log_context["token_id"] = secret_dict.get("token_name", secret_dict.get("id", "unknown"))
     if not get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None):
+        pin_host_settings_source_for_webhook()
         await asyncio.to_thread(apply_host_settings)
     if not get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None):
         raise RuntimeError("No GitLab API credential available for the hand-off")
@@ -434,12 +468,14 @@ def revoke_auto_approval_on_push(data: dict) -> None:
     """
     if data.get("object_kind") != "merge_request":
         return
-    object_attributes = data.get("object_attributes") or {}
+    object_attributes = data.get("object_attributes")
+    if not isinstance(object_attributes, dict):
+        return
     if object_attributes.get("action") != "update":
         return
     if object_attributes.get("oldrev"):
         why = "new commits were pushed"
-    elif "target_branch" in (data.get("changes") or {}):
+    elif isinstance(data.get("changes"), dict) and "target_branch" in data["changes"]:
         why = "the target branch changed"
     else:
         return
@@ -472,9 +508,24 @@ async def process_gitlab_event(data: dict, log_context: dict):
     directly in the second Lambda invocation when the webhook was handed off.
     """
     get_logger().info("GitLab data", artifact=payload_log_summary(data, ("object_kind",)))
-    revoke_auto_approval_on_push(data)
-    sender = data.get("user", {}).get("username", "unknown")
-    sender_id = data.get("user", {}).get("id", "unknown")
+    if data.get("object_kind") != "merge_request" and context.exists():
+        # Authentication may pin the source before the event type is known.
+        # Keep manual note commands' existing host-loading behavior unchanged.
+        context.pop("automatic_host_settings_source", None)
+    try:
+        if data.get("object_kind") == "merge_request":
+            attributes = data.get("object_attributes")
+            changes = data.get("changes")
+            if (isinstance(attributes, dict) and attributes.get("action") == "update"
+                    and (attributes.get("oldrev") or (isinstance(changes, dict) and "target_branch" in changes))):
+                await load_host_settings_for_webhook()
+    finally:
+        revoke_auto_approval_on_push(data)
+    actor = data.get("user") or {}
+    if not isinstance(actor, dict):
+        actor = {}
+    sender = actor.get("username", "unknown")
+    sender_id = actor.get("id", "unknown")
 
     # ignore bot users
     if is_bot_user(data):
@@ -482,10 +533,43 @@ async def process_gitlab_event(data: dict, log_context: dict):
 
     log_context["sender"] = sender
     if data.get('object_kind') == 'merge_request':
-        # ignore MRs based on title, labels, source and target branches
+        attributes = data.get('object_attributes')
+        if not isinstance(attributes, dict) or attributes.get('action') not in ('open', 'reopen', 'update'):
+            return
+        if attributes.get("action") == "update" and not attributes.get("oldrev") and not is_draft_ready(data):
+            changes = data.get("changes")
+            if not isinstance(changes, dict) or "reviewers" not in changes:
+                return
+        await load_host_settings_for_webhook()
+
+        # GitLab's event user is the actor. When a different user authored the
+        # MR, resolve the author only if a host author exclusion needs it.
+        author_override = None
+        author_id = attributes.get("author_id")
+        if (author_id is not None and str(author_id) != str(actor.get("id"))
+                and get_settings().get("CONFIG.IGNORE_PR_AUTHORS")):
+            author_override = ""
+            pr_url = attributes.get("url")
+            if pr_url:
+                try:
+                    metadata = await asyncio.to_thread(
+                        # Keep this early metadata read out of the request provider cache:
+                        # push commands must load a fresh MR after acquiring their slot.
+                        lambda: get_git_provider()(pr_url).get_request_policy_metadata({"sender"})
+                    )
+                    author_override = metadata.get("sender") or ""
+                except Exception as error:
+                    get_logger().warning(
+                        f"Unable to resolve GitLab MR author for host exclusion ({type(error).__name__})"
+                    )
+
+        # Defer the positive label gate; repository settings may supply it.
         prefilter_allowed = (
-            shared_should_process_pr_logic(data, provider="gitlab", check_include_labels=False)
-            if get_include_pr_labels() else should_process_pr_logic(data)
+            shared_should_process_pr_logic(
+                data, provider="gitlab", sender=author_override, check_include_labels=False
+            ) if author_override is not None
+            else (shared_should_process_pr_logic(data, provider="gitlab", check_include_labels=False)
+                  if get_include_pr_labels() else should_process_pr_logic(data))
         )
         if not prefilter_allowed:
             return
@@ -555,7 +639,7 @@ async def process_gitlab_event(data: dict, log_context: dict):
                                     content=jsonable_encoder({"message": "success"}))
 
             # Check PR logic after applying repo settings
-            if not should_process_pr_logic(data):
+            if not await asyncio.to_thread(should_process_pr_logic, data):
                 return JSONResponse(
                     status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"}))
 

@@ -209,8 +209,7 @@ For example: `GITLAB.PERSONAL_ACCESS_TOKEN` --> `GITLAB__PERSONAL_ACCESS_TOKEN`
 
 4. Create a lambda function that uses the uploaded image. Add the IAM permission `lambda:InvokeFunction` on the function itself to the execution role: the webhook is acknowledged as soon as its token is validated, and the review runs in a second, asynchronous invocation of the same function. Set the lambda timeout for the review length (for example 5m) — it no longer needs to cover the webhook acknowledgement. Lambda retries a timed-out or failed asynchronous invocation twice by default, which would run the review again; set the function's asynchronous invocation retry attempts to 0 if you do not want that.
 5. Configure the lambda function to have a Function URL.
-6. In the environment variables of the Lambda function, specify `AZURE_DEVOPS_CACHE_DIR` to a writable location such as /tmp. (see [link](https://github.com/the-pr-agent/pr-agent/pull/450#issuecomment-1840242269))
-7. Go back to steps 8-9 of [Run a GitLab webhook server](#run-a-gitlab-webhook-server) with the function URL as your Webhook URL.
+6. Go back to steps 8-9 of [Run a GitLab webhook server](#run-a-gitlab-webhook-server) with the function URL as your Webhook URL.
     The Webhook URL would look like `https://<LAMBDA_FUNCTION_URL>/webhook`
 
 The asynchronous hand-off carries the verified payload, event UUID and authentication

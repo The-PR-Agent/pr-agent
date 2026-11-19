@@ -41,7 +41,6 @@ from ..algo.inline_comment_dedup import (
     body_with_markers,
     code_fingerprint,
     get_inline_comment_store,
-    has_marker,
     strip_markers,
 )
 from ..algo.language_handler import is_valid_file
@@ -1375,7 +1374,17 @@ class GithubProvider(GitProvider):
     def publish_inline_comments(self, comments: list[dict], disable_fallback: bool = False):
         store = None
         pending_fingerprints = []
+        fallback_fingerprints = {}
+        dedup_body_fp_key = "_dedup_body_fp"
         dedup_code_fp_key = "_dedup_code_fp"
+        dedup_marked_key = "_dedup_already_marked"
+        dedup_key_issue_key = "_dedup_key_issue"
+        internal_dedup_keys = (
+            dedup_body_fp_key,
+            dedup_code_fp_key,
+            dedup_marked_key,
+            dedup_key_issue_key,
+        )
         if get_settings().get("config.persistent_inline_comments", False):
             store = get_inline_comment_store(self)
             local_seen = set()
@@ -1387,33 +1396,40 @@ class GithubProvider(GitProvider):
                     continue
                 path = comment.get("path", "")
                 body = comment.get("body", "")
-                # GitHub committable comments are anchored by diff position, which
-                # shifts as the PR gains commits; anchor the fingerprint on the file
-                # path and comment content instead so it stays stable across runs.
-                body_fp = body_fingerprint(path, None, body)
-                pre_transform_code_fp = comment.get(dedup_code_fp_key)
-                code_fp = pre_transform_code_fp or code_fingerprint(path, None, body)
+                is_key_issue = bool(comment.get(dedup_key_issue_key))
+                already_marked = bool(comment.get(dedup_marked_key))
+                marked = {key: value for key, value in comment.items() if key not in internal_dedup_keys}
+                if is_key_issue:
+                    deduped.append(marked)
+                    fallback_fingerprints[id(marked)] = None
+                    continue
+                if already_marked:
+                    body_fp = comment.get(dedup_body_fp_key)
+                    code_fp = comment.get(dedup_code_fp_key)
+                else:
+                    # GitHub committable comments are anchored by diff position, which
+                    # shifts as the PR gains commits; anchor the fingerprint on the file
+                    # path and comment content instead so it stays stable across runs.
+                    body_fp = comment.get(dedup_body_fp_key) or body_fingerprint(path, None, body)
+                    code_fp = comment.get(dedup_code_fp_key) or code_fingerprint(path, None, body)
+                recorded_fps = [fp for fp in (body_fp, code_fp) if fp]
                 # A fallback re-publish (disable_fallback=True) is for a comment
                 # that has not been posted yet, so do not filter it; only the
                 # top-level call drops duplicates. The fallback still gets marked
                 # and recorded below so it dedups on later runs.
-                if not disable_fallback and (
-                        store.seen(body_fp) or store.seen(code_fp)
-                        or body_fp in local_seen or (code_fp and code_fp in local_seen)):
+                if not disable_fallback and any(
+                    store.seen(fp) or fp in local_seen for fp in recorded_fps
+                ):
                     skipped += 1
                     continue
-                marked = dict(comment)
-                marked.pop(dedup_code_fp_key, None)
-                if has_marker(body):
-                    pass  # already carries a marker from the first pass
-                else:
+                if not already_marked:
                     marked["body"] = body_with_markers(
-                        body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
+                        body, body_fp, code_fp, getattr(self, "max_comment_chars", None)
+                    )
                 deduped.append(marked)
-                local_seen.add(body_fp)
-                if code_fp:
-                    local_seen.add(code_fp)
-                pending_fingerprints.append((body_fp, code_fp))
+                fallback_fingerprints[id(marked)] = (body_fp, code_fp)
+                local_seen.update(recorded_fps)
+                pending_fingerprints.extend(recorded_fps)
             if skipped and not any(deduped):
                 get_logger().info(
                     f"Persistent inline comments: all {skipped} suggestion(s) "
@@ -1422,7 +1438,7 @@ class GithubProvider(GitProvider):
             comments = deduped
         else:
             comments = [
-                {key: value for key, value in comment.items() if key != dedup_code_fp_key}
+                {key: value for key, value in comment.items() if key not in internal_dedup_keys}
                 if comment else comment
                 for comment in comments
             ]
@@ -1440,9 +1456,8 @@ class GithubProvider(GitProvider):
             # posted bodies, so comments the fallback below drops stay unrecorded
             # and can be retried on a later run.
             if store is not None:
-                for body_fp, code_fp in pending_fingerprints:
-                    store.add(body_fp)
-                    store.add(code_fp)
+                for fp in pending_fingerprints:
+                    store.add(fp)
             return True
         except (GithubException, RequestException) as e:
             get_logger().info("Initially failed to publish inline comments as committable")
@@ -1452,12 +1467,15 @@ class GithubProvider(GitProvider):
             else:
                 raise e # will end up with publishing the comments one by one
 
+            self._fallback_fingerprints = fallback_fingerprints if store is not None else None
             try:
                 published_count = self._publish_inline_comments_fallback_with_verification(comments)
                 return bool(published_count)
             except Exception as e:
                 get_logger().error(f"Failed to publish inline code comments fallback, error: {e}")
                 raise
+            finally:
+                self._fallback_fingerprints = None
 
     def _publishable_comment(self, body: str) -> str:
         text, marker = split_review_state_marker(body)
@@ -1704,17 +1722,36 @@ class GithubProvider(GitProvider):
         For invalid comments, also try removing the suggestion part and posting the comment just on the first line.
         """
         published_count = 0
+        fallback_fps = getattr(self, "_fallback_fingerprints", None)
         verified_comments, invalid_comments = self._verify_code_comments(comments)
 
         # publish as a group the verified comments
         if verified_comments:
             self.pr.create_review(commit=self.last_commit_id, event="COMMENT", comments=verified_comments)
             self._remember_published_inline_comment_bodies(verified_comments)
+            if fallback_fps:
+                store = get_inline_comment_store(self)
+                for comment in verified_comments:
+                    for fp in fallback_fps.get(id(comment)) or ():
+                        store.add(fp)
             published_count += len(verified_comments)
 
         # try to publish one by one the invalid comments as a one-line code comment
         if invalid_comments and get_settings().github.try_fix_invalid_inline_comments:
-            invalid_comments_list = [comment for comment, _ in invalid_comments]
+            invalid_comments_list = []
+            for comment, _ in invalid_comments:
+                if fallback_fps is not None and comment and id(comment) in fallback_fps:
+                    fps = fallback_fps[id(comment)]
+                    if fps is None:
+                        comment = {**comment, "_dedup_key_issue": True}
+                    else:
+                        comment = {
+                            **comment,
+                            "_dedup_already_marked": True,
+                            "_dedup_body_fp": fps[0],
+                            "_dedup_code_fp": fps[1],
+                        }
+                invalid_comments_list.append(comment)
             fixed_comments_as_one_liner = self._try_fix_invalid_inline_comments(invalid_comments_list)
             for comment in fixed_comments_as_one_liner:
                 try:
@@ -1819,8 +1856,12 @@ class GithubProvider(GitProvider):
     def _prepare_code_suggestions(self, code_suggestions: list) -> list:
         code_suggestions_with_fingerprints = copy.deepcopy(code_suggestions)
         for suggestion in code_suggestions_with_fingerprints:
-            suggestion["_dedup_code_fp"] = code_fingerprint(
-                suggestion.get("relevant_file", ""), None, suggestion.get("body", ""))
+            if suggestion.get("_dedup_key_issue"):
+                continue
+            relevant_file = suggestion.get("relevant_file", "")
+            body = suggestion.get("body", "")
+            suggestion["_dedup_body_fp"] = body_fingerprint(relevant_file, None, body)
+            suggestion["_dedup_code_fp"] = code_fingerprint(relevant_file, None, body)
         if getattr(getattr(self, "incremental", None), "head_sha", None):
             return code_suggestions_with_fingerprints
         return self.validate_comments_inside_hunks(code_suggestions_with_fingerprints)
@@ -1833,21 +1874,26 @@ class GithubProvider(GitProvider):
         relevant_lines_start = suggestion["relevant_lines_start"]
         relevant_lines_end = suggestion["relevant_lines_end"]
         if relevant_lines_end > relevant_lines_start:
-            return {
+            payload = {
                 "body": body,
                 "path": relevant_file,
                 "line": relevant_lines_end,
                 "start_line": relevant_lines_start,
                 "start_side": "RIGHT",
-                "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
             }
-        return {
-            "body": body,
-            "path": relevant_file,
-            "line": relevant_lines_start,
-            "side": "RIGHT",
-            "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
-        }
+        else:
+            payload = {
+                "body": body,
+                "path": relevant_file,
+                "line": relevant_lines_start,
+                "side": "RIGHT",
+            }
+        if suggestion.get("_dedup_key_issue"):
+            payload["_dedup_key_issue"] = True
+        else:
+            payload["_dedup_body_fp"] = suggestion.get("_dedup_body_fp")
+            payload["_dedup_code_fp"] = suggestion.get("_dedup_code_fp")
+        return payload
 
     def edit_comment(self, comment, body: str):
         try:

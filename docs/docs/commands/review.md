@@ -99,6 +99,13 @@ for the authoritative default values.
     <td>
       Set to false to suppress the "Failed to review PR" comment, including when a persistent review comment
       cannot be updated. Successful review output and the command's failure status are unchanged. Default is true.
+      On GitHub, GitLab, and Azure DevOps, when the comment author can be verified, repeated failures update one
+      comment instead of adding another, and the next review that completes removes it. If the provider rejects
+      that edit or removal, the earlier comment stays and no other is added. A review in which some chunks failed
+      keeps it; files left out for the token budget do not. With
+      <code>gitlab.reply_to_trigger_comment</code>, each failure still replies to its own command, and a persistent
+      review comment that cannot be updated gets a comment of its own each time. Those are removed the same way,
+      and so are the failure comments of earlier versions.
     </td>
   </tr>
   <tr>

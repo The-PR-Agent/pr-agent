@@ -10,6 +10,7 @@ from openai import APIError
 from starlette_context import request_cycle_context
 
 from pr_agent.algo.run_details import command_failed, init_run_details
+from pr_agent.algo.token_budget import FallbackEligibleError, ModelContextPreparationError
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.commands.pr_questions import (
     FILE_QUESTION_BUDGET_NOTE,
@@ -361,6 +362,48 @@ async def test_file_question_reports_a_fixed_prompt_budget_failure_before_prepar
     command.ai_handler.chat_completion.assert_not_awaited()
     assert FILE_QUESTION_BUDGET_NOTE in _file_answer(command.git_provider)
     command.git_provider.remove_initial_comment.assert_called_once()
+
+
+@pytest.mark.parametrize("backup_can_prepare", [False, True])
+async def test_file_question_keeps_exhausted_model_context_failure(file_question, monkeypatch, backup_can_prepare):
+    get_settings().set("config.fallback_models", [BACKUP])
+    error = ModelContextPreparationError("OpenRouter metadata HTTP 503")
+    prepare = AsyncMock(side_effect=[error, None if backup_can_prepare else error])
+    monkeypatch.setattr("pr_agent.commands.pr_questions.prepare_model_token_limits", prepare)
+    if backup_can_prepare:
+        def no_room(*_args, **_kwargs):
+            raise FallbackEligibleError("backup prompt does not fit")
+
+        monkeypatch.setattr("pr_agent.commands.pr_questions.AttemptTokenBudget.for_prompt_attempt", no_room)
+
+    with pytest.raises(Exception, match="OpenRouter metadata HTTP 503") as failure:
+        await file_question.run()
+
+    assert type(failure.value.__cause__) is (
+        FallbackEligibleError if backup_can_prepare else ModelContextPreparationError
+    )
+    assert [call.args[1] for call in prepare.await_args_list] == ["gpt-4o", BACKUP]
+    file_question.ai_handler.chat_completion.assert_not_awaited()
+    file_question.git_provider.reply_to_comment_from_comment_id.assert_not_called()
+
+
+async def test_file_question_reports_fit_failure_after_same_model_recovers(file_question, monkeypatch):
+    weak_model = "openrouter/example/weak"
+    get_settings().set("config.model_weak", weak_model)
+    get_settings().set("config.fallback_models", [weak_model])
+    prepare = AsyncMock(side_effect=[TimeoutError("metadata timeout"), None])
+    monkeypatch.setattr("pr_agent.commands.pr_questions.prepare_model_token_limits", prepare)
+
+    def no_room(*_args, **_kwargs):
+        raise FallbackEligibleError("fixed prompt does not fit")
+
+    monkeypatch.setattr("pr_agent.commands.pr_questions.AttemptTokenBudget.for_prompt_attempt", no_room)
+
+    await file_question.run()
+
+    assert [call.args[1] for call in prepare.await_args_list] == [weak_model, weak_model]
+    assert FILE_QUESTION_BUDGET_NOTE in _file_answer(file_question.git_provider)
+    file_question.ai_handler.chat_completion.assert_not_awaited()
 
 
 async def test_file_question_keeps_the_budget_note_when_the_question_reaches_the_comment_limit(file_question):

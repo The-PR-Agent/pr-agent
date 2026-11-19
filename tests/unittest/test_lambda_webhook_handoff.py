@@ -9,6 +9,7 @@ network.
 
 import asyncio
 import concurrent.futures
+import copy
 import hashlib
 import hmac
 import json
@@ -174,6 +175,44 @@ def test_github_lambda_handler_runs_the_dispatcher_for_a_handoff_event(aws_lambd
     assert result == {}
     handle_request.assert_awaited_once_with(body, event="issue_comment", delivery_id="delivery-1")
     invoke_client.invoke.assert_not_called()
+
+
+@pytest.mark.parametrize(("host_override", "initial_override", "expected_mode"), [
+    (True, True, "app"), (True, False, "app"),
+    (False, True, "user"), ("false", True, "user"),
+    (None, None, "app"), (None, "false", "user"),
+])
+def test_github_lambda_handoff_honors_host_deployment_override(
+    aws_lambda, invoke_client, monkeypatch, tmp_path, host_override, initial_override, expected_mode,
+):
+    from pr_agent.git_providers.utils import apply_host_settings
+
+    host = tmp_path / "host.toml"
+    host_toml = '[github]\ndeployment_type = "user"\n'
+    if host_override is not None:
+        value = f'"{host_override}"' if isinstance(host_override, str) else str(host_override).lower()
+        host_toml = f'[github_app]\noverride_deployment_type = {value}\n' + host_toml
+    host.write_text(host_toml)
+    settings = copy.deepcopy(lambda_handoff.global_settings)
+    settings.set("CONFIG.EXTRA_CONFIG_URL", str(host))
+    if initial_override is None:
+        settings.unset("GITHUB_APP")
+    else:
+        settings.set("GITHUB_APP.OVERRIDE_DEPLOYMENT_TYPE", initial_override)
+    settings.set("GITHUB.DEPLOYMENT_TYPE", "app")
+    monkeypatch.setattr(lambda_handoff, "global_settings", settings)
+    monkeypatch.setenv("GITHUB__DEPLOYMENT_TYPE", "user")
+    seen = []
+
+    async def inspect_dispatch(_body, **_kwargs):
+        apply_host_settings()
+        seen.append(get_settings().get("GITHUB.DEPLOYMENT_TYPE"))
+        return {}
+
+    monkeypatch.setattr(github_app, "handle_request", inspect_dispatch)
+    handoff = lambda_handoff.build_handoff_event("github", {"installation": {"id": 42}}, {})
+    assert github_lambda.lambda_handler(handoff, SimpleNamespace()) == {}
+    assert seen == [expected_mode]
 
 
 def test_handoff_does_not_break_the_next_webhook_on_a_warm_container(aws_lambda, invoke_client, monkeypatch):
