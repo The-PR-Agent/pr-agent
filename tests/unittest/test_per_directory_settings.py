@@ -8,6 +8,7 @@ from gitlab.exceptions import GitlabGetError
 from starlette_context import context, request_cycle_context
 
 from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.config_security import REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS
 from pr_agent.git_providers import utils as git_utils
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
@@ -598,6 +599,51 @@ num_max_findings = 4
 
         assert get_settings().get("openai.api_base", None) != "https://evil.example.com"
         assert get_settings().pr_reviewer.num_max_findings == 4
+
+    def test_overridable_sections_exist_in_default_settings(self, fresh_global_settings):
+        """Every per-directory section must be a real settings section.
+
+        `pr_help` has no defaults but is read by the help command, so it is the only exception.
+        """
+        default_sections = {section.lower() for section in global_settings.as_dict()}
+
+        missing = set(REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS) - default_sections - {"pr_help"}
+
+        assert missing == set()
+
+    def test_removed_command_section_is_ignored_with_warning(self, per_dir_settings, monkeypatch):
+        from loguru import logger as loguru_logger
+
+        config = b"""
+[pr_analyze]
+enable_help_text = true
+
+[pr_reviewer]
+num_max_findings = 4
+"""
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                root_settings=b"",
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": config},
+                files=["services/api.py"],
+            ),
+        )
+
+        captured_lines = []
+        sink_id = loguru_logger.add(
+            lambda msg: captured_lines.append(str(msg)),
+            level="WARNING",
+        )
+        try:
+            git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+        finally:
+            loguru_logger.remove(sink_id)
+
+        assert get_settings().get("pr_analyze", None) is None
+        assert get_settings().pr_reviewer.num_max_findings == 4
+        assert any("Ignoring section [pr_analyze] from per-directory settings" in line for line in captured_lines)
 
     def test_write_or_url_trigger_keys_are_dropped_in_per_directory(self, per_dir_settings, monkeypatch):
         config = b"""
