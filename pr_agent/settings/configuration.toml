@@ -586,7 +586,7 @@ allow_fallbacks = true # when provider_order is set, allow routing beyond the li
 reasoning_effort = ""
 # Use a positive value to override global effort and non-none OpenRouter-specific efforts.
 # Keep reasoning disabled for explicit openrouter.reasoning_effort = "none", except on
-# Grok 4.5/4.6, Gemini 3.7/3.8 Flash, and the GPT-6 models whose pages omit "none"
+# Grok 4.5/4.6, Gemini 3.7/3.8 Flash, Gemini 4 Argon, and the GPT-6 models whose pages omit "none"
 # (GPT-6 Astra and GPT-6.1 Sol). Clamp "none" to the lowest supported effort there
 # before applying the budget, so a positive budget wins.
 # Keep max_tokens greater than the reasoning budget where the provider requires it.

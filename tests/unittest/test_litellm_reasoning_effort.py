@@ -1367,14 +1367,40 @@ class TestLiteLLMReasoningEffortGemini:
                 assert call_kwargs["model"] == model, f"model mutated for {model}: {call_kwargs['model']}"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", [
+        "gemini/gemini-4-argon",
+        "vertex_ai/gemini-4-argon",
+    ])
+    async def test_gemini_4_argon_gets_reasoning_effort(self, monkeypatch, mock_logger, model):
+        """Gemini 4 Argon receives the configured reasoning_effort through both provider prefixes.
+
+        The bare "gemini-4-argon" spelling is not registered in litellm's cost map, so the
+        probe leaves it on the no-effort path; the provider prefixes are the documented ids.
+        """
+        fake_settings = create_mock_settings("high")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        self._isolate_env(monkeypatch)
+
+        with patch(ACOMPLETION_PATCH_TARGET, new_callable=AsyncMock) as mock_completion:
+            mock_completion.return_value = create_mock_acompletion_response()
+
+            handler = LiteLLMAIHandler()
+            await handler.chat_completion(model=model, system="test system", user="test user")
+
+            call_kwargs = mock_completion.call_args[1]
+            assert call_kwargs["reasoning_effort"] == "high", f"failed for {model}"
+
+    @pytest.mark.asyncio
     async def test_non_listed_gemini_gets_no_reasoning_effort(self, monkeypatch, mock_logger):
         """A Gemini id the bundled cost map does not flag as reasoning-capable must not receive reasoning_effort.
 
         Locks in the deliberate 3.x exclusions: gemini-3.1-flash and gemini-3.5-pro
         are absent from litellm's bundled cost map, and gemini-3.1-pro resolves
         only under the deepinfra/google/ prefix, so the metadata probe's suffix
-        lookup never flags their native spellings. Do not re-add them without
-        checking the bundled registry first.
+        lookup never flags their native spellings. The bare "gemini-4-argon"
+        spelling joins them because litellm registers only its gemini/ and
+        vertex_ai/ prefixed forms. Do not re-add them without checking the
+        bundled registry first.
         """
         fake_settings = create_mock_settings("low")
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
@@ -1386,6 +1412,7 @@ class TestLiteLLMReasoningEffortGemini:
             "gemini/gemini-3.1-flash",
             "gemini/gemini-3.1-pro",
             "gemini-3.5-pro",
+            "gemini-4-argon",
         ):
             with patch(ACOMPLETION_PATCH_TARGET, new_callable=AsyncMock) as mock_completion:
                 mock_completion.return_value = create_mock_acompletion_response()
@@ -1619,6 +1646,13 @@ class TestLiteLLMReasoningEffortGrok:
             ("vertex_ai/gemini-3.8-flash", "minimal", "low"),
             ("openrouter/google/gemini-3.8-flash", "minimal", "low"),
             ("openrouter/google/gemini-3.8-flash:nitro", "minimal", "low"),
+            # Gemini 4 Argon documents low/medium/high thinking levels, like 3.7/3.8 Flash.
+            ("gemini-4-argon", "minimal", "low"),
+            ("gemini/gemini-4-argon", "minimal", "low"),
+            ("vertex_ai/gemini-4-argon", "minimal", "low"),
+            ("gemini/gemini-4-argon", "none", "none"),
+            ("gemini/gemini-4-argon", "low", "low"),
+            ("gemini/gemini-4-argon", "high", "high"),
             ("gemini/gemini-3.7-flash", "low", "low"),
             ("gemini/gemini-3.7-flash", "medium", "medium"),
             ("gemini/gemini-3.7-flash", "high", "high"),

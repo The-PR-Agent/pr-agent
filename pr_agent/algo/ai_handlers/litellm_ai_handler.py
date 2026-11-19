@@ -2137,16 +2137,20 @@ class LiteLLMAIHandler(BaseAiHandler):
 
     @staticmethod
     def _uses_gemini_low_reasoning_floor(model: str) -> bool:
-        """Return whether Gemini reasoning needs a supported-level floor."""
+        """Return whether a model needs a floor for unsupported Gemini thinking levels.
+
+        These ids document low/medium/high only: clamp "minimal" to "low" on the
+        direct path, and clamp "none" to "low" on the OpenRouter path.
+        """
         normalized_model = model.rsplit(":", 1)[0] if model.startswith("openrouter/") else model
         return any(
             normalized_model == gemini_id or normalized_model.endswith("/" + gemini_id)
-            for gemini_id in ("gemini-3.7-flash", "gemini-3.8-flash")
+            for gemini_id in ("gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon")
         )
 
     @classmethod
     def _clamp_gemini_reasoning_effort(cls, model: str, reasoning_effort: str) -> str:
-        """Map unsupported Gemini 3.x ``minimal`` effort to the nearest level."""
+        """Map unsupported Gemini ``minimal`` effort to the nearest level."""
         if cls._uses_gemini_low_reasoning_floor(model) and reasoning_effort == "minimal":
             return "low"
         return reasoning_effort
