@@ -310,6 +310,7 @@ MAX_TOKENS = {
     'vertex_ai/gemini-4-argon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'vertex_ai/gemini-4-carbon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'vertex_ai/gemini-4-hydrogen': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
+    'vertex_ai/gemini-4-neon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'gemini/gemini-3.1-flash': 1048576,
     'gemini/gemini-3.1-pro': 1048576,
     'gemini/gemini-3.5-pro': 1048576,
@@ -317,6 +318,7 @@ MAX_TOKENS = {
     'gemini/gemini-4-argon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'gemini/gemini-4-carbon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'gemini/gemini-4-hydrogen': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
+    'gemini/gemini-4-neon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     # -- Bedrock Claude ----------------------------------------------------
     'bedrock/anthropic.claude-sonnet-4-20250514-v1:0': 200000,
     # -- Bedrock Claude (cross-region) -------------------------------------
