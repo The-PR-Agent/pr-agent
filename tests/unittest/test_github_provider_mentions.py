@@ -188,7 +188,7 @@ def test_premarked_key_issue_body_is_neutralized(monkeypatch):
     provider = _make_provider()
     marked = key_issue_body_with_markers(TEXT, "a" * 12, "b" * 12)
 
-    provider.publish_inline_comments([{"path": "src/a.py", "line": 3, "body": marked}])
+    provider.publish_inline_comments([{"path": "src/a.py", "line": 3, "body": marked, "_dedup_key_issue": True}])
 
     body = _reviewed_bodies(provider)[0]
     assert body.startswith(NEUTRAL)

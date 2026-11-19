@@ -1442,11 +1442,10 @@ class GithubProvider(GitProvider):
                 if comment else comment
                 for comment in comments
             ]
-        comments = [
-            {**comment, "body": self._publishable_inline_body(comment["body"])}
-            if comment and "body" in comment else comment
-            for comment in comments
-        ]
+        # in place, fallback_fingerprints is keyed by id() of these dicts
+        for comment in comments:
+            if comment and "body" in comment:
+                comment["body"] = self._publishable_inline_body(comment["body"])
         try:
             # publish all comments in a single message
             self.pr.create_review(commit=self.last_commit_id, event="COMMENT", comments=comments)
