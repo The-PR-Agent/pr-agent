@@ -2,7 +2,7 @@ name: PR-Agent
 
 on:
   pull_request_target:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review, synchronize]
   issue_comment:
     types: [created]
   workflow_dispatch:
@@ -23,10 +23,10 @@ jobs:
   prepare_review:
     # A cheap pre-filter only: the "Authorize comment command" step is the real gate.
     if: >-
-      github.event.sender.type != 'Bot' &&
+      (github.event.sender.type != 'Bot' || github.event.action == 'synchronize') &&
       (
         github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'pull_request_target' && !github.event.pull_request.draft) ||
+        (github.event_name == 'pull_request_target' && (!github.event.pull_request.draft || github.event.action == 'synchronize')) ||
         (
           github.event_name == 'issue_comment' &&
           github.event.issue.pull_request &&
@@ -146,6 +146,7 @@ jobs:
         run: |
           set -euo pipefail
           EVENT_FILE=${REPLAY_EVENT_FILE:-$GITHUB_EVENT_PATH}
+          [[ "$(jq -r '.action // ""' "$EVENT_FILE")" != "synchronize" ]] || exit 0
           if [[ "$EVENT_NAME" == "issue_comment" ]]; then
             body=$(jq -r '.comment.body // ""' "$EVENT_FILE")
             [[ "${body%%[[:space:]]*}" == "/review" ]] || exit 0
@@ -384,6 +385,12 @@ jobs:
           CONFIG__MAX_OUTPUT_TOKENS: '8192'
           CONFIG__LOG_LEVEL: INFO
           CONFIG__OUTPUT_RUN_DETAILS: 'true'
+          # Compute the merge verdict, publish it as the "PR Agent - Review" check, and approve
+          # the reviewed commit when it is clean (#4710, #4855).
+          PR_REVIEWER__REQUIRE_MERGE_RECOMMENDATION: 'true'
+          PR_REVIEWER__REQUIRE_RISK_ASSESSMENT: 'true'
+          PR_REVIEWER__PUBLISH_MERGE_RECOMMENDATION_STATUS: 'true'
+          CONFIG__ENABLE_AUTO_APPROVAL: 'true'
           # The action would also merge this repo's own .pr_agent.toml, whose `synchronize`
           # push command points at /agentic_review - not in OSS, so it would fail the job.
           CONFIG__USE_REPO_SETTINGS_FILE: 'false'

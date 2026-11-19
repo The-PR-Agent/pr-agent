@@ -23,7 +23,6 @@ from pr_agent.algo.i18n import t
 from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.utils import _fix_key_value, update_settings_from_args
-from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.commands.pr_questions import PRQuestions
 from pr_agent.commands.pr_reviewer import PRReviewer
@@ -311,7 +310,7 @@ class PRAgent:
     async def _create_command(self, command_class, pr_url, **kwargs):
         """Offload eligible command setup while preserving its cancellation boundary."""
         if get_settings() is global_settings or command_class not in (
-            PRReviewer, PRDescription, PRCodeSuggestions, PRQuestions
+            PRReviewer, PRDescription, PRQuestions
         ):
             # Preserve shared settings and other commands' existing initialization
             # (some constructors also update external indexes).

@@ -44,6 +44,7 @@ from starlette.responses import Response
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
+from pr_agent.telemetry.config import _normalized_exporter_type
 from pr_agent.telemetry.types import ExporterType
 
 _NAME_INVALID_CHARS = re.compile(r"[^a-zA-Z0-9_:]")
@@ -70,8 +71,9 @@ def _client() -> Any:
 def prometheus_metrics_enabled() -> bool:
     """True when the [otel] prometheus exporter is selected and telemetry is on."""
     settings = get_settings()
+    exporter_type = _normalized_exporter_type(settings.get("OTEL.EXPORTER_TYPE"))
     return _as_bool_setting(settings.get("OTEL.IS_ENABLED", False), setting_name="OTEL.IS_ENABLED") and (
-        settings.get("OTEL.EXPORTER_TYPE") == ExporterType.PROMETHEUS
+        exporter_type == ExporterType.PROMETHEUS
     )
 
 

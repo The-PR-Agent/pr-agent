@@ -53,8 +53,8 @@ COMMENT_OVERRIDABLE_KEYS = {
         "max_webhook_request_body_bytes", "model", "model_token_count_estimate_factor",
         "no_temperature_models", "output_run_cost", "output_run_details", "patch_extension_skip_types",
         "patch_extra_lines_after", "patch_extra_lines_before", "per_directory_settings_max_files",
-        "per_directory_settings_max_tree_pages", "persistent_inline_comments", "progress_gif_url",
-        "progress_gif_width", "propagate_command_errors", "publish_output", "publish_output_progress",
+        "per_directory_settings_max_tree_pages", "persistent_inline_comments", "propagate_command_errors",
+        "publish_output", "publish_output_progress",
         "reaction_on_failure", "reaction_on_start", "reaction_on_success",
         "repo_context_from_default_branch", "repo_context_max_lines", "response_language", "restricted_mode",
         "retry_same_model_on_length", "retry_same_model_on_timeout", "seed", "temperature",
@@ -75,7 +75,7 @@ COMMENT_OVERRIDABLE_KEYS = {
     "gitlab": frozenset({
         "auto_resolve_fixed_inline_threads", "expand_submodule_diffs", "feedback_on_draft_pr",
         "handle_push_trigger", "handle_reviewer_assignment", "ignore_user_ids",
-        "publish_code_suggestions_as_review", "publish_improve_as_thread", "publish_review_as_thread",
+        "publish_code_suggestions_as_review", "publish_review_as_thread",
         "push_commands", "reply_to_trigger_comment", "resolve_outdated_inline_threads", "reviewer_commands",
     }),
     "jira": frozenset({
@@ -111,14 +111,7 @@ COMMENT_OVERRIDABLE_KEYS = {
         "docs_style", "extra_instructions", "use_repo_context",
     }),
     "pr_code_suggestions": frozenset({
-        "code_suggestions_self_review_text", "committable_code_suggestions", "decouple_hunks",
-        "demand_code_suggestions_self_review", "dual_publishing_score_threshold", "enable_chat_text",
-        "enable_help_text", "enable_suggestions_coverage_footer", "extra_instructions",
-        "focus_only_on_problems", "max_discussion_context_chars", "max_history_len",
-        "max_suggestions_per_file", "new_score_mechanism", "new_score_mechanism_th_high",
-        "new_score_mechanism_th_medium", "num_code_suggestions_per_chunk", "persistent_comment",
-        "publish_failure_comment", "publish_output_no_suggestions", "score_on_reflection_failure",
-        "suggestions_heading", "suggestions_score_threshold",
+        "committable_code_suggestions", "extra_instructions", "suggestions_heading",
     }),
     "pr_description": frozenset({
         "add_original_user_description", "async_ai_calls", "collapsible_file_list",

@@ -16,6 +16,7 @@ from github import Auth, Github, GithubException, GithubIntegration, GithubRetry
 from github.Commit import Commit
 from github.GithubObject import GithubObject
 from github.Issue import Issue
+from github.PullRequest import PullRequest
 from jwt.exceptions import PyJWTError
 from requests.exceptions import RequestException
 from starlette_context import context
@@ -284,8 +285,6 @@ class GithubProvider(GitProvider):
     def supports_inline_help_footer(self) -> bool:
         return True
 
-    def supports_pr_chat(self) -> bool:
-        return True
 
     @classmethod
     def supports_issue_indexing(cls) -> bool:
@@ -405,6 +404,8 @@ class GithubProvider(GitProvider):
             self._languages = None
         self.repo, self.pr_num = repo, pr_num
         self.pr = self._get_pr()
+        # The commits loaded for the previous PR object do not describe this one.
+        self.pr_commits = None
 
     def _get_incremental_commits(self):
         if not self.pr_commits:
@@ -2449,12 +2450,15 @@ class GithubProvider(GitProvider):
         else:
             raise ValueError("Could not authenticate to GitHub")
 
+    def _has_current_repo_obj(self) -> bool:
+        return hasattr(self, "repo_obj") and \
+            hasattr(self.repo_obj, "full_name") and \
+            isinstance(self.repo_obj.full_name, str) and \
+            isinstance(self.repo, str) and \
+            self.repo_obj.full_name.lower() == self.repo.lower()
+
     def _get_repo(self):
-        if hasattr(self, 'repo_obj') and \
-                hasattr(self.repo_obj, 'full_name') and \
-                isinstance(self.repo_obj.full_name, str) and \
-                isinstance(self.repo, str) and \
-                self.repo_obj.full_name.lower() == self.repo.lower():
+        if self._has_current_repo_obj():
             return self.repo_obj
         else:
             self.repo_obj = self.github_client.get_repo(self.repo)
@@ -2462,7 +2466,12 @@ class GithubProvider(GitProvider):
 
 
     def _get_pr(self):
-        return self._get_repo().get_pull(self.pr_num)
+        if self._has_current_repo_obj():
+            return self.repo_obj.get_pull(self.pr_num)
+        # The pull payload embeds its base repository, so skip the separate repository read.
+        pr = PullRequest(self.github_client.requester, url=f"/repos/{self.repo}/pulls/{self.pr_num}")
+        self.repo_obj = pr.base.repo
+        return pr
 
     def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = False,
                             *, missing_is_error: bool = False) -> str:
@@ -2632,6 +2641,15 @@ class GithubProvider(GitProvider):
                 return None
         return label_names
 
+    def _loaded_commits_match_pr(self) -> bool:
+        """Whether the commits read with the PR still list its current revision completely."""
+        commits = getattr(self, "pr_commits", None)
+        if not commits or self._pr_revision(self.pr) != getattr(self, "_pr_revision_loaded", None):
+            return False
+        reported = getattr(self.pr, "commits", None)
+        # GitHub lists at most 250 commits, so the list of a longer PR never matches its count and is read again.
+        return isinstance(reported, int) and len(commits) == reported and commits[-1].sha == self.pr.head.sha
+
     def get_commit_messages(self) -> str:
         """
         Retrieves the commit messages of a pull request.
@@ -2641,7 +2659,8 @@ class GithubProvider(GitProvider):
         """
         max_tokens = get_settings().get("CONFIG.MAX_COMMITS_TOKENS", None)
         try:
-            commit_list = self.pr.get_commits()
+            # Reuse the commits read with the PR (re-read when it moves) instead of listing them again.
+            commit_list = self.pr_commits if self._loaded_commits_match_pr() else self.pr.get_commits()
             commit_messages = [commit.commit.message for commit in commit_list]
             commit_messages_str = "\n".join([f"{i + 1}. {message}" for i, message in enumerate(commit_messages)])
         except (GithubException, RequestException, AttributeError) as e:

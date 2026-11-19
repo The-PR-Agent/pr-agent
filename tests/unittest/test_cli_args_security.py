@@ -103,7 +103,6 @@ FORBIDDEN_ARGS = [
     "--github.api_retries=3",
     '--github={"ratelimit_retries": 3}',
     "--config.ai_timeout=300",
-    "--pr_code_suggestions.max_number_of_calls=10",
     # description_issue_regex is compiled and run with finditer over the whole pull-request
     # description. An ambiguous pattern backtracks exponentially, so a commenter who can choose
     # it can burn a worker on a short body; it stays an operator choice.
@@ -150,7 +149,6 @@ FORBIDDEN_ARGS = [
     "--pr_reviewer__per_commit_review=true",
     '--pr_reviewer={"per_commit_review": true}',
     "--pr_reviewer.max_commits_per_review=0",
-    "--pr_code_suggestions.parallel_calls=true",
     '--config.fallback_models=["gpt-4.1"]',
     "--config.num_retries=10",
     "--pr_update_changelog.push_changelog_changes=true",
@@ -457,7 +455,6 @@ def test_validate_user_args_rejects_forbidden_arg_with_leading_whitespace(prefix
         "--github .seconds_between_writes=1",
         "--github.\tapi_retries=3",
         "--pr_reviewer. max_number_of_calls=10",
-        "--pr_code_suggestions .parallel_calls=true",
         "--pr_similar_issue .force_update_dataset=true",
         "--prompt_fragments .diff_hunk_format=unsafe",
         "--push_outputs. webhook_url=https://evil.example",
@@ -501,7 +498,6 @@ def test_validate_user_args_rejects_forbidden_key_with_whitespace_around_the_sec
         "--pr_description .extra_instructions=hi",
         "--pr_description	.extra_instructions=hi",
         "--config .verbosity_level=2",
-        "--pr_code_suggestions. suggestions_score_threshold=0",
         # the whitespace check runs before the mapping branch: a mapping-valued flag
         # `continue`s past the rest of the loop body in validate_user_args
         "--pr_description .extra_instructions={what: parse}",

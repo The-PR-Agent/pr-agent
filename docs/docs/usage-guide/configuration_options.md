@@ -177,6 +177,8 @@ Accepted values:
 
 GitLab comment webhooks apply this host layer before their first provider lookup; repository and per-directory settings remain part of normal command dispatch.
 
+For automatic PR/MR webhooks in GitHub App, GitLab, Gitea, and Bitbucket Cloud, an external source that cannot be loaded (for example a failed fetch, an oversized file, or a path that is not a `.toml` file) skips the event and logs a warning, because the host exclusions and `system_instructions` could not be applied. The next webhook tries the source again. Manual commands and CLI runs keep running with the settings that did load. The Azure DevOps Server and Bitbucket Server webhooks are not covered yet: they do not preload the external source, so a failed load there still runs with the settings that did load.
+
 GitLab tokens obtained from a secret provider during webhook authentication remain bound to that request. External files and environment reapplication cannot replace those authenticated credentials.
 
 ### Authentication for private endpoints

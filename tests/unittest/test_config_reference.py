@@ -34,7 +34,6 @@ LONG_DESCRIPTION_ALLOWLIST = {
     ("pr_reviewer", "max_previous_findings_chars"),
     ("pr_reviewer", "inline_key_issues"),
     ("pr_reviewer", "enable_large_pr_chunking"),
-    ("pr_code_suggestions", "max_suggestions_per_file"),
     ("github", "agent_login"),
     ("github", "ratelimit_retries"),
     ("github", "polling_repositories"),
@@ -74,7 +73,7 @@ def _documented_keys(text: str) -> Counter:
 
 def test_config_reference_covers_every_active_key():
     keys = _toml_keys(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert sum(keys.values()) == 327
+    assert sum(keys.values()) == 302
 
     assert {
         "model",

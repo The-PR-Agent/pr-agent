@@ -785,10 +785,6 @@ def test_nested_provider_connection_keys_are_host_only_for_cli(arg):
     assert CliArgs.validate_user_args([arg])[0] is False
 
 
-def test_progress_gif_url_remains_repo_and_cli_configurable():
-    assert not is_repo_host_only_key("config", "progress_gif_url")
-    assert CliArgs.validate_user_args(["--config.progress_gif_url=https://example.com/progress.gif"])[0] is True
-
 
 def test_repo_settings_apply_only_section_specific_safe_overrides(monkeypatch, settings_snapshot):
     provider = FakeGitProvider(repo_settings_bytes=b"""

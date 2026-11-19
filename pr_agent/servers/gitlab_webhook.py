@@ -34,6 +34,7 @@ from pr_agent.servers.utils import (
     dedupe_review_commands,
     get_include_pr_labels,
     get_pr_commands,
+    host_settings_unavailable,
     is_ask_command_comment,
     is_command_comment,
     load_host_settings_for_webhook,
@@ -541,6 +542,10 @@ async def process_gitlab_event(data: dict, log_context: dict):
             if not isinstance(changes, dict) or "reviewers" not in changes:
                 return
         await load_host_settings_for_webhook()
+        if host_settings_unavailable():
+            # Fail closed: without the host layer its exclusions would not apply.
+            get_logger().warning("Request ignored: host settings could not be loaded")
+            return
 
         # GitLab's event user is the actor. When a different user authored the
         # MR, resolve the author only if a host author exclusion needs it.

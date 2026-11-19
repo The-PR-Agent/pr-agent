@@ -14,13 +14,10 @@ from requests.exceptions import HTTPError, Timeout
 from requests.utils import get_encoding_from_headers
 
 from pr_agent.algo.comment_identity import (
-    PRCodeSuggestionsHeader,
-    PRCodeSuggestionsIdentity,
     PRReviewHeader,
     PRReviewIdentity,
 )
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
-from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.config_loader import global_settings
 from pr_agent.git_providers import BitbucketServerProvider
 from pr_agent.git_providers.bitbucket_provider import (
@@ -2106,35 +2103,6 @@ class TestBitbucketServerProvider:
 
         assert provider.get_comment_url(comment) == f"{expected_repo_url}/pull-requests/1/overview?commentId=7"
         assert provider.get_latest_commit_url() == f"{expected_repo_url}/commits/deadbeef12345678"
-
-    def test_improve_history_updates_existing_bitbucket_server_comment(self):
-        provider = self._persistent_provider()
-        existing_body = (
-            f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n"
-            f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
-            "<!-- abc1234 -->\n\n<table>previous suggestions</table>"
-        )
-        provider.bitbucket_client.get_pull_requests_activities.return_value = [
-            self._comment_activity(existing_body),
-        ]
-
-        updated = PRCodeSuggestions.publish_persistent_comment_with_history(
-            provider,
-            f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n<table>new suggestions</table>",
-            initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
-            name="suggestions",
-            final_update_message=False,
-            max_previous_comments=4,
-            identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
-            legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
-        )
-
-        assert updated.id == 7
-        provider.bitbucket_client.add_pull_request_comment.assert_not_called()
-        updated_body = provider.bitbucket_client.update_pull_request_comment.call_args.args[4]
-        assert PRCodeSuggestionsIdentity.SUMMARY.value in updated_body
-        assert "new suggestions" in updated_body
-        assert "Previous suggestions" in updated_body
 
     def test_publish_inline_comment_maps_payload_correctly(self):
         provider = self._provider_for_code_suggestions()

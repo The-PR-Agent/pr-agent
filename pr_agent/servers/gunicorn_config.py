@@ -292,12 +292,14 @@ def _prepare_prometheus():
     """
     from pr_agent.algo.setting_utils import _as_bool_setting
     from pr_agent.config_loader import get_settings
+    from pr_agent.telemetry.config import _normalized_exporter_type
     from pr_agent.telemetry.prometheus_multiproc import ensure_prometheus_multiproc_dir
     from pr_agent.telemetry.types import ExporterType
 
     settings = get_settings()
     is_enabled = _as_bool_setting(settings.get("OTEL.IS_ENABLED", False), setting_name="OTEL.IS_ENABLED")
-    if is_enabled and settings.get("OTEL.EXPORTER_TYPE") == ExporterType.PROMETHEUS:
+    exporter_type = _normalized_exporter_type(settings.get("OTEL.EXPORTER_TYPE"))
+    if is_enabled and exporter_type == ExporterType.PROMETHEUS:
         ensure_prometheus_multiproc_dir(str(settings.get("OTEL.PROMETHEUS_MULTIPROC_DIR", "/tmp/pr-agent-prometheus")))
 
 

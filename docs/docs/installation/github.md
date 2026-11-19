@@ -644,7 +644,6 @@ For better performance with large repositories:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Optimize for large PRs
         config.large_patch_policy: "clip"
-        config.max_model_tokens: "256000"
         config.patch_extra_lines_before: "3"
         config.patch_extra_lines_after: "1"
         github_action_config.auto_review: "true"

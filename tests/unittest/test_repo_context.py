@@ -1882,30 +1882,6 @@ def test_github_provider_reads_from_default_branch_when_requested():
                 "enable_pr_description": True,
             },
         ),
-        (
-            "pr_code_suggestions_prompt",
-            {
-                "extra_instructions": "",
-                "artifact_context": None,
-                "repo_context": render_instruction_files_with_line_budget({"AGENTS.md": "Repo purpose"}, 10_000),
-                "skills_context": "",
-                "focus_only_on_problems": True,
-                "num_code_suggestions": 3,
-                "is_ai_metadata": False,
-            },
-        ),
-        (
-            "pr_code_suggestions_prompt_not_decoupled",
-            {
-                "extra_instructions": "",
-                "artifact_context": None,
-                "repo_context": render_instruction_files_with_line_budget({"AGENTS.md": "Repo purpose"}, 10_000),
-                "skills_context": "",
-                "focus_only_on_problems": True,
-                "num_code_suggestions": 3,
-                "is_ai_metadata": False,
-            },
-        ),
     ],
 )
 @pytest.mark.parametrize("artifact_context", [None, {"instructions": "Consider CI failures."}])
@@ -1916,11 +1892,6 @@ def test_prompt_templates_render_configured_repo_context(prompt_name, variables,
     if prompt_name == "pr_review_prompt":
         variables["diff_hunk_format"] = render_diff_hunk_format(
             include_line_numbers=True,
-            include_ai_metadata=False,
-        )
-    elif prompt_name == "pr_code_suggestions_prompt":
-        variables["diff_hunk_format"] = render_diff_hunk_format(
-            include_line_numbers=False,
             include_ai_metadata=False,
         )
 

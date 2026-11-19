@@ -39,6 +39,7 @@ from pr_agent.servers.utils import (
     dedupe_review_commands,
     get_include_pr_labels,
     get_pr_commands,
+    host_settings_unavailable,
     is_ask_command_comment,
     load_host_settings_for_webhook,
     push_trigger_slot,
@@ -444,6 +445,10 @@ async def _dispatch_request(body: dict[str, Any], event: str, action: str):
         )
         if not prefilter_allowed:
             get_logger().debug("Request ignored: PR logic filtering")
+            return {}
+        if action != 'closed' and host_settings_unavailable():
+            # Fail closed: without the host layer its exclusions would not apply.
+            get_logger().warning("Request ignored: host settings could not be loaded")
             return {}
 
     if 'check_run' in body:  # handle failed checks
