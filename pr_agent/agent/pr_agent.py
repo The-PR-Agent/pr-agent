@@ -2,8 +2,10 @@ import asyncio
 import copy
 import json
 import shlex
+import tomllib
 from contextlib import asynccontextmanager, contextmanager
-from functools import partial
+from functools import lru_cache, partial
+from pathlib import Path
 
 import dynaconf
 from opentelemetry.trace import StatusCode
@@ -207,6 +209,7 @@ def prepare_command(command: str) -> list[str]:
     original_language = settings.config.get("response_language", "en-us")
     try:
         update_settings_from_args(kept)
+        _normalize_boolean_settings()
     finally:
         # Apply the requested response language only during command execution.
         if settings.config.get("response_language", "en-us") != original_language:
@@ -242,11 +245,43 @@ def _record_token_metrics(action: str, git_provider: str) -> None:
         get_ai_calls_counter().add(details.num_ai_calls, labels)
 
 
-def _normalize_publish_output_setting() -> None:
-    """Honor false-like strings without changing explicitly empty or invalid setting defaults."""
+@lru_cache(maxsize=1)
+def _get_boolean_setting_defaults() -> dict[str, bool]:
+    """Extract all setting keys whose default in configuration.toml is a boolean."""
+    config_path = Path(__file__).resolve().parent.parent / "settings" / "configuration.toml"
+    try:
+        with open(config_path, "rb") as f:
+            data = tomllib.load(f)
+    except Exception as e:
+        get_logger().error(f"Failed to load configuration.toml: {e}")
+        return {}
+
+    bool_defaults: dict[str, bool] = {}
+
+    def _extract(mapping: dict, prefix: str = "") -> None:
+        for key, val in mapping.items():
+            full_key = f"{prefix}.{key}" if prefix else key
+            if isinstance(val, bool):
+                bool_defaults[full_key] = val
+            elif isinstance(val, dict):
+                _extract(val, full_key)
+
+    _extract(data)
+    return bool_defaults
+
+
+def _normalize_boolean_settings() -> None:
+    """Coerce string values for boolean settings to bools using their configured defaults."""
     settings = get_settings()
-    value = settings.config.publish_output
-    settings.set("CONFIG.PUBLISH_OUTPUT", _as_bool_setting(value, default=bool(value)))
+    for key_path, default in _get_boolean_setting_defaults().items():
+        value = settings.get(key_path)
+        if isinstance(value, str):
+            settings.set(key_path.upper(), _as_bool_setting(value, default=default, setting_name=key_path))
+
+
+def _normalize_publish_output_setting() -> None:
+    """Coerce boolean settings to bools using their configured defaults."""
+    _normalize_boolean_settings()
 
 
 @contextmanager
@@ -391,6 +426,7 @@ class PRAgent:
     ) -> bool | RequestOutcome:
         # Evaluate repository policy before command overrides, notifications or commands.
         apply_repo_settings(pr_url)
+        _normalize_boolean_settings()
         if enforce_request_policy(pr_url) is False:
             span.set_attribute("pr_agent.request.ignored", True)
             return RequestOutcome.SKIPPED
@@ -430,7 +466,7 @@ class PRAgent:
             if settings.config.get("response_language", "en-us") != previous_response_language:
                 settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)
             raise
-        _normalize_publish_output_setting()
+        _normalize_boolean_settings()
         language_overridden = settings.config.get("response_language", "en-us") != previous_response_language
 
         try:
