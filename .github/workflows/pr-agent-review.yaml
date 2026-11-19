@@ -26,7 +26,7 @@ jobs:
       (github.event.sender.type != 'Bot' || github.event.action == 'synchronize') &&
       (
         github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'pull_request_target' && !github.event.pull_request.draft) ||
+        (github.event_name == 'pull_request_target' && (!github.event.pull_request.draft || github.event.action == 'synchronize')) ||
         (
           github.event_name == 'issue_comment' &&
           github.event.issue.pull_request &&
