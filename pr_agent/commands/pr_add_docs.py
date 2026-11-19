@@ -13,6 +13,7 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.run_details import record_command_failure
+from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.algo.token_budget import AttemptTokenBudget, prepare_model_token_limits
 from pr_agent.algo.utils import _as_line, get_suggestion_fence, load_yaml
 from pr_agent.config_loader import get_settings, get_verbosity_level
@@ -138,6 +139,9 @@ class PRAddDocs:
             disable_extra_lines=False,
             return_remaining_files=True,
             output_token_reserve=output_token_reserve,
+            excluded_extensions=normalize_setting_list(
+                get_settings().get("docs_blacklist_extensions.docs_blacklist")
+            ),
         )
         patches_diff, remaining_files_list = output if isinstance(output, tuple) else (output, [])
         if not patches_diff and not remaining_files_list:
