@@ -333,6 +333,9 @@ class PRReviewer:
     _review_has_findings = False
     _review_fingerprint = ""
     _review_done = False
+    _review_degraded = False
+    _review_labels_degraded = False
+    _review_output_touched = False
     _review_published = False
     _keep_review_failure_notices = False
 
@@ -471,9 +474,18 @@ class PRReviewer:
             guard = UnchangedDiffGuard("review", self.git_provider)
         if guard is not None and await asyncio.to_thread(guard.should_skip):
             return
-        await self._run_review()
-        if guard is not None and self._review_done and not command_failed():
-            await asyncio.to_thread(guard.record)
+        run_clean = False
+        try:
+            await self._run_review()
+            run_clean = self._review_done and not self._review_degraded and not command_failed()
+        finally:
+            if guard is not None:
+                if run_clean:
+                    await asyncio.to_thread(
+                        guard.record, replaced_output=self._review_output_touched
+                    )
+                elif self._review_output_touched:
+                    await asyncio.to_thread(guard.invalidate)
 
     async def _review_as_one(self, reason: str, notice: str) -> None:
         get_logger().warning(f"{reason}, skipping per commit review")
@@ -811,11 +823,14 @@ class PRReviewer:
         review_failed = False
         review_completed = False
         persistent_write_failed = False
+        non_authoritative_review = False
         self._progress_response = None
         self._chunk_progress = None
         self._structured_review_data = None
         self._approval_model_fields = (None, None)
-        self._review_done = self._review_published = False
+        self._review_done = self._review_degraded = self._review_labels_degraded = (
+            self._review_output_touched
+        ) = self._review_published = False
         # An approval stands only for a run that finished clean; a new run starts without one.
         if self._auto_approval_enabled():
             self._withdraw_auto_approval("a new review started")
@@ -876,6 +891,7 @@ class PRReviewer:
 
             # PyGithub fetches diff files synchronously; keep large fetches off the webhook event loop.
             diff_files = await asyncio.to_thread(self.git_provider.get_diff_files)
+            has_unreadable_files = any(getattr(f, "content_fetch_failed", False) for f in (diff_files or ()))
             # Since #4861 every provider caches a completed empty diff, so an unconfirmed
             # one — an empty result whose provider left the cache unset — is only possible
             # for a provider that does not follow the contract yet.
@@ -929,6 +945,12 @@ class PRReviewer:
                     hosted_markdown_artifact.set(pr_review)
                 self._publish_merge_recommendation_status()
                 review_completed = True
+                self._review_degraded = (
+                    partial_review_error is not None
+                    or bool(self.review_failed_chunk_count)
+                    or self._review_labels_degraded
+                    or has_unreadable_files
+                )
                 self._review_done = True
                 return
 
@@ -959,6 +981,7 @@ class PRReviewer:
                     **review_thread_kwargs,
                 )
                 persistent_write_failed = True
+                self._review_output_touched = True
                 result = self.git_provider.publish_persistent_comment_full(
                     pr_review, **persistent_args
                 )
@@ -970,6 +993,8 @@ class PRReviewer:
                     "Review finding state is blocked by review data or provider read failure; "
                     "publishing without changing persistent state"
                 )
+                non_authoritative_review = state_block_reason != _STATE_BLOCK_SIZE
+                self._review_output_touched = True
                 self.git_provider.publish_comment(
                     self._as_non_authoritative_review(pr_review),
                     **review_thread_kwargs,
@@ -985,11 +1010,13 @@ class PRReviewer:
                     **review_thread_kwargs,
                 )
                 if not self._review_finding_state_in_play():
+                    self._review_output_touched = True
                     self.git_provider.publish_persistent_comment(pr_review, **persistent_args)
                 elif state_result is not None:
                     persistent_args["require_agent_authorship"] = True
                     persistent_args["fallback_on_error"] = False
                     persistent_write_failed = True
+                    self._review_output_touched = True
                     result = self.git_provider.publish_persistent_comment_full(
                         pr_review, **persistent_args
                     )
@@ -1002,6 +1029,7 @@ class PRReviewer:
                     persistent_args["require_agent_authorship"] = True
                     persistent_args["fallback_on_error"] = False
                     persistent_write_failed = True
+                    self._review_output_touched = True
                     result = self.git_provider.publish_persistent_comment_full(
                         pr_review, **persistent_args
                     )
@@ -1012,9 +1040,12 @@ class PRReviewer:
                     # There is no review comment to replace, so creating one cannot overwrite
                     # a comment PR-Agent did not author. An identity this deployment cannot
                     # resolve is not a reason to demote the canonical review.
+                    self._review_output_touched = True
                     self.git_provider.publish_persistent_comment(pr_review, **persistent_args)
                 else:
                     # An unverified provider identity must never update a canonical review.
+                    non_authoritative_review = True
+                    self._review_output_touched = True
                     self.git_provider.publish_comment(
                         self._as_non_authoritative_review(pr_review),
                         **review_thread_kwargs,
@@ -1031,9 +1062,17 @@ class PRReviewer:
                         else PRReviewIdentity.REGULAR.value
                     )
                     pr_review = add_pr_review_identity(pr_review, identity_marker, self.git_provider)
+                self._review_output_touched = True
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
                 self._review_published = True
             review_completed = True
+            self._review_degraded = (
+                non_authoritative_review
+                or partial_review_error is not None
+                or bool(self.review_failed_chunk_count)
+                or self._review_labels_degraded
+                or has_unreadable_files
+            )
             self._review_done = not review_failed
         except Exception as e:
             review_error = e
@@ -1147,6 +1186,7 @@ class PRReviewer:
         publisher = getattr(self.git_provider, "_publish_check_run", None)
         if not callable(publisher):
             return False
+        self._review_output_touched = True
         try:
             return publisher(pr_review, "review") is True
         except Exception as error:
@@ -2406,6 +2446,7 @@ class PRReviewer:
             try:
                 batch = list(candidate_comments.values())
                 already_posted = set()
+                self._review_output_touched = True
                 try:
                     batch_published = self.git_provider.publish_code_suggestions(batch)
                 except Exception as e:
@@ -2555,6 +2596,7 @@ class PRReviewer:
                 if current_labels is None:
                     # The read failed with no snapshot to fall back on. publish_labels
                     # replaces the whole set, so publishing would delete human labels.
+                    self._review_labels_degraded = True
                     get_logger().error(
                         "Skipping review label publish: existing labels could not be read, "
                         "and publishing would remove them")
@@ -2573,10 +2615,14 @@ class PRReviewer:
                 new_labels = review_labels + current_labels_filtered
                 if (current_labels or review_labels) and sorted(new_labels) != sorted(current_labels):
                     get_logger().info(f"Setting review labels:\n{review_labels + current_labels_filtered}")
-                    self.git_provider.publish_labels(new_labels)
+                    # Multi-call providers (e.g. Azure DevOps) can mutate labels before failing.
+                    self._review_output_touched = True
+                    if self.git_provider.publish_labels(new_labels) is False:
+                        self._review_labels_degraded = True
                 else:
                     get_logger().info(f"Review labels are already set:\n{review_labels + current_labels_filtered}")
             except Exception as e:
+                self._review_labels_degraded = True
                 get_logger().error(f"Failed to set review labels, error: {e}")
 
     def auto_approve_logic(self, partial_review_error=None, review_completed=False) -> None:

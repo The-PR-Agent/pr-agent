@@ -16,6 +16,7 @@ from pr_agent.algo.code_fence import strip_wrapping_code_fence
 from pr_agent.algo.comment_identity import PRDescriptionHeader, PRDescriptionIdentity
 from pr_agent.algo.language_handler import filter_bad_extensions
 from pr_agent.algo.output_models import PRDescriptionAssembled
+from pr_agent.algo.output_sinks import _push_outputs_consumes_payload
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     FallbackEligibleError,
@@ -28,6 +29,7 @@ from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
 from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details, record_command_failure
 from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
+from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget, prepare_model_token_limits
 from pr_agent.algo.unchanged_diff import UnchangedDiffGuard, skip_unchanged_diff_configured
@@ -69,6 +71,9 @@ def _build_unprocessed_files_block(file_list: list, label: str, max_files: int =
 
 class PRDescription:
     COLLAPSIBLE_FILE_LIST_THRESHOLD = 8
+    description_failed_chunk_count = 0
+    _description_degraded = False
+    _description_output_touched = False
 
     def __init__(self, pr_url: str, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -151,15 +156,31 @@ class PRDescription:
         guard = UnchangedDiffGuard("describe", self.git_provider) if skip_unchanged_diff_configured() else None
         if guard is not None and await asyncio.to_thread(guard.should_skip):
             return ""
-        result = await self._run_describe()
-        # A run that stops early returns None; a failed run also returns "", hence command_failed().
-        if guard is not None and result == "" and not command_failed():
-            await asyncio.to_thread(guard.record)
-        return result
+        run_clean = False
+        try:
+            result = await self._run_describe()
+            # A run that stops early returns None; a failed run also returns "", hence command_failed().
+            run_clean = (
+                result == ""
+                and not command_failed()
+                and not self.description_failed_chunk_count
+                and not self._description_degraded
+            )
+            return result
+        finally:
+            if guard is not None:
+                if run_clean:
+                    await asyncio.to_thread(
+                        guard.record, replaced_output=self._description_output_touched
+                    )
+                elif self._description_output_touched:
+                    await asyncio.to_thread(guard.invalidate)
 
     async def _run_describe(self):
         init_run_details()
         self.progress_response = None
+        self._description_degraded = False
+        self._description_output_touched = False
         try:
             get_logger().info(f"Generating a PR description for pr_id: {self.pr_id}")
             relevant_configs = {'pr_description': dict(get_settings().pr_description),
@@ -171,6 +192,7 @@ class PRDescription:
 
             # PyGithub fetches diff files synchronously; keep large fetches off the webhook event loop.
             diff_files = await asyncio.to_thread(self.git_provider.get_diff_files)
+            has_unreadable_files = any(getattr(f, "content_fetch_failed", False) for f in (diff_files or ()))
             self.vars["include_file_summary_changes"] = (
                 len(diff_files) <= self.COLLAPSIBLE_FILE_LIST_THRESHOLD
             )
@@ -185,6 +207,8 @@ class PRDescription:
             self._raw_prompt_vars = copy.deepcopy(self.vars)
 
             await retry_with_fallback_models(self._prepare_prediction, ModelType.WEAK)
+            if has_unreadable_files:
+                self._description_degraded = True
 
             if self.prediction:
                 self._prepare_data()
@@ -280,6 +304,7 @@ class PRDescription:
                     if original_labels is None:
                         # The read failed with no snapshot to fall back on. publish_labels
                         # replaces the whole set, so publishing would delete human labels.
+                        self._description_degraded = True
                         get_logger().error(
                             "Skipping label publish: existing labels could not be read, "
                             "and publishing would remove them")
@@ -290,13 +315,17 @@ class PRDescription:
                         get_logger().debug("published labels", artifact=new_labels)
                         if set(new_labels) != set(original_labels):
                             get_logger().info(f"Setting describe labels:\n{new_labels}")
-                            self.git_provider.publish_labels(new_labels)
+                            # Multi-call providers (e.g. Azure DevOps) can mutate labels before failing.
+                            self._description_output_touched = True
+                            if self.git_provider.publish_labels(new_labels) is False:
+                                self._description_degraded = True
                         else:
                             get_logger().debug("Labels are the same, not updating")
 
                 # publish description
                 if get_settings().pr_description.publish_description_as_comment:
                     full_markdown_description = f"## Title\n\n{pr_title.strip()}\n\n___\n{pr_body}"
+                    self._description_output_touched = True
                     if get_settings().pr_description.publish_description_as_comment_persistent:
                         self.git_provider.publish_persistent_comment(
                             full_markdown_description,
@@ -318,6 +347,7 @@ class PRDescription:
                     # anywhere in the body without depending on visible section
                     # headers that a human might quote.
                     pr_body = '<!-- pr-agent-generated -->\n' + pr_body
+                    self._description_output_touched = True
                     try:
                         self.git_provider.publish_description(title_to_publish, pr_body)
                     except Exception:
@@ -382,6 +412,7 @@ class PRDescription:
         self.description_total_chunk_count = 0
         self.description_failed_chunk_count = 0
         self.description_failed_files = []
+        self._description_degraded = False
         previous_progress = getattr(self, "_chunk_progress", None)
         if previous_progress is not None:
             # A fallback-model retry starts over, whatever path it takes next; restore the
@@ -649,7 +680,41 @@ class PRDescription:
                 get_logger().error(f"Error getting valid YAML in large PR handling for describe {self.pr_id}")
                 if load_yaml(prediction_headers, keys_fix_yaml=self.keys_fix):
                     get_logger().debug(f"Using only headers for describe {self.pr_id}")
+                    if self._file_summaries_requested():
+                        self._description_degraded = True
                     self.prediction = prediction_headers
+
+    def _has_diff_files(self) -> bool:
+        try:
+            return bool(self.git_provider.get_diff_files())
+        except Exception:
+            return True
+
+    def _walkthrough_requested(self) -> bool:
+        if not get_settings().pr_description.enable_semantic_files_types:
+            return False
+        provider = getattr(self, "git_provider", None)
+        if callable(getattr(provider, "is_supported", None)) and not provider.is_supported("gfm_markdown"):
+            return False
+        if not get_settings().pr_description.use_description_markers:
+            return True
+        user_description = getattr(self, "user_description", "") or ""
+        return (
+            "pr_agent:walkthrough" in user_description
+            and not re.search(r"<!--\s*pr_agent:walkthrough\s*-->", user_description)
+        )
+
+    def _file_summaries_requested(self) -> bool:
+        if not get_settings().pr_description.enable_semantic_files_types:
+            return False
+        if review_json_output_path.get() or self._walkthrough_requested():
+            return True
+        try:
+            if not _as_bool_setting(get_settings().config.get("publish_output", False), default=False):
+                return False
+            return _push_outputs_consumes_payload(get_settings().get("push_outputs", {}) or {}, "describe")
+        except Exception:
+            return False
 
     def _get_description_coverage_footer(self) -> str:
         failed_chunk_count = getattr(self, "description_failed_chunk_count", 0)
@@ -732,6 +797,7 @@ class PRDescription:
             # merge the two dictionaries
             if counter_extra_files > 0:
                 get_logger().info(f"Adding {counter_extra_files} unprocessed extra files to table prediction")
+                extended = False
                 prediction_extra_dict = load_yaml(prediction_extra, keys_fix_yaml=self.keys_fix)
                 if original_prediction_dict and isinstance(original_prediction_dict, dict) and \
                         isinstance(prediction_extra_dict, dict) and "pr_files" in prediction_extra_dict:
@@ -744,9 +810,14 @@ class PRDescription:
                         prediction = new_yaml
                         if isinstance(original_prediction_loaded, list):
                             prediction = yaml.dump(original_prediction_dict["pr_files"])
+                        extended = True
+                if (not extended or not any(filenames_predicted)) and self._file_summaries_requested():
+                    self._description_degraded = True
 
             return prediction
         except Exception as e:
+            if self._file_summaries_requested():
+                self._description_degraded = True
             get_logger().exception(f"Error extending uncovered files {self.pr_id}", artifact={"error": e})
             return original_prediction
 
@@ -997,7 +1068,11 @@ class PRDescription:
                 body = body.replace('pr_agent:walkthrough', walkthrough_gfm)
             except Exception as e:
                 get_logger().error(f"Failing to process walkthrough {self.pr_id}: {e}")
+                if self._walkthrough_requested():
+                    self._description_degraded = True
                 body = body.replace('pr_agent:walkthrough', "")
+        elif self._walkthrough_requested() and self._has_diff_files():
+            self._description_degraded = True
 
         # Add support for pr_agent:diagram marker (plain and HTML comment formats)
         ai_diagram = self.data.get('changes_diagram')
@@ -1092,11 +1167,25 @@ class PRDescription:
 
     def _prepare_file_labels(self):
         file_label_dict = {}
-        if (not self.data or not isinstance(self.data, dict) or
-                'pr_files' not in self.data or not self.data['pr_files']):
+        if not self.data or not isinstance(self.data, dict):
+            if self._file_summaries_requested() and self._has_diff_files():
+                self._description_degraded = True
             return file_label_dict
-        for file in self.data['pr_files']:
+        pr_files = self.data.get('pr_files')
+        if not pr_files:
+            if self._file_summaries_requested() and self._has_diff_files():
+                self._description_degraded = True
+            return file_label_dict
+        if not isinstance(pr_files, list):
+            if self._file_summaries_requested():
+                self._description_degraded = True
+            return file_label_dict
+        for file in pr_files:
             try:
+                if not isinstance(file, dict):
+                    if self._file_summaries_requested():
+                        self._description_degraded = True
+                    continue
                 required_fields = ['changes_title', 'filename', 'label']
                 if self.vars.get('include_file_summary_changes', True):
                     required_fields.append('changes_summary')
@@ -1104,6 +1193,8 @@ class PRDescription:
                     # can happen for example if a YAML generation was interrupted in the middle (no more tokens)
                     get_logger().warning(f"Missing required fields in file label dict {self.pr_id}, skipping file",
                                          artifact={"file": file})
+                    if self._file_summaries_requested():
+                        self._description_degraded = True
                     continue
                 filename = file['filename']
                 summary = file.get("changes_summary")
@@ -1115,7 +1206,8 @@ class PRDescription:
                 file_label_dict[label].append((filename, changes_title, changes_summary))
             except Exception:
                 get_logger().exception(f"Error preparing file label dict {self.pr_id}")
-                pass
+                if self._file_summaries_requested():
+                    self._description_degraded = True
         return file_label_dict
 
     def process_pr_files_prediction(self, pr_body, value):
@@ -1227,7 +1319,8 @@ class PRDescription:
 
         except Exception as e:
             get_logger().error(f"Error processing pr files to markdown {self.pr_id}: {str(e)}")
-            pass
+            if self._walkthrough_requested():
+                self._description_degraded = True
         return pr_body
 
     def add_file_data(self, delta_nbsp, diff_plus_minus, file_change_description_br, filename, filename_publish, link,
