@@ -33,7 +33,7 @@ REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
 
 _CONNECTION_KEY_SUFFIXES = ("url", "base_url", "endpoint", "org", "key", "token", "secret")
 _REPO_OVERRIDABLE_SUFFIX_KEYS_BY_SECTION = {
-    "config": frozenset({"progress_gif_url"}),
+
     "gitea": frozenset({"web_url"}),
 }
 _REPO_OVERRIDABLE_SUFFIX_SECTIONS = frozenset({"language_extension_map_org"})
@@ -209,7 +209,6 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "ignore": frozenset({"regex"}),
     "litellm": frozenset({"add_session_id_to_requests", "turn_off_message_logging"}),
     "openrouter": frozenset({"reasoning_effort", "reasoning_max_tokens"}),
-    "pr_code_suggestions": frozenset({"parallel_calls", "max_number_of_calls"}),
     "pr_description": frozenset({"max_ai_calls"}),
     # PR comments must not enable ticket reads performed with the operator's credentials.
     "pr_questions": frozenset({"resolve_threads", "use_ticket_context"}),
@@ -243,9 +242,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
 # bypass the operator's choice of which PR fields the bot edits. Ticket extraction
 # (require_ticket_analysis_review, use_ticket_context) stays root-controlled too: enabling it from a nested
 # file would make the bot run authenticated Jira lookups the root config already disabled.
-# The self-review workflow control (demand_code_suggestions_self_review) stays
-# root-controlled as well: a nested file must not be able to make /improve demand a
-# checklist. Thread-history collection (pr_questions.use_conversation_history) is
+# Thread-history collection (pr_questions.use_conversation_history) is
 # also root-controlled so a nested file cannot re-enable sending private review-thread
 # discussion bodies to the model after the operator opted out.
 # Similarly, budget/call-count controls (max_number_of_calls, max_ai_calls, parallel_calls,
@@ -268,17 +265,12 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
     "pr_code_suggestions": frozenset({
         "committable_code_suggestions",
         # The deprecated pre-1.0 spelling stays host-only for the same reason: a nested file
-        # must not be able to flip /improve to inline publishing through the alias that
+        # must not be able to flip inline fixes to committable comments through the alias that
         # get_committable_code_suggestions() still accepts. This layer works by subtraction
         # (the whole section is overridable in REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS), and
         # an unrecognized key survives the merge, so leaving the alias out of this set would
         # hand a nested file the very control the canonical name is denied.
         "commitable_code_suggestions",
-        # Dual publishing posts every suggestion at or above the threshold through the same
-        # inline path, so a nested file must not be able to turn it on either.
-        "dual_publishing_score_threshold",
-        "max_number_of_calls", "parallel_calls", "max_discussion_context_chars",
-        "demand_code_suggestions_self_review",
     }),
     "pr_similar_issue": frozenset({"force_update_dataset", "max_issues_to_scan", "vectordb", "skip_comments"}),
 }

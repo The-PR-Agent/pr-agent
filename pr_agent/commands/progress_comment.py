@@ -1,39 +1,6 @@
 import asyncio
 
-from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
-
-DEFAULT_PROGRESS_GIF_WIDTH = 48
-DEFAULT_PROGRESS_GIF_URL = "https://www.qodo.ai/images/pr_agent/dual_ball_loading-crop.gif"
-
-
-def get_progress_gif_url() -> str:
-    configured_url = get_settings().config.get("progress_gif_url", "").strip()
-    return configured_url or DEFAULT_PROGRESS_GIF_URL
-
-
-def get_progress_gif_width() -> int:
-    configured_width = get_settings().config.get("progress_gif_width", DEFAULT_PROGRESS_GIF_WIDTH)
-    try:
-        width = int(configured_width)
-    except (TypeError, ValueError):
-        return DEFAULT_PROGRESS_GIF_WIDTH
-
-    if width <= 0:
-        return DEFAULT_PROGRESS_GIF_WIDTH
-
-    return width
-
-
-def build_progress_comment() -> str:
-    gif_url = get_progress_gif_url()
-    gif_width = get_progress_gif_width()
-
-    return (
-        "## Generating PR code suggestions\n\n"
-        "\nWork in progress ...<br>\n"
-        f"<img src=\"{gif_url}\" alt=\"Work in progress\" width=\"{gif_width}\">"
-    )
 
 
 def chunk_progress_line(completed: int, total: int, failed: int = 0) -> str:
@@ -133,11 +100,6 @@ class ChunkProgressReporter:
         async with self._lock:
             await self._write(self.base_body)
 
-    async def extend_total(self, count: int) -> None:
-        """Account for chunks that will be retried, so a retry round stays within the total."""
-        async with self._lock:
-            self.total += max(int(count), 0)
-            await self._report()
 
     async def record_settled(self, count: int = 1) -> None:
         """Note chunks that finished, successfully or not, and republish the progress line."""

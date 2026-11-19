@@ -284,8 +284,6 @@ class GithubProvider(GitProvider):
     def supports_inline_help_footer(self) -> bool:
         return True
 
-    def supports_pr_chat(self) -> bool:
-        return True
 
     @classmethod
     def supports_issue_indexing(cls) -> bool:

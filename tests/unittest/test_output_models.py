@@ -9,7 +9,6 @@ from pydantic import StrictBool, StrictInt
 from pr_agent.algo.output_models import (
     CodeDocumentation,
     CodeSuggestion,
-    CodeSuggestionFeedback,
     ContributionTimeCostEstimate,
     DocHeadingsHelper,
     DocHelper,
@@ -446,16 +445,6 @@ PROMPT_MODELS = {
     "pr_help_prompts.toml": {"relevant_section": RelevantSection, "DocHelper": DocHelper},
     "pr_help_docs_prompts.toml": {"relevant_section": RelevantSection, "DocHelper": DocHelper},
     "pr_help_docs_headings_prompts.toml": {"file_idx_and_path": FileIdxAndPath, "DocHeadingsHelper": DocHeadingsHelper},
-    "code_suggestions/pr_code_suggestions_prompts.toml": {
-        "CodeSuggestion": CodeSuggestion, "PRCodeSuggestions": PRCodeSuggestions,
-    },
-    "code_suggestions/pr_code_suggestions_prompts_not_decoupled.toml": {
-        "CodeSuggestion": CodeSuggestion, "PRCodeSuggestions": PRCodeSuggestions,
-    },
-    "code_suggestions/pr_code_suggestions_reflect_prompts.toml": {
-        "CodeSuggestionFeedback": CodeSuggestionFeedback,
-        "PRCodeSuggestionsFeedback": PRCodeSuggestionsFeedback,
-    },
 }
 
 

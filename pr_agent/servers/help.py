@@ -169,15 +169,6 @@ You can ask questions about the entire PR, about specific code lines, or about a
         return output
 
 
-    @staticmethod
-    def get_improve_usage_guide():
-        output = "**Overview:**\n"
-        output += f"{COMMAND_DESCRIPTIONS['improve']} "
-        output += "Configure it through the [review settings](https://docs.pr-agent.ai/commands/review/#configuration-options).\n"
-        output += "\n\nSee the improve [usage page](https://docs.pr-agent.ai/commands/improve/) for a comprehensive guide on using this command.\n\n"
-
-        return output
-
 
     @staticmethod
     def get_help_docs_usage_guide():

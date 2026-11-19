@@ -1,4 +1,4 @@
-"""Shared internal representation for review findings and code suggestions."""
+"""Shared internal representation for review findings."""
 
 from __future__ import annotations
 
@@ -64,33 +64,6 @@ class Finding:
             confidence=confidence,
         )
 
-    @classmethod
-    def from_code_suggestion(cls, suggestion: object) -> Finding | None:
-        if not isinstance(suggestion, Mapping):
-            return None
-        path = str(suggestion.get("relevant_file") or "").strip()
-        body = str(suggestion.get("suggestion_content") or "").rstrip()
-        start = _as_line(suggestion.get("relevant_lines_start"))
-        end = _as_line(suggestion.get("relevant_lines_end"))
-        score = suggestion.get("score")
-        if isinstance(score, bool) or not isinstance(score, (int, float, str)):
-            score = None
-        confidence = suggestion.get("confidence")
-        if isinstance(confidence, bool) or not isinstance(confidence, int):
-            confidence = None
-        existing_code = suggestion.get("existing_code")
-        improved_code = suggestion.get("improved_code")
-        return cls(
-            path=path,
-            body=body,
-            line_start=start,
-            line_end=end,
-            label=str(suggestion.get("label") or "").strip(),
-            existing_code=existing_code if isinstance(existing_code, str) else None,
-            improved_code=improved_code if isinstance(improved_code, str) else None,
-            score=score,
-            confidence=confidence,
-        )
 
     def to_inline_comment(
         self,

@@ -1,4 +1,3 @@
-import json
 from datetime import UTC
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
@@ -15,7 +14,7 @@ from pr_agent.git_providers.azuredevops_provider import (
     Comment,
     CommentThread,
 )
-from pr_agent.git_providers.git_provider import DEFAULT_DISCUSSION_CONTEXT_CHARS, IncrementalPR
+from pr_agent.git_providers.git_provider import IncrementalPR
 from pr_agent.log import get_logger
 
 
@@ -2213,90 +2212,6 @@ class TestAzureDevopsProviderSuggestionDiscussions:
 
         assert aliases == set()
 
-    def test_formats_replies_from_suggestion_threads(self):
-        provider = _provider_with_diff("/src/app.py")
-        thread = SimpleNamespace(
-            id=21,
-            status="wontFix",
-            thread_context=SimpleNamespace(
-                file_path="/src/app.py",
-                right_file_start=SimpleNamespace(line=4),
-                right_file_end=SimpleNamespace(line=6),
-            ),
-            comments=[
-                SimpleNamespace(content="**Suggestion:** guard the value\n```suggestion\nsafe()\n```"),
-                SimpleNamespace(
-                    content="We will move this to the backlog.",
-                    author=SimpleNamespace(display_name="Alex"),
-                ),
-            ],
-        )
-        provider.azure_devops_client.get_threads.return_value = [thread]
-
-        discussions = json.loads(provider.get_code_suggestion_thread_context())
-
-        assert discussions == [{
-            "thread_id": 21,
-            "status": "wontFix",
-            "file": "/src/app.py",
-            "start_line": 4,
-            "end_line": 6,
-            "suggestion": "**Suggestion:** guard the value\n```suggestion\nsafe()\n```",
-            "replies": [{"author": "Alex", "message": "We will move this to the backlog."}],
-        }]
-
-    def test_includes_suggestion_threads_without_replies(self):
-        provider = _provider_with_diff("/src/app.py")
-        provider.azure_devops_client.get_threads.return_value = [
-            SimpleNamespace(
-                id=22,
-                status="active",
-                thread_context=SimpleNamespace(
-                    file_path="/src/app.py",
-                    right_file_start=SimpleNamespace(line=8),
-                    right_file_end=SimpleNamespace(line=8),
-                ),
-                comments=[SimpleNamespace(content="**Suggestion:** use value\n```suggestion\nvalue\n```")],
-            ),
-            SimpleNamespace(comments=[
-                SimpleNamespace(content="General discussion"),
-                SimpleNamespace(content="A reply"),
-            ]),
-        ]
-
-        assert json.loads(provider.get_code_suggestion_thread_context()) == [{
-            "thread_id": 22,
-            "status": "active",
-            "file": "/src/app.py",
-            "start_line": 8,
-            "end_line": 8,
-            "suggestion": "**Suggestion:** use value\n```suggestion\nvalue\n```",
-            "replies": [],
-        }]
-
-    def test_includes_large_existing_suggestion_history(self):
-        provider = _provider_with_diff("/src/app.py")
-        provider.azure_devops_client.get_threads.return_value = [
-            SimpleNamespace(
-                id=thread_id,
-                status="active",
-                thread_context=SimpleNamespace(
-                    file_path="/src/app.py",
-                    right_file_start=SimpleNamespace(line=thread_id),
-                    right_file_end=SimpleNamespace(line=thread_id),
-                ),
-                comments=[SimpleNamespace(
-                    content=f"**Suggestion:** issue {thread_id}\n```suggestion\nvalue_{thread_id}\n```"
-                )],
-            )
-            for thread_id in range(1, 31)
-        ]
-
-        discussions = json.loads(provider.get_code_suggestion_thread_context())
-
-        assert len(discussions) == 30
-        assert {discussion["thread_id"] for discussion in discussions} == set(range(1, 31))
-
     def test_adapts_azure_thread_comments_for_conversation_history(self):
         provider = _provider_with_diff("/src/app.py")
         provider.azure_devops_client.get_pull_request_thread.return_value = SimpleNamespace(comments=[
@@ -2390,118 +2305,6 @@ class TestAzureDevopsProviderSuggestionDiscussions:
         comments = provider.get_review_thread_comments(21)
 
         assert [comment.id for comment in comments] == [1]
-
-    def test_excludes_temporary_progress_reply_from_suggestion_discussions(self):
-        provider = _provider_with_diff("/src/app.py")
-        provider.azure_devops_client.create_comment.return_value = SimpleNamespace()
-        provider.reply_to_thread(21, "On it! ⏳", True)
-        progress_content = provider.azure_devops_client.create_comment.call_args.args[0].content
-
-        provider._threads_cache = [SimpleNamespace(
-            id=21,
-            status="active",
-            thread_context=SimpleNamespace(
-                file_path="/src/app.py",
-                right_file_start=SimpleNamespace(line=4),
-                right_file_end=SimpleNamespace(line=4),
-            ),
-            comments=[
-                SimpleNamespace(content="**Suggestion:** fix\n```suggestion\nvalue\n```"),
-                SimpleNamespace(
-                    content=progress_content,
-                    author=SimpleNamespace(display_name="PR-Agent"),
-                ),
-                SimpleNamespace(
-                    content="Rejected, keep as is.",
-                    author=SimpleNamespace(unique_name="developer@example.com"),
-                ),
-            ],
-        )]
-
-        discussions = json.loads(provider.get_code_suggestion_thread_context())
-
-        assert [reply["message"] for reply in discussions[0]["replies"]] == ["Rejected, keep as is."]
-
-
-    def test_suggestion_discussions_stay_within_the_context_budget(self):
-        provider = _provider_with_diff("/src/app.py")
-        provider._threads_cache = [
-            SimpleNamespace(
-                id=thread_id,
-                status="active",
-                thread_context=SimpleNamespace(
-                    file_path="/src/app.py",
-                    right_file_start=SimpleNamespace(line=thread_id),
-                    right_file_end=SimpleNamespace(line=thread_id),
-                ),
-                comments=[SimpleNamespace(content="**Suggestion:** " + "x" * 700 + "\n```suggestion\nvalue\n```")],
-            )
-            for thread_id in range(1, 61)
-        ]
-
-        result = provider.get_code_suggestion_thread_context()
-
-        assert len(result) <= DEFAULT_DISCUSSION_CONTEXT_CHARS
-        assert 0 < len(json.loads(result)) < 60
-
-    def test_caps_suggestion_replies_after_dropping_progress_messages(self):
-        provider = _provider_with_diff("/src/app.py")
-        replies = [
-            SimpleNamespace(content=f"reply {i}", author=SimpleNamespace(display_name="Alex"))
-            for i in range(12)
-        ]
-        progress = [
-            SimpleNamespace(
-                content="On it! <!-- pr-agent-progress -->",
-                author=SimpleNamespace(display_name="PR-Agent"),
-            )
-            for _ in range(5)
-        ]
-        provider._threads_cache = [SimpleNamespace(
-            id=21,
-            status="active",
-            thread_context=SimpleNamespace(
-                file_path="/src/app.py",
-                right_file_start=SimpleNamespace(line=4),
-                right_file_end=SimpleNamespace(line=4),
-            ),
-            comments=[SimpleNamespace(content="**Suggestion:** fix\n```suggestion\nvalue\n```"), *replies, *progress],
-        )]
-
-        discussions = json.loads(provider.get_code_suggestion_thread_context())
-
-        assert [reply["message"] for reply in discussions[0]["replies"]] == [f"reply {i}" for i in range(2, 12)]
-
-    @patch("pr_agent.git_providers.azuredevops_provider.get_settings")
-    def test_skips_suggestion_threads_opened_by_a_human(self, mock_get_settings):
-        mock_get_settings.return_value.get.side_effect = lambda key, default=None: (
-            "agent@example.com" if key == "azure_devops_server.agent_identity" else default
-        )
-        provider = _provider_with_diff("/src/app.py")
-
-        def suggestion_thread(thread_id, author):
-            return SimpleNamespace(
-                id=thread_id,
-                status="active",
-                thread_context=SimpleNamespace(
-                    file_path="/src/app.py",
-                    right_file_start=SimpleNamespace(line=4),
-                    right_file_end=SimpleNamespace(line=4),
-                ),
-                comments=[SimpleNamespace(
-                    content="**Suggestion:** fix\n```suggestion\nvalue\n```",
-                    author=SimpleNamespace(unique_name=author),
-                )],
-            )
-
-        provider._threads_cache = [
-            suggestion_thread(1, "agent@example.com"),
-            suggestion_thread(2, "human@example.com"),
-        ]
-
-        discussions = json.loads(provider.get_code_suggestion_thread_context())
-
-        assert [discussion["thread_id"] for discussion in discussions] == [1]
 
 
 def test_azure_issue_comments_newest_first_does_not_reverse_twice():
@@ -3183,7 +2986,6 @@ class TestAzureDevopsProviderSuggestionFence:
             provider.azure_devops_client.get_item.return_value = SimpleNamespace(
                 content="before\nvalues = set()\nafter"
             )
-            assert "Not doing this." in provider.get_code_suggestion_thread_context()
             assert provider.reconcile_code_suggestion_threads() == 1
 
     @pytest.mark.parametrize("legacy_diff", [False, True], ids=["suggestion-fence", "diff-block-before-4655"])

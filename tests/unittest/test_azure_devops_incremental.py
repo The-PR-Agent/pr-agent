@@ -201,12 +201,6 @@ class TestGetIncrementalCommits:
 
         assert provider.get_previous_review(full=True, incremental=False) is agent
 
-    def test_supports_review_and_suggestions_kinds(self):
-        provider = self._make_provider()
-
-        assert provider.supports_incremental_kind("review") is True
-        assert provider.supports_incremental_kind("suggestions") is True
-        assert provider.supports_incremental_kind("unknown") is False
 
     @pytest.mark.parametrize("suggestions_header", [
         "## PR Code Suggestions ✨",

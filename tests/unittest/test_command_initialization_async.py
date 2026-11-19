@@ -46,7 +46,7 @@ def providers(monkeypatch):
             )
             provider.get_issue_comments_newest_first.return_value = []
             provider.supports_review_finding_state.return_value = False
-            provider.supports_code_suggestion_state.return_value = False
+
             provider.supports_threaded_pr_questions.return_value = False
             provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
             instances[url] = provider
@@ -59,7 +59,7 @@ def providers(monkeypatch):
 @pytest.mark.parametrize(("command", "command_class", "section"), [
     ("review", agent.PRReviewer, "PR_REVIEWER"),
     ("describe", agent.PRDescription, "PR_DESCRIPTION"),
-    ("improve", agent.PRCodeSuggestions, "PR_CODE_SUGGESTIONS"),
+    ("improve", agent.command2class["improve"], "PR_REVIEWER"),
     ("ask", agent.command2class["ask"], "PR_QUESTIONS"),
     ("ask_question", agent.command2class["ask_question"], "PR_QUESTIONS"),
 ])

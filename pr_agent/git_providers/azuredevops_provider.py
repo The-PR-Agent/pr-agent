@@ -602,11 +602,6 @@ class AzureDevopsProvider(GitProvider):
             return False
         return True
 
-    def supports_incremental_kind(self, kind: str) -> bool:
-        return kind in self._INCREMENTAL_ANCHOR_PREFIXES
-
-    def supports_code_suggestion_state(self) -> bool:
-        return True
 
     def supports_threaded_pr_questions(self) -> bool:
         return True

@@ -40,7 +40,7 @@ System/user prompt strings live as TOML files under `pr_agent/settings/` and are
 
 - `pr_reviewer.py` ↔ `pr_reviewer_prompts.toml`
 - `pr_description.py` ↔ `pr_description_prompts.toml`
-- `pr_code_suggestions.py` ↔ `code_suggestions/pr_code_suggestions_prompts.toml` (plus its related variants)
+- `pr_questions.py` ↔ `pr_questions_prompts.toml`
 
 New prompt files must also be registered in the `settings_files=[...]` list in `pr_agent/config_loader.py` or they will not be loaded into `global_settings`.
 

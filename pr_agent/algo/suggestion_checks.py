@@ -5,7 +5,42 @@ import textwrap
 
 from pr_agent.algo.code_replacement import python_replacement_compiles, reindent_to_line
 from pr_agent.algo.git_patch_processing import split_diff_lines
+from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
+
+# TODO: in 1.0, remove the deprecated "commitable_code_suggestions" fallback in
+# get_committable_code_suggestions() below, its entry in
+# config_security.PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION, and the deprecation note in
+# docs/docs/commands/review.md. The flag guards the one-off warning it emits.
+_deprecated_spellings_warned = False
+
+
+def get_committable_code_suggestions() -> bool:
+    """Whether fixes publish as committable inline comments.
+
+    ``commitable_code_suggestions`` was the public key from v0.22 until the pre-1.0 typo fix, so
+    it stays readable as a deprecated fallback: existing ``.pr_agent.toml`` files and pasted
+    command overrides keep working instead of silently reverting to plain text output.
+
+    The mode is enabled when *either* spelling is true. The canonical key cannot override the
+    alias to false because its default in configuration.toml is also false, leaving "unset"
+    indistinguishable from an explicit false after the settings merge.
+    """
+    global _deprecated_spellings_warned
+    if get_settings().pr_code_suggestions.committable_code_suggestions:
+        return True
+    # The deprecated key is absent from configuration.toml, so read it with a default instead of
+    # attribute access. Both spellings are spelled out literally so the dead-key ledger in
+    # tests/unittest/test_config_dead_keys.py can still see the canonical reader.
+    deprecated = bool(get_settings().pr_code_suggestions.get("commitable_code_suggestions", False))
+    # The caller may sit in a per-suggestion loop, so report the deprecated spelling only once.
+    if deprecated and not _deprecated_spellings_warned:
+        _deprecated_spellings_warned = True
+        get_logger().warning(
+            "pr_code_suggestions.commitable_code_suggestions is deprecated and will be removed in "
+            "1.0; rename it to pr_code_suggestions.committable_code_suggestions"
+        )
+    return deprecated
 
 
 def get_patch_range_lines(patch, relevant_lines_start, relevant_lines_end) -> list[str] | None:
