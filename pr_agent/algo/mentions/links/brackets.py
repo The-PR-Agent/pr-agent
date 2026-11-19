@@ -77,8 +77,11 @@ def _spills(text: str, start: int, stop: int, end: int, last: dict[str, int]) ->
     return False
 
 
-def open_bracket_spans(text: str, start: int, end: int, ticks: dict[int, list[int]]) -> list[tuple[int, int]]:
+def open_bracket_spans(
+    text: str, start: int, end: int, ticks: dict[int, list[int]], urls: dict[int, int]
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
     spans = []
+    extents = []
     last = {closer: text.rfind(closer, start, end) for closer in ("`", *(closer for _, closer in _RAW_HTML))}
     depth = 0
     lax = False
@@ -110,6 +113,9 @@ def open_bracket_spans(text: str, start: int, end: int, ticks: dict[int, list[in
             if tail_end and not lax:
                 depth += text.count("[", step, tail_end)
                 step = tail_end
+        elif not depth and pos in urls:
+            step = min(urls[pos], end)
+            extents.append((pos, step))
 
         if not before and depth:
             opened = pos
@@ -118,4 +124,4 @@ def open_bracket_spans(text: str, start: int, end: int, ticks: dict[int, list[in
         pos = step
     if depth:
         spans.append((opened, end))
-    return spans
+    return spans, extents
