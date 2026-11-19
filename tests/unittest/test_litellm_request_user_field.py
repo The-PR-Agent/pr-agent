@@ -199,3 +199,11 @@ class TestSeedSetting:
         kwargs = await _run(monkeypatch, "gpt-4o", False, temperature=0,
                             config_values={"seed": "abc"})
         assert "seed" not in kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [True, -0.5, 3.7])
+    async def test_bool_or_fractional_seed_is_ignored(self, monkeypatch, value):
+        # int() would quietly turn these into 1, 0 or 3 and switch a fixed seed on
+        kwargs = await _run(monkeypatch, "gpt-4o", False, temperature=0,
+                            config_values={"seed": value})
+        assert "seed" not in kwargs

@@ -2419,6 +2419,10 @@ class LiteLLMAIHandler(BaseAiHandler):
     def _configured_seed() -> int:
         """Return config.seed as an int; -1 (no seed) when it is not a number."""
         value = get_settings().config.get("seed", -1)
+        # int() turns True into 1 and -0.5 into 0, which would switch a fixed seed on
+        if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+            get_logger().warning(f"Ignoring invalid config.seed: {value!r}")
+            return -1
         try:
             return int(value)
         except (TypeError, ValueError, OverflowError):
