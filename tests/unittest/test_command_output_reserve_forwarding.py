@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import ANY, AsyncMock, MagicMock, call
 
 import pytest
 
@@ -20,7 +20,12 @@ from tests.unittest._settings_helpers import restore_settings, snapshot_settings
             add_docs_module.PRAddDocs,
             add_docs_module,
             {},
-            {"add_line_numbers_to_hunks": True, "disable_extra_lines": False, "return_remaining_files": True},
+            {
+                "add_line_numbers_to_hunks": True,
+                "disable_extra_lines": False,
+                "return_remaining_files": True,
+                "excluded_extensions": ANY,
+            },
         ),
         (
             generate_labels_module.PRGenerateLabels,
