@@ -1189,12 +1189,6 @@ class GitLabProvider(GitProvider):
         self._latest_commit_url = None
         self.id_project, self.id_mr = self._parse_merge_request_url(merge_request_url)
         self.mr = self._get_merge_request()
-        try:
-            # the versions endpoint is ordered newest-first, so the latest diff is the first entry
-            self.last_diff = self.mr.diffs.list(page=1, per_page=1, get_all=False)[0]
-        except IndexError as e:
-            get_logger().error(f"Could not get diff for merge request {self.id_mr}")
-            raise DiffNotFoundError(f"Could not get diff for merge request {self.id_mr}") from e
 
     # Match the most recent prior note for each incremental kind against any accepted identity,
     # then use its timestamp as the timeline anchor.

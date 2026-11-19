@@ -3800,7 +3800,6 @@ class TestGitLabRelevantDiff:
         }
         provider.id_project = "group/repo"
         provider.id_mr = 1
-        provider.last_diff = "latest-at-construction"
         return provider
 
     def test_matching_change_resolves_to_the_newest_version(self):
@@ -3808,7 +3807,7 @@ class TestGitLabRelevantDiff:
 
         assert provider.get_relevant_diff("app.py", "+added line") is self.VERSIONS[0]
 
-    def test_fallback_uses_the_latest_version_not_the_construction_snapshot(self):
+    def test_fallback_uses_the_latest_version(self):
         provider = self._provider([{"new_path": "other.py", "diff": "@@\n+unrelated\n"}])
 
         assert provider.get_relevant_diff("app.py", "+added line") is self.VERSIONS[0]
@@ -3818,16 +3817,6 @@ class TestGitLabRelevantDiff:
         provider.mr.diffs.list.return_value = []
 
         assert provider.get_relevant_diff("app.py", "+added line") is None
-
-    def test_set_merge_request_snapshots_the_newest_version(self):
-        provider = GitLabProvider.__new__(GitLabProvider)
-        mr = MagicMock()
-        mr.diffs.list.return_value = list(self.VERSIONS)
-        with patch.object(GitLabProvider, "_parse_merge_request_url", return_value=("group/repo", 1)), \
-             patch.object(GitLabProvider, "_get_merge_request", return_value=mr):
-            provider._set_merge_request("https://gitlab.com/group/repo/-/merge_requests/1")
-
-        assert provider.last_diff is self.VERSIONS[0]
 
     @pytest.mark.parametrize("ref", ["base", "start", "head"])
     def test_missing_version_ref_is_rejected(self, ref):

@@ -4,12 +4,11 @@ from unittest.mock import Mock
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 
 
-def test_set_merge_request_fetches_only_latest_diff_version():
+def test_set_merge_request_does_not_list_diff_versions():
     provider = GitLabProvider.__new__(GitLabProvider)
     provider._parse_merge_request_url = Mock(return_value=("group/repo", 42))
 
-    latest_diff = object()
-    list_diffs = Mock(return_value=[latest_diff])
+    list_diffs = Mock()
     mr = SimpleNamespace(diffs=SimpleNamespace(list=list_diffs))
     provider._get_merge_request = Mock(return_value=mr)
 
@@ -18,8 +17,7 @@ def test_set_merge_request_fetches_only_latest_diff_version():
     assert provider.id_project == "group/repo"
     assert provider.id_mr == 42
     assert provider.mr is mr
-    assert provider.last_diff is latest_diff
-    list_diffs.assert_called_once_with(page=1, per_page=1, get_all=False)
+    list_diffs.assert_not_called()
 
 
 def test_get_relevant_diff_fetches_only_latest_diff_version():
@@ -28,7 +26,6 @@ def test_get_relevant_diff_fetches_only_latest_diff_version():
     latest_diff = SimpleNamespace(base_commit_sha="base", start_commit_sha="start", head_commit_sha="head")
     list_diffs = Mock(return_value=[latest_diff])
     provider.mr = SimpleNamespace(diffs=SimpleNamespace(list=list_diffs))
-    provider.last_diff = latest_diff
     provider._get_merge_request_changes = Mock(return_value={
         "changes": [{"new_path": "src/app.py", "diff": "@@\n+hello"}],
         "diff_refs": {"base_sha": "base", "start_sha": "start", "head_sha": "head"},
