@@ -612,10 +612,9 @@ deployment. This is required until the selected model's input limit is available
 in PR-Agent's registry or the installed LiteLLM metadata.
 CompactifAI's public model pages do not currently specify those limits.
 
-PR-Agent also caps the effective budget with `config.max_model_tokens`, which
-defaults to 256,000. To use a larger verified budget, raise both
-`config.custom_model_max_tokens` and `config.max_model_tokens`; the effective limit
-is the smaller of the two values.
+PR-Agent also caps the effective budget with `config.max_model_tokens`. To use a
+larger verified budget, raise both `config.custom_model_max_tokens` and
+`config.max_model_tokens` as needed; the effective limit is the smaller value.
 
 This budgeting limit is not the amount of space available for the changed-code diff.
 PR-Agent reserves output tokens and subtracts fixed prompt tokens before fitting
@@ -903,7 +902,7 @@ model = "github_copilot/gpt-4o"
 fallback_models = ["github_copilot/gpt-4.1"]
 ```
 
-The GitHub identity behind the model needs an active Copilot subscription. The token budgets for these models are resolved automatically from litellm's model metadata, so `custom_model_max_tokens` is not required. However, `get_max_tokens` clamps the effective window to `config.max_model_tokens`, which defaults to 256000 — above the input limits recorded for these Copilot routes (e.g., 64000 for gpt-4o, 128000 for gpt-4.1) — so those limits apply in full without changing it.
+The GitHub identity behind the model needs an active Copilot subscription. LiteLLM resolves token budgets for these models automatically, so `custom_model_max_tokens` is not required. PR-Agent still caps the effective window at `config.max_model_tokens`; raise that setting only if it is below the selected model's supported input limit.
 
 Authentication uses the [GitHub Copilot provider](https://docs.litellm.ai/docs/providers/github_copilot) flow:
 
@@ -1091,7 +1090,7 @@ configured output limit.
 ## Routing small pull requests to a cheaper model
 
 Without routing, regular-model calls use `config.model`, however small the pull request. In this example,
-the first rule selects the cheaper Luna model; the second deliberately keeps the default Sol model.
+the first rule selects Luna for smaller pull requests; the second selects Sol for larger ones.
 `config.fallback_models` still apply after the selected primary:
 
 ```toml
@@ -1130,12 +1129,12 @@ The retry chain starts as `[config.model] + config.fallback_models`, with a depl
 A matched rule replaces the first pair. If the routed `(model, deployment)` pair also appears among the
 configured fallbacks, the effective chain removes duplicate pairs while preserving their order and adds
 the displaced configured primary pair at the end, unless it is already present. This avoids retrying the
-same endpoint while retaining the configured primary in this collision case. With
+same endpoint while retaining the configured primary in this collision case. For example, with
 `config.model = "gpt-6.1-sol"`, no deployment configured, and the first rule above:
 
 | `config.fallback_models` | retry order if earlier attempts fail |
 | --- | --- |
-| `["gpt-6-luna"]` (shipped default) | `gpt-6-luna`, `gpt-6.1-sol` |
+| `["gpt-6-luna"]` | `gpt-6-luna`, `gpt-6.1-sol` |
 | `["gpt-6-luna", "other-model"]` | `gpt-6-luna`, `other-model`, `gpt-6.1-sol` |
 
 The first successful attempt returns immediately; later entries are attempted only after fallback-eligible
