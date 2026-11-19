@@ -3,8 +3,8 @@ import re
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable
 
-from .autolinks import github_autolinks, gitlab_autolinks
 from .blocks import line_flags
+from .links import github_autolinks, gitlab_autolinks
 
 # Mentions follow an ASCII boundary (Ruby \w) and entity decoding; leading underscores can open emphasis
 _MENTION_RE = re.compile(
