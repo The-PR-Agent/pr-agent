@@ -15,6 +15,7 @@ from pr_agent.algo.artifacts import get_artifact_context
 from pr_agent.algo.code_fence import strip_wrapping_code_fence
 from pr_agent.algo.comment_identity import PRDescriptionHeader, PRDescriptionIdentity
 from pr_agent.algo.language_handler import filter_bad_extensions
+from pr_agent.algo.markdown_span import _markdown_code_span
 from pr_agent.algo.output_models import PRDescriptionAssembled
 from pr_agent.algo.output_sinks import _push_outputs_consumes_payload
 from pr_agent.algo.pr_processing import (
@@ -54,6 +55,34 @@ from pr_agent.servers.help import HelpMessage
 
 MAX_DESCRIPTION_COVERAGE_FILES = 50
 DESCRIBE_PROGRESS_COMMENT = "Preparing PR description..."
+
+
+def _description_filename_key(filename: str) -> str:
+    return filename.strip().lower().strip("/")
+
+
+def _ambiguous_description_filenames(filenames: list[str]) -> set[str]:
+    normalized_paths = {}
+    for filename in filenames:
+        normalized_paths.setdefault(_description_filename_key(filename), set()).add(filename)
+    return {normalized for normalized, paths in normalized_paths.items() if len(paths) > 1}
+
+
+def _resolve_description_filename(
+        filename: str, expected_filenames: list[str], ambiguous_filenames: set[str]) -> str | None:
+    if filename in expected_filenames:
+        return filename
+    filename_without_newline = filename.rstrip("\r\n")
+    if filename_without_newline in expected_filenames:
+        return filename_without_newline
+    normalized_filename = _description_filename_key(filename_without_newline)
+    if normalized_filename in ambiguous_filenames:
+        return None
+    matches = {
+        expected_filename for expected_filename in expected_filenames
+        if _description_filename_key(expected_filename) == normalized_filename
+    }
+    return matches.pop() if len(matches) == 1 else None
 
 
 def _build_unprocessed_files_block(file_list: list, label: str, max_files: int = 50) -> str:
@@ -527,6 +556,13 @@ class PRDescription:
             # get the files prediction for each patch
             chunk_pairs = list(zip(patches_compressed_list, files_in_patches_list, strict=True))
             chunk_diffs = ["\n".join(patches) for patches, _files_in_patch in chunk_pairs]
+            known_filenames = list(dict.fromkeys([
+                *file_dict,
+                *(filename for _patches, files_in_patch in chunk_pairs for filename in files_in_patch),
+                *remaining_files_list,
+                *deleted_files_list,
+            ]))
+            ambiguous_chunk_filenames = _ambiguous_description_filenames(known_filenames)
             # Chunks an earlier model attempt described: a fallback re-sends only the others, as /review does.
             described_chunks = getattr(self, "_described_chunks", None)
             if described_chunks is None:
@@ -573,6 +609,7 @@ class PRDescription:
             chunk_models = []
             chunk_errors = []
             failed_files = []
+            incomplete_chunk_count = 0
             for i, (result, (_patches, files_in_patch)) in enumerate(zip(results, chunk_pairs, strict=True)):
                 if isinstance(result, Exception):
                     chunk_errors.append(result)
@@ -596,15 +633,33 @@ class PRDescription:
                 required_fields = ['filename', 'changes_title', 'label']
                 if self.vars.get('include_file_summary_changes', True):
                     required_fields.append('changes_summary')
-                described_files = {
-                    file_description['filename'].strip()
-                    for file_description in (file_descriptions if isinstance(file_descriptions, list) else [])
-                    if isinstance(file_description, dict) and
-                    all(isinstance(file_description.get(field), str) and file_description[field].strip()
-                        for field in required_fields)
-                }
-                if described_files:
-                    file_description_chunks.append(file_descriptions)
+                valid_file_descriptions = []
+                described_files = set()
+                for file_description in (file_descriptions if isinstance(file_descriptions, list) else []):
+                    if not isinstance(file_description, dict) or not all(
+                        isinstance(file_description.get(field), str) and file_description[field].strip()
+                        for field in required_fields
+                    ):
+                        continue
+                    matched_filename = _resolve_description_filename(
+                        file_description['filename'], files_in_patch, ambiguous_chunk_filenames,
+                    )
+                    if matched_filename is None or matched_filename in described_files:
+                        continue
+                    if matched_filename != file_description['filename']:
+                        file_description = {**file_description, 'filename': matched_filename}
+                    valid_file_descriptions.append(file_description)
+                    described_files.add(matched_filename)
+                if valid_file_descriptions:
+                    file_description_chunks.append(valid_file_descriptions)
+                    missing_files = [filename for filename in files_in_patch if filename not in described_files]
+                    if missing_files:
+                        incomplete_chunk_count += 1
+                        failed_files.extend(missing_files)
+                        get_logger().warning(
+                            f"Description chunk {i + 1} omitted valid descriptions for some files",
+                            artifact={"missing_files": missing_files},
+                        )
                     # Reuse only a chunk that described every file in it: a fallback may complete the others.
                     described = described_chunks.get(chunk_diffs[i])
                     if described is None and described_files.issuperset(files_in_patch):
@@ -618,7 +673,9 @@ class PRDescription:
                         artifact={"files": files_in_patch},
                     )
 
-            self.description_failed_chunk_count = len(chunk_pairs) - len(file_description_chunks)
+            self.description_failed_chunk_count = (
+                len(chunk_pairs) - len(file_description_chunks) + incomplete_chunk_count
+            )
             self.description_failed_files = list(dict.fromkeys(failed_files))
             progress = getattr(self, "_chunk_progress", None)
             if progress is not None and self.description_failed_chunk_count > 0:
@@ -741,13 +798,14 @@ class PRDescription:
         total_chunk_count = getattr(self, "description_total_chunk_count", failed_chunk_count)
         footer = (
             f"\n\n⚠️ **Description coverage:** {failed_chunk_count} of {total_chunk_count} "
-            "file-description chunks failed; the description above is based on the successful chunks only."
+            "file-description chunks failed or were incomplete; the description above is based only on the "
+            "available complete file summaries."
         )
         failed_files = getattr(self, "description_failed_files", [])
         if failed_files:
             displayed_files = failed_files[:MAX_DESCRIPTION_COVERAGE_FILES]
-            footer += "\n\nFiles from failed chunks may not be covered:\n" + "\n".join(
-                f"- `{filename}`" for filename in displayed_files
+            footer += "\n\nFiles from failed or incomplete chunks may not be covered:\n" + "\n".join(
+                f"- {_markdown_code_span(filename)}" for filename in displayed_files
             )
             remaining_count = len(failed_files) - len(displayed_files)
             if remaining_count:
@@ -766,8 +824,12 @@ class PRDescription:
                 original_prediction_dict = original_prediction_loaded
             if original_prediction_dict:
                 files = original_prediction_dict.get('pr_files', [])
-                filenames_predicted = [file.get('filename', '').strip() for file in files if isinstance(file, dict)]
+                filenames_predicted_exact = [
+                    file.get('filename', '') for file in files if isinstance(file, dict)
+                ]
+                filenames_predicted = [filename.strip() for filename in filenames_predicted_exact]
             else:
+                filenames_predicted_exact = []
                 filenames_predicted = []
 
             # extend the prediction with additional files not included in the original prediction
@@ -781,7 +843,7 @@ class PRDescription:
             MAX_EXTRA_FILES_TO_OUTPUT = 100
             counter_extra_files = 0
             for file in pr_files:
-                if file.filename in filenames_predicted:
+                if file.filename in filenames_predicted_exact or file.filename in filenames_predicted:
                     continue
 
                 # add up to MAX_EXTRA_FILES_TO_OUTPUT files
