@@ -20,17 +20,36 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+
+      # The /describe smoke test does not consume docs/docs; packaging tests cover /help.
+      - name: Detect documentation-only PR
+        id: docs
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          if git rev-parse -q --verify 'HEAD^2' > /dev/null &&
+             git diff --no-renames --quiet HEAD^1 HEAD -- . \
+               ':(top,exclude,glob)docs/docs/**/*.md' \
+               ':(top,exclude,glob)docs/docs/**/*.mdx'; then
+            echo 'docs_only=true' >> "$GITHUB_OUTPUT"
+            echo '::notice::Documentation-only PR: GitHub provider smoke setup and test skipped'
+          fi
 
       - name: Setup uv
+        if: steps.docs.outputs.docs_only != 'true'
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           version: '0.13.8'
           resolution-strategy: lowest
 
       - name: Install dependencies
+        if: steps.docs.outputs.docs_only != 'true'
         run: uv sync
 
       - name: Smoke /describe on a real GitHub PR
+        if: steps.docs.outputs.docs_only != 'true'
         env:
           GITHUB.USER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: PYTHONPATH=. uv run pytest tests/health_test/test_github_smoke.py -q
