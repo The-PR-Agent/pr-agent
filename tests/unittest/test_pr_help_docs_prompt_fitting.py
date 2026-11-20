@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from pr_agent.algo.pr_processing import retry_with_fallback_models
+from pr_agent.algo.token_budget import ModelContextPreparationError
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.commands.pr_help_docs import (
     PredictionPreparator,
@@ -21,6 +23,7 @@ from pr_agent.commands.pr_help_docs import (
     map_documentation_files_to_contents,
 )
 from pr_agent.config_loader import get_settings
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _FIT_MODEL = "gpt-fit-test"
 _LISTENER_XML = '<listener port="18443" mode="isolated-m7">localhost</listener>'
@@ -374,3 +377,168 @@ async def test_ranked_docs_preserve_fitting_xml_example(monkeypatch, comment):
     assert len(model_calls) == 2
     assert "/config.md" in command.vars["snippets"]
     assert xml_example in command.vars["snippets"]
+
+
+class _DeferredLimitAIHandler:
+    def __init__(
+        self,
+        limits: dict[str, int],
+        responses: dict[str, tuple[str, str]],
+        prepare_errors: dict[str, Exception] | None = None,
+    ):
+        self._limits = limits
+        self._responses = responses
+        self._prepare_errors = prepare_errors or {}
+        self.prepared_models: list[str] = []
+        self.completed_models: list[str] = []
+
+    async def prepare_model_token_limits(self, model: str) -> None:
+        if model in self._prepare_errors:
+            raise self._prepare_errors[model]
+        self.prepared_models.append(model)
+
+    def get_model_token_limits(self, model: str, *, ignore_max_model_tokens: bool = False) -> tuple[int, int | None]:
+        if model not in self.prepared_models:
+            raise RuntimeError(f"token limits requested before preparation for {model}")
+        return self._limits[model], None
+
+    async def chat_completion(self, *, model: str, temperature, system: str, user: str):
+        self.completed_models.append(model)
+        return self._responses[model]
+
+
+@pytest.mark.asyncio
+async def test_prediction_preparator_prepares_model_token_limits_before_fitting():
+    primary = "openrouter/test/primary"
+    fallback = "openrouter/test/fallback"
+    snapshot = snapshot_settings([
+        "config.model",
+        "config.fallback_models",
+        "model_routing.enable",
+        "openai.fallback_deployments",
+        "openai.deployment_id",
+    ])
+    try:
+        settings = get_settings()
+        settings.set("config.model", primary)
+        settings.set("config.fallback_models", [fallback])
+        settings.set("model_routing.enable", False)
+        settings.set("openai.fallback_deployments", [])
+
+        handler = _DeferredLimitAIHandler(
+            limits={primary: 32_000, fallback: 32_000},
+            responses={
+                primary: ("response: partial", "length"),
+                fallback: ("response: full answer", "stop"),
+            },
+        )
+        preparator = PredictionPreparator(
+            handler,
+            {"docs_url": "https://example.test", "question": "How does it work?", "snippets": "# Guide\nDetails."},
+            settings.pr_help_docs_prompts.system,
+            settings.pr_help_docs_prompts.user,
+        )
+
+        response = await retry_with_fallback_models(preparator)
+
+        assert response == "response: full answer"
+        assert handler.prepared_models == [primary, fallback]
+    finally:
+        restore_settings(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_help_docs_run_prepares_primary_model_token_limits_before_trimming(monkeypatch):
+    primary = "openrouter/test/help-docs"
+    snapshot = snapshot_settings(["config.model", "config.custom_model_max_tokens"])
+    try:
+        settings = get_settings()
+        settings.set("config.model", primary)
+        settings.set("config.custom_model_max_tokens", -1)
+
+        handler = _DeferredLimitAIHandler(
+            limits={primary: 32_000},
+            responses={primary: ("response: answer\nquestion_is_relevant: 1\n", "stop")},
+        )
+        command = PRHelpDocs.__new__(PRHelpDocs)
+        command.question = "How do I configure this?"
+        command.return_as_string = True
+        command.vars = {"docs_url": "https://example.test", "question": command.question, "snippets": ""}
+        command.ai_handler = handler
+        command.token_handler = TokenHandler(
+            None,
+            command.vars,
+            settings.pr_help_docs_prompts.system,
+            settings.pr_help_docs_prompts.user,
+            ai_handler=handler,
+        )
+        command._gen_filenames_to_contents_map_from_repo = lambda: {"/guide.md": "# Guide\nUse config."}
+        command._format_model_answer = lambda response, relevant_sections: response
+
+        async def predict(preparator, **kwargs):
+            return await preparator(primary)
+
+        monkeypatch.setattr("pr_agent.commands.pr_help_docs.retry_with_fallback_models", predict)
+
+        assert await command.run() == "answer"
+        assert handler.prepared_models == [primary, primary]
+    finally:
+        restore_settings(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_help_docs_run_falls_back_when_primary_preparation_fails(monkeypatch):
+    primary = "openrouter/test/failing-primary"
+    fallback = "openrouter/test/healthy-fallback"
+    snapshot = snapshot_settings([
+        "config.model",
+        "config.fallback_models",
+        "config.custom_model_max_tokens",
+        "model_routing.enable",
+        "openai.fallback_deployments",
+        "openai.deployment_id",
+    ])
+    try:
+        settings = get_settings()
+        settings.set("config.model", primary)
+        settings.set("config.fallback_models", [fallback])
+        settings.set("config.custom_model_max_tokens", -1)
+        settings.set("model_routing.enable", False)
+        settings.set("openai.fallback_deployments", [])
+
+        handler = _DeferredLimitAIHandler(
+            limits={fallback: 32_000},
+            responses={fallback: ("response: fallback answer\nquestion_is_relevant: 1\n", "stop")},
+            prepare_errors={primary: ModelContextPreparationError("temporary OpenRouter outage")},
+        )
+        command = PRHelpDocs.__new__(PRHelpDocs)
+        command.question = "How do I configure this?"
+        command.return_as_string = True
+        command.vars = {"docs_url": "https://example.test", "question": command.question, "snippets": ""}
+        command.ai_handler = handler
+        command.token_handler = TokenHandler(
+            None,
+            command.vars,
+            settings.pr_help_docs_prompts.system,
+            settings.pr_help_docs_prompts.user,
+            ai_handler=handler,
+        )
+        command._gen_filenames_to_contents_map_from_repo = lambda: {"/guide.md": "# Guide\nUse config."}
+        command._format_model_answer = lambda response, relevant_sections: response
+
+        bound_models = []
+        original_for_model = TokenHandler.for_model
+
+        def track_for_model(self, model):
+            bound_models.append(model)
+            return original_for_model(self, model)
+
+        monkeypatch.setattr(TokenHandler, "for_model", track_for_model)
+
+        assert await command.run() == "fallback answer"
+        assert handler.prepared_models == [fallback, fallback]
+        assert handler.completed_models == [fallback]
+        assert fallback in bound_models
+        assert primary not in bound_models
+    finally:
+        restore_settings(snapshot)
