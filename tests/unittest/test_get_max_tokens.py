@@ -26,6 +26,110 @@ def _expected_max_tokens(model: str) -> int:
 
 
 class TestGetMaxTokens:
+    @staticmethod
+    def _terra_settings(monkeypatch, *, limit=0, provider="", values=None):
+        settings = SimpleNamespace(
+            config=SimpleNamespace(custom_model_max_tokens=limit, max_model_tokens=0),
+            litellm=SimpleNamespace(custom_llm_provider=provider),
+            get=(values or {}).get,
+        )
+        monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
+
+    @pytest.mark.parametrize("model, provider, values, limit, expected, input_ceiling", [
+        ("gpt-6.1-terra", "", {}, 0, 1050000, 922000),
+        ("openai/gpt-6.1-terra", "", {"OPENAI.API_BASE": "https://gateway.example/v1"}, 32000, 32000, None),
+        ("gpt-6.1-terra_thinking", "", {"OPENAI.API_BASE": "https://gateway.example/v1"}, 0, None, None),
+        ("gpt-6.1-terra", "", {"OPENAI.API_BASE": "https:///"}, 0, None, None),
+        ("gpt-6.1-terra", "", {"OPENAI.API_BASE": "http://[::1"}, 16000, 16000, None),
+        ("openrouter/openai/gpt-6.1-terra", "", {
+            "OPENAI.API_BASE": "https://gateway.example/v1", "OPENAI.KEY": "openai-key",
+        }, 32000, 32000, None),
+        ("openrouter/openai/gpt-6.1-terra", "", {
+            "OPENAI.API_BASE": "https://gateway.example/v1", "OPENAI.KEY": "openai-key",
+            "OPENROUTER.API_BASE": "https://openrouter.ai/api/v1",
+        }, 0, 1050000, 922000),
+        ("azure_ai/gpt-6.1-terra_thinking", "openai", {
+            "OPENAI.API_BASE": "https://gateway.example/v1",
+        }, 0, None, None),
+        ("azure_ai/gpt-6.1-terra_thinking", "openai", {
+            "OPENAI.API_BASE": "https://api.openai.com/v1",
+        }, 0, 1050000, 922000),
+        ("gpt-6.1-terra", "ollama", {}, 16000, 16000, None),
+        ("gpt-6.1-terra", "ollama", {}, 0, 32768, None),
+    ])
+    def test_terra_token_budget_respects_route(
+        self, monkeypatch, model, provider, values, limit, expected, input_ceiling,
+    ):
+        for name in ("OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENROUTER_API_KEY", "OR_API_KEY", "OPENROUTER_API_BASE"):
+            monkeypatch.delenv(name, raising=False)
+        self._terra_settings(monkeypatch, provider=provider, limit=limit, values=values)
+        if provider == "ollama" and limit == 0:
+            monkeypatch.setitem(litellm.model_cost, "ollama/gpt-6.1-terra", {"max_input_tokens": 32768})
+        monkeypatch.setattr(litellm, "get_model_info", lambda _: {"max_input_tokens": 32768})
+        if expected is None:
+            with pytest.raises(Exception, match="custom_model_max_tokens"):
+                get_max_tokens(model, ignore_max_model_tokens=True)
+        else:
+            assert get_max_tokens(model, ignore_max_model_tokens=True) == expected
+        assert token_budget.get_max_input_tokens(model) == input_ceiling
+
+    def test_terra_gateway_uses_exact_alias_metadata(self, monkeypatch):
+        model = "openai/gpt-6.1-terra_thinking"
+        self._terra_settings(monkeypatch, values={"OPENAI.API_BASE": "https://gateway.example/v1"})
+        monkeypatch.setitem(litellm.model_cost, model, {"max_input_tokens": 28000})
+        monkeypatch.setattr(litellm, "get_model_info", lambda candidate: {
+            "max_input_tokens": 28000 if candidate == model else 922000,
+        })
+        assert get_max_tokens(model, ignore_max_model_tokens=True) == 28000
+        assert token_budget.get_max_input_tokens(model) is None
+
+    def test_terra_openai_like_namespace_uses_exact_context_metadata(self, monkeypatch):
+        model = "openai/gpt-6.1-terra_thinking"
+        self._terra_settings(monkeypatch, provider="openai_like")
+        exact = f"openai_like/{model}"
+        monkeypatch.setitem(litellm.model_cost, exact, {"max_input_tokens": 16000})
+        lookups = []
+
+        def get_model_info(candidate):
+            lookups.append(candidate)
+            return {"max_input_tokens": 16000 if candidate == exact else 922000}
+
+        monkeypatch.setattr(litellm, "get_model_info", get_model_info)
+        assert get_max_tokens(model, ignore_max_model_tokens=True) == 16000
+        assert lookups == [exact]
+
+    @pytest.mark.parametrize("exact_entry", [None, {"input_cost_per_token": 0.0}])
+    def test_terra_openai_like_namespace_rejects_generic_context(self, monkeypatch, exact_entry):
+        model = "openai/gpt-6.1-terra_thinking"
+        self._terra_settings(monkeypatch, provider="openai_like")
+        exact = f"openai_like/{model}"
+        if exact_entry is None:
+            monkeypatch.delitem(litellm.model_cost, exact, raising=False)
+        else:
+            monkeypatch.setitem(litellm.model_cost, exact, exact_entry)
+        monkeypatch.setitem(
+            litellm.model_cost, "openai_like/gpt-6.1-terra_thinking", {"max_input_tokens": 922000}
+        )
+        monkeypatch.setattr(litellm, "get_model_info", lambda _: {"max_input_tokens": 922000})
+        with pytest.raises(Exception, match="custom_model_max_tokens"):
+            get_max_tokens(model, ignore_max_model_tokens=True)
+
+    def test_terra_gateway_budget_without_litellm_settings_section(self, monkeypatch):
+        settings = SimpleNamespace(config=SimpleNamespace(custom_model_max_tokens=16000, max_model_tokens=0))
+        monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
+        assert get_max_tokens(
+            "gpt-6.1-terra", ignore_max_model_tokens=True, route_api_base="https://gateway.example/v1",
+        ) == 16000
+
+    @pytest.mark.parametrize("values", [{}, {"OPENAI.KEY": "openai-key"}])
+    def test_terra_openrouter_explicit_gateway_avoids_native_limits(self, monkeypatch, values):
+        for name in ("OPENROUTER_API_BASE", "OPENROUTER_API_KEY", "OR_API_KEY", "OPENAI_API_KEY"):
+            monkeypatch.delenv(name, raising=False)
+        self._terra_settings(monkeypatch, limit=16000, values=values)
+        model = "openrouter/openai/gpt-6.1-terra"
+        route_api_base = "https://gateway.example/v1"
+        assert get_max_tokens(model, ignore_max_model_tokens=True, route_api_base=route_api_base) == 16000
+        assert token_budget.get_max_input_tokens(model, route_api_base=route_api_base) is None
 
     @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("provider", ["ollama", "openai_like", "azure_text", "text-completion-openai"])

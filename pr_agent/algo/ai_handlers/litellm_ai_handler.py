@@ -49,6 +49,7 @@ from pr_agent.algo import (
     GPT6_MODELS,
     GPT6_MODELS_WITHOUT_NONE_EFFORT,
     GPT6_OPENROUTER_ROUTING_SUFFIXES,
+    GPT6_PROVIDER_BRIDGE_MODELS,
     GPT6_SOL_TIER_MODELS,
     GROK_REASONING_EFFORT_LEVELS,
     STREAMING_REQUIRED_MODELS,
@@ -151,6 +152,7 @@ from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.run_output import get_version
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.algo.skills_loader import get_skills_context
+from pr_agent.algo.token_budget import _gpt6_budget_model
 from pr_agent.algo.url_safety import with_safe_redirects
 from pr_agent.algo.utils import ReasoningEffort
 from pr_agent.config_loader import get_settings, get_verbosity_level, global_settings
@@ -1455,7 +1457,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         """Return the supported native GPT-6 model name without changing gateway model IDs."""
         if model.startswith(("azure_ai/", "aiohttp_openai/")):
             provider_model = model.split("/", 1)[1].removesuffix("_thinking")
-            return provider_model if provider_model in GPT6_SOL_TIER_MODELS else None
+            return provider_model if provider_model in GPT6_PROVIDER_BRIDGE_MODELS else None
         model = _strip_openai_azure_prefixes(model).removesuffix("_thinking")
         return model if model in GPT6_MODELS else None
 
@@ -1466,7 +1468,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             return "max_tokens"
         if (
             provider not in (None, "openai", "azure", "azure_ai", "openrouter")
-            and cls._gpt6_model_name(model) in GPT6_SOL_TIER_MODELS
+            and cls._gpt6_model_name(model) in GPT6_PROVIDER_BRIDGE_MODELS
         ):
             return "max_tokens"
         if model.startswith("openrouter/"):
@@ -1483,6 +1485,36 @@ class LiteLLMAIHandler(BaseAiHandler):
         model_base = _strip_openai_azure_prefixes(model.removeprefix("openrouter/"))
         return model_base.startswith("gpt-5")
 
+    def _captured_terra_api_base(self, model: str, custom_llm_provider: str) -> str | None:
+        """Use the endpoint selected at initialization, including OpenAI's native default."""
+        provider = self._resolve_configured_request_provider(model, custom_llm_provider)
+        params = getattr(self, "_provider_request_params", {})
+        provider_params = params.get(provider or "openai", {})
+        base = provider_params.get("api_base")
+        if (
+            provider == "openrouter"
+            and not provider_params
+            and not self._provider_environment_api_keys.get("openrouter")
+        ):
+            openai_params = {} if self._openai_api_base_is_azure else params.get("openai", {})
+            if openai_params.get("api_base") and (
+                openai_params.get("api_key") or self._provider_environment_api_keys.get("openai")
+            ):
+                base = openai_params["api_base"]
+        return base or (OPENAI_DEFAULT_API_BASE if provider == "openai" else None)
+
+    def _is_custom_terra_gateway(self, model: str, custom_llm_provider: str) -> bool:
+        if custom_llm_provider not in ("", "openai", "aiohttp_openai", "azure", "azure_ai", "openrouter"):
+            return False
+        candidate = model.rsplit(":", 1)[0] if model.endswith(GPT6_OPENROUTER_ROUTING_SUFFIXES) else model
+        if self._gpt6_model_name(candidate.removeprefix("openrouter/")) != "gpt-6.1-terra":
+            return False
+        model_base, native = _gpt6_budget_model(
+            model, get_settings(), custom_llm_provider,
+            route_api_base=self._captured_terra_api_base(model, custom_llm_provider),
+        )
+        return model_base == "gpt-6.1-terra" and not native
+
     def _normalize_gpt5_model_for_request(self, model: str, user_model: str, custom_llm_provider: str) -> str:
         """Normalize GPT-5/GPT-6 suffixes and prefixes before request parameters are selected."""
         if model.startswith("openrouter/") or custom_llm_provider == "openrouter":
@@ -1491,21 +1523,25 @@ class LiteLLMAIHandler(BaseAiHandler):
                 routed_model = routed_model.rsplit(":", 1)[0]
             gpt6_model = self._gpt6_model_name(routed_model)
             if gpt6_model:
-                if custom_llm_provider not in ("", "openrouter") and gpt6_model in GPT6_SOL_TIER_MODELS:
+                if custom_llm_provider not in ("", "openrouter") and gpt6_model in GPT6_PROVIDER_BRIDGE_MODELS:
+                    return model
+                if self._is_custom_terra_gateway(model, custom_llm_provider):
                     return model
                 return model.replace("_thinking", "", 1)
             if model.startswith("openrouter/"):
                 return model
+        if self._is_custom_terra_gateway(model, custom_llm_provider):
+            return model
         if custom_llm_provider and (
             custom_llm_provider in ("azure_text", "text-completion-openai")
             or self._resolve_configured_request_provider(model, custom_llm_provider) not in (
                 "openai", "azure", "azure_ai"
             )
-        ) and self._gpt6_model_name(model) in GPT6_SOL_TIER_MODELS:
+        ) and self._gpt6_model_name(model) in GPT6_PROVIDER_BRIDGE_MODELS:
             return model
         if (
             model.startswith(("azure_ai/", "aiohttp_openai/"))
-            and self._gpt6_model_name(model) in GPT6_SOL_TIER_MODELS
+            and self._gpt6_model_name(model) in GPT6_PROVIDER_BRIDGE_MODELS
         ):
             return model.replace("_thinking", "")
         model_base = _strip_openai_azure_prefixes(model)
@@ -2496,6 +2532,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         )
         sdk_limit = await asyncio.to_thread(
             _resolve_max_tokens, model, True, custom_llm_provider="openrouter", model_info_lookup=lookup,
+            route_api_base=base,
         )
         if sdk_limit is not None:
             return sdk_limit
@@ -2513,6 +2550,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Built-in, custom and alias priorities remain first and require no metadata request.
         local_limit = _resolve_max_tokens(
             model, True, custom_llm_provider="openrouter", model_info_lookup=lambda _: None,
+            route_api_base=route[0],
         )
         if local_limit is not None:
             return
@@ -2541,7 +2579,18 @@ class LiteLLMAIHandler(BaseAiHandler):
         from pr_agent.algo import token_budget
 
         route = self._openrouter_context_route(model)
-        provider_options = {"custom_llm_provider": "openrouter"} if route is not None else {}
+        provider_options = (
+            {"custom_llm_provider": "openrouter", "route_api_base": route[0]} if route is not None else {}
+        )
+        if route is None and token_budget._gpt6_budget_model(
+            model, get_settings(), self._custom_llm_provider
+        )[0] == "gpt-6.1-terra":
+            routed_model = self._route_model_for_request(model, self._custom_llm_provider, self.deployment_id)
+            request_provider = self._resolve_configured_request_provider(routed_model, self._custom_llm_provider)
+            provider_options = {
+                "custom_llm_provider": self._custom_llm_provider or request_provider or "",
+                "route_api_base": self._captured_terra_api_base(routed_model, self._custom_llm_provider),
+            }
         cache_key = (*route, model) if route is not None else None
         if cache_key is not None and cache_key in self._model_context_cache:
             prepared_window = self._model_context_cache[cache_key]
@@ -3224,14 +3273,16 @@ class LiteLLMAIHandler(BaseAiHandler):
                 gpt6_model = self._gpt6_model_name(family_model.removeprefix("openrouter/"))
                 preserved_gpt6_alias = (
                     bool(openrouter_model) and family_model.endswith("_thinking")
-                    and gpt6_model in GPT6_SOL_TIER_MODELS
+                    and gpt6_model in GPT6_PROVIDER_BRIDGE_MODELS
                 )
+                bridge_model = gpt6_model or family_model.rsplit("/", 1)[-1].removesuffix("_thinking")
+                terra_gateway_route = self._is_custom_terra_gateway(family_model, custom_llm_provider)
                 non_native_gpt6_model = (
                     (request_provider not in ("openai", "azure", "azure_ai", "openrouter")
                      or custom_llm_provider in ("azure_text", "text-completion-openai")
-                     or family_model.startswith(("azure_text/", "text-completion-openai/")))
-                    and (gpt6_model or family_model.rsplit("/", 1)[-1].removesuffix("_thinking"))
-                    in GPT6_SOL_TIER_MODELS
+                     or family_model.startswith(("azure_text/", "text-completion-openai/"))
+                     or terra_gateway_route)
+                    and bridge_model in GPT6_PROVIDER_BRIDGE_MODELS
                 )
                 if non_native_gpt6_model or preserved_gpt6_alias:
                     gpt6_model = None
@@ -3252,7 +3303,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                             f"{gpt6_model} does not support reasoning_effort='{effort}'; using 'low'"
                         )
                         effort = ReasoningEffort.LOW.value
-                    elif gpt6_model in GPT6_SOL_TIER_MODELS and request_provider in ("azure", "azure_ai") and (
+                    elif gpt6_model in GPT6_PROVIDER_BRIDGE_MODELS and request_provider in ("azure", "azure_ai") and (
                         effort == ReasoningEffort.MAX.value
                     ):
                         get_logger().info(f"{gpt6_model} on Azure Chat Completions uses 'xhigh' instead of 'max'")
@@ -3309,9 +3360,11 @@ class LiteLLMAIHandler(BaseAiHandler):
 
                     if openrouter_model:
                         openrouter_reasoning_effort = effort
-                    elif gpt6_model in GPT6_SOL_TIER_MODELS and (
-                        effort == ReasoningEffort.XHIGH.value
-                        or (request_provider in ("azure", "azure_ai") and effort == ReasoningEffort.NONE.value)
+                    elif (
+                        (gpt6_model in GPT6_SOL_TIER_MODELS and effort == ReasoningEffort.XHIGH.value)
+                        or (gpt6_model in GPT6_PROVIDER_BRIDGE_MODELS
+                            and request_provider in ("azure", "azure_ai")
+                            and effort == ReasoningEffort.NONE.value)
                     ):
                         # LiteLLM's bundled fallback map lacks these models and rejects xhigh/azure-none.
                         thinking_kwargs_gpt5 = {"extra_body": {"reasoning_effort": effort}}
@@ -3393,12 +3446,51 @@ class LiteLLMAIHandler(BaseAiHandler):
                     (reasoning_model, reasoning_model.removesuffix("_thinking"))
                     if non_native_gpt6_model and not preserved_gpt6_alias else (reasoning_model,)
                 )
+                terra_reasoning_support = None
+                if non_native_gpt6_model and bridge_model == "gpt-6.1-terra":
+                    legacy_completion_route = (
+                        request_provider in ("azure_text", "text-completion-openai")
+                        or custom_llm_provider in ("azure_text", "text-completion-openai")
+                        or (not custom_llm_provider and family_model.startswith((
+                            "azure_text/", "text-completion-openai/",
+                        )))
+                    )
+                    if legacy_completion_route:
+                        terra_reasoning_support = False
+                    else:
+                        routed_alias = (reasoning_model.rsplit(":", 1)[0]
+                                        if reasoning_model.endswith(GPT6_OPENROUTER_ROUTING_SUFFIXES)
+                                        else reasoning_model)
+                        alias_provider = custom_llm_provider or request_provider
+                        provider_alias = (
+                            routed_alias if not alias_provider or routed_alias.startswith(f"{alias_provider}/")
+                            else f"{alias_provider}/{routed_alias}"
+                        )
+                        aliases = (reasoning_model, routed_alias, provider_alias)
+                        if alias_provider and not reasoning_model.startswith(f"{alias_provider}/"):
+                            aliases = (provider_alias, *aliases)
+                        terra_reasoning_support = False
+                        for alias in dict.fromkeys(aliases):
+                            # A gateway's capabilities cannot be inferred from native Terra metadata.
+                            if alias in (
+                                "gpt-6.1-terra", "openai/gpt-6.1-terra", "azure/gpt-6.1-terra",
+                                "azure_ai/gpt-6.1-terra", "openrouter/gpt-6.1-terra",
+                                "openrouter/openai/gpt-6.1-terra",
+                            ):
+                                continue
+                            entry = litellm.model_cost.get(alias)
+                            if isinstance(entry, dict) and "supports_reasoning" in entry:
+                                terra_reasoning_support = entry["supports_reasoning"] is True
+                                break
                 if not (is_gpt5_model or is_gpt6_model) and (
                     self._grok_reasoning_levels_for(reasoning_model) is not None
-                    or not non_native_gpt6_model
-                    and not preserved_gpt6_alias
+                    or not (non_native_gpt6_model and bridge_model in GPT6_SOL_TIER_MODELS)
+                    and (not preserved_gpt6_alias or terra_reasoning_support is True)
                     and not self._is_claude_family_model(reasoning_model)
-                    and self._litellm_supports_reasoning(reasoning_model)
+                    and (
+                        self._litellm_supports_reasoning(reasoning_model)
+                        if terra_reasoning_support is None else terra_reasoning_support
+                    )
                     or any(
                         candidate == m or candidate.endswith("/" + m)
                         for candidate in reasoning_aliases for m in self.additional_reasoning_effort_models
@@ -3415,6 +3507,8 @@ class LiteLLMAIHandler(BaseAiHandler):
                     else:
                         get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
                         kwargs["reasoning_effort"] = reasoning_effort
+                        if non_native_gpt6_model and bridge_model == "gpt-6.1-terra":
+                            kwargs.pop("temperature", None)
                         # Whitelist reasoning_effort through allowed_openai_params when
                         # LiteLLM omits it from the params it reports for unknown or
                         # OpenAI-compatible gateway-prefixed model IDs. Merge into any
@@ -3469,7 +3563,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                         else request_provider
                     )
                     kwargs.setdefault(
-                        self._output_token_limit_param(capability_model, output_limit_provider), max_output_tokens
+                        "max_tokens" if terra_gateway_route else self._output_token_limit_param(
+                            capability_model, output_limit_provider
+                        ), max_output_tokens
                     )
 
                 if _as_bool_setting(
@@ -3684,11 +3780,14 @@ class LiteLLMAIHandler(BaseAiHandler):
             capability_model = self._canonical_openrouter_model(completion_model, request_provider) or completion_model
             if request_provider == "openrouter" and capability_model.endswith((":nitro", ":floor")):
                 capability_model = capability_model.rsplit(":", 1)[0]
-            output_limit_param = self._output_token_limit_param(
-                capability_model,
-                custom_llm_provider
-                if custom_llm_provider in ("azure_text", "text-completion-openai")
-                else request_provider,
+            output_limit_param = (
+                "max_tokens" if self._is_custom_terra_gateway(capability_model, custom_llm_provider)
+                else self._output_token_limit_param(
+                    capability_model,
+                    custom_llm_provider
+                    if custom_llm_provider in ("azure_text", "text-completion-openai")
+                    else request_provider,
+                )
             )
             kwargs = {
                 "model": completion_model,
