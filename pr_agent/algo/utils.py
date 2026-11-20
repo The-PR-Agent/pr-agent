@@ -1629,7 +1629,7 @@ def filter_generated_labels(labels: list[str]) -> list[str]:
         if isinstance(custom_labels, dict):
             for name, value in custom_labels.items():
                 description = value.get("description", "") if isinstance(value, dict) else str(value)
-                key = description_key(description)
+                key = description_key(description) if isinstance(description, str) else ""
                 if key:
                     # A description shared by several labels names none of them.
                     by_description[key] = None if key in by_description else str(name)
