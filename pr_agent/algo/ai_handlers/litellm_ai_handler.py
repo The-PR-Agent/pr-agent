@@ -2412,6 +2412,27 @@ class LiteLLMAIHandler(BaseAiHandler):
             )
         return extended_thinking_budget_tokens, extended_thinking_max_output_tokens
 
+    @staticmethod
+    def _custom_reasoning_model() -> bool:
+        """Read config.custom_reasoning_model as a bool, so a string "false" stays off."""
+        return _as_bool_setting(
+            get_settings().config.custom_reasoning_model, setting_name="CONFIG.CUSTOM_REASONING_MODEL"
+        )
+
+    @staticmethod
+    def _configured_seed() -> int:
+        """Return config.seed as an int; -1 (no seed) when it is not a number."""
+        value = get_settings().config.get("seed", -1)
+        # int() turns True into 1 and -0.5 into 0, which would switch a fixed seed on
+        if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+            get_logger().warning(f"Ignoring invalid config.seed: {value!r}")
+            return -1
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            get_logger().warning(f"Ignoring invalid config.seed: {value!r}")
+            return -1
+
     @classmethod
     def _configured_max_output_tokens(cls) -> int:
         """Return config.max_output_tokens, warning about values that would unset or undercut the cap."""
@@ -2596,7 +2617,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         system_prompt = append_protected_system_instructions(system_prompt)
         combine_prompts = (
             self._uses_user_message_only(model)
-            or get_settings().config.custom_reasoning_model
+            or self._custom_reasoning_model()
         )
         if combine_prompts:
             user_prompt = f"{system_prompt}\n\n\n{user_prompt}"
@@ -2819,7 +2840,10 @@ class LiteLLMAIHandler(BaseAiHandler):
         litellm_session_id. Explicitly configured headers win, so an operator
         can override the value.
         """
-        if not get_settings().litellm.get("add_session_id_to_requests", False):
+        if not _as_bool_setting(
+            get_settings().litellm.get("add_session_id_to_requests", False),
+            setting_name="LITELLM.ADD_SESSION_ID_TO_REQUESTS",
+        ):
             return
         headers = dict(kwargs.get("headers") or {})
         session_id = next(
@@ -3299,7 +3323,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                     model_family = "GPT-6" if is_gpt6_model else "GPT-5"
                     get_logger().info(f"Using reasoning_effort='{effort}' for {model_family} model")
                 # Currently, some models do not support a separate system and user prompts
-                if self._uses_user_message_only(model) or get_settings().config.custom_reasoning_model:
+                if self._uses_user_message_only(model) or self._custom_reasoning_model():
                     user = f"{system}\n\n\n{user}"
                     system = ""
                     get_logger().info(f"Using model {model}, combining system and user prompts")
@@ -3333,7 +3357,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # probe's own bare-model resolution; the api key snapshot itself is
                 # untouched (see the guard tests).
                 if (
-                    not get_settings().config.custom_reasoning_model
+                    not self._custom_reasoning_model()
                     and not any(
                         candidate == no_temp_model or candidate.endswith("/" + no_temp_model)
                         for candidate in (model, capability_model)
@@ -3448,10 +3472,12 @@ class LiteLLMAIHandler(BaseAiHandler):
                         self._output_token_limit_param(capability_model, output_limit_provider), max_output_tokens
                     )
 
-                if get_settings().litellm.get("enable_callbacks", False):
+                if _as_bool_setting(
+                    get_settings().litellm.get("enable_callbacks", False), setting_name="LITELLM.ENABLE_CALLBACKS"
+                ):
                     kwargs = self.add_litellm_callbacks(kwargs)
 
-                seed = get_settings().config.get("seed", -1)
+                seed = self._configured_seed()
                 if temperature > 0 and seed >= 0:
                     raise ValueError(f"Seed ({seed}) is not supported with temperature ({temperature}) > 0")
                 elif seed >= 0:
@@ -3470,7 +3496,10 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # specific PR without timestamp correlation (OpenRouter shows it as
                 # "external_user" and includes it in the activity export). Disabled by
                 # default: it shares request-attribution data with the model provider.
-                if get_settings().config.get("add_user_to_requests", False):
+                if _as_bool_setting(
+                    get_settings().config.get("add_user_to_requests", False),
+                    setting_name="CONFIG.ADD_USER_TO_REQUESTS",
+                ):
                     request_user = self._get_request_user_field()
                     if request_user:
                         try:
