@@ -26,12 +26,14 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | --- | --- | --- |
 | `max_webhook_request_body_bytes` | 5242880 | maximum request body accepted by webhook servers (5 MiB) |
 | `bot_display_name` | "PR-Agent" | product name shown in user-visible PR comments; host-only, repo settings and comment args cannot set it |
+
 **models**
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `model` | "gpt-6.1-sol" |  |
 | `fallback_models` | ["gpt-6-luna"] |  |
+
 **CLI**
 
 | Key | Default | Description |
@@ -41,11 +43,13 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | `publish_output_progress` | true |  |
 | `verbosity_level` | 0 | 0,1,2 |
 | `use_extra_bad_extensions` | false |  |
+
 **Log**
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `log_level` | "INFO" |  |
+
 **Configurations**
 
 | Key | Default | Description |
@@ -77,6 +81,7 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | `repo_context_sibling_repos` | [] | Host-only list of approved sibling repository identifiers (GitHub owner/repo, GitLab group/project or numeric ID strings) that repo_context_files sibling entries may select. On GitHub and GitLab, this also approves repositories for cross-repository issue and ticket context. Empty disables sibling reads. Approve only repositories whose content may be disclosed in consuming PRs, because the actor check bounds who triggers a read, not who chose the target or where the output lands. Repository settings and comment arguments cannot change this list. Canonical identities and owning namespaces are checked after resolution |
 | `repo_context_sibling_namespaces` | [] | Host-only list of additional org/group/workspace names an approved repo_context_sibling_repos entry (or an expanded gitlab.expand_submodule_diffs gitlink) may resolve into. Empty, the default, keeps the reviewed repository's own namespace as the only approved one. Set it where a project's dependencies live in sibling groups rather than its own, e.g. a submodule in a shared library group. It widens namespaces only: a repository still has to be in repo_context_sibling_repos, and the requester's read access is still checked. Repository settings and comment arguments cannot change this list |
 | `repo_context_max_sibling_files` | 5 | Maximum number of sibling-repository files fetched per repo-context build. The fetch count is bounded separately from repo_context_max_lines so selected sibling files cannot trigger an unbounded number of cross-repository calls; sibling files still compete for the repo_context_max_lines budget. Host-only (cannot be raised by a repository's .pr_agent.toml or a comment command) and clamped to a hard ceiling of 20 fetches per build. |
+
 **token limits**
 
 | Key | Default | Description |
@@ -88,6 +93,7 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | `max_output_tokens` | 0 | 0 = unset (the provider's own default applies) |
 | `model_token_count_estimate_factor` | 0.3 | factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate. |
 | `image_input_token_allowance` | 4096 | reserve tokens per image when provider counting omits or underestimates image cost |
+
 **patch extension logic**
 
 | Key | Default | Description |
@@ -105,12 +111,14 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | `large_patch_policy` | "clip" | "clip" (default) or "skip"; a missing value is treated as "clip" |
 | `duplicate_prompt_examples` | false |  |
 | `persistent_inline_comments` | false | Enable persistent inline comments (issue #2037) to fingerprint each inline comment and embed a provider-compatible marker, then skip re-posting suggestions already present on the PR/MR across runs. |
+
 **seed**
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `seed` | -1 | set positive value to fix the seed (and ensure temperature=0) |
 | `temperature` | 0.2 |  |
+
 **ignore logic**
 
 | Key | Default | Description |
@@ -136,6 +144,7 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | `reasoning_effort` | "medium" | "none", "minimal", "low", "medium", "high", "xhigh", "max" |
 | `additional_reasoning_effort_models` | [] | Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is otherwise decided by litellm's bundled model metadata (and the maintained Grok registry), so add an ID here when litellm does not know the model (custom OpenAI-compatible endpoints), or when another provider hosts a Sol-tier GPT-6 model under the same ID. Model IDs match exactly or through any provider prefix (e.g. "deepseek-v4-flash-0731" matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not recognize, so the parameter reaches the endpoint. The default "medium" may be rejected by providers that accept a different subset (e.g. "none"/"low"/"high"/"max"); adding a custom model id now surfaces a provider-side error instead of the previous silent drop. |
 | `no_temperature_models` | ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini", "moonshotai.kimi-k3", "us.moonshotai.kimi-k3", "global.moonshotai.kimi-k3", "kimi-k3", "kimi-k3.1-pro", "zai.glm-5"] | Optional: model IDs that must never receive the temperature parameter, on top of what litellm's parameter metadata reports. Temperature support is otherwise decided by litellm.get_supported_openai_params() (mirroring reasoning_effort), so add an ID here when litellm reports temperature as supported but the provider rejects it, or when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking Claude models (Opus 4.7/4.8, Opus/Sonnet/Fable 5.x and Haiku 5.5) never receive temperature. Match model IDs exactly or through any provider prefix. For OpenRouter `:nitro` and `:floor` routing shortcuts, also match the suffix-free base ID (for example, match `future-model` to `openrouter/vendor/future-model:nitro`). Keep other model variants at their full ID. Preserve the former static registry entries below when litellm's metadata still marks them temperature-capable; see #3611 (Derive temperature support from LiteLLM metadata and retire NO_SUPPORT_TEMPERATURE_MODELS) for the probe diff. Bedrock rejects temperature for Kimi K3 and GLM-5 ("This model doesn't support the temperature field"); Moonshot/Kimi reasoning endpoints reject custom temperature. |
+
 **extended thinking for Claude reasoning models**
 
 | Key | Default | Description |
@@ -178,6 +187,7 @@ See [Review](../commands/review.md#configuration-options).
 | `enable_risk_checks` | true | Flag sensitive paths and risky change shapes; adds nothing when clean. See docs/docs/commands/review.md |
 | `sensitive_paths` | [".github/workflows/**", ".github/actions/**", ".gitlab-ci.yml", "Jenkinsfile*", ".circleci/**", "azure-pipelines*.yml", ".travis.yml", "bitbucket-pipelines.yml", "*CODEOWNERS", ".pr_agent.toml", "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "requirements*.txt", "Pipfile", "Pipfile.lock", "pyproject.toml", "poetry.lock", "uv.lock", "Cargo.toml", "Cargo.lock", "go.mod", "go.sum", "pom.xml", "build.gradle*", "Gemfile", "Gemfile.lock", "composer.json", "composer.lock", "*Dockerfile*", "docker-compose*.yml", "docker-compose*.yaml", "*.dockerfile", "*.tf", "*.tfvars", "*.hcl", "*migrations*/**", "*migration*", "db/migrate/**", "alembic/**"] | Glob patterns of sensitive paths flagging deterministic review risk findings. See docs/docs/commands/review.md |
 | `extra_risky_shapes` | [] | Custom regex patterns flagging risky changes in diff hunks. See docs/docs/commands/review.md |
+
 **general options**
 
 | Key | Default | Description |
@@ -211,6 +221,7 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 | --- | --- | --- |
 | `enable_review_labels_security` | true |  |
 | `enable_review_labels_effort` | true |  |
+
 **specific configurations for incremental review (/review -i)**
 
 | Key | Default | Description |
@@ -243,12 +254,14 @@ See [Describe](../commands/describe.md#configuration-options).
 | `enable_pr_diagram` | true | adds a section with a diagram of the PR changes |
 | `pr_diagram_direction` | "adaptive" | 'adaptive', 'LR', 'TD'. 'adaptive' picks the direction from the shape of the diagram |
 | `pr_diagram_direction_threshold` | 5 | with 'adaptive', a chain longer than this many nodes is drawn top-down |
+
 **describe as comment**
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `publish_description_as_comment` | false |  |
 | `publish_description_as_comment_persistent` | true |  |
+
 **changes walkthrough section**
 
 | Key | Default | Description |
@@ -257,6 +270,7 @@ See [Describe](../commands/describe.md#configuration-options).
 | `collapsible_file_list` | "adaptive" | true, false, 'adaptive' |
 | `collapsible_file_list_threshold` | 6 |  |
 | `file_table_collapsible_open_by_default` | false |  |
+
 **markers**
 
 | Key | Default | Description |
@@ -370,6 +384,7 @@ See [GitHub App](../usage-guide/automations_and_usage.md#github-app).
 | Key | Default | Description |
 | --- | --- | --- |
 | `override_deployment_type` | true | these toggles allows running the github app from custom deployments |
+
 **settings for "pull_request" event**
 
 | Key | Default | Description |
