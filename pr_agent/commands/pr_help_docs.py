@@ -16,6 +16,7 @@ from pr_agent.algo.pr_processing import (
     FallbackEligibleError,
     retry_with_fallback_models,
 )
+from pr_agent.algo.run_output import append_run_details
 from pr_agent.algo.token_budget import AttemptTokenBudget, FittedPrompt, clip_tokens
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType, load_yaml
@@ -559,7 +560,7 @@ class PRHelpDocs:
                 return answer_str
             #Otherwise, publish the answer if answer is non-empty and publish is not turned off:
             if answer_str and get_settings().config.publish_output:
-                self.git_provider.publish_comment(answer_str)
+                self.git_provider.publish_comment(append_run_details(answer_str, self.git_provider))
             else:
                 get_logger().info("Answer:", artifacts={'answer_str': answer_str})
             return answer_str
