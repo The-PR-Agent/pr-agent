@@ -23,6 +23,7 @@ from starlette_context import request_cycle_context
 
 import pr_agent.agent.pr_agent as pr_agent_module
 from pr_agent.algo.run_details import record_command_failure
+from pr_agent.algo.utils import encode_user_text_arg
 from pr_agent.config_loader import get_settings
 from tests.unittest._reaction_helpers import _RecordingProvider
 
@@ -264,7 +265,8 @@ def test_single_line_diff_note_dispatch(run_comment, position, expected_line, ex
     provider = run_comment(payload=payload)
 
     if expected_line is None:
-        assert provider.dispatched == [body]
+        # A note on a whole file has no line: its question is about the file, with the text kept whole.
+        assert provider.dispatched == [["/ask", f"--origin_comment_id={COMMENT_ID}", encode_user_text_arg(question)]]
     else:
         assert provider.dispatched == [[
             "/ask_line",
