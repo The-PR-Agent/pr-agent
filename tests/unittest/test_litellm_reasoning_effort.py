@@ -19,6 +19,49 @@ from pr_agent.algo.utils import ReasoningEffort
 ACOMPLETION_PATCH_TARGET = 'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion'
 
 
+@pytest.mark.parametrize("budget", [1, 16384, 32767])
+async def test_fireworks_numeric_budget_reaches_provider(monkeypatch, budget):
+    model = "fireworks_ai/accounts/fireworks/models/deepseek-v4p1-flash-1017"
+    settings = create_mock_settings(budget)
+    settings.config.get = lambda key, default=None: {"max_output_tokens": 32768}.get(key, default)
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+    monkeypatch.setattr(LiteLLMAIHandler, "_litellm_supports_reasoning", staticmethod(lambda model: False))
+    with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+        completion.return_value = create_mock_acompletion_response()
+        await LiteLLMAIHandler().chat_completion(model=model, system="system", user="user")
+    completion.assert_awaited_once()
+    assert completion.call_args.kwargs["reasoning_effort"] == budget
+    params = get_optional_params(
+        model="accounts/fireworks/models/deepseek-v4p1-flash-1017",
+        custom_llm_provider="fireworks_ai",
+        reasoning_effort=budget,
+        allowed_openai_params=completion.call_args.kwargs.get("allowed_openai_params"),
+    )
+    assert params["reasoning_effort"] == budget
+
+
+@pytest.mark.parametrize("model,budget,output_limit", [
+    ("fireworks_ai/accounts/fireworks/models/deepseek-v4p1-flash-1017", 0, 32768),
+    ("fireworks_ai/accounts/fireworks/models/deepseek-v4p1-flash-1017", -1, 32768),
+    ("fireworks_ai/accounts/fireworks/models/deepseek-v4p1-flash-1017", 32768, 32768),
+    ("fireworks_ai/accounts/fireworks/models/deepseek-v4p1-flash-1017", 16384, None),
+    ("fireworks_ai/accounts/fireworks/models/deepseek-v3p2", 16384, 32768),
+    ("openrouter/deepseek/deepseek-v4p1-flash-1017", 16384, 32768),
+])
+def test_numeric_budget_rejects_unsupported_model_or_budget(monkeypatch, model, budget, output_limit):
+    settings = create_mock_settings(budget)
+    settings.config.get = lambda key, default=None: {"max_output_tokens": output_limit}.get(key, default)
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+    with pytest.raises(ValueError):
+        LiteLLMAIHandler()._resolve_reasoning_effort(model, budget)
+
+
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "none"])
+def test_fireworks_named_effort_is_preserved(effort):
+    model = "fireworks_ai/accounts/fireworks/models/deepseek-v4p1-flash-1017"
+    assert LiteLLMAIHandler()._resolve_reasoning_effort(model, effort) == effort
+
+
 def create_mock_settings(reasoning_effort_value):
     """Create a fake settings object with configurable reasoning_effort."""
     return type('', (), {
