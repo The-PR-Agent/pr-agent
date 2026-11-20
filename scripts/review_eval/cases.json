@@ -1,0 +1,1083 @@
+{
+ "source": "fuse model tests, quick tier, 14 Nov 2026",
+ "cases": [
+  {
+   "key": "3018-31fd8f2c",
+   "kind": "precision",
+   "pr": 3018,
+   "reviewed_sha": "31fd8f2cf5aa95114406ed1d0be17cbab0e51173",
+   "merge_base": "baf9e0b46536fbd105b5a023959eb15ee1cfd0f6",
+   "title": "test: use importlib mode for pytest test imports",
+   "branch": "fix/pytest-importlib-mode",
+   "description": "Allow test modules in separate suite directories to share a basename without triggering pytest's import-file-mismatch collection error.\n\nKeep the unit-only default discovery from #2987 while making explicit cross-suite collection robust. Verify the behavior in a bounded, plugin-isolated subprocess with an explicit root directory.",
+   "tickets": []
+  },
+  {
+   "key": "3029-77e1862a",
+   "kind": "precision",
+   "pr": 3029,
+   "reviewed_sha": "77e1862a0870d230c79e60a8dd75f8749c695c44",
+   "merge_base": "f1e4208f5702ee023aeb5a9231cafa4a7b8dbf2e",
+   "title": "fix(gitea): resolve base_url_html on first use so a repo-level web_url applies",
+   "branch": "fix/gitea-lazy-web-url",
+   "description": "`apply_repo_settings()` builds the provider before it merges the repo's\n`.pr_agent.toml`, and `GiteaProvider.__init__` resolved `base_url_html` as its\nlast step, so a repo-level `[gitea] web_url` never reached the links published\nin comments. #2617 documented that as a caveat on the `web_url` setting; the\nconstructor was the wrong place for it, as noted on #2620.\n\n`base_url_html` is now a property, resolved on first use and cached, with a\nsetter so callers and tests that assign it keep working. Its only readers,\n`get_line_link()` and `get_pr_url()`, run after the settings merge. The\n`web_url` comment in `configuration.toml` now says the per-repo override\napplies.\n\nTests: the constructor leaves the URL unresolved, a `web_url` that lands after\nconstruction is used by both readers, resolution happens once, and an assigned\nvalue is used as is. The first two fail on `main`.\n\nCloses #3026\n",
+   "tickets": [
+    {
+     "ticket_id": 2620,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/2620",
+     "title": "[Bug]: Repository-level [ignore] rules are applied too late for Gitea PRs",
+     "body": "### Git provider\n\nOther\n\n### System Info\n\n- PR-Agent image: `pragent/pr-agent:0.41.0-gitea_app`\n- Git provider: Gitea\n- Trigger: manual `/review`\n- Repository settings: enabled\n\n### Bug details\n\n```markdown\n### Current behavior\n\nRepository-level `[ignore]` rules from `.pr_agent.toml` are loaded successfully for Gitea pull requests, but they do not exclude matching files from the review diff sent to the model.\n\nThe logs show that the repository config is applied:\n\n```text\nApplying repo settings (sections: ['ignore', 'pr_reviewer'])\n```\n\nHowever, files matching the configured ignore globs are still present in the subsequent `PR diff` log and are included in the review prompt.\n\n### Expected behavior\n\nWhen `CONFIG.USE_REPO_SETTINGS_FILE=true` and a repository contains a valid `.pr_agent.toml`, its `[ignore].glob` and `[ignore].regex` rules should exclude matching files from the review analysis.\n\n### Minimal reproduction\n\n1. Run PR-Agent with Gitea and repository settings enabled:\n\n   ```yaml\n   CONFIG__USE_REPO_SETTINGS_FILE: \"true\"\n   GITEA__REPO_SETTING: .pr_agent.toml\n   ```\n\n2. Add this file to the root of the PR head branch:\n\n   ```toml\n   [ignore]\n   glob = [\n     \"generated/**\",\n     \"api/schema.d.ts\",\n   ]\n   regex = []\n   ```\n\n3. Open a PR that changes both:\n\n   ```text\n   generated/client.py\n   api/schema.d.ts\n   src/application.py\n   ```\n\n4. Trigger `/review`.\n\n### Actual result\n\n`generated/client.py` and `api/schema.d.ts` are still included in the PR diff and review context.\n\n### Suspected cause\n\nIn the Gitea flow, `apply_repo_settings(pr_url)` constructs `GiteaProvider` before loading the repository-level `.pr_agent.toml`.\n\nDuring `GiteaProvider.__init__`, PR files are fetched and immediately passed to:\n\n```python\nfilter_ignored(self.git_files, platform=\"gitea\")\n```\n\nOnly afterwards does `apply_repo_settings()` fetch and merge `.pr_agent.toml`. There is no second filtering pass after the repository settings have been applied.\n\nRelevant code:\n\n- `pr_agent/git_providers/gitea_provider.py`\n- `pr_agent/git_providers/utils.py`\n\n### Suggested fix\n\nEither:\n\n1. make repository `[ignore]` settings available before the Gitea provider fetches and filters PR files; or\n2. re-run `filter_ignored(self.git_files, platform=\"gitea\")` after repository settings are merged and before `get_diff_files()` builds the review payload.\n\nA regression test should verify that a Gitea PR with a repository-level `.pr_agent.toml` excludes files matched by both `ignore.glob` and `ignore.regex`.",
+     "labels": "bug"
+    },
+    {
+     "ticket_id": 3026,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/3026",
+     "title": "Gitea: base_url_html is resolved in the constructor, so a repo-level gitea.web_url never applies",
+     "body": "Follow-on from #2620, where @IsmaelMartinez noted that `GiteaProvider.__init__` still resolves settings-dependent state and suggested this get its own issue. #2617 added `base_url_html` and documented the limitation on the `web_url` setting in `configuration.toml`: \"read when the provider is constructed, before repo-level .pr_agent.toml settings are merged, so a per-repo override does not apply to /describe, /review and /improve\".\n\nMechanism: `apply_repo_settings()` (`pr_agent/git_providers/utils.py:257`) constructs the provider through `get_git_provider_with_context()` and only then fetches and merges the repo's `.pr_agent.toml`. `GiteaProvider.__init__` ends with `self.base_url_html = self._resolve_base_url_html()` (`gitea_provider.py:120`), so the user-facing URL is fixed before a repo-level `[gitea] web_url` exists, and every tool that later reuses the cached provider from the request context builds its links from the wrong base.\n\nFix: resolve `base_url_html` on first use rather than in the constructor. Its only readers are `get_line_link()` and `get_pr_url()`, both called after the settings merge.\n",
+     "labels": ""
+    }
+   ]
+  },
+  {
+   "key": "3072-98f8c6ef",
+   "kind": "precision",
+   "pr": 3072,
+   "reviewed_sha": "98f8c6ef4e95f6c879dd2a78a44b3b0fd850b39c",
+   "merge_base": "ab888b9083b1199d65a6da50d1711a2636f230fa",
+   "title": "fix(review): keep the persistent review when the agent identity is unproven",
+   "branch": "fix/review-persistent-comment-authorship",
+   "description": "Closes #3071.\n\n## Description\n\n`persistent_comment` (default `true`) promises that \"every new review request will edit the previous one\".\nSince #2722 the reviewer refuses to touch a review comment unless the provider can *prove* PR-Agent authored\nit, and demotes the result to a `## Standalone PR Review` comment otherwise. In three ordinary deployments the\nidentity is merely *unresolved* rather than *foreign*, so the promise is broken on every run.\n\n### Root cause\n\n`PRReviewer.run()` reaches the demotion whenever `_review_finding_state_in_play()` is true (any provider that\noverrides `supports_review_finding_state`) but `_review_comment_authorship_available()` is false:\n\n| Trigger | Why the identity is unknown |\n|---|---|\n| GitHub App, any automatic command (`pr_commands`, `push_commands`, `review_commands`) | In app mode the login was only ever cached by `publish_comment`, i.e. by the *\"Preparing review\u2026\"* progress comment \u2014 which `config.is_auto_command` suppresses. |\n| GitHub Actions, every rerun | `deployment_type=user` with `GITHUB_TOKEN`; `GET /user` answers 403 *\"Resource not accessible by integration\"*, so `is_comment_authored_by_pr_agent` raises and the run is treated as a provider read failure. |\n| Azure DevOps, shipped configuration | `supports_review_finding_state()` is `bool(_configured_stable_agent_identities())` and `configuration.toml` ships `agent_identity = \"\"`. |\n| Any provider, when one key issue lacks a file or body | `_review_findings_from_data` returned `None` for the whole collection, blocking the state and demoting the review. |\n\n### The fix\n\nThree changes, each addressing one link in that chain:\n\n1. **`github_provider.py` \u2014 resolve the identity instead of giving up.** App deployments read their own\n   `<slug>[bot]` login from the app JWT (`GithubIntegration.get_app()`), which does not depend on having\n   commented before. User deployments that cannot call `GET /user` fall back to `github-actions[bot]` when\n   `GITHUB_ACTIONS=true`, which is the login the workflow token posts as.\n2. **`pr_reviewer.py` \u2014 separate creating from updating.** When no comment carries the full-review identity,\n   creating one cannot overwrite a comment PR-Agent did not author, so the review is published persistently.\n   The demotion is kept for the case it was written for: a comment already exists and authorship is unproven.\n3. **`pr_reviewer.py` \u2014 drop an untrackable key issue instead of the whole collection.** A finding with no\n   file or body is skipped for lifecycle purposes and still rendered in the summary. Because a dropped\n   finding is not an absent one, that run is barred from resolving anything.\n\n## Behaviour change\n\n| Situation | Before | After |\n|---|---|---|\n| App auto command, fresh PR | new `## Standalone PR Review` comment each run | the persistent review, created once and edited afterwards |\n| Actions rerun | a second standalone comment per run | the previous review is edited in place |\n| Azure DevOps, default config | standalone comment | persistent review |\n| One fileless key issue | whole review demoted, state frozen | review updated, that one finding not tracked |\n| **Comment exists, authorship unproven (forged marker)** | standalone comment, original untouched | **unchanged** |\n| Provider comments unreadable | standalone comment | **unchanged** (cannot know what it would replace) |\n\n## Testing\n\n```\n$ PYTHONPATH=. pytest tests/unittest\n3694 passed, 1 skipped, 1 xfailed, 94 warnings in 58.24s\n```\n\nNew file `tests/unittest/test_review_persistent_comment_authorship.py` (9 tests), each written first and\nproven to fail without the fix (8 failed / 1 passed before, 9 passed after). It drives the real\n`PRReviewer.run()` against a real `GithubProvider` and a real `AzureDevopsProvider`; only the PyGithub client,\nthe diff and the model are faked. It covers the four triggers, a resolvable-identity control, and two\nsecurity edge cases:\n\n- `test_forged_review_comment_is_never_edited` \u2014 a human-authored comment carrying the identity marker is\n  left untouched and the result is still a standalone comment.\n- `test_unreadable_comments_do_not_create_a_second_review` \u2014 a provider read failure stays conservative.\n\nThe pre-existing authorship tests in `tests/unittest/test_pr_reviewer_finding_state.py`, including\n`test_review_run_does_not_edit_forged_persistent_comment_without_authorship`, pass unchanged.\n\nAlso checked: `ruff check` clean on every file touched.\n\n## Risk / compatibility\n\nThe forgery protection introduced by #2722 is preserved exactly: the only newly-allowed write is *creating*\na comment when none exists. Deployments that already resolved their identity take the same path as before.\n`GithubIntegration.get_app()` is called at most once per provider instance and only in app mode; any failure\nis logged and degrades to the previous behaviour.\n\n",
+   "tickets": [
+    {
+     "ticket_id": 3071,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/3071",
+     "title": "fix(review): keep the persistent review when the agent identity is unproven",
+     "body": "### Git provider\n\nOther\n\n### System Info\n\n- **PR-Agent version:** 0.45.0, branch `main` (commit `ab888b90`)\n- **Python:** 3.12.14\n- **Deployment type:** app (automatic commands), action (every rerun), cli/app for Azure DevOps\n- **Model:** any (the defect is independent of the model)\n\n\n### Bug details\n\n`/review` stops maintaining its persistent review comment and posts a new\n**\"Standalone PR Review\"** comment instead, carrying the notice *\"PR-Agent could not safely update the\npersistent review. This standalone result will not replace the canonical review.\"*\n\nBecause that comment deliberately carries no identity marker, the next run does not find it either, so the\ncomments accumulate \u2014 one per review \u2014 and the documented behaviour of `persistent_comment` (*\"every new\nreview request will edit the previous one\"*) never happens.\n\nIt reproduces in three ordinary deployments, none of which involve a foreign comment:\n\n1. **GitHub App running any automatic command** (`pr_commands` on PR open, `push_commands`,\n   `review_commands`). Automatic commands set `config.is_auto_command`, which suppresses the\n   *\"Preparing review\u2026\"* progress comment. That progress comment was the only thing that taught the provider\n   its own bot login, so `supports_review_finding_state()` returns `False` and the review is demoted.\n2. **GitHub Actions, every rerun.** The runner sets `deployment_type=user` with `GITHUB_TOKEN`.\n   `is_comment_authored_by_pr_agent` calls `GET /user`, which an installation token may not use \u2014 GitHub\n   answers `403 Resource not accessible by integration` \u2014 so the run is treated as a provider read failure.\n3. **Azure DevOps with the shipped configuration.** `supports_review_finding_state()` is\n   `bool(_configured_stable_agent_identities())` and `configuration.toml` ships `agent_identity = \"\"`.\n   The setting is presented as optional in `docs/docs/installation/azure.md`.\n\nA fourth, provider-independent trigger: if the model returns one key issue without a `relevant_file` or with\nan empty `issue_content`, `_review_findings_from_data` discards the entire collection and the same demotion\nhappens, even though the review summary renders that finding fine.\n\n### Reproduction\n\nMinimal case (GitHub App, automatic command, fresh PR):\n\n1. Install PR-Agent as a GitHub App with the default `github_app.pr_commands`.\n2. Open a pull request.\n3. Push a second commit so `push_commands` runs again.\n\n**Expected:** one persistent review comment, edited on the second run.\n**Actual:** two `## Standalone PR Review` comments, neither of which is the canonical review.\n\nAn executable reproduction driving the real `PRReviewer.run()` against a real `GithubProvider` is in\n`tests/unittest/test_review_persistent_comment_authorship.py` on the accompanying branch; on `ab888b90` it\nreports 8 failed / 1 passed.\n",
+     "labels": "bug"
+    }
+   ]
+  },
+  {
+   "key": "3082-8dc1087b",
+   "kind": "precision",
+   "pr": 3082,
+   "reviewed_sha": "8dc1087b19d9ff8821c9744b127ed07985039dcf",
+   "merge_base": "ab888b9083b1199d65a6da50d1711a2636f230fa",
+   "title": "feat(tickets): make the shorthand issue-number bound configurable",
+   "branch": "feat/configurable-issue-reference-bound",
+   "description": "\nImplements #3081.\n\n## Description\n\n`extract_ticket_links_from_pr_description` follows a bare `#123` reference only while it has\nfewer than five digits. That bound is deliberate \u2014 `tests/unittest/test_markdown_ticket_output_core.py`\npins it with `test_hash_only_rejects_long_numbers`, commented *\"5 digits, looks like a code, not an\nissue\"* \u2014 and it is right for most repositories.\n\nIt is wrong for a repository whose issue numbers have outgrown it. Once a project passes its\n10 000th issue, the standard `Fixes #12345` closing keyword stops being recognised, so ticket\ncompliance (`require_ticket_analysis_review`, on by default) silently never runs. Nothing is logged.\n\n### The change\n\nThe bound becomes a setting rather than a constant:\n\n```toml\n[config]\nmax_shorthand_issue_digits = 4   # unchanged default\n```\n\n`get_max_shorthand_issue_digits()` reads it, coerces a string (environment overrides arrive as\nstrings), and falls back to the default with a warning when the value is unusable or non-positive.\n\nUnambiguous forms are untouched, because they were never bounded: a full issue URL and the\ncross-repository `owner/repo#123` shorthand both name their repository explicitly.\n\n## Behaviour change\n\n| Description | Default | `max_shorthand_issue_digits = 7` |\n|---|---|---|\n| `Fixes #1234` | followed | followed |\n| `Fixes #12345` | ignored (unchanged) | followed |\n| `Fixes https://github.com/org/repo/issues/1234567` | followed | followed |\n| `Fixes other/project#12345` | followed | followed |\n\nNothing changes unless an operator raises the bound.\n\n## Testing\n\n```\n$ PYTHONPATH=. pytest tests/unittest\n3703 passed, 1 skipped, 1 xfailed, 91 warnings in 50.61s\n```\n\nNew file `tests/unittest/test_github_issue_reference_extraction.py` (18 tests), written first.\nCovers the unchanged default, a raised bound, a bound that still excludes longer numbers, five\nunusable configuration values, a numeric string, and the two unambiguous forms as controls.\n\n`test_hash_only_rejects_long_numbers` in the existing suite passes unchanged, which is the point:\nthe default behaviour the maintainers chose is preserved exactly.\n\nAlso checked: `ruff check` clean on both files.\n\n## Risk / compatibility\n\nDefault-preserving by construction. The only new failure mode \u2014 a bad configured value \u2014 falls back\nto the default and warns.\n\n## Note on provenance\n\nThis started as a bug report (\"five-digit issue references are never extracted\"). The existing test\nabove shows the bound is an intentional product decision, so it is offered as opt-in configurability\nrather than a behaviour change. The corresponding entry in `BUG_REPORT_ROUND4.md` has been withdrawn.",
+   "tickets": [
+    {
+     "ticket_id": 3081,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/3081",
+     "title": "feat(tickets): make the shorthand issue-number bound configurable",
+     "body": "### Feature request\n\nMake the digit bound on bare `#123` issue references configurable, so repositories with more\nthan 9 999 issues keep their ticket compliance.\n\n`pr_agent/tools/ticket_pr_compliance_check.py::extract_ticket_links_from_pr_description` follows\na shorthand reference only when `len(issue_number) < 5`:\n\n```python\nelse:  # #123 format\n    issue_number = match[5][1:]\n    if issue_number.isdigit() and len(issue_number) < 5 and repo_path:\n        _add(...)\n```\n\nThe bound is intentional \u2014 `test_hash_only_rejects_long_numbers` pins it, on the grounds that a\nbare five-digit number looks more like an error code than an issue \u2014 and it is a reasonable\ndefault. But it is a global constant, so a project that has passed its 10 000th issue has no way\nto opt out.\n\nFor those repositories the effect is silent: `Fixes #12345` is matched by the pattern and then\ndiscarded, nothing is logged, and `require_ticket_analysis_review` (on by default) simply never\nfinds a ticket. The neighbouring branch-name extractor already accepts up to six digits\n(`BRANCH_ISSUE_PATTERN`), and the full-URL form has no bound at all, so the four-digit ceiling is\nalso inconsistent within the same module.\n\n\n### Motivation\n\n\n### Proposed behaviour\n\n```toml\n[config]\nmax_shorthand_issue_digits = 4   # default: today's behaviour\n```\n\n- unset or unusable \u2192 today's behaviour, with a warning for an unusable value;\n- raised \u2192 longer shorthand references are followed;\n- full URLs and `owner/repo#123` stay unbounded, since they name their repository.\n\n### Alternatives considered\n\n- **Always allow up to 7 digits.** Rejected: it overrides a maintainer decision that a bare long\n  number is probably not an issue, and it breaks an existing test that documents the intent.\n- **Allow long numbers only after a closing keyword** (`Fixes`, `Closes`, \u2026). Rejected for the same\n  reason: the existing test uses `Fixes #12345` and still expects it to be ignored.\n",
+     "labels": "feature"
+    },
+    {
+     "ticket_id": 123,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/123",
+     "title": "Preserve existing labels on Pull Requests",
+     "body": "I noticed the PR Agent is removing existing labels assigned to the PR. For example, if a label is assigned by https://github.com/actions/labeler, it will get removed as soon as the task runs (i.e. /describe).",
+     "labels": ""
+    }
+   ]
+  },
+  {
+   "key": "3171-81f8425f",
+   "kind": "precision",
+   "pr": 3171,
+   "reviewed_sha": "81f8425fc380c9967673459ec3abbc7b1ec2aea6",
+   "merge_base": "6952c4783a1d0291ae8bb153d421b77da6842121",
+   "title": "fix(github): report command failures in outcome reactions",
+   "branch": "audit/semantic-20260908-final",
+   "description": "## Summary\n\nFix GitHub outcome reactions reporting success after a PR-Agent tool failed.\n\n## Root cause\n\nThe GitHub comment handler uses the boolean returned by `PRAgent.handle_request()` to select the configured outcome reaction.\n\nReview, description, and code-suggestion tools can catch internal provider/model errors and return normally when `config.propagate_tool_errors = false`, which is the shipped compatibility default. The handler therefore receives `True` and adds `reaction_on_success` even though the command failed.\n\nThe existing reaction tests only used fake agents that directly returned `True` or `False`; they did not cover the real Agent/tool error contract.\n\n## Changes\n\n- Add an optional request-scoped `propagate_tool_errors` override to `PRAgent.handle_request()`.\n- Pass the override through the Agent routing path and apply it after repository and command settings are processed.\n- Restore the previous setting in `finally`.\n- Enable the override for GitHub comment commands whose result is consumed by `react_to_outcome()`.\n- Add a regression using a provider-free tool that reproduces the existing swallow/propagate behavior.\n\nThe shipped default behavior for callers that do not pass the override is unchanged.\n\n## Validation\n\n- Baseline regression: `1 failed, 34 deselected`\n- Fixed regression: `1 passed, 34 deselected`\n- Reaction tests: `35 passed`\n- Full unittest suite: `4338 passed, 1 skipped, 1 xfailed`\n- Ruff: passed\n- compileall: passed\n- pre-commit: passed\n- Package sdist/wheel build: passed\n- Docker `--target test` build: passed\n- `git diff --check`: passed\n\nThese are local Docker-based results. No live provider, external CI, deployment, or production result is claimed.\n",
+   "tickets": []
+  },
+  {
+   "key": "3232-9d8030f0",
+   "kind": "precision",
+   "pr": 3232,
+   "reviewed_sha": "9d8030f03476ae84e9e6d1bff19bec51d7337114",
+   "merge_base": "29709d42e805fceab0a74580a191499b2d3c725a",
+   "title": "fix(github): report total inline suggestion fallback failure",
+   "branch": "fix/3223-github-suggestion-fallback",
+   "description": "# Title\n\nfix(github): report total inline suggestion fallback failure\n\n# Description\n\nFixes #3223\n\n## Summary\n\nFix GitHub code-suggestion publication reporting when the initial batch review fails with HTTP 422 and the verification fallback drops every comment.\n\nPreviously, `GithubProvider.publish_code_suggestions()` returned `True` whenever `publish_inline_comments()` completed without raising, even if the 422 fallback ultimately published zero comments. This caused `PRCodeSuggestions` to treat the run as successful and skip its existing retry path.\n\n## Changes\n\n* Track the number of comments actually published by `_publish_inline_comments_fallback_with_verification()`.\n* Return `False` when the 422 fallback publishes zero comments.\n* Preserve `True` for partial fallback success to avoid duplicate retries of suggestions that already landed.\n* Preserve successful no-op behavior for persistent inline-comment dedup when all suggestions were already posted.\n* Make `publish_code_suggestions()` return the actual result from `publish_inline_comments()` instead of unconditionally returning `True`.\n* Add regression tests covering total fallback failure, partial success, repaired-comment success/failure, normal success, and persistent dedup-only behavior.\n\n## Scope\n\nThis change is intentionally limited to the GitHub provider.\n\nIt does not modify:\n\n* GitLab or other providers\n* the caller retry policy in `PRCodeSuggestions`\n* pre-submission validation/drop semantics\n* provider-wide publication contracts\n\n## Validation\n\n* `tests/unittest/test_github_provider_comments.py`: 39 passed\n* `tests/unittest/test_inline_comment_dedup.py`: 41 passed\n* GitHub fallback verification tests: 4 passed\n* Relevant PR code-suggestion tests: 170 passed\n* Ruff: passed\n* Pre-commit: passed\n* `git diff --check`: clean\n",
+   "tickets": [
+    {
+     "ticket_id": 3223,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/3223",
+     "title": "GitHub publish_code_suggestions reports success when the 422 fallback drops every comment",
+     "body": "### Summary\n\n`GithubProvider.publish_code_suggestions` returns `True` when the 422 fallback path drops **every** comment, so a run in which nothing was posted is reported to the caller as a successful publication.\n\nThis is the same invariant as #3109 (GitLab) and the one #3117 tracks, but on the reference provider. Gitea (#2878), Bitbucket (#2992), and Bitbucket Server already count publishable-vs-published; GitHub does not.\n\n### Where\n\n`pr_agent/git_providers/github_provider.py`:\n\n```python\ntry:\n    self.publish_inline_comments(post_parameters_list)\n    return True\nexcept Exception as e:\n    get_logger().error(f\"Failed to publish code suggestion, error: {e}\")\n    return False\n```\n\n`publish_inline_comments` returns `None` on every non-raising path, so `return True` is unconditional whenever it does not raise. On a 422 it calls `_publish_inline_comments_fallback_with_verification`, which:\n\n- posts only `verified_comments` (may be empty),\n- and, when `_try_fix_invalid_inline_comments` fixes nothing, logs\n  `Dropped N invalid comments that could not be fixed` and returns normally.\n\nNothing was posted; the caller is told it succeeded.\n\n### Why it matters\n\n`pr_agent/tools/pr_code_suggestions.py` reads the return value as the failure signal:\n\n```python\nis_successful = self.git_provider.publish_code_suggestions(code_suggestions)\nif is_successful:\n    self._output_published = True\nif not is_successful:\n    # retry each suggestion separately\n```\n\nSo the one-by-one retry \u2014 which exists precisely to salvage suggestions the batch review rejected \u2014 is suppressed exactly in the case it was written for, and `_output_published` is set for output that does not exist.\n\n### Reproduction\n\n```python\nfrom unittest.mock import MagicMock\nfrom pr_agent.git_providers.github_provider import GithubProvider\n\np = GithubProvider.__new__(GithubProvider)\np.pr = MagicMock()\np.last_commit_id = \"abc\"\np.max_comment_chars = None\np.validate_comments_inside_hunks = lambda s: s\n\nerr = Exception(\"unprocessable\"); err.status = 422\np.pr.create_review.side_effect = err\n# every comment fails verification, none can be fixed\np._verify_code_comments = lambda comments: ([], [(c, \"bad\") for c in comments])\np._try_fix_invalid_inline_comments = lambda comments: []\n\nsuggestions = [{\n    \"body\": \"x\\n```suggestion\\ny\\n```\",\n    \"relevant_file\": \"app.py\",\n    \"relevant_lines_start\": 1,\n    \"relevant_lines_end\": 1,\n}]\nassert p.publish_code_suggestions(suggestions) is False\n```\n\nObserved on `main` (`9b7bb8cd`):\n\n```\nAssertionError: assert True is False\n +  where True = publish_code_suggestions([...])\n--- Captured stderr ---\nINFO  ... Initially failed to publish inline comments as committable\nWARNING ... Dropped 1 invalid comments that could not be fixed. Paths: ['app.py']\n```\n\n### Suggested fix\n\nMake `publish_inline_comments` (and its fallback) report how many comments actually landed, and have `publish_code_suggestions` return the shape already merged elsewhere:\n\n```python\nreturn published_count > 0 or publishable_count == 0\n```\n\nTwo behaviours must be preserved, and both already have precedent in the merged providers:\n\n- **Partial failure must still return `True`** \u2014 the caller republishes the whole list, which would duplicate the suggestions that did land.\n- **The persistent-dedup early return must stay `True`.** When `config.persistent_inline_comments` is on and every suggestion was already posted on an earlier run, `publish_inline_comments` returns early with `Persistent inline comments: all N suggestion(s) already posted; nothing to publish`. Nothing was published *this* run, but nothing needed to be \u2014 this is `publishable_count == 0`, not a failure. I confirmed this path currently returns `True` and it should keep doing so; a naive `published_count > 0` would regress it into an infinite one-by-one retry of comments that are already on the PR.\n\n### Scope\n\nI am not opening a PR for this yet \u2014 #3219 (Gerrit + CodeCommit) is awaiting review and #3129 owns the GitLab half (#3109), so this is the remaining provider. Happy to take it if a maintainer wants it, either as its own change or folded into whichever of those lands first.\n",
+     "labels": ""
+    }
+   ]
+  },
+  {
+   "key": "3254-12bdb305",
+   "kind": "precision",
+   "pr": 3254,
+   "reviewed_sha": "12bdb30535fdc1a407d82042970e4c9cb9c16889",
+   "merge_base": "17651f75b2b29268eb32d5d9a9227b8f3a7c1131",
+   "title": "fix(providers): make the base persistent comment actually persist",
+   "branch": "fix/persistent-comment-base",
+   "description": "Fixes #3181.\n\n## What was wrong\n\n`GitProvider.publish_persistent_comment` did not persist anything \u2014 it called `publish_comment`. The real implementation is `publish_persistent_comment_full` directly below it. Five providers overrode the base only to forward to it, and the four that never overrode it (codecommit, gerrit, local, plain-diff) got no persistence at all.\n\n## Changes\n\n- **The base delegates to `publish_persistent_comment_full`**, so providers that never overrode it inherit persistence instead of duplicating a comment on every rerun.\n- **Removed the five pure pass-through overrides** \u2014 `gitlab_provider.py`, `gitea_provider.py`, `bitbucket_provider.py`, `bitbucket_server_provider.py`, `azuredevops_provider.py`. Each was read before deletion and none carried behaviour beyond the forward. `GithubProvider` keeps its override: it has a real check-run branch.\n- **Aligned the signature drift.** `as_thread` was accepted by the base, gitlab and bitbucket-server but not by github, so the next provider to return `True` from `should_publish_review_as_thread()` would have hit a `TypeError`. `GithubProvider.publish_persistent_comment` now accepts and forwards it.\n- **Dropped the `publisher.__func__ is GitProvider.publish_persistent_comment` check** in `pr_reviewer.py:465`. It existed only to detect the non-persisting base, and it is exactly the provider-type branching AGENTS.md tells us to avoid. The capability gate below it (`supports_review_finding_state()` + `is_supported(\"get_issue_comments\")`) already covers the case correctly.\n\n## One thing the issue did not mention\n\nDelegating unconditionally introduces a silent data-loss bug, so this PR adds `GitProvider.supports_comment_editing()` to guard it.\n\nThe base `edit_comment` is a no-op returning `None`, and `publish_persistent_comment_full` only treats `False` as an edit failure. Gerrit reports `get_issue_comments` as supported (`gerrit_provider.py:356` leaves it commented out of the unsupported list) but never implemented `edit_comment`. With an unguarded delegation it would match an existing comment, no-op the edit, and then publish only the `**[Persistent review](...)** updated to latest commit ...` status line \u2014 **the review body would never reach the PR**.\n\nI reproduced this against a fake provider mirroring gerrit's shape before adding the guard: the only published call was the status line. Providers that cannot edit now create a new comment instead, which is the pre-existing behaviour for them. The regression test fails if the guard is removed.\n\n## Coordination\n\nDeliberately does not touch `codecommit_provider.py` or `codecommit_client.py`, so this does not conflict with the open #3158. #3155 has already merged.\n\n## Tests\n\nAdded coverage for: the base updating a matching comment; the base falling back to `publish_comment` when none matches; a provider without `edit_comment` publishing the body rather than losing it; `CodeCommitProvider`/`LocalGitProvider` inheriting the implementation; and `GithubProvider` forwarding `as_thread`.\n\n```\nPYTHONPATH=. uv run pytest tests/unittest -q\n4461 passed, 1 skipped, 1 xfailed in 99.51s\n```\n\n`uv run ruff check` clean on every touched file.",
+   "tickets": [
+    {
+     "ticket_id": 3181,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/3181",
+     "title": "Base publish_persistent_comment does not persist; four provider overrides are pure pass-throughs",
+     "body": "`GitProvider.publish_persistent_comment` does not persist anything, and most providers override it only to undo that.\n\nVerified on `main` (6275ac09):\n\n- The base at `pr_agent/git_providers/git_provider.py:524` just calls `publish_comment`. The real implementation is `publish_persistent_comment_full` immediately below it.\n- Four of the six overrides are pure pass-throughs to `publish_persistent_comment_full` adding no behaviour: `gitlab_provider.py:942`, `gitea_provider.py:325`, `bitbucket_server_provider.py:356`, `azuredevops_provider.py:979`. GitHub adds only a check-run branch before delegating.\n- Four providers never override it, so they get no persistence at all: `codecommit_provider.py`, `gerrit_provider.py`, `local_git_provider.py`, `plain_diff_provider.py`.\n- `pr_agent/tools/pr_reviewer.py:465` has to detect this by comparing `publisher.__func__ is GitProvider.publish_persistent_comment`, which is exactly the provider-type branching AGENTS.md tells us to avoid.\n\nThis is the shared root cause behind #3157 (CodeCommit duplicates comments on rerun) and #3145 (Bitbucket Cloud diverges), both currently being patched per provider in #3158 and #3155.\n\nAlso worth fixing in the same pass: the override signatures have drifted. `as_thread` is accepted by the base, gitlab and bitbucket_server, but not by github, gitea, bitbucket or azuredevops. That is safe today only because GitLab is the sole provider returning `True` from `should_publish_review_as_thread()`, so the next provider to opt in hits a `TypeError`.\n\nSuggested action: make the base delegate to `publish_persistent_comment_full`, delete the four redundant overrides, align the signatures, and drop the `__func__` check. Please coordinate with #3155 and #3158 first so we do not conflict.\n",
+     "labels": "help wanted, Refactoring, High Effort Issue"
+    }
+   ]
+  },
+  {
+   "key": "3330-76846eed",
+   "kind": "precision",
+   "pr": 3330,
+   "reviewed_sha": "76846eed3f632894bbede7ebcda0c4926302d0e5",
+   "merge_base": "ca725b1ba511d82930d372ed9d79d9e95da23262",
+   "title": "docs(review): correct ticket-compliance documentation",
+   "branch": "fix/3327-review-ticket-docs",
+   "description": "Fixes #3327.\n\n## Summary\n\n- Remove the unsupported ticket-compliance label, `require_ticket_labels`, `require_no_ticket_labels`, and `Linea` claims from the review guide.\n- Explain that ticket compliance is included in the review comment under `pr_reviewer.require_ticket_analysis_review`, not published as PR labels.\n- Align the supported-source wording with the current implementation, including linked Azure DevOps work items, and link to the ticket-context guide.\n- Remove the implication that generated ticket-compliance labels can gate merging.\n\nOnly `docs/docs/tools/review.md` changes. No new settings or runtime behavior; #3328 is out of scope.\n\n## Validation\n\n- `PYTHONPATH=. uv run --frozen pytest -q tests/unittest/test_docs_nav_parity.py tests/unittest/test_markdown_ticket_output_core.py tests/unittest/test_ticket_compliance.py tests/unittest/test_ticket_pr_compliance_capabilities.py`: **152 passed, 1 xfailed**.\n- `PYTHONPATH=. uv run --frozen pytest -q tests/unittest/test_pr_reviewer_core.py -k set_review_labels`: **2 passed, 79 deselected**.\n- `mkdocs build -f docs/mkdocs.yml --site-dir <temporary-site-dir>` with the docs-CI packages: **passed**. Checked the generated HTML for the corrected text and link; both the review page and linked ticket-context page returned HTTP 200 when served locally.\n- Markdown-applicable pre-commit hooks and `git diff --check`: **passed**. Used `SKIP=actionlint` because its local Go bootstrap hit an `operation not permitted` error; no workflow files changed.\n\nTerminal capture:\n\n```text\n152 passed, 1 xfailed in 20.11s\n2 passed, 79 deselected in 6.52s\nINFO    -  Documentation built in 0.80 seconds\nReview page: HTTP 200\nTicket-context link: HTTP 200\n```\n\n`mkdocs build --strict` aborts on the existing missing `site_url` warning. Repeated the strict build against unchanged upstream `ca725b1b`; the warning and link diagnostics are identical. No docs configuration changes are included.\n\nPrepared with AI assistance.\n",
+   "tickets": [
+    {
+     "ticket_id": 3327,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/3327",
+     "title": "docs: review.md documents a `ticket compliance` label and `require_ticket_labels`/`require_no_ticket_labels` flags that do not exist, and lists `Linea` as a supported ticket system",
+     "body": "## Summary\n\n`docs/docs/tools/review.md:220` (live at https://docs.pr-agent.ai/tools/review/) documents auto-generated PR labels including a `ticket compliance` label and two configuration flags that do not exist anywhere in the code or in `pr_agent/settings/configuration.toml`. It also names `Linea` as a ticket system that is not supported.\n\n## Evidence\n\nThe doc claims:\n\n> **`ticket compliance`**: Adds a label ... to any GitHub/Jira/Linea ticket linked in the PR. Controlled by the `require_ticket_labels` flag (default: false). If `require_no_ticket_labels` is also enabled, PRs without ticket links will receive a \"No ticket found\" label.\n\n- `git grep \"require_ticket_labels|require_no_ticket_labels\"` matches only this docs file - the keys do not exist in code or `configuration.toml`.\n- The only labels the review tool actually publishes are `Review effort X/5` and `Possible security concern` (`set_review_labels`, `pr_agent/tools/pr_reviewer.py:1246-1298`).\n- Ticket compliance levels (\"Fully compliant\", \"Partially compliant\", \"Not compliant\") are rendered as text inside the review comment by `ticket_markdown_logic` (`pr_agent/algo/utils.py:571+`), never published as PR labels.\n- \"Linea\" is not a supported ticket system anywhere; the ticket pipeline covers GitHub issues, GitLab issues, Jira Cloud, and Asana (`pr_agent/tools/ticket_pr_compliance_check.py`).\n\n## Impact\n\nUsers following the docs expect a label that the tool never applies, and may set `require_ticket_labels`/`require_no_ticket_labels` in config expecting an effect. At minimum the documented behavior should be removed or replaced with what actually happens.\n\n## Expected\n\nDrop the `ticket compliance` bullet (and the `Linea` reference) from review.md, or update it to describe the real behavior.",
+     "labels": ""
+    },
+    {
+     "ticket_id": 3328,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/3328",
+     "title": "docs: additional_configurations.md documents `config.ignore_ticket_labels`, a key that exists nowhere in code or configuration.toml",
+     "body": "## Summary\n\n`docs/docs/usage-guide/additional_configurations.md:544-555` (live at https://docs.pr-agent.ai/usage-guide/additional_configurations/) documents a `config.ignore_ticket_labels` setting. The key has no implementation: it does not exist in `pr_agent/settings/configuration.toml` and is never read by any code.\n\n## Evidence\n\nThe doc shows:\n\n```toml\n[config]\nignore_ticket_labels = [\"ignore-compliance\", \"skip-review\", \"wont-fix\"]\n```\n\n- `git grep \"ignore_ticket_labels\"` matches only this docs file.\n- Every sibling `ignore_*` key documented nearby (`ignore_pr_labels`, `ignore_pr_authors`, `ignore_repositories`, `ignore_pr_source_branches`, `ignore_pr_target_branches`, `ignore_language_framework`) is implemented in `configuration.toml` and the server code - but there is no ticket-label filtering anywhere in the ticket pipeline (`pr_agent/tools/ticket_pr_compliance_check.py`).\n\n## Impact\n\nUsers who add this key are silently ignored; there is no ticket-label-based filtering to enable. The setting should either be implemented or removed from the docs so reads do not expect behavior that does not exist.\n\n## Expected\n\nImplement ticket-label filtering in the ticket fetch/analysis path, or remove this section from the docs.",
+     "labels": "documentation, good first issue"
+    }
+   ]
+  },
+  {
+   "key": "3380-b4f0cad5",
+   "kind": "precision",
+   "pr": 3380,
+   "reviewed_sha": "b4f0cad59161990887bd2665decf0d2b60128c90",
+   "merge_base": "785bb828270ec9016915fcfd4d71a4647426066f",
+   "title": "fix: prepare AWS credentials off the event loop",
+   "branch": "fix/litellm-aws-async-preparation",
+   "description": "Defer opted-in AWS discovery until a request needs SigV4 credentials.\nRun discovery and refresh in a worker while preserving initialization snapshots and the existing credential and static fallback policies.\n\nKeep preparation serialized after caller cancellation until the worker finishes, without blocking the event loop or starting overlapping work.\n\nFollow-up to #2999.",
+   "tickets": []
+  },
+  {
+   "key": "3398-41dfd7f2",
+   "kind": "precision",
+   "pr": 3398,
+   "reviewed_sha": "41dfd7f2baa204417de932081e72144c8755edb7",
+   "merge_base": "8ac8f7aa9bb97ecf3aa050aac9f6462314206692",
+   "title": "fix(security): scrub provider tokens from cloned repositories",
+   "branch": "fix/3396",
+   "description": "## Summary\n\n- scrub authenticated clone URLs from `.git/config` after successful clones\n- remove partial checkouts when cloning or credential scrubbing fails\n- keep the origin URL token-free for GitHub, GitLab, and Gitea providers\n- add regression coverage for remote URL scrubbing and failed-clone cleanup\n\nFixes #3396\n\n## Validation\n\n- Ruff passed on the changed files\n- Python compilation passed\n- Focused pytest could not run because the locked dependency set could not be downloaded from PyPI in this environment",
+   "tickets": [
+    {
+     "ticket_id": 3396,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/3396",
+     "title": "security: clone persists GitHub, GitLab, and Gitea tokens in .git/config",
+     "body": "### Git provider\n\nGitHub, GitLab, and Gitea\n\n### Bug details\n\nThe GitHub, GitLab, and Gitea providers embed access tokens directly into clone URLs in `_prepare_clone_url_with_token()`. The shared `GitProvider.clone()` then invokes `git clone` with that authenticated URL.\n\nGit persists the remote URL in the new checkout's `.git/config`, leaving the token in plaintext on disk:\n\n```text\n[remote \"origin\"]\n    url = https://<token>@host/owner/repository.git\n```\n\nThis affects temporary review checkouts and can expose credentials through filesystem snapshots, backups, container volume mounts, diagnostics, or any process that can read the checkout directory. The token may grant repository read or write access depending on its scope.\n\n### Reproduction\n\n1. Configure a GitHub, GitLab, or Gitea provider with a personal or access token.\n2. Trigger a command that clones the repository (for example, repository documentation/context loading).\n3. Before the temporary checkout is removed, inspect its Git configuration:\n\n```bash\ngit -C <clone-directory> config --get remote.origin.url\ncat <clone-directory>/.git/config\n```\n\nThe output contains the access token embedded in the remote URL.\n\n### Expected behavior\n\nAccess tokens should not be persisted in `.git/config` or any clone metadata. Authentication should be supplied per Git operation through a protected credential helper or temporary configuration that is removed after the operation, while the origin URL remains token-free.\n\n### Suggested remediation\n\n- Keep the repository URL token-free.\n- Provide authentication through a mode-600 temporary credential helper/configuration scoped to the clone/fetch operation.\n- Ensure cleanup happens on success, failure, and timeout.\n- Add regression tests asserting that the resulting `.git/config` and `remote.origin.url` contain no token.\n",
+     "labels": ""
+    }
+   ]
+  },
+  {
+   "key": "3590-108f5a42",
+   "kind": "precision",
+   "pr": 3590,
+   "reviewed_sha": "108f5a422512fe202de423cb0cbc68975fc50b56",
+   "merge_base": "b9fed67c652dd74fa8deca64056a9c5b1c801998",
+   "title": "fix(review): keep findings with non-numeric line fields",
+   "branch": "fix/review-finding-drop-3589",
+   "description": "Fixes #3589\n\n## Problem\n\n`convert_to_markdown_v2` (`pr_agent/algo/utils.py:318-319`) called `int(str(issue.get(\"start_line\", 0)).strip())` inside a per-finding `try/except Exception`. When the model emitted a non-integer line field (empty string, `N/A`, a float, `null`, or a hyphenated range), the `ValueError` was caught and the entire finding was dropped from the published `/review` summary with no user-visible error.\n\nThe two sibling consumers of the same dict are tolerant and keep the finding:\n\n- `pr_agent/tools/pr_reviewer.py:1263-1266` (`_build_key_issue_comment`), inline comments.\n- `pr_agent/tools/pr_reviewer.py:648-651` (`_review_finding_from_issue`), persisted finding state.\n\nSo a \"Possible security issue\" could vanish from the summary while inline comments and the persistent state still recorded it, and the bookkeeping for later reviews diverged from what maintainers actually saw.\n\n## Fix\n\nIn `convert_to_markdown_v2`, parse `start_line`/`end_line` tolerantly (defaulting to `0` on non-numeric input, matching the sibling paths). When the lines are not usable (`start_line < 1` or `end_line < start_line`), the finding still renders in the summary with its header and content, but without a line anchor link or excerpt. Calling `extract_relevant_lines_str` and `get_line_link` is gated on `valid_lines` so no bogus `R0` anchor is produced.\n\n## Tests\n\nAdded `test_key_issue_with_non_numeric_lines_keeps_finding_in_summary` in `tests/unittest/test_convert_to_markdown.py`: a finding with `start_line: \"\"` still renders header and content and `get_line_link` is not called.\n\nVerification:\n\n- New test plus the reviewer, finding-state, and markdown render suites pass.\n- Full unit suite: 9187 passed, 33 skipped, 1 xfailed.\n- `ruff check` and the pre-commit hooks are clean on the touched files.",
+   "tickets": [
+    {
+     "ticket_id": 3589,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/3589",
+     "title": "review: a non-numeric start_line or end_line silently drops the finding from the published summary while inline comments and persisted state keep it",
+     "body": "### Git provider\nAll (provider-independent; lives in `pr_agent/algo/utils.py`)\n\n### System Info\n- Tool: PR-Agent, `/review` command, any deployment\n- Default configuration\n\n### Bug details\n\nA key review finding silently disappears from the published `/review` summary whenever the model emits a non-integer value for `start_line` or `end_line`. The finding (header, content, file link) is dropped from the review with no user-visible error, while two sibling code paths keep it, so the review bookkeeping diverges from what maintainers actually see.\n\n`convert_to_markdown_v2` builds the \"Recommended focus areas for review\" section at `pr_agent/algo/utils.py:318-319`:\n\n```python\nstart_line = int(str(issue.get('start_line', 0)).strip())\nend_line = int(str(issue.get('end_line', 0)).strip())\n```\n\nA value that is not int-coercible, for example `\"\"`, `\"N/A\"`, `12.5`, or `null` (which becomes the string `\"None\"`), raises `ValueError`. The whole per-issue block is wrapped in `try`/`except Exception` at `pr_agent/algo/utils.py:305-342`, so the exception is logged (`get_logger().exception(...)`) and the entire finding is dropped from the summary.\n\nThe two other consumers of the exact same dict tolerate this input intentionally and keep the finding:\n\n- `pr_agent/tools/pr_reviewer.py:1263-1266` (`_build_key_issue_comment`): `except ValueError: start_line, end_line = 0, 0`, comment still published inline.\n- `pr_agent/tools/pr_reviewer.py:648-651` (`_review_finding_from_issue`): `except (TypeError, ValueError): start, end = 0, 0`, finding still recorded in the persistent finding state, which later incremental reviews and inline-comment resolution use.\n\nSo a \"Possible security issue\" or similar key finding can be dropped from the summary while the tool still records it as a known/resolved finding, and inline comments can carry it. Summary output, inline output, and persisted state disagree about the same review.\n\nReproduction (feeds same shape the model returns after YAML load):\n\n```python\nfrom pr_agent.algo.utils import convert_to_markdown_v2\n\ndata = {\"review\": {\"key_issues_to_review\": [{\n    \"relevant_file\": \"src/foo.py\",\n    \"issue_header\": \"Possible security issue\",\n    \"issue_content\": \"Credentials are logged on the error path.\",\n    \"start_line\": \"\",   # or \"N/A\", 12.5, null\n    \"end_line\": 14,\n}]}}\n\nmarkdown = convert_to_markdown_v2(data)   # \"Possible security issue\" is absent\n```\n\nWith integer fields the finding renders; with a non-integer `start_line` or `end_line` it disappears. The negative cases are realistic model outputs: empty string, float, `null`, or a hyphenated range such as `\"12-15\"`.\n\nSuggested fix: reuse the tolerant parsing already present in `pr_reviewer.py`, defaulting non-numeric lines to `0`, so the finding still renders with header and content (matching the sibling paths), or drop it from the state everywhere consistently. No existing unit test asserts the current drop behavior.",
+     "labels": ""
+    }
+   ]
+  },
+  {
+   "key": "3635-ec50bef4",
+   "kind": "precision",
+   "pr": 3635,
+   "reviewed_sha": "ec50bef4f31843c4add8828f47c73792f778f68b",
+   "merge_base": "223ac5121195f73e35f558862b08c8599e0b52d5",
+   "title": "fix(cli): isolate invocation settings",
+   "branch": "codex/cli-invocation-settings",
+   "description": "Follow-up to #3585, kept separate from command quoting.\n\nA plain-diff call to `cli.run()` can leave settings behind, causing a later hosted review in the same process to use the previous local diff. Each invocation now gets its own effective settings and fresh target caches, while preserving caller authentication metadata. The caller's context is restored on success or failure, after callbacks and exit-status evaluation finish.\n\nValidation:\n\n- 227 focused tests passed, covering repeated hosted/plain-diff calls and error cleanup.\n- `PYTHONPATH=. uv run pytest tests/unittest -q`: 9,265 passed, 33 skipped, 1 xfailed.\n- Ruff and touched-file pre-commit checks passed.\n<!-- oss-manager:717f05557688f5b7273b3d1e11bc9fbd5491da2f2492dee31e00e2dd88a7f0a5 -->",
+   "tickets": []
+  },
+  {
+   "key": "3671-8d68af32",
+   "kind": "precision",
+   "pr": 3671,
+   "reviewed_sha": "8d68af32010ee9c34894c064a9cd5d3ba88b59e9",
+   "merge_base": "1f11725b4d96afbaad8ed956afd074ecf4642426",
+   "title": "fix(diff): keep all hunks spanned by a line range",
+   "branch": "fix/diff-multihunk-range-overlap",
+   "description": "## Problem\n\n`extract_hunk_lines_from_patch()` decides whether a hunk participates in a requested line range by checking only `line_start` against each hunk's span. When `line_end` reaches into a later hunk, that later hunk is skipped entirely and its lines silently disappear from `selected_lines`.\n\nThis is the fallback used by `extract_relevant_lines_str()` when `file.head_file` is missing, and by `/ask` line questions in `pr_line_questions.py`. A range that crosses a hunk boundary returns truncated context, so the model never sees the later lines.\n\nExample: with hunks covering new lines 1..4 and 11..13, requesting lines 2..12 returns only lines 2,3,4. The lines 11,12 are dropped with no warning.\n\n## Fix\n\nGate each hunk on whether the requested range overlaps it:\n\n- Left side: keep the hunk when `line_end >= start1` and `line_start <= start1 + size1 - 1`.\n- Right side: keep the hunk when `line_end >= start2` and `line_start <= start2 + size2 - 1`.\n\nSingle hunk behavior is unchanged; all existing tests still pass.\n\n## Tests\n\nAdded right and left side cases where the range spans both hunks, asserting both hunk headers are present and selected lines come from both hunks.\n\nFull unit suite: 9353 passed.\n",
+   "tickets": []
+  },
+  {
+   "key": "3694-9b689dc7",
+   "kind": "precision",
+   "pr": 3694,
+   "reviewed_sha": "9b689dc7f26ea0f0786da1960fd8e9c49f3d71a4",
+   "merge_base": "d1349aa7eb063c9ad0de1ce8a5df9cc4d1446e08",
+   "title": "fix(tokens): avoid a stale cached encoder on concurrent model switch",
+   "branch": "fix/token-encoder-cache-race",
+   "description": "## Problem\n\n`TokenEncoder` caches one tokenizer for the whole process, together with the model that tokenizer belongs to. `get_token_encoder` checked that pair outside the lock and published `_model` before the tokenizer finished building:\n\n```python\nif cls._encoder_instance is None or model != cls._model:  # no lock\n    with cls._lock:\n        if cls._encoder_instance is None or model != cls._model:\n            cls._model = model                                   # published first\n            cls._encoder_instance = cls._create_encoder(cls._model)  # slow, published second\nreturn cls._encoder_instance\n```\n\nWhile a tokenizer is being built, `_model` already names the new model but `_encoder_instance` still holds the previous model's tokenizer. A concurrent request for the new model sees `_encoder_instance is not None` and `model == cls._model`, concludes the cache is warm, skips the lock, and is handed the previous model's tokenizer.\n\nTokenizer construction is slow, especially on first use of a model, so the window is wide enough to hit in the webhook server where several PRs are processed at once.\n\nThe result is silent wrong token counts. `TokenHandler` uses them to decide how much of a diff fits in the context window, so a request can be trimmed against the wrong model's vocabulary and still overflow, or be trimmed far more aggressively than needed.\n\n## Fix\n\nDo the check and the build in one critical section, and publish `_model` only once its tokenizer exists:\n\n```python\nwith cls._lock:\n    if cls._encoder_instance is None or model != cls._model:\n        encoder = cls._create_encoder(model)\n        cls._model = model\n        cls._encoder_instance = encoder\nreturn cls._encoder_instance\n```\n\nA concurrent caller now blocks on the lock and then reads a cache that is consistent, so every caller gets the tokenizer for the model it asked for.\n\nThe lock-free fast path is dropped. It was the source of the inconsistency, and `get_token_encoder` is called only a handful of times per request, so an uncontended acquire is not measurable next to the `encode` work that follows. Building under the lock is unchanged, since the original code already built there.\n\n## Test\n\n`test_concurrent_model_switch_does_not_hand_out_previous_model_encoder` starts a model switch with a slow encoder build, then makes a concurrent call for the same model and asserts both callers receive the same new encoder rather than the stale one.\n\nIt fails on the previous implementation and passes on this one. Verified both ways: the cache invariant check and the stale-encoder symptom check each fail when the old code is restored.\n\n## Scope\n\nTwo files, one issue. No changes to encoder selection, model fallback, or the `model != configured_model` path.\n",
+   "tickets": []
+  },
+  {
+   "key": "3737-151f76cd",
+   "kind": "precision",
+   "pr": 3737,
+   "reviewed_sha": "151f76cdc969adc93df15ecfd428add9d929a761",
+   "merge_base": "b138817eaef6d1756ea50d8e89679db2b74a121b",
+   "title": "feat: support CompactifAI provider credentials",
+   "branch": "feature/compactifai-support",
+   "description": "CompactifAI already has a native LiteLLM provider, but PR-Agent does not forward `[compactifai].key` to it. This change adds that mapping, a secrets template, and setup documentation for `compactifai/glm-5-3`, `compactifai/glm-5-2`, and `compactifai/quasar-438b`.\n\nThe documented setup uses the existing LiteLLM transport and explicit reasoning configuration. It requires a positive `config.custom_model_max_tokens` within the deployment's verified limits because CompactifAI's public documentation does not publish context limits. No transport, dependency, or deployment changes are included.\n\nValidation: the matching-provider API-key tests pass, including configured-key precedence without changing the native environment key. The unit suite passed 9,826 tests; its 13 local-socket failures were resolved by rerunning the polling test file with socket access (29 passed). The final new precedence test passes separately. All pre-commit checks pass. Live CompactifAI requests were not run.\n\nProvider documentation: [models](https://docs.compactif.ai/models/), [GLM-5.3](https://docs.compactif.ai/models/glm_5_3/), [GLM-5.2](https://docs.compactif.ai/models/glm_5_2/), [Quasar-438B](https://docs.compactif.ai/models/quasar_438b/).\n",
+   "tickets": []
+  },
+  {
+   "key": "3796-72c0002a",
+   "kind": "precision",
+   "pr": 3796,
+   "reviewed_sha": "72c0002a55d91843529d220851c9eefa3ab11888",
+   "merge_base": "e04d8ae8d698fb516ed8682855a5ce57c1784369",
+   "title": "fix(bitbucket): encode filenames in line links",
+   "branch": "fix/3792-bitbucket-line-links",
+   "description": "## What changed\n\nFixes #3792.\n\nPercent-encode the filename before adding it to Bitbucket Cloud's line-link fragment, keeping directory separators intact. This covers both file-only and single-line links without changing how line ranges are handled.\n\nFor example, the generated links now look like:\n\n```text\nhttps://bitbucket.org/owner/repo/pull-requests/7/#Ldocs/my%20notes.mdT12\nhttps://bitbucket.org/owner/repo/pull-requests/7/#Lsrc/a%23b.py\n```\n\nAdded 15 cases to the existing provider contract tests for reserved characters, Unicode, literal percent sequences, and parentheses. All 15 fail without the fix.\n\n## Testing\n\n- Python 3.12.13, dependencies installed from `uv.lock` with uv 0.12.10.\n- Line-link contract and Bitbucket provider tests: 209 passed.\n- Full unit suite: 10,273 passed, 33 skipped, 1 expected failure. Warnings come from unchanged code and dependencies.\n- Ruff and pre-commit checks pass on both changed files.\n\nI haven't verified navigation against a live Bitbucket Cloud repository; the tests check the exact URLs and filename round trips.\n",
+   "tickets": [
+    {
+     "ticket_id": 3792,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/3792",
+     "title": "Bitbucket Cloud line links break for filenames with a space or #",
+     "body": "`BitbucketProvider.get_line_link` (`bitbucket_provider.py:544-549`) puts the raw filename into the `#L{file}T{line}` fragment. `docs/my notes.md` gives `.../#Ldocs/my notes.mdT12`, and because Bitbucket Cloud uses the plain `[file](link)` form, the rendered link stops at `#Ldocs/my`. A `#` in the path breaks it the same way.\n\nGitLab, Gitea and Azure DevOps encode the filename since #3782. Suggested fix: `quote(relevant_file, safe=\"/\")` in both branches. Not yet checked against a live Bitbucket Cloud instance.\n",
+     "labels": "good first issue, help wanted, Low Effort Issue, bug"
+    }
+   ]
+  },
+  {
+   "key": "3974-40139bfc",
+   "kind": "precision",
+   "pr": 3974,
+   "reviewed_sha": "40139bfc1beec4b9b37148b692618fb5ee0827b8",
+   "merge_base": "821c6ad173194d443a3f768b5a1087924025e90f",
+   "title": "fix(review): log all schema validation errors and run require checks (#3973)",
+   "branch": "fix/review-schema-validation-all-errors",
+   "description": "## Summary\n\nFixes #3973.\n\nIn `PRReviewer._validate_review_schema` (`pr_agent/tools/pr_reviewer.py`):\n- Previously, `except ValidationError as error` logged only `error.errors()[0]` and returned `False` immediately.\n- This caused observability gaps:\n  1. If Pydantic reported multiple validation errors (e.g. unexpected extra keys under `extra=\"forbid\"` and invalid field types or missing fields), only the first error was logged while the remaining errors were hidden.\n  2. Because it returned early on `ValidationError`, the `require_*` checks (e.g. `require_score`, `require_tests`, etc.) never executed if Pydantic validation failed, meaning missing required fields were masked by unknown keys.\n  3. When multiple `require_*` settings were enabled and missing from the output, the loop exited on the first missing field (`return False`), hiding subsequent missing required fields.\n\n## Changes\n\n- Iterate over all errors in `error.errors()` and log a warning for each error.\n- Do not return early on `ValidationError`; continue to evaluate all `require_*` fields.\n- Iterate through all `required_fields` without early exit so every missing required field is logged.\n- Return `is_valid` representing overall validation status.\n\n## Testing\n\n- Added unit tests in `tests/unittest/test_pr_reviewer_core.py`:\n  - `test_review_schema_logs_all_pydantic_validation_errors`: verifies that all Pydantic errors are logged when multiple validation failures occur.\n  - `test_review_schema_runs_require_checks_when_pydantic_validation_fails`: verifies that `require_*` checks run and log missing required fields even when Pydantic validation fails.\n  - `test_review_schema_logs_all_missing_required_fields`: verifies that all missing required fields are logged when multiple are missing.\n- All 186 reviewer unit tests pass (`uv run pytest tests/unittest/test_pr_reviewer*.py`).\n- `uv run ruff check` passes with 0 violations.",
+   "tickets": [
+    {
+     "ticket_id": 3973,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/3973",
+     "title": "/review schema validation logs only the first error, so an unknown key can hide a missing required field",
+     "body": "### Git provider\nAll\n\n### System Info\nmain @ 038f6a5e\n\n### Bug details\n`_validate_review_schema` logs only `error.errors()[0]` (`pr_reviewer.py:1218-1259`), and the `require_*` checks run only after pydantic validation passes. With an unknown key in the output (Review uses `extra=\"forbid\"`), a missing `score` is never reported; with a missing `key_issues_to_review`, the extra key is the one hidden. Both callers ignore the return value.\n\nWarn-only is intended (#3372), so this is about observability: log every pydantic error and run the `require_*` checks regardless of the pydantic result.\n",
+     "labels": ""
+    }
+   ]
+  },
+  {
+   "key": "4008-5a62ea12",
+   "kind": "precision",
+   "pr": 4008,
+   "reviewed_sha": "5a62ea12e23299d6af30eefb146fac125ea8abc4",
+   "merge_base": "35553cb89d6243c52678f681413a0ea1bbb1feba",
+   "title": "perf(routing): count diff hunks only when needed",
+   "branch": "perf/lazy-model-routing-hunk-count",
+   "description": "## Summary\n\nAvoid unnecessary diff hunk counting when model-routing rules can be evaluated without scanning patches.\n\n- Check file-count limits and Azure deployment eligibility before counting hunks.\n- Compute the hunk count lazily, at most once, only when an eligible rule requires it.\n- Preserve routing decisions, rule ordering, and deployment selection.\n- Avoid forcing a hunk scan solely for logging.\n\n## Motivation\n\n`count_hunks()` scans and splits patch contents even when routing rules cannot match. Skipping unnecessary scans reduces CPU work and temporary memory allocations, particularly for large diffs.\n\n## Tests\n\nAdd regression coverage for file-only rules, file-count and deployment-ineligible rules, multiple hunk-limited rules, zero-hunk results, and invalid rules.\n\nRouting decisions remain unchanged. Missing Azure deployment warnings may be emitted earlier for rules that would otherwise fail a hunk limit.",
+   "tickets": []
+  },
+  {
+   "key": "4021-64666d4d",
+   "kind": "precision",
+   "pr": 4021,
+   "reviewed_sha": "64666d4d75a2ba87ddb8ad5cde6e1e5c8f3a650d",
+   "merge_base": "35553cb89d6243c52678f681413a0ea1bbb1feba",
+   "title": "fix(gerrit): reset local edits after failed patch uploads",
+   "branch": "fix/gerrit-reset-failed-patch-upload",
+   "description": "A failed Gerrit suggestion upload can leave temporary repository edits behind because cleanup only runs after a successful upload.\n\nAttempt cleanup whether the upload succeeds or fails. If both operations fail, preserve the original upload error and log the cleanup failure. If cleanup fails after a successful upload, propagate that failure before publishing the suggestion comment.\n",
+   "tickets": []
+  },
+  {
+   "key": "4041-cc05c542",
+   "kind": "precision",
+   "pr": 4041,
+   "reviewed_sha": "cc05c5424ef96e2a7fab6a20f868ef3f297ac93e",
+   "merge_base": "b451c7ca618875c3153da837a97b531d4505c446",
+   "title": "fix(diff): keep unreadable file notices in chunked diffs",
+   "branch": "fix/unreadable-file-multi-diff",
+   "description": "## Problem\n\nWhen a provider cannot fetch a changed file's contents, PR-Agent marks it with `content_fetch_failed=True` and leaves its patch empty.\n\nExtended and compressed diffs already preserve these failures as manual-review notices. However, fresh multi-diff packing skips empty patches when the full diff exceeds the token budget, causing unreadable files to disappear from both the model input and remaining-file coverage.\n\n## Changes\n\n- Preserve unreadable-file notices in chunked diffs using the existing `_unreadable_file_notice()` helper.\n- Carry the failure marker through fresh and prepared diff data.\n- Prevent oversized notices from being clipped into incomplete warnings. Instead, report those files as unprocessed.\n- Preserve existing behavior for normal empty patches, deleted files, and token budgeting.\n\n## Tests\n\nAdded parameterized regression tests covering:\n\n- Full and chunked diffs with line numbers enabled and disabled.\n- Mixed readable and unreadable files.\n- Multiple unreadable files.\n- Insufficient token budgets and `skip`/`clip` policies.\n- Prepared-diff reuse.\n- Normal empty patches and deleted files.\n\nNo new dependencies or configuration changes.",
+   "tickets": []
+  },
+  {
+   "key": "4129-5fd13df6",
+   "kind": "precision",
+   "pr": 4129,
+   "reviewed_sha": "5fd13df6ff6af114d3bbe702ab58e48886cdd73e",
+   "merge_base": "330f0813b5fe0d1f54b794077c2d02aa85a1fb63",
+   "title": "fix: preserve repeated override quote types",
+   "branch": "fix/repeated-quoted-overrides",
+   "description": "Keep quote state per argument when a command repeats the same setting. The last override now retains its intended type.\n\nTests: `PYTHONPATH=. uv run pytest tests/unittest/test_cli_command_tokenization.py -q --color=no`\n",
+   "tickets": []
+  },
+  {
+   "key": "4171-dac21acc",
+   "kind": "catch",
+   "pr": 4171,
+   "reviewed_sha": "dac21acc6bfbe9786e0439ea20fd4805c772e4df",
+   "merge_base": "33fc4b4a7c418819371b7fbef82bbab156022d31",
+   "title": "fix(azure): handle created events without a web link",
+   "branch": "fix/azure-created-event-url",
+   "description": "Azure DevOps pull-request-created events can include the repository URL and PR ID without a web link. The handler previously failed before running automatic commands for these events. It now builds the PR URL from those fields when the web link is missing or empty, while preserving the existing behavior for a nonempty web link.\n\nThe fallback retains encoded project and repository names and supports self-hosted collection prefixes and ports. Invalid fallback identity is skipped with a fixed diagnostic before command dispatch.\n\nValidation: 93 focused Azure webhook, authentication and URL-parsing tests passed; the full unit suite passed with 13,869 tests and 33 skips. Ruff and file-scoped pre-commit checks passed. No live Azure DevOps delivery was exercised.\n\n<!-- oss-manager:889b80bff33d6de00423725ac5107d8faeb27711eb9169d0fd8f9185d63d084b -->",
+   "tickets": [],
+   "known_findings": [
+    {
+     "label": "4171a",
+     "finding": "Parsing `remoteUrl` misroutes the documented created payload, so build the PR URL from the event's project and repository names instead.",
+     "fact_needed": "_created_event_pr_url in pr_agent/servers/azuredevops_server_webhook.py falls back, when `_links.web.href` is absent, to urlsplit(repository.remoteUrl); the documented created sample's remoteUrl `https://dev.azure.com/fabrikam/DefaultCollection/_git/Fabrikam` therefore yields project `DefaultCollection`, and a URL without a project segment or with an `org@` user part fails, while the event carries resourceContainers.collection.baseUrl, repository.project.name and repository.name."
+    }
+   ]
+  },
+  {
+   "key": "4174-03584e94",
+   "kind": "precision",
+   "pr": 4174,
+   "reviewed_sha": "03584e947d82275236c349fb119880f19f69b723",
+   "merge_base": "33fc4b4a7c418819371b7fbef82bbab156022d31",
+   "title": "ci(review): make self-hosted /improve post suggestions again",
+   "branch": "fix/self-review-improve-suggestions",
+   "description": "The three env changes from #4161, in `.github/workflows/pr-agent-review.yaml`:\n\n- `PR_CODE_SUGGESTIONS__FOCUS_ONLY_ON_PROBLEMS: 'false'` \u2014 the default \"only critical problems\" prompt made /improve return an empty list on most PRs here (90 of 99 comments since 10 Oct said \"No code suggestions found\"). Runs that do produce suggestions also get the self-reflection pass back, which removes the \"Could not self-reflect on suggestions; using score 7\" warning.\n- `PR_CODE_SUGGESTIONS__PUBLISH_OUTPUT_NO_SUGGESTIONS: 'false'` \u2014 when the list is still empty, stay quiet instead of posting the empty comment.\n- `CONFIG__USE_REPO_SETTINGS_FILE: 'false'` \u2014 the action merges this repo's own `.pr_agent.toml` despite the header; its `synchronize` push command points at `/agentic_review`, which the OSS image lacks, so a later `synchronize` run would fail the job.\n\nI can't push a branch to this repo to run the live check from the issue (`gh workflow run pr-agent-review.yaml --ref <branch> -f pr_number=<open PR>`), so the validation step needs someone with write access \u2014 happy to do it if the branch is copied over, otherwise this takes effect on the next PR once merged.\n\nFixes #4161",
+   "tickets": [
+    {
+     "ticket_id": 4161,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/4161",
+     "title": "/improve in pr-agent-review.yaml returns no suggestions on 90% of PRs",
+     "body": "Thanks @ofir-frd for getting PR-Agent running on its own PRs in #4002. Since 10 Oct, `/improve` has posted \"No code suggestions found\" in 90 of 99 comments, while Copilot flagged issues the authors then fixed on #4064, #4083 and #4146.\n\nThe likely driver is the default `pr_code_suggestions.focus_only_on_problems=true`, whose prompt says \"Only give suggestions that address critical problems and bugs ... If no relevant suggestions are applicable, return an empty list\". It will not close the whole gap, since the #4146 bug sat in a file outside the diff. The \"Could not self-reflect on suggestions; using score 7\" log warning is a side effect of the empty list.\n\nProposed env changes in `.github/workflows/pr-agent-review.yaml`:\n\n- `PR_CODE_SUGGESTIONS__FOCUS_ONLY_ON_PROBLEMS: 'false'` (runs with suggestions add a reflection call)\n- `CONFIG__USE_REPO_SETTINGS_FILE: 'false'`: the action merges `.pr_agent.toml` despite its header, so adding `synchronize` later would run its `/agentic_review` push command, which OSS lacks, and fail the job\n- `PR_CODE_SUGGESTIONS__PUBLISH_OUTPUT_NO_SUGGESTIONS: 'false'`, to drop the empty comments\n\nTo test, push a branch here (not a fork) and run `gh workflow run pr-agent-review.yaml --ref <branch> -f pr_number=<open PR>`, which also rewrites that PR's description.\n\n",
+     "labels": "good first issue, help wanted, Configuration changes"
+    }
+   ]
+  },
+  {
+   "key": "4186-3a37edd7",
+   "kind": "catch",
+   "pr": 4186,
+   "reviewed_sha": "3a37edd7e4d88df603a0eec490a8fffe46fb36bd",
+   "merge_base": "59638246e41d37caf1d95435e00718859e35b69b",
+   "title": "fix(describe): fall back on unusable model responses",
+   "branch": "fix/describe-unusable-model-response",
+   "description": "## Summary\n\nAllow `/describe` to use its existing fallback model chain when a non-empty model response contains no usable description mapping.\n\n## Problem\n\nResponses such as `null`, `{}`, `[]`, or plain text can pass the model attempt and fail later, after fallback is no longer available. This can lead to incomplete descriptions.\n\n## Changes\n\n- Require a non-empty top-level YAML mapping before extending uncovered files in the normal path.\n- Apply the same check to large-PR headers before appending file summaries.\n- Raise the existing `FallbackEligibleError`, preserving permissive field-level validation for custom descriptions.",
+   "tickets": [],
+   "known_findings": [
+    {
+     "label": "4186a",
+     "finding": "The two `[ \\t]*` runs either side of the optional label make this fence-strip pattern quadratic on a long run of blanks; moving the second one inside the group is linear.",
+     "fact_needed": "PRDescription._prepare_pr_answer (pr_agent/tools/pr_description.py:564) strips the header fence with r'^```[ \\t]*(?:(?i:yaml|yml))?[ \\t]*(?=\\r?\\n)' on model output, and with the label optional the two adjacent `[ \\t]*` quantifiers can match the same blanks, giving quadratic time (about 4 s for 32k spaces)."
+    }
+   ]
+  },
+  {
+   "key": "4197-de281487",
+   "kind": "catch",
+   "pr": 4197,
+   "reviewed_sha": "de28148710ebf9b79efa487f1b52a49bab83a968",
+   "merge_base": "729415c68b8ef55df8bcce919a419af7f5cebffb",
+   "title": "fix: prevent local config contents in log artifact while preserving PR comment",
+   "branch": "main",
+   "description": "## Summary\nPrevent raw local `.pr_agent.toml` contents from being included in the server log artifact while preserving the existing PR comment behavior exactly.\n\nLocal configuration parse errors continue to include the raw TOML content in the PR comment for debugging (since repository readers can access the file), but the server log artifact now uses a separate redacted representation that omits raw TOML contents and secret values.\n\nThe log artifact uses a separate `log_body` that:\n- Omits raw TOML configuration contents for ALL categories (global, group, local)\n- Retains useful context: configuration category, parse/error information, source\n- Prevents secret values (API keys, tokens) from leaking into server logs\n\nContinue generating the existing full `body` used for the PR comment, including local configuration content for debugging.\nCreate a separate `log_body` for the warning artifact that redacts config contents.\n\n## Tests\nRegression test added:\n- Published comment behavior unchanged: local config content still included in PR comment\n- Log artifact behavior changed: raw TOML contents and secrets redacted in log\n\nTest results:\n- test_git_provider_utils.py: 24 passed\n- test_apply_repo_settings.py: 6 passed\n- test_apply_repo_settings_security.py: 53 passed\n- test_extra_config_url.py: 45 passed\n- total: 128 passed\n\nA/B verification:\n- Original: PR comment test PASS, log redaction test FAIL (secrets logged)\n- Fixed: PR comment test PASS, log redaction test PASS",
+   "tickets": [],
+   "known_findings": [
+    {
+     "label": "4197a",
+     "finding": "The added sentence changes main's PR comment and calls the repository's own file a settings repository; keep the comment as on main and give the log only the header and the error.",
+     "fact_needed": "handle_configurations_errors (pr_agent/git_providers/utils.py:842-845) appends 'The invalid configuration came from the local settings repository (`config.global_settings_repo` ... repository's .pr_agent.toml for local)' to the persistent PR comment for local errors, which main does not post, and builds a second copy of the header text for log_body."
+    },
+    {
+     "label": "4197b",
+     "finding": "The fix keeps local config contents out of the log artifact but has no test, so a small one in test_git_provider_utils.py should pin it.",
+     "fact_needed": "tests/unittest/test_git_provider_utils.py at the reviewed commit only has test_handle_configurations_errors_uses_persistent_comment_when_supported and ..._keeps_markdown_details_when_persistent_comment_is_missing; none asserts that a secret inside the local settings bytes is absent from the artifact body passed to get_logger().warning in handle_configurations_errors."
+    }
+   ],
+   "fast": true
+  },
+  {
+   "key": "4220-ba2e5b75",
+   "kind": "catch",
+   "pr": 4220,
+   "reviewed_sha": "ba2e5b751c33d8666f26b36207ff0e9b13664937",
+   "merge_base": "af83869342f78444f952360b351cd2c806d981dd",
+   "title": "feat(repo-context): glob entries and fallback alternatives in repo_context_files",
+   "branch": "repo-context/001-globs-and-alternatives",
+   "description": "## Summary\n- `repo_context_files` entries may use a wildcard in the file name (e.g. `docs/adr/*.md`). Matches are listed through a new `GitProvider.list_repo_directory` (implemented for GitHub and GitLab; other providers skip the entry with a warning), read in name order, and capped by the new `config.repo_context_max_glob_matches` (default 20, hard cap 100). The cap is host-only for comment arguments, like `repo_context_files`.\n- A nested list is a group of alternatives: only the first entry that yields content is used, so repos that keep the same instructions as `AGENTS.md`, `CLAUDE.md` and `.kiro/steering/*.md` (often copies or symlinks) send them once.\n- **Default change:** `repo_context_files` now defaults to `[[\"AGENTS.md\", \"CLAUDE.md\", \".kiro/steering/*.md\"]]` instead of `[\"AGENTS.md\"]`. Repos with no `AGENTS.md` will start picking up `CLAUDE.md` or the steering files.\n\nGlobs and alternatives run inside the existing lazy `_iter_repo_context_files` loader and share its fetch-error and content state. Only the file-name part of a glob may contain wildcards, so each glob costs one directory listing.\n\n## Test plan\n- [x] `PYTHONPATH=. uv run pytest tests/unittest` (14044 passed, 33 skipped)\n- [x] ruff and pre-commit hooks\n- [ ] Not exercised against live GitHub/GitLab APIs; `list_repo_directory` is covered by mocked-client unit tests only.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+   "tickets": [],
+   "known_findings": [
+    {
+     "label": "4220a",
+     "finding": "as shipped, the new default changes what every existing install sends and fetches, so I'd like the feature to stay opt-in for now",
+     "fact_needed": "The PR changes config.repo_context_files in pr_agent/settings/configuration.toml from [\"AGENTS.md\"] to [[\"AGENTS.md\", \"CLAUDE.md\", \".kiro/steering/*.md\"]], so every existing install that does not set the key starts sending CLAUDE.md or fetching and listing .kiro/steering through build_repo_context (pr_agent/algo/repo_context.py)."
+    },
+    {
+     "label": "4220b",
+     "finding": "As the PR-Agent bot pointed out, a glob alternative fetche",
+     "fact_needed": "_load_first_available_alternative in pr_agent/algo/repo_context.py loads each alternative through _load_repo_context_files, which fetches every glob match up front, so a glob alternative fetches all its matches even when the first one already fills repo_context_max_lines."
+    },
+    {
+     "label": "4220c",
+     "finding": "`get_all=True` pages through the whole directory at 20 entries a",
+     "fact_needed": "The new GitLabProvider.list_repo_directory (gitlab_provider.py) calls project.repository_tree(..., get_all=True), which pages through the whole directory at python-gitlab's default 20 entries per page with no bound, unlike the page-limited _list_config_tree_paths in the same provider."
+    },
+    {
+     "label": "4220d",
+     "finding": "With `[` counted as a wildcard, an existing entry such as `src/app/[locale]/AGENTS.md` is now skipped with a warning instead of read.",
+     "fact_needed": "pr_agent/algo/repo_context.py now sets _GLOB_CHARACTERS = (\"*\", \"?\", \"[\") and _is_glob_entry/_expand_glob_entries reject wildcards outside the last path segment, so an existing literal entry such as `src/app/[locale]/AGENTS.md` is treated as a glob and skipped with a warning instead of read."
+    },
+    {
+     "label": "4220e",
+     "finding": "The dropped sentence describes the ADR-aware review from #4221, which is not in this PR.",
+     "fact_needed": "The PR's addition to docs/docs/usage-guide/additional_configurations.md ends with 'When ADRs or standards files are present, `/review` checks the PR against the rules they state and cites the rule it applies', but nothing in this PR changes pr_reviewer_prompts.toml or PRReviewer; that ADR-aware review is #4221."
+    }
+   ],
+   "fast": true
+  },
+  {
+   "key": "4222-9a6d4df5",
+   "kind": "catch",
+   "pr": 4222,
+   "reviewed_sha": "9a6d4df53bc3b127a6f50480e73ea0194c788909",
+   "merge_base": "325e1a28ba14f2a6b1ef51b44e87d9ecbf1429b2",
+   "title": "fix(review): resolve findings in a chunked review when none were cut",
+   "branch": "fix/chunked-review-resolution",
+   "description": "Refs #4136.\n\nThis implements the part of the hybrid from the thread that is not in doubt: a chunked `/review` keeps finding resolution on when no finding was left out. Rule used: resolution is blocked only if a finding may be missing from the merged list, that is, a chunk reported `num_max_findings` findings on its own, or the union of the chunks was longer than the limit and the merge cut it. Chunks of two and one findings with a limit of three now resolve fixed findings; the merged list reaching the limit no longer blocks it.\n\nPublished output is unchanged (still capped at `num_max_findings` by #4138). `findings_may_be_cut()` in `review_merge.py` computes the flag from the chunk outputs, `_merge_cached_review_chunks` stores it, and `_prepare_review_finding_state` uses it in place of `len(current_findings) < max_findings` for chunked reviews. Single-call reviews keep the old test.\n\nLeft open: when findings were cut, resolution stays off, as today. Reconciling state against the uncapped list in that case (state and output using different lists) is not part of this PR; it needs a decision on what \"cut\" findings should do to previously reported ones.\n\nTests: `test_review_chunk_merge.py` covers the flag (2+1 with limit 3 is not cut, a full chunk and a merge cut are, repeated findings do not count). `test_pr_reviewer_finding_state.py` runs real chunked results through the merge and the state step: 2+1 resolves a fixed finding, 3+0 and 2+2 do not. The 2+1 test fails without the source change. Full unit suite and `ruff check` pass.\n\nThis overlaps textually with #4221, which adds `and not self.low_confidence_filtered_count` right above the line I replace in `_prepare_review_finding_state`. The two conditions are independent, so whichever merges second needs a small rebase.\n",
+   "tickets": [
+    {
+     "ticket_id": 4136,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/4136",
+     "title": "Chunked /review ignores num_max_findings, which also stops findings from being resolved",
+     "body": "### Git provider\n\nAzure (the problem is in the provider-independent chunk merge, so other providers should behave the same)\n\n### System Info\n\n- pr-agent `main` at 330f0813 and v0.47.0, CLI in a CI container\n- large-context model through LiteLLM\n- `pr_reviewer.enable_large_pr_chunking = true`, `pr_reviewer.num_max_findings = 5`, `pr_reviewer.persistent_finding_state = true`\n\n### Bug details\n\nWhen `/review` is chunked, every chunk is allowed `num_max_findings` key issues, and `merge_review_chunks` unions them without applying the limit again (`key_issues_to_review: _union_of_lists(_key_issue_identity)` in `pr_agent/algo/review_merge.py`). A review of N chunks can therefore publish up to N x `num_max_findings` findings.\n\nThat has a second effect. `_prepare_review_finding_state` only lets a run resolve earlier findings when the run reported fewer findings than the limit:\n\n```python\n# pr_agent/tools/pr_reviewer.py\nand len(current_findings) < max_findings\n```\n\nAfter a chunked merge, the total is usually at or above the limit, so resolution is turned off for that run. On a large PR this happens on every run, which means:\n\n- findings that a later commit fixed are never moved to `RESOLVED`, so the persistent review keeps listing them;\n- since #3750 they are fed back to the model as `active` findings on every run;\n- with `inline_key_issues`, the review publishes more inline threads than `num_max_findings` suggests.\n\n**Reproduction** (on `main`):\n\n```python\nfrom pr_agent.algo.review_merge import merge_review_chunks\n\ndef issue(i, chunk):\n    return {\"relevant_file\": f\"src/chunk{chunk}/file{i}.py\", \"issue_header\": f\"Issue {chunk}.{i}\",\n            \"issue_content\": f\"Problem {i} in chunk {chunk}\", \"start_line\": 10, \"end_line\": 12}\n\n# num_max_findings = 3, each chunk returns 3 findings\nchunks = [{\"review\": {\"key_issues_to_review\": [issue(i, c) for i in range(3)]}} for c in (1, 2)]\nprint(len(merge_review_chunks(chunks)[\"review\"][\"key_issues_to_review\"]))  # 6\n```\n\n**Expected:** a chunked review respects `num_max_findings` like a single-call review does, and the resolution guard means \"this run may have left out a still-valid finding\" rather than \"the merged list is long\".\n\n**Possible directions:**\n\n1. Base the resolution guard on the chunks: block resolution only when some chunk hit its own limit. That is the case the guard is there for, since only a full chunk can have left something out.\n2. Cap the merged list at `num_max_findings`, and treat the findings that were cut as left out (not as absent), the same way `dropped_findings` already works.\n3. Give each chunk a share of the limit instead of the full limit.\n\nOption 1 alone fixes resolution. Option 2 or 3 also keeps the published count at the configured limit.\n",
+     "labels": ""
+    }
+   ],
+   "known_findings": [
+    {
+     "label": "4222",
+     "finding": "reconcile a cut finding already in state (active stays active, resolved reopens), but keep new ones out until published",
+     "fact_needed": "In PRReviewer._prepare_review_finding_state (pr_agent/tools/pr_reviewer.py) a True review_findings_cut (from findings_may_be_cut in pr_agent/algo/review_merge.py) only switches allow_resolution off for the whole run, so findings already in state that the merge cut are neither kept active nor reopened, even though the stored state reaches the next review as already reported."
+    }
+   ]
+  },
+  {
+   "key": "4235-59e025db",
+   "kind": "catch",
+   "pr": 4235,
+   "reviewed_sha": "59e025dbd1ba0b52db13b00b0598e7a95c2033f3",
+   "merge_base": "a3bdec38cdb98736ab1f8be067c507bbdce954bc",
+   "title": "perf(gitlab): stop fetching discussions after finding the target",
+   "branch": "perf/gitlab-thread-lookup-pagination",
+   "description": "## Problem\nResolving or reopening a GitLab comment thread eagerly retrieves every discussion page, even when the matching note appears on the first page.\n\n## Change\nIterate through discussions lazily and stop once the target is found. Continue fetching subsequent pages when needed, while preserving existing missing-target and error handling.",
+   "tickets": [],
+   "known_findings": [
+    {
+     "label": "4235",
+     "finding": "GitLab lists discussions oldest first, so a thread published in the same run is always on the last page and the early exit saves nothing there.",
+     "fact_needed": "GitLabProvider.resolve_comment_thread and unresolve_comment_thread (gitlab_provider.py) now iterate self.mr.discussions.list(iterator=True) at python-gitlab's default 20 per page, and GitLab returns discussions oldest first, so a thread PRCodeSuggestions.publish_no_suggestions/run resolves right after publishing it sits on the last page and the early break saves no requests unless per_page is raised (as #4164 did for commits)."
+    }
+   ]
+  },
+  {
+   "key": "4245-d8b22dbc",
+   "kind": "catch",
+   "pr": 4245,
+   "reviewed_sha": "d8b22dbc5f6f985d1b87ad285b8379b4ec35e3df",
+   "merge_base": "a3bdec38cdb98736ab1f8be067c507bbdce954bc",
+   "title": "fix(ignore): keep bracket expressions in string glob patterns",
+   "branch": "fix/ignore-glob-string-patterns",
+   "description": "## Problem\n\n`ignore.glob` accepts a list, but a string is a natural way to write one pattern or a short list. The string was split with `strip('[]').split(',')`.\n\n`strip('[]')` removes every leading and trailing bracket, so a pattern that ends in a bracket expression loses its closing bracket. `split(',')` also cuts inside a bracket expression.\n\n## Impact\n\n```\nignore.glob = [\"*.py[0-9]\"]  -> ignored: gen.py1, gen.py2   (list form, correct)\nignore.glob = \"*.py[0-9]\"    -> ignored: nothing            (string form)\n```\n\nThe excluded files still reach the model. The same happens for a comma inside a bracket expression, such as `file[1,2].txt`.\n\n## Fix\n\nA string value is split on top-level commas only, and one leading and one trailing bracket are removed as the list wrapper. A bracket expression keeps its brackets.\n\nThe list form is unchanged.\n\n## Tests\n\nAdded to `tests/unittest/test_file_filter.py`:\n\n- the string value splits into the expected patterns\n- the string value ignores the matching files\n- the string value and the list value ignore the same files\n",
+   "tickets": [],
+   "known_findings": [
+    {
+     "label": "4245a",
+     "finding": "fnmatch classes do not nest and an unclosed `[` is a literal, so `[[]*.txt,*.env` and `a[b,*.md` each stay a single pattern and neither glob applies",
+     "fact_needed": "split_glob_patterns in pr_agent/algo/file_filter.py tracks '[' / ']' as a nesting depth counter, but fnmatch (and _globstar_offsets in the same file) ends a class at the first ']' after its first member and treats an unclosed '[' as a literal, so in `[[]*.txt,*.env` and `a[b,*.md` the depth never returns to 0 at the comma and each value stays one pattern."
+    },
+    {
+     "label": "4245b",
+     "finding": "Pins both cases; they fail at the current head and pass with the change above.",
+     "fact_needed": "The parametrized cases for split_glob_patterns in tests/unittest/test_file_filter.py (test_string_value_splits_into_patterns) cover only balanced brackets, so nothing pins a literal or unclosed '[' such as `[[]*.txt,*.env` or `a[b,*.md`, both of which the depth-counter split_glob_patterns gets wrong."
+    }
+   ]
+  },
+  {
+   "key": "4250-cde20c26",
+   "kind": "catch",
+   "pr": 4250,
+   "reviewed_sha": "cde20c26dbe03b1a302b0779e4301092c442d022",
+   "merge_base": "6c6da246af071bade2a9c13ade03d84d78f0c065",
+   "title": "feat(jira): support scoped API tokens",
+   "branch": "feat/jira-scoped-api-tokens",
+   "description": "## Summary\n\nAdd optional jira.cloud_id support for scoped and service account API tokens.\n\nKeep Jira browse links on the configured site and reject invalid cloud IDs.\n\nKeep cloud_id host-only.\n\nCloses #4249\n\n## Tests\n\n- 174 focused tests passed\n- Ruff and pre-commit passed",
+   "tickets": [
+    {
+     "ticket_id": 4249,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/4249",
+     "title": "feat(jira): support scoped API tokens / service accounts via the Atlassian API gateway",
+     "body": "### Feature request\n\nAdd an optional `jira.cloud_id` setting. When it is set, Jira ticket-context lookups send API requests to the Atlassian platform gateway, `https://api.atlassian.com/ex/jira/<cloud_id>`, instead of `https://<jira_site>.atlassian.net`.\n\nProposed shape, keeping the fixed-destination design from #2420 and #4001:\n\n- **Fixed host, validated value.** `cloud_id` must be a UUID, the same way `jira_site` must be a single DNS label. Requests can only ever go to `api.atlassian.com` or `<site>.atlassian.net`; nothing becomes a free-form URL.\n- **Host-only.** It is added to `REPO_HOST_ONLY_KEYS_BY_SECTION[\"jira\"]` next to `jira_site`, `jira_api_email` and `project_keys`. A repository's `.pr_agent.toml` and comment arguments cannot set it. It doesn't match the connection-key suffix rule, so it needs an explicit entry.\n- **Fails closed.** A blank, non-string or non-UUID value turns off the Jira lookup with a warning that does not print the value, as an invalid `jira_site` does today.\n- **API calls only.** The client uses the gateway, but ticket links stay `https://<jira_site>.atlassian.net/browse/KEY`. So `jira_site` remains required, and `add_jira_tickets()` still de-duplicates tickets by that link.\n- **Same auth.** Basic auth with `jira_api_email` and `jira_api_token`, which Atlassian accepts on the gateway.\n- **Opt-in.** With `cloud_id` unset, behavior is the same as today.\n\nOut of scope: Jira Server / Data Center and arbitrary base URLs.\n\nIf this approach works for you, I'm happy to open a PR with:\n- unit tests next to `TestJiraSiteInjection`, plus the host-only security tests\n- updates to `fetching_ticket_context.md` and `configuration_options.md`\n- the regenerated configuration reference\n\n### Motivation\n\nJira ticket context (#2420) works only with classic, unscoped API tokens. Atlassian accepts **scoped** API tokens only through the platform gateway, and every service-account token is scoped. Atlassian's docs say: \"Tokens must always use the Platform API Gateway URLs beginning with `api.atlassian.com`\" ([docs](https://support.atlassian.com/user-management/docs/manage-api-tokens-for-service-accounts/)). On `<site>.atlassian.net`, such a token is treated as anonymous, so every lookup fails with:\n\n```\nFailed to fetch Jira ticket PROJ-123: Issue does not exist or you do not have permission to see it.\n```\n\nAtlassian tracks site-URL support for scoped tokens as an open suggestion ([JRACLOUD-94545](https://jira.atlassian.com/browse/JRACLOUD-94545), open since May 2025), so a fix on their side isn't coming soon.\n\nThis rules out the least-privilege setup. A ticket lookup only needs to read issues, but the only credential that works today is a classic token, which carries every permission of the user who created it, write and admin included. Teams that want a read-only (`read:jira-work`) token, or a dedicated service account that needs no Jira seat, can't use the feature. That matters most for a token stored in shared CI settings, which is exactly where a review bot's token ends up.\n\nVerified with a service-account token (basic auth, `email:token`): `GET https://api.atlassian.com/ex/jira/<cloudId>/rest/api/2/issue/PROJ-123` returns 200, while the same request to `https://<site>.atlassian.net/rest/api/2/issue/PROJ-123` returns 404 with the error above.",
+     "labels": ""
+    }
+   ],
+   "known_findings": [
+    {
+     "label": "4250a",
+     "finding": "a valid `cloud_id` currently skips the `jira_site` check, so lookups run with no warning and every ticket link comes back empty",
+     "fact_needed": "_jira_cloud_base_url in pr_agent/tools/ticket_pr_compliance_check.py returns the api.atlassian.com gateway URL as soon as cloud_id is a valid UUID, before jira_site is read or matched against JIRA_SITE_PATTERN, while extract_jira_tickets builds ticket links only from a valid jira_site, so gateway mode without a site runs lookups with no warning and empty links."
+    },
+    {
+     "label": "4250b",
+     "finding": "An all-digit site set through an environment variable arrives as an int, so `isinstance(site, str)` drops its links",
+     "fact_needed": "extract_jira_tickets in pr_agent/tools/ticket_pr_compliance_check.py builds ticket_base_url only when isinstance(site, str), but Dynaconf parses an all-digit JIRA__JIRA_SITE environment value as an int, which the client path in _jira_cloud_base_url accepts via str(site), so such sites lose their links."
+    },
+    {
+     "label": "4250c",
+     "finding": "A regression test for the site requirement in gateway mode; it fails without the first suggestion.",
+     "fact_needed": "tests/unittest/test_jira_ticket_extraction.py covers gateway mode only with an invalid cloud_id (test_invalid_cloud_id_skips_lookup) and a valid site (test_cloud_builds_url_from_site_and_pins_v2), never a valid cloud_id with a missing or invalid jira_site, which is the case _jira_cloud_base_url lets through."
+    }
+   ],
+   "fast": true
+  },
+  {
+   "key": "4254-78e2aebc",
+   "kind": "catch",
+   "pr": 4254,
+   "reviewed_sha": "78e2aebc6e18a8e172d99895c70e0f9b59d06461",
+   "merge_base": "6c6da246af071bade2a9c13ade03d84d78f0c065",
+   "title": "perf(gitlab): cache stable merge request changes",
+   "branch": "perf/gitlab-cache-diff-collection",
+   "description": "## Summary\nCache the validated merge request diff collection within a provider instance.\n\nThis avoids repeated GitLab metadata and paginated diff requests during file discovery and diff processing.\n\n## Tests\nPYTHONPATH=. uv run pytest tests/unittest/test_gitlab_provider.py -q --color=no\n270 passed",
+   "tickets": [],
+   "known_findings": [
+    {
+     "label": "4254",
+     "finding": "`get_relevant_diff` writes its submodule-expanded list back into the dict it gets, which is now the cached one",
+     "fact_needed": "GitLabProvider.get_relevant_diff (gitlab_provider.py) assigns _changes['changes'] = self._expand_submodule_changes(...) on the dict returned by _get_merge_request_changes, which the PR now returns from self._merge_request_changes_cache, so with gitlab.expand_submodule_diffs on, every inline comment re-expands the cached list and appends duplicate submodule entries."
+    }
+   ]
+  },
+  {
+   "key": "4292-43da6af2",
+   "kind": "catch",
+   "pr": 4292,
+   "reviewed_sha": "43da6af210149326b75edf68fe84dc02e8604bf1",
+   "merge_base": "29c3837a5de61e1fc5789bffc928577caf855b36",
+   "title": "fix: anchor incremental reviews to agent comments",
+   "branch": "fix/incremental-review-authorship",
+   "description": "Fix incremental review anchors so only comments authored by PR-Agent can move the review baseline. Applies to GitHub and Azure DevOps, with a full review fallback when authorship cannot be verified.",
+   "tickets": [],
+   "known_findings": [
+    {
+     "label": "4292a",
+     "finding": "Nothing fails if the Azure DevOps change is reverted, so add a test where a matching review comment from another user is skipped.",
+     "fact_needed": "AzureDevopsProvider._find_incremental_anchor (azuredevops_provider.py:720-733) now appends a matching comment only when is_comment_authored_by_pr_agent(comment) is true, but tests/unittest/test_azure_devops_incremental.py has no case with a foreign-authored matching comment, so reverting that check keeps every Azure test green."
+    }
+   ]
+  },
+  {
+   "key": "4293-4d9f4a1d",
+   "kind": "catch",
+   "pr": 4293,
+   "reviewed_sha": "4d9f4a1d5ceaa86d0db1bb3b09d998841eb99631",
+   "merge_base": "29c3837a5de61e1fc5789bffc928577caf855b36",
+   "title": "fix: hide host-only configuration output",
+   "branch": "fix/config-output-host-only",
+   "description": "Fixes #4285\n\nUse one shared filter for /config and relevant configuration output. Host-only and credential-like keys are now omitted before values are published.",
+   "tickets": [
+    {
+     "ticket_id": 4285,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/4285",
+     "title": "/config and the relevant-configurations block: skip host-only settings",
+     "body": "`/config` prints every `[config]` and `pr_*` key not in its skip list (`pr_agent/tools/pr_config.py:66-78`), so host-only values such as `extra_config_url` (including any userinfo in the URL) and `global_settings_repo` appear in the PR thread for any commenter. `show_relevant_configurations` (`pr_agent/algo/run_output.py:101-132`) has a shorter skip list and no partial `key`/`secret`/`token` match, so a credential-like key under `[config]` would print its value.\n\nSkipping the `config` keys that `is_repo_host_only_key` reports, in both renderers, through one shared filter that also applies the partial `key`/`secret`/`token` match, fixes both. The relevant-configurations block is off by default (`config.output_relevant_configurations`), but a repository can turn it on.\n\n",
+     "labels": "help wanted"
+    }
+   ],
+   "known_findings": [
+    {
+     "label": "4293a",
+     "finding": "Could you add a test for the /config path (PRConfig._prepare_pr_configs) that fails on main and passes here?",
+     "fact_needed": "PRConfig._prepare_pr_configs (pr_agent/tools/pr_config.py) now filters through config_security.should_skip_config_key like show_relevant_configurations in run_output.py, but tests/unittest/test_pr_config.py has no test that a host-only key such as config.global_settings_repo is hidden from the /config output."
+    },
+    {
+     "label": "4293b",
+     "finding": "`restore_config` only snapshots `CONFIG`, so the new test leaks `pr_reviewer.publish_error_details=True` into later tests unless PR_REVIEWER is restored too.",
+     "fact_needed": "tests/unittest/test_show_relevant_configurations.py::test_hide_host_only_and_credential_like_keys sets pr_reviewer.publish_error_details and pr_reviewer.secret_key through the restore_config fixture, which only snapshots and restores the CONFIG section, so the PR_REVIEWER values persist after the test."
+    }
+   ]
+  },
+  {
+   "key": "4321-40a637a3",
+   "kind": "catch",
+   "pr": 4321,
+   "reviewed_sha": "40a637a311542bb63e15c285eb2f398ec226e51b",
+   "merge_base": "ab90e6e8545ea4d983a35ad0bfdc295c49727e24",
+   "title": "feat(cli): add a doctor command to preflight the deployment",
+   "branch": "feat/cli-doctor-command",
+   "description": "## Problem\n\nA misconfigured deployment only fails at the end of a full run. In the sample from #4195, 20 of 81 owners running the action publicly failed with `Incorrect API key provided: dummy_key`: the runner warns `OPENAI_KEY not set` and carries on, and every tool call then fails against the placeholder. Wrong base URLs and quota errors surface the same way, one full run later (#4320).\n\nThe existing `tests.health_test.main` needs a repository checkout (it is not shipped), a GitHub token, and real PRs \u2014 there is nothing lightweight to gate a setup with.\n\n## Solution\n\n`pr-agent doctor` \u2014 runs without `--pr_url` or a diff, never touches a git provider:\n\n- `config.model` is set\n- the active provider has a real key (env or settings \u2014 `_captured_api_key`, the same source a run uses; the value is never printed; providers unknown to the env table, i.e. keyless auth, defer to the ping)\n- a one-token completion against the configured model succeeds, through the real `LiteLLMAIHandler.chat_completion` path\n\nOne line per check on stdout; exit code 0 only when everything passes, so CI setups can gate on it. No new settings; no existing command changes (`doctor` joins only the CLI choices, not the agent dispatch).\n\n## Testing\n\n- Passing setup \u2192 all three checks pass, exit 0; missing key names the env variable, placeholder key fails, bad ping reports the failure reason \u2014 each exits 1.\n- `doctor` never constructs `PRAgent` (asserted), and the key value never appears in the output.\n- CLI regression suite (201 tests) and ruff pass.\n\nFixes #4320",
+   "tickets": [
+    {
+     "ticket_id": 4195,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/4195",
+     "title": "docs: add \"Incorrect API key provided: dummy_key\" to the GitHub Action troubleshooting list",
+     "body": "When the action runs without an OpenAI key, the runner prints \"OPENAI_KEY not set\" (`pr_agent/servers/github_action_runner.py:226-230`) and carries on. With the default OpenAI model, every tool then sends pr-agent's placeholder key (`DUMMY_LITELLM_API_KEY`, `pr_agent/algo/ai_handlers/cloud_auth.py:77`) and fails with \"Incorrect API key provided: dummy_key\". The \"Common Error Messages and Solutions\" list in `docs/docs/installation/github.md` covers \"API key not found\", which is not what this failure prints.\n\nIn a sample of failed runs from 81 owners using the action publicly over the last 14 days, 20 failed this way. 18 passed their OpenAI key variable empty: 5 on Dependabot PRs and 2 on fork PRs, which get no Actions secrets on `pull_request`, and 11 most likely with an unset or misnamed secret. The other 2 had another provider's key variables but left `config.model` at the OpenAI default.\n\nSuggested change: an entry for that exact message covering the three causes: a PR event that gets no secrets (see the `pull_request_target` section, the `sender.type != 'Bot'` guard in the basic example, or Dependabot secrets), a missing or misnamed secret, and another provider's key with the default model. Optionally, the runner's \"OPENAI_KEY not set\" line could check the key pr-agent will actually use: it also prints when the key arrives as `OPENAI__KEY` or `OPENAI_API_KEY`, which both work.\n",
+     "labels": "documentation, good first issue, help wanted, Low Effort Issue"
+    },
+    {
+     "ticket_id": 4320,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/4320",
+     "title": "Add a pr-agent doctor command to catch broken configuration before a run",
+     "body": "### Problem\n\nA misconfigured deployment only fails at the end of a full run. In the sample from #4195, 20 of 81 owners running the action publicly failed with `Incorrect API key provided: dummy_key` \u2014 the runner warns `OPENAI_KEY not set` at startup and carries on, and every tool call then fails against the placeholder key. Wrong base URLs and quota errors surface the same way, one full run later.\n\n### Proposed scope\n\n- A `doctor` CLI command that runs without `--pr_url` and never touches a git provider.\n- Checks, each reported pass/fail on stdout: configuration loads; the active model's provider key is set and is not the placeholder; a one-token completion against the configured model succeeds.\n- Exit code 0 only when every check passes, so CI setups can gate on it.\n- No new settings.\n\n### Acceptance criteria\n\n- [ ] `pr-agent doctor` with a working key passes all checks and exits 0\n- [ ] With the key unset, it names the missing variable and exits non-zero\n- [ ] With a bad base URL, the ping check reports the failure reason\n- [ ] No existing command changes",
+     "labels": ""
+    }
+   ],
+   "known_findings": [
+    {
+     "label": "4321a",
+     "finding": "doctor looks under `custom_openai`, so a working gateway fails the key check and exits 1",
+     "fact_needed": "doctor._active_provider (pr_agent/doctor.py) returns \"custom_openai\" for an unprefixed model when OPENAI.API_BASE is set, but LiteLLMAIHandler._captured_api_key (litellm_ai_handler.py) holds an OpenAI-compatible gateway's key under \"openai\", so _check_provider_key finds no key and a working gateway exits 1."
+    },
+    {
+     "label": "4321b",
+     "finding": "This won't reach the #4195 runs on its own, since those were Action runs with no key",
+     "fact_needed": "The PR adds pr-agent doctor only as a CLI command (pr_agent/cli.py, pr_agent/doctor.py); run_action in pr_agent/servers/github_action_runner.py never runs the key check and just prints 'OPENAI_KEY not set' and carries on, so the keyless Action runs reported in #4195 still fail a full run later."
+    }
+   ]
+  },
+  {
+   "key": "4322-74d322cb",
+   "kind": "catch",
+   "pr": 4322,
+   "reviewed_sha": "74d322cb648c2d71ac96f4a0e8059de0dc589ffe",
+   "merge_base": "ab90e6e8545ea4d983a35ad0bfdc295c49727e24",
+   "title": "perf: avoid duplicate GitLab comment reversal",
+   "branch": "fix/gitlab-comment-order",
+   "description": "GitLab comments are already returned newest first by get_issue_comments().\nThe newest-first helper reversed the full list again, adding unnecessary work and restoring oldest-first order.\nThis change reuses the existing ordered result.\nThe regression test now models the API response order and verifies newest-first behavior.",
+   "tickets": [],
+   "known_findings": [
+    {
+     "label": "4322a",
+     "finding": "GitLab's notes API returns newest first by default (`sort` defaults to `desc`)",
+     "fact_needed": "GitLab's merge request notes API sorts desc (newest first) by default, so GitLabProvider.get_issue_comments (gitlab_provider.py) reverses notes.list(get_all=True) into oldest first, and the second reversal in get_issue_comments_newest_first is what makes it newest first; dropping it returns oldest first."
+    },
+    {
+     "label": "4322b",
+     "finding": "With this change main's test, whose fixture matches the API's real order, fails",
+     "fact_needed": "tests/unittest/test_gitlab_provider.py::test_get_issue_comments_newest_first_returns_notes_newest_first on main mocks mr.notes.list in the API's real newest-first order, and the PR flips the fixture to oldest first so the test passes with the broken get_issue_comments_newest_first."
+    },
+    {
+     "label": "4322c",
+     "finding": "Closing, since reversing an in-memory list costs next to nothing.",
+     "fact_needed": "GitLabProvider.get_issue_comments_newest_first (gitlab_provider.py) reverses an in-memory list of MR notes already fetched by get_issue_comments, so removing the reversal saves no API call and next to no time."
+    }
+   ],
+   "fast": true
+  },
+  {
+   "key": "4333-155d8b41",
+   "kind": "catch",
+   "pr": 4333,
+   "reviewed_sha": "155d8b4161e001a5e403c2a8d96192db5c01580c",
+   "merge_base": "3d973368cb08144c25b23aad37905baf6e7c4f26",
+   "title": "perf(ci): cache uv dependencies and Python runtimes",
+   "branch": "perf/ci-cache-uv-dependencies",
+   "description": "## Problems\n\nCI recreated the same uv dependency cache on every run, and each native Python matrix job downloaded its interpreter and packages again. This added avoidable setup time to build, provider smoke, and matrix test jobs.\n\n## Changes\n\nEnable uv caching for the lowest-resolution jobs and cache managed Python runtimes per matrix version. The matrix now receives its interpreter from setup-uv, with isolated cache keys for each Python version.\n\n## Validation\n\n- `git diff --check`\n- Existing pinned GitHub Actions versions preserved\n- Focused regression suite: 207 passed in 3.27s\n- Ruff: passed on the related test and provider files",
+   "tickets": [],
+   "known_findings": [
+    {
+     "label": "4333",
+     "finding": "setup-uv's `enable-cache` defaults to `auto`, and main's build job already logs a cache hit, so those lines change nothing",
+     "fact_needed": "The PR adds enable-cache: true to the astral-sh/setup-uv steps (pinned v10.3.0) in .github/workflows/build-and-test.yaml and provider-smoke.yaml, but setup-uv's enable-cache input defaults to auto, which already caches on GitHub-hosted runners, and main's build job already logs a uv cache hit, so those lines change nothing."
+    }
+   ]
+  },
+  {
+   "key": "4337-12413d4c",
+   "kind": "catch",
+   "pr": 4337,
+   "reviewed_sha": "12413d4c10952ef3b431620dd2999fe9a9901b28",
+   "merge_base": "bebd4b54d1cff88c0435f59e08070130ec8c0a6f",
+   "title": "fix(mosaico): retain tasks with bounded owner history",
+   "branch": "fix/mosaico-task-store-retention",
+   "description": "## Problems\n\nThe MOSAICO in-memory task store retained every task, message, and review artifact until process restart. The executor index could also evict context references independently, breaking follow-ups and allowing one owner's activity to affect another owner.\n\n## Changes\n\nAdd a bounded owner-scoped task store with configurable retention. Evicted tasks are removed from the underlying A2A store and the executor follow-up index together. Add regression coverage and document the retention setting.\n\n## Validation\n\n- `PYTHONPATH=. uv run pytest tests/unittest/test_mosaico_*.py tests/unittest/test_config_reference.py -q --color=no`\n- `uv run ruff check` on changed Python files\n- 294 tests passed, 1 skipped",
+   "tickets": [],
+   "known_findings": [
+    {
+     "label": "4337a",
+     "finding": "`forget_task` is untested (making it a no-op keeps every test green)",
+     "fact_needed": "PRAgentExecutor.forget_task (mosaico/executor.py), wired as on_task_evicted in server.py, is never called by any test, so making it a no-op leaves the suite green."
+    },
+    {
+     "label": "4337b",
+     "finding": "`mosaico_server.md` still says the store retains tasks until restart (lines 78-79); could it name the new setting?",
+     "fact_needed": "The PR bounds MosaicoTaskStore (pr_agent/mosaico/task_store.py) with the new mosaico task_store_max_tasks_per_owner setting in configuration.toml, but docs/docs/installation/mosaico_server.md lines 78-79 still say the in-memory store retains tasks until restart."
+    },
+    {
+     "label": "4337c",
+     "finding": "Eviction stays inside the caller's owner, so the caller's own context can replace `_OwnerContext`.",
+     "fact_needed": "MosaicoTaskStore.save in pr_agent/mosaico/task_store.py evicts only tasks of owner = resolve_user_scope(context), so super().delete(task_id, context) with the caller's own context reaches the same scope and the _OwnerContext wrapper class is unnecessary."
+    }
+   ]
+  },
+  {
+   "key": "4338-aa1fe390",
+   "kind": "catch",
+   "pr": 4338,
+   "reviewed_sha": "aa1fe390aba87da8cd8182acb37e626c943d8806",
+   "merge_base": "bebd4b54d1cff88c0435f59e08070130ec8c0a6f",
+   "title": "feat(artifacts): support multiple artifact files",
+   "branch": "feat/multiple-artifact-context",
+   "description": "## Problems\n\nThe artifacts configuration accepted only one file, forcing CI pipelines to merge unrelated logs and context into one label and one truncation budget. Per-tool routing was also shared across the entire artifact payload.\n\n## Changes\n\nAccept a list of artifact paths or metadata entries with individual labels, instructions, truncation direction, and target tools. Read and redact each file independently under one shared size budget, skip missing files with warnings, and render each artifact with separate untrusted boundaries. Single-file configuration remains compatible.\n\n## Validation\n\n- 303 artifact and prompt-contract tests passed\n- 71 routing and configuration tests passed\n- 53 GitHub Action runner tests passed\n- Ruff and diff checks passed\n\nCloses #4335",
+   "tickets": [
+    {
+     "ticket_id": 4335,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/4335",
+     "title": "[artifacts]: accept more than one artifact file",
+     "body": "### Problem\n\n`[artifacts]` takes a single `artifact_path`, so a pipeline has to choose between, say, the tail of its CI logs (#2640) and diff-scoped code-graph context (#2499), or concatenate them into one file that shares one label and one truncation.\n\n### Proposed scope\n\n- Accept a list of paths, each file read, redacted and truncated on its own and rendered as its own labelled, untrusted block with its own markers.\n- Optionally let each file name its own `target_tools`, since a CI-log file may ask for a `/review`-only field; default to today's shared setting.\n- `max_artifact_size` becomes the total budget shared across the files.\n- A single `ARTIFACT_PATH` keeps working exactly as today.\n- No new model calls.\n\n### Acceptance criteria\n\n- [ ] Two files reach `/review` as two separately labelled blocks\n- [ ] A file limited to `pr_reviewer` does not reach `/improve`\n- [ ] The combined content never exceeds `max_artifact_size`\n- [ ] A missing file is skipped with a warning; the others still load\n- [ ] A single `ARTIFACT_PATH` behaves exactly as today\n",
+     "labels": "help wanted, feature"
+    }
+   ],
+   "known_findings": [
+    {
+     "label": "4338a",
+     "finding": "The bot spotted that a non-string path aborts every artifact",
+     "fact_needed": "load_artifact_context in pr_agent/algo/artifacts.py passes each entry's path from _artifact_entries straight to resolve_artifact_path, whose Path(path) raises TypeError for a non-string value and only catches OSError, so one malformed list entry aborts the whole artifact context instead of being skipped."
+    },
+    {
+     "label": "4338b",
+     "finding": "Reverting all eight prompt files keeps the suite green, so could a test render two labelled blocks for `/review` and none for `/improve`?",
+     "fact_needed": "The PR edits eight prompt TOMLs under pr_agent/settings/ to render multiple labelled artifact blocks, but tests/unittest/test_artifacts.py only exercises get_artifact_context, never rendering a real tool prompt, so reverting the TOMLs keeps the suite green."
+    },
+    {
+     "label": "4338c",
+     "finding": "could `installation/github.md` show the list form, with one key name per field",
+     "fact_needed": "pr_agent/algo/artifacts.py now accepts artifacts.artifact_path as a list of entries with per-entry path and label (_artifact_entries, load_artifact_context), but the CI artifact context section of docs/docs/installation/github.md still documents only the single artifact_path / artifact_label form."
+    },
+    {
+     "label": "4338d",
+     "finding": "let a shared `artifact_label` fall back to file names when there are several",
+     "fact_needed": "In artifacts.py the per-entry label falls back to the section-level artifacts.artifact_label for every entry (entry.get(\"artifact_label\", entry.get(\"label\", artifacts_settings.get(\"artifact_label\", \"\")))), so with several files they all get the same label."
+    }
+   ],
+   "fast": true
+  },
+  {
+   "key": "4377-028acd87",
+   "kind": "catch",
+   "pr": 4377,
+   "reviewed_sha": "028acd875a58cef28995971c22c4effb92ec86cc",
+   "merge_base": "d40d62bf4b1fad07402a7153b6cc04e2e59d0883",
+   "title": "fix(improve): retry unusable self-reflection feedback",
+   "branch": "fix/reflection-unusable-feedback",
+   "description": "## Problem\n\nThe `/improve` tool stops its self-reflection fallback chain at the first non-empty model response, even when the parsed feedback cannot be used. Missing score data or required line anchors can cause generated suggestions to be dropped instead of trying an available fallback model.\n\n## Change\n\n- Parse reflection feedback before accepting it, and try the next configured reasoning model when no usable feedback is present.\n- Require usable line anchors for positive scores if the original suggestion has none, while retaining valid zero-score rejections and partially usable feedback.\n- Reuse the original suggestions, respect existing model and deployment restrictions, and avoid reparsing accepted YAML.\n- Explain fallback behavior and potential additional model usage in the documentation.\n\n## Tests\n\nCover malformed feedback, missing or invalid anchors, zero scores, partial feedback, model order, pinned deployments, and recovering suggestions without regenerating them.",
+   "tickets": [],
+   "known_findings": [
+    {
+     "label": "4377c",
+     "finding": "The score is parsed for validation but the string stays in the entry, so a `\"9\"` next to an `8` breaks the summary sort; write the parsed int back.",
+     "fact_needed": "At 028acd875a _has_usable_reflection_feedback validates score = self._parse_line_number(entry.get('suggestion_score')) but analyze_self_reflection_response copies code_suggestions_feedback[i]['suggestion_score'] (line 1186) unchanged into suggestion['score'], so a string score remains and the summary ordering compares str with int."
+    }
+   ]
+  },
+  {
+   "key": "4377-fad6ab41",
+   "kind": "catch",
+   "pr": 4377,
+   "reviewed_sha": "fad6ab41bae7eaa19624776ed7b20a528b133aa9",
+   "merge_base": "0624ad2434d8627dd8a66da6223ae9cbde3729b8",
+   "title": "fix(improve): retry unusable self-reflection feedback",
+   "branch": "fix/reflection-unusable-feedback",
+   "description": "## Problem\n\nThe `/improve` tool stops its self-reflection fallback chain at the first non-empty model response, even when the parsed feedback cannot be used. Missing score data or required line anchors can cause generated suggestions to be dropped instead of trying an available fallback model.\n\n## Change\n\n- Parse reflection feedback before accepting it, and try the next configured reasoning model when no usable feedback is present.\n- Require usable line anchors for positive scores if the original suggestion has none, while retaining valid zero-score rejections and partially usable feedback.\n- Reuse the original suggestions, respect existing model and deployment restrictions, and avoid reparsing accepted YAML.\n- Explain fallback behavior and potential additional model usage in the documentation.\n\n## Tests\n\nCover malformed feedback, missing or invalid anchors, zero scores, partial feedback, model order, pinned deployments, and recovering suggestions without regenerating them.",
+   "tickets": [],
+   "known_findings": [
+    {
+     "label": "4377a",
+     "finding": "A negative score passes the reflection usability check, then the consumer drops or rescores the suggestion without trying the next model; bound the score to 0-10.",
+     "fact_needed": "PRCodeSuggestions._has_usable_reflection_feedback (pr_agent/tools/pr_code_suggestions.py:1135-1155) accepts any entry whose int(entry['suggestion_score']) parses, with no range check, so scores such as -3 or 99 count as usable feedback and the fallback model is not tried."
+    },
+    {
+     "label": "4377b",
+     "finding": "Quoted line numbers pass the usability check but are not normalised, so the consumer drops the suggestion without trying the next model.",
+     "fact_needed": "_has_usable_reflection_feedback validates relevant_lines_start/end through self._parse_line_number but returns True leaving the entry's quoted strings (e.g. \"1\") in place for the consumer."
+    }
+   ]
+  },
+  {
+   "key": "4414-5b74daa0",
+   "kind": "catch",
+   "pr": 4414,
+   "reviewed_sha": "5b74daa0e7dbaa5e7714070cf01ed1d62c07cd4a",
+   "merge_base": "5eaa1265a608f3274fc207e45119ee424279c38c",
+   "title": "fix: only use static AWS fallback for auth errors",
+   "branch": "fix/4413-bedrock-imds-fallback-errors",
+   "description": "## What / Why / How\n\nStatic AWS credentials are now used as a fallback only for authentication and permission errors. Bedrock service errors and timeouts keep using IMDS credentials during retries, so transient failures do not change the credential source for later calls. Fixes #4413.\n\n## Affected platforms\n\nPR-Agent's AWS Bedrock backend when IMDS credentials are enabled.\n\n## Test plan\n\n`PYTHONPATH=. uv run pytest tests/unittest/test_litellm_imds.py -q` (268 passed); Ruff and pre-commit passed.\n",
+   "tickets": [
+    {
+     "ticket_id": 4413,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/4413",
+     "title": "AWS_USE_IMDS: a Bedrock 503 or timeout permanently switches the handler to the static credentials",
+     "body": "With `AWS_USE_IMDS=true` and static `[aws]` keys configured, the `except openai.APIError` branch in `_chat_completion_with_retry` (`pr_agent/algo/ai_handlers/litellm_ai_handler.py:3240`) calls `_activate_static_aws_fallback()` for every error except a rate limit, not only for credential failures. A Bedrock 503 `ServiceUnavailableException` is therefore re-sent at once with the static keys, and `_aws_imds_fell_back` stays `True`, so every later call from that handler uses the static keys. #2307 described the fallback as \"if the ambient credentials fail a Bedrock call\". The immediate re-send also bypasses the same-model backoff proposed in #4407.\n\nVerified on main (5eaa1265a) with the fixtures in `tests/unittest/test_litellm_imds.py`: a `litellm.ServiceUnavailableError` followed by a success gives two calls, `IMDS-KEY` then `STATIC-KEY`, and leaves `_aws_imds_fell_back` set to `True`. `test_chat_completion_preserves_static_fallback_for_api_errors` (line 2143) pins the same behaviour for `APITimeoutError`.\n\nSuggested fix: switch only on errors that can mean the ambient credentials are wrong (`AuthenticationError`, `PermissionDeniedError`, plus the refresh failures `_snapshot_aws_request_credentials` already handles), and let capacity errors and timeouts go through the normal retry. The timeout case in that test would then expect no switch.\n",
+     "labels": "good first issue, help wanted, error handling, Low Effort Issue, bug"
+    }
+   ],
+   "known_findings": [
+    {
+     "label": "4414a",
+     "finding": "changing_a_model.md:434 still says any API error other than a rate limit triggers the static-key fallback; it should say authentication and permission errors only.",
+     "fact_needed": "The PR narrows the AWS static-credential switch in litellm_ai_handler.py to authentication, permission and credential-refresh errors, but docs/docs/usage-guide/changing_a_model.md:434 still describes the fallback for errors in general."
+    }
+   ]
+  },
+  {
+   "key": "4423-45c4f337",
+   "kind": "catch",
+   "pr": 4423,
+   "reviewed_sha": "45c4f337bb4f0ab15e6a5e90140a37b6e8d9c61b",
+   "merge_base": "ae053ea8979a086d08340c77a12ef113996b5369",
+   "title": "fix: load tiktoken files bundled with LiteLLM so token counting works\u2026",
+   "branch": "fix/offline-tiktoken-bundled-files",
+   "description": "fix: load tiktoken files bundled with LiteLLM so token counting works offline\n\ntiktoken downloads its encoding files from openaipublic.blob.core.windows.net, which fails in corporate and air-gapped networks. LiteLLM already ships o200k_base and cl100k_base, but it only points tiktoken at them when its own encoding module is imported, so whether PR-Agent stays offline depends on which code loads first.\n\ntoken_handler now sets TIKTOKEN_CACHE_DIR to LiteLLM's bundled tokenizer directory when it loads, unless TIKTOKEN_CACHE_DIR, DATA_GYM_CACHE_DIR or CUSTOM_TIKTOKEN_CACHE_DIR is already set.\nDocs: new \"Tokenizer files without internet access\" section in additional_configurations.md.\nTests: the default directory and the precedence of the variables above, plus loading the encoders for gpt-4o, gpt-4, claude-sonnet-4 and openai/my-corp-model with downloads blocked.",
+   "tickets": [],
+   "known_findings": [
+    {
+     "label": "4423a",
+     "finding": "LiteLLM overwrites `TIKTOKEN_CACHE_DIR` as soon as it loads its encoding, so only the `CUSTOM_` variable sticks; the note about your own cache directory should name it.",
+     "fact_needed": "_use_bundled_tiktoken_files (pr_agent/algo/token_handler.py:18-34) returns early when TIKTOKEN_CACHE_DIR is set and otherwise copies CUSTOM_TIKTOKEN_CACHE_DIR into TIKTOKEN_CACHE_DIR, but LiteLLM resets TIKTOKEN_CACHE_DIR when it imports its encoding, and docs/docs/usage-guide/additional_configurations.md:239 only says to set your own cache directory."
+    }
+   ]
+  },
+  {
+   "key": "4461-c4f07904",
+   "kind": "catch",
+   "pr": 4461,
+   "reviewed_sha": "c4f0790496d6ce1330a7181ba2122bf93eb2b345",
+   "merge_base": "98c90f992e08baffd6d39e77822df5f163471289",
+   "title": "fix(servers): disable_auto_feedback stops push and review commands too",
+   "branch": "fix/disable-auto-feedback-push-commands",
+   "description": "Fixes #4448\n\n## What\n\nWith `config.disable_auto_feedback = true` the docs promise that no automatic tool runs when a PR is opened or new code is pushed. Only the Bitbucket Server webhook did that. The other runners checked the flag only for `pr_commands` (the GitHub App also for `review_commands`), so `push_commands` still ran, and so did GitLab's `reviewer_commands`.\n\n- New `auto_feedback_disabled()` in `pr_agent/servers/utils.py`: the one predicate for the flag.\n- The GitHub App, GitLab, Gitea, Bitbucket Cloud and Azure DevOps Server runners call it before running any auto command. Their existing log messages and early-return behaviour stay as they were. Bitbucket Server already gated every command and is unchanged.\n\n## Tests\n\nNew `tests/unittest/test_disable_auto_feedback_servers.py` (13 tests): for each of those five runners and every command list it can be asked to run (pr / push / review / reviewer commands), a recording agent is given `/review` as the configured command with the flag on, and no command may run. 4 of the 13 fail without the server changes (`push_commands` on the GitHub App, Gitea, Bitbucket Cloud and Azure DevOps Server) and all 13 pass with them.\n\nI also ran the existing server-related tests (`-k` on github_app, gitlab, gitea, bitbucket, azure_devops, push_trigger, auto_feedback) before and after: 29 failed / 2258 passed in both runs, with the identical failures. Those failures come from my local environment (missing optional extras), not from this change, so CI is the real check.\n\nNot covered: I did not run the Bitbucket Server webhook in the new test since it already honoured the flag. GitLab's reviewer_commands is now also gated; if you would rather keep reviewer assignment independent of the flag, say so and I will drop that.\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+   "tickets": [
+    {
+     "ticket_id": 4448,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/4448",
+     "title": "config.disable_auto_feedback does not stop push commands on GitHub App, GitLab, Gitea and Bitbucket Cloud",
+     "body": "The docs say that with `config.disable_auto_feedback = true`, PR-Agent runs no automatic tools \"when a new PR is opened, or when new code is pushed to an open PR\" (`docs/docs/usage-guide/automations_and_usage.md:116`). Only the Bitbucket Server webhook does that (`pr_agent/servers/bitbucket_server_webhook.py:159`). The other servers check the flag only for `pr_commands` (GitHub App also for `review_commands`), so `push_commands` still run: `github_app.py:487`, `gitlab_webhook.py:98`, `gitea_app.py:150`, `bitbucket_app.py:218`.\n\nReproduced on main (98c90f99): calling the GitHub App, GitLab, Gitea and Bitbucket Cloud command handlers with `push_commands = [\"/review\"]` and `disable_auto_feedback = true` still runs `/review`.\n\nSuggested change: one shared predicate in `pr_agent/servers/utils.py` that every server calls before running any auto command, plus a test that runs each server's handler with the flag on and asserts no command runs.\n\nDone when: with the flag on, no server runs `pr_commands`, `push_commands` or `review_commands`, and the test covers all six servers.\n",
+     "labels": "help wanted, bug"
+    }
+   ],
+   "known_findings": [
+    {
+     "label": "4461c",
+     "finding": "The dotted-path patch doesn't reach the module the test calls, so the real `apply_repo_settings` runs and two `bitbucket_app` cases fail in the full suite.",
+     "fact_needed": "At c4f0790496 the auto_settings fixture in tests/unittest/test_disable_auto_feedback_servers.py (lines 70-71) patches bitbucket_app.apply_repo_settings and the azure one via dotted strings, and in the full unit suite the real apply_repo_settings still runs, failing test_no_auto_command_runs_when_auto_feedback_is_disabled[bitbucket_app-pr_commands] and [bitbucket_app-push_commands]; patching the imported module objects fixes it. Only reproducible by running the full suite."
+    }
+   ]
+  },
+  {
+   "key": "4475-337129db",
+   "kind": "catch",
+   "pr": 4475,
+   "reviewed_sha": "337129dbb7156daf58ce2e8f1a0085989e428b6a",
+   "merge_base": "98c90f992e08baffd6d39e77822df5f163471289",
+   "title": "fix: cap config.num_retries and keep host only",
+   "branch": "fix/cap-num-retries-config",
+   "description": "Repository settings can no longer set config.num_retries and a host value above 10 is clamped to 10 to prevent unbounded retries.",
+   "tickets": [],
+   "known_findings": [
+    {
+     "label": "4475a",
+     "finding": "Reverting config_security.py leaves every test green, so add a test that `num_retries` is on the repository host-only list.",
+     "fact_needed": "The PR adds 'num_retries' to the config section of REPO_HOST_ONLY_KEYS_BY_SECTION (pr_agent/config_security.py:103) but tests/unittest/test_litellm_retry_config.py only tests the retry predicate and the clamp, so no test fails if that entry is removed."
+    }
+   ],
+   "fast": true
+  },
+  {
+   "key": "4499-c31e91ea",
+   "kind": "precision",
+   "pr": 4499,
+   "reviewed_sha": "c31e91ea111dda6e12211501817ea5e3e857f8f8",
+   "merge_base": "6708a99b9de98e94d1db8cfb9e23f589fcb59787",
+   "title": "fix(improve): match const and let as whole words",
+   "branch": "fix/const-let-word-boundaries",
+   "description": "## Problem\n\nThe `/improve` filter suppresses low-value `const instead of let` advice using substring checks. This can also discard valid suggestions containing unrelated words such as `constructor` and `deleting`.\n\n## Changes\n\nMatch `const` and `let` as whole words while retaining the existing `instead` condition.\n\n## Tests\n\nExtend the existing parameterized filtering test with actual keyword advice, backtick-quoted keywords, and false-positive examples.",
+   "tickets": []
+  },
+  {
+   "key": "4505-38d2d99a",
+   "kind": "catch",
+   "pr": 4505,
+   "reviewed_sha": "38d2d99aa2a6150ebc6730c2e2baca7570a9f1b9",
+   "merge_base": "aebf506e995a02fba284c5feb121d2e20a3b177c",
+   "title": "feat(config): identify keys absent from shipped declarations",
+   "branch": "feat/config-declaration-note",
+   "description": "`/config` shows effective settings without distinguishing names declared in the shipped configuration from extra names. It now adds a sorted, names-only note inside the existing YAML block for rendered keys absent from those declarations.\n\nThe note stays neutral because legacy aliases and extension settings can be intentional. It does not change how settings are loaded or used. Existing value rendering and output filtering are preserved; output with no extra keys is unchanged.\n\nValidation: 23 focused tests, including output filtering and legacy spelling compatibility; 15,451 unit tests passed, 33 skipped; 3 packaging tests passed. Touched-file Ruff and pre-commit checks passed. The new output test failed before the change and passed afterward. No live provider publication or model run.\n\n<!-- oss-manager:573aa4e4bb210a25d153a6fe25690e8c515971d118a58d0900a7d7724774fc09 -->",
+   "tickets": [],
+   "known_findings": [
+    {
+     "label": "4505a",
+     "finding": "On default settings the note already lists `config.enable_custom_labels`, which is declared in custom_labels.toml, not configuration.toml.",
+     "fact_needed": "PRConfig._prepare_pr_configs (pr_agent/tools/pr_config.py:41-51) builds declared_config_keys from configuration.toml alone, so config.enable_custom_labels, declared in custom_labels.toml, is reported as absent on default settings."
+    },
+    {
+     "label": "4505b",
+     "finding": "A test on the real shipped settings, rather than the monkeypatched Dynaconf, would pin that defaults print no note.",
+     "fact_needed": "tests/unittest/test_pr_config.py builds its settings from a stub Dynaconf(config={'git_provider': 'test'}) patched over config_loader.global_settings, so no test runs _prepare_pr_configs against the shipped defaults to prove they produce no 'not declared' note."
+    }
+   ]
+  },
+  {
+   "key": "4520-39e99743",
+   "kind": "catch",
+   "pr": 4520,
+   "reviewed_sha": "39e99743e918fb16d51a8958cefd9a8ea5816e75",
+   "merge_base": "5bca250b930ce9b40407f92707d9bb28447b938e",
+   "title": "fix(providers): validate suggestion line ranges in Gerrit, Gitea and CodeCommit",
+   "branch": "fix/4514-suggestion-line-range",
+   "description": "Fixes #4514.\n\n`_is_valid_code_suggestion` now rejects any start line below 1. It used to accept negative starts other than -1, such as -5 to -3. Gerrit, Gitea and CodeCommit now run the check before publishing.\n\n- **Gerrit** is the provider where an inverted range does real damage: `add_suggestion` writes `lines[:start-1]`, then the suggestion, then `lines[end:]`, so a 5-to-3 range kept every original line and repeated line 4. Inverted ranges are now skipped before the file is touched.\n- **Gitea and CodeCommit** anchor on the start line only. A start below 1 cannot anchor a comment, and an inverted range means the suggestion is malformed, so both now skip what the inherited base `publish_code_suggestions` already skips for GitHub and Bitbucket.\n- **Local and plain diff** only render the range into a markdown file, so they are unchanged and still show whatever the model returned.\n- The check reads both keys with `.get()`. A Gitea or CodeCommit suggestion without `relevant_lines_end` is still checked on its start line alone, as before.\n\nTests:\n- validator cases: starts of 0, -1, -5 and `None`, an inverted range, valid ranges, and a missing end line\n- Gerrit: an inverted range leaves the file untouched\n- Gitea: inverted and zero-start suggestions are skipped while a valid one is posted\n- CodeCommit: an inverted range is not published\n\nValidation: 15,629 unit tests passed, 33 skipped. Ruff passes on the touched files. No live provider run.\n",
+   "tickets": [
+    {
+     "ticket_id": 4514,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/4514",
+     "title": "Gerrit repeats lines on an inverted suggestion range; four other overrides skip the check too",
+     "body": "Since #3726 the base `publish_code_suggestions` (git_provider.py:680) rejects a suggestion whose end line is before its start (`_is_valid_code_suggestion`, :708-722). GitHub and both Bitbuckets inherit it, and Azure and GitLab have their own checks. Five overrides have none: Gitea (gitea_provider.py:489), CodeCommit (codecommit_provider.py:341), Gerrit (gerrit_provider.py:485), Local (local_git_provider.py:164) and Plain diff (plain_diff_provider.py:205).\n\nOnly Gerrit uses the end line to rewrite the file: `add_suggestion` (gerrit_provider.py:203) writes `lines[:start-1]`, the suggestion, then `lines[end:]`, so a range of 5 to 3 keeps every original line and repeats line 4. Gitea and CodeCommit anchor on the start line only, and Local and Plain diff only print the range. Checked on main (d3b606a7e).\n\nSuggested change: tighten `_is_valid_code_suggestion` to reject any start below 1 (it accepts -5 to -3 today), call it in Gerrit with a test, and in the other four if an inverted range should be dropped there too. CodeCommit and Gitea need `.get()`-safe handling of a missing `relevant_lines_end`.\n\nDone when the check rejects starts below 1, Gerrit skips an inverted range, and the other four are decided.\n",
+     "labels": "help wanted, Low Effort Issue, bug"
+    }
+   ],
+   "known_findings": [
+    {
+     "label": "4520a",
+     "finding": "Gerrit still rewrites the file when `relevant_lines_end` is missing or `None`: `add_suggestion` slices `lines[end:]`, so it writes the suggestion and then repeats the whole file.",
+     "fact_needed": "gerrit_provider.add_suggestion (line 216) does dst.writelines(lines[end:]) and publish_code_suggestions (line 509) only checks the shared _is_valid_code_suggestion, which accepts a missing end, so end=None repeats the whole file and a missing key raises KeyError at line 518."
+    }
+   ]
+  },
+  {
+   "key": "4562-0ec26d9c",
+   "kind": "catch",
+   "pr": 4562,
+   "reviewed_sha": "0ec26d9c5dff42a56f6e9000484402da6cba1c96",
+   "merge_base": "cdff0c937718661844d4034e8cc06dad8316f8e4",
+   "title": "fix(gitlab): skip webhook events from ignored user IDs",
+   "branch": "fix/gitlab-ignore-user-ids",
+   "description": "Fixes #4561\n\nThe GitLab webhook only skips bots by display name (`config.bot_user_indicators`). Display names are free text, so \"Jane Abbot-Smith\" is skipped while \"Renovate Bot\" is not. GitLab already sends the sender's numeric `user.id` on merge request and note events, and that ID is stable.\n\n## Changes\n- New `gitlab.ignore_user_ids = []` in `[gitlab]`. `is_bot_user` checks `str(user.id)` against it before the name check.\n- It takes a list, a single int (`GITLAB__IGNORE_USER_IDS=123`) or a single string. Entries are normalised with `str(x).strip()`, and a missing `user.id` never matches.\n- `bot_user_indicators` is unchanged. An unlisted ID falls through to the name check.\n- The `configuration.toml` comment says the key is host-only, because the check runs before repository settings are loaded. `configuration_reference.md` is regenerated with `scripts/generate_config_reference.py`, and the active-key count in `test_config_reference.py` goes from 306 to 307.\n- Sibling providers: the GitHub App uses the sender `type == \"Bot\"` and Bitbucket uses the actor type. Neither matches on names, so they are not changed here.\n\n## Tests\nNew cases in `tests/unittest/test_webhook_logic_core.py`: listed and unlisted IDs, int and string entries, padded strings, a single scalar int or string, a missing `user.id`, an empty list, and a listed ID skipped whatever the display name. 6 of them fail on `main`.\n\nChecks run:\n- `PYTHONPATH=. uv run pytest tests/unittest`: 15853 passed, 33 skipped\n- `ruff check` and `uvx pre-commit run --files <changed files>` pass\n\nAI disclosure: an AI coding assistant helped write this change. I reviewed it and ran the tests above.\n",
+   "tickets": [
+    {
+     "ticket_id": 4561,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/4561",
+     "title": "GitLab webhook: let operators skip bot accounts by user ID",
+     "body": "`is_bot_user` (`pr_agent/servers/gitlab_webhook.py:128-153`) skips an event when one of `config.bot_user_indicators` (`pr_agent/settings/configuration.toml:107`) occurs in the sender's display name. Display names are free text, so a hyphenated surname matches (\"Jane Abbot-Smith\" is skipped) while \"Renovate Bot\" and \"Dependabot\" do not. The webhook already reads the sender's numeric `user.id` beside that check (`:366`), which GitLab sends on merge request and note events and which is stable and unique.\n\nSuggested change: add `gitlab.ignore_user_ids = []` to `[gitlab]` (IDs are GitLab-specific, so not the shared `[config]` list) and, inside `is_bot_user`, skip the event when `str(user.id)` matches an entry, before the name check. Accept a list, a single int or a single string (`GITLAB__IGNORE_USER_IDS=123` arrives as an int), normalise entries with `str(x).strip()`, and never match a missing `user.id`. Leave `bot_user_indicators` unchanged. Like it, the check runs before repository settings are loaded, so it is set by the host only.\n\nAdd cases to `tests/unittest/test_webhook_logic_core.py` (listed and unlisted id, int and string entries, a single scalar, missing `user.id`), regenerate `docs/docs/usage-guide/configuration_reference.md`, and bump the active-key count in `tests/unittest/test_config_reference.py:30`.\n\nDone when: an event whose `user.id` is listed is skipped whatever its display name, an unlisted ID falls through to the name check, and the setting is documented.\n\n",
+     "labels": "help wanted, Low Effort Issue"
+    }
+   ],
+   "known_findings": [
+    {
+     "label": "4562a",
+     "finding": "`GITLAB__IGNORE_USER_IDS=123,456` reaches the code as the single string \"123,456\", so it never matches; `normalize_setting_list` handles this with `split_commas`.",
+     "fact_needed": "is_bot_user (pr_agent/servers/gitlab_webhook.py:128-140) builds ignored_ids from normalize_setting_list(get_settings().get('gitlab.ignore_user_ids', [])) without split_commas=True, so a comma-separated environment value becomes one entry '123,456' and no sender id matches."
+    }
+   ]
+  },
+  {
+   "key": "4654-5658c904",
+   "kind": "precision",
+   "pr": 4654,
+   "reviewed_sha": "5658c904851b981cf1b5320dd7c4dabd6a17f639",
+   "merge_base": "10f6429f22c2fafb54d54600085e299efbc8190e",
+   "title": "fix(action): skip duplicate first-open review requests",
+   "branch": "fix/action-first-open-review-4653",
+   "description": "## Summary\n\nA PR opened with a requested reviewer produces both `opened` and initial `review_requested` events. The Action runner previously dispatched the enabled auto-tool batch for both, duplicating model work and racing on published comments.\n\nSkip the initial review-request event when the PR has a nonempty creation timestamp equal to its update timestamp, matching the GitHub App's existing first-open guard. The filter runs before repository settings and model-key checks for both `pull_request` and `pull_request_target`. Later review requests and unknown/partial timestamps keep their existing routing.\n\nThe installation guide explains the opening-event behavior and subsequent review requests. Configuration defaults and workflow files are unchanged.\n\nCloses #4653.\n\n## Validation\n\nPython 3.12.14, uv 0.13.5, locked runtime/dev dependencies installed with `uv sync --frozen`.\n\n- New entrypoint event-stream matrix: **2 failed, 10 passed before the fix**; all **12 passed after**. Both event types exercise real `run_action()` calls for opened \u2192 review_requested, with model-backed tools mocked at the dispatch boundary.\n- Related Action and App suites: **175 passed**.\n- Full unit-suite final run is in progress.\n- Packaging contract suite: **3 passed**.\n- Ruff, relevant pre-commit hooks, compile and diff checks passed.\n- Documentation production build passed; all 32 code-referenced URLs and static-asset links across 48 built pages resolve.\n\nLocal test setup preserves the inherited proxy and supplies its `socksio` transport in the tool virtualenv. The telemetry tests use `OTEL_TRACES_SAMPLER=always_on` for the test process; this host otherwise inherits 1% sampling. The unmodified base reproduced those sampling-related failures. No project dependency or lockfile changed for this environment setup.\n\n```sh\nPYTHONPATH=. uv run --no-sync pytest tests/unittest/test_github_action_runner_core.py tests/unittest/test_github_app_timeout_core.py -q\nOTEL_TRACES_SAMPLER=always_on PYTHONPATH=. uv run --no-sync pytest tests/unittest -q\nPYTHONPATH=. uv run --no-sync pytest tests/packaging/test_help_docs_package.py -q\nuv run ruff check --fix pr_agent/servers/github_action_runner.py tests/unittest/test_github_action_runner_core.py\nuvx pre-commit run --files pr_agent/servers/github_action_runner.py tests/unittest/test_github_action_runner_core.py docs/docs/installation/github.md\n(cd docs && npm ci && npm run build)\npython3 scripts/check_docs_urls.py\n```\n\nNo live GitHub Action deployment or real model calls were run locally.\n\nAI assistance: implemented and checked with Codex.\n",
+   "tickets": [
+    {
+     "ticket_id": 4653,
+     "ticket_url": "https://github.com/The-PR-Agent/pr-agent/issues/4653",
+     "title": "GitHub Action runner runs auto tools twice for PRs created with a requested reviewer (no first-open guard, unlike the App path)",
+     "body": "### What happened?\n\nThe GitHub Action runner path runs the enabled auto tools **twice** for PRs that are created with a requested reviewer.\n\n- The runner's default `PR_ACTIONS` includes `review_requested` (`pr_agent/servers/github_action_runner.py:393-396`), and the dispatch check (`:445`) only tests `action in pr_actions` \u2014 there is no first-open guard.\n- The GitHub App path guards the same event stream: `github_app.py:474-477` skips `review_requested` when `pull_request.created_at == pull_request.updated_at`, with the comment *\"avoid double reviews when opening a PR for the first time\"* \u2014 and that guard is pinned by `tests/unittest/test_github_app_timeout_core.py::test_rejects_synchronize_when_created_equals_updated`.\n- The two entries even disagree in `configuration.toml`: the App-side default (`:360`) omits `review_requested`, while the Action-side comment example (`:346`) includes it. The official install workflow from the docs (`docs/docs/installation/github.md:73`) also lists `review_requested` in `types:`.\n\nWhen a PR is created with a reviewer selected, GitHub dispatches both `pull_request.opened` and `pull_request.review_requested`. Both pass the runner's check, so `_run_auto_tool` executes the enabled tools (describe + review + improve) twice \u2014 double the model calls on the operator's key, and two concurrent runs racing on the same persistent comment heads.\n\n### Steps to Reproduce\n\nUnit-level (mirrors `test_run_action_invokes_enabled_auto_tools_for_pull_request_event` in `tests/unittest/test_github_action_runner_core.py`): set `GITHUB_EVENT_NAME=pull_request`, payload `action: \"review_requested\"` with `created_at == updated_at`, keep the default `pr_actions`. The runner invokes the same tool set as an `opened` event \u2014 i.e. the suite runs for the first-open event stream that the App path suppresses.\n\nRepo-level: install with the default workflow from the docs, create a PR with a reviewer pre-selected, and observe two full auto-tool runs.\n\n### Expected Behavior\n\nThe Action path should mirror the App guard: skip `review_requested` when `created_at == updated_at` (first open), so the same event stream produces one run regardless of entry point.\n\n### Environment\n\n- Operating System: n/a (workflow configuration logic, not runtime-specific)\n- Installation Method: GitHub Action (default `pr-agent-review.yaml` from the docs)\n- Agent Canvas Version: n/a \u2014 observed on `pr-agent` main @ `e7c6dfb`\n",
+     "labels": ""
+    }
+   ]
+  },
+  {
+   "key": "4672-cdbca7d1",
+   "kind": "precision",
+   "pr": 4672,
+   "reviewed_sha": "cdbca7d1bf54f847c7b8cd88b9a2874fee6748c9",
+   "merge_base": "10f6429f22c2fafb54d54600085e299efbc8190e",
+   "title": "fix(azure): preserve physical lines in suggestion ranges and reconciliation",
+   "branch": "fix/azure-physical-suggestion-lines",
+   "description": "Azure DevOps suggestion positions and reconciliation count lines with `splitlines()`, which treats U+2028, NEL, form feed and similar characters as line breaks. A separator before the anchor makes the final UTF-16 column come from a different physical line. During reconciliation, one physical line containing a non-LF separator can also compare equal to a two-line suggestion and incorrectly mark an unapplied thread fixed.\n\nUse the shared Git/LF-aware splitter for final-line offsets, fetched file content and proposed code. Add regressions for the offset, an applied suggestion after a separator, and an unapplied multiline suggestion that previously compared equal. This addresses Azure publication/reconciliation, separately from supplied-diff parsing.\n\nValidation:\n- **21 regression failures on baseline;230 passed** for the complete `tests/unittest/test_azure_devops_provider.py` after the fix, using the frozen Python3.12.11/pytest9.2.0 environment and mocked Azure clients. No live provider writes were performed.\n- Changed files pass locked Ruff0.17.3 and `git diff --check`.\n- Existing seven-candidate local aggregate full unit suite passed16,420 tests; this new independent Azure head has not yet been included in that aggregate. Required applicable pre-commit hooks and hosted build/test checks remain pending; keep draft.\n",
+   "tickets": []
+  },
+  {
+   "key": "4753-2e390a64",
+   "kind": "precision",
+   "pr": 4753,
+   "reviewed_sha": "2e390a6444762b3008f68750c84cea28f88129ce",
+   "merge_base": "402e7881d78dabeeba59c04747ae1dbed3adb686",
+   "title": "feat(gitlab): keep Ask answers in the triggering discussion",
+   "branch": "feature/gitlab-ask-trigger-discussions",
+   "description": "GitLab's opt-in reply_to_trigger_comment option keeps review and improvement output in the discussion that triggered the command, but regular Ask questions still produce detached merge request notes.\n\nRegister /ask and /ask_question as accepting the triggering discussion ID and forward it from top-level notes or existing discussions. Reuse the existing opt-in provider reply mechanism and normal-note fallback while retaining DiffNote /ask_line routing and review/improve behavior.\n\nUpdate configuration documentation and focused regression tests.",
+   "tickets": []
+  },
+  {
+   "key": "4820-63da4328",
+   "kind": "precision",
+   "pr": 4820,
+   "reviewed_sha": "63da432845ed529754dbf0941a793c96fa68a414",
+   "merge_base": "eac9d734f98c9d88b0d37686de1903e7b9b7e32a",
+   "title": "fix(gitlab): filter non-reference hashes in ticket extraction",
+   "branch": "fix/gitlab-ticket-reference-filters",
+   "description": "## Problem\n\n`extract_ticket_links_from_pr_description()` filters out closed HTML comments (`<!-- ... -->`), certain link-text `#N` tokens, Tailwind arbitrary values such as `bg-[#121212]`, and bare `#N` tokens longer than `MAX_SHORTHAND_ISSUE_DIGITS` (6 digits). However, `extract_gitlab_ticket_references()` in the same module still matched those patterns as local issue references in the current GitLab project and passed unvalidated `issue_iid` strings directly to `int()`.\n\n## Change\n\n- Skip GitLab ticket references inside closed HTML comments (`_html_comment_spans()`).\n- For bare `#N` matches outside HTML comments, lazily compute `_non_reference_hash_starts(pr_description, ())` and skip tokens matched by `_is_non_reference_hash()` (including `#N` forming the entire link text of `[#N](...)`, `[#N][ref]`, or `<a ...>#N</a>`, hashes glued to word characters, and `bg-[#121212]`-style Tailwind arbitrary values).\n- Apply `MAX_SHORTHAND_ISSUE_DIGITS` (6 digits) to bare `#N` references in `extract_gitlab_ticket_references()`, validate extracted `issue_iid` strings as positive ASCII integers, and guard `int()` conversion against `ValueError`.\n- Update `docs/docs/core-abilities/fetching_ticket_context.md` to note that built-in matching on both GitHub and GitLab recognizes local `#<ISSUE_NUMBER>` references of up to six digits.\n- Compatibility note: bare `#N` tokens longer than 6 characters (such as `#1234567` or zero-padded `#0000042`) are no longer treated as local GitLab issue references; explicit `group/proj#1234567` references and full GitLab issue URLs remain supported.\n\n## Testing\n\n- Expanded parameterized test cases in `tests/unittest/test_ticket_extraction_async.py` (`TestGitLabExtraction.test_shorthand_reference_boundaries`) covering 6- and 7-digit bare `#N` boundaries, closed HTML comments, Markdown/HTML `#N` link text, Tailwind arbitrary values, `#0`, non-ASCII digits, and oversized integers.",
+   "tickets": []
+  },
+  {
+   "key": "4828-fa6bf94c",
+   "kind": "precision",
+   "pr": 4828,
+   "reviewed_sha": "fa6bf94ce9582d45e4a10368336cff1f2d445b5a",
+   "merge_base": "eac9d734f98c9d88b0d37686de1903e7b9b7e32a",
+   "title": "fix(bitbucket): decode each file of the PR diff on its own",
+   "branch": "fix/bitbucket-diff-per-file-decoding",
+   "description": "`BitbucketProvider.get_diff_files` reads the PR diff with atlassian's `PullRequest.diff()`, which decodes the whole response as UTF-8. The pull request diff redirects to the [repository diff](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-commits/#api-repositories-workspace-repo-slug-diff-spec-get), whose reference says: \"The raw diff is returned as-is, in whatever encoding the files in the repository use. It is not decoded into unicode.\" So one file that is not UTF-8, such as a Java `.properties` file kept in ISO-8859-1 or a cp1252 source file, makes that raise `UnicodeDecodeError`. The fallback then re-reads the diff with the first of `['iso-8859-1', 'latin-1', 'ascii', 'utf-16']`. ISO-8859-1 cannot fail, so the whole diff is decoded as Latin-1, the other entries are never tried, and every non-ASCII character of every UTF-8 file in the PR reaches `/review`, `/describe` and `/improve` as mojibake. The fallback catches every exception, so a first request that fails for another reason, such as a connection reset, garbles an all-UTF-8 diff the same way, under a \"Failed to decode PR patch with utf-8\" warning.\n\n#4648 fixed the raw file reads and called the diff right, which holds only while every file in the PR is UTF-8. The base file now decodes as UTF-8, so a hunk that opens with a garbled line no longer matches it and also loses its extra context.\n\n## Before / after\n\nA PR with a UTF-8 `src/greeting.py` and an ISO-8859-1 `messages_de.properties`. `pr.diff()` is atlassian's own `PullRequest.diff()` on those bytes, and `extend_patch` runs with the default 5 lines before and 1 after (script below). On `main` (eac9d734f) the log says `Invalid hunk in PR, line 7 in hunk header doesn't match the original file content`, and `greeting.py` comes out as (`\\x` escapes stand for control and no-break characters):\n\n```text\n@@ -7,7 +7,7 @@\n     # Gr\u00c3\u00bc\u00c3\\x9fe aus K\u00c3\u00b6ln \u00e2\\x80\\x93 \u00e4\u00bd\\xa0\u00e5\u00a5\u00bd\n     greeting = f'Hallo {NAME}'\n     print(greeting)\n-    print('caf\u00c3\u00a9')\n+    print('caf\u00c3\u00a9 \u00e2\\x98\\x95')\n     return 0\n \n \n```\n\nWith this change:\n\n```text\n@@ -2,13 +2,13 @@\n \n NAME = sys.argv[1] if len(sys.argv) > 1 else 'Welt'\n \n \n def main():\n     # Gr\u00fc\u00dfe aus K\u00f6ln \u2013 \u4f60\u597d\n     greeting = f'Hallo {NAME}'\n     print(greeting)\n-    print('caf\u00e9')\n+    print('caf\u00e9 \u2615')\n     return 0\n \n \n if __name__ == '__main__':\n```\n\nThe `.properties` file decodes the same on both: `+greeting=Sch\u00f6ne Gr\u00fc\u00dfe`.\n\n<details><summary>repro.py</summary>\n\n```python\n# PYTHONPATH=. uv run python repro.py\nimport difflib\nfrom unittest.mock import MagicMock\n\nfrom atlassian.bitbucket.cloud.repositories.pullRequests import PullRequest\n\nfrom pr_agent.algo.git_patch_processing import decode_if_bytes, extend_patch\nfrom pr_agent.git_providers.bitbucket_provider import BitbucketProvider\n\nBASE = (\"import sys\\n\\nNAME = sys.argv[1] if len(sys.argv) > 1 else 'Welt'\\n\\n\\ndef main():\\n\"\n        \"    # Gr\u00fc\u00dfe aus K\u00f6ln \u2013 \u4f60\u597d\\n    greeting = f'Hallo {NAME}'\\n    print(greeting)\\n\"\n        \"    print('caf\u00e9')\\n    return 0\\n\\n\\nif __name__ == '__main__':\\n    sys.exit(main())\\n\")\nFILES = {  # path: (base, head, encoding of the file in the repository)\n    \"src/greeting.py\": (BASE, BASE.replace(\"print('caf\u00e9')\", \"print('caf\u00e9 \u2615')\"), \"utf-8\"),\n    \"src/main/resources/messages_de.properties\": (\n        \"app.title=Anwendung\\ngreeting=Gr\u00fc\u00dfe\\n\", \"app.title=Anwendung\\ngreeting=Sch\u00f6ne Gr\u00fc\u00dfe\\n\", \"iso-8859-1\"),\n}\nraw_diff = b\"\".join(\n    (f\"diff --git a/{path} b/{path}\\n\" + \"\".join(difflib.unified_diff(\n        base.splitlines(True), head.splitlines(True), f\"a/{path}\", f\"b/{path}\"))).encode(encoding)\n    for path, (base, head, encoding) in FILES.items())\n\nprovider = BitbucketProvider.__new__(BitbucketProvider)\nprovider.diff_files, provider.pr = None, MagicMock()\ndiffstats = []\nfor path in FILES:\n    diffstat = MagicMock()\n    diffstat.new.path = diffstat.old.path = path\n    diffstat.data = {\"status\": \"modified\", \"lines_added\": 1, \"lines_removed\": 1}\n    diffstat.old.get_data.return_value = diffstat.new.get_data.return_value = None\n    diffstats.append(diffstat)\nprovider.pr.diffstat.return_value = diffstats\napi = MagicMock()\napi.get.return_value = raw_diff  # atlassian's own PullRequest.diff() decodes these bytes\nprovider.pr.diff.side_effect = lambda encoding=\"utf-8\": PullRequest.diff(api, encoding=encoding)\n\nfor file in provider.get_diff_files():\n    # File contents decoded as _get_pr_file_content decodes them since #4648.\n    base, head = (decode_if_bytes(text.encode(FILES[file.filename][2])) for text in FILES[file.filename][:2])\n    print(f\"## {file.filename}{extend_patch(base, file.patch, 5, 1, file.filename, new_file_str=head)}\")\n```\n\n</details>\n\n## Change\n\nThe UTF-8 read is unchanged, so a diff that decodes still takes one request. The fallback reads the diff once as ISO-8859-1, which maps every byte to one character, splits it at the `diff --git` headers as before, and decodes each file's part with `decode_if_bytes`, as `_get_pr_file_content` decodes file contents: UTF-8 when that part is valid UTF-8, else Latin-1. The unreachable encodings and the `ValueError` after them are gone, and the warning names the exception type.\n\n## Sibling providers\n\nGitHub and GitLab get one patch per file in JSON, Azure DevOps and Bitbucket Server build each patch from that file's contents, and CodeCommit, Gerrit and local git skip or flag a file that is not UTF-8. Gitea also splits one aggregate `.diff`, but decodes it with `errors=\"replace\"`: its other files stay intact and only the undecodable bytes of the non-UTF-8 file become U+FFFD, as `test_gitea_provider_decodes_non_utf8_diff_with_replacement` pins. I left it as it is.\n\n## Not changed\n\n- A file whose part of the diff is not valid UTF-8 still decodes as Latin-1, as today and as its contents do: right for ISO-8859-1, while cp1252-only characters such as `\u20ac` or curly quotes come out as C1 control characters.\n- The fallback still runs after any exception and makes one more request, as before.\n\n## Testing\n\n- `test_bitbucket_provider.py`, with `pr.diff` answering like atlassian (`str(raw, encoding)`): a diff with a UTF-8 file and an ISO-8859-1 `.properties` file keeps `caf\u00e9 \u2615` and `\u4f60\u597d` and decodes `Sch\u00f6ne Gr\u00fc\u00dfe`, with the same two requests as before; a diff whose first request raises `ConnectionError` keeps its UTF-8 text. Both fail on `main` and pass with the change.\n- That file plus `test_bitbucket_diff_line_counts.py`, `test_bitbucket_inline_comment_dedup.py` and `test_provider_http_timeout.py`: 324 passed on `main`, 326 with the change, 4 skipped on both. The 34 test files that mention `BitbucketProvider`, `bitbucket_provider`, `extend_patch` or `git_patch_processing`: 1865 and 1867 passed, with the same 5 failures on both in my environment (Windows, Python 3.12, `PYTHONUTF8=1`: CRLF in `test_local_git_provider.py`, a subprocess import in `test_silent_failure_fallbacks.py`).\n- `ruff check` (0.17.4, with the new PERF rules) and `uvx pre-commit run --files` on the changed files: clean (actionlint skipped, no workflow changes).\n\nNot tested against a live Bitbucket Cloud workspace: the diff bytes are canned and decoded by atlassian-python-api's own `PullRequest.diff()` (5.0.5).\n",
+   "tickets": []
+  },
+  {
+   "key": "4833-59350e19",
+   "kind": "precision",
+   "pr": 4833,
+   "reviewed_sha": "59350e196aa102ed55e7e61b1a82fb0ef5053cf1",
+   "merge_base": "7cd2a669cd4f3229f98c702e9319c3387aef5a88",
+   "title": "chore(deps): bump protobuf from 6.33.6 to 7.36.2 in the python-major group",
+   "branch": "dependabot/uv/python-major-9125f883eb",
+   "description": "Bumps the python-major group with 1 update: [protobuf](https://developers.google.com/protocol-buffers/).\n\nUpdates `protobuf` from 6.33.6 to 7.36.2\n\n\n[![Dependabot compatibility score](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=protobuf&package-manager=uv&previous-version=6.33.6&new-version=7.36.2)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't alter it yourself. You can also trigger a rebase manually by commenting `@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits that have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all of the ignore conditions of the specified dependency\n- `@dependabot ignore <dependency name> major version` will close this group update PR and stop Dependabot creating any more for the specific dependency's major version (unless you unignore this specific dependency's major version or upgrade to it yourself)\n- `@dependabot ignore <dependency name> minor version` will close this group update PR and stop Dependabot creating any more for the specific dependency's minor version (unless you unignore this specific dependency's minor version or upgrade to it yourself)\n- `@dependabot ignore <dependency name>` will close this group update PR and stop Dependabot creating any more for the specific dependency (unless you unignore this specific dependency or upgrade to it yourself)\n- `@dependabot unignore <dependency name>` will remove all of the ignore conditions of the specified dependency\n- `@dependabot unignore <dependency name> <ignore condition>` will remove the ignore condition of the specified dependency and ignore conditions\n\n\n</details>",
+   "tickets": []
+  },
+  {
+   "key": "4850-a3ba9347",
+   "kind": "precision",
+   "pr": 4850,
+   "reviewed_sha": "a3ba934792f4359e0a96301fb51cde2abcf00bfa",
+   "merge_base": "69c4becdfbfa8111d13a6fd6966c29d42fa312b2",
+   "title": "feat(gitlab): include discussion history in inline /ask",
+   "branch": "feature/gitlab-inline-ask-history",
+   "description": "## Motivation\n\nGitLab inline `/ask` replies are posted in the selected diff discussion, but follow-up questions currently lack earlier messages from that thread. GitHub and Azure DevOps already provide same-thread context for line questions.\n\n## Changes\n\n- Read earlier notes from the selected GitLab discussion using the existing line-question history path.\n- Pass the triggering note ID separately from the discussion ID used for replies. Exclude the current question, later replies, system notes, and empty notes.\n- When the origin note is missing or discussion history cannot be read, answer the current question independently.\n- Reuse the existing `pr_questions.use_conversation_history` option, shared input-token budget, and untrusted-discussion guidance.\n- Update the Ask documentation.\n\n## Scope and compatibility\n\n- Applies only to GitLab inline `/ask` on diff lines; top-level `/ask`, reply placement, and thread resolution are unchanged.\n- With history enabled (the default), each eligible question adds one GitLab discussion API read and may consume additional input tokens, without another model request.\n- Set `pr_questions.use_conversation_history=false` to disable the additional read.\n- No new dependencies or configuration keys.",
+   "tickets": []
+  }
+ ],
+ "fast_note": "fast tier: the catch cases caught in every one of 4 trial runs (local and fork CI, 14 Nov 2026); a canary for breakage, not a quality measure"
+}

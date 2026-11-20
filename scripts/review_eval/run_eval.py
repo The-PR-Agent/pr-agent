@@ -1,0 +1,307 @@
+#!/usr/bin/env python3
+"""Review-quality eval: replay /review on frozen PR commits, judge the output, compare with a baseline.
+
+Catch cases carry known findings (real issues a maintainer raised) and measure how many the review raises; precision
+cases measure how many posted findings a code-reading judge confirms. Each case runs `--repeats` times because model
+output varies run to run. The exit code is 1 when the gate fails (see score.gate), so a pipeline can block on it.
+
+Example (from the repository root, with OPENAI__KEY in the environment):
+  uv run python scripts/review_eval/run_eval.py --model openai/gpt-6.1-sol \\
+      --judge-model openai/gpt-6.1-sol --repeats 2 --out /tmp/review-eval
+Runs are cached in --out, so an interrupted eval resumes. Use --write-baseline to record an accepted run.
+"""
+import argparse
+import concurrent.futures
+import hashlib
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import judge  # noqa: E402
+import score  # noqa: E402
+
+HERE = pathlib.Path(__file__).resolve().parent
+REPO = HERE.parent.parent
+REPLAY = HERE / "replay.py"
+BRANCH_PREFIX = "review-eval-base-"
+MAX_DIFF = 60_000
+PASS_ENV = ("PATH", "HOME", "TMPDIR", "SSL_CERT_FILE")
+SECRET_ENV = {"openai": ("OPENAI__KEY", "OPENAI_KEY")}
+OVERRIDE_SECTIONS = {"CONFIG", "PR_REVIEWER"}
+OVERRIDE_DENY = {"KEY", "KEYS", "TOKEN", "SECRET", "PASSWORD", "BASE", "URL", "PROXY", "HEADER", "HEADERS", "TYPE",
+                 "ENDPOINT", "MODEL", "MODELS", "CERT", "SSL", "BUNDLE", "HOST"}
+
+
+def git(*args, cwd=REPO, check=True):
+    return subprocess.run(["git", *args], cwd=cwd, check=check, capture_output=True, text=True).stdout
+
+
+def has(sha):
+    return subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=REPO, capture_output=True).returncode == 0
+
+
+def prepare(case, out, remote):
+    """A detached worktree at the reviewed commit and a local branch at its merge base (the local provider diffs
+    against merge-base(target, HEAD))."""
+    for sha in (case["reviewed_sha"], case["merge_base"]):
+        if not has(sha):
+            git("fetch", "-q", remote, sha)
+    wt = out / "wt" / case["key"]
+    if not wt.exists():
+        git("worktree", "add", "-q", "--detach", str(wt), case["reviewed_sha"])
+    git("branch", "-f", BRANCH_PREFIX + case["key"], case["merge_base"])
+    return wt
+
+
+def digest(*parts):
+    return hashlib.sha256("\0".join(parts).encode()).hexdigest()[:16]
+
+
+def fingerprints(model, judge_model, overrides, cases_file):
+    """(review inputs, judge inputs) hashes: cached reviews are only valid for the same model, settings, cases,
+    pr-agent code (committed tree plus uncommitted edits such as an overlay), lockfile and replay script; cached
+    verdicts also for the same judge model and the code that builds and scores judge inputs."""
+    code = git("rev-parse", "HEAD:pr_agent").strip() + git("diff", "HEAD", "--", "pr_agent")
+    review_fp = digest(model, json.dumps(overrides, sort_keys=True), cases_file.read_text(), code,
+                       (REPO / "uv.lock").read_text(), REPLAY.read_text())
+    judge_code = "".join((HERE / f).read_text() for f in ("judge.py", "score.py", "run_eval.py"))
+    return review_fp, digest(review_fp, judge_model, judge_code)
+
+
+def check_cache(out, review_fp, judge_fp):
+    """Refuse an --out holding reviews from other inputs; drop verdicts made by another judge."""
+    f = out / "inputs.json"
+    old = json.loads(f.read_text()) if f.exists() else None
+    if old and old["review"] != review_fp:
+        raise SystemExit(f"{out} holds reviews from different inputs (model, settings or code); use a new --out")
+    if old and old["judge"] != judge_fp:
+        for stale in out.glob("runs/*/r*/judged.json"):
+            stale.unlink()
+    f.write_text(json.dumps({"review": review_fp, "judge": judge_fp}))
+
+
+def cleanup(out, cases):
+    for case in cases:
+        wt = out / "wt" / case["key"]
+        if wt.exists():
+            git("worktree", "remove", "--force", str(wt), check=False)
+        git("branch", "-D", BRANCH_PREFIX + case["key"], check=False)
+
+
+def parse_overrides(items):
+    """SECTION__KEY=VALUE review settings. Dynaconf reads env names case-insensitively, so keys are upper-cased and
+    checked against an allowlist of sections and a denylist of credential and endpoint words."""
+    out = {}
+    for item in items:
+        key, sep, value = item.partition("=")
+        key = key.strip().upper()
+        section = key.split("__", 1)[0]
+        words = set(key.replace("__", "_").split("_"))
+        if not sep or "__" not in key or section not in OVERRIDE_SECTIONS or words & OVERRIDE_DENY:
+            raise SystemExit(f"--set {key or item!r}: only review settings ({', '.join(sorted(OVERRIDE_SECTIONS))}"
+                             "), never keys, tokens or endpoints")
+        out[key] = value
+    return out
+
+
+def child_env(model, overrides):
+    """Allowlist: a few process vars, the model settings, SECTION__KEY overrides, and the model provider's key."""
+    env = {k: os.environ[k] for k in PASS_ENV if k in os.environ}
+    env.update({"PYTHONPATH": str(REPO), "CONFIG__MODEL": model, "CONFIG__MODEL_WEAK": model,
+                "CONFIG__MODEL_REASONING": model, "CONFIG__FALLBACK_MODELS": "[]"})
+    env.update(overrides)
+    provider = model.split("/", 1)[0] if "/" in model else "openai"
+    keys = [k for k in SECRET_ENV.get(provider, ()) if os.environ.get(k)]
+    if not keys:
+        raise SystemExit(f"no API key in the environment for model {model!r} (need one of {SECRET_ENV.get(provider)})")
+    env.update({k: os.environ[k] for k in keys})
+    return env
+
+
+def review(case, rep, out, wt, env):
+    run = out / "runs" / case["key"] / f"r{rep}"
+    status = run / "status.json"
+    if status.exists() and json.loads(status.read_text())["ok"]:
+        return run
+    run.mkdir(parents=True, exist_ok=True)
+    for stale in ("final.md", "review.json", "judged.json"):  # a rerun never keeps the failed attempt's output
+        (run / stale).unlink(missing_ok=True)
+    (run / "case.json").write_text(json.dumps({k: case[k] for k in ("title", "branch", "description", "tickets")}))
+    env = {**env, "REVIEW_EVAL_RUN_DIR": str(run), "REVIEW_EVAL_CASE": str(run / "case.json"),
+           "REVIEW_EVAL_TARGET_BRANCH": BRANCH_PREFIX + case["key"]}
+    try:
+        p = subprocess.run([sys.executable, str(REPLAY)], cwd=wt, env=env, capture_output=True, text=True,
+                           timeout=900)
+        (run / "stderr.log").write_text(p.stderr[-20000:])
+    except subprocess.TimeoutExpired:
+        status.write_text(json.dumps({"ok": False, "error": "timeout", "usage": [], "finish": []}))
+    if not status.exists():
+        status.write_text(json.dumps({"ok": False, "error": "replay crashed, see stderr.log", "usage": [],
+                                      "finish": []}))
+    return run
+
+
+def context(case, wt):
+    diff = git("diff", case["merge_base"], case["reviewed_sha"], cwd=wt)
+    if len(diff) > MAX_DIFF:
+        diff = diff[:MAX_DIFF] + "\n... (diff truncated)"
+    return f"PR title: {case['title']}\n\nPR description:\n{case['description']}\n\nPR diff:\n{diff}"
+
+
+def judge_run(case, run, wt, judge_model):
+    """Cached judge verdicts for one run: catch verdicts by two judges, or a precision verdict per finding."""
+    f = run / "judged.json"
+    if f.exists() and not json.loads(f.read_text()).get("judge_error"):
+        return json.loads(f.read_text())
+    status = json.loads((run / "status.json").read_text())
+    found = []
+    if status["ok"] and (run / "review.json").exists():
+        found = score.findings_from_review(json.loads((run / "review.json").read_text()))
+    elif status["ok"]:
+        found = score.findings((run / "final.md").read_text(errors="replace"))
+    text = "\n\n".join(f"[{i}] {t}\n{b}" for i, (t, b) in enumerate(found))
+    res = {"findings": len(found), "usage": []}
+    if case["kind"] == "catch":
+        known = case["known_findings"]
+        if found:
+            try:
+                a, ua = judge.judge_catch(judge_model, known, text)
+                b, ub = judge.judge_catch(judge_model, known, text, reverse=True)
+            except RuntimeError as e:  # counted as a failed run and redone on the next invocation
+                res.update({"judge_error": str(e), "catch": {k["label"]: ["missed", "missed"] for k in known}})
+                f.write_text(json.dumps(res, indent=1))
+                return res
+            res["usage"] += ua + ub
+        else:
+            a = b = {k["label"]: "missed" for k in known}
+        res["catch"] = {k["label"]: [a[k["label"]], b[k["label"]]] for k in known}
+    elif found:
+        res["valid"], u = judge.judge_precision(judge_model, context(case, wt), found, wt)
+        res["usage"] += u
+    else:
+        res["valid"] = []
+    f.write_text(json.dumps(res, indent=1))
+    return res
+
+
+def metrics(cases, out, repeats, judge_model):
+    runs = failed = capped = posted = valid = found = 0
+    catch_by_rep = [0.0] * repeats
+    per_case = {}
+    tokens = {"review_in": 0, "review_out": 0, "judge_in": 0, "judge_out": 0}
+    for case in cases:
+        for rep in range(1, repeats + 1):
+            run = out / "runs" / case["key"] / f"r{rep}"
+            st = json.loads((run / "status.json").read_text())
+            jd = json.loads((run / "judged.json").read_text())
+            runs += 1
+            found += jd["findings"]
+            failed += not st["ok"] or bool(jd.get("judge_error"))
+            capped += "length" in st.get("finish", [])
+            tokens["review_in"] += sum(u["input"] for u in st["usage"])
+            tokens["review_out"] += sum(u["output"] for u in st["usage"])
+            tokens["judge_in"] += sum(u["input"] for u in jd["usage"])
+            tokens["judge_out"] += sum(u["output"] for u in jd["usage"])
+            if case["kind"] == "catch":
+                pts = sum(score.finding_points(*v) for v in jd["catch"].values())
+                catch_by_rep[rep - 1] += pts
+                per_case.setdefault(case["key"], []).append(pts)
+            else:
+                posted += jd["findings"]
+                valid += sum(v == "yes" for v in jd["valid"])
+    n_findings = sum(len(c["known_findings"]) for c in cases if c["kind"] == "catch")
+    return {"runs": runs, "failed_runs": failed, "capped_runs": capped, "known_findings": n_findings,
+            "catch": sum(catch_by_rep) / repeats, "catch_by_repeat": catch_by_rep,
+            "catch_per_case": {k: sum(v) / len(v) for k, v in per_case.items()},
+            "posted": posted / repeats, "valid": valid / repeats,
+            "findings_per_run": found / max(runs, 1), "judge_model": judge_model, "tokens": tokens}
+
+
+def summary(m, failures, notes, args):
+    precision = "none posted"
+    if m["posted"]:
+        precision = f"{m['valid']:.1f} of {m['posted']:.1f} ({m['valid'] / m['posted']:.0%})"
+    lines = [f"## Review-quality eval: {'FAIL' if failures else 'pass'}", "",
+             f"Model `{args.model}`, judge `{args.judge_model}`, {args.tier} tier, {args.repeats} repeats, "
+             f"{m['runs']} runs.", "",
+             "| Metric | Value |", "|---|---|",
+             f"| Known findings caught | {m['catch']:.2f} of {m['known_findings']} (per repeat: "
+             f"{', '.join(f'{x:.2f}' for x in m['catch_by_repeat'])}) |",
+             *([f"| Valid of posted findings, recent PRs (per repeat) | {precision} |"] if args.tier == "full" else []),
+             f"| Findings per review | {m['findings_per_run']:.2f} |",
+             f"| Failed runs / output-cap hits | {m['failed_runs']} / {m['capped_runs']} |",
+             f"| Review tokens in / out | {m['tokens']['review_in']:,} / {m['tokens']['review_out']:,} |",
+             f"| Judge tokens in / out | {m['tokens']['judge_in']:,} / {m['tokens']['judge_out']:,} |", ""]
+    lines += [f"- FAIL: {f}" for f in failures] + [f"- {n}" for n in notes]
+    return "\n".join(lines) + "\n"
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--model", required=True, help="model under test, with provider prefix")
+    ap.add_argument("--judge-model", required=True, help="keep it fixed across runs so scores stay comparable")
+    ap.add_argument("--repeats", type=int, default=2)
+    ap.add_argument("--out", required=True, type=pathlib.Path)
+    ap.add_argument("--cases", type=pathlib.Path, default=HERE / "cases.json")
+    ap.add_argument("--tier", choices=("fast", "full"), default="full",
+                    help="fast: the six always-caught catch cases, a breakage canary (about $1 with two repeats in "
+                         "the fork trial); full: all 55 cases (about $8.50)")
+    ap.add_argument("--baseline", type=pathlib.Path, help="default: baseline_<tier>.json next to this script")
+    ap.add_argument("--write-baseline", type=pathlib.Path)
+    ap.add_argument("--limit", type=int, help="first N cases of each kind only (smoke test)")
+    ap.add_argument("--jobs", type=int, default=1, help="parallel runs")
+    ap.add_argument("--remote", default="origin", help="remote to fetch missing commits from")
+    ap.add_argument("--set", action="append", default=[], metavar="SECTION__KEY=VALUE",
+                    help="pr-agent setting override for the reviewed runs, repeatable")
+    ap.add_argument("--keep-worktrees", action="store_true")
+    args = ap.parse_args()
+
+    cases = json.loads(args.cases.read_text())["cases"]
+    if args.tier == "fast":
+        cases = [c for c in cases if c.get("fast")]
+    args.baseline = args.baseline or HERE / f"baseline_{args.tier}.json"
+    if args.limit:
+        cases = [c for c in cases if c["kind"] == "catch"][:args.limit] + \
+                [c for c in cases if c["kind"] == "precision"][:args.limit]
+    overrides = parse_overrides(args.set)
+    env = child_env(args.model, overrides)
+    judge.warm_up(args.judge_model)
+    args.out = args.out.resolve()  # the replay runs inside each case's worktree
+    args.out.mkdir(parents=True, exist_ok=True)
+    check_cache(args.out, *fingerprints(args.model, args.judge_model, overrides, args.cases))
+    try:
+        wts = {c["key"]: prepare(c, args.out, args.remote) for c in cases}
+        jobs = [(c, r) for c in cases for r in range(1, args.repeats + 1)]
+        with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
+            def one(job):
+                c, r = job
+                run = review(c, r, args.out, wts[c["key"]], env)
+                judge_run(c, run, wts[c["key"]], args.judge_model)
+                print(f"{c['key']} r{r} done", flush=True)
+            list(pool.map(one, jobs))
+        m = metrics(cases, args.out, args.repeats, args.judge_model)
+    finally:
+        if not args.keep_worktrees:
+            cleanup(args.out, cases)
+    # A baseline is only compared with a run of the same cases and tier.
+    m.update({"model": args.model, "tier": args.tier, "repeats": args.repeats,
+              "cases_hash": digest(json.dumps(cases, sort_keys=True))})
+    baseline = json.loads(args.baseline.read_text()) if args.baseline.exists() and not args.limit else None
+    failures, notes = score.gate(m, baseline, args.repeats)
+    text = summary(m, failures, notes, args)
+    (args.out / "metrics.json").write_text(json.dumps(m, indent=1) + "\n")  # commit it as baseline_<tier>.json
+    (args.out / "summary.md").write_text(text)
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+            f.write(text)
+    print(text)
+    if args.write_baseline:
+        args.write_baseline.write_text(json.dumps(m, indent=1) + "\n")
+    sys.exit(1 if failures else 0)
+
+
+if __name__ == "__main__":
+    main()
