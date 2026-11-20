@@ -6,6 +6,7 @@ import yaml
 from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
+from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import ModelType, load_yaml
 from pr_agent.commands.pr_description import (
@@ -405,6 +406,49 @@ async def test_unusable_large_pr_header_retries_before_appending_file_walkthroug
     assert header_models == ["gpt-4o", "gpt-4o-mini"]
     assert load_yaml(obj.prediction, keys_fix_yaml=obj.keys_fix)["title"] == "Partial description"
     assert "pr_files:" in obj.prediction
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_ai_calls", [True, False])
+@pytest.mark.parametrize("first_answer", ["not yaml", _file_prediction("src/file2.py")], ids=["invalid", "partial"])
+@pytest.mark.parametrize("semantic_files", [True, False])
+async def test_large_pr_fallback_resends_only_chunks_without_a_complete_description(
+    monkeypatch, async_ai_calls, first_answer, semantic_files,
+):
+    obj = _make_large_pr_instance()
+    monkeypatch.setitem(get_settings().pr_description, "async_ai_calls", async_ai_calls)
+    monkeypatch.setitem(get_settings().pr_description, "enable_semantic_files_types", semantic_files)
+    init_run_details()
+    chunks = _large_pr_chunks()
+    chunks[5][1].append("src/file3.py")
+    complete_answer = _file_prediction("src/file2.py") + _file_prediction("src/file3.py").removeprefix("pr_files:")
+    chunk_calls = []
+
+    async def predict(model, patches_diff, prompt="pr_description_prompt"):
+        if prompt == "pr_description_only_description_prompts":
+            return "null" if model == "gpt-4o" else _header_prediction()
+        chunk = "file1" if "file1" in patches_diff else "file2"
+        chunk_calls.append((model, chunk))
+        if chunk == "file1":
+            return _file_prediction("src/file1.py")
+        return first_answer if model == "gpt-4o" else complete_answer
+
+    obj._get_prediction = AsyncMock(side_effect=predict)
+    with (
+        patch("pr_agent.commands.pr_description.get_pr_diff", return_value=""),
+        patch("pr_agent.commands.pr_description.get_pr_diff_multiple_patchs", return_value=chunks),
+        patch("pr_agent.algo.pr_processing._get_all_models", return_value=["gpt-4o", "gpt-4o-mini"]),
+        patch("pr_agent.algo.pr_processing._get_all_deployments", return_value=[None, None]),
+        patch("pr_agent.algo.pr_processing.route_primary_model", return_value=None),
+    ):
+        await retry_with_fallback_models(obj._prepare_prediction, ModelType.WEAK)
+
+    assert sorted(chunk_calls) == [("gpt-4o", "file1"), ("gpt-4o", "file2"), ("gpt-4o-mini", "file2")]
+    if semantic_files:
+        files = [entry["filename"] for entry in load_yaml(obj.prediction, keys_fix_yaml=obj.keys_fix)["pr_files"]]
+        assert files == ["src/file1.py", "src/file2.py", "src/file3.py"]
+    assert obj.description_failed_chunk_count == 0
+    assert get_run_details().models_used == ["gpt-4o", "gpt-4o-mini"]
 
 
 def _mock_settings(pr_diagram_direction: str = 'adaptive', pr_diagram_direction_threshold: int = 5):

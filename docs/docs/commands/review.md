@@ -99,6 +99,13 @@ for the authoritative default values.
     <td>
       Set to false to suppress the "Failed to review PR" comment, including when a persistent review comment
       cannot be updated. Successful review output and the command's failure status are unchanged. Default is true.
+      On GitHub, GitLab, and Azure DevOps, when the comment author can be verified, repeated failures update one
+      comment instead of adding another, and the next review that completes removes it. If the provider rejects
+      that edit or removal, the earlier comment stays and no other is added. A review in which some chunks failed
+      keeps it; files left out for the token budget do not. With
+      <code>gitlab.reply_to_trigger_comment</code>, each failure still replies to its own command, and a persistent
+      review comment that cannot be updated gets a comment of its own each time. Those are removed the same way,
+      and so are the failure comments of earlier versions.
     </td>
   </tr>
   <tr>
@@ -403,9 +410,9 @@ PR page. Otherwise the fix is shown as a text block in the comment. A finding th
 inline comments, `inline_key_issues` is off, or publishing failed) stays in the review summary, and its fix appears there as a text
 block. Findings are capped by `pr_reviewer.num_max_findings` (6 by default), and chunked reviews keep the same cap.
 
-Two `pr_code_suggestions` settings are honoured: `committable_code_suggestions` and `extra_instructions`
-(added to the review's extra instructions when it differs from `pr_reviewer.extra_instructions`).
-Every other `pr_code_suggestions` setting is ignored since 0.51.
+Three `pr_code_suggestions` settings are honoured: `committable_code_suggestions`, `extra_instructions`
+(added to the review's extra instructions when it differs from `pr_reviewer.extra_instructions`) and
+`suggestions_heading` (the base heading for code-suggestion comments). Other `pr_code_suggestions` keys have no effect.
 
 ```
 /review --pr_code_suggestions.committable_code_suggestions=true
@@ -516,7 +523,7 @@ merged field by field:
 | `relevant_tests` | Yes if any chunk found tests |
 | `score` | The lowest score any chunk gave |
 | `risk_level`, `merge_recommendation` | The most conservative value any chunk gave |
-| `failure_modes` | Concatenate valid cases in chunk order, keeping at most three |
+| `failure_modes` | Concatenate valid cases in chunk order, dropping exact duplicates and keeping at most three |
 | `estimated_effort_to_review_[1-5]` | The highest value any chunk gave |
 | `contribution_time_cost_estimate` | The sum over the chunks, per case |
 | `ticket_compliance_check` | One entry per ticket, with its bullet lists unioned across chunks |
@@ -662,7 +669,8 @@ not match the schema, or anything fails while computing the row, the review is p
 :::tip
 
 When `enable_risk_checks` is enabled (the default), PR-Agent scans changed files and diff hunks for known risk patterns
-without making model calls. Findings are rendered as a dedicated row in the review table:
+without making model calls. Incremental and per-commit reviews scope unfiltered path checks to the active incremental
+file set unless `require_merge_recommendation` is enabled. Findings are rendered as a dedicated row in the review table:
 
 ```
 ⚠️ Risk checks: 3 finding(s) detected
@@ -676,8 +684,8 @@ When no findings are detected, the row is omitted completely so clean reviews st
 **Checks performed.**
 
 - **Sensitive paths**: Flags changes to files matching glob patterns in `sensitive_paths`. By default, this covers
-  CI/CD pipelines, package manager manifests and lockfiles, Dockerfiles, Terraform and infrastructure configs, and
-  database migrations.
+  CI/CD pipelines and local composite actions, package manager manifests and lockfiles, Dockerfiles, Terraform and
+  infrastructure configs, and database migrations.
 - **Risky change shapes**: Scans added or modified lines in diff hunks for destructive SQL (`DROP TABLE`, `ALTER ... RENAME`,
   `REVOKE ... ON/FROM`, `TRUNCATE`), authentication and secrets keywords, cache invalidations, and any custom patterns
   configured in `extra_risky_shapes`.
@@ -693,56 +701,100 @@ PR-Agent logs a warning and skips that pattern for the rest of the review.
 
 ### Merge recommendation
 
-When `require_merge_recommendation` is enabled, PR-Agent computes the recommendation from deterministic checks;
-the model can only make it more cautious. `no_concerns_found` requires passing CI on the reviewed head, a current
-head, human authors, no sensitive paths or risky changes, and a diff within `max_changed_lines`. A check that
-cannot be evaluated fails closed. The review includes each check and its result.
+When `require_merge_recommendation` is enabled, PR-Agent computes the published verdict from deterministic checks.
+The model can only make the verdict more cautious: it can lower a clean verdict, or raise `needs_review` to
+`changes_required`, but it cannot override a failed deterministic check.
 
-When `publish_merge_recommendation_status` is enabled, PR-Agent publishes the verdict against the exact head SHA
-that was reviewed. GitHub uses the `PR Agent - Review` check run and GitLab uses a commit status. `needs_review`
-publishes as neutral on GitHub and skipped on GitLab, so it does not block a merge. `changes_required` publishes
-as failure/failed and blocks merging when that status is required by branch protection or the project's merge rules.
-A new commit has no PR-Agent verdict status until it is reviewed.
+**Checks and sources**
 
-The line cap, sensitive-path patterns, and custom risky-shape patterns are host-only settings; repository,
-per-directory, and comment configuration cannot weaken or replace them. The verdict scans the complete PR diff,
-including ignored paths and files already reviewed by an incremental review. If the full diff or a trustworthy CI
-timestamp is unavailable, the verdict cannot be `no_concerns_found`.
+- `CI on reviewed head` (deterministic): requires passing CI for the reviewed head. Unavailable CI status fails
+  closed.
+- `Head is current with its base` (deterministic): requires the reviewed head to be current with its base for
+  reviewed files. Unavailable staleness status fails closed.
+- `Human authors` (deterministic): requires all authors to be human. Bot/unlinked or unavailable author data fails
+  closed.
+- `No sensitive paths or risky changes` (deterministic): requires no findings from deterministic risk checks
+  (`sensitive_paths`, risky diff shapes, deleted files). Unavailable risk-check data fails closed.
+- `Changed lines within cap` (deterministic): requires total added/removed lines within
+  `pr_reviewer.max_changed_lines`. Unavailable line counts fail closed.
+- `Model merge recommendation` (model, veto only): if the model returns `needs_review` or `changes_required`, the
+  verdict cannot be `no_concerns_found`.
+- `Model risk level` (model, veto only): if the model returns `medium` or `high` risk, the verdict cannot be
+  `no_concerns_found`.
+
+`no_concerns_found` requires all deterministic checks to pass and no model veto. If any deterministic check cannot be
+evaluated, the verdict fails closed. The review includes each check and its result.
+
+**Configuration and status publishing**
+
+- `pr_reviewer.sensitive_paths`: glob patterns for files treated as sensitive by deterministic risk checks.
+  Host-only.
+- `pr_reviewer.max_changed_lines`: host-only changed-line cap for `no_concerns_found`. Counts added and removed
+  lines.
+- `pr_reviewer.extra_risky_shapes`: host-only custom regex patterns scanned in added/modified diff lines.
+- `publish_merge_recommendation_status`: publishes the verdict for the exact reviewed head SHA. GitHub uses the
+  `PR Agent - Review` check run; GitLab uses a commit status.
+
+`needs_review` publishes as neutral on GitHub and skipped on GitLab, so it does not block merges by itself.
+`changes_required` publishes as failure/failed and blocks merges when that status is required. To require it, add
+`PR Agent - Review` as a required status/check in your GitHub branch protection rule or ruleset, or require the
+PR-Agent commit status in your GitLab project's merge rules. A new commit has no PR-Agent verdict status until it is
+reviewed.
+
+The verdict scans the complete PR diff, including ignored paths and files already reviewed by an incremental review.
+If the full diff or a trustworthy CI timestamp is unavailable, the verdict cannot be `no_concerns_found`.
 
 ### Gated auto-approval
 
 :::warning
 
-Off by default. An approval counts toward a protected branch's required reviews, so enable it only where an
-automated approval of small, clean changes is acceptable. PR-Agent never merges.
+Off by default and host-only (`config.enable_auto_approval`). An approval counts toward a protected branch's
+required reviews, so enable it only where an automated approval of small, clean changes is acceptable. PR-Agent
+never merges.
 
 :::
 
 When the host sets `config.enable_auto_approval` (for example `CONFIG__ENABLE_AUTO_APPROVAL=true`), `/review` on
-GitHub approves the exact commit it reviewed when all of these hold:
+GitHub and GitLab approves the exact commit it reviewed only when all of these hold:
 
 - the computed merge recommendation is `no_concerns_found`;
 - the model returned both a merge recommendation and a risk level, so `require_merge_recommendation` and
-  `require_risk_assessment` must be on;
+  `require_risk_assessment` must be enabled;
 - the review covered the whole pull request: not an incremental review, no file left out or cut short to fit the
   model's context, and no part of the diff failed;
 - the review completed and its finding state could be updated.
 
 Each `/review` run withdraws the approval PR-Agent gave when it starts, and approves again only when it ends with all
-of these holding, so a run that fails or finds a concern leaves no approval behind. On a push, a change of base branch or a reopen, the GitHub App and the GitHub Action dismiss it
-before any other event filter runs. PR-Agent only dismisses approvals it gave automatically; manual approvals from
-the same account are left alone. With `publish_output` off, nothing is approved or dismissed.
+of these holding, so a run that fails or finds a concern leaves no approval behind. On a push, the GitHub App, the
+GitHub Action, and the GitLab webhook dismiss it before any other event filter runs. A change of base branch also
+dismisses it, and on GitHub so does a reopen. On GitHub, PR-Agent only dismisses approvals it gave automatically;
+manual approvals from the same account are left alone. On GitLab, an approval belongs to the token's account, so use
+an account reserved for PR-Agent. With `publish_output` off, nothing is approved or dismissed.
 
 `enable_auto_approval` is host-only: a repository `.pr_agent.toml` or a comment argument cannot turn it on.
 
 **Required repository settings.**
 
-- Turn on "Dismiss stale pull request approvals when new commits are pushed" in the branch protection rule or
-  ruleset. PR-Agent can miss a push (a failed webhook delivery, a polling deployment, or a workflow that does not
-  listen to `synchronize`), and GitHub only removes a stale approval itself when this is on.
+- On GitHub, turn on "Dismiss stale pull request approvals when new commits are pushed" in the branch protection
+  rule or ruleset. PR-Agent can miss a push (a failed webhook delivery, a polling deployment, or a workflow that
+  does not listen to `synchronize`), and GitHub only removes a stale approval itself when this is on.
+- On GitLab, enable merge request approvals for the project and keep approvals reset on push in the project's
+  approval settings, so a missed webhook does not leave a stale approval behind.
 - For the GitHub Action, allow "GitHub Actions to create and approve pull requests" in the repository's Actions
   settings. Pull requests from forks get a read-only token, so they cannot be approved.
 - If the rule restricts who can dismiss reviews, include PR-Agent's account; otherwise it cannot withdraw its own
   approval, and only logs an error.
 
-GitHub does not let an account approve a pull request it opened. Other git providers are not supported yet.
+GitHub does not let an account approve a pull request it opened. GitLab can also reject approval by the merge
+request author according to the project's approval settings. Other git providers are not supported yet.
+
+**Suggested rollout**
+
+1. Enable `require_merge_recommendation`, `require_risk_assessment`, and `publish_merge_recommendation_status` on
+   the host. Tune `sensitive_paths` and `max_changed_lines` as needed.
+2. Require the published verdict status in branch protection or merge rules, and verify verdicts on representative
+   PRs.
+3. Enable `config.enable_auto_approval` for a limited scope first (or a pilot environment), confirm approvals are
+   dismissed on push/base changes, and monitor outcomes.
+4. Expand gradually once the behavior matches your repository's review policy. Keep PR-Agent's account permissions
+   and stale-approval settings in place.

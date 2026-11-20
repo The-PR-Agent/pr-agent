@@ -56,11 +56,13 @@ not existing human-applied PR labels.
 `review`, `describe`, and `ask` are supported, along with their
 `review_pr`, `describe_pr`, and `ask_question` aliases. `improve` and `improve_code` run `review`.
 `generate_labels` also works with raw diffs and can write its filtered labels as JSON.
+`update_changelog` can generate a changelog draft to stdout (`--output` is not supported for it),
+but cannot read or update an existing repository changelog file in this mode.
 Because there is no hosting
 platform to push to, `review` writes its findings, including any fixes, as a single markdown
 document to stdout (and to `--output`, if given), with each fix as a text block in the
 summary, instead of as committable inline suggestions. Commands that require live platform interaction (such as
-`update_changelog` or `similar_issue`) are not meaningful in this mode.
+`similar_issue`) are not meaningful in this mode.
 
 By default, `describe` uses `Local diff review` as the title in stdout and `--output`;
 set `pr_description.generate_ai_title=true` to use an AI-generated title.
@@ -108,6 +110,9 @@ that use it, but does not add model requests.
    `ask`/`ask_question` writes the `question`, `answer`, and `usage`, including a note when no diff is analyzable.
    `generate_labels` writes the filtered `labels` list and `usage`; it never
    combines existing user labels into that list.
+   With `--json-output`, a run whose command fails or that the request policy skips exits with status 1;
+   parser errors, such as an unreadable diff file or empty input, exit with status 2.
+   A skipped run (for example, `config.include_pr_labels` is set and a diff has no labels) writes no JSON file.
 
 No platform token, no PR URL, and no internet access are required for the diff processing
 step itself. An LLM API key is still needed unless you configure a local model.

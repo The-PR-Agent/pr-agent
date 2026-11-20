@@ -16,7 +16,7 @@ import openai
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
-import pr_agent.algo.ai_handlers.litellm_helpers as litellm_helpers
+from pr_agent.algo.ai_handlers import litellm_helpers
 from pr_agent.algo.ai_handlers.litellm_ai_handler import DUMMY_LITELLM_API_KEY, LiteLLMAIHandler
 
 
@@ -5912,6 +5912,7 @@ async def test_openai_sdk_request_blocks_residual_organization_and_headers(monke
         "openrouter/model",
         "deepseek/model",
         "groq/model",
+        "opencode_go/deepseek-v4.1-flash",
         "gpt-5-pro",
         "azure/codex-mini",
         "azure/responses/custom-deployment",
@@ -5941,6 +5942,7 @@ async def test_raw_http_request_rejects_residual_headers_without_omit_values(mon
         "openrouter/model",
         "deepseek/model",
         "groq/model",
+        "opencode_go/deepseek-v4.1-flash",
         "gpt-5-pro",
         "azure/codex-mini",
         "azure/responses/custom-deployment",
@@ -7592,7 +7594,7 @@ def header_only_native_auth(monkeypatch):
 
 
 @pytest.mark.parametrize("route", (
-    "neosantara", "tensormesh", "parasail", "meta", "pinstripes",
+    "neosantara", "tensormesh", "parasail", "empiriolabs", "meta", "pinstripes",
     "xai", "ragflow", "ragflow_agent", "azure_ai", "azure_ai_key",
 ))
 @pytest.mark.parametrize("entrypoint", ("chat", "probe"))
@@ -7693,9 +7695,7 @@ def test_json_responses_native_config_contract():
         "cortecs", "prism", "sail", "coralbricks", "inferenceapis", "aiand", "openinfer",
         "refuseless", "zerogpu",
     }
-    # Pinned native HTTP client selection rejects this registry-only provider
-    # before authentication; do not claim transport coverage for that path.
-    assert providers - {provider.value for provider in litellm.LlmProviders} == {"empiriolabs"}
+    assert providers <= {provider.value for provider in litellm.LlmProviders}
     for provider in providers:
         # The native manager checks Python overrides before the JSON registry.
         selected = ProviderConfigManager.get_provider_responses_api_config(provider, model="test-model")

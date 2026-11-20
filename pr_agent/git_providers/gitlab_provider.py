@@ -109,6 +109,9 @@ class GitLabDiffNotReadyError(IncompleteGitLabDiffError):
 _DIFF_READY_RETRY_DELAYS = (2, 5, 10)
 _diff_ready_sleep = time.sleep
 
+# GitLab rejects a merge request title longer than this (HTTP 400).
+MAX_PR_TITLE_GITLAB_LENGTH = 255
+
 # Keep requests small: GitLab limits multi-blob GraphQL responses to 20 MB.
 # The wall-clock budget is best-effort while Requests waits for response headers.
 _GRAPHQL_CONTENT_BATCH = 10
@@ -1078,8 +1081,6 @@ class GitLabProvider(GitProvider):
             return False
         return True
 
-    def supports_incremental_kind(self, kind: str) -> bool:
-        return kind in self._INCREMENTAL_ANCHOR_PREFIXES
 
     def supports_issue_reference_tickets(self) -> bool:
         return True
@@ -1186,12 +1187,6 @@ class GitLabProvider(GitProvider):
         self._latest_commit_url = None
         self.id_project, self.id_mr = self._parse_merge_request_url(merge_request_url)
         self.mr = self._get_merge_request()
-        try:
-            # the versions endpoint is ordered newest-first, so the latest diff is the first entry
-            self.last_diff = self.mr.diffs.list(page=1, per_page=1, get_all=False)[0]
-        except IndexError as e:
-            get_logger().error(f"Could not get diff for merge request {self.id_mr}")
-            raise DiffNotFoundError(f"Could not get diff for merge request {self.id_mr}") from e
 
     # Match the most recent prior note for each incremental kind against any accepted identity,
     # then use its timestamp as the timeline anchor.
@@ -1212,6 +1207,7 @@ class GitLabProvider(GitProvider):
         # MR changes cache re-polls together with the diff cache it feeds.
         self._merge_request_changes_cache = None
         self._diff_mr_refs = None
+        self._incremental_unfiltered_files = None
 
     def get_incremental_commits(self, incremental: IncrementalPR | None = None, kind: str = "review"):
         """Populate state needed for an incremental run.
@@ -1229,6 +1225,7 @@ class GitLabProvider(GitProvider):
         # next get_diff_files() call reflects the scope configured here.
         self.diff_files = None
         self._diff_mr_refs = None
+        self._incremental_unfiltered_files = None
         self._merge_request_changes_cache = None
         self.mr_commits = None
         self._commit_diff_refs = None
@@ -1415,14 +1412,24 @@ class GitLabProvider(GitProvider):
     def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> str | None:
         self.incremental = incremental
         self.diff_files = None
+        self._incremental_unfiltered_files = None
         self.unreviewed_files_map = {}
         self._commit_diff_refs = None
         loaded = vars(self).setdefault("_loaded_commits", {})
         if commit.sha not in loaded:
-            gl_commit = self.gl.projects.get(self.id_project, lazy=True).commits.get(commit.sha)
-            parent_ids = list(getattr(gl_commit, "parent_ids", None) or [])
-            loaded[commit.sha] = parent_ids, (list(gl_commit.diff(get_all=True, per_page=100))
-                                              if len(parent_ids) == 1 else [])
+            project = self.gl.projects.get(self.id_project, lazy=True)
+            if commit.parents is not None:
+                parent_ids = list(commit.parents)
+                diffs = (
+                    list(project.commits.get(commit.sha, lazy=True).diff(get_all=True, per_page=100))
+                    if len(parent_ids) == 1
+                    else []
+                )
+            else:
+                gl_commit = project.commits.get(commit.sha)
+                parent_ids = list(getattr(gl_commit, "parent_ids", None) or [])
+                diffs = list(gl_commit.diff(get_all=True, per_page=100)) if len(parent_ids) == 1 else []
+            loaded[commit.sha] = parent_ids, diffs
         parent_ids, diffs = loaded[commit.sha]
         if len(parent_ids) != 1:
             get_logger().info(f"Skipping commit {commit.sha} with {len(parent_ids)} parents in per commit review")
@@ -1818,6 +1825,11 @@ class GitLabProvider(GitProvider):
             head_sha_for_content = diff_refs.get('head_sha')
         raw_changes = self._expand_submodule_changes(raw_changes, diff_refs)
         diffs_original = raw_changes
+        self._incremental_unfiltered_files = (
+            [c for c in diffs_original if c.get('new_path') or c.get('old_path')]
+            if incremental_active
+            else None
+        )
         diffs = filter_ignored(diffs_original, 'gitlab')
         if diffs != diffs_original:
             try:
@@ -1965,7 +1977,12 @@ class GitLabProvider(GitProvider):
     def publish_description(self, pr_title: str, pr_body: str) -> None:
         try:
             if pr_title is not None:
-                self.mr.title = _neutralize_gitlab_mentions(pr_title)
+                # Neutralization can insert a zero-width space after @, so apply
+                # the 255-character title cap after that rewrite. An overlong AI
+                # title would fail the whole publish, including a body that fits.
+                pr_title = _neutralize_gitlab_mentions(pr_title)
+                pr_title = self.limit_title_characters(pr_title, MAX_PR_TITLE_GITLAB_LENGTH)
+                self.mr.title = pr_title
             self.mr.description = _neutralize_gitlab_mentions(pr_body)
             self.mr.save()
         except (GitlabError, RequestException) as e:
@@ -2003,6 +2020,65 @@ class GitLabProvider(GitProvider):
         except (GitlabError, RequestException, AttributeError) as e:
             get_logger().exception(f"Could not get head SHA: {e}")
             return ""
+
+    def _own_approval_present(self) -> bool | None:
+        """Return whether this account approved the MR, or None when that cannot be read."""
+        try:
+            approvals = self.mr.approvals.get()
+            approved_by = getattr(approvals, "approved_by", None)
+            own_user_id = self._get_own_user_id()
+            if not isinstance(approved_by, list) or own_user_id is None:
+                return None
+            for entry in approved_by:
+                user = entry.get("user") if isinstance(entry, dict) else getattr(entry, "user", None)
+                user_id = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
+                if user_id is not None and str(user_id) == str(own_user_id):
+                    return True
+            return False
+        except (GitlabError, RequestException, AttributeError):
+            return None
+
+    def auto_approve(self, body: str = "") -> bool:
+        """Approve the merge request at the exact revision this run reviewed.
+
+        GitLab moves an approval with the branch, so pin the approval to the reviewed
+        head and target, and verify after approving that neither moved.
+        """
+        reviewed_head_sha = getattr(self, "_diff_head_sha", None)
+        if not isinstance(reviewed_head_sha, str) or not reviewed_head_sha:
+            get_logger().info("Skipping auto-approval: no reviewed head SHA to pin")
+            return False
+        approved = False
+        try:
+            if not self._cleanup_revision_is_current(reviewed_head_sha):
+                get_logger().info("Skipping auto-approval: the merge request revision changed since the review")
+                return False
+            self.mr.approve(sha=reviewed_head_sha)
+            approved = True
+            if not self._cleanup_revision_is_current(reviewed_head_sha):
+                self.mr.unapprove()
+                get_logger().info("Withdrew auto-approval: the merge request revision changed during approval")
+                return False
+            return True
+        except (GitlabError, RequestException, AttributeError) as e:
+            get_logger().exception(f"Failed to auto-approve merge request: {e}")
+            if approved:
+                try:
+                    self.mr.unapprove()
+                except (GitlabError, RequestException, AttributeError) as unapprove_error:
+                    get_logger().exception(f"Failed to withdraw auto-approval: {unapprove_error}")
+            return False
+
+    def revoke_auto_approval(self, reason: str) -> bool:
+        """Withdraw PR-Agent's approval from the merge request."""
+        try:
+            if self._own_approval_present() is False:
+                return True
+            self.mr.unapprove()
+            return True
+        except (GitlabError, RequestException, AttributeError) as e:
+            get_logger().exception(f"Failed to revoke auto-approval: {e}")
+            return False
 
     def publish_merge_recommendation_status(self, recommendation: str) -> bool:
         """Publish the computed verdict as a GitLab commit status on the reviewed head SHA."""
@@ -2280,9 +2356,6 @@ class GitLabProvider(GitProvider):
     def should_publish_review_as_thread(self) -> bool:
         return _as_bool_setting(get_settings().get("GITLAB.PUBLISH_REVIEW_AS_THREAD", False))
 
-    def should_publish_improve_as_thread(self) -> bool:
-        return _as_bool_setting(get_settings().get("GITLAB.PUBLISH_IMPROVE_AS_THREAD", False))
-
     def should_reply_to_trigger_comment(self) -> bool:
         return _as_bool_setting(get_settings().get("GITLAB.REPLY_TO_TRIGGER_COMMENT", False))
 
@@ -2292,8 +2365,6 @@ class GitLabProvider(GitProvider):
     def supports_review_finding_state(self) -> bool:
         return True
 
-    def supports_code_suggestion_state(self) -> bool:
-        return True
 
     def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
         try:
@@ -2766,7 +2837,8 @@ class GitLabProvider(GitProvider):
         if body and body not in recent:
             recent.append(body)
 
-    def _record_if_unconfirmed_suggestion_write(self, error, body, store, body_fp, code_fp, as_draft) -> bool:
+    @staticmethod
+    def _suggestion_write_may_have_landed(error) -> bool:
         if isinstance(error, (ConnectTimeout, InvalidHeader, InvalidSchema, InvalidURL, MissingSchema)):
             return False  # The request never reached GitLab.
         if isinstance(error, RequestsConnectionError):
@@ -2780,7 +2852,10 @@ class GitLabProvider(GitProvider):
         status = getattr(error, "response_code", None)
         if status is None:
             status = getattr(getattr(error, "response", None), "status_code", None)
-        if isinstance(status, int) and 400 <= status < 500 and status != 408:
+        return not (isinstance(status, int) and 400 <= status < 500 and status != 408)
+
+    def _record_if_unconfirmed_suggestion_write(self, error, body, store, body_fp, code_fp, as_draft) -> bool:
+        if not self._suggestion_write_may_have_landed(error):
             return False
         get_logger().warning(
             f"GitLab did not confirm suggestion creation for MR {self.id_mr}; "
@@ -2855,6 +2930,42 @@ class GitLabProvider(GitProvider):
                                                         original_suggestion, store, body_fp, code_fp)
             return created
 
+    def _post_file_level_fallback(self, as_draft: bool, body_fallback: str, diff, target_file) -> None:
+        """Post the general file note as a resolvable file-level thread (position_type 'file').
+
+        The notes endpoint ignores a position, so a note posted there is standalone and cannot be
+        resolved. If GitLab rejects the file position (e.g. an older self-managed version), post the
+        plain note instead. Only a failure that cannot have created the thread (a 4xx, or one before
+        the request reached GitLab) falls back; any other propagates so the caller does not post a
+        duplicate."""
+        new_path = target_file.filename
+        file_position = {
+            'base_sha': diff.base_commit_sha,
+            'start_sha': diff.start_commit_sha,
+            'head_sha': diff.head_commit_sha,
+            'position_type': 'file',
+            'new_path': new_path,
+            'old_path': getattr(target_file, 'old_filename', None) or new_path,
+        }
+        try:
+            if as_draft:
+                self.mr.draft_notes.create({'note': body_fallback, 'position': file_position})
+            else:
+                self.mr.discussions.create({'body': body_fallback, 'position': file_position})
+        except (GitlabError, RequestException) as error:
+            if self._suggestion_write_may_have_landed(error):
+                raise
+            get_logger().debug(f"File-level position not accepted for {new_path} in MR {self.id_mr}; "
+                               f"posting a plain note: {error}")
+            if as_draft:
+                self.mr.draft_notes.create({'note': body_fallback})
+            else:
+                self.mr.notes.create({'body': body_fallback})
+        if as_draft:
+            self._code_suggestion_draft_queued = True
+        else:
+            self._remember_published_inline_comment_body(body_fallback)
+
     def _create_suggestion_note(self, as_draft: bool, body: str, pos_obj: dict, diff, target_file,
                                 relevant_file: str, original_suggestion, store, body_fp, code_fp) -> bool:
         """Creates the anchored suggestion comment, falling back to a general file note if GitLab
@@ -2862,7 +2973,14 @@ class GitLabProvider(GitProvider):
         attempt succeeded."""
         try:
             if as_draft:
-                self.mr.draft_notes.create({'note': body, 'position': pos_obj})
+                draft = self.mr.draft_notes.create({'note': body, 'position': pos_obj})
+                if self._is_unanchored_line_draft(draft):
+                    # draft_notes.create accepts a line position outside the diff (line_code null) where
+                    # discussions.create returns 400; bulk_publish then fails on it or leaves it pending.
+                    self._delete_unanchored_draft(draft)
+                    # A 4xx keeps _record_if_unconfirmed_suggestion_write from treating this as a landed write.
+                    raise GitlabCreateError("GitLab could not anchor the draft note to a diff line",
+                                            response_code=400)
                 self._code_suggestion_draft_queued = True
             else:
                 self.mr.discussions.create({'body': body, 'position': pos_obj})
@@ -2895,11 +3013,13 @@ class GitLabProvider(GitProvider):
                     new_code_snippet = original_suggestion['improved_code']
                     content = original_suggestion['suggestion_content']
                     label = original_suggestion['label']
-                    score = original_suggestion.get('score', 7)
+                    score = original_suggestion.get('score')
 
                 score_why = str(original_suggestion.get('score_why') or "").strip()
                 link = self.get_line_link(relevant_file, line_start, line_end)
-                body_fallback =f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
+                # /review findings carry no importance score; do not invent one
+                tag = f"[{label}, importance: {score}]" if score is not None else f"[{label}]"
+                body_fallback =f"**Suggestion:** {content} {tag}\n\n"
                 if score_why:
                     body_fallback += f"Why: {score_why}\n\n"
                 body_fallback += (f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):"
@@ -2921,21 +3041,9 @@ class GitLabProvider(GitProvider):
                 # A review finding's markers let the reviewer verify this note and skip it on the next run.
                 body_fallback = body_with_carried_markers(
                     body_fallback, body, getattr(self, "max_comment_chars", None))
-                # Create a general note on the file in the MR
-                fallback_position = {
-                    'base_sha': diff.base_commit_sha,
-                    'start_sha': diff.start_commit_sha,
-                    'head_sha': diff.head_commit_sha,
-                    'position_type': 'text',
-                    'file_path': f'{target_file.filename}',
-                }
+                # Post a resolvable file-level thread; a plain note is the fallback (see _post_file_level_fallback)
                 fallback_create_attempted = True
-                if as_draft:
-                    self.mr.draft_notes.create({'note': body_fallback, 'position': fallback_position})
-                    self._code_suggestion_draft_queued = True
-                else:
-                    self.mr.notes.create({'body': body_fallback, 'position': fallback_position})
-                    self._remember_published_inline_comment_body(body_fallback)
+                self._post_file_level_fallback(as_draft, body_fallback, diff, target_file)
                 get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
                 if store is not None:
                     store.add(body_fp)
@@ -2972,13 +3080,51 @@ class GitLabProvider(GitProvider):
             return None
         return latest_diff
 
+    @staticmethod
+    def _is_unanchored_line_draft(draft) -> bool:
+        if getattr(draft, 'line_code', '') is not None:
+            return False
+        position = getattr(draft, 'position', None)
+        return isinstance(position, dict) and (position.get('new_line') is not None
+                                               or position.get('old_line') is not None)
+
+    def _delete_unanchored_draft(self, draft) -> bool:
+        try:
+            draft.delete()
+            return True
+        except (GitlabError, RequestException) as e:
+            get_logger().error(f"Could not delete unanchored draft note {getattr(draft, 'id', None)} in MR "
+                               f"{self.id_mr}; it may stay pending: {e}")
+            return False
+
+    def _remember_published_draft(self, draft) -> None:
+        body = getattr(draft, "note", "") or ""
+        if body:
+            self._remember_published_inline_comment_body(body)
+
     def _publish_suggestion_drafts(self, pending) -> None:
-        if pending:
+        # Drafts GitLab could not anchor never publish, so drop them rather than record them as published.
+        unanchored = [draft for draft in pending if self._is_unanchored_line_draft(draft)]
+        all_deleted = all([self._delete_unanchored_draft(draft) for draft in unanchored])
+        pending = [draft for draft in pending if draft not in unanchored]
+        if not pending:
+            return
+        if all_deleted:
             self.mr.draft_notes.bulk_publish()
             for draft in pending:
-                body = getattr(draft, "note", "") or ""
-                if body:
-                    self._remember_published_inline_comment_body(body)
+                self._remember_published_draft(draft)
+            return
+        # bulk_publish would include the undeletable draft, and GitLab before 19.6 fails the whole batch on it.
+        first_error = None
+        for draft in pending:
+            try:
+                draft.publish()
+            except (GitlabError, RequestException) as e:
+                first_error = first_error or e
+                continue
+            self._remember_published_draft(draft)
+        if first_error is not None:
+            raise first_error
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         # Runs first so the fingerprints it frees are in the store before any dedup lookup.
@@ -3074,9 +3220,9 @@ class GitLabProvider(GitProvider):
                     if relevant_line_in_file is None:
                         get_logger().warning(f"Skipping suggestion: no source line for '{relevant_file}'")
                         continue
-                    # Keep the existing fallback path for anchors outside the diff. GitLab will
-                    # reject the optimistic addition position and _create_suggestion_note will
-                    # publish the general file note instead.
+                    # Keep the existing fallback path for anchors outside the diff. GitLab rejects
+                    # the optimistic addition position (a draft comes back without a line_code) and
+                    # _create_suggestion_note publishes the general file note instead.
                     source_line_no = -1
                     target_line_no = relevant_lines_start + 1
                     found = True

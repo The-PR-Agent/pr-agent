@@ -93,10 +93,16 @@ Add automated PR reviews to your repository with a simple workflow file:
 name: PR Agent
 on:
   pull_request:
+    # PR-Agent skips synchronize by default. Include it in github_action_config.pr_actions
+    # for auto commands, or enable github_action_config.handle_push_trigger for push_commands (takes precedence).
     types: [opened, synchronize]
 jobs:
   pr_agent_job:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
     - name: PR Agent action step
       uses: the-pr-agent/pr-agent@main
@@ -112,7 +118,8 @@ Run PR-Agent locally on your repository:
 
 ```bash
 pip install "pr-agent[github]"
-export OPENAI_KEY=your_key_here
+export OPENAI__KEY=your_openai_key
+export GITHUB__USER_TOKEN=your_github_token
 pr-agent --pr_url https://github.com/owner/repo/pull/123 review
 ```
 Git provider SDKs are optional extras: install the one for your provider ([list](https://docs.pr-agent.ai/installation/locally/#using-pip-package)), or `pr-agent[all]` for every integration.
@@ -133,7 +140,7 @@ Full notes for every release are on the [Releases page](https://github.com/the-p
 
 ### 🎯 Built for Real Development Teams
 
-**Fast & Affordable**: Each command (`/review`, `/ask`) uses a single LLM call (~30 seconds, low cost)
+**Fast & Affordable**: Simple `/review` and `/ask` requests can use one LLM call; retries, fallbacks, and larger reviews may need more.
 
 **Handles Any PR Size**: Our [PR Compression strategy](https://docs.pr-agent.ai/core-abilities/compression_strategy/) effectively processes both small and large PRs
 

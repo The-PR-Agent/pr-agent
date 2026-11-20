@@ -41,15 +41,9 @@ The commands above assume the `pr_agent` package is importable — use the venv 
 3. **git provider**: The [git_provider](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) field in a configuration file determines the GIT provider that will be used by PR-Agent. Currently, the following providers are supported:
    `github` **(default)**, `gitlab`, `bitbucket`, `bitbucket_server`, `azure`, `codecommit`, `local`, `gerrit`, `gitea`, and `plain-diff`.
 
-4. For scripts that need a failed request to return a non-zero process status, enable command error propagation:
+4. A failed request returns a non-zero process status, so scripts and CI jobs can detect it. The installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1 when the request fails or a command records a failure even though it returns successfully (for example, when no model produced a prediction). In the latter case, the CLI logs a warning explaining the non-zero exit.
 
-   ```bash
-   python -m pr_agent.cli --pr_url=<pr_url> review --config.propagate_command_errors=true
-   ```
-
-   With `config.propagate_command_errors=true`, the installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1 when a propagated command error makes the request fail or a command records a failure even though it returns successfully. In the latter case, the CLI logs a warning explaining the non-zero exit.
-
-   Command error propagation is disabled by default, preserving the existing status 0 behavior for these command failures. Argparse parse and usage errors continue to exit with status 2.
+   This does not depend on `config.propagate_command_errors`, which controls whether a command re-raises an internal error instead of swallowing it. A review that was published as a partial result after its fallback chain was exhausted still exits with status 0 unless that setting is enabled (see [`/review`](../commands/review.md)). Argparse parse and usage errors continue to exit with status 2.
 
 ### CLI Health Check
 
@@ -128,6 +122,29 @@ disable_auto_feedback = true
 ```
 
 When this parameter is set to `true`, PR-Agent will not run any automatic commands (like `describe` and `review`) when a new PR is opened, or when new code is pushed to an open PR.
+
+### Skipping runs when nothing changed
+
+Rebases, reopened PRs and CI pipelines that re-run when the target branch moves can run `/review` and `/describe` again on a PR that has not changed. To skip those runs, set:
+
+```toml
+[config]
+skip_unchanged_diff = true
+```
+
+An automatic or CLI `/review` or `/describe` run is then skipped, with no model calls, when, since that command last succeeded on the PR, either of these holds:
+
+- The head commit and the target branch name are the same. The branch is compared by name, not by its latest commit, so new commits on the target branch do not trigger a run. This check needs the provider to report the target branch.
+- The diff is the same, for example after a rebase that changed no content. Hunk line numbers are ignored, so a rebase that only moves the changes within their files counts as the same diff. This check is off when a file has no patch, such as a binary file, because its content can change without changing the diff.
+
+PR-Agent keeps its record in one comment on the PR, and edits it to say when a run was skipped and why. The record is written only after a command finishes cleanly, so a failed, partial, or degraded run is retried next time, and clears that command's earlier record if it attempted to update the PR's output or labels.
+
+- A command typed in a PR comment, such as `/review`, always runs. When it succeeds it updates the record and takes down that command's skip notice, so the next automatic run skips if nothing has changed since.
+- Incremental review (`/review -i`) and per commit review always run.
+- Output that belongs to one head commit is never left behind by a skip. `/review` always runs while `config.enable_auto_approval` or `pr_reviewer.publish_merge_recommendation_status` is on, and both commands always run while `github.publish_as_check_run` is on.
+- Some automatic runs are requested by a person: assigning PR-Agent as a GitLab reviewer (`gitlab.reviewer_commands`), a GitHub review request, or a GitHub review submitted with changes requested (`review_commands`). These are skipped too when nothing has changed; comment the command to run it.
+- Changing the configuration or model does not count as a change. Comment the command to run it again.
+- The setting works only on providers that can verify which comments PR-Agent wrote: GitHub, GitLab, and Azure DevOps when its identity is configured. On other providers every run goes ahead.
 
 ### GitHub App
 
@@ -320,8 +337,8 @@ For detailed step-by-step examples of configuring different models (Gemini, Clau
 **Common Model Configuration Patterns:**
 
 - **OpenAI**: Set `config.model: "<openai-model>"` and `OPENAI_KEY`
-- **Gemini**: Set `config.model: "gemini/gemini-3.8-flash"` and `GOOGLE_AI_STUDIO.GEMINI_API_KEY` (no `OPENAI_KEY` needed)
-- **Claude**: Set `config.model: "anthropic/claude-opus-5"` and `ANTHROPIC.KEY` (no `OPENAI_KEY` needed)
+- **Gemini**: Set `config.model` to a `gemini/` model ID and `GOOGLE_AI_STUDIO.GEMINI_API_KEY` (no `OPENAI_KEY` needed)
+- **Claude**: Set `config.model` to an `anthropic/` model ID and `ANTHROPIC.KEY` (no `OPENAI_KEY` needed)
 - **Azure OpenAI**: Set `OPENAI.API_TYPE: "azure"`, `OPENAI.API_BASE`, and `OPENAI.DEPLOYMENT_ID`
 - **Local Models**: Set `config.model: "ollama/model-name"` and `OLLAMA.API_BASE`
 
@@ -362,7 +379,7 @@ push_commands = [
 ]
 ```
 
-Note that to use the 'handle_push_trigger' feature, you need to give the gitlab webhook also the "Push events" scope.
+To use `handle_push_trigger`, enable GitLab `Merge request events`. New commits trigger a merge request `update` event with `oldrev`; the separate `Push events` trigger is not required.
 
 The GitLab webhook can also respond to the bot being assigned or explicitly re-requested as a reviewer on an open MR.
 The configuration toggle `handle_reviewer_assignment` can be used to enable this feature.
@@ -434,7 +451,7 @@ push_commands = [
 
 ### BitBucket Server webhook
 
-For a BitBucket Server webhook deployment, new commits pushed to an open PR (the `pr:from_ref_updated` and `repo:refs_changed` events) run no commands by default. To run commands on each **push**, set (for example):
+For a BitBucket Server webhook deployment, new commits pushed to an open PR arrive as `pr:from_ref_updated` ("Source branch updated" in the webhook settings) and run no commands by default. The repository "Push" event (`repo:refs_changed`) carries no pull request and is ignored. To run commands on each **push**, subscribe the webhook to `pr:from_ref_updated` and set (for example):
 
 ```toml
 [bitbucket_server]

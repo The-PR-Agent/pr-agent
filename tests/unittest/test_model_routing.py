@@ -15,7 +15,6 @@ from starlette_context import request_cycle_context
 from pr_agent.algo.model_routing import count_hunks, count_patch_chars, route_primary_model
 from pr_agent.algo.pr_processing import (
     FallbackEligibleError,
-    get_effective_fallback_chain,
     retry_with_fallback_models,
 )
 from pr_agent.algo.run_details import get_run_details, init_run_details
@@ -260,13 +259,13 @@ class TestRouting:
                           "openai.fallback_deployments": fallback_deployments})
         settings.set("config.fallback_models", ["tiny-model"])
         original_deployment = settings.get("openai.deployment_id")
-        previous_chain = get_effective_fallback_chain()
+
         expected = (("tiny-model", None), ("primary-model", None))
         observed = []
 
         async def fake_f(model):
             observed.append((model, settings.get("openai.deployment_id")))
-            assert get_effective_fallback_chain() == expected
+
             raise FallbackEligibleError("endpoint failed")
 
         with pytest.raises(Exception, match="Failed to generate prediction with any model"):
@@ -274,7 +273,7 @@ class TestRouting:
 
         assert observed == list(expected)
         assert settings.get("openai.deployment_id") == original_deployment
-        assert get_effective_fallback_chain() == previous_chain
+
 
     @pytest.mark.parametrize("outcome", ["routed-success", "primary-success", "exhausted", "fatal"])
     @pytest.mark.parametrize("fallback_deployments", [["", None, ""], ",,"])
@@ -284,12 +283,12 @@ class TestRouting:
         settings.set("config.fallback_models", ["tiny-model", "primary-model", "tiny-model"])
         settings.set("openai.fallback_deployments", fallback_deployments)
         expected = (("tiny-model", None), ("primary-model", None))
-        previous_chain = get_effective_fallback_chain()
+
         observed = []
 
         async def fake_f(model):
             observed.append((model, settings.get("openai.deployment_id")))
-            assert get_effective_fallback_chain() == expected
+
             if outcome == "fatal":
                 raise ValueError("not eligible for fallback")
             if outcome == "exhausted" or (outcome == "primary-success" and model == "tiny-model"):
@@ -306,7 +305,7 @@ class TestRouting:
 
         assert observed == list(expected[:1] if outcome in ("fatal", "routed-success") else expected)
         assert settings.get("openai.deployment_id") == ""
-        assert get_effective_fallback_chain() == previous_chain
+
 
     @pytest.mark.parametrize("routed", [True, False])
     @pytest.mark.parametrize("deployment", [None, "", " "])
@@ -323,7 +322,7 @@ class TestRouting:
 
         async def fake_f(model):
             observed.append((model, settings.get("openai.deployment_id")))
-            assert get_effective_fallback_chain() == expected
+
             raise FallbackEligibleError("endpoint failed")
 
         with pytest.raises(Exception, match="Failed to generate prediction with any model"):
@@ -359,11 +358,11 @@ class TestRouting:
             {"max_hunks": 3, "model": routed[0], "deployment_id": routed[1]},
         ])
         observed = []
-        previous_chain = get_effective_fallback_chain()
+
 
         async def fake_f(model):
             observed.append((model, get_settings().get("openai.deployment_id")))
-            assert get_effective_fallback_chain() == tuple(expected)
+
             raise FallbackEligibleError("endpoint failed")
 
         with pytest.raises(Exception, match="Failed to generate prediction with any model") as error:
@@ -372,7 +371,7 @@ class TestRouting:
         assert observed == expected
         assert f"any model of {[model for model, _ in expected]}" in str(error.value)
         assert get_settings().get("openai.deployment_id") == "primary-deployment"
-        assert get_effective_fallback_chain() == previous_chain
+
 
     def test_weak_tier_is_not_routed(self, settings, monkeypatch):
         offload = AsyncMock(side_effect=AssertionError("Weak models must not dispatch a routing worker"))

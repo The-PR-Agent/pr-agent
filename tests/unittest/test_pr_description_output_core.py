@@ -924,13 +924,15 @@ class TestRoundTripWithProcessDescription:
         if marker_suffix:
             marker = "<!-- pr-agent:file-walkthrough-escaped -->"
             table = table.replace(marker + line_ending, marker + marker_suffix + line_ending)
+        intro = "Acceptance criteria before unfinished <!-- example"
         description = (
-            f"<details><summary><h3>{PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>"
+            f"{intro}\n\n<details><summary><h3>{PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>"
             f"{table}</details>"
         )
 
-        _, files = process_description(description)
+        base, files = process_description(description)
 
+        assert base == intro
         assert len(files) == 1
         assert files[0]["full_file_name"] == filename
         assert files[0]["short_summary"] == "Keep path"
@@ -1099,8 +1101,17 @@ class TestRoundTripWithProcessDescription:
         assert "src/app.py\n\nDetails." in table
         obj.git_provider.get_line_link.assert_called_once_with("src/app.py", relevant_line_start=-1)
 
+    @pytest.mark.parametrize("intro", [
+        "Some intro text.",
+        "Require displaying the label File Walkthrough in the UI.\n\n"
+        + "<details><summary>Acceptance criteria</summary>\n\n"
+        + "Reject invoices without manager approval.\n\n</details>",
+        '<table><thead><tr><th></th><th align="left">Relevant files</th></tr></thead><tbody>'
+        + "</tbody></table>\n\nAcceptance: keep this user-authored table.",
+        "An unmatched ` must not hide the generated walkthrough.",
+    ], ids=["plain", "earlier-details", "earlier-table", "unmatched-backtick"])
     @patch("pr_agent.commands.pr_description.get_settings")
-    def test_walkthrough_table_round_trips_through_process_description(self, mock_get_settings):
+    def test_walkthrough_table_round_trips_through_process_description(self, mock_get_settings, intro):
         mock_get_settings.return_value = _settings(collapsible_file_list=False)
         obj = _make_instance()
         diff = FilePatchInfo("", "", "", "src/app.py")
@@ -1115,14 +1126,14 @@ class TestRoundTripWithProcessDescription:
         table = obj.process_pr_files_prediction("", value)
 
         full_description = (
-            "Some intro text.\n\n___\n\n"
+            f"{intro}\n\n___\n\n"
             f"<details> <summary><h3> {PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>\n\n"
             f"{table}\n\n</details>\n\n___\n\nFooter"
         )
 
         base, files = process_description(full_description)
 
-        assert base.startswith("Some intro text.")
+        assert base == f"{intro}\n\n___"
         # At least one structured file entry was recovered.
         assert files, "expected process_description to recover at least one file entry"
         recovered = files[0]
@@ -1130,11 +1141,177 @@ class TestRoundTripWithProcessDescription:
         assert recovered["full_file_name"] == "src/app.py"
         assert "Add cache" in recovered["short_summary"]
 
+    @pytest.mark.parametrize("collapsible", [False, True], ids=["flat", "collapsible"])
+    @pytest.mark.parametrize("summary", ["Require manager approval.", ""], ids=["full", "title-only"])
+    @pytest.mark.parametrize("separator", ["\n\n", ": ", "\n\n- Details\n\n    "],
+                             ids=["block", "inline", "nested-marker"])
+    @patch("pr_agent.commands.pr_description.get_settings")
+    def test_marker_walkthrough_preserves_text_before_the_table(
+        self, mock_get_settings, summary, separator, collapsible,
+    ):
+        mock_get_settings.return_value = _settings(collapsible_file_list=collapsible)
+        obj = _make_instance()
+        obj.vars = {"title": "Approval", "include_file_summary_changes": bool(summary)}
+        intro = (
+            "Require displaying the label File Walkthrough in the UI.\n\n"
+            '<table><thead><tr><th></th><th align="left">Relevant files</th></tr></thead><tbody>'
+            "</tbody></table>\n\n"
+            "Acceptance criteria: reject invoices without manager approval.\n\n"
+            f"## File Walkthrough{separator}"
+        )
+        obj.data = {"pr_files": [{
+            "filename": "src/app.py", "label": "backend", "changes_title": "Require approval",
+            "changes_summary": summary,
+        }]}
+        obj.file_label_dict = obj._prepare_file_labels()
+        obj.git_provider = MagicMock()
+        obj.git_provider.is_supported.return_value = True
+        obj.git_provider.get_diff_files.return_value = []
+        obj.git_provider.get_line_link.return_value = "https://example/blob/main/src/app.py#L1"
+        intro = obj.process_pr_files_prediction("", obj.file_label_dict) + "\n\n" + intro
+        obj.user_description = intro + "pr_agent:walkthrough"
+
+        _, description = obj._prepare_pr_answer_with_markers()
+        base, files = process_description(description)
+
+        assert base == intro.strip()
+        assert files == ([{
+            "short_file_name": "app.py", "full_file_name": "src/app.py",
+            "short_summary": "Require approval", "long_summary": "* Require manager approval.",
+        }] if summary else [])
+
+    @pytest.mark.parametrize("quoted", [
+        "```html\n{}\n```",
+        "~~~html\n{}\n~~~",
+        "- Example:\n\n    ```html\n    {}\n    ```",
+        "- Example:\r\n\r\n    ```html\r\n    {}\r\n    ```",
+        "- Example:\n\n\t```html\n\t{}\n\t```",
+        "- ```html\n  {}\n  ```",
+        "> {}",
+        "> ```html\n> {}\n> ```",
+        "<!--\n{}\n-->",
+        "> ```html\n> {}\n```\nAnother fenced example\n```",
+        "Use `{}` as an example.",
+        "Use ``literal ` {}`` as an example.",
+        "An unmatched ` before ``{}`` is literal.",
+    ], ids=["backticks", "tildes", "list-fence", "crlf-list-fence", "tab-list-fence", "list-inline-fence", "blockquote",
+            "quoted-fence", "html-comment", "separate-fence-after-quote", "inline", "double-inline",
+            "unmatched-inline"])
+    def test_walkthrough_examples_are_not_description_boundaries(self, quoted):
+        walkthrough = (
+            "<details><summary><h3>File Walkthrough</h3></summary>"
+            '<table><thead><tr><th></th><th align="left">Relevant files</th></tr></thead><tbody>'
+            "</tbody></table></details>"
+        )
+        description = "Keep this example.\n\n" + quoted.format(walkthrough) + "\n\nKeep the acceptance criteria."
+
+        assert process_description(description) == (description, [])
+
+        assert process_description(description + "\n\n" + walkthrough) == (description, [])
+
+    @pytest.mark.parametrize("intro", [
+        "Intro",
+        "Intro with a literal `<!--` example.",
+        "Intro with an HTML example:\n\n```html\n<!--\n```",
+        "> <!-- comment opener in a quote\n\nIntro",
+    ], ids=["plain", "inline-code", "fenced-code", "blockquote"])
+    def test_commented_walkthrough_with_escaped_file_marker_is_preserved(self, intro):
+        walkthrough = (
+            '<details><summary><h3>File Walkthrough</h3></summary>\n'
+            '<table><tr><td><details><summary><strong>app.py</strong>'
+            '<dd><code>Keep approval</code></dd></summary><hr>\n'
+            '<!-- pr-agent:file-walkthrough-escaped -->\n'
+            'src/app.py\n\n- Require manager approval</details></td></tr></table></details>'
+        )
+        description = f'{intro}\n\n<!--\n{walkthrough}\n-->\n\nAcceptance: keep this note.'
+
+        assert process_description(description) == (description, [])
+        generated = walkthrough.replace('app.py', 'real.py')
+        base, files = process_description(description + '\n\n' + generated)
+        assert base == description
+        assert len(files) == 1
+        assert files[0]['full_file_name'] == 'src/real.py'
+
+    @pytest.mark.parametrize("summary", ["Require manager approval.", ""], ids=["full", "title-only"])
+    @patch("pr_agent.commands.pr_description.get_settings")
+    def test_marker_table_without_walkthrough_heading_preserves_author_text(self, mock_get_settings, summary):
+        mock_get_settings.return_value = _settings(collapsible_file_list=False)
+        obj = _make_instance()
+        obj.git_provider = MagicMock()
+        obj.git_provider.is_supported.return_value = True
+        obj.git_provider.get_diff_files.return_value = []
+        obj.git_provider.get_line_link.return_value = "https://example.test/file"
+        table = obj.process_pr_files_prediction("", {"backend": [("src/app.py", "Require approval", summary)]})
+        description = "Intro\n\n" + table + "\n\nAcceptance: keep the authored text."
+
+        base, files = process_description(description)
+
+        assert base == description
+        assert files == []
+
+    def test_many_single_line_comments_do_not_hide_generated_walkthrough(self):
+        intro = "Intro " + "<!-- example -->" * 32768
+        walkthrough = "<details><summary><h3>File Walkthrough</h3></summary>Generated</details>"
+
+        assert process_description(intro + walkthrough) == (intro.strip(), [])
+
+    def test_fenced_nested_marker_inside_author_comment_preserves_description(self):
+        description = (
+            "Intro\n\n<!--\n```html\n<!-- pr-agent:file-walkthrough-escaped -->\n```\n"
+            "<details><summary><h3>File Walkthrough</h3></summary>Example</details>\n"
+            "-->\n\nAcceptance: keep the authored text."
+        )
+
+        assert process_description(description) == (description, [])
+
+    @pytest.mark.parametrize("intro", [
+        "Intro\n\n```html\n<p>Example</p>\n\nAcceptance: manager approval.\n\n",
+        "Intro\n\n~~~html\n<p>Example</p>\n\nAcceptance: manager approval.\n\n",
+        "- Example:\n\n    ```html\n    <p>Example</p>\n\nAcceptance: manager approval.\n\n",
+        "- ```html\n  <p>Example</p>\n\nAcceptance: manager approval.\n\n",
+    ], ids=["top-level-backticks", "top-level-tildes", "nested-list-fence", "list-marker-fence"])
+    def test_unclosed_fence_does_not_hide_generated_walkthrough(self, intro):
+        walkthrough = (
+            "<details><summary><h3>File Walkthrough</h3></summary>\n"
+            "<table><tr><td><details><summary><strong>app.py</strong>"
+            "<dd><code>Keep approval</code></dd></summary>\n"
+            "<hr>\nsrc/app.py\n- Require manager approval"
+            "</details></td></tr></table></details>"
+        )
+
+        base, files = process_description(intro + walkthrough)
+
+        assert base == intro.strip()
+        assert len(files) == 1
+        assert files[0]["full_file_name"] == "src/app.py"
+        assert files[0]["short_summary"] == "Keep approval"
+
     def test_process_description_returns_empty_on_empty_input(self):
         assert process_description("") == ("", [])
 
-    def test_process_description_without_walkthrough_returns_full_text(self):
-        text = "Just a description without any walkthrough section."
+    @pytest.mark.parametrize("text", [
+        "Just a description without any walkthrough section.",
+        "Require displaying the label File Walkthrough in the UI.\n\nAcceptance: require manager approval.",
+        "File Walkthrough is the label required in the UI.",
+        "The required label is File Walkthrough",
+        "## File Walkthrough\n\nAcceptance: require manager approval.",
+        "```\nFile Walkthrough\n```\n\nAcceptance: require manager approval.",
+        "> File Walkthrough\n\nAcceptance: require manager approval.",
+        "<details-foo><summary><h3>File Walkthrough</h3></summary>\n"
+        + "Acceptance: keep this custom element.\n</details-foo>",
+        "Show File Walkthrough in the UI. File Walkthrough must remain visible.",
+        "File Walkthrough example:\n"
+        + '<table><thead><tr><th></th><th align="left">Relevant files</th></tr></thead><tbody>'
+        + "</tbody></table>\n\nAcceptance: require manager approval.",
+        'Example:\n\n    <table><thead><tr><th></th><th align="left">Relevant files</th></tr></thead><tbody>'
+        + "<tr><td><strong>Documentation</strong></td></tr></tbody></table>\n\n"
+        + "Acceptance: require manager approval.",
+        'Need the label File Walkthrough.\n\n'
+        + '<table><thead><tr><th></th><th align="left">Relevant files</th></tr></thead><tbody>'
+        + '<tr><td><strong>Documentation</strong></td><td>Release notes</td></tr></tbody></table>\n\n'
+        + 'Acceptance: require manager approval.',
+    ])
+    def test_process_description_without_walkthrough_returns_full_text(self, text):
         base, files = process_description(text)
         assert base == text
         assert files == []

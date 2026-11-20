@@ -1,5 +1,7 @@
 import subprocess
 import sys
+import tomllib
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -55,6 +57,8 @@ def test_normalize_file_path():
     [
         (".github/workflows/deploy.yml", True),
         (".github/workflows/sub/ci.yaml", True),
+        (".github/actions/setup/action.yml", True),
+        (".github/actions/deploy/action.yaml", True),
         (".gitlab-ci.yml", True),
         ("Jenkinsfile", True),
         ("Jenkinsfile.deploy", True),
@@ -94,6 +98,12 @@ def test_normalize_file_path():
 def test_matches_sensitive_path_defaults(path, expected_match):
     matched = dr.matches_sensitive_path(path)
     assert bool(matched) is expected_match
+
+
+def test_default_sensitive_paths_match_shipped_configuration():
+    config_path = Path(dr.__file__).parents[1] / "settings" / "configuration.toml"
+    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert config["pr_reviewer"]["sensitive_paths"] == list(dr.DEFAULT_SENSITIVE_PATHS)
 
 
 def test_matches_sensitive_path_custom():
@@ -252,7 +262,6 @@ class _SlowPattern:
     def search(self, text, timeout=None):
         self.timeouts.append(timeout)
         self.clock[0] += 1 / 32
-        return None
 
 
 def test_pattern_slow_on_every_line_is_dropped_after_its_review_budget(monkeypatch, risk_settings):
@@ -499,3 +508,379 @@ def test_reviewer_drops_model_supplied_risk_checks_row(risk_settings):
     # The clean git diff had no files, so build_risk_checks was None;
     # hallucinated risk_checks must be dropped
     assert "hallucinated" not in markdown
+
+
+@pytest.mark.parametrize(
+    ("unreviewed_files_map", "rename_sources", "expanded_unfiltered", "expected_in_markdown"),
+    [
+        (
+            {"src/app.py": SimpleNamespace(filename="src/app.py", previous_filename=None)},
+            [],
+            None,
+            False,
+        ),
+        (
+            {"config/sample.txt": SimpleNamespace(filename="config/sample.txt", previous_filename="Dockerfile")},
+            [],
+            None,
+            True,
+        ),
+        (
+            {"config/sample.txt": SimpleNamespace(filename="config/sample.txt", previous_filename=None)},
+            ["Dockerfile"],
+            None,
+            True,
+        ),
+        (
+            {"config/sample.txt": {"new_path": "config/sample.txt", "old_path": "Dockerfile"}},
+            [],
+            None,
+            True,
+        ),
+        (
+            {"submod": {"new_path": "submod", "old_path": "submod"}},
+            [],
+            [{"new_path": "submod/ignored.gen", "old_path": "submod/Dockerfile"}],
+            True,
+        ),
+        (
+            {".github/workflows/deploy.yml": "@@ -1 +1 @@\n-name: old\n+name: new\n"},
+            [],
+            None,
+            True,
+        ),
+        (
+            {},
+            [],
+            None,
+            False,
+        ),
+    ],
+    ids=[
+        "clean-commit",
+        "github-rename",
+        "github-rename-then-modify",
+        "gitlab-rename",
+        "gitlab-expanded-submodule",
+        "ado-patch-value",
+        "empty-map",
+    ],
+)
+def test_reviewer_incremental_scopes_risk_paths_to_unreviewed_files(
+    risk_settings, unreviewed_files_map, rename_sources, expanded_unfiltered, expected_in_markdown
+):
+    from unittest.mock import patch
+
+    clean_patch = FilePatchInfo(
+        base_file="x = 1\n",
+        head_file="x = 2\n",
+        patch="@@ -1 +1 @@\n-x = 1\n+x = 2\n",
+        filename="src/app.py",
+        edit_type=EDIT_TYPE.MODIFIED,
+    )
+    stale_full_pr_patch = FilePatchInfo(
+        base_file="SELECT 1;\n",
+        head_file="DROP TABLE users;\n",
+        patch="@@ -1 +1 @@\n-SELECT 1;\n+DROP TABLE users;\n",
+        filename="db/migrations/001_drop.sql",
+        edit_type=EDIT_TYPE.MODIFIED,
+    )
+    empty_incremental = unreviewed_files_map == {} and not expanded_unfiltered
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = MagicMock()
+    reviewer.git_provider.get_diff_files.return_value = [stale_full_pr_patch] if empty_incremental else [clean_patch]
+    reviewer.git_provider.get_pr_file_paths.return_value = [".github/workflows/ci.yml", "src/app.py"]
+    reviewer.git_provider.get_files.return_value = [".github/workflows/ci.yml", "src/app.py"]
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = ["Dockerfile"] if empty_incremental else []
+    reviewer.git_provider.unreviewed_files_map = unreviewed_files_map
+    reviewer.git_provider.unreviewed_rename_sources = rename_sources
+    reviewer.git_provider._incremental_unfiltered_files = expanded_unfiltered
+    reviewer.git_provider.is_supported.return_value = True
+    reviewer.git_provider.publish_structured_review = None
+    reviewer.git_provider.get_pr_url.return_value = "https://example/pr/1"
+    reviewer.git_provider.incremental = SimpleNamespace(first_new_commit_sha="abc1234")
+    reviewer.pr_url = "https://example/pr/1"
+    reviewer.token_handler = MagicMock()
+    reviewer.remaining_files_list = []
+    reviewer.partial_files_list = []
+    reviewer.incremental = SimpleNamespace(is_incremental=True)
+    reviewer.vars = {}
+    reviewer.prediction = "review:\n  relevant_tests: Yes\n"
+    reviewer.prediction_data = None
+    reviewer.review_chunk_count = 1
+    reviewer.review_failed_chunk_count = 0
+
+    with patch("pr_agent.commands.pr_reviewer.github_action_output"):
+        markdown = reviewer._prepare_pr_review()
+
+    reviewer.git_provider.get_pr_file_paths.assert_not_called()
+    reviewer.git_provider.get_files.assert_not_called()
+    assert ("Risk checks:" in markdown) is expected_in_markdown
+    assert ".github/workflows/ci.yml" not in markdown
+
+
+def test_reviewer_merge_recommendation_keeps_pr_wide_risk_paths_when_incremental(risk_settings):
+    from unittest.mock import patch
+
+    clean_patch = FilePatchInfo(
+        base_file="x = 1\n",
+        head_file="x = 2\n",
+        patch="@@ -1 +1 @@\n-x = 1\n+x = 2\n",
+        filename="src/app.py",
+        edit_type=EDIT_TYPE.MODIFIED,
+    )
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = MagicMock()
+    reviewer.git_provider.get_diff_files.return_value = [clean_patch]
+    reviewer.git_provider.get_verdict_diff_files.return_value = [clean_patch]
+    reviewer.git_provider.get_pr_file_paths.return_value = [".github/workflows/ci.yml", "src/app.py"]
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = []
+    reviewer.git_provider.unreviewed_files_map = {
+        "src/app.py": SimpleNamespace(filename="src/app.py", previous_filename=None)
+    }
+    reviewer.git_provider.is_supported.return_value = True
+    reviewer.git_provider.publish_structured_review = None
+    reviewer.git_provider.get_pr_url.return_value = "https://example/pr/1"
+    reviewer.git_provider.incremental = SimpleNamespace(first_new_commit_sha="abc1234")
+    reviewer.pr_url = "https://example/pr/1"
+    reviewer.token_handler = MagicMock()
+    reviewer.remaining_files_list = []
+    reviewer.partial_files_list = []
+    reviewer.incremental = SimpleNamespace(is_incremental=True)
+    reviewer.vars = {"require_merge_recommendation": True}
+    reviewer.prediction = "review:\n  relevant_tests: Yes\n"
+    reviewer.prediction_data = None
+    reviewer.review_chunk_count = 1
+    reviewer.review_failed_chunk_count = 0
+
+    with (
+        patch("pr_agent.commands.pr_reviewer.github_action_output"),
+        patch(
+            "pr_agent.commands.pr_reviewer.compute_merge_verdict",
+            return_value={"recommendation": "Ready to merge", "checks": []},
+        ),
+    ):
+        markdown = reviewer._prepare_pr_review()
+
+    reviewer.git_provider.get_pr_file_paths.assert_called_once_with()
+    assert ".github/workflows/ci.yml" in markdown
+
+
+def test_github_get_incremental_commits_preserves_overwritten_rename_sources():
+    from pr_agent.git_providers.git_provider import IncrementalPR
+    from pr_agent.git_providers.github_provider import GithubProvider
+
+    provider = GithubProvider.__new__(GithubProvider)
+    commit_rename = SimpleNamespace(
+        sha="c1",
+        parents=[object()],
+        _rawData={"parents": [{}]},
+        commit=SimpleNamespace(message="rename"),
+        get_files=lambda **_: [SimpleNamespace(filename="config/sample.txt", previous_filename="Dockerfile")],
+    )
+    commit_modify = SimpleNamespace(
+        sha="c2",
+        parents=[object()],
+        _rawData={"parents": [{}]},
+        commit=SimpleNamespace(message="modify"),
+        get_files=lambda **_: [SimpleNamespace(filename="config/sample.txt", previous_filename=None)],
+    )
+    provider.pr = SimpleNamespace(commits=2, head=SimpleNamespace(sha="c2"))
+    provider._get_repo = lambda: SimpleNamespace(default_branch="main")
+    provider.pr_commits = [commit_rename, commit_modify]
+    provider.get_previous_review = MagicMock(return_value=MagicMock())
+
+    def _commit_range():
+        provider.incremental.last_seen_commit = MagicMock()
+        return [commit_rename, commit_modify]
+
+    provider.get_commit_range = _commit_range
+
+    provider.get_incremental_commits(IncrementalPR(True))
+
+    assert provider.unreviewed_files_map["config/sample.txt"].previous_filename is None
+    assert provider.unreviewed_rename_sources == ["Dockerfile"]
+
+
+def test_gitlab_incremental_preserves_expanded_submodule_unfiltered_files():
+    from unittest.mock import patch
+
+    from pr_agent.git_providers.git_provider import IncrementalPR
+    from pr_agent.git_providers.gitlab_provider import GitLabProvider
+
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_mr = 1
+    provider.diff_files = None
+    provider._commit_diff_refs = SimpleNamespace(base_commit_sha="b", start_commit_sha="b", head_commit_sha="h")
+    provider._incremental_head_sha = "h"
+    provider._incremental_unfiltered_files = None
+    provider.incremental = IncrementalPR(True)
+    provider.incremental.last_seen_commit = SimpleNamespace(sha="b")
+    provider.unreviewed_files_map = {
+        "submod": {
+            "new_path": "submod",
+            "old_path": "submod",
+            "diff": "@@ -1 +1 @@\n-Subproject commit 1111111\n+Subproject commit 2222222\n",
+            "new_file": False,
+            "deleted_file": False,
+            "renamed_file": False,
+        }
+    }
+    expanded_child = {
+        "new_path": "submod/ignored.gen",
+        "old_path": "submod/Dockerfile",
+        "diff": "@@ -1 +1 @@\n-FROM a\n+FROM b\n",
+        "new_file": False,
+        "deleted_file": False,
+        "renamed_file": True,
+        "_submodule_child": True,
+    }
+    with (
+        patch.object(provider, "_expand_submodule_changes", return_value=[expanded_child]),
+        patch("pr_agent.git_providers.gitlab_provider.filter_ignored", return_value=[]),
+    ):
+        assert provider.get_diff_files() == []
+
+    assert provider._incremental_unfiltered_files == [expanded_child]
+
+
+def test_azure_incremental_preserves_unfiltered_and_rename_paths_and_resets(risk_settings):
+    from unittest.mock import patch
+
+    from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+    from pr_agent.git_providers.git_provider import IncrementalPR
+
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.workspace_slug = "proj"
+    provider.repo_slug = "repo"
+    provider.pr_num = 1
+    provider.pr_url = "https://dev.azure.com/org/proj/_git/repo/pullrequest/1"
+    provider.diff_files = None
+    provider._diff_path_map = None
+    provider.unreviewed_files_map = {}
+    provider._incremental_unfiltered_files = None
+    provider.pr_commits = [
+        SimpleNamespace(commit_id="c1", sha="c1", parents=["p0"]),
+        SimpleNamespace(commit_id="c2", sha="c2", parents=["c1"]),
+    ]
+    provider._find_incremental_anchor = MagicMock(return_value=object())
+
+    def _commit_range():
+        provider.incremental.first_new_commit = SimpleNamespace(sha="c1")
+        return list(provider.pr_commits)
+
+    provider._get_commit_range = _commit_range
+    changes_by_commit = {
+        "c1": SimpleNamespace(
+            changes=[
+                {
+                    "item": {"path": "/config/sample.txt", "gitObjectType": "blob"},
+                    "changeType": "rename",
+                    "originalPath": "/Dockerfile",
+                },
+                {"item": {"path": "/uv.lock", "gitObjectType": "blob"}, "changeType": "edit"},
+                {"item": {"path": "/src/app.py", "gitObjectType": "blob"}, "changeType": "edit"},
+            ]
+        ),
+        "c2": SimpleNamespace(
+            changes=[
+                {"item": {"path": "/config/sample.txt", "gitObjectType": "blob"}, "changeType": "edit"},
+            ]
+        ),
+    }
+    provider.azure_devops_client = SimpleNamespace(
+        get_changes=lambda commit_id, **_: changes_by_commit[commit_id]
+    )
+    provider.get_diff_files = MagicMock(
+        return_value=[
+            FilePatchInfo(
+                base_file="",
+                head_file="x = 1\n",
+                patch="@@ -0,0 +1 @@\n+x = 1\n",
+                filename="/src/app.py",
+                edit_type=EDIT_TYPE.MODIFIED,
+            )
+        ]
+    )
+    provider.get_pr_file_paths = MagicMock(return_value=["/Cargo.lock", "/src/app.py"])
+    provider.get_filtered_diff_file_names = MagicMock(return_value=[])
+    provider.is_supported = lambda capability: capability == "gfm_markdown"
+
+    provider.get_incremental_commits(IncrementalPR(True))
+
+    assert provider.unreviewed_files_map == {
+        "/config/sample.txt": "/config/sample.txt",
+        "/src/app.py": "/src/app.py",
+    }
+    assert provider._incremental_unfiltered_files == [
+        "/config/sample.txt",
+        "/Dockerfile",
+        "/uv.lock",
+        "/src/app.py",
+    ]
+
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = provider
+    reviewer.pr_url = provider.pr_url
+    reviewer.token_handler = MagicMock()
+    reviewer.remaining_files_list = []
+    reviewer.partial_files_list = []
+    reviewer.incremental = provider.incremental
+    reviewer.vars = {}
+    reviewer.prediction = "review:\n  relevant_tests: Yes\n"
+    reviewer.prediction_data = None
+    reviewer.review_chunk_count = 1
+    reviewer.review_failed_chunk_count = 0
+
+    with patch("pr_agent.commands.pr_reviewer.github_action_output"):
+        markdown = reviewer._prepare_pr_review()
+
+    provider.get_pr_file_paths.assert_not_called()
+    assert "Dockerfile" in markdown
+    assert "uv.lock" in markdown
+    assert "Cargo.lock" not in markdown
+
+    provider.diff_files = ["cached-incremental"]
+    provider.get_incremental_commits(IncrementalPR(False))
+    assert provider.diff_files is None
+    assert provider._incremental_unfiltered_files is None
+
+
+def test_prepare_pr_review_incremental_without_unreviewed_map_skips_full_pr_get_files(risk_settings):
+    from unittest.mock import patch
+
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.pr_url = "https://example/pr/1"
+    reviewer.token_handler = MagicMock()
+    reviewer.remaining_files_list = []
+    reviewer.partial_files_list = []
+    reviewer.incremental = SimpleNamespace(is_incremental=True)
+    reviewer.vars = {}
+    reviewer.prediction = "review:\n  relevant_tests: Yes\n"
+    reviewer.prediction_data = None
+    reviewer.review_chunk_count = 1
+    reviewer.review_failed_chunk_count = 0
+    reviewer.git_provider = SimpleNamespace(
+        get_diff_files=MagicMock(
+            return_value=[
+                FilePatchInfo(
+                    base_file="",
+                    head_file="x = 1\n",
+                    patch="@@ -0,0 +1 @@\n+x = 1\n",
+                    filename="src/app.py",
+                    edit_type=EDIT_TYPE.MODIFIED,
+                )
+            ]
+        ),
+        get_files=MagicMock(return_value=["uv.lock", "src/app.py"]),
+        get_filtered_diff_file_names=MagicMock(return_value=[]),
+        get_pr_url=lambda: "https://example/pr/1",
+        incremental=SimpleNamespace(first_new_commit_sha="abc1234"),
+        is_supported=lambda capability: capability == "gfm_markdown",
+    )
+
+    with patch("pr_agent.commands.pr_reviewer.github_action_output"):
+        markdown = reviewer._prepare_pr_review()
+
+    reviewer.git_provider.get_files.assert_not_called()
+    assert "uv.lock" not in markdown

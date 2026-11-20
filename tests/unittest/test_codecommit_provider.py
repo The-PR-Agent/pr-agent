@@ -1476,6 +1476,77 @@ class TestCodeCommitProvider:
 
         assert CodeCommitProvider._get_edit_type("X") is None
 
+    @staticmethod
+    def _make_description_provider():
+        provider = object.__new__(CodeCommitProvider)
+        provider.pr_num = 321
+        provider.codecommit_client = MagicMock()
+        return provider
+
+    def test_publish_description_caps_a_long_marker_description_after_doubling(self):
+        # CodeCommit has no gfm_markdown, so /describe emits no file walkthrough or usage guide.
+        # The reachable overflow is a long description (use_description_markers) whose newlines
+        # are doubled: it fits before the doubling, and UpdatePullRequestDescription rejected it.
+        provider = self._make_description_provider()
+        body = ("## Context\n" + "- keep rule A\n" * 700
+                + "\n### Summary\nRename the billing modules\n")
+        assert len(body) <= 10240 < len(CodeCommitProvider._add_additional_newlines(body))
+
+        provider.publish_description("AI title", body)
+
+        kwargs = provider.codecommit_client.publish_description.call_args.kwargs
+        assert kwargs["pr_title"] == "AI title"
+        published = kwargs["pr_body"]
+        assert len(published) == 10240
+        assert published.startswith("## Context\n\n- keep rule A\n\n- keep rule A\n\n")
+
+    def test_publish_description_truncates_a_body_still_over_the_limit_after_doubling(self):
+        provider = self._make_description_provider()
+        # 10,000 characters fit, but CodeCommit receives 12,000 once the newlines are doubled.
+        body = "line\n" * 2000
+
+        provider.publish_description(None, body)
+
+        published = provider.codecommit_client.publish_description.call_args.kwargs["pr_body"]
+        assert len(published) == 10240
+        assert published.endswith(" ... (description truncated due to length limit)")
+
+    def test_publish_description_keeps_a_body_within_the_limit(self):
+        provider = self._make_description_provider()
+        body = "### **Description**\n- Short change\n"
+
+        provider.publish_description("AI title", body)
+
+        published = provider.codecommit_client.publish_description.call_args.kwargs["pr_body"]
+        assert published == CodeCommitProvider._add_additional_newlines(body)
+
+
+    def test_publish_description_caps_a_title_over_the_api_limit(self):
+        # UpdatePullRequestTitle rejects a title longer than 150 characters.
+        # The client updates the title before the description, so an overlong
+        # AI title would fail the whole /describe publish, including a body
+        # that already fits the description limit.
+        provider = self._make_description_provider()
+        title = "A" * 200
+        body = "### **Description**\n- Short change\n"
+
+        provider.publish_description(title, body)
+
+        kwargs = provider.codecommit_client.publish_description.call_args.kwargs
+        published_title = kwargs["pr_title"]
+        assert len(published_title) == 150
+        assert published_title.endswith("...")
+        assert published_title.startswith("A")
+        assert kwargs["pr_body"] == CodeCommitProvider._add_additional_newlines(body)
+
+    def test_publish_description_keeps_a_title_within_the_limit(self):
+        provider = self._make_description_provider()
+        title = "A" * 150
+
+        provider.publish_description(title, "short")
+
+        assert provider.codecommit_client.publish_description.call_args.kwargs["pr_title"] == title
+
     def test_add_additional_newlines_doubles_newlines_in_short_text(self):
         # a short string to test adding double newlines
         input = "abc\ndef\n\n___\nghi\njkl\nmno\n\npqr\n"

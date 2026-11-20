@@ -2,12 +2,14 @@ import asyncio
 import copy
 import json
 import shlex
+import tomllib
 from contextlib import asynccontextmanager, contextmanager
-from functools import partial
+from functools import lru_cache, partial
+from pathlib import Path
 
 import dynaconf
 from opentelemetry.trace import StatusCode
-from starlette_context import context, request_cycle_context
+from starlette_context import context
 
 from pr_agent.agent.command_registry import COMMAND_SPECS
 from pr_agent.agent.request_policy import RequestOutcome, enforce_request_policy
@@ -23,11 +25,10 @@ from pr_agent.algo.i18n import t
 from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.utils import _fix_key_value, update_settings_from_args
-from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.commands.pr_questions import PRQuestions
 from pr_agent.commands.pr_reviewer import PRReviewer
-from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.config_loader import get_settings, global_settings, safe_request_cycle_context
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import (
     IncompleteBitbucketPullRequestFilesError as _IncompleteBitbucketPullRequestFilesError,
@@ -242,11 +243,49 @@ def _record_token_metrics(action: str, git_provider: str) -> None:
         get_ai_calls_counter().add(details.num_ai_calls, labels)
 
 
-def _normalize_publish_output_setting() -> None:
-    """Honor false-like strings without changing explicitly empty or invalid setting defaults."""
+@lru_cache(maxsize=1)
+def _boolean_setting_defaults() -> dict[str, bool]:
+    """Dynaconf paths to defaults for keys whose default is a boolean.
+
+    Read from pr_agent/settings/configuration.toml, the same file the settings
+    loader uses, so a boolean setting added later is covered without editing
+    this code. Keys without a boolean default (e.g. gitlab.ssl_verify, which
+    may hold a CA bundle path) never appear here and stay untouched.
+    """
+    config_path = Path(__file__).resolve().parent.parent / "settings" / "configuration.toml"
+    try:
+        with open(config_path, "rb") as config_file:
+            configuration = tomllib.load(config_file)
+    except Exception:
+        # The settings loader already failed in this case; keep the #4823
+        # behaviour for config.publish_output instead of breaking commands.
+        get_logger().warning("Failed to read boolean defaults from %s", config_path)
+        return {"CONFIG.PUBLISH_OUTPUT": True}
+    return {
+        f"{section}.{key}".upper(): value
+        for section, values in configuration.items()
+        if isinstance(values, dict)
+        for key, value in values.items()
+        if isinstance(value, bool)
+    }
+
+
+def _normalize_boolean_settings() -> None:
+    """Coerce string values of boolean-default settings to real booleans.
+
+    A quoted "false" in a comment argument or in a repository's .pr_agent.toml
+    reaches the commands as a string, which a plain truthiness read treats as
+    on (#5047). #4823 fixed this for config.publish_output only; this
+    generalises it to every key whose default in configuration.toml is a
+    boolean. Values that are already booleans or anything else are left
+    alone; only strings pass through _as_bool_setting with the key's own
+    default, so an unrecognized value warns and falls back to that default.
+    """
     settings = get_settings()
-    value = settings.config.publish_output
-    settings.set("CONFIG.PUBLISH_OUTPUT", _as_bool_setting(value, default=bool(value)))
+    for key, default in _boolean_setting_defaults().items():
+        value = settings.get(key)
+        if isinstance(value, str):
+            settings.set(key, _as_bool_setting(value, default=default, setting_name=key))
 
 
 @contextmanager
@@ -311,7 +350,7 @@ class PRAgent:
     async def _create_command(self, command_class, pr_url, **kwargs):
         """Offload eligible command setup while preserving its cancellation boundary."""
         if get_settings() is global_settings or command_class not in (
-            PRReviewer, PRDescription, PRCodeSuggestions, PRQuestions
+            PRReviewer, PRDescription, PRQuestions
         ):
             # Preserve shared settings and other commands' existing initialization
             # (some constructors also update external indexes).
@@ -345,6 +384,15 @@ class PRAgent:
     async def _handle_request(
         self, pr_url, request, notify=None, propagate_command_errors: bool | None = None
     ) -> bool | RequestOutcome:
+        if propagate_command_errors is not None:
+            try:
+                context["settings"]
+            except Exception:
+                # Create request-local settings before awaiting commands outside middleware.
+                with safe_request_cycle_context({"settings": copy.deepcopy(global_settings)}):
+                    return await self._handle_request(
+                        pr_url, request, notify, propagate_command_errors=propagate_command_errors
+                    )
         # Exceptions raised inside are caught below, but a BaseException (e.g. the
         # CancelledError a webhook timeout raises) still escapes the span, and the SDK
         # would auto-record its message and stacktrace — request content, so opt-in.
@@ -361,14 +409,6 @@ class PRAgent:
             try:
                 if propagate_command_errors is None:
                     return await self._run_command(pr_url, request, notify, span)
-                try:
-                    context["settings"]
-                except Exception:
-                    # Create request-local settings before awaiting commands outside middleware.
-                    with request_cycle_context({"settings": copy.deepcopy(global_settings)}):
-                        return await self._run_command(
-                            pr_url, request, notify, span, propagate_command_errors=propagate_command_errors
-                        )
                 return await self._run_command(
                     pr_url, request, notify, span, propagate_command_errors=propagate_command_errors
                 )
@@ -390,6 +430,9 @@ class PRAgent:
     ) -> bool | RequestOutcome:
         # Evaluate repository policy before command overrides, notifications or commands.
         apply_repo_settings(pr_url)
+        # Repository settings may carry quoted "false" strings; coerce them
+        # before any policy or command reads a boolean setting (#5047).
+        _normalize_boolean_settings()
         if enforce_request_policy(pr_url) is False:
             span.set_attribute("pr_agent.request.ignored", True)
             return RequestOutcome.SKIPPED
@@ -429,7 +472,7 @@ class PRAgent:
             if settings.config.get("response_language", "en-us") != previous_response_language:
                 settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)
             raise
-        _normalize_publish_output_setting()
+        _normalize_boolean_settings()
         language_overridden = settings.config.get("response_language", "en-us") != previous_response_language
 
         try:

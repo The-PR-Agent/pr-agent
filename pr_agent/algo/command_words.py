@@ -76,20 +76,19 @@ def _split_command(command: str, *, single_quotes: bool = True, raw: bool = Fals
                 quote = None
             else:
                 token.append(character)
+        elif character == '"':
+            quote = None
+        elif character == "\\":
+            if index + 1 >= len(command):
+                raise ValueError("No escaped character")
+            escaped = command[index + 1]
+            if escaped in {'"', "\\", "$", "`"}:
+                token.append(escaped)
+            elif escaped != "\n":
+                token.extend(("\\", escaped))
+            index += 1
         else:
-            if character == '"':
-                quote = None
-            elif character == "\\":
-                if index + 1 >= len(command):
-                    raise ValueError("No escaped character")
-                escaped = command[index + 1]
-                if escaped in {'"', "\\", "$", "`"}:
-                    token.append(escaped)
-                elif escaped != "\n":
-                    token.extend(("\\", escaped))
-                index += 1
-            else:
-                token.append(character)
+            token.append(character)
         index += 1
 
     if quote is not None:

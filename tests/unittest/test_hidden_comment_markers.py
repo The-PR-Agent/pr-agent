@@ -81,27 +81,3 @@ def test_bitbucket_character_budget_reserves_rendered_marker():
     suffix = "\n\n#### (Review updated until commit commit)\n"
     marker = render_hidden_marker(PRReviewIdentity.REGULAR.value, provider)
     assert reviewer._review_comment_max_chars() == 1000 - len(suffix) - len(marker) - 2
-
-
-@pytest.mark.parametrize("stored", hidden_marker_forms(PRCodeSuggestionsIdentity.SUMMARY.value))
-def test_suggestions_history_strips_both_forms_and_updates_existing_comment(stored):
-    from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
-
-    provider = BitbucketProvider.__new__(BitbucketProvider)
-    comment = SimpleNamespace(body=f"## Suggestions\n\n{stored}\n\nold")
-    provider.get_issue_comments_newest_first = MagicMock(return_value=[comment])
-    provider.edit_comment = MagicMock(return_value=True)
-    provider.publish_comment = MagicMock()
-    provider.get_latest_commit_url = MagicMock(return_value="https://example.com/commit/abc1234")
-    provider.get_comment_url = MagicMock(return_value="https://example.com/comment/1")
-    result = PRCodeSuggestions.publish_persistent_comment_with_history(
-        provider, f"## Suggestions\n\n{stored}\n\nnew", initial_header="## Suggestions",
-        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value, max_previous_comments=1,
-    )
-    assert result is comment
-    body = provider.edit_comment.call_args.args[1]
-    marker = render_hidden_marker(PRCodeSuggestionsIdentity.SUMMARY.value, provider)
-    assert body.count(marker) == 1
-    assert PRCodeSuggestionsIdentity.SUMMARY.value not in body
-    assert "new" in body
-    provider.publish_comment.assert_not_called()

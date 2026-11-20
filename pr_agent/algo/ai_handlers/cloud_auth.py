@@ -328,6 +328,7 @@ OPENAI_RAW_HTTP_REQUEST_PROVIDERS = {
     "hosted_vllm",
     "minimax",
     "openai_like",
+    "opencode_go",
     "openrouter",
     "ragflow",
     "together_ai",

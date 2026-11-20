@@ -35,6 +35,7 @@ MAX_FINDINGS_PER_CATEGORY = 10
 DEFAULT_SENSITIVE_PATHS: tuple[str, ...] = (
     # Workflows and CI files
     ".github/workflows/**",
+    ".github/actions/**",
     ".gitlab-ci.yml",
     "Jenkinsfile*",
     ".circleci/**",

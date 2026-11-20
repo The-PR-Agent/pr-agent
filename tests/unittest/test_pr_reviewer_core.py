@@ -28,7 +28,7 @@ from pr_agent.algo.token_budget import FallbackEligibleError
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.commands.pr_reviewer import PRReviewer, _code_lines, _review_failure_comment
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, safe_request_cycle_context
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.git_provider import (
     GitProvider,
@@ -265,6 +265,571 @@ async def test_prepare_prediction_offloads_diff_only_with_request_settings(reque
     assert reviewer.patches_diff == "diff"
     assert reviewer.remaining_files_list == ["src/one.py"]
     assert reviewer.prediction == _VALID_PREDICTION
+
+
+def _clone_request_settings():
+    base = get_settings(use_context=False)
+    _ = base.config
+    return copy.deepcopy(base)
+
+
+def _make_run_review_reviewer(provider, prediction: str, *, reviewer_cls=PRReviewer):
+    reviewer = reviewer_cls.__new__(reviewer_cls)
+    reviewer.git_provider = provider
+    reviewer.pr_url = "https://example/pr/1"
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {"require_merge_recommendation": False}
+    reviewer.prediction = None
+    reviewer.prediction_data = None
+    reviewer.remaining_files_list = []
+    reviewer.partial_files_list = []
+    reviewer.review_chunk_count = 1
+    reviewer.review_failed_chunk_count = 0
+    reviewer.low_confidence_filtered_count = 0
+    reviewer.alias_notice = ""
+    reviewer._review_commit = None
+
+    async def predict(*_args, **_kwargs):
+        reviewer.prediction = prediction
+
+    return reviewer, predict
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_scoped", [False, True], ids=["shared-settings", "request-settings"])
+async def test_run_review_offloads_prepare_pr_review_only_with_request_settings(monkeypatch, request_scoped):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    diff_file = FilePatchInfo(
+        base_file="x = 1\n",
+        head_file="x = 2\n",
+        patch="@@ -1,1 +1,1 @@\n-x = 1\n+x = 2\n",
+        filename="app.py",
+    )
+    provider = MagicMock()
+    provider.get_files.return_value = ["app.py"]
+    provider.get_diff_files.return_value = [diff_file]
+    provider.get_pr_file_paths.return_value = ["app.py"]
+    provider.get_filtered_diff_file_names.return_value = []
+    provider.is_supported.side_effect = lambda cap: cap in {"gfm_markdown", "get_labels"}
+    provider.supports_review_finding_state.return_value = False
+    provider.supports_review_comment_identity.return_value = False
+    provider.should_publish_review_as_thread.return_value = False
+
+    events = []
+    started = threading.Event()
+    release = threading.Event()
+    loop_thread = threading.get_ident()
+    seen = []
+
+    def fetch_labels(update=True):
+        seen.append((threading.get_ident(), get_settings(), update))
+        started.set()
+        if request_scoped:
+            assert release.wait(timeout=5)
+        return []
+
+    provider.get_pr_labels.side_effect = fetch_labels
+    provider.publish_labels.side_effect = lambda labels: events.append(("labels", labels))
+    provider.publish_comment.side_effect = lambda body, **_kw: events.append(("comment", body))
+
+    prediction = (
+        "review:\n"
+        "  estimated_effort_to_review_[1-5]: 2, concise\n"
+        "  relevant_tests: 'No'\n"
+        "  possible_issues: 'No'\n"
+        "  security_concerns: 'No'\n"
+    )
+    reviewer, predict = _make_run_review_reviewer(provider, prediction)
+    reviewer._should_publish_review_no_suggestions = lambda _: True
+    reviewer._deliver_sink_output = AsyncMock(side_effect=lambda: events.append(("sink", None)))
+
+    settings = _clone_request_settings() if request_scoped else get_settings()
+    if request_scoped:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = True
+        settings.pr_reviewer.persistent_comment = False
+        settings.pr_reviewer.inline_key_issues = False
+        settings.pr_reviewer.require_estimate_effort_to_review = True
+        settings.pr_reviewer.require_security_review = False
+        settings.pr_reviewer.enable_review_labels_effort = True
+        settings.pr_reviewer.enable_review_labels_security = False
+        settings.pr_reviewer.enable_help_text = False
+    else:
+        monkeypatch.setitem(settings.config, "publish_output", True)
+        monkeypatch.setitem(settings.config, "is_auto_command", True)
+        monkeypatch.setitem(settings.pr_reviewer, "persistent_comment", False)
+        monkeypatch.setitem(settings.pr_reviewer, "inline_key_issues", False)
+        monkeypatch.setitem(settings.pr_reviewer, "require_estimate_effort_to_review", True)
+        monkeypatch.setitem(settings.pr_reviewer, "require_security_review", False)
+        monkeypatch.setitem(settings.pr_reviewer, "enable_review_labels_effort", True)
+        monkeypatch.setitem(settings.pr_reviewer, "enable_review_labels_security", False)
+        monkeypatch.setitem(settings.pr_reviewer, "enable_help_text", False)
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", predict)
+
+    scope = safe_request_cycle_context({"settings": settings}) if request_scoped else nullcontext()
+    with scope:
+        if request_scoped:
+            task = asyncio.create_task(reviewer._run_review())
+            try:
+                # Confirm the event loop stays responsive while _prepare_pr_review blocks in the worker.
+                await asyncio.wait_for(asyncio.to_thread(started.wait, 5), timeout=5)
+                assert started.is_set()
+                await asyncio.sleep(0)
+                assert not task.done()
+                release.set()
+                await asyncio.wait_for(task, timeout=5)
+            finally:
+                release.set()
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+        else:
+            await reviewer._run_review()
+
+    assert len(seen) == 1
+    assert (seen[0][0] != loop_thread) is request_scoped
+    assert seen[0][1] is settings
+    assert seen[0][2] is True
+    assert [kind for kind, _ in events] == ["labels", "sink", "comment"]
+
+
+@pytest.mark.asyncio
+async def test_run_review_offloads_overridden_prepare_pr_review_hooks(monkeypatch):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    provider = MagicMock()
+    provider.get_files.return_value = ["app.py"]
+    provider.get_diff_files.return_value = []
+    provider.get_pr_file_paths.return_value = ["app.py"]
+    provider.get_filtered_diff_file_names.return_value = []
+    provider.is_supported.return_value = False
+    provider.supports_review_finding_state.return_value = False
+    provider.supports_review_comment_identity.return_value = False
+    provider.should_publish_review_as_thread.return_value = False
+
+    loop_thread = threading.get_ident()
+    hook_threads = []
+
+    class CustomReviewer(PRReviewer):
+        def _prepare_review_finding_state(self, data: dict) -> None:
+            hook_threads.append(("finding_state", threading.get_ident()))
+            super()._prepare_review_finding_state(data)
+
+        def _publish_key_issues_as_inline_comments(self, data: dict) -> dict:
+            hook_threads.append(("inline", threading.get_ident()))
+            return super()._publish_key_issues_as_inline_comments(data)
+
+    prediction = (
+        "review:\n"
+        "  estimated_effort_to_review_[1-5]: 1, simple\n"
+        "  key_issues_to_review:\n"
+        "    - relevant_file: app.py\n"
+        "      issue_header: Bug\n"
+        "      issue_content: Fix it\n"
+        "      start_line: 1\n"
+        "      end_line: 1\n"
+    )
+    reviewer, predict = _make_run_review_reviewer(provider, prediction, reviewer_cls=CustomReviewer)
+    reviewer._should_publish_review_no_suggestions = lambda _: True
+    reviewer._deliver_sink_output = AsyncMock()
+
+    settings = _clone_request_settings()
+    settings.config.publish_output = True
+    settings.config.is_auto_command = True
+    settings.pr_reviewer.persistent_comment = False
+    settings.pr_reviewer.inline_key_issues = True
+    settings.pr_reviewer.enable_review_labels_effort = False
+    settings.pr_reviewer.enable_review_labels_security = False
+    settings.pr_reviewer.enable_help_text = False
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", predict)
+
+    with safe_request_cycle_context({"settings": settings}):
+        await reviewer._run_review()
+
+    assert [name for name, _ in hook_threads] == ["finding_state", "inline"]
+    assert all(tid != loop_thread for _, tid in hook_threads)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("block_stage", ["file_paths", "labels"])
+async def test_run_review_cancellation_drains_real_prepare_pr_review_and_skips_writes(
+    monkeypatch, tmp_path, block_stage
+):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    output = tmp_path / "review.json"
+    diff_file = FilePatchInfo(
+        base_file="x = 1\n",
+        head_file="x = 2\n",
+        patch="@@ -1,1 +1,1 @@\n-x = 1\n+x = 2\n",
+        filename="app.py",
+    )
+    provider = MagicMock()
+    del provider.get_unfiltered_files
+    provider.get_files.return_value = ["app.py"]
+    provider.get_diff_files.return_value = [diff_file]
+    provider.get_filtered_diff_file_names.return_value = []
+    provider.is_supported.side_effect = lambda cap: cap in {"gfm_markdown", "get_labels"}
+    provider.supports_review_finding_state.return_value = False
+    provider.supports_review_comment_identity.return_value = False
+    provider.should_publish_review_as_thread.return_value = False
+    provider.get_pr_url.return_value = "https://example/pr/1"
+    provider.publish_comment.return_value = "progress-handle"
+
+    started = threading.Event()
+    release = threading.Event()
+    events = []
+
+    def wait_for_cancel():
+        started.set()
+        assert release.wait(timeout=5)
+        events.append("worker_exit")
+
+    def get_pr_file_paths():
+        if block_stage == "file_paths":
+            wait_for_cancel()
+            return None
+        return ["app.py"]
+
+    def get_pr_labels(update=True):
+        if block_stage == "labels":
+            wait_for_cancel()
+        return []
+
+    provider.get_pr_file_paths.side_effect = get_pr_file_paths
+    provider.get_pr_labels.side_effect = get_pr_labels
+    provider.remove_comment.side_effect = lambda handle: events.append(("remove_comment", handle))
+
+    prediction = (
+        "review:\n"
+        "  estimated_effort_to_review_[1-5]: 2, concise\n"
+        "  relevant_tests: 'No'\n"
+        "  possible_issues: 'No'\n"
+        "  security_concerns: 'No'\n"
+        "  merge_recommendation: ready_to_merge\n"
+        "  risk_level: low\n"
+    )
+    reviewer, _ = _make_run_review_reviewer(provider, prediction)
+    reviewer.vars = {"require_merge_recommendation": True}
+    reviewer._should_publish_review_no_suggestions = lambda _: True
+    reviewer._deliver_sink_output = AsyncMock()
+
+    async def fail_with_partial_chunks(*_args, **_kwargs):
+        raise RuntimeError("chunk 2 failed")
+
+    def merge_cached_chunks():
+        reviewer.prediction = prediction
+        return True
+
+    reviewer._merge_cached_review_chunks = merge_cached_chunks
+
+    settings = _clone_request_settings()
+    settings.config.publish_output = True
+    settings.config.is_auto_command = False
+    settings.config.propagate_command_errors = True
+    settings.pr_reviewer.persistent_comment = False
+    settings.pr_reviewer.inline_key_issues = False
+    settings.pr_reviewer.require_estimate_effort_to_review = True
+    settings.pr_reviewer.require_security_review = False
+    settings.pr_reviewer.enable_review_labels_effort = True
+    settings.pr_reviewer.enable_review_labels_security = False
+    settings.pr_reviewer.enable_help_text = False
+    settings.pr_reviewer.publish_merge_recommendation_status = True
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", fail_with_partial_chunks)
+
+    token = review_json_output_path.set(str(output))
+    try:
+        with safe_request_cycle_context({"settings": settings}):
+            task = asyncio.create_task(reviewer._run_review())
+            try:
+                await asyncio.wait_for(asyncio.to_thread(started.wait, 5), timeout=5)
+                assert started.is_set()
+                task.cancel()
+                # Cleanup must wait until the worker thread drains instead of racing with it.
+                await asyncio.sleep(0.05)
+                assert not task.done()
+                assert events == []
+                release.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=5)
+            finally:
+                release.set()
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+    finally:
+        review_json_output_path.reset(token)
+
+    assert events == ["worker_exit", ("remove_comment", "progress-handle")]
+    if block_stage == "file_paths":
+        # Only _run_review()'s pre-prediction file check ran; the get_files() fallback after
+        # get_pr_file_paths() returned None was skipped on cancellation.
+        assert provider.get_files.call_count == 1
+        provider.get_head_ci_status.assert_not_called()
+        provider.is_head_stale_against_base.assert_not_called()
+        provider.are_all_authors_human.assert_not_called()
+        provider.publish_structured_review.assert_not_called()
+    provider.publish_labels.assert_not_called()
+    provider.publish_merge_recommendation_status.assert_not_called()
+    reviewer._deliver_sink_output.assert_not_awaited()
+    assert getattr(reviewer, "_pending_sink_output", None) is None
+    # Only the initial temporary progress comment was published.
+    assert provider.publish_comment.call_count == 1
+    assert not output.exists()
+
+
+@pytest.mark.asyncio
+async def test_run_review_cancellation_during_inline_batch_skips_retries_and_verification(monkeypatch):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    diff_file = FilePatchInfo(
+        base_file="x = 1\ny = 2\n",
+        head_file="x = 10\ny = 20\n",
+        patch="@@ -1,2 +1,2 @@\n-x = 1\n-y = 2\n+x = 10\n+y = 20\n",
+        filename="app.py",
+    )
+    provider = MagicMock()
+    provider._inline_comment_store = None
+    del provider.get_existing_inline_comment_fingerprints
+    provider.get_files.return_value = ["app.py"]
+    provider.get_diff_files.return_value = [diff_file]
+    provider.get_pr_file_paths.return_value = ["app.py"]
+    provider.get_filtered_diff_file_names.return_value = []
+    provider.is_supported.return_value = False
+    provider.supports_review_finding_state.return_value = False
+    provider.supports_review_comment_identity.return_value = False
+    provider.should_publish_review_as_thread.return_value = False
+    provider.get_recent_inline_comment_bodies.return_value = []
+
+    started = threading.Event()
+    release = threading.Event()
+    publish_sizes = []
+
+    def publish_batch(comments):
+        publish_sizes.append(len(comments))
+        started.set()
+        assert release.wait(timeout=5)
+        return False
+
+    provider.publish_code_suggestions.side_effect = publish_batch
+
+    prediction = (
+        "review:\n"
+        "  estimated_effort_to_review_[1-5]: 2, concise\n"
+        "  key_issues_to_review:\n"
+        "    - relevant_file: app.py\n"
+        "      issue_header: First\n"
+        "      issue_content: Fix x\n"
+        "      start_line: 1\n"
+        "      end_line: 1\n"
+        "    - relevant_file: app.py\n"
+        "      issue_header: Second\n"
+        "      issue_content: Fix y\n"
+        "      start_line: 2\n"
+        "      end_line: 2\n"
+    )
+    reviewer, predict = _make_run_review_reviewer(provider, prediction)
+    reviewer._can_verify_inline_key_issue_publication = lambda: True
+    reviewer._should_publish_review_no_suggestions = lambda _: True
+    reviewer._deliver_sink_output = AsyncMock()
+
+    settings = _clone_request_settings()
+    settings.config.publish_output = True
+    settings.config.is_auto_command = True
+    settings.pr_reviewer.persistent_comment = False
+    settings.pr_reviewer.inline_key_issues = True
+    settings.pr_reviewer.enable_review_labels_effort = False
+    settings.pr_reviewer.enable_review_labels_security = False
+    settings.pr_reviewer.enable_help_text = False
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", predict)
+    monkeypatch.setattr(
+        "pr_agent.algo.inline_comment_dedup.iter_existing_inline_comment_bodies",
+        lambda _provider: iter(()),
+    )
+
+    with safe_request_cycle_context({"settings": settings}):
+        task = asyncio.create_task(reviewer._run_review())
+        try:
+            await asyncio.wait_for(asyncio.to_thread(started.wait, 5), timeout=5)
+            task.cancel()
+            await asyncio.sleep(0.05)
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5)
+        finally:
+            release.set()
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    # Only the in-flight batch call ran; per-comment retries, post-publish verification,
+    # and trailing markdown/sink work were skipped.
+    assert publish_sizes == [2]
+    provider.get_recent_inline_comment_bodies.assert_not_called()
+    provider.get_latest_commit_url.assert_not_called()
+    assert getattr(reviewer, "_pending_sink_output", None) is None
+
+
+@pytest.mark.asyncio
+async def test_run_prepare_pr_review_drains_worker_when_inner_task_cancelled(monkeypatch):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    provider = MagicMock()
+    reviewer, _ = _make_run_review_reviewer(provider, _VALID_PREDICTION)
+
+    loop = asyncio.get_running_loop()
+    started = threading.Event()
+    release = threading.Event()
+    loop_callback_ran = threading.Event()
+    events = []
+
+    def slow_prepare():
+        started.set()
+        assert release.wait(timeout=5)
+        # Verify the event loop remains unblocked while draining an independently cancelled inner task.
+        loop.call_soon_threadsafe(loop_callback_ran.set)
+        assert loop_callback_ran.wait(timeout=5)
+        events.append("worker_exit")
+        return "## Review"
+
+    reviewer._prepare_pr_review = slow_prepare
+
+    inner_tasks = []
+    real_create_task = asyncio.create_task
+
+    def capture_task(coro, *args, **kwargs):
+        created = real_create_task(coro, *args, **kwargs)
+        inner_tasks.append(created)
+        return created
+
+    monkeypatch.setattr(pr_reviewer_module.asyncio, "create_task", capture_task)
+
+    settings = _clone_request_settings()
+    with safe_request_cycle_context({"settings": settings}):
+        outer = real_create_task(reviewer._run_prepare_pr_review())
+        try:
+            await asyncio.wait_for(asyncio.to_thread(started.wait, 5), timeout=5)
+            assert len(inner_tasks) == 1
+            inner_tasks[0].cancel()
+            await asyncio.sleep(0.02)
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(outer, timeout=5)
+            events.append("after_outer_cancelled")
+        finally:
+            release.set()
+            if not outer.done():
+                outer.cancel()
+                await asyncio.gather(outer, return_exceptions=True)
+
+    assert loop_callback_ran.is_set()
+    assert events == ["worker_exit", "after_outer_cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_run_prepare_pr_review_cancellation_does_not_wait_for_saturated_executor():
+    from concurrent.futures import ThreadPoolExecutor
+
+    provider = MagicMock()
+    reviewer, _ = _make_run_review_reviewer(provider, _VALID_PREDICTION)
+    prepare_called = threading.Event()
+
+    def prepare():
+        prepare_called.set()
+        return "## Review"
+
+    reviewer._prepare_pr_review = prepare
+
+    loop = asyncio.get_running_loop()
+    blocker_started = loop.create_future()
+    blocker_release = threading.Event()
+
+    def occupy_pool():
+        loop.call_soon_threadsafe(blocker_started.set_result, None)
+        blocker_release.wait(timeout=5)
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    previous_executor = loop._default_executor
+    loop.set_default_executor(executor)
+    settings = _clone_request_settings()
+    try:
+        blocker_future = loop.run_in_executor(None, occupy_pool)
+        await asyncio.wait_for(blocker_started, timeout=5)
+
+        with safe_request_cycle_context({"settings": settings}):
+            task = asyncio.create_task(reviewer._run_prepare_pr_review())
+            try:
+                await asyncio.sleep(0.02)
+                task.cancel()
+                # Must unwind immediately while the executor is still saturated.
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=1)
+            finally:
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+        blocker_release.set()
+        await asyncio.wait_for(blocker_future, timeout=5)
+        # Drain any queued executor work before asserting _prepare_pr_review never ran.
+        await asyncio.wait_for(loop.run_in_executor(None, lambda: None), timeout=5)
+    finally:
+        blocker_release.set()
+        if previous_executor is None:
+            loop._default_executor = None
+        else:
+            loop.set_default_executor(previous_executor)
+        executor.shutdown(wait=True)
+
+    assert not prepare_called.is_set()
+
+
+@pytest.mark.asyncio
+async def test_run_prepare_pr_review_propagates_worker_exception_unless_cancelled():
+    provider = MagicMock()
+    reviewer, _ = _make_run_review_reviewer(provider, _VALID_PREDICTION)
+
+    def failing_prepare():
+        raise RuntimeError("boom")
+
+    reviewer._prepare_pr_review = failing_prepare
+    settings = _clone_request_settings()
+    with safe_request_cycle_context({"settings": settings}):
+        with pytest.raises(RuntimeError, match="boom"):
+            await reviewer._run_prepare_pr_review()
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def failing_after_cancel():
+        started.set()
+        assert release.wait(timeout=5)
+        raise RuntimeError("boom after cancel")
+
+    reviewer._prepare_pr_review = failing_after_cancel
+    with safe_request_cycle_context({"settings": settings}):
+        task = asyncio.create_task(reviewer._run_prepare_pr_review())
+        try:
+            await asyncio.wait_for(asyncio.to_thread(started.wait, 5), timeout=5)
+            task.cancel()
+            await asyncio.sleep(0.02)
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5)
+        finally:
+            release.set()
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -538,7 +1103,8 @@ async def test_failure_modes_reach_output_consumers_only_when_enabled(enabled):
     reviewer.vars = {"require_failure_modes": enabled}
     mode = {"what": "Partial write", "where": "app.py:save", "trigger": "Write fails",
             "detected_by": "Write failure test", "covered_in_this_pr": False}
-    raw_modes = [{**mode, "covered_in_this_pr": "false"}, "bad", mode, mode, mode, mode]
+    modes = [{**mode, "what": name} for name in ("Partial write", "Stale read", "Lost retry", "Missing receipt")]
+    raw_modes = [{**mode, "covered_in_this_pr": "false"}, "bad", modes[0], modes[0], *modes[1:]]
     reviewer.prediction = "unused prediction"
     data = {"review": {"key_issues_to_review": [], "failure_modes": raw_modes}}
     reviewer.git_provider.get_diff_files.return_value = []
@@ -558,7 +1124,7 @@ async def test_failure_modes_reach_output_consumers_only_when_enabled(enabled):
     if push.called:
         assert ("failure_modes" in push.call_args.kwargs["payload"]) is enabled
     if enabled:
-        expected = [mode] * 3
+        expected = modes[:3]
         assert action_output.call_args.args[0]["review"]["failure_modes"] == expected
         assert reviewer.git_provider.publish_structured_review.call_args.args[0]["review"]["failure_modes"] == expected
         assert render.call_args.args[0]["review"]["failure_modes"] == expected
@@ -2796,3 +3362,14 @@ def test_convert_to_markdown_renders_the_confidence_the_filter_compares(monkeypa
     assert ("Possible Issue (confidence: 8.5)" in markdown) is rendered
     assert ("Possible Issue (confidence: 7)" in markdown) is rendered
     assert markdown.count("confidence:") == (3 if rendered else 0)
+
+
+def test_fix_keeps_git_line_numbers_around_unicode_separators(committable_on):
+    issue = _key_issue(start_line=3, end_line=3, existing_code="c = 3", improved_code="c = 4")
+    reviewer, data = _reviewer_with_findings(issue, head_file="a = 1\nb = '\u2028'\nc = 3\n")
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion\nc = 4\n```" in comment["body"]
+    assert comment["original_suggestion"]["existing_code"] == "c = 3"

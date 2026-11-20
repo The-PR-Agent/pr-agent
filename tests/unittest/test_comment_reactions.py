@@ -5,11 +5,13 @@ a long command could not tell whether it had finished. `add_reaction` is the pro
 primitive; `add_eyes_reaction` and `react_to_outcome` are the two policies built on it.
 """
 import asyncio
+import copy
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 from requests.exceptions import RequestException
+from starlette_context import request_cycle_context
 
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.git_provider import GitProvider, get_reaction_setting
@@ -233,6 +235,22 @@ def test_github_survives_an_api_failure(monkeypatch):
     assert provider.add_reaction(7, "eyes") is None
 
 
+def test_github_reacts_to_a_review_comment_through_its_own_endpoints(monkeypatch):
+    """The issue comment endpoints answer 404 for a comment on a diff line or a file."""
+    provider = _github(monkeypatch)
+    provider.mark_review_comment(7)
+
+    assert provider.add_reaction(7, "eyes") == 99
+    assert provider.remove_reaction(7, 99) is True
+    assert provider.add_reaction(8, "eyes") == 99
+
+    assert [call.args for call in provider.pr._requester.requestJsonAndCheck.call_args_list] == [
+        ("POST", "https://api.github.com/repos/org/repo/pulls/comments/7/reactions"),
+        ("DELETE", "https://api.github.com/repos/org/repo/pulls/comments/7/reactions/99"),
+        ("POST", "https://api.github.com/repos/org/repo/issues/comments/8/reactions"),
+    ]
+
+
 def test_gitlab_awards_the_configured_emoji(monkeypatch):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_mr = 5
@@ -260,8 +278,8 @@ def _comment_event(body="/review"):
 @pytest.fixture
 def comment_handler(monkeypatch):
     """The real handle_comments_on_pr, with only the provider and the agent faked."""
-    import pr_agent.servers.github_app as github_app
     from pr_agent.identity_providers.identity_provider import Eligibility
+    from pr_agent.servers import github_app
 
     provider = _RecordingProvider()
     provider.add_eyes_reaction_calls = []
@@ -320,6 +338,59 @@ async def test_the_default_configuration_adds_only_the_start_reaction(reactions,
 
     assert provider.reactions == [(4242, "eyes")]
     assert provider.removed == []
+
+
+def _review_comment_event(body):
+    return {
+        "action": "created",
+        "comment": {
+            "id": 4243, "body": body, "subject_type": "line", "path": "src/app.py", "side": "RIGHT",
+            "start_line": None, "line": 12, "diff_hunk": "@@ -10,2 +10,3 @@\n+new line",
+            "pull_request_url": "https://api.github.com/repos/org/repo/pulls/1",
+        },
+    }
+
+
+@pytest.mark.parametrize(("event", "payload", "expected"), [
+    # A command in a diff thread gets both reactions on its review comment.
+    ("pull_request_review_comment", _review_comment_event("/review"), [
+        ("POST", "pulls/comments/4243/reactions", "eyes"),
+        ("DELETE", "pulls/comments/4243/reactions/99", None),
+        ("POST", "pulls/comments/4243/reactions", "hooray"),
+    ]),
+    # A question on lines starts without the eyes reaction, but still gets the outcome one.
+    ("pull_request_review_comment", _review_comment_event("/ask Why here?"), [
+        ("POST", "pulls/comments/4243/reactions", "hooray"),
+    ]),
+    ("issue_comment", _comment_event(), [
+        ("POST", "issues/comments/4242/reactions", "eyes"),
+        ("DELETE", "issues/comments/4242/reactions/99", None),
+        ("POST", "issues/comments/4242/reactions", "hooray"),
+    ]),
+])
+async def test_github_app_reacts_on_the_comment_that_ran_the_command(
+    reactions, monkeypatch, event, payload, expected
+):
+    from pr_agent.identity_providers.identity_provider import Eligibility
+    from pr_agent.servers import github_app
+
+    reactions(success="hooray")
+    provider = _github(monkeypatch)
+    monkeypatch.setattr(github_app, "get_git_provider_with_context", lambda pr_url: provider)
+    monkeypatch.setattr(github_app, "get_identity_provider",
+                        lambda: SimpleNamespace(verify_eligibility=lambda *a, **k: Eligibility.ELIGIBLE))
+
+    async def handle_request(api_url, command, notify=None, **_kwargs):
+        notify()
+        return True
+
+    with request_cycle_context({"settings": copy.deepcopy(global_settings)}):
+        await github_app.handle_comments_on_pr(
+            payload, event, "user", "1", "created", {}, SimpleNamespace(handle_request=handle_request))
+
+    calls = provider.pr._requester.requestJsonAndCheck.call_args_list
+    assert [(call.args[0], call.args[1].removeprefix("https://api.github.com/repos/org/repo/"),
+             call.kwargs.get("input", {}).get("content")) for call in calls] == expected
 
 
 @pytest.mark.asyncio

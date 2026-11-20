@@ -9,7 +9,6 @@ from github import GithubException
 from starlette_context import context, request_cycle_context
 
 import pr_agent.agent.pr_agent as pr_agent_module
-import pr_agent.servers.github_action_runner as github_action_runner
 from pr_agent import config_loader
 from pr_agent.agent.request_policy import enforce_request_policy
 from pr_agent.algo import artifacts
@@ -19,6 +18,7 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import _GIT_PROVIDERS, get_git_provider_with_context
 from pr_agent.git_providers import utils as git_utils
 from pr_agent.git_providers.github_provider import GithubProvider, IncompletePullRequestFilesError
+from pr_agent.servers import github_action_runner
 
 
 @pytest.fixture(autouse=True)
@@ -95,7 +95,10 @@ async def test_direct_auto_command_leaves_unexpected_constructor_error_unchanged
 @pytest.mark.parametrize(("value", "expected"), [
     ("false", False),
     ("off", False),
-    ("", False),
+    # #5047: an empty value falls back to the key's default in configuration.toml
+    # (True for publish_output), with a warning. Previously the #4823 shortcut
+    # defaulted to bool(value), so "" read False.
+    ("", True),
     ("true", True),
 ])
 async def test_direct_auto_command_normalizes_publish_output(value, expected):
@@ -113,6 +116,24 @@ async def test_direct_auto_command_normalizes_publish_output(value, expected):
         await github_action_runner._run_auto_command(AutoCommand, "https://example/pr/1")
 
     assert observed == [expected]
+
+
+@pytest.mark.asyncio
+async def test_direct_auto_command_exposes_pr_url_for_session_id():
+    from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+
+    observed = []
+
+    class AutoCommand:
+        def __init__(self, _pr_url):
+            pass
+
+        async def run(self):
+            observed.append(LiteLLMAIHandler._capture_log_context("probe", "test probe").get("pr_url"))
+
+    await github_action_runner._run_auto_command(AutoCommand, "https://example/pr/1")
+
+    assert observed == ["https://example/pr/1"]
 
 
 @pytest.mark.asyncio
@@ -967,11 +988,13 @@ async def test_auto_actions_apply_policy_after_repo_settings_without_rebuilding_
         get_commits=Mock(return_value=[SimpleNamespace(sha="head")]),
     )
     repo = Mock(full_name="org/repo", default_branch="main")
+    pr.base.repo = repo
     repo.get_pull.return_value = pr
     repo.get_contents.return_value = SimpleNamespace(decoded_content=repo_settings)
     client = Mock()
-    client.get_repo.return_value = repo
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: client)
+    pull_request = Mock(return_value=pr)
+    monkeypatch.setattr("pr_agent.git_providers.github_provider.PullRequest", pull_request)
     commands = [Mock(return_value=SimpleNamespace(run=AsyncMock())) for _ in range(2)]
     for name, command in zip(("PRDescription", "PRReviewer"), commands, strict=True):
         monkeypatch.setattr(github_action_runner, name, command)
@@ -994,8 +1017,9 @@ async def test_auto_actions_apply_policy_after_repo_settings_without_rebuilding_
         assert command.call_count == expected_calls
         assert command.return_value.run.await_count == expected_calls
     # The policy reuses the instance that already loaded .pr_agent.toml; each command that runs re-reads the PR once.
-    client.get_repo.assert_called_once_with("org/repo")
-    assert repo.get_pull.call_count == 1 + sum(command.call_count for command in commands)
+    pull_request.assert_called_once()
+    client.get_repo.assert_not_called()
+    assert repo.get_pull.call_count == sum(command.call_count for command in commands)
     pr.get_commits.assert_called_once()
     repo.get_contents.assert_called_once()
 
@@ -1043,7 +1067,6 @@ class _FakeAutoCommand:
 
     async def run(self):
         type(self).runs.append(self.pr_url)
-        return None
 
 
 class _FakeDescription(_FakeAutoCommand):
@@ -1070,7 +1093,6 @@ def test_recorded_auto_command_failure_fails_action_with_default_gate(monkeypatc
         async def run(self):
             type(self).runs.append(self.pr_url)
             record_command_failure()
-            return None
 
     monkeypatch.setattr(github_action_runner, "PRReviewer", FailingCommand)
     _install_action_env(monkeypatch, tmp_path, _write_pull_request_opened_event(tmp_path))
@@ -1092,7 +1114,6 @@ def test_recorded_command_failure_stays_green_when_gate_disabled(monkeypatch, tm
         async def run(self):
             type(self).runs.append(self.pr_url)
             record_command_failure()
-            return None
 
     monkeypatch.setattr(github_action_runner, "PRReviewer", FailingCommand)
     _install_action_env(monkeypatch, tmp_path, _write_pull_request_opened_event(tmp_path))
@@ -1169,7 +1190,6 @@ def test_recorded_command_failure_fails_action_with_default_gate(monkeypatch, tm
     class FailingAgent:
         async def handle_request(self, url, body, notify=None):
             record_command_failure()
-            return None
 
     monkeypatch.setattr(github_action_runner, "PRAgent", FailingAgent)
     monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)

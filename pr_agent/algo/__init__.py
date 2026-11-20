@@ -114,6 +114,15 @@ _CLAUDE_MODEL_FAMILIES = [
         # Ref: https://platform.claude.com/docs/en/build-with-claude/claude-in-amazon-bedrock#regions
         "bedrock_regions": ("global", "us"),
     },
+    {
+        "model_id": "claude-fable-5-2",
+        "max_tokens": 1000000,
+        "bedrock_regions": ("global", "us"),
+        "extra_aliases": {
+            "azure_ai/claude-fable-5-2": 1000000,
+            "bedrock/claude_platform/claude-fable-5-2": 1000000,
+        },
+    },
 ]
 
 
@@ -301,6 +310,7 @@ MAX_TOKENS = {
     'vertex_ai/gemini-4-argon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'vertex_ai/gemini-4-carbon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'vertex_ai/gemini-4-hydrogen': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
+    'vertex_ai/gemini-4-neon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'gemini/gemini-3.1-flash': 1048576,
     'gemini/gemini-3.1-pro': 1048576,
     'gemini/gemini-3.5-pro': 1048576,
@@ -308,6 +318,7 @@ MAX_TOKENS = {
     'gemini/gemini-4-argon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'gemini/gemini-4-carbon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'gemini/gemini-4-hydrogen': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
+    'gemini/gemini-4-neon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     # -- Bedrock Claude ----------------------------------------------------
     'bedrock/anthropic.claude-sonnet-4-20250514-v1:0': 200000,
     # -- Bedrock Claude (cross-region) -------------------------------------

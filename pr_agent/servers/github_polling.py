@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 
 import aiohttp
-from starlette_context import request_cycle_context
 
 from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.algo.ai_handlers.litellm_helpers import (
@@ -16,7 +15,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     drain_litellm_callbacks,
     litellm_callbacks_registered,
 )
-from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.config_loader import get_settings, global_settings, safe_request_cycle_context
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 
@@ -255,17 +254,9 @@ def _polling_request_settings():
 
 @contextmanager
 def _polling_settings_scope():
-    """request_cycle_context with a guaranteed reset: its bare yield (unfixed
-    upstream as of starlette-context 0.5.1) skips the ContextVar reset when an
-    exception crosses the with-body, so enter and exit are driven explicitly
-    and the reset runs on any exit, BaseException included.
-    """
-    cm = request_cycle_context({"settings": _polling_request_settings()})
-    cm.__enter__()
-    try:
+    """Scope request settings to one polled comment and reset on any exit."""
+    with safe_request_cycle_context({"settings": _polling_request_settings()}):
         yield
-    finally:
-        cm.__exit__(None, None, None)
 
 
 def process_comment_sync(pr_url, rest_of_comment, comment_id):
@@ -317,13 +308,12 @@ async def is_valid_notification(
                         if not comment_body:
                             get_logger().debug("no comment_body")
                             check_prev_comments = True
+                        elif user_tag not in comment_body:
+                            get_logger().debug("user_tag not in comment_body")
+                            check_prev_comments = True
                         else:
-                            if user_tag not in comment_body:
-                                get_logger().debug("user_tag not in comment_body")
-                                check_prev_comments = True
-                            else:
-                                get_logger().info(f"Polling, pr_url: {pr_url}",
-                                                  artifact={"comment": comment_body})
+                            get_logger().info(f"Polling, pr_url: {pr_url}",
+                                              artifact={"comment": comment_body})
 
                         if not check_prev_comments:
                             return True, handled_ids, comment, comment_body, pr_url, user_tag

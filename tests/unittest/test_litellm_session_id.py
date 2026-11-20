@@ -112,9 +112,37 @@ class TestSessionIdHeader:
         assert first["headers"]["x-litellm-session-id"] != second["headers"]["x-litellm-session-id"]
 
     @pytest.mark.asyncio
-    async def test_enabled_without_context_is_noop(self, monkeypatch):
-        kwargs = await _run(monkeypatch, True)
-        assert "x-litellm-session-id" not in (kwargs.get("headers") or {})
+    async def test_disabled_does_not_pass_litellm_session_id(self, monkeypatch):
+        kwargs = await _run(monkeypatch, False, log_context={"command": "improve", "pr_url": PR_URL})
+        assert "litellm_session_id" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_enabled_passes_litellm_session_id(self, monkeypatch):
+        # LiteLLM turns litellm_session_id into provider affinity headers such as
+        # OpenCode Go's required x-opencode-session; the proxy header alone does not.
+        kwargs = await _run(monkeypatch, True, log_context={"command": "improve", "pr_url": PR_URL})
+        assert kwargs["litellm_session_id"] == kwargs["headers"]["x-litellm-session-id"]
+
+    @pytest.mark.asyncio
+    async def test_enabled_without_context_uses_process_session(self, monkeypatch):
+        # OpenCode Go rejects requests without a session, so doctor pings and
+        # health probes need one even with no PR to derive it from.
+        first = await _run(monkeypatch, True)
+        second = await _run(monkeypatch, True)
+        assert first["litellm_session_id"] == litellm_handler._PROCESS_SESSION_ID
+        assert first["headers"]["x-litellm-session-id"] == litellm_handler._PROCESS_SESSION_ID
+        assert second["litellm_session_id"] == first["litellm_session_id"]
+
+    @pytest.mark.asyncio
+    async def test_probe_completion_passes_session_id(self, monkeypatch):
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings(True))
+        mock_call = AsyncMock(return_value=_mock_response())
+        handler = litellm_handler.LiteLLMAIHandler()
+        with get_logger().contextualize(pr_url=PR_URL):
+            await handler.probe_completion("gpt-4o", _completion=mock_call)
+        assert mock_call.call_args[1]["litellm_session_id"] == (
+            "pr-agent-github-com-owner-repo-pull-123-b065a0b1d1c7b721"
+        )
 
     @pytest.mark.asyncio
     async def test_value_uses_litellm_allowed_characters(self, monkeypatch):
@@ -163,3 +191,4 @@ class TestSessionIdHeader:
             extra_headers='{"x-litellm-session-id": "operator-session"}',
         )
         assert kwargs["headers"]["x-litellm-session-id"] == "operator-session"
+        assert kwargs["litellm_session_id"] == "operator-session"

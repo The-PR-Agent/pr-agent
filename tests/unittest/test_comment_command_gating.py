@@ -8,12 +8,10 @@ import pytest
 from starlette.background import BackgroundTasks
 from starlette_context import context, request_cycle_context
 
-import pr_agent.servers.gitea_app as gitea_app
-import pr_agent.servers.gitlab_webhook as gitlab_webhook
 from pr_agent.algo.utils import decode_user_text_args
 from pr_agent.config_loader import global_settings
 from pr_agent.identity_providers.identity_provider import Eligibility
-from pr_agent.servers import bitbucket_app, bitbucket_server_webhook, github_app
+from pr_agent.servers import bitbucket_app, bitbucket_server_webhook, gitea_app, github_app, gitlab_webhook
 from pr_agent.servers.github_common import handle_file_question_comment
 from pr_agent.servers.utils import is_ask_command_comment, is_command_comment
 
@@ -328,7 +326,7 @@ async def test_github_review_comment_question_routes_as_in_the_action(
             "--file_name=src/app.py", "--comment_id=123", question,
         ]
         assert file_question == dict.fromkeys(FILE_QUESTION_CONTEXT_KEYS)
-    # No eyes reaction: the provider adds it through the issue comment endpoint, which has no review comments.
+    # No eyes reaction on a question about lines or a file, as in the Action.
     assert reactions == [(123, True)]
 
 

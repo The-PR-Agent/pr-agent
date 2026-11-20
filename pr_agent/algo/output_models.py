@@ -63,13 +63,16 @@ class FailureMode(BaseModel):
 
 
 def parse_failure_modes(value: object) -> list[dict]:
-    """Keep at most three valid cases, including when review validation only warns."""
+    """Keep at most three distinct valid cases, including when review validation only warns."""
     modes = []
     for entry in value if isinstance(value, list) else []:
         try:
-            modes.append(FailureMode.model_validate(entry).model_dump())
+            mode = FailureMode.model_validate(entry).model_dump()
         except ValidationError:
             continue
+        if mode in modes:
+            continue
+        modes.append(mode)
         if len(modes) == 3:
             break
     return modes
@@ -185,33 +188,6 @@ class PRReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     review: Review
-
-
-class CodeSuggestion(BaseModel):
-    relevant_file: str
-    language: str
-    existing_code: str
-    suggestion_content: str
-    improved_code: str
-    one_sentence_summary: str
-    label: str
-
-
-class PRCodeSuggestions(BaseModel):
-    code_suggestions: list[CodeSuggestion]
-
-
-class CodeSuggestionFeedback(BaseModel):
-    suggestion_summary: str
-    relevant_file: str
-    relevant_lines_start: int
-    relevant_lines_end: int
-    suggestion_score: int = Field(ge=0, le=10)
-    why: str
-
-
-class PRCodeSuggestionsFeedback(BaseModel):
-    code_suggestions: list[CodeSuggestionFeedback]
 
 
 class PRType(StrEnum):
