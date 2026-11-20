@@ -258,15 +258,21 @@ def _start_auto_command_check_run(provider, command) -> str | None:
     return name
 
 
-def _finish_auto_command_check_run(provider, name: str | None, command, succeeded: bool) -> None:
+def _finish_auto_command_check_run(provider, name: str | None, command, succeeded: bool,
+                                   cancelled: bool = False) -> None:
     """Complete the command's check run when its command did not, so it cannot stay in_progress."""
     if provider is None or name is None:
         return
     action, _ = _auto_command_check_run(command)
     bot_display_name = get_bot_display_name()
-    summary = f"{bot_display_name} ran {action}" if succeeded else f"{bot_display_name} could not finish {action}"
+    if cancelled:
+        conclusion, summary = "cancelled", f"{bot_display_name} stopped {action}: it was cancelled"
+    elif succeeded:
+        conclusion, summary = "success", f"{bot_display_name} ran {action}"
+    else:
+        conclusion, summary = "failure", f"{bot_display_name} could not finish {action}"
     try:
-        provider.finish_check_run(name, "success" if succeeded else "failure", summary)
+        provider.finish_check_run(name, conclusion, summary)
     except Exception as e:
         get_logger().warning(f"Failed to complete the {name} check run: {e}")
 
@@ -512,6 +518,8 @@ async def handle_request(body: dict[str, Any], event: str, delivery_id: str | No
         return await _handle_request(body, event, delivery_id)
     if event == "pull_request" and body.get("action") == "closed":
         for running in _pr_tasks.get(pr_url, ()):
+            if running.done() or running.cancelling():
+                continue  # finished, or already cancelled for another reason: keep that reason and its cleanup
             _closed_pr_tasks.add(running)
             running.cancel()
     task = asyncio.create_task(_handle_request(body, event, delivery_id))
@@ -644,6 +652,11 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
                 # pull request that never got its review.
                 get_logger().warning(f"Command '{command}' reported success but recorded a failure")
                 command_succeeded = False
+        except asyncio.CancelledError:
+            # A closed PR or a shutdown cancelled the command: complete its check run (a synchronous call, so the
+            # cancellation cannot interrupt it) rather than leave it in_progress, then let the cancellation through.
+            _finish_auto_command_check_run(provider, check_run, command, False, cancelled=True)
+            raise
         except Exception as e:
             command_succeeded = False
             get_logger().error(f"Failed to perform command {command}: {e}")

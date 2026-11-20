@@ -5,6 +5,7 @@ pull request and the model answering there is no sign PR-Agent picked it up. Whe
 `github.publish_as_check_run` is on, the command's check run is opened as in_progress before the
 command runs and completed in place by the command, so there is one signal on the commit.
 """
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -321,6 +322,27 @@ async def test_a_raising_command_completes_its_check_run_as_failure(check_runs_e
 
     assert events[-1] == ("finish", "review", "failure", "PR-Agent could not finish /review")
     assert result is False
+
+
+async def test_a_cancelled_command_completes_its_check_run_as_cancelled(check_runs_enabled, auto_commands):
+    """Closing the PR (or a shutdown) cancels the command mid-run; its check run must not stay in_progress."""
+    events = []
+    _record(auto_commands, events)
+    agent = MagicMock()
+
+    async def handle_request(api_url, command, notify=None):
+        notify()
+        raise asyncio.CancelledError()
+
+    agent.handle_request = handle_request
+
+    with pytest.raises(asyncio.CancelledError):
+        await github_app._perform_auto_commands_github("pr_commands", agent, {}, API_URL, {})
+
+    assert events == [
+        ("start", "review", "PR-Agent is running /review"),
+        ("finish", "review", "cancelled", "PR-Agent stopped /review: it was cancelled"),
+    ]
 
 
 async def test_each_command_gets_its_own_check_run(check_runs_enabled, auto_commands, monkeypatch):

@@ -89,3 +89,50 @@ async def test_work_cancelled_for_another_reason_still_raises(dispatch, monkeypa
 async def test_a_delivery_without_a_pr_is_not_registered(dispatch):
     await github_app.handle_request({"action": "deleted", "installation": {}}, "installation")
     assert dispatch.ended == [("installation", "deleted", "finished")] and github_app._pr_tasks == {}
+
+
+async def test_a_second_close_does_not_interrupt_the_cancelled_work_s_cleanup(monkeypatch, dispatch):
+    started, cleaning, cleaned = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    ended = []
+
+    async def slow_cleanup(body, event, action):
+        if action != "opened":
+            return
+        try:
+            started.set()
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cleaning.set()
+            try:
+                await cleaned.wait()  # stands in for an async context manager releasing its slot
+                ended.append("cleaned up")
+            except asyncio.CancelledError:
+                ended.append("cleanup interrupted")
+                raise
+            raise
+
+    monkeypatch.setattr(github_app, "_dispatch_request", slow_cleanup)
+    review = asyncio.create_task(github_app.handle_request(pr_event("opened"), "pull_request"))
+    await started.wait()
+    await github_app.handle_request(pr_event("closed"), "pull_request")
+    await cleaning.wait()
+    await github_app.handle_request(pr_event("closed"), "pull_request")  # GitHub redelivers, or the PR closes again
+    cleaned.set()
+    assert await review == {}
+    assert ended == ["cleaned up"]
+
+
+async def test_a_close_does_not_claim_work_that_already_ended_cancelled(monkeypatch, dispatch):
+    closing = []
+
+    async def cancelled_by_itself(body, event, action):
+        if action == "opened":
+            # The close is handled after the work has ended but before its handler reads why it ended.
+            closing.append(asyncio.create_task(github_app.handle_request(pr_event("closed"), "pull_request")))
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(github_app, "_dispatch_request", cancelled_by_itself)
+    with pytest.raises(asyncio.CancelledError):
+        await github_app.handle_request(pr_event("opened"), "pull_request")
+    await closing[0]
+    assert github_app._pr_tasks == {} and github_app._closed_pr_tasks == set()
