@@ -1253,6 +1253,63 @@ class TestGitLabProvider:
             "src/lib_a", "src/lib_b", "src/lib_a/src/a.c", "src/lib_b/src/a.c",
         ]
 
+    def test_expanded_submodule_files_link_into_the_submodule_project(self, gitlab_provider):
+        gitlab_provider.gl.url = "https://gitlab.com"
+        gitlab_provider.id_project = "group/repo"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.source_branch = "feature/cache"
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {"GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
+        sub_diffs = [
+            {"old_path": "inc/a b.h", "new_path": "inc/a b.h", "diff": "@@ -1 +1 @@\n-x\n+y\n"},
+            {"old_path": "gone.c", "new_path": "gone.c", "diff": "@@ -1 +0,0 @@\n-x\n", "deleted_file": True},
+        ]
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_get_gitmodules_map",
+                          return_value={"src/lib_a": "../../libs/lib_a.git", "src/lib_b": "../../libs/lib_b.git"}), \
+             patch.object(gitlab_provider, "_compare_submodule", side_effect=[sub_diffs, []]):
+            gitlab_provider._expand_submodule_changes([self._submodule_bump(), self._submodule_bump("src/lib_b")])
+
+        lib_a = "https://gitlab.com/libs/lib_a"
+        assert gitlab_provider.get_line_link("src/lib_a/inc/a b.h", -1) == f"{lib_a}/-/blob/bbb2222/inc/a%20b.h"
+        assert gitlab_provider.get_line_link("src/lib_a/inc/a b.h", 10, 12) == (
+            f"{lib_a}/-/blob/bbb2222/inc/a%20b.h#L10-12"
+        )
+        assert gitlab_provider.get_line_link("src/lib_a/gone.c", -1) == f"{lib_a}/-/blob/aaa1111/gone.c"
+        assert gitlab_provider.get_line_link("src/lib_a", -1) == f"{lib_a}/-/compare/aaa1111...bbb2222"
+        # A bump that could not be expanded keeps its link into the reviewed project.
+        assert gitlab_provider.get_line_link("src/lib_b", -1) == (
+            "https://gitlab.com/group/repo/-/blob/feature/cache/src/lib_b?ref_type=heads"
+        )
+
+    def test_expanded_submodule_links_use_the_resolved_project_web_url(self, gitlab_provider):
+        gitlab_provider.gl.url = "https://gitlab-api.internal"
+        gitlab_provider.id_project = "group/repo"
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {"GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
+        project = MagicMock()
+        project.web_url = "https://gitlab.example.com/libs/lib_a/"
+        project.repository_compare.return_value = {
+            "diffs": [{"old_path": "src/a.c", "new_path": "src/a.c", "diff": "@@ -1 +1 @@\n-x\n+y\n"}]
+        }
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_get_gitmodules_map", return_value={"src/lib_a": "../../libs/lib_a.git"}), \
+             patch.object(gitlab_provider, "_project_by_path", return_value=project) as m_project, \
+             patch.object(gitlab_provider, "_submodule_target_allowed", return_value=True):
+            gitlab_provider._expand_submodule_changes([self._submodule_bump()])
+            # The second pass is served from the compare cache and must not resolve the project again.
+            gitlab_provider._expand_submodule_changes([self._submodule_bump()])
+
+        m_project.assert_called_once_with("libs/lib_a")
+        assert gitlab_provider.get_line_link("src/lib_a/src/a.c", -1) == (
+            "https://gitlab.example.com/libs/lib_a/-/blob/bbb2222/src/a.c"
+        )
+        assert gitlab_provider.get_line_link("src/lib_a", -1) == (
+            "https://gitlab.example.com/libs/lib_a/-/compare/aaa1111...bbb2222"
+        )
+
     def test_expand_submodule_changes_skips_unresolvable_relative_url(self, gitlab_provider):
         gitlab_provider.id_project = "group/repo"
         settings = MagicMock()
