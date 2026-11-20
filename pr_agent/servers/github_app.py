@@ -157,10 +157,12 @@ async def handle_comments_on_pr(body: dict[str, Any],
             get_logger().info("Ignoring comment not starting with /")
             return {}
     disable_eyes = False
+    review_comment = False
     if "issue" in body and "pull_request" in body["issue"] and "url" in body["issue"]["pull_request"]:
         api_url = body["issue"]["pull_request"]["url"]
     elif "comment" in body and "pull_request_url" in body["comment"]:
         api_url = body["comment"]["pull_request_url"]
+        review_comment = True
         try:
             if (is_ask_command_comment(comment_body) and
                     body["comment"].get("subject_type") in ("line", "file")):
@@ -179,6 +181,9 @@ async def handle_comments_on_pr(body: dict[str, Any],
     provider = get_git_provider_with_context(pr_url=api_url)
     if isinstance(sender, str) and sender and hasattr(provider, "set_command_actor"):
         provider.set_command_actor(sender)
+    if review_comment and hasattr(provider, "mark_review_comment"):
+        # Reactions on a review comment go through its own endpoints: the issue comment ones answer 404 for it.
+        provider.mark_review_comment(comment_id)
     with get_logger().contextualize(**log_context):
         if get_identity_provider().verify_eligibility("github", sender_id, api_url) is not Eligibility.NOT_ELIGIBLE:
             get_logger().info(f"Processing comment on PR {api_url=}, comment_body={comment_body}")

@@ -326,7 +326,7 @@ async def test_github_review_comment_question_routes_as_in_the_action(
             "--file_name=src/app.py", "--comment_id=123", question,
         ]
         assert file_question == dict.fromkeys(FILE_QUESTION_CONTEXT_KEYS)
-    # No eyes reaction: the provider adds it through the issue comment endpoint, which has no review comments.
+    # No eyes reaction on a question about lines or a file, as in the Action.
     assert reactions == [(123, True)]
 
 
