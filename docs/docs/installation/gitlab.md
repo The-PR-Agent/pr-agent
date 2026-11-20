@@ -67,6 +67,12 @@ pr_agent_job:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
 ```
 
+For published PR-Agent releases through v0.50.0, `review` identifies
+potential issues and `improve` provides separate code suggestions. In newer
+versions, both commands produce a review that may include suggested fixes.
+If your version has this behavior, remove the `improve` step above to avoid
+reviewing the same merge request twice.
+
 This script runs PR-Agent when a merge request pipeline is created, including when a merge request is opened and when new commits are pushed to its source branch. You can modify the `rules` section to run PR-Agent on different events.
 You can also modify the `script` section to run different PR-Agent commands, or with different parameters by exporting different environment variables.
 
