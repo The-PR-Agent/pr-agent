@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import os
 import time
@@ -486,7 +487,52 @@ async def _dispatch_request(body: dict[str, Any], event: str, action: str):
     return {}
 
 
+# Running deliveries per pull request API URL, so closing the PR can cancel them, and the ones a close cancelled.
+_pr_tasks: dict[str, set[asyncio.Task]] = {}
+_closed_pr_tasks: set[asyncio.Task] = set()
+
+
+def _webhook_pr_url(body: dict[str, Any]) -> str:
+    """The API URL of the pull request a delivery concerns, or "" when it names none."""
+    return ((body.get("pull_request") or {}).get("url")
+            or ((body.get("issue") or {}).get("pull_request") or {}).get("url")
+            or (body.get("comment") or {}).get("pull_request_url")
+            or "")
+
+
 async def handle_request(body: dict[str, Any], event: str, delivery_id: str | None = None):
+    """Run a delivery as a task registered under its PR; a pull_request "closed" delivery cancels the PR's others.
+
+    Cancelling a task stops its work at the next await: remaining chunks and fallback models never start, the
+    in-flight model request is dropped, nothing is published, and push-backlog and delivery slots are released by
+    their context managers. Only deliveries handled by this process are cancelled.
+    """
+    pr_url = _webhook_pr_url(body)
+    if not pr_url:
+        return await _handle_request(body, event, delivery_id)
+    if event == "pull_request" and body.get("action") == "closed":
+        for running in _pr_tasks.get(pr_url, ()):
+            _closed_pr_tasks.add(running)
+            running.cancel()
+    task = asyncio.create_task(_handle_request(body, event, delivery_id))
+    tasks = _pr_tasks.setdefault(pr_url, set())
+    tasks.add(task)
+    try:
+        return await task
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if task not in _closed_pr_tasks or (current is not None and current.cancelling()):
+            raise  # not cancelled by the PR closing (server shutdown, or the work itself): propagate
+        get_logger().info("Cancelled a running request: the PR was closed", api_url=pr_url)
+        return {}
+    finally:
+        _closed_pr_tasks.discard(task)
+        tasks.discard(task)
+        if not tasks:
+            _pr_tasks.pop(pr_url, None)
+
+
+async def _handle_request(body: dict[str, Any], event: str, delivery_id: str | None = None):
     """
     Handle incoming GitHub webhook requests.
 
