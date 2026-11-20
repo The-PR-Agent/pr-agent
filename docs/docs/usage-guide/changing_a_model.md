@@ -765,6 +765,30 @@ key = ... # your DeepInfra api key
 
 (you can obtain a DeepInfra key from [here](https://deepinfra.com/dash/api_keys))
 
+### LLMTR
+
+[LLMTR](https://llmtr.com/) is an OpenAI-compatible gateway. Model IDs that start with `llmtr/`
+are hosted in Turkey; other IDs, such as `anthropic/claude-sonnet-5`, are routed to their vendors.
+LiteLLM has no `llmtr/` provider, so use the `openai/` prefix in front of the LLMTR model ID:
+
+```toml
+[config] # in configuration.toml
+model = "openai/llmtr/qwen3-8-27b"
+fallback_models = ["openai/llmtr/gemma-4"]
+custom_model_max_tokens = 131072 # llmtr/gemma-4 has the smaller context window of the two
+```
+
+and fill up your key and the endpoint
+
+```toml
+[openai] # in .secrets.toml
+key = ... # your LLMTR API key
+api_base = "https://llmtr.com/v1"
+```
+
+You can also set `OPENAI__KEY` and `OPENAI__API_BASE` instead.
+(you can obtain an LLMTR API key from [here](https://llmtr.com/dashboard/keys))
+
 ### Mistral
 
 To use models like Mistral or Codestral with Mistral, for example, set:
