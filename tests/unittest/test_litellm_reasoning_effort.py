@@ -1037,8 +1037,238 @@ class TestLiteLLMReasoningEffortGPT6:
     @staticmethod
     def _isolate_env(monkeypatch):
         for name in ("AWS_USE_IMDS", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-                     "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY"):
+                     "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY",
+                     "OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENROUTER_API_BASE",
+                     "OPENROUTER_API_KEY", "OR_API_KEY", "AZURE_API_BASE",
+                     "AZURE_OPENAI_ENDPOINT", "AZURE_AI_API_BASE"):
             monkeypatch.delenv(name, raising=False)
+
+    @pytest.mark.parametrize("provider, effort, in_extra_body", [
+        ("openai", "none", False),
+        ("openai", "xhigh", False),
+        ("openai", "max", False),
+        ("azure", "none", True),
+        ("azure", "xhigh", False),
+    ])
+    def test_litellm_forwards_terra_native_parameters(self, monkeypatch, provider, effort, in_extra_body):
+        """Pin LiteLLM's native parameter forwarding independently of PR-Agent model registration."""
+        monkeypatch.setattr(litellm, "drop_params", False)
+        reasoning = (
+            {"extra_body": {"reasoning_effort": effort}} if in_extra_body
+            else {"reasoning_effort": effort}
+        )
+        params = get_optional_params(
+            model="gpt-6.1-terra", custom_llm_provider=provider, max_completion_tokens=4096, **reasoning,
+        )
+        assert params["max_completion_tokens"] == 4096
+        assert "max_tokens" not in params
+        assert "temperature" not in params
+        assert "max_tokens" not in params.get("extra_body", {})
+        assert "temperature" not in params.get("extra_body", {})
+        if in_extra_body:
+            assert params["extra_body"]["reasoning_effort"] == effort
+            assert "reasoning_effort" not in params
+        else:
+            assert params["reasoning_effort"] == effort
+            assert "reasoning_effort" not in params.get("extra_body", {})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model, provider, exact, base, expected", [
+        ("gpt-6.1-terra", "openai_like", None, False, None),
+        ("gpt-6.1-terra_thinking", "", None, True, "effort"),
+        ("openai_like/gpt-6.1-terra", "openai_like", False, True, None),
+        ("openai_like/gpt-6.1-terra_thinking", "openai_like", None, True, None),
+        ("openai_like/gpt-6.1-terra_thinking", "openai_like", False, True, None),
+        ("openai_like/gpt-6.1-terra_thinking", "openai_like", True, False, "effort"),
+        ("openrouter/openai/gpt-6.1-terra_thinking:nitro", "openrouter", None, True, "body"),
+        ("openrouter/openai/gpt-6.1-terra_thinking:floor", "openrouter", False, True, None),
+        ("openrouter/openai/gpt-6.1-terra_thinking:floor", "openrouter", True, False, "body"),
+    ])
+    async def test_gpt61_terra_custom_reasoning_uses_exact_metadata(
+        self, monkeypatch, model, provider, exact, base, expected,
+    ):
+        settings = create_mock_settings("medium")
+        monkeypatch.setattr(settings.litellm, "custom_llm_provider", provider, raising=False)
+        if provider == "openrouter":
+            settings.get = lambda key, default=None: {
+                "OPENROUTER.API_BASE": "https://gateway.example.com/v1", "OPENROUTER.KEY": "router-key",
+            }.get(key, default)
+        elif not provider:
+            settings.get = lambda key, default=None: (
+                "https://gateway.example.com/v1" if key == "OPENAI.API_BASE" else default
+            )
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+        monkeypatch.setitem(litellm.model_cost, "gpt-6.1-terra", {"supports_reasoning": True})
+        if provider == "openrouter":
+            base_alias = model.rsplit(":", 1)[0]
+        elif not provider:
+            base_alias = "openai/gpt-6.1-terra_thinking"
+        else:
+            base_alias = "openai_like/gpt-6.1-terra"
+        monkeypatch.setitem(litellm.model_cost, base_alias, {"supports_reasoning": base})
+        if exact is None:
+            if model != "gpt-6.1-terra":
+                monkeypatch.delitem(litellm.model_cost, model, raising=False)
+        else:
+            monkeypatch.setitem(litellm.model_cost, model, {"supports_reasoning": exact})
+        self._isolate_env(monkeypatch)
+
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = create_mock_acompletion_response()
+            await LiteLLMAIHandler().chat_completion(model=model, system="system", user="user")
+
+        kwargs = completion.call_args.kwargs
+        assert kwargs["model"] == model
+        assert kwargs.get("reasoning_effort") == ("medium" if expected == "effort" else None)
+        assert (kwargs.get("extra_body") or {}).get("reasoning") == (
+            {"effort": "medium"} if expected == "body" else None
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("deployment_support, generic_support, unqualified_entry", [
+        (False, True, None),
+        (True, False, None),
+        (True, False, {"input_cost_per_token": 0.0}),
+        (False, True, {"supports_reasoning": True}),
+        (True, False, {"supports_reasoning": False}),
+    ])
+    async def test_gpt61_terra_gateway_uses_deployment_metadata(
+        self, monkeypatch, deployment_support, generic_support, unqualified_entry,
+    ):
+        settings = create_mock_settings("medium")
+        monkeypatch.setattr(settings.litellm, "custom_llm_provider", "openai_like", raising=False)
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+        model = "team-a/gpt-6.1-terra_thinking"
+        if unqualified_entry is None:
+            monkeypatch.delitem(litellm.model_cost, model, raising=False)
+        else:
+            monkeypatch.setitem(litellm.model_cost, model, unqualified_entry)
+        monkeypatch.setitem(litellm.model_cost, f"openai_like/{model}", {
+            "supports_reasoning": deployment_support,
+        })
+        monkeypatch.setitem(litellm.model_cost, "openai_like/gpt-6.1-terra_thinking", {
+            "supports_reasoning": generic_support,
+        })
+        self._isolate_env(monkeypatch)
+
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = create_mock_acompletion_response()
+            await LiteLLMAIHandler().chat_completion(model=model, system="system", user="user")
+
+        assert completion.call_args.kwargs.get("reasoning_effort") == (
+            "medium" if deployment_support else None
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", [
+        "gpt-6.1-terra_thinking", "openai/gpt-6.1-terra_thinking",
+        "aiohttp_openai/gpt-6.1-terra_thinking",
+    ])
+    async def test_gpt61_terra_custom_openai_gateway_preserves_alias_and_parameters(self, monkeypatch, model):
+        settings = create_mock_settings("medium")
+        settings.get = lambda key, default=None: (
+            "https://gateway.example.com/v1" if key == "OPENAI.API_BASE" else default
+        )
+        settings.config.get = lambda key, default=None: 4096 if key == "max_output_tokens" else default
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+        self._isolate_env(monkeypatch)
+
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = create_mock_acompletion_response()
+            await LiteLLMAIHandler().chat_completion(model=model, system="system", user="user")
+
+        kwargs = completion.call_args.kwargs
+        assert kwargs["model"] == model
+        assert kwargs["max_tokens"] == 4096
+        assert "max_completion_tokens" not in kwargs
+        assert "reasoning_effort" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_gpt61_terra_uses_captured_gateway_after_settings_change(self, monkeypatch):
+        gateway = create_mock_settings("medium")
+        gateway.config.custom_model_max_tokens = 16000
+        gateway.get = lambda key, default=None: (
+            "https://gateway.example.com/v1" if key == "OPENAI.API_BASE" else default
+        )
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: gateway)
+        self._isolate_env(monkeypatch)
+        handler = LiteLLMAIHandler()
+
+        native = create_mock_settings("medium")
+        native.config.custom_model_max_tokens = 16000
+        native.config.max_model_tokens = 0
+        native.get = lambda key, default=None: (
+            "https://api.openai.com/v1" if key == "OPENAI.API_BASE" else default
+        )
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: native)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: native)
+        assert handler.get_model_token_limits("gpt-6.1-terra", ignore_max_model_tokens=True) == (16000, None)
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = create_mock_acompletion_response()
+            await handler.chat_completion(model="gpt-6.1-terra_thinking", system="system", user="user")
+
+        kwargs = completion.call_args.kwargs
+        assert kwargs["api_base"] == "https://gateway.example.com/v1"
+        assert kwargs["model"] == "gpt-6.1-terra_thinking"
+        assert "max_completion_tokens" not in kwargs
+        assert "reasoning_effort" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_gpt61_terra_native_default_survives_late_gateway_setting(self, monkeypatch):
+        native = create_mock_settings("medium")
+        native.config.custom_model_max_tokens = 0
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: native)
+        self._isolate_env(monkeypatch)
+        handler = LiteLLMAIHandler()
+
+        gateway = create_mock_settings("medium")
+        gateway.config.custom_model_max_tokens = 16000
+        gateway.get = lambda key, default=None: (
+            "https://gateway.example.com/v1" if key == "OPENAI.API_BASE" else default
+        )
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: gateway)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: gateway)
+        assert handler.get_model_token_limits("gpt-6.1-terra", ignore_max_model_tokens=True) == (
+            1050000, 922000,
+        )
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = create_mock_acompletion_response()
+            await handler.chat_completion(model="gpt-6.1-terra_thinking", system="system", user="user")
+
+        kwargs = completion.call_args.kwargs
+        assert kwargs["api_base"] == "https://api.openai.com/v1"
+        assert kwargs["model"] == "openai/gpt-6.1-terra"
+        assert kwargs["reasoning_effort"] == "medium"
+
+    @pytest.mark.asyncio
+    async def test_gpt61_terra_openrouter_uses_captured_openai_gateway_fallback(self, monkeypatch):
+        gateway = create_mock_settings("medium")
+        gateway.config.custom_model_max_tokens = 16000
+        monkeypatch.setattr(gateway.litellm, "custom_llm_provider", "openrouter", raising=False)
+        gateway.get = lambda key, default=None: {
+            "OPENAI.API_BASE": "https://gateway.example.com/v1",
+            "OPENAI.KEY": "gateway-key",
+        }.get(key, default)
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: gateway)
+        self._isolate_env(monkeypatch)
+        handler = LiteLLMAIHandler()
+
+        native = create_mock_settings("medium")
+        native.config.custom_model_max_tokens = 16000
+        native.get = lambda key, default=None: {
+            "OPENAI.API_BASE": "https://api.openai.com/v1",
+            "OPENAI.KEY": "native-key",
+        }.get(key, default)
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: native)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: native)
+        model = "openrouter/openai/gpt-6.1-terra_thinking"
+        assert handler.get_model_token_limits(model, ignore_max_model_tokens=True) == (16000, None)
+
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = create_mock_acompletion_response()
+            await handler.chat_completion(model=model, system="system", user="user")
+        assert completion.call_args.kwargs["api_base"] == "https://gateway.example.com/v1"
+        assert completion.call_args.kwargs["model"] == model
 
     @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("provider", ["openai", "azure"])
@@ -1092,6 +1322,7 @@ class TestLiteLLMReasoningEffortGPT6:
         ("gpt-6-sol", "none"),
         ("gpt-6-luna", "none"),
         ("gpt-6.1-sol", "low"),
+        ("gpt-6.1-terra", "none"),
     ])
     @pytest.mark.parametrize(("effort", "expected"), [
         ("low", "low"),
@@ -1132,7 +1363,7 @@ class TestLiteLLMReasoningEffortGPT6:
         ]
         assert result == ("test", "stop")
 
-    @pytest.mark.parametrize("model", GPT6_SOL_TIER_MODELS)
+    @pytest.mark.parametrize("model", (*GPT6_SOL_TIER_MODELS, "gpt-6.1-terra"))
     @pytest.mark.parametrize("effort", ["none", "xhigh", "max"])
     @pytest.mark.asyncio
     async def test_azure_gpt6_reasoning_uses_extra_body_when_litellm_map_is_missing(
@@ -1145,7 +1376,7 @@ class TestLiteLLMReasoningEffortGPT6:
             expected_effort = ReasoningEffort.LOW.value
             extra_body_expected = False
         else:
-            extra_body_expected = True
+            extra_body_expected = effort == "none" or model in GPT6_SOL_TIER_MODELS
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: create_mock_settings(effort))
         self._isolate_env(monkeypatch)
 
@@ -1167,7 +1398,7 @@ class TestLiteLLMReasoningEffortGPT6:
             assert "extra_body" not in kwargs
         assert "temperature" not in kwargs
 
-    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol", "gpt-6.1-terra"])
     @pytest.mark.parametrize("prefix", ["", "openai/", "azure/", "azure/openai/"])
     @pytest.mark.parametrize("suffix", ["", "_thinking"])
     @pytest.mark.parametrize("azure", [False, True])
@@ -1191,7 +1422,7 @@ class TestLiteLLMReasoningEffortGPT6:
         assert kwargs["reasoning_effort"] == "medium"
         assert "temperature" not in kwargs
 
-    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol", "gpt-6.1-terra"])
     @pytest.mark.asyncio
     async def test_gpt6_output_limit(self, monkeypatch, model):
         fake_settings = create_mock_settings("max")
@@ -1207,7 +1438,7 @@ class TestLiteLLMReasoningEffortGPT6:
         assert kwargs["max_completion_tokens"] == 4096
         assert "max_tokens" not in kwargs
 
-    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol", "gpt-6.1-terra"])
     @pytest.mark.parametrize("prefix", ["", "openai/", "azure/", "azure/openai/"])
     @pytest.mark.parametrize("suffix", ["", "_thinking"])
     @pytest.mark.asyncio

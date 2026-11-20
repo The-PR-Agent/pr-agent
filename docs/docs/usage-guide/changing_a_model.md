@@ -947,7 +947,7 @@ If the relevant model doesn't appear [here](https://github.com/the-pr-agent/pr-a
 reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh", "max"
 ```
 
-With the OpenAI models that support reasoning effort (eg: gpt-6-luna), you can specify its reasoning effort via `config` section. The default value is `medium`. You can change it to any supported value based on your usage. Available values depend on the model and provider. Where litellm marks minimal unsupported for a GPT-5 model, PR-Agent sends low instead. For native OpenAI GPT-6 requests, PR-Agent maps `minimal` to `low` for all supported GPT-6 models. It also maps `none` to `low` for GPT-6.1 Sol; GPT-6 Luna accepts `none`.
+With the OpenAI models that support reasoning effort (eg: gpt-6-luna), you can specify its reasoning effort via `config` section. The default value is `medium`. You can change it to any supported value based on your usage. Available values depend on the model and provider. Where litellm marks minimal unsupported for a GPT-5 model, PR-Agent sends low instead. For native OpenAI GPT-6 requests, PR-Agent maps `minimal` to `low` for all supported GPT-6 models. It also maps `none` to `low` for GPT-6.1 Sol; GPT-6 Luna and GPT-6.1 Terra accept `none`.
 
 For a model served through an OpenAI-compatible endpoint that litellm does not recognize as reasoning-capable, add its ID to `config.additional_reasoning_effort_models`. For known models support is decided by litellm's bundled reasoning metadata plus the maintained Grok registry (Grok ids resolve through their `xai/` prefix) with Claude models left out of the metadata path (their reasoning comes from the dedicated extended/adaptive thinking settings; an explicit entry in the list above still applies to them). Config IDs match exactly or through any provider prefix (e.g. `"deepseek-v4-flash-0731"` matches `"openai/deepseek-v4-flash-0731"`). When LiteLLM does not recognize the model, PR-Agent sets `allowed_openai_params = ["reasoning_effort"]` so the parameter reaches the endpoint. Note the default `"medium"` may be rejected by providers that accept a different subset (e.g. `"none"/"low"/"high"/"max"`); adding a custom model ID surfaces that provider-side error instead of silently dropping the setting.
 
@@ -1012,6 +1012,9 @@ effort set.
 Its model page also requires the Responses API for tool calling and describes Chat Completions
 as supported without tool calling, so unlike GPT-6 Sol and Luna this model has no Chat
 Completions tool-calling path at any effort.
+
+[GPT-6.1 Terra](https://developers.openai.com/api/docs/models/gpt-6.1-terra) uses `model = "gpt-6.1-terra"` and shares Sol's native token limits.
+For custom gateways (including Ollama), set `config.custom_model_max_tokens` to the actual deployment limit unless LiteLLM has exact-model metadata; custom OpenRouter and Azure-compatible gateways require an explicit limit.
 
 To use [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra):
 
