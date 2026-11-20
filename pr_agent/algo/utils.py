@@ -1617,9 +1617,22 @@ def set_custom_labels(variables, git_provider=None):
 def filter_generated_labels(labels: list[str]) -> list[str]:
     """Keep model-generated labels within the enabled vocabulary, not user labels."""
     names = [label.value for label in PRType]
+
+    def description_key(text: str) -> str:
+        # The prompt shows a description with its newlines and quotes escaped; a model may echo either form.
+        return " ".join(text.replace("\\n", " ").replace("\\'", "'").split()).lower()
+
+    by_description = {}
     if get_settings().config.get("enable_custom_labels", False):
         custom_labels = get_settings().get("custom_labels", {}) or _DEFAULT_CUSTOM_LABELS
         names.extend(str(label) for label in custom_labels)
+        if isinstance(custom_labels, dict):
+            for name, value in custom_labels.items():
+                description = value.get("description", "") if isinstance(value, dict) else str(value)
+                key = description_key(description)
+                if key:
+                    # A description shared by several labels names none of them.
+                    by_description[key] = None if key in by_description else str(name)
     allowed = {name.lower() for name in names}
     # Resolve prompt enum keys (e.g. bug_fix) to allowed display names.
     aliases = {name.lower().replace(" ", "_"): name for name in names}
@@ -1630,6 +1643,9 @@ def filter_generated_labels(labels: list[str]) -> list[str]:
             accepted.append(label.strip())
         elif isinstance(label, str) and label.strip().lower() in aliases:
             accepted.append(aliases[label.strip().lower()])
+        # The prompt enum's value is the description, and a model may answer with it instead of the key.
+        elif isinstance(label, str) and (name := by_description.get(description_key(label))):
+            accepted.append(name)
         else:
             dropped.append(label)
     if dropped:

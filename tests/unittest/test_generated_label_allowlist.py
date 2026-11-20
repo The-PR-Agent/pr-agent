@@ -31,6 +31,14 @@ def label_settings():
     (True, {"Release ready": "ready"}, [" RELEASE_READY "], ["Release ready"]),
     (True, {}, ["BUG_FIX_WITH_TESTS"], ["Bug fix with tests"]),
     (False, {"Release ready": "ready"}, ["RELEASE_READY"], []),
+    (True, {"Release ready": "ready"}, ["ready", " READY "], ["Release ready", "Release ready"]),
+    (True, {"LIB_BUFFERS": {"description": "Touches the BUFFERS library.\nOne label per library."}},
+     ["Touches the BUFFERS library. One label per library."], ["LIB_BUFFERS"]),
+    (True, {"X_ROM": {"description": "Part of product X's ROM build.\nRead the makefile."}},
+     ["Part of product X\\'s ROM build.\\nRead the makefile."], ["X_ROM"]),
+    (False, {"Release ready": "ready"}, ["ready"], []),
+    (True, {"A": "same text", "B": "same text", "C": ""}, ["same text", ""], []),
+    (True, {"Release ready": "Other"}, ["Other"], ["Other"]),
 ])
 def test_prepare_labels_filters_model_output(command_class, enabled, custom, labels, expected):
     get_settings().set("config.enable_custom_labels", enabled)
