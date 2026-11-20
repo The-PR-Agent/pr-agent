@@ -65,6 +65,7 @@ from pr_agent.algo.pr_processing import (
     run_diff_preparation,
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
+from pr_agent.algo.publish_firewall import firewall_model_output
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.review_finding_state import (
     append_review_state,
@@ -1331,6 +1332,89 @@ class PRReviewer:
     def _review_finding_from_issue(issue: dict) -> Finding | None:
         return Finding.from_review_issue(issue)
 
+    def _firewall_review_prose(self, data) -> None:
+        """Run the publish-boundary firewall over the model-authored prose fields (#4999).
+
+        Field-level, before rendering: the bot's own template markup (tables, details
+        sections) is never in scope, and fenced code fields are inert by construction.
+        The rules live in pr_agent.algo.publish_firewall; the pass is idempotent, so
+        re-entering this hook cannot double-escape a field.
+        """
+        review = data.get("review") if isinstance(data, dict) else None
+        if not isinstance(review, dict):
+            return
+        concerns = review.get("security_concerns")
+        if isinstance(concerns, str):
+            review["security_concerns"] = firewall_model_output(concerns)
+        issues = review.get("key_issues_to_review")
+        if isinstance(issues, list):
+            for issue in issues:
+                if not isinstance(issue, dict):
+                    continue
+                for prose_key in ("issue_content", "issue_header"):
+                    if isinstance(issue.get(prose_key), str):
+                        issue[prose_key] = firewall_model_output(issue[prose_key])
+        self._firewall_extra_prose(review)
+
+
+    def _firewall_extra_prose(self, review) -> None:
+        """Firewall the remaining model-authored prose: todo sections, failure modes,
+        ticket compliance, priority files, split candidates, and the cost estimate."""
+        todo_sections = review.get("todo_sections")
+        if isinstance(todo_sections, list):
+            for section in todo_sections:
+                if isinstance(section, dict) and isinstance(section.get("content"), str):
+                    section["content"] = firewall_model_output(section["content"])
+        failure_modes = review.get("failure_modes")
+        if isinstance(failure_modes, list):
+            for mode in failure_modes:
+                if not isinstance(mode, dict):
+                    continue
+                for prose_key in ("what", "where", "trigger", "detected_by"):
+                    if isinstance(mode.get(prose_key), str):
+                        mode[prose_key] = firewall_model_output(mode[prose_key])
+        tickets = review.get("ticket_compliance_check")
+        if isinstance(tickets, list):
+            for ticket in tickets:
+                if not isinstance(ticket, dict):
+                    continue
+                for prose_key in (
+                    "ticket_requirements",
+                    "fully_compliant_requirements",
+                    "not_compliant_requirements",
+                    "requires_further_human_verification",
+                ):
+                    if isinstance(ticket.get(prose_key), str):
+                        ticket[prose_key] = firewall_model_output(ticket[prose_key])
+        priority_files = review.get("review_priority_files")
+        if isinstance(priority_files, list):
+            review["review_priority_files"] = [
+                firewall_model_output(entry) if isinstance(entry, str) else entry
+                for entry in priority_files
+            ]
+        splits = review.get("can_be_split")
+        if isinstance(splits, list):
+            for split in splits:
+                if isinstance(split, dict) and isinstance(split.get("title"), str):
+                    split["title"] = firewall_model_output(split["title"])
+        estimate = review.get("contribution_time_cost_estimate")
+        if isinstance(estimate, dict):
+            for prose_key in ("best_case", "average_case", "worst_case"):
+                if isinstance(estimate.get(prose_key), str):
+                    estimate[prose_key] = firewall_model_output(estimate[prose_key])
+
+    def _firewall_artifact_prose(self, review) -> None:
+        """Firewall parsed artifact findings; their quotes were verified on the raw text."""
+        findings = review.get("artifact_findings")
+        if not isinstance(findings, list):
+            return
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            for prose_key in ("fact", "evidence"):
+                if isinstance(finding.get(prose_key), str):
+                    finding[prose_key] = firewall_model_output(finding[prose_key])
+
     @classmethod
     def _review_findings_from_data(cls, data: dict) -> list[Finding] | None:
         review = data.get("review")
@@ -1978,12 +2062,14 @@ class PRReviewer:
         if self.prediction_data is None:
             self._validate_review_schema(data)
             self._filter_low_confidence_findings(data)
+        self._firewall_review_prose(data)
         if isinstance(data, dict) and isinstance(data.get("review"), dict) and "failure_modes" in data["review"]:
             data["review"]["failure_modes"] = parse_failure_modes(data["review"]["failure_modes"])
         if isinstance(data, dict) and isinstance(data.get("review"), dict) and "artifact_findings" in data["review"]:
             data["review"]["artifact_findings"] = parse_artifact_findings(
                 data["review"]["artifact_findings"], getattr(self, "vars", {}).get("artifact_context")
             )
+            self._firewall_artifact_prose(data["review"])
         if self._prepare_cancelled():
             return ""
         github_action_output(data, 'review')
