@@ -1882,30 +1882,6 @@ def test_github_provider_reads_from_default_branch_when_requested():
                 "enable_pr_description": True,
             },
         ),
-        (
-            "pr_code_suggestions_prompt",
-            {
-                "extra_instructions": "",
-                "artifact_context": None,
-                "repo_context": render_instruction_files_with_line_budget({"AGENTS.md": "Repo purpose"}, 10_000),
-                "skills_context": "",
-                "focus_only_on_problems": True,
-                "num_code_suggestions": 3,
-                "is_ai_metadata": False,
-            },
-        ),
-        (
-            "pr_code_suggestions_prompt_not_decoupled",
-            {
-                "extra_instructions": "",
-                "artifact_context": None,
-                "repo_context": render_instruction_files_with_line_budget({"AGENTS.md": "Repo purpose"}, 10_000),
-                "skills_context": "",
-                "focus_only_on_problems": True,
-                "num_code_suggestions": 3,
-                "is_ai_metadata": False,
-            },
-        ),
     ],
 )
 @pytest.mark.parametrize("artifact_context", [None, {"instructions": "Consider CI failures."}])
@@ -1916,11 +1892,6 @@ def test_prompt_templates_render_configured_repo_context(prompt_name, variables,
     if prompt_name == "pr_review_prompt":
         variables["diff_hunk_format"] = render_diff_hunk_format(
             include_line_numbers=True,
-            include_ai_metadata=False,
-        )
-    elif prompt_name == "pr_code_suggestions_prompt":
-        variables["diff_hunk_format"] = render_diff_hunk_format(
-            include_line_numbers=False,
             include_ai_metadata=False,
         )
 
@@ -2719,3 +2690,32 @@ def test_build_repo_context_retries_reached_glob_listing_errors(repo_context_set
     assert "ADR instructions" in second_context
     assert provider.requested_paths == ["AGENTS.md", "AGENTS.md", "docs/adr/0001.md"]
     assert provider.list_repo_directory.call_count == 2
+
+
+@pytest.mark.parametrize("local_first", [False, True])
+def test_local_only_context_cache_is_separate_from_sibling_guidance(
+    repo_context_settings, local_first
+):
+    """A prior sibling-inclusive read must never contaminate local-only guidance."""
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", ["group/private"])
+    repo_context_settings.set(
+        "CONFIG.REPO_CONTEXT_FILES",
+        ["AGENTS.md", {"repo_id": "group/private", "file_path": "AGENTS.md"}],
+    )
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_SIBLING_FILES", 5)
+    provider = SiblingFakeProvider(
+        files={"AGENTS.md": "Public local guidance"},
+        sibling_files={"group/private:AGENTS.md": "PRIVATE_SIBLING_GUIDANCE"},
+    )
+    if local_first:
+        local_context = build_repo_context(provider, local_only=True)
+        full_context = build_repo_context(provider)
+    else:
+        full_context = build_repo_context(provider)
+        local_context = build_repo_context(provider, local_only=True)
+
+    assert "PRIVATE_SIBLING_GUIDANCE" in full_context
+    assert "PRIVATE_SIBLING_GUIDANCE" not in local_context
+    assert "Public local guidance" in local_context
+    assert build_repo_context(provider, local_only=True) == local_context
+    assert provider.requested_siblings == ["group/private:AGENTS.md"]

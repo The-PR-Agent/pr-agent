@@ -16,6 +16,12 @@ def filter_bad_extensions(files):
     return partition_files_by_language_filter(files)[0]
 
 
+def filter_files_by_extensions(files, extensions):
+    """Drop files whose name ends with one of the given extensions, ignoring case."""
+    suffixes = tuple(f".{str(extension).lower()}" for extension in extensions)
+    return [file for file in files if not (file.filename and file.filename.lower().endswith(suffixes))]
+
+
 def partition_files_by_language_filter(files):
     """Partition files and omitted names using the shared language-filter predicate."""
     # Bad Extensions, source: https://github.com/EleutherAI/github-downloader/blob/345e7c4cbb9e0dc8a0615fd995a08bf9d73b3fe6/download_repo_text.py  # noqa: E501

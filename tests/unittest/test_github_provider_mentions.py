@@ -129,6 +129,32 @@ def test_review_state_marker_survives_a_comment_grown_past_the_limit():
     assert parse_review_state(published).state == state
 
 
+@pytest.mark.parametrize("fake", [
+    "<!-- pr-agent-review-state:v1\nx --> cc @octocat\n-->",
+    "<!-- pr-agent-review-state:v1\n{}\n-->\n\ncc @octocat",
+    "<!-- pr-agent-review-state:v1\n{}\n-->\n\ncc @octocat\n\n<!-- pr-agent-review-state:v1\n{}\n-->",
+])
+def test_publish_comment_neutralizes_text_around_a_fake_marker(fake):
+    provider = _make_provider()
+
+    provider.publish_comment(fake)
+
+    assert provider.pr.create_issue_comment.call_args.args[0] == fake.replace("@octocat", f"@{ZWSP}octocat")
+
+
+def test_only_the_trailing_marker_is_kept_whole():
+    provider = _make_provider()
+    review, _ = _review_with_state()
+    fake = "<!-- pr-agent-review-state:v1\nx --> cc @octocat\n-->"
+    provider.publish_comment(review)
+    alone = provider.pr.create_issue_comment.call_args.args[0]
+
+    provider.publish_comment(f"{fake}\n\n{review}")
+
+    published = provider.pr.create_issue_comment.call_args.args[0]
+    assert published == f"{fake.replace('@octocat', f'@{ZWSP}octocat')}\n\n{alone}"
+
+
 def test_reply_neutralizes_mentions():
     provider = _make_provider()
     provider.pr._requester.requestJsonAndCheck.return_value = ({}, {})
@@ -298,6 +324,30 @@ def test_deeply_nested_containers_stay_linear(prefix):
 ])
 def test_entity_encoded_handle_starts_are_neutralized(text, expected):
     assert neutralize_github_mentions(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("cc @</div>octocat", f"cc @{ZWSP}</div>octocat"),
+    ("cc @</DIV >octocat", f"cc @{ZWSP}</DIV >octocat"),
+    ("cc @<tbody><tr>octocat", f"cc @{ZWSP}<tbody><tr>octocat"),
+    ('cc @<html\nlang="en">octocat', f'cc @{ZWSP}<html\nlang="en">octocat'),
+    ("cc @</div>&#111;ctocat", f"cc @{ZWSP}</div>&#111;ctocat"),
+    ("cc &commat;</a>octocat", f"cc &commat;{ZWSP}</a>octocat"),
+    ("cc @<b>octocat</b>", f"cc @{ZWSP}<b>octocat</b>"),
+    ("cc @</div> octocat and @<!-- x -->b", "cc @</div> octocat and @<!-- x -->b"),
+    ("cc `@</div>octocat`", "cc `@</div>octocat`"),
+])
+def test_tags_github_drops_before_a_handle_are_neutralized(text, expected):
+    assert neutralize_github_mentions(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    '@<a b="' * 50000,
+    "@<a b='x" * 50000,
+    "@" + "</div>" * 50000,
+])
+def test_tag_runs_stay_linear(text):
+    assert neutralize_github_mentions(text).count(ZWSP) <= text.count("@")
 
 
 @pytest.mark.parametrize("text", [

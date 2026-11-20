@@ -11,13 +11,24 @@ VALID_EXPORTER_TYPES = {ExporterType.CONSOLE, ExporterType.OTLP, ExporterType.PR
 VALID_OTLP_PROTOCOLS = {OtlpProtocol.HTTP, OtlpProtocol.GRPC}
 
 
+def _normalized_exporter_type(value) -> str | None:
+    """Fold ``OTEL.EXPORTER_TYPE`` the same way ``OTEL.OTLP_PROTOCOL`` is folded.
+
+    ``None`` stays ``None``. ``str(None)`` is ``"none"``, a valid exporter type,
+    so a missing setting must not become an explicit choice.
+    """
+    if value is None:
+        return None
+    return str(value).strip().lower()
+
+
 def get_otel_config() -> TelemetryConfig:
     """Read and validate telemetry configuration from settings"""
     settings = get_settings()
     if not _as_bool_setting(settings.get("OTEL.IS_ENABLED", False), setting_name="OTEL.IS_ENABLED"):
         return TelemetryConfig()
 
-    exporter_type = settings.get("OTEL.EXPORTER_TYPE", None)
+    exporter_type = _normalized_exporter_type(settings.get("OTEL.EXPORTER_TYPE", None))
     service_name = settings.get("OTEL.SERVICE_NAME", None)
     environment = settings.get("OTEL.ENVIRONMENT", None)
     # Endpoint and headers are secrets — never included in log messages

@@ -56,11 +56,17 @@ class LangChainOpenAIHandler(BaseAiHandler):
     def get_model_token_limits(self, model: str, *, ignore_max_model_tokens: bool = False) -> tuple[int, int | None]:
         """Use this client's route, not LiteLLM's independent provider setting."""
         provider = "azure" if self.azure else "openai"
-        window = get_max_tokens(
-            model, ignore_max_model_tokens=ignore_max_model_tokens, custom_llm_provider=provider,
-        )
-        input_limit = get_max_input_tokens(model, custom_llm_provider=provider)
         api_base = get_settings().get("OPENAI.API_BASE", None)
+        if self.azure and not api_base:
+            api_base = os.getenv("AZURE_OPENAI_ENDPOINT")
+        native_route = None if self.azure else _is_native_openai_endpoint(api_base)
+        window = get_max_tokens(
+            model, ignore_max_model_tokens=ignore_max_model_tokens,
+            custom_llm_provider=provider, route_api_base=api_base, native_route_override=native_route,
+        )
+        input_limit = get_max_input_tokens(
+            model, custom_llm_provider=provider, route_api_base=api_base, native_route_override=native_route,
+        )
         custom_limit = _as_int(get_settings().config.custom_model_max_tokens)
         # A compatible gateway does not establish ownership of the native model's full window.
         if (not self.azure and input_limit is not None and custom_limit > 0

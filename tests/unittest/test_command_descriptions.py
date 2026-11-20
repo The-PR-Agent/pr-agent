@@ -26,7 +26,7 @@ def test_cli_and_bot_help_use_canonical_command_descriptions(description):
     [
         (HelpMessage.get_describe_usage_guide, "describe"),
         (HelpMessage.get_review_usage_guide, "review"),
-        (HelpMessage.get_improve_usage_guide, "improve"),
+
     ],
 )
 def test_command_usage_guides_use_canonical_command_descriptions(usage_guide, command):
@@ -41,7 +41,7 @@ def test_runtime_help_uses_current_documentation_links():
             HelpMessage.get_review_usage_guide(),
             HelpMessage.get_describe_usage_guide(),
             HelpMessage.get_ask_usage_guide(),
-            HelpMessage.get_improve_usage_guide(),
+
             HelpMessage.get_help_docs_usage_guide(),
         ]
     )

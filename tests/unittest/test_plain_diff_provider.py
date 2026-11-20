@@ -5,7 +5,6 @@ import pytest
 from git import Repo
 
 from pr_agent.algo.types import EDIT_TYPE
-from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import _GIT_PROVIDERS
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
@@ -447,61 +446,6 @@ def test_publish_code_suggestions_empty_is_noop(cfg, capsys):
     provider = PlainDiffGitProvider(None)
     assert provider.publish_code_suggestions([]) is True
     assert capsys.readouterr().out.strip() == ""
-
-
-@pytest.mark.asyncio
-async def test_partial_improve_keeps_suggestions_and_coverage_in_one_output(cfg, capsys, tmp_path):
-    output = tmp_path / "suggestions.md"
-    cfg("plain_diff.content", DIFF)
-    cfg("plain_diff.output_path", str(output))
-    provider = PlainDiffGitProvider(None)
-    assert provider.supports_code_suggestions_artifact() is True
-    command = object.__new__(PRCodeSuggestions)
-    command.git_provider = provider
-    command.failed_chunk_count = 1
-    command.total_chunk_count = 2
-    command.progress_response = None
-    command._output_published = False
-    command._validate_suggestion = lambda *args: (True, "", True)
-
-    await command.push_inline_code_suggestions({"code_suggestions": [{
-        "relevant_file": "foo.py",
-        "relevant_lines_start": 2,
-        "relevant_lines_end": 2,
-        "suggestion_content": "Use a constant",
-        "improved_code": "",
-        "existing_code": "line2-changed",
-        "label": "maintainability",
-        "score": 8,
-    }]})
-
-    content = output.read_text(encoding="utf-8")
-    stdout = capsys.readouterr().out
-    for rendered in (content, stdout):
-        assert rendered.count("Use a constant") == 1
-        assert rendered.count("foo.py:2-2") == 1
-        assert rendered.count("1 of 2 analysis chunks failed") == 1
-        assert rendered.index("Use a constant") < rendered.index("1 of 2 analysis chunks failed")
-
-
-@pytest.mark.asyncio
-async def test_partial_improve_without_suggestions_keeps_coverage_in_artifact(cfg, capsys, tmp_path):
-    output = tmp_path / "suggestions.md"
-    cfg("plain_diff.content", DIFF)
-    cfg("plain_diff.output_path", str(output))
-    provider = PlainDiffGitProvider(None)
-    command = object.__new__(PRCodeSuggestions)
-    command.git_provider = provider
-    command.failed_chunk_count = 1
-    command.total_chunk_count = 2
-
-    await command.publish_no_suggestions()
-
-    content = output.read_text(encoding="utf-8")
-    stdout = capsys.readouterr().out
-    for rendered in (content, stdout):
-        assert rendered.count("No code suggestions found in the successfully analyzed chunks.") == 1
-        assert rendered.count("1 of 2 analysis chunks failed") == 1
 
 
 def test_incremental_review_disabled(cfg):

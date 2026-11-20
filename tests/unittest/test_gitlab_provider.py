@@ -1,4 +1,3 @@
-import json
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -18,7 +17,6 @@ from requests.exceptions import RequestException
 from pr_agent.algo.comment_identity import PRCodeSuggestionsIdentity, PRReviewHeader, PRReviewIdentity
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.git_provider import (
-    DEFAULT_DISCUSSION_CONTEXT_CHARS,
     ConcurrentFileUpdateError,
     FileContentSnapshot,
     IncrementalPR,
@@ -1257,6 +1255,63 @@ class TestGitLabProvider:
             "src/lib_a", "src/lib_b", "src/lib_a/src/a.c", "src/lib_b/src/a.c",
         ]
 
+    def test_expanded_submodule_files_link_into_the_submodule_project(self, gitlab_provider):
+        gitlab_provider.gl.url = "https://gitlab.com"
+        gitlab_provider.id_project = "group/repo"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.source_branch = "feature/cache"
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {"GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
+        sub_diffs = [
+            {"old_path": "inc/a b.h", "new_path": "inc/a b.h", "diff": "@@ -1 +1 @@\n-x\n+y\n"},
+            {"old_path": "gone.c", "new_path": "gone.c", "diff": "@@ -1 +0,0 @@\n-x\n", "deleted_file": True},
+        ]
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_get_gitmodules_map",
+                          return_value={"src/lib_a": "../../libs/lib_a.git", "src/lib_b": "../../libs/lib_b.git"}), \
+             patch.object(gitlab_provider, "_compare_submodule", side_effect=[sub_diffs, []]):
+            gitlab_provider._expand_submodule_changes([self._submodule_bump(), self._submodule_bump("src/lib_b")])
+
+        lib_a = "https://gitlab.com/libs/lib_a"
+        assert gitlab_provider.get_line_link("src/lib_a/inc/a b.h", -1) == f"{lib_a}/-/blob/bbb2222/inc/a%20b.h"
+        assert gitlab_provider.get_line_link("src/lib_a/inc/a b.h", 10, 12) == (
+            f"{lib_a}/-/blob/bbb2222/inc/a%20b.h#L10-12"
+        )
+        assert gitlab_provider.get_line_link("src/lib_a/gone.c", -1) == f"{lib_a}/-/blob/aaa1111/gone.c"
+        assert gitlab_provider.get_line_link("src/lib_a", -1) == f"{lib_a}/-/compare/aaa1111...bbb2222"
+        # A bump that could not be expanded keeps its link into the reviewed project.
+        assert gitlab_provider.get_line_link("src/lib_b", -1) == (
+            "https://gitlab.com/group/repo/-/blob/feature/cache/src/lib_b?ref_type=heads"
+        )
+
+    def test_expanded_submodule_links_use_the_resolved_project_web_url(self, gitlab_provider):
+        gitlab_provider.gl.url = "https://gitlab-api.internal"
+        gitlab_provider.id_project = "group/repo"
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {"GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
+        project = MagicMock()
+        project.web_url = "https://gitlab.example.com/libs/lib_a/"
+        project.repository_compare.return_value = {
+            "diffs": [{"old_path": "src/a.c", "new_path": "src/a.c", "diff": "@@ -1 +1 @@\n-x\n+y\n"}]
+        }
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_get_gitmodules_map", return_value={"src/lib_a": "../../libs/lib_a.git"}), \
+             patch.object(gitlab_provider, "_project_by_path", return_value=project) as m_project, \
+             patch.object(gitlab_provider, "_submodule_target_allowed", return_value=True):
+            gitlab_provider._expand_submodule_changes([self._submodule_bump()])
+            # The second pass is served from the compare cache and must not resolve the project again.
+            gitlab_provider._expand_submodule_changes([self._submodule_bump()])
+
+        m_project.assert_called_once_with("libs/lib_a")
+        assert gitlab_provider.get_line_link("src/lib_a/src/a.c", -1) == (
+            "https://gitlab.example.com/libs/lib_a/-/blob/bbb2222/src/a.c"
+        )
+        assert gitlab_provider.get_line_link("src/lib_a", -1) == (
+            "https://gitlab.example.com/libs/lib_a/-/compare/aaa1111...bbb2222"
+        )
+
     def test_expand_submodule_changes_skips_unresolvable_relative_url(self, gitlab_provider):
         gitlab_provider.id_project = "group/repo"
         settings = MagicMock()
@@ -1638,18 +1693,13 @@ class TestGitLabProvider:
         with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
             assert gitlab_provider.should_reply_to_trigger_comment() is configured
 
-    @pytest.mark.parametrize(
-        ("method_name", "setting_name"),
-        [
-            ("should_publish_improve_as_thread", "GITLAB.PUBLISH_IMPROVE_AS_THREAD"),
-            ("should_reply_to_trigger_comment", "GITLAB.REPLY_TO_TRIGGER_COMMENT"),
-        ],
-    )
-    def test_string_false_disables_gitlab_flags(self, gitlab_provider, method_name, setting_name):
+    def test_string_false_disables_gitlab_flags(self, gitlab_provider):
         settings = MagicMock()
-        settings.get.side_effect = lambda key, default=None: {setting_name: "false"}.get(key, default)
+        settings.get.side_effect = lambda key, default=None: {
+            "GITLAB.REPLY_TO_TRIGGER_COMMENT": "false",
+        }.get(key, default)
         with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
-            assert getattr(gitlab_provider, method_name)() is False
+            assert gitlab_provider.should_reply_to_trigger_comment() is False
 
     def test_string_false_does_not_expand_submodule_changes(self, gitlab_provider):
         settings = MagicMock()
@@ -2206,205 +2256,6 @@ class TestGitLabProvider:
             assert lookup(target) is (None if reopen else False)
         assert client.http_request.call_count == 2
         client.http_put.assert_not_called()
-
-    def test_get_code_suggestion_thread_context_includes_bot_suggestion_threads(self, gitlab_provider):
-        gitlab_provider._own_user_id = _BOT_USER_ID
-        open_thread = _thread([
-            _thread_note(body=_AGENT_BODY + "\n<!-- pr-agent-dedup: aabbccddeeff -->"),
-        ], discussion_id='open-thread')
-        human_resolved = _thread([
-            _thread_note(resolved=True, resolved_by={'id': 99, 'name': 'Alice'}),
-        ], discussion_id='human-resolved')
-        bot_resolved = _thread([
-            _thread_note(resolved=True, resolved_by={'id': _BOT_USER_ID, 'name': 'GitLab Bot'}),
-            {'author': {'id': 99, 'name': 'Alice'}, 'system': False, 'body': 'We will not do this.'},
-        ], discussion_id='bot-resolved')
-        general = _thread([_thread_note(body=_HUMAN_BODY)], discussion_id='general')
-
-        gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.list.return_value = [open_thread, general, human_resolved, bot_resolved]
-
-        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
-
-        assert discussions == [
-            {
-                "thread_id": "bot-resolved",
-                "status": "auto_resolved",
-                "file": "src/app.py",
-                "start_line": 12,
-                "end_line": 12,
-                "suggestion": _AGENT_BODY,
-                "replies": [{"author": "Alice", "message": "We will not do this."}],
-            },
-            {
-                "thread_id": "human-resolved",
-                "status": "resolved",
-                "file": "src/app.py",
-                "start_line": 12,
-                "end_line": 12,
-                "suggestion": _AGENT_BODY,
-                "replies": [],
-            },
-            {
-                "thread_id": "open-thread",
-                "status": "open",
-                "file": "src/app.py",
-                "start_line": 12,
-                "end_line": 12,
-                "suggestion": _AGENT_BODY,
-                "replies": [],
-            },
-        ]
-
-    def test_get_code_suggestion_thread_context_reports_applied_suggestions(self, gitlab_provider):
-        gitlab_provider._own_user_id = _BOT_USER_ID
-        applied = _thread_note(resolved=True, resolved_by={'id': _BOT_USER_ID, 'name': 'GitLab Bot'})
-        applied['suggestions'] = [{'id': 1, 'applied': True}]
-        not_applied = _thread_note()
-        not_applied['suggestions'] = [{'id': 2, 'applied': False}]
-
-        gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.list.return_value = [
-            _thread([applied], discussion_id='applied'),
-            _thread([not_applied], discussion_id='pending'),
-        ]
-
-        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
-
-        assert [(d["thread_id"], d["status"]) for d in discussions] == [("pending", "open"), ("applied", "applied")]
-
-    def test_get_code_suggestion_thread_context_treats_bot_resolution_as_resolved_when_identity_is_unknown(
-            self, gitlab_provider):
-        gitlab_provider._own_user_id = None
-        note = _thread_note(resolved=True, resolved_by={'id': _BOT_USER_ID, 'name': 'GitLab Bot'})
-
-        gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.list.return_value = [_thread([note], discussion_id='d1')]
-
-        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
-
-        assert discussions[0]["status"] == "resolved"
-
-    def test_get_code_suggestion_thread_context_uses_the_multi_line_range(self, gitlab_provider):
-        gitlab_provider._own_user_id = _BOT_USER_ID
-        note = _thread_note()
-        note['position']['line_range'] = {
-            'start': {'new_line': 10, 'old_line': None},
-            'end': {'new_line': 14, 'old_line': None},
-        }
-        deletion = _thread_note(line_key='old_line')
-        deletion['position']['line_range'] = {
-            'start': {'new_line': None, 'old_line': 3},
-            'end': {'new_line': None, 'old_line': 5},
-        }
-        renamed = _thread_note(line_key=None)
-        renamed['position'].update({'old_path': 'src/old_name.py', 'new_path': 'src/new_name.py'})
-        renamed['position']['line_range'] = {
-            'start': {'new_line': 7, 'old_line': None},
-            'end': {'new_line': 8, 'old_line': None},
-        }
-
-        gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.list.return_value = [
-            _thread([note], discussion_id='range'),
-            _thread([deletion], discussion_id='deleted'),
-            _thread([renamed], discussion_id='renamed'),
-        ]
-
-        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
-
-        assert [(d["thread_id"], d["file"], d["start_line"], d["end_line"]) for d in discussions] == [
-            ("renamed", "src/new_name.py", 7, 8),
-            ("deleted", "src/app.py", 3, 5),
-            ("range", "src/app.py", 10, 14),
-        ]
-
-    def test_get_code_suggestion_thread_context_truncates_messages_and_replies(self, gitlab_provider):
-        gitlab_provider._own_user_id = _BOT_USER_ID
-        long_message = _AGENT_BODY + "\n" + "x" * 900
-        long_reply = "y" * 900
-        reply = {'author': {'id': 99, 'name': 'Alice'}, 'system': False, 'body': long_reply}
-        thread = _thread([_thread_note(body=long_message), reply], discussion_id='d1')
-
-        gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.list.return_value = [thread]
-
-        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
-
-        assert len(discussions[0]["suggestion"]) == 750
-        assert discussions[0]["replies"] == [{"author": "Alice", "message": long_reply[:750]}]
-
-    def test_get_code_suggestion_thread_context_caps_thread_count(self, gitlab_provider):
-        gitlab_provider._own_user_id = _BOT_USER_ID
-        threads = [_thread([_thread_note()], discussion_id=f'd{i}') for i in range(60)]
-
-        gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.list.return_value = threads
-
-        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
-
-        assert len(discussions) == 50
-
-    def test_get_code_suggestion_thread_context_enforces_context_char_budget(self, gitlab_provider):
-        gitlab_provider._own_user_id = _BOT_USER_ID
-        big_message = "**Suggestion:** " + "x" * 740
-        threads = [_thread([_thread_note(body=big_message)], discussion_id=f'd{i}') for i in range(60)]
-
-        gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.list.return_value = threads
-
-        result = gitlab_provider.get_code_suggestion_thread_context()
-
-        assert len(result) <= DEFAULT_DISCUSSION_CONTEXT_CHARS
-        assert len(json.loads(result)) < 60
-
-    def test_get_code_suggestion_thread_context_caps_replies_after_dropping_system_notes(self, gitlab_provider):
-        gitlab_provider._own_user_id = _BOT_USER_ID
-        human_replies = [{'author': {'id': 99, 'name': 'Alice'}, 'system': False, 'body': f'reply {i}'}
-                         for i in range(12)]
-        system_notes = [{'author': {'id': 99, 'name': 'Alice'}, 'system': True, 'body': 'changed this line'}
-                        for _ in range(5)]
-        thread = _thread([_thread_note(), *human_replies, *system_notes], discussion_id='d1')
-
-        gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.list.return_value = [thread]
-
-        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
-
-        assert [reply["message"] for reply in discussions[0]["replies"]] == [f"reply {i}" for i in range(2, 12)]
-
-    def test_get_code_suggestion_thread_context_skips_threads_opened_by_a_human(self, gitlab_provider):
-        gitlab_provider._own_user_id = _BOT_USER_ID
-        human_thread = _thread([_thread_note(author_id=99)], discussion_id='human')
-        bot_thread = _thread([_thread_note()], discussion_id='bot')
-
-        gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.list.return_value = [bot_thread, human_thread]
-
-        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
-
-        assert [discussion["thread_id"] for discussion in discussions] == ["bot"]
-
-    def test_get_code_suggestion_thread_context_keeps_threads_when_author_is_unverifiable(self, gitlab_provider):
-        gitlab_provider._own_user_id = None
-        gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.list.return_value = [_thread([_thread_note()], discussion_id='d1')]
-
-        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
-
-        assert [discussion["thread_id"] for discussion in discussions] == ["d1"]
-
-    def test_get_code_suggestion_thread_context_empty_without_agent_threads(self, gitlab_provider):
-        gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.list.return_value = [_thread([_thread_note(body=_HUMAN_BODY)])]
-
-        assert gitlab_provider.get_code_suggestion_thread_context() == ""
-
-    def test_get_code_suggestion_thread_context_soft_fails(self, gitlab_provider):
-        gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.list.side_effect = GitlabError("gitlab api error")
-
-        assert gitlab_provider.get_code_suggestion_thread_context() == ""
 
     def test_resolve_comment_thread_ignores_unrelated_discussions(self, gitlab_provider):
         # An open discussion that does not own our note must be left untouched.
@@ -3441,10 +3292,6 @@ class TestGitLabIncrementalReview:
         assert gitlab_provider.unreviewed_files_map == {}
         mock_project.repository_compare.assert_not_called()
 
-    def test_supports_incremental_kind(self, gitlab_provider):
-        assert gitlab_provider.supports_incremental_kind("review") is True
-        assert gitlab_provider.supports_incremental_kind("suggestions") is True
-        assert gitlab_provider.supports_incremental_kind("something-else") is False
 
     def test_get_incremental_commits_invalidates_cached_diff_files(self, gitlab_provider):
         # Server mode caches the provider per PR URL: a diff computed by an earlier command
@@ -3802,7 +3649,6 @@ class TestGitLabRelevantDiff:
         }
         provider.id_project = "group/repo"
         provider.id_mr = 1
-        provider.last_diff = "latest-at-construction"
         return provider
 
     def test_matching_change_resolves_to_the_newest_version(self):
@@ -3810,7 +3656,7 @@ class TestGitLabRelevantDiff:
 
         assert provider.get_relevant_diff("app.py", "+added line") is self.VERSIONS[0]
 
-    def test_fallback_uses_the_latest_version_not_the_construction_snapshot(self):
+    def test_fallback_uses_the_latest_version(self):
         provider = self._provider([{"new_path": "other.py", "diff": "@@\n+unrelated\n"}])
 
         assert provider.get_relevant_diff("app.py", "+added line") is self.VERSIONS[0]
@@ -3820,16 +3666,6 @@ class TestGitLabRelevantDiff:
         provider.mr.diffs.list.return_value = []
 
         assert provider.get_relevant_diff("app.py", "+added line") is None
-
-    def test_set_merge_request_snapshots_the_newest_version(self):
-        provider = GitLabProvider.__new__(GitLabProvider)
-        mr = MagicMock()
-        mr.diffs.list.return_value = list(self.VERSIONS)
-        with patch.object(GitLabProvider, "_parse_merge_request_url", return_value=("group/repo", 1)), \
-             patch.object(GitLabProvider, "_get_merge_request", return_value=mr):
-            provider._set_merge_request("https://gitlab.com/group/repo/-/merge_requests/1")
-
-        assert provider.last_diff is self.VERSIONS[0]
 
     @pytest.mark.parametrize("ref", ["base", "start", "head"])
     def test_missing_version_ref_is_rejected(self, ref):

@@ -376,6 +376,10 @@ class GitLabProvider(GitProvider):
         self.temp_comments = []
         self._published_inline_comment_bodies: list[str] = []
         self._submodule_cache: dict[tuple[str, str, str], list[dict]] = {}
+        # Expanded submodule path -> web address in the submodule's own project.
+        self._submodule_links: dict[str, str] = {}
+        # Submodule project path -> the web address GitLab reported when the project was resolved.
+        self._submodule_web_urls: dict[str, str] = {}
         self.pr_url = merge_request_url
         self._set_merge_request(merge_request_url)
         self.RE_HUNK_HEADER = re.compile(
@@ -596,6 +600,8 @@ class GitLabProvider(GitProvider):
                 get_logger().warning(f"[submodule] skipping {proj_path}: not an authorized sibling repository")
                 self._submodule_cache[key] = []
                 return []
+            if isinstance(web_url := getattr(proj, "web_url", None), str):
+                self._submodule_web_urls[proj_path] = web_url.rstrip("/")
             cmp = proj.repository_compare(old_sha, new_sha)
             if isinstance(cmp, dict):
                 diffs = cmp.get("diffs", []) or []
@@ -671,10 +677,20 @@ class GitLabProvider(GitProvider):
 
             get_logger().info(f"[submodule] {sub_path} url={repo_url} -> proj_path={proj_path}")
             sub_diffs = self._compare_submodule(proj_path, old_sha, new_sha)
+            # gitlab.url is the API address, which need not be the one people browse; it is only the fallback.
+            sub_web_url = self._submodule_web_urls.get(proj_path) or f"{self.gl.url}/{quote(proj_path, safe='/')}"
+            if sub_diffs:
+                self._submodule_links[sub_path] = f"{sub_web_url}/-/compare/{old_sha}...{new_sha}"
             for sd in sub_diffs:
                 sd_diff = sd.get("diff") or ""
                 sd_old = sd.get("old_path") or sd.get("a_path") or ""
                 sd_new = sd.get("new_path") or sd.get("b_path") or sd_old
+                if sd_new:
+                    # A file deleted by the bump only exists at the old commit.
+                    sd_sha = old_sha if sd.get("deleted_file") else new_sha
+                    self._submodule_links[f"{sub_path}/{sd_new}"] = (
+                        f"{sub_web_url}/-/blob/{sd_sha}/{quote(sd_new, safe='/')}"
+                    )
                 out.append({
                     "old_path": f"{sub_path}/{sd_old}" if sd_old else sub_path,
                     "new_path": f"{sub_path}/{sd_new}" if sd_new else sub_path,
@@ -772,8 +788,6 @@ class GitLabProvider(GitProvider):
             return False
         return True
 
-    def supports_incremental_kind(self, kind: str) -> bool:
-        return kind in self._INCREMENTAL_ANCHOR_PREFIXES
 
     def supports_issue_reference_tickets(self) -> bool:
         return True
@@ -880,12 +894,6 @@ class GitLabProvider(GitProvider):
         self._latest_commit_url = None
         self.id_project, self.id_mr = self._parse_merge_request_url(merge_request_url)
         self.mr = self._get_merge_request()
-        try:
-            # the versions endpoint is ordered newest-first, so the latest diff is the first entry
-            self.last_diff = self.mr.diffs.list(page=1, per_page=1, get_all=False)[0]
-        except IndexError as e:
-            get_logger().error(f"Could not get diff for merge request {self.id_mr}")
-            raise DiffNotFoundError(f"Could not get diff for merge request {self.id_mr}") from e
 
     # Match the most recent prior note for each incremental kind against any accepted identity,
     # then use its timestamp as the timeline anchor.
@@ -2055,9 +2063,6 @@ class GitLabProvider(GitProvider):
     def should_publish_review_as_thread(self) -> bool:
         return _as_bool_setting(get_settings().get("GITLAB.PUBLISH_REVIEW_AS_THREAD", False))
 
-    def should_publish_improve_as_thread(self) -> bool:
-        return _as_bool_setting(get_settings().get("GITLAB.PUBLISH_IMPROVE_AS_THREAD", False))
-
     def should_reply_to_trigger_comment(self) -> bool:
         return _as_bool_setting(get_settings().get("GITLAB.REPLY_TO_TRIGGER_COMMENT", False))
 
@@ -2067,8 +2072,6 @@ class GitLabProvider(GitProvider):
     def supports_review_finding_state(self) -> bool:
         return True
 
-    def supports_code_suggestion_state(self) -> bool:
-        return True
 
     def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
         try:
@@ -3598,19 +3601,15 @@ class GitLabProvider(GitProvider):
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
+        # A file expanded from a submodule is not in this project, so link into the submodule's own.
+        link = getattr(self, "_submodule_links", {}).get(relevant_file) or (
+            f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
+        )
         if relevant_line_start == -1:
-            link = f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
-        elif relevant_line_end:
-            link = (
-                f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
-                f"#L{relevant_line_start}-{relevant_line_end}"
-            )
-        else:
-            link = (
-                f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
-                f"#L{relevant_line_start}"
-            )
-        return link
+            return link
+        if relevant_line_end:
+            return f"{link}#L{relevant_line_start}-{relevant_line_end}"
+        return f"{link}#L{relevant_line_start}"
 
 
     #Clone related

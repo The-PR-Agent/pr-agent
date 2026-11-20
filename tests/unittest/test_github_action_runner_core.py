@@ -95,7 +95,10 @@ async def test_direct_auto_command_leaves_unexpected_constructor_error_unchanged
 @pytest.mark.parametrize(("value", "expected"), [
     ("false", False),
     ("off", False),
-    ("", False),
+    # #5047: an empty value falls back to the key's default in configuration.toml
+    # (True for publish_output), with a warning. Previously the #4823 shortcut
+    # defaulted to bool(value), so "" read False.
+    ("", True),
     ("true", True),
 ])
 async def test_direct_auto_command_normalizes_publish_output(value, expected):
@@ -985,11 +988,13 @@ async def test_auto_actions_apply_policy_after_repo_settings_without_rebuilding_
         get_commits=Mock(return_value=[SimpleNamespace(sha="head")]),
     )
     repo = Mock(full_name="org/repo", default_branch="main")
+    pr.base.repo = repo
     repo.get_pull.return_value = pr
     repo.get_contents.return_value = SimpleNamespace(decoded_content=repo_settings)
     client = Mock()
-    client.get_repo.return_value = repo
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: client)
+    pull_request = Mock(return_value=pr)
+    monkeypatch.setattr("pr_agent.git_providers.github_provider.PullRequest", pull_request)
     commands = [Mock(return_value=SimpleNamespace(run=AsyncMock())) for _ in range(2)]
     for name, command in zip(("PRDescription", "PRReviewer"), commands, strict=True):
         monkeypatch.setattr(github_action_runner, name, command)
@@ -1012,8 +1017,9 @@ async def test_auto_actions_apply_policy_after_repo_settings_without_rebuilding_
         assert command.call_count == expected_calls
         assert command.return_value.run.await_count == expected_calls
     # The policy reuses the instance that already loaded .pr_agent.toml; each command that runs re-reads the PR once.
-    client.get_repo.assert_called_once_with("org/repo")
-    assert repo.get_pull.call_count == 1 + sum(command.call_count for command in commands)
+    pull_request.assert_called_once()
+    client.get_repo.assert_not_called()
+    assert repo.get_pull.call_count == sum(command.call_count for command in commands)
     pr.get_commits.assert_called_once()
     repo.get_contents.assert_called_once()
 

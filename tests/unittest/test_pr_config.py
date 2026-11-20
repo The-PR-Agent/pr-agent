@@ -95,12 +95,12 @@ def test_shipped_config_defaults_have_no_undeclared_keys():
 def test_config_output_identifies_names_absent_from_shipped_declarations(monkeypatch, include_extras):
     settings = Dynaconf(
         config={"model": "selected", "skip_keys": []},
-        pr_code_suggestions={"committable_code_suggestions": False, "publish_failure_comment": False},
+        pr_code_suggestions={"committable_code_suggestions": False, "suggestions_heading": "Suggestions"},
         core_loaders=[], loaders=[], envvar_prefix=False,
     )
     declarations = {
         "Config": {"MoDeL": "shipped"},
-        "Pr_Code_Suggestions": {"CoMmItTaBlE_CoDe_SuGgEsTiOnS": False, "PUBLISH_FAILURE_COMMENT": False},
+        "Pr_Code_Suggestions": {"CoMmItTaBlE_CoDe_SuGgEsTiOnS": False, "SUGGESTIONS_HEADING": "Suggestions"},
     }
     monkeypatch.setattr(config_loader, "global_settings", settings)
     monkeypatch.setattr(pr_config, "Dynaconf", lambda **kwargs: declarations)
@@ -122,7 +122,7 @@ def test_config_output_identifies_names_absent_from_shipped_declarations(monkeyp
     expected += (
         "\n\n==================== PR_CODE_SUGGESTIONS ===================="
         "\npr_code_suggestions.committable_code_suggestions = False  "
-        "\npr_code_suggestions.publish_failure_comment = False  "
+        "\npr_code_suggestions.suggestions_heading = 'Suggestions'  "
     )
     if include_extras:
         expected += "\npr_code_suggestions.commitable_code_suggestions = True  "

@@ -119,9 +119,6 @@ def _prepare_suggestion_publication(provider, monkeypatch, refs):
     }
     monkeypatch.setattr(gitlab_provider, "get_settings", lambda: settings)
     provider.id_mr = 7
-    provider.last_diff = SimpleNamespace(
-        base_commit_sha="construction-base", start_commit_sha="construction-start", head_commit_sha="construction-head",
-    )
     provider.mr.diffs.list = Mock(return_value=[SimpleNamespace(
         **{f"{key}_commit_sha": refs[f"{key}_sha"] for key in ("base", "start", "head")},
     )])

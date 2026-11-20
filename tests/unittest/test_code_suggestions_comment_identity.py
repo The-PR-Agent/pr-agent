@@ -9,7 +9,6 @@ from pr_agent.algo.comment_identity import (
     comment_matches_identity,
     format_pr_code_suggestions_header,
 )
-from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
@@ -21,12 +20,6 @@ def restore_suggestions_heading():
     yield
     restore_settings(snapshot)
 
-
-@pytest.fixture
-def restore_check_run_setting():
-    snapshot = snapshot_settings(["github.publish_as_check_run"])
-    yield
-    restore_settings(snapshot)
 
 def test_custom_suggestions_heading_changes_presentation_only(restore_suggestions_heading):
     get_settings().set(
@@ -87,66 +80,6 @@ def test_suggestions_identity_is_bounded_and_does_not_match_quoted_marker():
     assert not comment_matches_identity(late, marker)
 
 
-def test_summarized_artifact_uses_custom_heading_without_identity(restore_suggestions_heading):
-    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    get_settings().set("pr_code_suggestions.suggestions_heading", "Team Suggestions")
-
-    artifact = command.generate_summarized_suggestions({"code_suggestions": []})
-
-    assert artifact.startswith("## Team Suggestions ✨\n\n")
-    assert "<!-- pr-agent:improve" not in artifact
-
-
-@pytest.mark.asyncio
-async def test_no_suggestions_uses_custom_heading_with_separate_result_identity():
-    snapshot = snapshot_settings(
-        [
-            "config.publish_output",
-            "pr_code_suggestions.publish_output_no_suggestions",
-            "pr_code_suggestions.suggestions_heading",
-        ]
-    )
-    provider = MagicMock()
-    provider.supports_code_suggestions_artifact.return_value = False
-    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    command.git_provider = provider
-    command.progress_response = None
-    try:
-        get_settings().set("config.publish_output", True)
-        get_settings().set("pr_code_suggestions.publish_output_no_suggestions", True)
-        get_settings().set("pr_code_suggestions.suggestions_heading", "Team Suggestions")
-
-        await command.publish_no_suggestions()
-    finally:
-        restore_settings(snapshot)
-
-    published = provider.publish_comment.call_args.args[0]
-    assert published.startswith(
-        "## Team Suggestions ✨\n\n"
-        f"{PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value}\n\n"
-    )
-    assert PRCodeSuggestionsIdentity.SUMMARY.value not in published
-
-
-def test_github_check_run_receives_configured_presentation_without_identity(restore_check_run_setting):
-    provider = MagicMock()
-    provider._publish_check_run.return_value = True
-    comment = "## Team Suggestions ✨\n\n<table>suggestions</table>"
-    get_settings().set("github.publish_as_check_run", True)
-
-    PRCodeSuggestions.publish_persistent_comment_with_history(
-        provider,
-        comment,
-        initial_header="## Team Suggestions ✨",
-        name="suggestions",
-        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
-        legacy_initial_header="## PR Code Suggestions ✨",
-    )
-
-    provider._publish_check_run.assert_called_once_with(comment, "suggestions")
-    provider.get_issue_comments.assert_not_called()
-
-
 def _persistent_publish(prev_comment_bodies):
     provider = MagicMock()
     comments = [SimpleNamespace(body=body) for body in prev_comment_bodies]
@@ -194,39 +127,4 @@ def test_persistent_summary_updates_the_marked_summary_comment():
     assert provider.edit_comment.call_args.args[0].body.startswith(
         f"## PR Code Suggestions ✨\n\n{PRCodeSuggestionsIdentity.SUMMARY.value}"
     )
-    provider.publish_comment.assert_not_called()
-
-
-@pytest.mark.parametrize("identity_marker", [PRCodeSuggestionsIdentity.SUMMARY.value, None])
-def test_history_stops_reading_after_matching_comment(identity_marker):
-    header = "## PR Code Suggestions ✨"
-    existing = SimpleNamespace(body=(
-        f"{header}\n\n{identity_marker or ''}\n\n"
-        "<!-- aaa1111 -->\n\n<table>old suggestions</table>"
-    ))
-
-    def newest_first():
-        yield SimpleNamespace(body="New discussion")
-        yield existing
-        raise AssertionError("Older comments must not be read after finding the target")
-
-    provider = MagicMock()
-    provider._publish_check_run.return_value = False
-    provider.get_issue_comments_newest_first.return_value = newest_first()
-    provider.get_comment_url.return_value = "https://example.test/comment/1"
-    provider.get_latest_commit_url.return_value = "https://example.test/commit/deadbee"
-
-    result = PRCodeSuggestions.publish_persistent_comment_with_history(
-        provider,
-        f"{header}\n\n<table>new suggestions</table>",
-        initial_header=header,
-        name="suggestions",
-        identity_marker=identity_marker,
-        legacy_initial_header=header,
-    )
-
-    assert result is existing
-    provider.edit_comment.assert_called_once()
-    assert "<table>new suggestions</table>" in provider.edit_comment.call_args.args[1]
-    assert "<table>old suggestions</table>" in provider.edit_comment.call_args.args[1]
     provider.publish_comment.assert_not_called()

@@ -2,7 +2,7 @@ name: PR-Agent
 
 on:
   pull_request_target:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review, synchronize]
   issue_comment:
     types: [created]
   workflow_dispatch:
@@ -23,10 +23,10 @@ jobs:
   prepare_review:
     # A cheap pre-filter only: the "Authorize comment command" step is the real gate.
     if: >-
-      github.event.sender.type != 'Bot' &&
+      (github.event.sender.type != 'Bot' || github.event.action == 'synchronize') &&
       (
         github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'pull_request_target' && !github.event.pull_request.draft) ||
+        (github.event_name == 'pull_request_target' && (!github.event.pull_request.draft || github.event.action == 'synchronize')) ||
         (
           github.event_name == 'issue_comment' &&
           github.event.issue.pull_request &&
@@ -146,6 +146,7 @@ jobs:
         run: |
           set -euo pipefail
           EVENT_FILE=${REPLAY_EVENT_FILE:-$GITHUB_EVENT_PATH}
+          [[ "$(jq -r '.action // ""' "$EVENT_FILE")" != "synchronize" ]] || exit 0
           if [[ "$EVENT_NAME" == "issue_comment" ]]; then
             body=$(jq -r '.comment.body // ""' "$EVENT_FILE")
             [[ "${body%%[[:space:]]*}" == "/review" ]] || exit 0
@@ -384,6 +385,12 @@ jobs:
           CONFIG__MAX_OUTPUT_TOKENS: '8192'
           CONFIG__LOG_LEVEL: INFO
           CONFIG__OUTPUT_RUN_DETAILS: 'true'
+          # Compute the merge verdict, publish it as the "PR Agent - Review" check, and approve
+          # the reviewed commit when it is clean (#4710, #4855).
+          PR_REVIEWER__REQUIRE_MERGE_RECOMMENDATION: 'true'
+          PR_REVIEWER__REQUIRE_RISK_ASSESSMENT: 'true'
+          PR_REVIEWER__PUBLISH_MERGE_RECOMMENDATION_STATUS: 'true'
+          CONFIG__ENABLE_AUTO_APPROVAL: 'true'
           # The action would also merge this repo's own .pr_agent.toml, whose `synchronize`
           # push command points at /agentic_review - not in OSS, so it would fail the job.
           CONFIG__USE_REPO_SETTINGS_FILE: 'false'
@@ -399,3 +406,21 @@ jobs:
           GITHUB_ACTION_CONFIG__AUTO_REVIEW: 'true'
           GITHUB_ACTION_CONFIG__AUTO_IMPROVE: 'true'
           GITHUB_ACTION_CONFIG__FAIL_ON_COMMAND_ERRORS: 'true'
+          # Grafana Cloud telemetry stays off unless the GRAFANA_OTLP_ENDPOINT variable is set;
+          # the GRAFANA_OTLP_AUTH secret holds only the base64 "instanceID:token" value.
+          # Neither PR-Agent's [otel] parser nor LiteLLM's (which bypasses the OTel SDK's URL-decoding
+          # of OTEL_EXPORTER_OTLP_HEADERS) decodes %20, so both headers use a literal space.
+          OTEL__IS_ENABLED: ${{ vars.GRAFANA_OTLP_ENDPOINT != '' && 'true' || 'false' }}
+          OTEL__EXPORTER_TYPE: otlp
+          OTEL__ENVIRONMENT: production
+          OTEL__OTLP_ENDPOINT: ${{ vars.GRAFANA_OTLP_ENDPOINT }}
+          OTEL__OTLP_HEADERS: ${{ vars.GRAFANA_OTLP_ENDPOINT != '' && format('Authorization=Basic {0}', secrets.GRAFANA_OTLP_AUTH) || '' }}
+          LITELLM__SUCCESS_CALLBACK: ${{ vars.GRAFANA_OTLP_ENDPOINT != '' && '["otel"]' || '' }}
+          LITELLM__FAILURE_CALLBACK: ${{ vars.GRAFANA_OTLP_ENDPOINT != '' && '["otel"]' || '' }}
+          # Keep prompts and completions (PR code and diffs) out of the exported spans.
+          LITELLM__TURN_OFF_MESSAGE_LOGGING: 'true'
+          OTEL_EXPORTER: otlp_http
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.GRAFANA_OTLP_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_HEADERS: ${{ vars.GRAFANA_OTLP_ENDPOINT != '' && format('Authorization=Basic {0}', secrets.GRAFANA_OTLP_AUTH) || '' }}
+          OTEL_SERVICE_NAME: pr-agent
+          LITELLM_OTEL_INTEGRATION_ENABLE_METRICS: 'true'

@@ -103,7 +103,6 @@ FORBIDDEN_ARGS = [
     "--github.api_retries=3",
     '--github={"ratelimit_retries": 3}',
     "--config.ai_timeout=300",
-    "--pr_code_suggestions.max_number_of_calls=10",
     # description_issue_regex is compiled and run with finditer over the whole pull-request
     # description. An ambiguous pattern backtracks exponentially, so a commenter who can choose
     # it can burn a worker on a short body; it stays an operator choice.
@@ -150,7 +149,6 @@ FORBIDDEN_ARGS = [
     "--pr_reviewer__per_commit_review=true",
     '--pr_reviewer={"per_commit_review": true}',
     "--pr_reviewer.max_commits_per_review=0",
-    "--pr_code_suggestions.parallel_calls=true",
     '--config.fallback_models=["gpt-4.1"]',
     "--config.num_retries=10",
     "--pr_update_changelog.push_changelog_changes=true",
@@ -164,6 +162,29 @@ FORBIDDEN_ARGS = [
     "--config.branch_issue_regex=^([\\w/.-]+)*!$",
     "--ignore.regex=^([\\w/.-]+)*!$",
     "--config.output_relevant_configurations=true",
+    # Model spend, provider metadata and process-wide LiteLLM logging stay host-controlled.
+    "--pr_similar_issue.max_issues_to_scan=100000",
+    "--pr_similar_issue__max_issues_to_scan=100000",
+    '--pr_similar_issue={"max_issues_to_scan": 100000}',
+    "--config.reasoning_effort=high",
+    "--config__reasoning_effort=high",
+    '--config={"reasoning_effort": "high"}',
+    "--openrouter.reasoning_effort=high",
+    "--openrouter__reasoning_effort=high",
+    '--openrouter={"reasoning_effort": "high"}',
+    "--openrouter.reasoning_max_tokens=100000",
+    "--openrouter__reasoning_max_tokens=100000",
+    '--openrouter={"reasoning_max_tokens": 100000}',
+    "--litellm.add_session_id_to_requests=true",
+    "--litellm__add_session_id_to_requests=true",
+    '--litellm={"add_session_id_to_requests": true}',
+    "--config.add_user_to_requests=true",
+    "--config__add_user_to_requests=true",
+    '--config={"add_user_to_requests": true}',
+    "--litellm.turn_off_message_logging=true",
+    "--LITELLM.TURN_OFF_MESSAGE_LOGGING=true",
+    "--litellm__turn_off_message_logging=true",
+    '--litellm={"turn_off_message_logging": true}',
     # section-level mapping values on sections that are not host-only themselves:
     # the dotted keys below are all rejected, so their {key: value} forms must be too
     '--qdrant={url: "https://evil.example", api_key: "x"}',
@@ -190,7 +211,6 @@ ALLOWED_ARGS_SINGLE = [
     "--pr_description.publish_labels=false",
     # a mapping value whose nested keys are all allowed stays accepted
     "--qdrant={timeout: 5, prefer_grpc: true}",
-    "--pr_similar_issue.max_issues_to_scan=50",
     "--github.publish_as_check_run=true",
     "--gitlab.handle_push_trigger=true",
     "--bitbucket.identity_request_timeout=10",
@@ -435,7 +455,6 @@ def test_validate_user_args_rejects_forbidden_arg_with_leading_whitespace(prefix
         "--github .seconds_between_writes=1",
         "--github.\tapi_retries=3",
         "--pr_reviewer. max_number_of_calls=10",
-        "--pr_code_suggestions .parallel_calls=true",
         "--pr_similar_issue .force_update_dataset=true",
         "--prompt_fragments .diff_hunk_format=unsafe",
         "--push_outputs. webhook_url=https://evil.example",
@@ -479,7 +498,6 @@ def test_validate_user_args_rejects_forbidden_key_with_whitespace_around_the_sec
         "--pr_description .extra_instructions=hi",
         "--pr_description	.extra_instructions=hi",
         "--config .verbosity_level=2",
-        "--pr_code_suggestions. suggestions_score_threshold=0",
         # the whitespace check runs before the mapping branch: a mapping-valued flag
         # `continue`s past the rest of the loop body in validate_user_args
         "--pr_description .extra_instructions={what: parse}",

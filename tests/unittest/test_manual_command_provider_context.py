@@ -34,10 +34,11 @@ async def test_manual_commands_reuse_request_provider(monkeypatch, action):
     repo.get_languages.return_value = {"Python": 1}
     pr = MagicMock(title="Example", body="Description", html_url=pr_url, changed_files=1)
     pr.head = SimpleNamespace(sha="head", ref="feature")
-    pr.base = SimpleNamespace(sha="base", ref="main")
+    pr.base = SimpleNamespace(sha="base", ref="main", repo=repo)
     pr.get_commits.return_value = [SimpleNamespace(sha="head", commit=SimpleNamespace(message="Change"))]
     pr.get_files.return_value = [SimpleNamespace(filename="app.py")]
     repo.get_pull.return_value = pr
+    monkeypatch.setattr("pr_agent.git_providers.github_provider.PullRequest", lambda *_args, **_kwargs: pr)
     clients = []
 
     def github_client(**_kwargs):
@@ -222,11 +223,13 @@ async def test_github_head_refreshes_after_automatic_command_boundary(monkeypatc
     new_pr = MagicMock(title="PR", body="", changed_files=2)
     for pr, sha in ((old_pr, "old-head"), (new_pr, "new-head")):
         pr.head = SimpleNamespace(sha=sha, ref="feature")
-        pr.base = SimpleNamespace(sha="base", ref="main")
+        pr.base = SimpleNamespace(sha="base", ref="main", repo=repo)
         pr.get_commits.return_value = [SimpleNamespace(sha=sha, commit=SimpleNamespace(message="Update"))]
         pr.get_files.return_value = [SimpleNamespace(filename="app.py")]
     active_pr = {"value": old_pr}
     repo.get_pull.side_effect = lambda _number: active_pr["value"]
+    monkeypatch.setattr("pr_agent.git_providers.github_provider.PullRequest",
+                        lambda *_args, **_kwargs: repo.get_pull(1))
 
     def github_client(**_kwargs):
         client = MagicMock()
