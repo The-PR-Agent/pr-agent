@@ -687,6 +687,8 @@ class GitLabProvider(GitProvider):
         self._submodule_cache: dict[tuple[str, str, str], list[dict]] = {}
         # Expanded submodule path -> web address in the submodule's own project.
         self._submodule_links: dict[str, str] = {}
+        # Submodule project path -> the web address GitLab reported when the project was resolved.
+        self._submodule_web_urls: dict[str, str] = {}
         self.pr_url = merge_request_url
         self._set_merge_request(merge_request_url)
         self.RE_HUNK_HEADER = re.compile(
@@ -907,6 +909,8 @@ class GitLabProvider(GitProvider):
                 get_logger().warning(f"[submodule] skipping {proj_path}: not an authorized sibling repository")
                 self._submodule_cache[key] = []
                 return []
+            if isinstance(web_url := getattr(proj, "web_url", None), str):
+                self._submodule_web_urls[proj_path] = web_url.rstrip("/")
             cmp = proj.repository_compare(old_sha, new_sha)
             if isinstance(cmp, dict):
                 diffs = cmp.get("diffs", []) or []
@@ -982,8 +986,8 @@ class GitLabProvider(GitProvider):
 
             get_logger().info(f"[submodule] {sub_path} url={repo_url} -> proj_path={proj_path}")
             sub_diffs = self._compare_submodule(proj_path, old_sha, new_sha)
-            # shortcut: takes gitlab.url as the web address, read the project's web_url if an instance splits the two
-            sub_web_url = f"{self.gl.url}/{quote(proj_path, safe='/')}"
+            # gitlab.url is the API address, which need not be the one people browse; it is only the fallback.
+            sub_web_url = self._submodule_web_urls.get(proj_path) or f"{self.gl.url}/{quote(proj_path, safe='/')}"
             if sub_diffs:
                 self._submodule_links[sub_path] = f"{sub_web_url}/-/compare/{old_sha}...{new_sha}"
             for sd in sub_diffs:
