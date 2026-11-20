@@ -566,6 +566,9 @@ class PRDescription:
                 task_results = await asyncio.gather(*tasks, return_exceptions=True)
                 for chunk_index, result in zip(task_indices, task_results, strict=True):
                     results[chunk_index] = result
+            for result in results:
+                if isinstance(result, BaseException) and not isinstance(result, Exception):
+                    raise result
             file_description_chunks = []
             chunk_models = []
             chunk_errors = []
@@ -579,8 +582,6 @@ class PRDescription:
                         artifact={"error": result, "files": files_in_patch},
                     )
                     continue
-                if isinstance(result, BaseException):
-                    raise result
                 if not isinstance(result, str):
                     chunk_errors.append(FallbackEligibleError(f"Description chunk {i + 1} returned no prediction"))
                     failed_files.extend(files_in_patch)
