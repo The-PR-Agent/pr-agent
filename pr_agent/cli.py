@@ -31,6 +31,7 @@ from pr_agent.algo.run_output import get_version
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
 from pr_agent.config_loader import get_settings, safe_request_cycle_context
 from pr_agent.doctor import DOCTOR_COMMANDS, run_doctor_checks
+from pr_agent.git_providers.plain_diff_provider import plain_diff_local_context_enabled
 from pr_agent.log import get_logger, setup_logger
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -152,7 +153,7 @@ def _encode_plain_diff_context_args(args):
     for arg in args:
         if arg.startswith("--") and "=" in arg:
             key, value = arg.split("=", 1)
-            if key[2:].lower() in ("plain_diff.title", "plain_diff.description"):
+            if key[2:].lower() in ("plain_diff.title", "plain_diff.description", "plain_diff.context_ref"):
                 quoted = yaml.safe_dump(value, allow_unicode=True, default_style='"').strip()
                 arg = f"{key}={quoted}"
         encoded.append(arg)
@@ -302,9 +303,11 @@ def run(inargs=None, args=None):
             hosted_token = hosted_markdown_export.set(hosted_markdown_output)
             artifact_token = hosted_markdown_artifact.set(None)
             config_error_token = hosted_markdown_config_error.set(False)
+            local_context_token = plain_diff_local_context_enabled.set(bool(diff_mode))
             try:
                 return await run_inner()
             finally:
+                plain_diff_local_context_enabled.reset(local_context_token)
                 hosted_markdown_config_error.reset(config_error_token)
                 hosted_markdown_artifact.reset(artifact_token)
                 hosted_markdown_export.reset(hosted_token)
