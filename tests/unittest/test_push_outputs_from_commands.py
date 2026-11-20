@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from pr_agent.algo.review_json_output import hosted_markdown_export, review_json_output_path
-from pr_agent.algo.run_details import add_token_usage
+from pr_agent.algo.run_details import add_token_usage, command_failed
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.commands.pr_questions import NO_ANALYZABLE_FILES_NOTE, PRQuestions
 from pr_agent.commands.pr_reviewer import PRReviewer
@@ -138,7 +138,7 @@ async def test_ask_writes_json_without_publishing_or_sinks(monkeypatch, tmp_path
 
 
 @pytest.mark.parametrize("publish_output", [True, False])
-async def test_changelog_emits_only_the_new_entry_when_publishing(monkeypatch, publish_output):
+async def test_changelog_emits_only_the_new_entry_when_publishing(monkeypatch, publish_output, tmp_path):
     command = PRUpdateChangelog.__new__(PRUpdateChangelog)
     command.changelog_path = "docs/HISTORY.md"
     command.changelog_file = "# Previous changelog\n\n- Earlier change"
@@ -151,6 +151,7 @@ async def test_changelog_emits_only_the_new_entry_when_publishing(monkeypatch, p
 
     async def prepare(_callback, model_type):
         command.prediction = "```markdown\n### Added\n- New feature\n```"
+        add_token_usage({"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25})
 
     async def record(message_type, **kwargs):
         events.append(("sink", message_type, kwargs))
@@ -164,7 +165,18 @@ async def test_changelog_emits_only_the_new_entry_when_publishing(monkeypatch, p
     monkeypatch.setattr("pr_agent.commands.pr_update_changelog.push_outputs_async", record)
     monkeypatch.setitem(get_settings().config, "publish_output", publish_output)
 
-    await command.run()
+    output = tmp_path / "changelog.json"
+    token = review_json_output_path.set(str(output))
+    try:
+        await command.run()
+    finally:
+        review_json_output_path.reset(token)
+
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        "path": "docs/HISTORY.md",
+        "entry": "### Added\n- New feature",
+        "usage": {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
+    }
 
     if not publish_output:
         assert events == []
@@ -178,3 +190,41 @@ async def test_changelog_emits_only_the_new_entry_when_publishing(monkeypatch, p
     assert sink["git_provider"] is command.git_provider
     assert "Previous changelog" not in sink["markdown"]
     assert "to commit the new content" not in sink["markdown"]
+
+
+@pytest.mark.parametrize("failure_case", ["missing", "empty", "unwritable"])
+async def test_changelog_required_json_failure_is_reported_without_changing_publication(
+    monkeypatch, tmp_path, failure_case,
+):
+    command = PRUpdateChangelog.__new__(PRUpdateChangelog)
+    command.changelog_path = "CHANGELOG.md"
+    command.changelog_file = ""
+    command.changelog_read_error = None
+    command.commit_changelog = False
+    command.push_skipped_reason = None
+    command.prediction = None
+    command.git_provider = MagicMock()
+
+    async def prepare(_callback, model_type):
+        if failure_case != "missing":
+            command.prediction = "   " if failure_case == "empty" else "### Added\n- New feature"
+
+    monkeypatch.setattr("pr_agent.commands.pr_update_changelog.retry_with_fallback_models", prepare)
+    monkeypatch.setattr("pr_agent.commands.pr_update_changelog.push_outputs_async", AsyncMock())
+    if failure_case == "unwritable":
+        monkeypatch.setattr("pr_agent.commands.pr_update_changelog.write_review_json_output",
+                            MagicMock(side_effect=OSError("unwritable path")))
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
+
+    output = tmp_path / "changelog.json"
+    token = review_json_output_path.set(str(output))
+    try:
+        await command.run()
+    finally:
+        review_json_output_path.reset(token)
+
+    assert command_failed()
+    assert not output.exists()
+    published = [call for call in command.git_provider.publish_comment.call_args_list
+                 if not call.kwargs.get("is_temporary")]
+    assert len(published) == (0 if failure_case == "missing" else 1)
