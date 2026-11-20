@@ -16,9 +16,9 @@ import pytest
 from starlette_context import request_cycle_context
 
 import pr_agent.agent.pr_agent as agent
-from pr_agent.agent.pr_agent import _boolean_setting_defaults, _normalize_boolean_settings
 from pr_agent.algo.cli_args import CliArgs
 from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.config_security import is_repo_host_only_key
 from pr_agent.git_providers import _GIT_PROVIDERS
 
 URL = "https://example.test/owner/repo/pull/1"
@@ -102,12 +102,12 @@ def test_normalize_boolean_settings_coerces_every_string_value():
     """Every boolean-default key set to "false" reads False afterwards."""
     defaults = _boolean_defaults()
     assert len(defaults) > 100, "boolean enumeration is unexpectedly small"
-    assert defaults == _boolean_setting_defaults(), "implementation reads the same TOML source"
+    assert defaults == agent._boolean_setting_defaults(), "implementation reads the same TOML source"
     with request_cycle_context({"settings": _settings()}):
         settings = get_settings()
         for key in defaults:
             settings.set(key, "false")
-        _normalize_boolean_settings()
+        agent._normalize_boolean_settings()
         failures = {key: settings.get(key) for key in defaults if settings.get(key) is not False}
         assert not failures, f"boolean keys still not False: {failures}"
 
@@ -123,7 +123,7 @@ def test_normalize_boolean_settings_keeps_true_strings_and_non_strings():
         settings.set("PR_REVIEWER.REQUIRE_SCORE_REVIEW", 1)  # not a string: untouched
         settings.set("CONFIG.MODEL", "gpt-4o")  # not a boolean key: untouched
         settings.set("GITLAB.SSL_VERIFY", "/etc/ssl/ca.pem")  # no boolean default: untouched
-        _normalize_boolean_settings()
+        agent._normalize_boolean_settings()
         assert settings.config.publish_output is True
         assert settings.pr_reviewer.require_tests_review is True
         assert settings.pr_description.publish_labels is True
@@ -160,6 +160,11 @@ async def test_comment_args_false_strings_read_false_in_stub_command(monkeypatch
     with request_cycle_context({"settings": _settings()}):
         assert await agent.PRAgent().handle_request(URL, request) is True
     _assert_no_string_booleans(captured, defaults)
+    # Every comment-settable key was passed as "false": the override must have
+    # actually taken effect, not just been discarded (a discarded override
+    # would leave the TOML default, which _assert_no_string_booleans accepts).
+    failures = {key: captured[key] for key in settable if captured[key] is not False}
+    assert not failures, f"comment overrides did not become False: {failures}"
 
 
 async def test_repo_settings_false_strings_read_false_in_stub_command(monkeypatch, providers):
@@ -184,3 +189,21 @@ async def test_repo_settings_false_strings_read_false_in_stub_command(monkeypatc
     with request_cycle_context({"settings": _settings()}):
         assert await agent.PRAgent().handle_request(URL, "/review") is True
     _assert_no_string_booleans(captured, defaults)
+    # Same guard as the comment-args test: every key in the repo file was
+    # "false", so each must read False, not its TOML default — except host-only
+    # keys, which apply_repo_settings deliberately ignores (e.g.
+    # GITHUB_APP.OVERRIDE_DEPLOYMENT_TYPE and LITELLM.SUPPRESS_DEBUG_INFO are
+    # host concerns; a repo file must not flip them). Those must still read
+    # their TOML default, never a string.
+    overridable = {
+        key: value for key, value in defaults.items()
+        if not is_repo_host_only_key(*key.lower().split(".", 1))
+    }
+    failures = {key: captured[key] for key in overridable if captured[key] is not False}
+    assert not failures, f"repo overrides did not become False: {failures}"
+    host_only = {key: value for key, value in defaults.items() if key not in overridable}
+    assert host_only, "expected at least one host-only boolean key"
+    assert all(captured[key] == value for key, value in host_only.items()), (
+        f"host-only keys must keep their TOML default: "
+        f"{ {key: captured[key] for key in host_only if captured[key] != host_only[key]} }"
+    )
