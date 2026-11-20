@@ -21,6 +21,7 @@ from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, _as_ssl_verify_setting, normalize_setting_list
+from pr_agent.algo.utils import encode_user_text_arg
 from pr_agent.config_loader import get_bot_display_name, get_settings, global_settings
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.git_providers.request_timeout import get_http_request_timeout, refresh_session_request_timeout
@@ -34,6 +35,7 @@ from pr_agent.servers.utils import (
     dedupe_review_commands,
     get_include_pr_labels,
     get_pr_commands,
+    host_settings_unavailable,
     is_ask_command_comment,
     is_command_comment,
     load_host_settings_for_webhook,
@@ -541,6 +543,10 @@ async def process_gitlab_event(data: dict, log_context: dict):
             if not isinstance(changes, dict) or "reviewers" not in changes:
                 return
         await load_host_settings_for_webhook()
+        if host_settings_unavailable():
+            # Fail closed: without the host layer its exclusions would not apply.
+            get_logger().warning("Request ignored: host settings could not be loaded")
+            return
 
         # GitLab's event user is the actor. When a different user authored the
         # MR, resolve the author only if a host author exclusion needs it.
@@ -677,8 +683,9 @@ async def process_gitlab_event(data: dict, log_context: dict):
             if (discussion_id and command_takes_comment_id(command) and (
                     not note_type or (note_type == "DiscussionNote" and command in ("/ask", "/ask_question")))):
                 body = f"{body} --comment_id={discussion_id}"
-            if note_type == 'DiffNote' and is_ask_command_comment(body):  # /ask_line
-                body = handle_ask_line(body, data)
+            if note_type == 'DiffNote' and is_ask_command_comment(body):
+                # /ask on a whole file asks about that file; on lines it becomes /ask_line
+                body = handle_file_question(body, data, url) or handle_ask_line(body, data)
 
             # A fresh collector, so the verdict below can only come from this command.
             init_run_details()
@@ -705,6 +712,32 @@ async def process_gitlab_event(data: dict, log_context: dict):
             # Offload outcome HTTP requests while preserving request-scoped settings.
             await asyncio.to_thread(
                 provider.react_to_outcome, comment_id, bool(result) and not command_failed())
+
+
+def handle_file_question(body, data, mr_url):
+    """Turn /ask or /ask_question on a whole file into a question about that file's diff.
+
+    The file and the note's discussion go into the request context, where PRQuestions reads them to
+    answer in that discussion. Returns None for any other note.
+    """
+    attributes = data['object_attributes']
+    position = attributes.get('position')
+    if (not isinstance(position, dict) or position.get('position_type') != 'file'
+            or body.split(maxsplit=1)[0].lower() not in ("/ask", "/ask_question")):
+        return None
+    path = position.get('new_path')
+    discussion_id = attributes.get('discussion_id')
+    note_id = attributes.get('id')
+    if not isinstance(path, str) or not path.strip() or not discussion_id or note_id is None:
+        return None
+    parts = body.strip().split(maxsplit=1)
+    question = parts[1] if len(parts) > 1 else ""
+    context["file_question_path"] = path
+    context["file_question_comment_id"] = discussion_id
+    context["file_question_origin_comment_id"] = note_id
+    context["file_question_comment_url"] = attributes.get('url') or f"{mr_url}#note_{note_id}"
+    # The provider reads the notes before this one in the discussion as its history.
+    return ["/ask", f"--origin_comment_id={note_id}", encode_user_text_arg(question)]
 
 
 def handle_ask_line(body, data):

@@ -90,8 +90,8 @@ its webhook command names remain case-sensitive.
 
 If no matching diff hunk is found for the selected lines, the command explains this without calling a model.
 
-In the GitHub App and GitHub Actions, a file comment whose first non-whitespace token is `/ask` or `/ask_question`
-uses that file's complete diff as context. These two command names are case-insensitive.
+In the GitHub App, GitHub Actions, and GitLab webhook, a file comment whose first non-whitespace token is `/ask` or
+`/ask_question` uses that file's complete diff as context. These two command names are case-insensitive.
 The existing file filters and input budgets still apply. If the file has no analyzable diff, or the question cannot
 be prepared within the configured input budget, the command explains this without calling a model.
 The answer is posted in the original file-comment thread with a link to the question.
@@ -140,7 +140,7 @@ To get a direct link to an image, we recommend using the following scheme:
 
    <img src="/img/ask_images5.png" alt="Ask image5" width="512" />
 
-See a full video tutorial [here](https://codium.ai/images/pr_agent/ask_image_video.mov)
+See a full video tutorial [here](https://www.qodo.ai/images/pr_agent/ask_image_video.mov)
 
 ## Linked ticket context
 

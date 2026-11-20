@@ -875,7 +875,7 @@ def update_settings_from_args(args: list[str]) -> list[str]:
     Args:
         args: A list of arguments passed to the function.
         Example args: ['--pr_code_suggestions.extra_instructions="be funny',
-                  '--pr_code_suggestions.num_code_suggestions_per_chunk=3']
+                  '--pr_reviewer.num_max_findings=3']
 
     Returns:
         None
@@ -1224,7 +1224,7 @@ def _load_yaml_initial(response_text: str) -> Any:
 
 
 def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_key="", last_key="",
-              *, preserve_null: bool = False) -> Any:
+              *, preserve_null: bool = False, suppress_diagnostics: bool = False) -> Any:
     """Parse model output, normalizing YAML null to {} unless preservation is requested."""
     if keys_fix_yaml is None:
         keys_fix_yaml = []
@@ -1256,7 +1256,10 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
             raise ValueError("Preprocessing/sanitization removed all content from a non-empty AI prediction")
         data = _load_yaml_initial(response_text)
     except Exception as e:
-        get_logger().warning(f"Initial failure to parse AI prediction: {e}")
+        if suppress_diagnostics:
+            get_logger().warning("Initial failure to parse AI prediction")
+        else:
+            get_logger().warning(f"Initial failure to parse AI prediction: {e}")
         # The fence stripping above is anchored at the start of the response, so when
         # the labelled YAML block sits mid-text (for example after a code example the
         # model included for explanation), the surrounding prose and the other fence
@@ -1270,18 +1273,22 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
                     get_logger().info("Recovered labelled YAML block embedded in prose")
                     return candidate
             except Exception as e:
-                get_logger().debug(f"Mid-text YAML block parse failed: {e}")
+                if suppress_diagnostics:
+                    get_logger().debug("Mid-text YAML block parse failed")
+                else:
+                    get_logger().debug(f"Mid-text YAML block parse failed: {e}")
         separators = str.maketrans({"\u2028": " ", "\u2029": " "})
         response_text = response_text.translate(separators)
         response_text_original_sanitized = response_text_original_sanitized.translate(separators)
         data = try_fix_yaml(response_text, keys_fix_yaml=keys_fix_yaml, first_key=first_key, last_key=last_key,
-                            response_text_original=response_text_original_sanitized)
+                            response_text_original=response_text_original_sanitized,
+                            suppress_diagnostics=suppress_diagnostics)
         if not data:
             get_logger().error("Failed to parse AI prediction after fallbacks",
-                               artifact={'response_text': response_text})
+                               artifact={} if suppress_diagnostics else {'response_text': response_text})
         else:
             get_logger().info("Successfully parsed AI prediction after fallbacks",
-                              artifact={'response_text': response_text})
+                              artifact={} if suppress_diagnostics else {'response_text': response_text})
     if data is None and not preserve_null:
         return {}
     return data
@@ -1292,7 +1299,7 @@ def try_fix_yaml(response_text: str,
                  keys_fix_yaml: list[str] | None = None,
                  first_key="",
                  last_key="",
-                 response_text_original="") -> dict:
+                 response_text_original="", suppress_diagnostics: bool = False) -> dict:
     if keys_fix_yaml is None:
         keys_fix_yaml = []
     response_text_lines = response_text.split('\n')
@@ -1387,7 +1394,10 @@ def try_fix_yaml(response_text: str,
                 get_logger().info("Successfully parsed AI prediction after extracting yaml snippet")
                 return data
         except Exception as e:
-            get_logger().debug(f"Failed to parse AI prediction after extracting yaml snippet: {e}")
+            if suppress_diagnostics:
+                get_logger().debug("Failed to parse AI prediction after extracting yaml snippet")
+            else:
+                get_logger().debug(f"Failed to parse AI prediction after extracting yaml snippet: {e}")
 
 
     # A preceding code example can make the generic fence match start at its
@@ -1404,7 +1414,10 @@ def try_fix_yaml(response_text: str,
                 if isinstance(data, dict) and data:
                     return data
             except Exception as e:
-                get_logger().debug(f"Trailing labelled YAML fence retry failed: {e}")
+                if suppress_diagnostics:
+                    get_logger().debug("Trailing labelled YAML fence retry failed")
+                else:
+                    get_logger().debug(f"Trailing labelled YAML fence retry failed: {e}")
 
 
     # third fallback - try to remove leading and trailing curly brackets
@@ -1604,9 +1617,22 @@ def set_custom_labels(variables, git_provider=None):
 def filter_generated_labels(labels: list[str]) -> list[str]:
     """Keep model-generated labels within the enabled vocabulary, not user labels."""
     names = [label.value for label in PRType]
+
+    def description_key(text: str) -> str:
+        # The prompt shows a description with its newlines and quotes escaped; a model may echo either form.
+        return " ".join(text.replace("\\n", " ").replace("\\'", "'").split()).lower()
+
+    by_description = {}
     if get_settings().config.get("enable_custom_labels", False):
         custom_labels = get_settings().get("custom_labels", {}) or _DEFAULT_CUSTOM_LABELS
         names.extend(str(label) for label in custom_labels)
+        if isinstance(custom_labels, dict):
+            for name, value in custom_labels.items():
+                description = value.get("description", "") if isinstance(value, dict) else str(value)
+                key = description_key(description) if isinstance(description, str) else ""
+                if key:
+                    # A description shared by several labels names none of them.
+                    by_description[key] = None if key in by_description else str(name)
     allowed = {name.lower() for name in names}
     # Resolve prompt enum keys (e.g. bug_fix) to allowed display names.
     aliases = {name.lower().replace(" ", "_"): name for name in names}
@@ -1617,6 +1643,9 @@ def filter_generated_labels(labels: list[str]) -> list[str]:
             accepted.append(label.strip())
         elif isinstance(label, str) and label.strip().lower() in aliases:
             accepted.append(aliases[label.strip().lower()])
+        # The prompt enum's value is the description, and a model may answer with it instead of the key.
+        elif isinstance(label, str) and (name := by_description.get(description_key(label))):
+            accepted.append(name)
         else:
             dropped.append(label)
     if dropped:

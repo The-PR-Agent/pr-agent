@@ -13,7 +13,11 @@ from pr_agent.algo.git_patch_processing import (
     extend_patch,
     handle_patch_deletions,
 )
-from pr_agent.algo.language_handler import AUTO_GENERATED_FILES_EXACT, sort_files_by_main_languages
+from pr_agent.algo.language_handler import (
+    AUTO_GENERATED_FILES_EXACT,
+    filter_files_by_extensions,
+    sort_files_by_main_languages,
+)
 from pr_agent.algo.model_routing import route_primary_model
 from pr_agent.algo.run_details import record_model_used
 from pr_agent.algo.token_budget import AttemptTokenBudget, FallbackEligibleError, clip_tokens
@@ -42,10 +46,6 @@ _effective_fallback_chain: ContextVar[tuple[tuple[str, str | None], ...] | None]
     "pr_agent_effective_fallback_chain", default=None
 )
 
-
-def get_effective_fallback_chain() -> tuple[tuple[str, str | None], ...] | None:
-    """Return the model/deployment chain selected for the current retry invocation."""
-    return _effective_fallback_chain.get()
 
 
 def _count_raw_and_stripped_tokens(token_handler: TokenHandler, text: str) -> int:
@@ -215,7 +215,8 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 large_pr_handling=False,
                 return_remaining_files=False,
                 return_prepared=False,
-                output_token_reserve: Callable[[str, int], int] | None = None):
+                output_token_reserve: Callable[[str, int], int] | None = None,
+                excluded_extensions: list | None = None):
     budget = AttemptTokenBudget.for_attempt(
         model, token_handler, output_token_reserve=output_token_reserve
     )
@@ -236,6 +237,8 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
         PATCH_EXTRA_LINES_AFTER = cap_and_log_extra_lines(PATCH_EXTRA_LINES_AFTER, "after")
 
     diff_files = git_provider.get_diff_files()
+    if excluded_extensions:
+        diff_files = filter_files_by_extensions(diff_files, excluded_extensions)
     filtered_files = getattr(git_provider, "get_filtered_diff_file_names", lambda: [])()
     if not isinstance(filtered_files, (list, tuple)):
         filtered_files = []

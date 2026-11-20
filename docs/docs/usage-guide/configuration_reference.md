@@ -39,8 +39,6 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | `git_provider` | "github" |  |
 | `publish_output` | true |  |
 | `publish_output_progress` | true |  |
-| `progress_gif_url` | "" | optional, override for the progress loading gif url (example: 'https://.../spinner.gif'). |
-| `progress_gif_width` | 48 | optional, width (in px) of the progress loading gif. |
 | `verbosity_level` | 0 | 0,1,2 |
 | `use_extra_bad_extensions` | false |  |
 **Log**
@@ -291,42 +289,8 @@ See [Fixes and committable suggestions](../commands/review.md#fixes-and-committa
 | Key | Default | Description |
 | --- | --- | --- |
 | `committable_code_suggestions` | false | Deprecated alias still accepted until 1.0: pr_code_suggestions.commitable_code_suggestions |
-| `dual_publishing_score_threshold` | -1 | Not settable from a per-directory .pr_agent.toml. -1 or 0 disables, [1-10] also publishes suggestions scoring >= it as committable, besides the table. |
-| `focus_only_on_problems` | true |  |
 | `extra_instructions` | "" |  |
-| `suggestions_heading` | "PR Code Suggestions" | Visible base heading for summary-table /improve comments. Identity is tracked separately. |
-| `enable_help_text` | false |  |
-| `enable_chat_text` | false |  |
-| `persistent_comment` | true |  |
-| `publish_failure_comment` | true | Set to false to suppress /improve failure comments without changing the command's failure status. |
-| `max_history_len` | 4 | Previous sets to retain; <=0 keeps latest only (same comment if editable). |
-| `publish_output_no_suggestions` | true |  |
-| `enable_suggestions_coverage_footer` | true | show failed chunks and files omitted by the token or AI-call budget |
-**suggestions scoring**
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `suggestions_score_threshold` | 1 | [0-10]\| 0 is treated as 1; recommend not to set this value above 8, since above it may clip highly relevant suggestions |
-| `score_on_reflection_failure` | 7 | [0-10]\| score assigned when self-reflection fails or its feedback cannot be parsed; set below suggestions_score_threshold to drop unvetted suggestions |
-| `new_score_mechanism` | true |  |
-| `new_score_mechanism_th_high` | 9 |  |
-| `new_score_mechanism_th_medium` | 7 |  |
-**params for '/improve --extended' mode**
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `num_code_suggestions_per_chunk` | 3 |  |
-| `max_suggestions_per_file` | 0 | Maximum suggestions retained per file after all chunks are merged; 0 disables the cap. Skip unresolvable line locations before applying a positive cap to summarized output; leave inline selection unchanged. |
-| `max_discussion_context_chars` | 24000 | Character budget for prior code-suggestion threads given to /improve as context (GitLab, Azure DevOps); 0 disables it. |
-| `max_number_of_calls` | 3 |  |
-| `parallel_calls` | true |  |
-| `decouple_hunks` | false |  |
-**self-review checkbox**
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `demand_code_suggestions_self_review` | false | add a checkbox for the author to self-review the code suggestions |
-| `code_suggestions_self_review_text` | "**Author self-review**: I have reviewed the PR code suggestions, and addressed the relevant ones." |  |
+| `suggestions_heading` | "PR Code Suggestions" | Visible base heading for code-suggestion comments. Identity is tracked separately. |
 
 
 ## `[pr_add_docs]` — /add_docs {#pr_add_docs-add_docs}
@@ -337,6 +301,7 @@ See [Add Docs](../commands/add_docs.md#configuration-options).
 | --- | --- | --- |
 | `extra_instructions` | "" |  |
 | `docs_style` | "Sphinx" | Docstring style: Google Style with Args, Returns, Attributes...etc; Numpy Style; Sphinx; PEP257; reStructuredText. See docs/docs/commands/add_docs.md. |
+| `use_repo_context` | true | Include repository instructions in /add_docs when they fit (true/false); see commands/add_docs.md. |
 
 
 ## `[pr_update_changelog]` — /update_changelog {#pr_update_changelog-update_changelog}
@@ -433,7 +398,6 @@ See [GitLab](../usage-guide/automations_and_usage.md#gitlab-webhook).
 | `expand_submodule_diffs` | false | Submodule targets must also be listed in config.repo_context_sibling_repos. |
 | `feedback_on_draft_pr` | false |  |
 | `publish_review_as_thread` | false | Post the /review summary as a resolvable thread (discussion) instead of a plain note. |
-| `publish_improve_as_thread` | false | Ignored: /improve runs /review, so there is no suggestions comment. Use publish_review_as_thread. |
 | `reply_to_trigger_comment` | false | Reply in the triggering GitLab discussion for `/review`, `/improve`, or `/ask` (true/false); see docs/docs/usage-guide/additional_configurations.md. |
 | `publish_code_suggestions_as_review` | false | When pr_code_suggestions.committable_code_suggestions is true, queue each suggestion as a GitLab draft note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of posting each as its own live discussion - and its own notification - as soon as it's created. |
 | `resolve_outdated_inline_threads` | false | Resolve the bot's own inline threads that a later push left on an outdated diff version. |
@@ -527,7 +491,7 @@ See [Changing a model](../usage-guide/changing_a_model.md#changing-a-model-in-pr
 | `success_callback` | [] | process-wide: only the deployment's configuration and environment set it, not a repo's .pr_agent.toml; in the Action, use a workflow env entry |
 | `failure_callback` | [] | process-wide, set like success_callback |
 | `service_callback` | [] | process-wide, set like success_callback |
-| `turn_off_message_logging` | false | omit prompts/responses from LiteLLM callbacks and PR-Agent's LiteLLM logs; recommended with the "otel" callback |
+| `turn_off_message_logging` | false | omit prompts/responses from LiteLLM callbacks and PR-Agent's LiteLLM and OpenAI handler logs; recommended with the "otel" callback |
 | `suppress_debug_info` | true | hide LiteLLM's "Give Feedback / Get Help" stdout banner on provider errors; process-wide, set like success_callback |
 | `custom_llm_provider` | "" | Optional: forward a fixed custom_llm_provider to LiteLLM, so a raw hosted model id (e.g. "claude-sonnet-4-5") reaches the provider unchanged instead of being rewritten by LiteLLM's prefix inference. Empty = let LiteLLM infer the provider from the model name. |
 | `force_streaming_custom_llm_provider` | "" | Force streaming when the request matches this provider AND its api_base contains one of the substrings below. Some OpenAI-compatible endpoints return a response that LiteLLM cannot normalize in non-streaming mode. Both must be set for the workaround to apply. |
@@ -558,7 +522,7 @@ See [OpenRouter](../usage-guide/changing_a_model.md#openrouter).
 | `provider_order` | [] | preferred provider order; ignored when provider_only is set; empty = unset |
 | `allow_fallbacks` | true | when provider_order is set, allow routing beyond the listed providers |
 | `reasoning_effort` | "" | Invalid reasoning_effort values are warned about and treated as unset. Empty inherits config.reasoning_effort for reasoning-capable models (probed against litellm's bundled reasoning metadata or the Grok registry, or listed in additional_reasoning_effort_models). Valid values: "none", "minimal", "low", "medium", "high", "xhigh", "max". OpenRouter normalizes "max" to "xhigh" for LiteLLM/OpenRouter compatibility. Model-specific support varies. For models not covered by PR-Agent's clamps, do not assume "none" disables reasoning; check the selected model and provider's support. |
-| `reasoning_max_tokens` | 0 | Use a positive value to override global effort and non-none OpenRouter-specific efforts. Keep reasoning disabled for explicit openrouter.reasoning_effort = "none", except on Grok 4.5/4.6, Gemini 3.7/3.8 Flash, and the GPT-6 models whose pages omit "none" (GPT-6 Astra and GPT-6.1 Sol). Clamp "none" to the lowest supported effort there before applying the budget, so a positive budget wins. Keep max_tokens greater than the reasoning budget where the provider requires it. |
+| `reasoning_max_tokens` | 0 | Use a positive value to override global effort and non-none OpenRouter-specific efforts. Keep reasoning disabled for explicit openrouter.reasoning_effort = "none", except on Grok 4.5/4.6, Gemini 3.7/3.8 Flash, Gemini 4 Argon, and the GPT-6 models whose pages omit "none" (GPT-6 Astra and GPT-6.1 Sol). Clamp "none" to the lowest supported effort there before applying the budget, so a positive budget wins. Keep max_tokens greater than the reasoning budget where the provider requires it. |
 | `max_tokens` | 0 | hard cap on completion tokens for the request; 0 = unset |
 
 

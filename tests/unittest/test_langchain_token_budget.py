@@ -36,6 +36,64 @@ def make_budget(handler):
     )
 
 
+@pytest.mark.parametrize("api_base, azure_ad_base, endpoint_env, custom_limit, expected", [
+    ("https://gateway.example.com/v1", "https://resource.openai.azure.com", None, 0, None),
+    ("https://gateway.example.com/v1", "https://resource.openai.azure.com", None, 32000, (32000, None)),
+    ("https://resource.openai.azure.com", "https://gateway.example.com/v1", None, 0, (1050000, 922000)),
+    (None, "https://resource.openai.azure.com", "https://gateway.example.com/v1", 32000, (32000, None)),
+])
+def test_terra_azure_budget_uses_langchain_endpoint_not_azure_ad(
+    monkeypatch, settings, api_base, azure_ad_base, endpoint_env, custom_limit, expected,
+):
+    config, values = settings
+    monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+    if endpoint_env:
+        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", endpoint_env)
+        monkeypatch.setenv("AZURE_API_BASE", "https://resource.openai.azure.com")
+    config.config.custom_model_max_tokens = custom_limit
+    values.update({
+        "OPENAI.API_TYPE": "azure",
+        "OPENAI.API_BASE": api_base,
+        "AZURE_AD.CLIENT_ID": "example-client",
+        "AZURE_AD.API_BASE": azure_ad_base,
+    })
+    handler = langchain_module.LangChainOpenAIHandler()
+    if expected is None:
+        with pytest.raises(Exception, match="config.custom_model_max_tokens"):
+            handler.get_model_token_limits("gpt-6.1-terra")
+    else:
+        assert handler.get_model_token_limits("gpt-6.1-terra", ignore_max_model_tokens=True) == expected
+
+
+@pytest.mark.parametrize("preferred, secondary, gateway", [
+    ("https://gateway.example.com/v1", "https://api.openai.com/v1", True),
+    ("https://api.openai.com/v1", "https://gateway.example.com/v1", False),
+])
+def test_terra_langchain_uses_client_endpoint_environment_precedence(
+    monkeypatch, settings, preferred, secondary, gateway,
+):
+    _, values = settings
+    values["OPENAI.API_BASE"] = None
+    monkeypatch.setenv("OPENAI_API_BASE", preferred)
+    monkeypatch.setenv("OPENAI_BASE_URL", secondary)
+    handler = langchain_module.LangChainOpenAIHandler()
+    if gateway:
+        with pytest.raises(Exception, match="config.custom_model_max_tokens"):
+            handler.get_model_token_limits("gpt-6.1-terra")
+    else:
+        assert handler.get_model_token_limits("gpt-6.1-terra", ignore_max_model_tokens=True) == (
+            1050000, 922000,
+        )
+
+
+def test_terra_langsmith_gateway_requires_verified_context(monkeypatch, settings):
+    _, values = settings
+    values["OPENAI.API_BASE"] = None
+    monkeypatch.setenv("LANGSMITH_GATEWAY", "true")
+    with pytest.raises(Exception, match="config.custom_model_max_tokens"):
+        langchain_module.LangChainOpenAIHandler().get_model_token_limits("gpt-6.1-terra")
+
+
 @pytest.mark.parametrize("api_type", ["", "azure"])
 async def test_native_client_keeps_input_ceiling_despite_litellm_provider(monkeypatch, settings, api_type):
     config, values = settings

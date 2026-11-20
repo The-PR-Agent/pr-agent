@@ -8,8 +8,6 @@ from pydantic import StrictBool, StrictInt
 
 from pr_agent.algo.output_models import (
     CodeDocumentation,
-    CodeSuggestion,
-    CodeSuggestionFeedback,
     ContributionTimeCostEstimate,
     DocHeadingsHelper,
     DocHelper,
@@ -19,8 +17,6 @@ from pr_agent.algo.output_models import (
     KeyIssuesComponentLink,
     Label,
     Labels,
-    PRCodeSuggestions,
-    PRCodeSuggestionsFeedback,
     PRDescription,
     PRDescriptionAssembled,
     PRDescriptionHeaders,
@@ -103,21 +99,6 @@ def test_review_model_does_not_expose_user_answer_insights():
         (ContributionTimeCostEstimate, {"best_case": "45m", "average_case": "2h", "worst_case": "5h"}),
         (Review, _review_fixture()["review"]),
         (PRReview, _review_fixture()),
-        (CodeSuggestion, {
-            "relevant_file": "src/app.py", "language": "python", "existing_code": "return value",
-            "suggestion_content": "Handle the missing value.", "improved_code": "return value or default",
-            "one_sentence_summary": "Handle missing values", "label": "possible bug",
-        }),
-        (PRCodeSuggestions, {"code_suggestions": [{
-            "relevant_file": "src/app.py", "language": "python", "existing_code": "return value",
-            "suggestion_content": "Handle the missing value.", "improved_code": "return value or default",
-            "one_sentence_summary": "Handle missing values", "label": "possible bug",
-        }]}),
-        (PRCodeSuggestionsFeedback, {"code_suggestions": [{
-            "suggestion_summary": "Handle missing values", "relevant_file": "src/app.py",
-            "relevant_lines_start": 10, "relevant_lines_end": 10, "suggestion_score": 8,
-            "why": "The change prevents a runtime failure.",
-        }]}),
         (PRDescription, {"type": ["Bug fix"], "description": "Fix a runtime failure.", "title": "Fix runtime failure",
                          "changes_diagram": "flowchart LR\nA --> B", "pr_files": [{
                              "filename": "src/app.py", "changes_summary": "- Handle failures",
@@ -227,11 +208,6 @@ def test_review_accepts_extra_fields_while_nested_schemas_stay_strict():
 
 
 _INVALID_MODEL_PAYLOADS = [
-    (CodeSuggestion, {
-        "relevant_file": "src/app.py", "language": "python", "existing_code": "return value",
-        "suggestion_content": "Handle the missing value.", "improved_code": "return value or default",
-        "one_sentence_summary": "Handle missing values",
-    }),
     (PRRankResponses, {
         "which_response_was_better": 3, "why": "No", "score_response1": 1, "score_response2": 1,
     }),
@@ -241,10 +217,6 @@ _INVALID_MODEL_PAYLOADS = [
     }] * 21}),
     (Review, {"key_issues_to_review": [], "estimated_effort_to_review_[1-5]": 0}),
     (Review, {"key_issues_to_review": [], "score": 101}),
-    (PRCodeSuggestionsFeedback, {"code_suggestions": [{
-        "suggestion_summary": "x", "relevant_file": "x", "relevant_lines_start": 1,
-        "relevant_lines_end": 1, "suggestion_score": 11, "why": "x",
-    }]}),
     (PRRankResponses, {
         "which_response_was_better": 1, "why": "x", "score_response1": 0, "score_response2": 11,
     }),
@@ -446,16 +418,6 @@ PROMPT_MODELS = {
     "pr_help_prompts.toml": {"relevant_section": RelevantSection, "DocHelper": DocHelper},
     "pr_help_docs_prompts.toml": {"relevant_section": RelevantSection, "DocHelper": DocHelper},
     "pr_help_docs_headings_prompts.toml": {"file_idx_and_path": FileIdxAndPath, "DocHeadingsHelper": DocHeadingsHelper},
-    "code_suggestions/pr_code_suggestions_prompts.toml": {
-        "CodeSuggestion": CodeSuggestion, "PRCodeSuggestions": PRCodeSuggestions,
-    },
-    "code_suggestions/pr_code_suggestions_prompts_not_decoupled.toml": {
-        "CodeSuggestion": CodeSuggestion, "PRCodeSuggestions": PRCodeSuggestions,
-    },
-    "code_suggestions/pr_code_suggestions_reflect_prompts.toml": {
-        "CodeSuggestionFeedback": CodeSuggestionFeedback,
-        "PRCodeSuggestionsFeedback": PRCodeSuggestionsFeedback,
-    },
 }
 
 

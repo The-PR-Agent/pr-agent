@@ -137,7 +137,7 @@ An automatic or CLI `/review` or `/describe` run is then skipped, with no model 
 - The head commit and the target branch name are the same. The branch is compared by name, not by its latest commit, so new commits on the target branch do not trigger a run. This check needs the provider to report the target branch.
 - The diff is the same, for example after a rebase that changed no content. Hunk line numbers are ignored, so a rebase that only moves the changes within their files counts as the same diff. This check is off when a file has no patch, such as a binary file, because its content can change without changing the diff.
 
-PR-Agent keeps its record in one comment on the PR, and edits it to say when a run was skipped and why. The record is written only after a command succeeds, so a failed run is retried next time.
+PR-Agent keeps its record in one comment on the PR, and edits it to say when a run was skipped and why. The record is written only after a command finishes cleanly, so a failed, partial, or degraded run is retried next time, and clears that command's earlier record if it attempted to update the PR's output or labels.
 
 - A command typed in a PR comment, such as `/review`, always runs. When it succeeds it updates the record and takes down that command's skip notice, so the next automatic run skips if nothing has changed since.
 - Incremental review (`/review -i`) and per commit review always run.
@@ -337,8 +337,8 @@ For detailed step-by-step examples of configuring different models (Gemini, Clau
 **Common Model Configuration Patterns:**
 
 - **OpenAI**: Set `config.model: "<openai-model>"` and `OPENAI_KEY`
-- **Gemini**: Set `config.model: "gemini/gemini-3.8-flash"` and `GOOGLE_AI_STUDIO.GEMINI_API_KEY` (no `OPENAI_KEY` needed)
-- **Claude**: Set `config.model: "anthropic/claude-opus-5"` and `ANTHROPIC.KEY` (no `OPENAI_KEY` needed)
+- **Gemini**: Set `config.model` to a `gemini/` model ID and `GOOGLE_AI_STUDIO.GEMINI_API_KEY` (no `OPENAI_KEY` needed)
+- **Claude**: Set `config.model` to an `anthropic/` model ID and `ANTHROPIC.KEY` (no `OPENAI_KEY` needed)
 - **Azure OpenAI**: Set `OPENAI.API_TYPE: "azure"`, `OPENAI.API_BASE`, and `OPENAI.DEPLOYMENT_ID`
 - **Local Models**: Set `config.model: "ollama/model-name"` and `OLLAMA.API_BASE`
 

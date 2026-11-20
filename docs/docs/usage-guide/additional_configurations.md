@@ -413,7 +413,7 @@ turn_off_message_logging = true
 
 > **Set `turn_off_message_logging = true`.** LiteLLM attaches full prompt and response content to what its
 > callbacks emit, which here means the entire PR diff. This also suppresses PR-Agent's own full prompt/response
-> diagnostics in the LiteLLM handler, even at `DEBUG` log level or verbosity level 2. It does not sanitize
+> diagnostics in the LiteLLM and OpenAI handlers, even at `DEBUG` log level or verbosity level 2. It does not sanitize
 > unrelated application logs or third-party callback errors. The default is `false` to preserve existing
 > behavior for Langfuse and LangSmith users. A deployment-level opt-out cannot be disabled by repository
 > settings. Unpublished CLI commands with verbosity level 2 still print model responses to stdout, which
@@ -551,10 +551,12 @@ Notes:
 
 `Platforms supported: GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, Local`
 
-To give PR-Agent's commands additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/) or [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices) — in the prompts for the `/review`, `/describe`, `/improve`, `/ask`, and `/ask_line` commands.
+To give PR-Agent's commands additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/) or [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices) — in the prompts for the `/review`, `/describe`, `/improve`, `/ask`, `/ask_line`, and `/add_docs` commands.
 
 Both Ask modes add instructions only after fitting their existing question, diff, and history context, and report when the instruction block does not fit.
 See [Ask: Repository instructions](../commands/ask.md#repository-instructions).
+
+The `/add_docs` command uses configured local repository files by default; structured sibling-repository entries are excluded because generated documentation suggestions may be published. Set `pr_add_docs.use_repo_context = false` to opt out for that command.
 
 By default, PR-Agent includes the `AGENTS.md` file at the repository root:
 

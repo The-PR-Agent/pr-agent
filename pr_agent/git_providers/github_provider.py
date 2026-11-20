@@ -16,6 +16,7 @@ from github import Auth, Github, GithubException, GithubIntegration, GithubRetry
 from github.Commit import Commit
 from github.GithubObject import GithubObject
 from github.Issue import Issue
+from github.PullRequest import PullRequest
 from jwt.exceptions import PyJWTError
 from requests.exceptions import RequestException
 from starlette_context import context
@@ -37,11 +38,15 @@ from ..algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
     TEXT_FIX_INFO,
     body_fingerprint,
+    body_with_carried_markers,
     body_with_markers,
     code_fingerprint,
     get_inline_comment_store,
+    strip_markers,
 )
 from ..algo.language_handler import is_valid_file
+from ..algo.mentions import neutralize_github_mentions
+from ..algo.review_finding_state import split_review_state_marker
 from ..algo.token_budget import clip_tokens
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (
@@ -284,8 +289,6 @@ class GithubProvider(GitProvider):
     def supports_inline_help_footer(self) -> bool:
         return True
 
-    def supports_pr_chat(self) -> bool:
-        return True
 
     @classmethod
     def supports_issue_indexing(cls) -> bool:
@@ -405,6 +408,8 @@ class GithubProvider(GitProvider):
             self._languages = None
         self.repo, self.pr_num = repo, pr_num
         self.pr = self._get_pr()
+        # The commits loaded for the previous PR object do not describe this one.
+        self.pr_commits = None
 
     def _get_incremental_commits(self):
         if not self.pr_commits:
@@ -953,9 +958,9 @@ class GithubProvider(GitProvider):
         # file walkthrough of a large PR can pass it.
         # It similarly rejects a title over 256 characters. An overlong AI title
         # would fail the whole publish, including a body that already fits.
-        pr_body = self.limit_description_characters(pr_body, self.max_comment_chars)
+        pr_body = self.limit_description_characters(neutralize_github_mentions(pr_body), self.max_comment_chars)
         if pr_title is not None:
-            pr_title = self.limit_title_characters(pr_title, MAX_PR_TITLE_GITHUB_LENGTH)
+            pr_title = self.limit_title_characters(neutralize_github_mentions(pr_title), MAX_PR_TITLE_GITHUB_LENGTH)
         if pr_title is None:
             self.pr.edit(body=pr_body)
         else:
@@ -1323,7 +1328,7 @@ class GithubProvider(GitProvider):
         if is_temporary and not get_settings().config.publish_output_progress:
             get_logger().debug(f"Skipping publish_comment for temporary comment: {pr_comment}")
             return None
-        pr_comment = self.limit_output_characters(pr_comment, self.max_comment_chars)
+        pr_comment = self._publishable_comment(pr_comment)
 
         # In case this is an issue, can publish the comment on the issue.
         if self.issue_main:
@@ -1346,7 +1351,8 @@ class GithubProvider(GitProvider):
             # File-level comments use the single review-comment endpoint. The
             # create_review endpoint does not accept subject_type in its payload.
             self.pr.create_review_comment(
-                comment["body"], self.last_commit_id, comment["path"], subject_type="file"
+                self._publishable_inline_body(comment["body"]), self.last_commit_id, comment["path"],
+                subject_type="file",
             )
             return
         self.publish_inline_comments([comment])
@@ -1437,6 +1443,10 @@ class GithubProvider(GitProvider):
                 if comment else comment
                 for comment in comments
             ]
+        # in place, fallback_fingerprints is keyed by id() of these dicts
+        for comment in comments:
+            if comment and "body" in comment:
+                comment["body"] = self._publishable_inline_body(comment["body"])
         try:
             # publish all comments in a single message
             self.pr.create_review(commit=self.last_commit_id, event="COMMENT", comments=comments)
@@ -1466,6 +1476,22 @@ class GithubProvider(GitProvider):
                 raise
             finally:
                 self._fallback_fingerprints = None
+
+    def _publishable_comment(self, body: str) -> str:
+        text, marker = split_review_state_marker(body)
+        text = neutralize_github_mentions(text)
+        if not marker:
+            return self.limit_output_characters(text, self.max_comment_chars)
+        # the state marker is hidden and must stay byte for byte, or the next run sees changed findings
+        text = self.limit_output_characters(text, max(self.max_comment_chars - len(marker) - 3, 0))
+        return "\n\n".join(part for part in (text, marker) if part) + "\n"
+
+    def _publishable_inline_body(self, body: str) -> str:
+        neutral = neutralize_github_mentions(body)
+        if len(neutral) <= self.max_comment_chars:
+            return neutral
+        text = self.limit_output_characters(neutralize_github_mentions(strip_markers(body)), self.max_comment_chars)
+        return body_with_carried_markers(text, body, self.max_comment_chars)
 
     def get_review_thread_comments(self, comment_id: int) -> list[dict]:
         """
@@ -1871,7 +1897,7 @@ class GithubProvider(GitProvider):
 
     def edit_comment(self, comment, body: str):
         try:
-            body = self.limit_output_characters(body, self.max_comment_chars)
+            body = self._publishable_comment(body)
             comment.edit(body=body)
         except GithubException as e:
             if hasattr(e, "status") and e.status == 403:
@@ -1889,7 +1915,7 @@ class GithubProvider(GitProvider):
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
         try:
             # self.pr.get_issue_comment(comment_id).edit(body)
-            body = self.limit_output_characters(body, self.max_comment_chars)
+            body = self.limit_output_characters(neutralize_github_mentions(body), self.max_comment_chars)
             headers, data_patch = self.pr._requester.requestJsonAndCheck(
                 "POST", f"{self.base_url}/repos/{self.repo}/pulls/{self.pr_num}/comments/{comment_id}/replies",
                 input={"body": body}
@@ -2316,6 +2342,17 @@ class GithubProvider(GitProvider):
     # The reaction API accepts only this closed set; anything else is rejected with 422.
     SUPPORTED_REACTIONS = ("+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes")
 
+    def mark_review_comment(self, comment_id: int) -> None:
+        """Record that `comment_id` is a review comment, on a diff line or a file, rather than an issue comment.
+
+        Review comments have their own reactions endpoints: the issue comment ones answer 404 for their IDs.
+        """
+        self._review_comment_ids = getattr(self, "_review_comment_ids", set()) | {comment_id}
+
+    def _comment_reactions_url(self, comment_id: int) -> str:
+        comments = "pulls/comments" if comment_id in getattr(self, "_review_comment_ids", ()) else "issues/comments"
+        return f"{self.base_url}/repos/{self.repo}/{comments}/{comment_id}/reactions"
+
     def add_reaction(self, issue_comment_id: int, reaction: str) -> int | None:
         if reaction not in self.SUPPORTED_REACTIONS:
             get_logger().warning(
@@ -2324,8 +2361,7 @@ class GithubProvider(GitProvider):
             return None
         try:
             headers, data_patch = self.pr._requester.requestJsonAndCheck(
-                "POST", f"{self.base_url}/repos/{self.repo}/issues/comments/{issue_comment_id}/reactions",
-                input={"content": reaction}
+                "POST", self._comment_reactions_url(issue_comment_id), input={"content": reaction}
             )
         except (GithubException, RequestException) as e:
             get_logger().warning(f"Failed to add the {reaction} reaction, error: {e}")
@@ -2336,8 +2372,7 @@ class GithubProvider(GitProvider):
         try:
             # self.pr.get_issue_comment(issue_comment_id).delete_reaction(reaction_id)
             headers, data_patch = self.pr._requester.requestJsonAndCheck(
-                "DELETE",
-                f"{self.base_url}/repos/{self.repo}/issues/comments/{issue_comment_id}/reactions/{reaction_id}"
+                "DELETE", f"{self._comment_reactions_url(issue_comment_id)}/{reaction_id}"
             )
             return True
         except (GithubException, RequestException) as e:
@@ -2449,12 +2484,15 @@ class GithubProvider(GitProvider):
         else:
             raise ValueError("Could not authenticate to GitHub")
 
+    def _has_current_repo_obj(self) -> bool:
+        return hasattr(self, "repo_obj") and \
+            hasattr(self.repo_obj, "full_name") and \
+            isinstance(self.repo_obj.full_name, str) and \
+            isinstance(self.repo, str) and \
+            self.repo_obj.full_name.lower() == self.repo.lower()
+
     def _get_repo(self):
-        if hasattr(self, 'repo_obj') and \
-                hasattr(self.repo_obj, 'full_name') and \
-                isinstance(self.repo_obj.full_name, str) and \
-                isinstance(self.repo, str) and \
-                self.repo_obj.full_name.lower() == self.repo.lower():
+        if self._has_current_repo_obj():
             return self.repo_obj
         else:
             self.repo_obj = self.github_client.get_repo(self.repo)
@@ -2462,7 +2500,12 @@ class GithubProvider(GitProvider):
 
 
     def _get_pr(self):
-        return self._get_repo().get_pull(self.pr_num)
+        if self._has_current_repo_obj():
+            return self.repo_obj.get_pull(self.pr_num)
+        # The pull payload embeds its base repository, so skip the separate repository read.
+        pr = PullRequest(self.github_client.requester, url=f"/repos/{self.repo}/pulls/{self.pr_num}")
+        self.repo_obj = pr.base.repo
+        return pr
 
     def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = False,
                             *, missing_is_error: bool = False) -> str:
@@ -2632,6 +2675,15 @@ class GithubProvider(GitProvider):
                 return None
         return label_names
 
+    def _loaded_commits_match_pr(self) -> bool:
+        """Whether the commits read with the PR still list its current revision completely."""
+        commits = getattr(self, "pr_commits", None)
+        if not commits or self._pr_revision(self.pr) != getattr(self, "_pr_revision_loaded", None):
+            return False
+        reported = getattr(self.pr, "commits", None)
+        # GitHub lists at most 250 commits, so the list of a longer PR never matches its count and is read again.
+        return isinstance(reported, int) and len(commits) == reported and commits[-1].sha == self.pr.head.sha
+
     def get_commit_messages(self) -> str:
         """
         Retrieves the commit messages of a pull request.
@@ -2641,7 +2693,8 @@ class GithubProvider(GitProvider):
         """
         max_tokens = get_settings().get("CONFIG.MAX_COMMITS_TOKENS", None)
         try:
-            commit_list = self.pr.get_commits()
+            # Reuse the commits read with the PR (re-read when it moves) instead of listing them again.
+            commit_list = self.pr_commits if self._loaded_commits_match_pr() else self.pr.get_commits()
             commit_messages = [commit.commit.message for commit in commit_list]
             commit_messages_str = "\n".join([f"{i + 1}. {message}" for i, message in enumerate(commit_messages)])
         except (GithubException, RequestException, AttributeError) as e:

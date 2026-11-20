@@ -5,6 +5,7 @@ from openai import AsyncOpenAI
 from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+from pr_agent.algo.ai_handlers.litellm_ai_handler import _message_logging_disabled
 from pr_agent.algo.run_details import record_ai_call
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -50,8 +51,11 @@ class OpenAIHandler(BaseAiHandler):
         try:
             if img_path:
                 get_logger().warning(f"Image path is not supported for OpenAIHandler. Ignoring image path: {img_path}")
-            get_logger().info("System: ", system)
-            get_logger().info("User: ", user)
+            # Prompts and responses carry the PR diff: keep them at DEBUG and honor the
+            # message-logging opt-out, as the LiteLLM handler does.
+            hide_message_logs = _message_logging_disabled(get_settings())
+            if not hide_message_logs:
+                get_logger().debug("Prompts", artifact={"system": system, "user": user})
             messages = self.build_request_messages(model, system, user)
             client = AsyncOpenAI()
             chat_completion = await client.chat.completions.create(
@@ -62,8 +66,9 @@ class OpenAIHandler(BaseAiHandler):
             resp = chat_completion.choices[0].message.content
             finish_reason = chat_completion.choices[0].finish_reason
             usage = chat_completion.usage
-            get_logger().info("AI response", response=resp, messages=messages, finish_reason=finish_reason,
-                              model=model, usage=usage)
+            if not hide_message_logs:
+                get_logger().debug("AI response", artifact={"response": resp, "messages": messages})
+            get_logger().info("AI response received", finish_reason=finish_reason, model=model, usage=usage)
             # Count the call and its tokens but no cost: this handler has no pricing
             # source wired up, so with output_run_cost enabled its calls render as
             # unpriced. Left as-is while the path stays cold — no setting selects

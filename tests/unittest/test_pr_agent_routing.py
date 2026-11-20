@@ -401,12 +401,12 @@ def test_prepare_command_accepts_apostrophes_in_unquoted_arguments_and_values():
 
 def test_prepare_command_keeps_unquoted_value_type_when_key_is_quoted():
     settings = get_settings()
-    setting_key = "PR_CODE_SUGGESTIONS.NUM_CODE_SUGGESTIONS"
+    setting_key = "PR_REVIEWER.NUM_MAX_FINDINGS"
     original = settings.get(setting_key)
 
     try:
         command = pr_agent_module.prepare_command(
-            '/review --"pr_code_suggestions.num_code_suggestions"=3'
+            '/review --"pr_reviewer.num_max_findings"=3'
         )
 
         assert command[0] == "/review"

@@ -187,6 +187,13 @@ def test_config_flag_alone_is_enough(clean_litellm_callbacks):
     assert litellm_callbacks_registered() is True
 
 
+@pytest.mark.parametrize("value", ["false", "FALSE"])
+def test_config_flag_set_to_string_false_is_off(clean_litellm_callbacks, value):
+    # FALSE from env or a quoted "false" in toml come in as str, before this still count as on
+    global_settings.set("LITELLM.ENABLE_CALLBACKS", value)
+    assert litellm_callbacks_registered() is False
+
+
 @pytest.mark.parametrize("attr", ["success_callback", "failure_callback", "service_callback"])
 def test_string_callback_lists_are_detected(clean_litellm_callbacks, attr):
     setattr(litellm, attr, ["langsmith"])
