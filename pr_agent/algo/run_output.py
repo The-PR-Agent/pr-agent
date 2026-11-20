@@ -379,20 +379,30 @@ def show_fallback_note() -> str:
     return f"\n\n> {note}\n"
 
 
-def append_run_details(body: str, git_provider) -> str:
+def append_run_details(body: str, git_provider, include_footer: bool = True) -> str:
     """Append the fallback note and the opt-in run-details section to a comment body.
 
     The fallback note is added whenever a fallback model produced the output. The
     run-details section is skipped when ``config.output_run_details`` is off, or when the
     current run recorded no model (so a message that needed no AI call stays clean).
-    A provider without capability checks gets the plain-text section.
+    A provider without capability checks gets the plain-text section. The host's
+    ``config.custom_comment_footer`` text, when set, comes last unless ``include_footer`` is
+    False (for a caller that appends it itself).
     """
     body += show_fallback_note()
-    if not get_settings().get("config.output_run_details", False):
-        return body
-    is_supported = getattr(git_provider, "is_supported", None)
-    gfm_supported = bool(callable(is_supported) and is_supported("gfm_markdown"))
-    return body + show_run_details(gfm_supported)
+    if get_settings().get("config.output_run_details", False):
+        is_supported = getattr(git_provider, "is_supported", None)
+        gfm_supported = bool(callable(is_supported) and is_supported("gfm_markdown"))
+        body += show_run_details(gfm_supported)
+    return (body + show_custom_comment_footer()) if include_footer else body
+
+
+def show_custom_comment_footer() -> str:
+    """Render the operator's ``config.custom_comment_footer`` text, or "" when it is unset or blank."""
+    footer = get_settings().get("config.custom_comment_footer", "")
+    if not isinstance(footer, str) or not footer.strip():
+        return ""
+    return f"\n\n___\n\n{footer.strip()}\n"
 
 
 def get_version() -> str:

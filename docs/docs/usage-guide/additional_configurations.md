@@ -133,6 +133,31 @@ host-only: repository settings, namespace settings repositories, per-directory s
 `extra_instructions` retains its existing behavior; use `system_instructions` when a rule must not be
 overridable by a repository or comment author.
 
+## Custom comment footer
+
+`extra_instructions` and `system_instructions` guide the model; they do not insert fixed text. To add the same
+literal text to the bot's output in every repository, for example how to opt out or where to send feedback, host
+operators can set `config.custom_comment_footer` (Markdown):
+
+```toml
+[config]
+custom_comment_footer = """
+To disable PR-Agent on this PR, add the label `no-pr-agent`.
+For feedback on the AI results, open a ticket in the internal tracker.
+"""
+```
+
+PR-Agent adds the text after a horizontal rule at the end of the result of `/review` (and `/improve`, which runs
+`/review`), `/describe`, `/ask`, `/ask_line`, `/help`, `/help_docs`, `/update_changelog`, `/config`,
+`/similar_issue`, and the labels comment `/generate_labels` posts on providers without label support. When
+`/describe` updates the PR description rather than posting a comment, the footer becomes part of the PR
+description. Progress, temporary and failure notices are left unchanged, and so are inline code suggestions
+(posted one per line, so a footer would repeat on every suggestion). If a `/review` comment and its persistent
+review state do not both fit the provider's comment size limit, the footer is omitted so the state is kept.
+
+The setting is host-only: repository settings, namespace settings repositories, per-directory settings, and
+`/command --config.custom_comment_footer=...` arguments cannot set or remove it. An empty value disables it.
+
 ## Language Settings
 
 The default response language for PR-Agent is **U.S. English**. However, some development teams may prefer to display information in a different language. For example, your team's workflow might improve if PR descriptions and code suggestions are set to your country's native language.

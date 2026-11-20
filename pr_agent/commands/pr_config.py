@@ -1,5 +1,6 @@
 from dynaconf import Dynaconf
 
+from pr_agent.algo.run_output import show_custom_comment_footer
 from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.config_loader import get_bot_display_name, get_settings
 from pr_agent.config_security import should_skip_config_key
@@ -32,7 +33,7 @@ class PRConfig:
         pr_comment = self._prepare_pr_configs()
         if get_settings().config.publish_output:
             get_logger().info('Pushing configs...')
-            self.git_provider.publish_comment(pr_comment)
+            self.git_provider.publish_comment(pr_comment + show_custom_comment_footer())
             self.git_provider.remove_initial_comment()
         return ""
 
