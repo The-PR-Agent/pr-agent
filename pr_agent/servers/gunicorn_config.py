@@ -40,14 +40,14 @@ backlog = 2048
 #   worker_class - The type of workers to use. The default
 #       sync class should handle most 'normal' types of work
 #       loads. You'll want to read
-#       http://docs.gunicorn.org/en/latest/design.html#choosing-a-worker-type
+#       https://gunicorn.org/design/#worker-types
 #       for information on when you might want to choose one
 #       of the other worker classes.
 #
 #       A string referring to a Python path to a subclass of
 #       gunicorn.workers.base.Worker. The default provided values
 #       can be seen at
-#       http://docs.gunicorn.org/en/latest/settings.html#worker-class
+#       https://gunicorn.org/reference/settings/#worker_class
 #
 #   worker_connections - For the eventlet and gevent worker classes
 #       this limits the maximum number of simultaneous clients that
