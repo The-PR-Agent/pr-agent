@@ -294,9 +294,10 @@ for the authoritative default values.
   <tr>
     <td><b>extra_risky_shapes</b></td>
     <td>
-      List of custom regular expression patterns to scan within added or modified lines in diff hunks. Patterns matching a
-      line flag a deterministic risk finding. Host configuration only: a repository settings file or comment cannot set it.
-      Default is empty.
+      List of custom regular expression patterns to scan within added and removed lines in diff hunks. Patterns matching a
+      line flag a deterministic risk finding. Patterns longer than 200 characters, or with a quantified group that holds a
+      nested quantifier or an alternation (such as `(a+)+` or `(a|b)+`), are skipped with a logged warning. Host
+      configuration only: a repository settings file or comment cannot set it. Default is empty.
     </td>
   </tr>
 </table>
@@ -686,9 +687,11 @@ When no findings are detected, the row is omitted completely so clean reviews st
 - **Sensitive paths**: Flags changes to files matching glob patterns in `sensitive_paths`. By default, this covers
   CI/CD pipelines and local composite actions, package manager manifests and lockfiles, Dockerfiles, Terraform and
   infrastructure configs, and database migrations.
-- **Risky change shapes**: Scans added or modified lines in diff hunks for destructive SQL (`DROP TABLE`, `ALTER ... RENAME`,
+- **Risky change shapes**: Scans added and removed lines in diff hunks for destructive SQL (`DROP TABLE`, `ALTER ... RENAME`,
   `REVOKE ... ON/FROM`, `TRUNCATE`), authentication and secrets keywords, cache invalidations, and any custom patterns
-  configured in `extra_risky_shapes`.
+  configured in `extra_risky_shapes`. Removed lines are also checked for removed function signatures (Python, JS/TS, Go,
+  Rust) and, in `.toml`, `.yaml`, `.yml`, `.json`, `.ini` and `.env` files, removed configuration defaults. Changes to
+  prompt files (`*prompt*.toml`, `*prompt*.yaml`, or files under a `*prompts*/` directory) are flagged as well.
 - **Deleted files**: Flags removed files.
 
 **Custom patterns.** Additional regular expressions can be configured via `extra_risky_shapes`. Because regex execution
@@ -731,7 +734,7 @@ evaluated, the verdict fails closed. The review includes each check and its resu
   Host-only.
 - `pr_reviewer.max_changed_lines`: host-only changed-line cap for `no_concerns_found`. Counts added and removed
   lines.
-- `pr_reviewer.extra_risky_shapes`: host-only custom regex patterns scanned in added/modified diff lines.
+- `pr_reviewer.extra_risky_shapes`: host-only custom regex patterns scanned in added and removed diff lines.
 - `publish_merge_recommendation_status`: publishes the verdict for the exact reviewed head SHA. GitHub uses the
   `PR Agent - Review` check run; GitLab uses a commit status.
 
