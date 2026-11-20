@@ -111,7 +111,10 @@ async def test_a_plain_instruction_reaches_the_command(monkeypatch, debug_loggin
 @pytest.mark.parametrize(("value", "expected"), [
     ("false", False),
     ("off", False),
-    ("", False),
+    # #5047: an empty or unrecognized value falls back to the key's default in
+    # configuration.toml (True for publish_output), with a warning. Previously
+    # the #4823 shortcut defaulted to bool(value), so "" read False.
+    ("", True),
     ("true", True),
     ("unexpected", True),
 ])

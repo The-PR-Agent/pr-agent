@@ -11,7 +11,7 @@ from starlette_context import context
 
 from pr_agent.agent.pr_agent import (
     PRAgent,
-    _normalize_publish_output_setting,
+    _normalize_boolean_settings,
     parse_command,
     publish_incomplete_files_comment,
     response_language_instructions,
@@ -170,7 +170,7 @@ async def _run_auto_command(command_class, pr_url):
     # behind by a previous command; the command replaces it with its own on entry.
     init_run_details()
     _refresh_shared_provider(pr_url)
-    _normalize_publish_output_setting()
+    _normalize_boolean_settings()
     try:
         # Like PRAgent.handle_request: the LiteLLM handler reads pr_url from the log
         # context to build the session id.
