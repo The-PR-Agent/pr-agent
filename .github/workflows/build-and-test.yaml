@@ -90,6 +90,22 @@ jobs:
     steps:
       - id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+
+      - id: docs_pages
+        name: Detect documentation-only PR
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          # Only documentation pages are safe to skip Docker validation for.
+          if git rev-parse -q --verify 'HEAD^2' > /dev/null &&
+             git diff --no-renames --quiet HEAD^1 HEAD -- . \
+               ':(top,exclude,glob)docs/docs/**/*.md' \
+               ':(top,exclude,glob)docs/docs/**/*.mdx'; then
+            echo 'docs_only=true' >> "$GITHUB_OUTPUT"
+            echo '::notice::Docs-only PR: Docker tests skipped; packaging and documentation checks retained'
+          fi
 
       - id: uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
@@ -103,12 +119,27 @@ jobs:
       - name: Test package artifacts
         run: uv run pytest -q tests/packaging/test_help_docs_package.py
 
+      - name: Test documentation contracts
+        if: steps.docs_pages.outputs.docs_only == 'true'
+        run: |
+          PYTHONPATH=. uv run pytest -q \
+            tests/unittest/test_docs_help_corpus.py \
+            tests/unittest/test_docs_nav_parity.py \
+            tests/unittest/test_docs_urls.py \
+            tests/unittest/test_config_reference.py \
+            tests/unittest/test_command_descriptions.py \
+            tests/unittest/test_similar_issue_qdrant_collection.py \
+            tests/unittest/test_unreachable_code.py \
+            tests/unittest/test_ci_docs_only_docker.py
+
       - id: dockerx
         name: Setup Docker Buildx
+        if: steps.docs_pages.outputs.docs_only != 'true'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - id: build
         name: Build dev docker
+        if: steps.docs_pages.outputs.docs_only != 'true'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
@@ -122,18 +153,21 @@ jobs:
 
       - id: test
         name: Test dev docker
+        if: steps.docs_pages.outputs.docs_only != 'true'
         run: |
           docker run --name test_container pragent/pr-agent:test pytest -v tests/unittest --cov=pr_agent --cov-report term --cov-report xml:coverage.xml
           docker cp test_container:/app/coverage.xml coverage.xml
           docker rm test_container
 
       - name: Validate coverage report
+        if: steps.docs_pages.outputs.docs_only != 'true'
         run: |
           if [ ! -f coverage.xml ]; then
             echo "Coverage report not found"
             exit 1
           fi
       - name: Upload coverage to Codecov
+        if: steps.docs_pages.outputs.docs_only != 'true'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -142,6 +176,7 @@ jobs:
       # Smoke-start github_app (gunicorn + uvicorn) with no secrets; GET / → 200.
       - id: build-smoke
         name: Build github_app docker
+        if: steps.docs_pages.outputs.docs_only != 'true'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
@@ -154,6 +189,7 @@ jobs:
 
       - id: smoke
         name: Smoke-start the github_app container
+        if: steps.docs_pages.outputs.docs_only != 'true'
         run: |
           docker run -d --name pr-agent-smoke -p 3000:3000 pragent/pr-agent:smoke
           for _ in $(seq 1 15); do
