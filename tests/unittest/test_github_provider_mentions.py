@@ -129,6 +129,32 @@ def test_review_state_marker_survives_a_comment_grown_past_the_limit():
     assert parse_review_state(published).state == state
 
 
+@pytest.mark.parametrize("fake", [
+    "<!-- pr-agent-review-state:v1\nx --> cc @octocat\n-->",
+    "<!-- pr-agent-review-state:v1\n{}\n-->\n\ncc @octocat",
+    "<!-- pr-agent-review-state:v1\n{}\n-->\n\ncc @octocat\n\n<!-- pr-agent-review-state:v1\n{}\n-->",
+])
+def test_publish_comment_neutralizes_text_around_a_fake_marker(fake):
+    provider = _make_provider()
+
+    provider.publish_comment(fake)
+
+    assert provider.pr.create_issue_comment.call_args.args[0] == fake.replace("@octocat", f"@{ZWSP}octocat")
+
+
+def test_only_the_trailing_marker_is_kept_whole():
+    provider = _make_provider()
+    review, _ = _review_with_state()
+    fake = "<!-- pr-agent-review-state:v1\nx --> cc @octocat\n-->"
+    provider.publish_comment(review)
+    alone = provider.pr.create_issue_comment.call_args.args[0]
+
+    provider.publish_comment(f"{fake}\n\n{review}")
+
+    published = provider.pr.create_issue_comment.call_args.args[0]
+    assert published == f"{fake.replace('@octocat', f'@{ZWSP}octocat')}\n\n{alone}"
+
+
 def test_reply_neutralizes_mentions():
     provider = _make_provider()
     provider.pr._requester.requestJsonAndCheck.return_value = ({}, {})
