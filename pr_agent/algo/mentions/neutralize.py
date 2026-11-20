@@ -3,8 +3,8 @@ import re
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable
 
-from .autolinks import github_autolinks, gitlab_autolinks
 from .blocks import line_flags
+from .links import github_autolinks, gitlab_autolinks
 
 # Mentions follow an ASCII boundary (Ruby \w) and entity decoding; leading underscores can open emphasis
 _MENTION_RE = re.compile(r"(?<![A-Za-z0-9_])_*(?:@|&#0{0,5}64;|&#[xX]0{0,4}40;|&commat;)")
@@ -42,7 +42,7 @@ def neutralize_gitlab_mentions(text: str) -> str:
     return _neutralize(text, gitlab_autolinks)
 
 
-def _neutralize(text: str, autolinks: Callable[[str], list[tuple[int, int]]]) -> str:
+def _neutralize(text: str, autolinks: Callable[[str], tuple[list[tuple[int, int]], list[tuple[int, int]]]]) -> str:
     if not text:
         return text
 
@@ -51,7 +51,9 @@ def _neutralize(text: str, autolinks: Callable[[str], list[tuple[int, int]]]) ->
         tick_runs.setdefault(len(run.group()), []).append(run.start())
 
     code_by_start, boundaries, html_starts = line_flags(text)
-    url_spans = _autolink_spans(autolinks(text))
+    links, url_extents = autolinks(text)
+    url_spans = _autolink_spans(links)
+    link_extents = _autolink_spans(url_extents)
 
     output = []
     index = 0
@@ -93,7 +95,7 @@ def _neutralize(text: str, autolinks: Callable[[str], list[tuple[int, int]]]) ->
 
                 runs = tick_runs.get(ticks)
                 # Backticks inside a raw HTML block are literal text, not code spans
-                if runs and line_offset not in html_starts:
+                if runs and line_offset not in html_starts and not _in_autolink(index, link_extents):
                     closer_index = bisect_left(runs, end)
                     boundary_index = bisect_left(boundaries, end)
                     boundary = boundaries[boundary_index] if boundary_index < len(boundaries) else len(text)

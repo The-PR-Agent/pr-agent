@@ -24,25 +24,30 @@ _HTML_BLOCK_STARTS = (
     (re.compile(r"<!\[CDATA\["), ("]]>",)),
     (re.compile(rf"</?(?:{_HTML_BLOCK_TAGS})(?:[\s>]|/>|$)", re.IGNORECASE), ()),
 )
+_TAG_LINE_RE = re.compile(
+    r"(?:<[A-Za-z][A-Za-z0-9-]*+(?:[ \t\v\f]++[A-Za-z_:][A-Za-z0-9_.:-]*+(?:[ \t\v\f]*+=[ \t\v\f]*+"
+    r"(?:[^ \t\v\f\"'=<>`]++|'[^']*+'|\"[^\"]*+\"))?+)*+[ \t\v\f]*+/?>|</[A-Za-z][A-Za-z0-9-]*+[ \t\v\f]*+>)[ \t\f]*$"
+)
 
 
-def _html_block_ends(line: str) -> tuple[str, ...] | None:
+def _html_block_ends(line: str, interrupting: bool) -> tuple[str, ...] | None:
     for start, ends in _HTML_BLOCK_STARTS:
         if start.match(line):
             return ends
-    return None
+    return () if not interrupting and _TAG_LINE_RE.match(line) else None
 
 
 def _table_cells(line: str) -> list[str]:
     return _TABLE_PIPE_RE.split(line.strip().removeprefix("|").removesuffix("|"))
 
 
-def _is_table_delimiter(line: str, header: str) -> bool:
-    if "|" not in line:
-        return False
-    cells = _table_cells(line)
-    return (len(cells) == len(_table_cells(header))
-            and all(_TABLE_CELL_RE.fullmatch(cell.strip()) for cell in cells))
+def _cell_cuts(line: str, offset: int) -> list[int]:
+    return [offset + pipe.start() for pipe in _TABLE_PIPE_RE.finditer(line)]
+
+
+def _delimiter_cells(line: str) -> int:
+    cells = _table_cells(line) if "|" in line else []
+    return len(cells) if cells and all(_TABLE_CELL_RE.fullmatch(cell.strip()) for cell in cells) else 0
 
 
 def _opens_fence(line: str) -> re.Match | None:
@@ -52,14 +57,14 @@ def _opens_fence(line: str) -> re.Match | None:
     return None
 
 
-def _starts_html(line: str) -> tuple[str, ...] | None:
-    return _html_block_ends(line.lstrip(" ")) if indent_of(line) <= 3 else None
+def _starts_html(line: str, interrupting: bool) -> tuple[str, ...] | None:
+    return _html_block_ends(line.lstrip(" "), interrupting) if indent_of(line) <= 3 else None
 
 
 def _continues_paragraph(line: str) -> bool:
     return bool(line.strip()) and not (
         _opens_fence(line) or _ATX_RE.match(line) or THEMATIC_RE.match(line)
-        or _starts_html(line) is not None)
+        or _starts_html(line, False) is not None)
 
 
 def line_flags(text: str) -> tuple[dict[int, bool], list[int], set[int]]:
@@ -72,7 +77,7 @@ def line_flags(text: str) -> tuple[dict[int, bool], list[int], set[int]]:
     fence_size = 0
     html_ends: tuple[str, ...] | None = None
     indented_code = False
-    in_table = False
+    in_table = table_visited = False
     empty_item = False
     paragraph = False
     header = ""
@@ -84,6 +89,7 @@ def line_flags(text: str) -> tuple[dict[int, bool], list[int], set[int]]:
         line = raw_line.removesuffix("\r").expandtabs(4)
         is_code = False
         in_html = False
+        cuts = []
         boundary = boundary_next
         boundary_next = False
         depth, rest = continue_containers(containers, quotes, line, empty_item)
@@ -122,7 +128,7 @@ def line_flags(text: str) -> tuple[dict[int, bool], list[int], set[int]]:
             stripped = rest.strip()
             indent = indent_of(rest)
             fence = _opens_fence(rest)
-            html_block = _starts_html(rest) if stripped else None
+            html_block = _starts_html(rest, paragraph) if stripped else None
             if lazy:
                 pass
             elif indented_code and (not stripped or indent >= 4):
@@ -144,20 +150,24 @@ def line_flags(text: str) -> tuple[dict[int, bool], list[int], set[int]]:
                 indented_code = False
                 single_line_block = bool(
                     _ATX_RE.match(rest) or THEMATIC_RE.match(rest) or (paragraph and _SETEXT_RE.match(rest)))
+                delimiter = _delimiter_cells(rest) if paragraph and indent <= 3 and not table_visited else 0
                 if not stripped:
                     boundary = True
                     in_table = paragraph = False
-                elif paragraph and indent <= 3 and _is_table_delimiter(rest, header):
+                elif delimiter == len(_table_cells(header)):
                     boundary = in_table = True
                     paragraph = False
                     if prev_start is not None and (not boundaries or boundaries[-1] != prev_start):
                         boundaries.append(prev_start)
+                    boundaries += _cell_cuts(text[prev_start:offset - 1], prev_start)
                 elif in_table and not single_line_block:
                     boundary = True
+                    cuts = _cell_cuts(raw_line, offset)
                 elif single_line_block:
                     boundary = boundary_next = True
                     in_table = paragraph = False
                 else:
+                    table_visited = paragraph and (table_visited or delimiter > 0)
                     in_table = False
                     paragraph = True
                     header = rest
@@ -167,6 +177,7 @@ def line_flags(text: str) -> tuple[dict[int, bool], list[int], set[int]]:
             html_starts.add(offset)
         if boundary:
             boundaries.append(offset)
+        boundaries += cuts
         prev_start = offset
         offset += len(raw_line) + 1
 

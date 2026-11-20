@@ -366,6 +366,11 @@ def test_tag_runs_stay_linear(text):
     "\\[https://medium.com/@user",
     "[a <b>]</b> https://medium.com/@user",
     "[a](<b c>) https://medium.com/@user",
+    '<div>\n<a href="https://medium.com/@user">x</a>',
+    '<div>\n<a title="a>b" href="https://medium.com/@user">x</a>',
+    "<div\nhref=https://medium.com/@user>",
+    "https://x.com/a[b https://medium.com/@user",
+    "| a | b |\n|---|---|\n| [ | https://medium.com/@user |",
 ])
 def test_github_autolinks_keep_their_mentions(text):
     assert neutralize_github_mentions(text) == text
@@ -389,6 +394,37 @@ def test_github_autolinks_keep_their_mentions(text):
     ("[a `]` https://x.com/@octocat", f"[a `]` https://x.com/@{ZWSP}octocat"),
     ('[a <b title="]"> https://x.com/@octocat', f'[a <b title="]"> https://x.com/@{ZWSP}octocat'),
     ("[\\<https://x.com/@octocat>", f"[\\<https://x.com/@{ZWSP}octocat>"),
+    ("<div>\nhttps://x.com/@octocat", f"<div>\nhttps://x.com/@{ZWSP}octocat"),
+    ("<b>\nhttps://x.com/@octocat", f"<b>\nhttps://x.com/@{ZWSP}octocat"),
+    ("- a\n<b>\nhttps://x.com/@octocat", f"- a\n<b>\nhttps://x.com/@{ZWSP}octocat"),
+    ("> <b>\n> https://x.com/@octocat", f"> <b>\n> https://x.com/@{ZWSP}octocat"),
+    ("https://x.com/a`b [ c` https://y.com/@octocat", f"https://x.com/a`b [ c` https://y.com/@{ZWSP}octocat"),
+    ("|a|b|\n|-|-|\n|`x | [ https://x.com/@octocat|", f"|a|b|\n|-|-|\n|`x | [ https://x.com/@{ZWSP}octocat|"),
+    ("x\n|---|---|\n[|https://x.com/@octocat\n|---|---|", f"x\n|---|---|\n[|https://x.com/@{ZWSP}octocat\n|---|---|"),
 ])
 def test_text_github_does_not_autolink_is_neutralized(text, expected):
     assert neutralize_github_mentions(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("|a|b|c|\n|-|-|-|\n|`x | @octocat | y`|", f"|a|b|c|\n|-|-|-|\n|`x | @{ZWSP}octocat | y`|"),
+    ("| `x | @octocat | y` |\n|---|---|---|", f"| `x | @{ZWSP}octocat | y` |\n|---|---|---|"),
+    ("https://x.com/a`b and @octocat`", f"https://x.com/a`b and @{ZWSP}octocat`"),
+    ("www.x.com/a`b and @octocat`", f"www.x.com/a`b and @{ZWSP}octocat`"),
+    ("| a |\n|---|\n| `x \\| @x` |", "| a |\n|---|\n| `x \\| @x` |"),
+    ("`https://x.com/a`b` @x `", "`https://x.com/a`b` @x `"),
+])
+def test_code_spans_pair_up_like_github(text, expected):
+    assert neutralize_github_mentions(text) == expected
+
+
+@pytest.mark.parametrize("prefix", [
+    "<div>\n" + "https://x.com/@a " * 20000,
+    "<div>\n<a" + ' ="' * 50000,
+    "<a" + " " * 50000 + "x",
+    "| a |\n|---|\n" + "| `x " * 50000,
+    "x\n" + "|---|---|\n" * 50000,
+    "https://x.com/" + "a`" * 50000,
+])
+def test_html_table_and_link_scans_stay_linear(prefix):
+    assert neutralize_github_mentions(prefix + "\n\n@b") == neutralize_github_mentions(prefix) + f"\n\n@{ZWSP}b"
