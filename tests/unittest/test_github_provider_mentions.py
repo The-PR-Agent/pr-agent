@@ -300,6 +300,30 @@ def test_entity_encoded_handle_starts_are_neutralized(text, expected):
     assert neutralize_github_mentions(text) == expected
 
 
+@pytest.mark.parametrize(("text", "expected"), [
+    ("cc @</div>octocat", f"cc @{ZWSP}</div>octocat"),
+    ("cc @</DIV >octocat", f"cc @{ZWSP}</DIV >octocat"),
+    ("cc @<tbody><tr>octocat", f"cc @{ZWSP}<tbody><tr>octocat"),
+    ('cc @<html\nlang="en">octocat', f'cc @{ZWSP}<html\nlang="en">octocat'),
+    ("cc @</div>&#111;ctocat", f"cc @{ZWSP}</div>&#111;ctocat"),
+    ("cc &commat;</a>octocat", f"cc &commat;{ZWSP}</a>octocat"),
+    ("cc @<b>octocat</b>", f"cc @{ZWSP}<b>octocat</b>"),
+    ("cc @</div> octocat and @<!-- x -->b", "cc @</div> octocat and @<!-- x -->b"),
+    ("cc `@</div>octocat`", "cc `@</div>octocat`"),
+])
+def test_tags_github_drops_before_a_handle_are_neutralized(text, expected):
+    assert neutralize_github_mentions(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    '@<a b="' * 50000,
+    "@<a b='x" * 50000,
+    "@" + "</div>" * 50000,
+])
+def test_tag_runs_stay_linear(text):
+    assert neutralize_github_mentions(text).count(ZWSP) <= text.count("@")
+
+
 @pytest.mark.parametrize("text", [
     "see https://medium.com/@user",
     "see HTTPS://medium.com/@user",
