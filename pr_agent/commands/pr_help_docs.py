@@ -14,9 +14,10 @@ from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     FallbackEligibleError,
+    _get_all_models,
     retry_with_fallback_models,
 )
-from pr_agent.algo.token_budget import AttemptTokenBudget, FittedPrompt, clip_tokens
+from pr_agent.algo.token_budget import AttemptTokenBudget, FittedPrompt, clip_tokens, prepare_model_token_limits
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType, load_yaml
 from pr_agent.config_loader import get_settings
@@ -84,8 +85,8 @@ def extract_model_answer_and_relevant_sources(ai_response: str) -> str | None:
     get_logger().warning(f"Either no answer section found, or that section is malformed: {ai_response}")
     return None
 
-def get_maximal_text_input_length_for_token_count_estimation():
-    model = get_settings().config.model
+def get_maximal_text_input_length_for_token_count_estimation(model: str | None = None):
+    model = model or get_settings().config.model
     if 'claude-3-7-sonnet' in model.lower():
         return 900000 #Claude API for token estimation allows maximal text input of 900K chars
     return math.inf #Otherwise, no known limitation on input text just for token estimation
@@ -419,6 +420,7 @@ class PredictionPreparator:
             get_logger().error("ai handler not set. Cannot invoke model!")
             raise ValueError("PredictionPreparator not initialized")
         try:
+            await prepare_model_token_limits(self.ai_handler, model)
             fitted = self._fit_snippets_for_model(model)
             response, finish_reason = await self.ai_handler.chat_completion(
                 model=model, temperature=get_settings().config.temperature,
@@ -508,7 +510,8 @@ class PRHelpDocs:
             # this time, trim in case of exceeding limit.
 
             #First, check if the text is not too long to even query the LLM provider:
-            max_allowed_txt_input = get_maximal_text_input_length_for_token_count_estimation()
+            budget_model = await self._resolve_docs_budget_model()
+            max_allowed_txt_input = get_maximal_text_input_length_for_token_count_estimation(budget_model)
             invoke_llm_just_with_headings = self._trim_docs_input(docs_prompt_to_send_to_model, max_allowed_txt_input,
                                                                   only_return_if_trim_needed=True)
             if invoke_llm_just_with_headings:
@@ -668,6 +671,27 @@ class PRHelpDocs:
             get_logger().exception("Unexpected exception thrown. Returning empty dict.")
             return {}
 
+    async def _resolve_docs_budget_model(self) -> str:
+        """Prepare model metadata for the first fallback-eligible model in the configured chain."""
+        models = _get_all_models(ModelType.REGULAR)
+        last_error = None
+        for idx, model in enumerate(models):
+            try:
+                await prepare_model_token_limits(self.ai_handler, model)
+                self._budget_model = model
+                return model
+            except (TimeoutError, FallbackEligibleError) as error:
+                last_error = error
+                self._budget_model = None
+                if idx + 1 < len(models):
+                    get_logger().warning(
+                        f"Unable to prepare /help_docs token limits for {model}; trying next fallback model",
+                        artifact={"model": model, "error": str(error)},
+                    )
+        if last_error is not None:
+            raise last_error
+        return get_settings().config.model
+
     def _docs_input_token_limit(self) -> int:
         """Verified input budget that the documentation text alone may occupy.
 
@@ -677,8 +701,9 @@ class PRHelpDocs:
         """
         attempt_vars = dict(self.vars)
         attempt_vars["snippets"] = ""
+        budget_model = getattr(self, "_budget_model", None) or get_settings().config.model
         budget = AttemptTokenBudget.for_prompt_attempt(
-            get_settings().config.model,
+            budget_model,
             None,
             attempt_vars,
             get_settings().pr_help_docs_prompts.system,
@@ -703,7 +728,13 @@ class PRHelpDocs:
                     return True
                 docs_input = docs_input[:max_allowed_txt_input]
             # Then, count the tokens in the prompt. If the count exceeds the limit, trim the text.
-            token_count = self.token_handler.count_tokens(docs_input, force_accurate=True)
+            budget_model = getattr(self, "_budget_model", None) or get_settings().config.model
+            token_handler = (
+                self.token_handler.for_model(budget_model)
+                if isinstance(self.token_handler, TokenHandler)
+                else self.token_handler
+            )
+            token_count = token_handler.count_tokens(docs_input, force_accurate=True)
             get_logger().debug(f"Estimated token count of documentation to send to model: {token_count}")
             # Size against the verified request budget instead of a hard-coded
             # margin: the model context minus the output reserve and the fixed
@@ -716,7 +747,7 @@ class PRHelpDocs:
                     docs_input = clean_markdown_content(
                         docs_input)  # Reduce unnecessary text/images/etc.
                 cleaned_token_count = (token_count if already_cleaned else
-                                       self.token_handler.count_tokens(docs_input, force_accurate=True))
+                                       token_handler.count_tokens(docs_input, force_accurate=True))
                 if cleaned_token_count > input_limit:
                     get_logger().info(
                         f"Token count {cleaned_token_count} exceeds the input limit {input_limit}."
