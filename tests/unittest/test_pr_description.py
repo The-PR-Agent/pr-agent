@@ -1262,21 +1262,34 @@ description: |
         assert len(obj._get_prediction.await_args_list) == 2  # one non-empty chunk and the header pass
 
     @pytest.mark.asyncio
-    async def test_large_pr_chunk_cancellation_propagates(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "first_chunk_outcome",
+        ["success", "error"],
+        ids=["after-successful-chunk", "after-failed-chunk"],
+    )
+    async def test_large_pr_chunk_cancellation_propagates(self, monkeypatch, first_chunk_outcome):
         obj = _make_large_pr_instance()
         monkeypatch.setitem(get_settings().pr_description, "async_ai_calls", True)
 
         async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
             if "file2" in patches_diff:
                 raise asyncio.CancelledError()
+            if first_chunk_outcome == "error":
+                raise RuntimeError("transient chunk error")
             return _file_prediction("src/file1.py")
 
         obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
         with patch("pr_agent.commands.pr_description.get_pr_diff", return_value=""), patch(
             "pr_agent.commands.pr_description.get_pr_diff_multiple_patchs",
             return_value=_large_pr_chunks(),
-        ), pytest.raises(asyncio.CancelledError):
+        ), patch("pr_agent.commands.pr_description.load_yaml", wraps=load_yaml) as mock_load_yaml, patch(
+            "pr_agent.commands.pr_description.get_logger"
+        ) as mock_get_logger, pytest.raises(asyncio.CancelledError):
             await obj._prepare_prediction("gpt-4o")
+
+        mock_load_yaml.assert_not_called()
+        mock_get_logger.return_value.warning.assert_not_called()
+        assert obj._described_chunks == {}
 
     @pytest.mark.asyncio
     async def test_large_pr_all_fail_then_fallback_model_keeps_partial_result(self, monkeypatch):
