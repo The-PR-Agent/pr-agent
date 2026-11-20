@@ -146,6 +146,7 @@ def test_neutralize_gitlab_mentions_preserves_literals(text, expected):
     ("cc &#x40;user and &#X0040;team", "cc &#x40;\u200buser and &#X0040;\u200bteam"),
     ("cc &commat;user", "cc &commat;\u200buser"),
     ("cc é&#64;user", "cc é&#64;\u200buser"),
+    ("cc @&#111;ctocat", "cc @\u200b&#111;ctocat"),
 ])
 def test_neutralize_gitlab_mentions_uses_gitlab_reference_boundaries(text, expected):
     assert _neutralize_gitlab_mentions(text) == expected
@@ -156,6 +157,7 @@ def test_neutralize_gitlab_mentions_uses_gitlab_reference_boundaries(text, expec
     "entity in a word a&#64;b.com",
     "unknown entities &#640;user &#x400;user &at;user &#64user",
     "see https://medium.com/@user/post and <https://example.com/@team>",
+    "gitlab autolinks any scheme custom://host/@user",
     "mentions inside code `&#64;user` and `/@scope/pkg`",
     "already neutralised @\u200buser and &#64;\u200buser",
 ])

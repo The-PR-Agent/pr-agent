@@ -38,11 +38,15 @@ from ..algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
     TEXT_FIX_INFO,
     body_fingerprint,
+    body_with_carried_markers,
     body_with_markers,
     code_fingerprint,
     get_inline_comment_store,
+    strip_markers,
 )
 from ..algo.language_handler import is_valid_file
+from ..algo.mentions import neutralize_github_mentions
+from ..algo.review_finding_state import split_review_state_marker
 from ..algo.token_budget import clip_tokens
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (
@@ -954,9 +958,9 @@ class GithubProvider(GitProvider):
         # file walkthrough of a large PR can pass it.
         # It similarly rejects a title over 256 characters. An overlong AI title
         # would fail the whole publish, including a body that already fits.
-        pr_body = self.limit_description_characters(pr_body, self.max_comment_chars)
+        pr_body = self.limit_description_characters(neutralize_github_mentions(pr_body), self.max_comment_chars)
         if pr_title is not None:
-            pr_title = self.limit_title_characters(pr_title, MAX_PR_TITLE_GITHUB_LENGTH)
+            pr_title = self.limit_title_characters(neutralize_github_mentions(pr_title), MAX_PR_TITLE_GITHUB_LENGTH)
         if pr_title is None:
             self.pr.edit(body=pr_body)
         else:
@@ -1324,7 +1328,7 @@ class GithubProvider(GitProvider):
         if is_temporary and not get_settings().config.publish_output_progress:
             get_logger().debug(f"Skipping publish_comment for temporary comment: {pr_comment}")
             return None
-        pr_comment = self.limit_output_characters(pr_comment, self.max_comment_chars)
+        pr_comment = self._publishable_comment(pr_comment)
 
         # In case this is an issue, can publish the comment on the issue.
         if self.issue_main:
@@ -1347,7 +1351,8 @@ class GithubProvider(GitProvider):
             # File-level comments use the single review-comment endpoint. The
             # create_review endpoint does not accept subject_type in its payload.
             self.pr.create_review_comment(
-                comment["body"], self.last_commit_id, comment["path"], subject_type="file"
+                self._publishable_inline_body(comment["body"]), self.last_commit_id, comment["path"],
+                subject_type="file",
             )
             return
         self.publish_inline_comments([comment])
@@ -1438,6 +1443,10 @@ class GithubProvider(GitProvider):
                 if comment else comment
                 for comment in comments
             ]
+        # in place, fallback_fingerprints is keyed by id() of these dicts
+        for comment in comments:
+            if comment and "body" in comment:
+                comment["body"] = self._publishable_inline_body(comment["body"])
         try:
             # publish all comments in a single message
             self.pr.create_review(commit=self.last_commit_id, event="COMMENT", comments=comments)
@@ -1467,6 +1476,22 @@ class GithubProvider(GitProvider):
                 raise
             finally:
                 self._fallback_fingerprints = None
+
+    def _publishable_comment(self, body: str) -> str:
+        text, marker = split_review_state_marker(body)
+        text = neutralize_github_mentions(text)
+        if not marker:
+            return self.limit_output_characters(text, self.max_comment_chars)
+        # the state marker is hidden and must stay byte for byte, or the next run sees changed findings
+        text = self.limit_output_characters(text, max(self.max_comment_chars - len(marker) - 3, 0))
+        return "\n\n".join(part for part in (text, marker) if part) + "\n"
+
+    def _publishable_inline_body(self, body: str) -> str:
+        neutral = neutralize_github_mentions(body)
+        if len(neutral) <= self.max_comment_chars:
+            return neutral
+        text = self.limit_output_characters(neutralize_github_mentions(strip_markers(body)), self.max_comment_chars)
+        return body_with_carried_markers(text, body, self.max_comment_chars)
 
     def get_review_thread_comments(self, comment_id: int) -> list[dict]:
         """
@@ -1872,7 +1897,7 @@ class GithubProvider(GitProvider):
 
     def edit_comment(self, comment, body: str):
         try:
-            body = self.limit_output_characters(body, self.max_comment_chars)
+            body = self._publishable_comment(body)
             comment.edit(body=body)
         except GithubException as e:
             if hasattr(e, "status") and e.status == 403:
@@ -1890,7 +1915,7 @@ class GithubProvider(GitProvider):
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
         try:
             # self.pr.get_issue_comment(comment_id).edit(body)
-            body = self.limit_output_characters(body, self.max_comment_chars)
+            body = self.limit_output_characters(neutralize_github_mentions(body), self.max_comment_chars)
             headers, data_patch = self.pr._requester.requestJsonAndCheck(
                 "POST", f"{self.base_url}/repos/{self.repo}/pulls/{self.pr_num}/comments/{comment_id}/replies",
                 input={"body": body}
