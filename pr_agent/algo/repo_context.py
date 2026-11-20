@@ -736,6 +736,9 @@ def build_repo_context(
             return ("", True) if return_status else ""
     if not _provider_supports_repo_context(git_provider):
         return ("", True) if return_status else ""
+    normalize_files = getattr(type(git_provider), "normalize_repo_context_files", None)
+    if callable(normalize_files):
+        context_files = normalize_files(context_files)
 
     # Sibling repositories change independently of the requesting repo, so the current-repo
     # revision cannot reconstruct their default-branch content. Bypass the revision-keyed cache

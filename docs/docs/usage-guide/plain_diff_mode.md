@@ -87,6 +87,27 @@ Without them, the title remains `Local diff review` and the description remains
 empty. Supplying a description may increase model input tokens for commands
 that use it, but does not add model requests.
 
+### Optional repository instructions from a Git revision
+
+When running inside a local Git repository, explicitly select a trusted base revision to include
+the configured `repo_context_files` (by default, `AGENTS.md`) in review, description, and question prompts:
+
+```bash
+git diff main...feature | python -m pr_agent.cli --stdin review \
+  --plain_diff.context_ref=main
+```
+
+The ref must resolve to a locally available commit or the command fails; fetch it first if your checkout is shallow.
+When supplying a ref through a settings file or environment variable instead of the CLI argument,
+quote numeric-looking tags (especially `1.10`) to prevent lossy value conversion.
+This option is available only in the local CLI, not in hosted requests or bot comments.
+Files are read from that commit, **not from HEAD or the working tree**. This is opt-in because the
+supplied diff may come from a different repository or branch. No Git hosting token or extra model
+request is needed, but instructions increase prompt tokens. Without a ref, Plain Diff stays
+patch-only for repository instructions. Explicit file paths and relative imports work using
+the existing repository context rules. Symlinks, directory globs, and sibling-repository entries
+are not resolved by this provider.
+
 ## How it works
 
 1. **Diff parsing** — the unified diff is parsed locally into per-file patch objects.

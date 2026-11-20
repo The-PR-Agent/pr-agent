@@ -482,6 +482,14 @@ class PRAgent:
             _git_provider = get_settings().config.git_provider
             span.set_attribute("vcs.provider.name", _git_provider)
 
+            # Validate an explicit Plain Diff revision before optional context fetches.
+            if settings.get("plain_diff.content") and settings.get("plain_diff.context_ref") is not None:
+                # Pass the pinned SHA to separately constructed providers such as /ask.
+                pinned_sha = get_git_provider_with_context(pr_url).get_repo_context_ref()
+                if not pinned_sha:
+                    raise ValueError("plain_diff.context_ref could not be resolved by the active Plain Diff provider")
+                settings.set("plain_diff.context_ref", pinned_sha)
+
             if action not in command2class:
                 get_logger().warning(f"Unknown command: {action}")
                 span.set_status(StatusCode.ERROR)
