@@ -536,7 +536,7 @@ Instead of setting all options via environment variables, you can use a `.pr_age
 
 If you get model not found errors:
 
-1. **Check model name format**: Ensure you're using the correct model identifier format (e.g., `gemini/gemini-3.8-flash`, not just `gemini-3.8-flash`)
+1. **Check model name format**: Use the correct provider prefix (e.g., `gemini/` for Google AI Studio or `vertex_ai/` for Vertex AI).
 
 2. **Verify API keys**: Make sure your API keys are correctly set as repository secrets
 
