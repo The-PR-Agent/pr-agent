@@ -77,11 +77,13 @@ def test_is_ask_command_comment(body, expected):
     assert is_ask_command_comment(body) is expected
 
 
-async def _run_gitlab_note_webhook(monkeypatch, note_body, note_type=None):
+async def _run_gitlab_note_webhook(monkeypatch, note_body, note_type=None, attributes=None, file_questions=None):
     dispatched = []
 
     async def record_request(api_url, body, log_context, sender_id, notify=None):
         dispatched.append((api_url, body))
+        if file_questions is not None:
+            file_questions.append({key: context.get(key) for key in FILE_QUESTION_CONTEXT_KEYS})
 
     object_attributes = {
         "id": 7,
@@ -97,6 +99,7 @@ async def _run_gitlab_note_webhook(monkeypatch, note_body, note_type=None):
                 "end": {"type": "new", "new_line": 12, "old_line": None},
             },
         }
+    object_attributes.update(attributes or {})
     payload = {
         "object_kind": "note",
         "event_type": "note",
@@ -155,6 +158,61 @@ async def test_gitlab_diffnote_starting_with_ask_still_routes_to_ask_line(monkey
     assert body[0] == "/ask_line"
     assert "--file_name=src/app.py" in body
     assert "why is this null?" in body
+
+
+# A note on a whole file, as GitLab sends it: a DiffNote whose position has no line.
+GITLAB_FILE_POSITION = {
+    "base_sha": "aaa111", "start_sha": "aaa111", "head_sha": "bbb222",
+    "old_path": "src/app.py", "new_path": "src/app.py", "position_type": "file",
+}
+
+
+@pytest.mark.parametrize("command", ["/ask", "/ask_question", "/ASK"])
+@pytest.mark.parametrize("note_url", ["https://gitlab.example.com/group/repo/-/merge_requests/1#note_7", None])
+async def test_gitlab_file_question_is_asked_about_the_file_in_its_discussion(monkeypatch, command, note_url):
+    question = "Explain --config.publish_output=false in this code"
+    file_questions = []
+    dispatched = await _run_gitlab_note_webhook(
+        monkeypatch, f"{command} {question}", note_type="DiffNote",
+        attributes={"position": GITLAB_FILE_POSITION, "url": note_url}, file_questions=file_questions)
+
+    [(_url, body)] = dispatched
+    # About that file's diff, answered in the note's discussion, with the notes before it as history.
+    assert body[:2] == ["/ask", "--origin_comment_id=7"]
+    assert decode_user_text_args(body[2:]) == question
+    assert file_questions == [{
+        "file_question_path": "src/app.py",
+        "file_question_comment_id": "discussion-1",
+        "file_question_origin_comment_id": 7,
+        "file_question_comment_url": "https://gitlab.example.com/group/repo/-/merge_requests/1#note_7",
+    }]
+
+
+@pytest.mark.parametrize(("command", "position"), [
+    # /ask_line names lines, and a whole file has none: it is passed on as written, as before.
+    ("/ask_line", GITLAB_FILE_POSITION),
+    # Without a file path there is no file to ask about.
+    ("/ask", {**GITLAB_FILE_POSITION, "new_path": None}),
+    ("/ask", {**GITLAB_FILE_POSITION, "new_path": ""}),
+])
+async def test_gitlab_file_note_without_a_file_question_is_passed_on(monkeypatch, command, position):
+    file_questions = []
+    dispatched = await _run_gitlab_note_webhook(
+        monkeypatch, f"{command} why this file?", note_type="DiffNote", attributes={"position": position},
+        file_questions=file_questions)
+
+    assert dispatched == [("https://gitlab.example.com/group/repo/-/merge_requests/1", f"{command} why this file?")]
+    assert file_questions == [dict.fromkeys(FILE_QUESTION_CONTEXT_KEYS)]
+
+
+async def test_gitlab_line_question_records_no_file_question(monkeypatch):
+    file_questions = []
+    dispatched = await _run_gitlab_note_webhook(
+        monkeypatch, "/ask why is this null?", note_type="DiffNote", file_questions=file_questions)
+
+    [(_url, body)] = dispatched
+    assert body[0] == "/ask_line"
+    assert file_questions == [dict.fromkeys(FILE_QUESTION_CONTEXT_KEYS)]
 
 
 async def test_github_line_review_mentioning_ask_stays_review(monkeypatch):
