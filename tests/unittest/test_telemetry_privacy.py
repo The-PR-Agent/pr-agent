@@ -442,3 +442,73 @@ async def test_include_pr_url_opt_in_values(telemetry, value):
 
     span = exporter.get_finished_spans()[0]
     assert dict(span.attributes)["pr_agent.pr_url"] == SENTINEL_URL
+
+
+class _IdentityProvider:
+    def __init__(self, identity):
+        self.identity = identity
+
+    def get_pr_identity(self):
+        if isinstance(self.identity, Exception):
+            raise self.identity
+        return self.identity
+
+
+def _identity_command(provider):
+    class IdentityCommand:
+        def __init__(self, pr_url, ai_handler, args):
+            if provider is not None:
+                self.git_provider = provider
+
+        async def run(self):
+            return None
+
+    return IdentityCommand
+
+
+_PR_IDENTITY = {
+    "url": SENTINEL_URL, "provider": "github", "repo": "org/private-repo", "number": 42, "head_sha": "abc123",
+}
+
+
+@pytest.mark.asyncio
+async def test_pr_identity_on_span_when_include_pr_url_enabled(telemetry, monkeypatch):
+    exporter, _ = telemetry
+    get_settings().set("otel.include_pr_url", True)
+    monkeypatch.setitem(pr_agent_module.command2class, "idcmd", _identity_command(_IdentityProvider(_PR_IDENTITY)))
+
+    assert await PRAgent(ai_handler="fake")._handle_request(SENTINEL_URL, ["idcmd"]) is True
+
+    attributes = dict(exporter.get_finished_spans()[0].attributes)
+    assert attributes["vcs.repository.name"] == "org/private-repo"
+    assert attributes["vcs.change.id"] == "42"
+    assert attributes["vcs.ref.head.revision"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_pr_identity_kept_out_by_default(telemetry, monkeypatch):
+    exporter, _ = telemetry
+    get_settings().set("otel.include_pr_url", False)
+    monkeypatch.setitem(pr_agent_module.command2class, "idcmd", _identity_command(_IdentityProvider(_PR_IDENTITY)))
+
+    await PRAgent(ai_handler="fake")._handle_request(SENTINEL_URL, ["idcmd"])
+
+    exported = _all_exported_text(exporter)
+    assert "vcs.repository.name" not in exported
+    assert "org/private-repo" not in exported
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider",
+    [None, _IdentityProvider(RuntimeError("boom")), _IdentityProvider({"url": "", "repo": "", "number": ""})],
+)
+async def test_missing_pr_identity_adds_no_attributes(telemetry, monkeypatch, provider):
+    exporter, _ = telemetry
+    get_settings().set("otel.include_pr_url", True)
+    monkeypatch.setitem(pr_agent_module.command2class, "idcmd", _identity_command(provider))
+
+    assert await PRAgent(ai_handler="fake")._handle_request(SENTINEL_URL, ["idcmd"]) is True
+
+    attributes = dict(exporter.get_finished_spans()[0].attributes)
+    assert not any(key.startswith("vcs.") and key != "vcs.provider.name" for key in attributes)
