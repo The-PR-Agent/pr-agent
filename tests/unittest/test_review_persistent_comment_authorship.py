@@ -379,7 +379,9 @@ async def test_azure_auto_rerun_resolves_identity_and_edits_review(
     assert not threads[0].comments[0].content.startswith(STANDALONE_HEADING)
     assert "pr-agent-review-state:v1" in threads[0].comments[0].content
     if jira_enabled:
-        assert "https://example.atlassian.net/browse/ABC-123" in threads[0].comments[0].content
+        # The publish firewall escapes the model-authored ticket URL in place (#4999):
+        # still readable, no longer a live link.
+        assert "https\\://example\\.atlassian\\.net/browse/ABC-123" in threads[0].comments[0].content
 
 
 async def test_control_github_pat_rerun_edits_the_previous_review(monkeypatch, review_settings):
