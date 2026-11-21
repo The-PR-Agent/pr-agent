@@ -914,6 +914,10 @@ class GitLabProvider(GitProvider):
         # MR changes cache re-polls together with the diff cache it feeds.
         self._merge_request_changes_cache = None
         self._diff_mr_refs = None
+        self._file_link_source_url = None
+        self._file_link_source_lookup_attempts = 0
+        self._file_link_base_sha = None
+        self._file_link_incremental = False
         self._incremental_unfiltered_files = None
 
     def get_incremental_commits(self, incremental: IncrementalPR | None = None, kind: str = "review"):
@@ -1646,6 +1650,8 @@ class GitLabProvider(GitProvider):
         # where two calls in one command could see different file sets.
         self.diff_files = diff_files
         self._diff_head_sha = head_sha_for_content
+        self._file_link_base_sha = base_sha_for_content
+        self._file_link_incremental = incremental_active
         # Pin the target revision associated with the reviewed diff.
         mr_refs = getattr(getattr(self, "mr", None), "diff_refs", None)
         self._cleanup_diff_start_sha = (
@@ -3596,6 +3602,80 @@ class GitLabProvider(GitProvider):
         return f"{self.gl.url}/{project_path}"
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
+        reviewed_files = getattr(self, "diff_files", None)
+        fallback = getattr(self.mr, "web_url", "") or getattr(self, "pr_url", "")
+        if reviewed_files is not None:
+            # Expanded submodules have their own repositories and immutable links.
+            submodule_link = getattr(self, "_submodule_links", {}).get(relevant_file)
+            if submodule_link:
+                start, end = self._normalize_line_range(relevant_line_start, relevant_line_end)
+                if start == -1:
+                    return submodule_link
+                return submodule_link + (f"#L{start}-{end}" if end else f"#L{start}")
+            path = relevant_file.strip("/") if isinstance(relevant_file, str) else ""
+            if not path:
+                return fallback
+            matches = [file for file in reviewed_files
+                       if getattr(file, "filename", "").strip("/") == path]
+            if not matches:
+                matches = [file for file in reviewed_files
+                           if isinstance(getattr(file, "old_filename", None), str)
+                           and file.old_filename.strip("/") == path]
+            if not matches:
+                matches = [file for file in reviewed_files
+                           if any(isinstance(getattr(file, key, None), str)
+                                  and getattr(file, key).strip("/").lower() == path.lower()
+                                  for key in ("filename", "old_filename"))]
+            if len(matches) != 1:
+                return fallback
+            item = matches[0]
+            deleted = item.edit_type == EDIT_TYPE.DELETED
+            revision = getattr(self, "_file_link_base_sha" if deleted else "_diff_head_sha", None)
+            source_id = getattr(self.mr, "source_project_id", None)
+            target_id = getattr(self.mr, "target_project_id", None)
+            if not isinstance(revision, str) or not revision:
+                return fallback
+            # A full-review deletion always belongs to the target's base.
+            # A deleted source fork can leave source_project_id unavailable.
+            source_side = not deleted or getattr(self, "_file_link_incremental", False)
+            if source_side and (not isinstance(source_id, int) or not isinstance(target_id, int)):
+                return fallback
+            project_url = self._get_project_web_url()
+            if source_side and source_id != target_id:
+                fork_url = getattr(self, "_file_link_source_url", None)
+                if fork_url is None:
+                    attempts = getattr(self, "_file_link_source_lookup_attempts", 0)
+                    if attempts >= 2:
+                        return fallback
+                    self._file_link_source_lookup_attempts = attempts + 1
+                    try:
+                        fork_url = self.gl.projects.get(source_id).web_url or ""
+                    except GitlabGetError as exc:
+                        fork_url = ""
+                        if getattr(exc, "response_code", None) in (403, 404):
+                            self._file_link_source_url = ""
+                    except (GitlabError, RequestException, AttributeError, TypeError):
+                        fork_url = ""
+                    if isinstance(fork_url, str) and fork_url:
+                        self._file_link_source_url = fork_url
+                if not isinstance(fork_url, str) or not fork_url:
+                    return fallback
+                project_url = fork_url
+            if not isinstance(project_url, str) or not project_url:
+                return fallback
+            filename = item.old_filename if deleted and item.old_filename else item.filename
+            link = (f"{project_url.rstrip('/')}/-/blob/{quote(revision, safe='')}"
+                    f"/{quote(filename, safe='/')}")
+            start, end = self._normalize_line_range(relevant_line_start, relevant_line_end)
+            if start != -1:
+                link += f"#L{start}-{end}" if end else f"#L{start}"
+            return link
+
+        # A fork branch cannot be resolved inside the target repository.
+        source_id = getattr(self.mr, "source_project_id", None)
+        target_id = getattr(self.mr, "target_project_id", None)
+        if isinstance(source_id, int) and isinstance(target_id, int) and source_id != target_id:
+            return fallback
         project_web_url = self._get_project_web_url()
         encoded_file = quote(relevant_file, safe="/")
         relevant_line_start, relevant_line_end = self._normalize_line_range(
