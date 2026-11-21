@@ -3598,13 +3598,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 ):
                     request_user = self._get_request_user_field()
                     if request_user:
-                        try:
-                            supported_params = litellm.get_supported_openai_params(model=model) or []
-                        except Exception:
-                            supported_params = []
-                        if "user" in supported_params:
-                            kwargs["user"] = request_user
-                        elif openrouter_model:
+                        if openrouter_model:
                             # LiteLLM's OpenRouter transformation does not forward the
                             # standard "user" parameter; extra_body reaches the
                             # OpenAI-compatible request body verbatim.
@@ -3612,12 +3606,33 @@ class LiteLLMAIHandler(BaseAiHandler):
                             user_extra_body["user"] = request_user
                             kwargs["extra_body"] = user_extra_body
                         else:
-                            # Providers whose parameter mapping does not accept "user"
-                            # (e.g. gemini, deepseek) would reject the request when
-                            # litellm.drop_params is off: skip the field instead of
-                            # breaking the call.
-                            get_logger().debug(
-                                f"add_user_to_requests: user field unsupported for {model}, skipped")
+                            user_param_provider = (
+                                custom_llm_provider
+                                or self._resolve_request_transport_provider(routed_model)
+                                or request_provider
+                                or None
+                            )
+                            user_param_model = (
+                                model.removeprefix(f"{user_param_provider}/")
+                                if user_param_provider and model.startswith(f"{user_param_provider}/")
+                                else model
+                            )
+                            try:
+                                supported_params = litellm.get_supported_openai_params(
+                                    model=user_param_model,
+                                    custom_llm_provider=user_param_provider,
+                                ) or []
+                            except Exception:
+                                supported_params = []
+                            if "user" in supported_params:
+                                kwargs["user"] = request_user
+                            else:
+                                # Providers whose parameter mapping does not accept "user"
+                                # (e.g. gemini, deepseek) would reject the request when
+                                # litellm.drop_params is off: skip the field instead of
+                                # breaking the call.
+                                get_logger().debug(
+                                    f"add_user_to_requests: user field unsupported for {model}, skipped")
 
                 # Anthropic prompt caching via LiteLLM's cache_control_injection_points. The value
                 # is validated before the try/except (see above) so a malformed config surfaces as
