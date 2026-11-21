@@ -262,8 +262,11 @@ def run(inargs=None, args=None):
                 parser.error(f"Could not read --diff-file '{args.diff_file}': {e}")
             except UnicodeDecodeError as e:
                 parser.error(f"--diff-file '{args.diff_file}' is not valid UTF-8 text: {e}")
-        else:
-            diff_content = sys.stdin.read()
+            else:
+         try:
+             diff_content = sys.stdin.read()
+         except UnicodeDecodeError as e:
+             parser.error(f"Could not decode --stdin: {e}")
         if not diff_content.strip():
             parser.error("No diff content received (empty stdin/file)")
     elif not args.pr_url and not args.issue_url:
