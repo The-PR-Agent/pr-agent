@@ -1363,8 +1363,14 @@ class PRReviewer:
         todo_sections = review.get("todo_sections")
         if isinstance(todo_sections, list):
             for section in todo_sections:
-                if isinstance(section, dict) and isinstance(section.get("content"), str):
-                    section["content"] = firewall_model_output(section["content"])
+                if not isinstance(section, dict):
+                    continue
+                # Rendered inside the template's own HTML blocks, where a fence line in
+                # the field is not a fence on GitHub (#4999).
+                if isinstance(section.get("content"), str):
+                    section["content"] = firewall_model_output(section["content"], fenced_ok=False)
+                if isinstance(section.get("relevant_file"), str):
+                    section["relevant_file"] = firewall_model_output(section["relevant_file"], fenced_ok=False)
         failure_modes = review.get("failure_modes")
         if isinstance(failure_modes, list):
             for mode in failure_modes:
@@ -1378,6 +1384,8 @@ class PRReviewer:
             for ticket in tickets:
                 if not isinstance(ticket, dict):
                     continue
+                if isinstance(ticket.get("ticket_url"), str):
+                    ticket["ticket_url"] = firewall_model_output(ticket["ticket_url"], fenced_ok=False)
                 for prose_key in (
                     "ticket_requirements",
                     "fully_compliant_requirements",
@@ -1385,18 +1393,26 @@ class PRReviewer:
                     "requires_further_human_verification",
                 ):
                     if isinstance(ticket.get(prose_key), str):
-                        ticket[prose_key] = firewall_model_output(ticket[prose_key])
+                        ticket[prose_key] = firewall_model_output(ticket[prose_key], fenced_ok=False)
         priority_files = review.get("review_priority_files")
         if isinstance(priority_files, list):
             review["review_priority_files"] = [
-                firewall_model_output(entry) if isinstance(entry, str) else entry
+                firewall_model_output(entry, fenced_ok=False) if isinstance(entry, str) else entry
                 for entry in priority_files
             ]
         splits = review.get("can_be_split")
         if isinstance(splits, list):
             for split in splits:
-                if isinstance(split, dict) and isinstance(split.get("title"), str):
-                    split["title"] = firewall_model_output(split["title"])
+                if not isinstance(split, dict):
+                    continue
+                if isinstance(split.get("title"), str):
+                    split["title"] = firewall_model_output(split["title"], fenced_ok=False)
+                files = split.get("relevant_files")
+                if isinstance(files, list):
+                    split["relevant_files"] = [
+                        firewall_model_output(entry, fenced_ok=False) if isinstance(entry, str) else entry
+                        for entry in files
+                    ]
         estimate = review.get("contribution_time_cost_estimate")
         if isinstance(estimate, dict):
             for prose_key in ("best_case", "average_case", "worst_case"):

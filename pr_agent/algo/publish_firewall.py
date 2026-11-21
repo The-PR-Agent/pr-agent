@@ -68,7 +68,6 @@ _BACKTICK_RUN = re.compile(r"`+")
 # closing bracket anywhere on the line (complete tags are objects and get
 # escaped, which dissolves their blocks). The block then runs until a blank line.
 _HTML_BLOCK_OPENER = re.compile(r" {0,3}<[a-zA-Z][a-zA-Z0-9-]*(?![^>]*>)")
-_BLANK_LINE = re.compile(r"[ \t]*")
 
 _TAG_PREFIX = re.compile(r"\s*/?[a-zA-Z]")
 
@@ -103,29 +102,47 @@ class _LineIndex:
         return self.breaks[index] if index < len(self.breaks) else len(self.text)
 
 
+def _positions(text: str, needle: str) -> list[int]:
+    """All occurrences of ``needle``, in one linear scan (for bisect lookups)."""
+    found = []
+    position = text.find(needle)
+    while position != -1:
+        found.append(position)
+        position = text.find(needle, position + len(needle))
+    return found
+
+
+def _first_at_or_after(positions: list[int], bound: int):
+    """The first position >= bound, or None. ``positions`` must be sorted."""
+    index = bisect_right(positions, bound - 1)
+    return positions[index] if index < len(positions) else None
+
+
 def _active_object_spans(text: str) -> list[tuple[int, int]]:
-    """Spans of the renderable objects in one linear pass per family.
+    """Spans of the renderable objects, linear per family on hostile input.
 
     A regex alternation over ``[`` or ``<`` goes quadratic on unbalanced input (a
     50k-character diff line of stray brackets costs seconds), so each family is
     anchored on its closing shape instead: ``](`` / ``][`` walk back to the nearest
     bracket, ``<`` walks forward to ``>`` or the line end, and URL prefixes extend
-    to the next whitespace. Backward walks stay between consecutive anchors, so the
-    total work is linear in the text length.
+    to the next whitespace. Backward walks stay between consecutive anchors, and
+    closer lookups bisect a precomputed position list, so a far-away or missing
+    closer costs one logarithmic lookup instead of another linear scan.
     """
     spans = []
     lines = _LineIndex(text)
     # Inline and reference links/images.
     for anchor_pair, closer in (("](", ")"), ("][", "]")):
+        closer_positions = _positions(text, closer)
         floor = 0
         anchor = text.find(anchor_pair, 0)
         while anchor != -1:
             bracket = text.rfind("[", max(floor, lines.start(anchor)), anchor)
             escaped_bracket = bracket > 0 and text[bracket - 1] == "\\"
-            if bracket != -1 and not escaped_bracket and "]" not in text[bracket + 1:anchor]:
+            if bracket != -1 and not escaped_bracket and text.find("]", bracket + 1, anchor) == -1:
                 start = bracket - 1 if bracket > 0 and text[bracket - 1] == "!" else bracket
-                close = text.find(closer, anchor + 2)
-                if close != -1 and "\n" not in text[anchor + 2:close]:
+                close = _first_at_or_after(closer_positions, anchor + 2)
+                if close is not None and close < lines.end(anchor):
                     spans.append((start, close + 1))
             floor = anchor
             anchor = text.find(anchor_pair, anchor + 2)
@@ -172,8 +189,10 @@ def _strip_html_comments(segment: str) -> str:
     A lazy regex over a rebuilt string would leave reassembled openers behind
     (``<!-<!---->-`` strips to a fresh ``<!--``), so this scans once and then
     neutralizes whatever openers remain, backslashing the ``<`` the same way the
-    finding-state marker code does.
+    finding-state marker code does. Closer positions are precomputed once, so a
+    flood of openers with one distant closer costs bisects, not rescans.
     """
+    closer_positions = _positions(segment, "-->")
     pieces = []
     position = 0
     while True:
@@ -182,8 +201,8 @@ def _strip_html_comments(segment: str) -> str:
             pieces.append(segment[position:])
             break
         pieces.append(segment[position:start])
-        end = segment.find("-->", start + 4)
-        if end == -1:
+        end = _first_at_or_after(closer_positions, start + 4)
+        if end is None:
             # An unclosed opener swallows nothing; keep scanning after it.
             position = start + 4
             continue
@@ -247,17 +266,25 @@ def _inline_code_intervals(line: str) -> list[tuple[int, int]]:
 
 
 def _escape_active_objects(line: str) -> str:
-    """Escape every syntax object in the line, in place."""
-    inert_intervals = _inline_code_intervals(line)
-    spans = [
-        (start, end)
-        for start, end in _active_object_spans(line)
-        # Objects already inside an inline code span render literally; leave them be.
-        if not any(begin <= start and end <= finish for begin, finish in inert_intervals)
-    ]
+    """Escape every syntax object in the line, in place.
+
+    Span-versus-code-span containment walks both sorted lists with a running
+    prefix maximum, so a line carrying thousands of objects and thousands of
+    code spans stays linear instead of crossing every pair.
+    """
+    intervals = sorted(_inline_code_intervals(line))
     pieces = []
     position = 0
-    for start, end in spans:
+    interval_index = 0
+    covered_until = -1  # farthest end among the code spans that started so far
+    for start, end in _active_object_spans(line):
+        while interval_index < len(intervals) and intervals[interval_index][0] <= start:
+            begin, finish = intervals[interval_index]
+            covered_until = max(covered_until, finish)
+            interval_index += 1
+        # Objects already inside an inline code span render literally; leave them be.
+        if covered_until >= end:
+            continue
         pieces.append(line[position:start])
         pieces.append(line[start:end].translate(_ESCAPE_TARGETS))
         position = end
@@ -265,23 +292,44 @@ def _escape_active_objects(line: str) -> str:
     return "".join(pieces)
 
 
-def firewall_model_output(markdown: str) -> str:
-    """Apply the three publish rules to a model-authored markdown field."""
+def _ends_html_block(line: str) -> bool:
+    """Whether the line terminates an HTML block: blank after the prose strips.
+
+    Stripping invisibles or removing an unclosed ``<!--`` can itself create a
+    blank line, and classification has to agree before and after those strips,
+    or a second pass over the output would see different block boundaries.
+    """
+    residual = _strip_html_comments(_strip_invisible(line))
+    return residual.strip(" \t") == ""
+
+
+def firewall_model_output(markdown: str, *, fenced_ok: bool = True) -> str:
+    """Apply the three publish rules to a model-authored markdown field.
+
+    ``fenced_ok=False`` treats the whole field as prose: use it for fields the
+    templates render inside their own HTML blocks (``<ul>``, ``<details>``),
+    where a fence line in the field is not a fence on GitHub and everything in
+    it renders as raw markup.
+    """
     if not isinstance(markdown, str) or not markdown:
         return markdown
     lines = markdown.split("\n")
     result = []
     open_fence = None  # (character, length) of the fence currently protecting a block
-    html_block = False  # inside an unescaped HTML block: no fences, prose rules stay on
+    html_block = False  # inside a detected HTML block: no fences, prose rules stay on
+    embedded = not fenced_ok  # a template-embedded field is prose throughout, blank lines included
     prose_buffer = []
     for line in lines:
+        if embedded:
+            prose_buffer.append(line)
+            continue
         if open_fence is not None:
             if _closing_fence(line, open_fence[0], open_fence[1]):
                 open_fence = None
             result.append(line)
             continue
         if html_block:
-            if _BLANK_LINE.fullmatch(line) is not None:
+            if _ends_html_block(line):
                 html_block = False
             prose_buffer.append(line)
             continue

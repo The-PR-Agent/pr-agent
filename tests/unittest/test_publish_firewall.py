@@ -232,6 +232,41 @@ def test_prose_segments_after_a_fence_are_not_re_emitted():
     assert result == body  # the first segment was flushed once, not duplicated
 
 
+def test_fields_embedded_in_template_html_blocks_treat_everything_as_prose():
+    # The templates render these fields inside their own <ul>/<details> blocks, where
+    # a ``` line in the field is not a fence on GitHub; a beacon after it stays live
+    # unless the whole field runs through the prose rules.
+    field = f"```\ncode-ish line\n```\nsummary with {BEACON} at the end"
+
+    result = firewall_model_output(field, fenced_ok=False)
+
+    assert _live_occurrences(result, BEACON) == []
+
+
+def test_bracket_floods_with_a_far_closer_stay_fast():
+    # Quadratic rescans for the closer cost seconds at 50k characters; the bisected
+    # position list keeps it flat. Runs inline: quadratic behavior would stall the suite.
+    hostile = "[a](" * 25000 + ")"
+
+    result = firewall_model_output(hostile)
+
+    assert _live_occurrences(result, "[a](") == []
+
+
+def test_comment_floods_stay_fast():
+    hostile = "<!-- " * 20000
+
+    assert "<!--" not in firewall_model_output(hostile)
+
+
+def test_object_and_code_span_floods_stay_fast():
+    hostile = "x `y` [a](b) " * 5000
+
+    result = firewall_model_output(hostile)
+
+    assert _live_occurrences(result, "[a](b)") == []
+
+
 def test_the_pass_is_idempotent():
     composite = "\n".join([
         f"prose with {BEACON} and {MARKER}",
