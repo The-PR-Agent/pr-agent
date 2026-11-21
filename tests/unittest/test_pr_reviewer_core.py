@@ -79,6 +79,87 @@ def test_merge_recommendation_status_is_opt_in(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_merge_recommendation_status_published_once_when_review_comment_suppressed(monkeypatch):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    provider = MagicMock()
+    provider.get_files.return_value = ["app.py"]
+    provider.get_diff_files.return_value = []
+    provider.publish_merge_recommendation_status.return_value = True
+
+    reviewer = _make_reviewer(provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+
+    def prepare_review():
+        reviewer._merge_recommendation_status = "no_concerns_found"
+        return "## PR Reviewer Guide\n\nNo major issues detected"
+
+    async def predict(*args, **kwargs):
+        reviewer.prediction = "review:\n  key_issues_to_review: []\n"
+
+    reviewer._prepare_pr_review = prepare_review
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", predict)
+
+    settings = get_settings()
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.config, "is_auto_command", True)
+    monkeypatch.setitem(settings.pr_reviewer, "publish_output_no_suggestions", False)
+    monkeypatch.setitem(settings.pr_reviewer, "publish_merge_recommendation_status", True)
+
+    await reviewer._run_review()
+
+    provider.publish_comment.assert_not_called()
+    provider.publish_merge_recommendation_status.assert_called_once_with("no_concerns_found")
+
+
+@pytest.mark.asyncio
+async def test_merge_recommendation_status_error_does_not_skip_finalizer(monkeypatch, tmp_path):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    output = tmp_path / "review.json"
+    provider = MagicMock()
+    provider.get_files.return_value = ["app.py"]
+    provider.get_diff_files.return_value = []
+    provider.publish_merge_recommendation_status.side_effect = RuntimeError("status API down")
+
+    reviewer = _make_reviewer(provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    expected = {"review": {"merge_recommendation": "no_concerns_found"}, "usage": {}}
+
+    def prepare_review():
+        reviewer._merge_recommendation_status = "no_concerns_found"
+        reviewer._structured_review_data = expected
+        return "## PR Reviewer Guide\n\nNo major issues detected"
+
+    async def predict(*args, **kwargs):
+        reviewer.prediction = "review:\n  key_issues_to_review: []\n"
+
+    reviewer._prepare_pr_review = prepare_review
+    reviewer.auto_approve_logic = MagicMock()
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", predict)
+
+    settings = get_settings()
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.config, "is_auto_command", True)
+    monkeypatch.setitem(settings.pr_reviewer, "publish_output_no_suggestions", False)
+    monkeypatch.setitem(settings.pr_reviewer, "publish_merge_recommendation_status", True)
+
+    token = review_json_output_path.set(str(output))
+    try:
+        await reviewer._run_review()
+    finally:
+        review_json_output_path.reset(token)
+
+    provider.publish_merge_recommendation_status.assert_called_once_with("no_concerns_found")
+    reviewer.auto_approve_logic.assert_called_once_with(None, review_completed=True)
+    assert json.loads(output.read_text(encoding="utf-8")) == expected
+
+
+@pytest.mark.asyncio
 async def test_pr_review_json_is_written_after_publication(monkeypatch, tmp_path):
     from pr_agent.commands import pr_reviewer as pr_reviewer_module
 
