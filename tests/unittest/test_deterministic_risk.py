@@ -114,6 +114,43 @@ def test_matches_sensitive_path_custom():
     assert dr.matches_sensitive_path("config/secrets/prod.json", ["prod.json", "config/**"]) == "prod.json"
 
 
+@pytest.mark.parametrize(
+    ("path", "patterns", "expected"),
+    [
+        # Default ** globs must match nested subdirectories in monorepos too.
+        ("services/api/alembic/versions/001_init.py", None, "alembic/**"),
+        ("apps/web/db/migrate/2026/001_users.rb", None, "db/migrate/**"),
+        ("packages/ci/.github/actions/setup/action.yml", None, ".github/actions/**"),
+        ("packages/ci/.github/workflows/sub/deploy.yml", None, ".github/workflows/**"),
+        ("services/app/.circleci/orbs/build.yml", None, ".circleci/**"),
+        # Custom ** globs must match zero directories and arbitrary nesting depth.
+        ("auth/login.py", ["**/auth/**"], "**/auth/**"),
+        ("auth/jwt/verify.py", ["**/auth/**"], "**/auth/**"),
+        ("services/api/auth/jwt/verify.py", ["**/auth/**"], "**/auth/**"),
+        ("secrets/prod.yaml", ["**/secrets/*.yaml"], "**/secrets/*.yaml"),
+        ("config/secrets.yml", ["config/**/secrets.yml"], "config/**/secrets.yml"),
+        ("services/api/config/prod/us/secrets.yml", ["config/**/secrets.yml"], "config/**/secrets.yml"),
+        ("alembic/versions/001_init.py", ["./alembic/**"], "./alembic/**"),
+        ("alembic/versions/001_init.py", ["alembic/**/"], "alembic/**/"),
+        ("lib/fixtures/data.json", ["**/fixtures/"], "**/fixtures/"),
+        ("services/a/b/c.py", ["a/**/**/c.py"], "a/**/**/c.py"),
+        # Root-anchored globs (leading '/') only match from repository root.
+        ("alembic/versions/001_init.py", ["/alembic/**"], "/alembic/**"),
+        ("services/api/alembic/versions/001_init.py", ["/alembic/**"], None),
+        # Preserve existing full-path fnmatch matches so host configs never lose coverage on upgrade.
+        ("app/secrets/sub/prod.yaml", ["**/secrets/*.yaml"], "**/secrets/*.yaml"),
+        # Non-matching boundaries: trailing /** requires a child, and segment names stay exact.
+        ("alembic", ["alembic/**"], None),
+        ("services/alembic", ["alembic/**"], None),
+        ("lib/fixtures", ["/**/fixtures/"], None),
+        ("services/my-alembic/versions/001_init.py", ["alembic/**"], None),
+        ("services/oauth/login.py", ["**/auth/**"], None),
+    ],
+)
+def test_matches_sensitive_path_globstar_nesting_and_boundaries(path, patterns, expected):
+    assert dr.matches_sensitive_path(path, patterns) == expected
+
+
 def test_matches_sensitive_path_ignores_oversized_globs():
     oversized = "a" * (dr.MAX_GLOB_LENGTH + 1)
     assert dr.matches_sensitive_path("app.py", [oversized, "app.py"]) == "app.py"
