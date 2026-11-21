@@ -213,6 +213,42 @@ class TestExtendPatch:
         hunk_headers = [line for line in extended.splitlines() if line.startswith("@@")]
         assert hunk_headers == ["@@ -1,11 +1,11 @@ ", "@@ -17,6 +17,6 @@ "]
 
+    def test_mismatched_pre_context_preserves_after_context_size(self):
+        original = "\n".join(f"line{i}" for i in range(1, 11))
+        new_lines = [f"line{i}" for i in range(1, 11)]
+        new_lines[3] = "changed_line4"
+        new_lines[4] = "new_line5"
+        new_lines[7] = "new_line8"
+        patch = "@@ -5,1 +5,1 @@\n-line5\n+new_line5\n@@ -8,1 +8,1 @@\n-line8\n+new_line8"
+
+        extended = extend_patch(
+            original,
+            patch,
+            patch_extra_lines_before=2,
+            patch_extra_lines_after=2,
+            new_file_str="\n".join(new_lines),
+        )
+
+        assert extended == (
+            "\n@@ -5,3 +5,3 @@ \n-line5\n+new_line5\n line6\n line7"
+            "\n\n@@ -8,3 +8,3 @@ \n-line8\n+new_line8\n line9\n line10"
+        )
+
+    def test_mismatched_pre_context_on_zero_length_hunk_preserves_after_context(self):
+        original = "line1\nline2\nline3\nline4\nline5"
+        new = "line1\nchanged_line2\ninserted\nline3\nline4\nline5"
+        patch = "@@ -2,0 +3,1 @@\n+inserted"
+
+        extended = extend_patch(
+            original,
+            patch,
+            patch_extra_lines_before=1,
+            patch_extra_lines_after=2,
+            new_file_str=new,
+        )
+
+        assert extended == "\n@@ -3,2 +3,3 @@ \n+inserted\n line3\n line4"
+
 
 
 

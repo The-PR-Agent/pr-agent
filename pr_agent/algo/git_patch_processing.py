@@ -232,10 +232,9 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
                                         found_mini_match = True
                                         break
                                 if not found_mini_match:
-                                    extended_start1 = start1
-                                    extended_size1 = size1
-                                    extended_start2 = start2
-                                    extended_size2 = size2
+                                    extended_start1, extended_size1, extended_start2, extended_size2 = (
+                                        _calc_context_limits(0)
+                                    )
                                     delta_lines_original = []
                                     # get_logger().debug(f"Extra lines before hunk are different",
                                     #                    artifact={"delta_lines_original": delta_lines_original,
