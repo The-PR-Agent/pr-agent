@@ -93,8 +93,7 @@ def _uses_ambient_auth_or_custom_endpoint(provider: str, handler: LiteLLMAIHandl
     settings = get_settings()
     anthropic_token = (handler._anthropic_auth_token or "").strip()
     ambient = (
-        settings.get("AZURE_AD.CLIENT_ID", None)
-        or provider.startswith(("bedrock", "azure"))
+        provider.startswith(("bedrock", "azure"))
         or (
             provider == "anthropic"
             and anthropic_token not in ("", DUMMY_LITELLM_API_KEY)

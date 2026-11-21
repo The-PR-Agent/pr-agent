@@ -196,6 +196,87 @@ def test_azure_ad_ambient_auth_defers_to_the_run(monkeypatch, cli_mode_settings)
     assert doctor.missing_provider_key_env_vars() is None
 
 
+@pytest.mark.parametrize(
+    ("model", "provider", "key_setting"),
+    [
+        ("anthropic/claude-3-5-sonnet-20241022", "anthropic", "anthropic.key"),
+        ("openrouter/openai/gpt-4o", "openrouter", "openrouter.key"),
+    ],
+)
+@pytest.mark.parametrize("key", (None, DUMMY_LITELLM_API_KEY))
+async def test_azure_ad_does_not_exempt_explicit_non_azure_provider(
+    monkeypatch, cli_mode_settings, model, provider, key_setting, key,
+):
+    from pr_agent.algo.ai_handlers import litellm_ai_handler
+
+    # Azure AD initialization is real except for external credential acquisition.
+    monkeypatch.setattr(litellm_ai_handler, "_get_azure_ad_credential", lambda settings: object())
+    cli_mode_settings.set("azure_ad.client_id", "synthetic-client-id")
+    cli_mode_settings.set("config.model", model)
+    if key is not None:
+        cli_mode_settings.set(key_setting, key)
+
+    handler = litellm_ai_handler.LiteLLMAIHandler()
+    assert handler._route_model(model, handler.deployment_id) == model
+    routed_model = handler._route_model_for_request(
+        model, handler._custom_llm_provider, handler.deployment_id,
+    )
+    assert doctor._active_provider(model, handler) == provider
+    assert handler._resolve_configured_request_provider(routed_model, handler._custom_llm_provider) == provider
+
+    if provider == "anthropic":
+        captured = {}
+
+        async def fake_completion(**kwargs):
+            captured.update(kwargs)
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        # Exercise the real handler's request path; intercept only the external LLM call.
+        await handler.probe_completion(model, _completion=fake_completion)
+        assert captured["model"].startswith("anthropic/")
+        assert captured["api_key"] == DUMMY_LITELLM_API_KEY
+        assert "azure_ad_token" not in captured
+
+        from litellm.llms.anthropic.common_utils import AnthropicModelInfo
+
+        headers = AnthropicModelInfo().get_anthropic_headers(
+            api_key=captured["api_key"], auth_token=handler._anthropic_auth_token,
+        )
+        assert headers["x-api-key"] == DUMMY_LITELLM_API_KEY
+        assert not any(name.lower() == "authorization" for name in headers)
+    else:
+        params = await handler._get_provider_request_params_async(routed_model, provider=provider)
+        assert "azure_ad_token" not in params
+        if key is not None:
+            assert params["api_key"] == DUMMY_LITELLM_API_KEY
+
+    assert doctor._check_provider_key(handler, provider)[0] is False
+    # The GitHub Action uses this same preflight before running model-backed commands.
+    assert doctor.missing_provider_key_env_vars()[0] == provider
+
+
+@pytest.mark.parametrize("model", ("gpt-4o", "openai/gpt-4o"))
+async def test_azure_ad_still_exempts_actual_azure_requests(monkeypatch, cli_mode_settings, model):
+    from pr_agent.algo.ai_handlers import litellm_ai_handler
+
+    monkeypatch.setattr(litellm_ai_handler, "_get_azure_ad_credential", lambda settings: object())
+    monkeypatch.setattr(litellm_ai_handler, "_get_azure_ad_token", lambda credential: "synthetic-azure-token")
+    cli_mode_settings.set("azure_ad.client_id", "synthetic-client-id")
+    cli_mode_settings.set("config.model", model)
+
+    handler = litellm_ai_handler.LiteLLMAIHandler()
+    routed_model = handler._route_model_for_request(
+        model, handler._custom_llm_provider, handler.deployment_id,
+    )
+    assert routed_model.startswith("azure/")
+    assert doctor._active_provider(model, handler) == "azure"
+    request_provider = handler._resolve_configured_request_provider(routed_model, handler._custom_llm_provider)
+    assert request_provider == "azure"
+    params = await handler._get_provider_request_params_async(routed_model, provider=request_provider)
+    assert params["azure_ad_token"] == "synthetic-azure-token"
+    assert doctor.missing_provider_key_env_vars() is None
+
+
 def test_azure_provider_defers_to_the_run_without_azure_ad_settings(monkeypatch, cli_mode_settings):
     _install_handler(monkeypatch, key=None)
     get_settings().set("config.model", "azure/gpt-4o")
@@ -273,7 +354,7 @@ def test_endpoint_settings_must_be_used_by_the_real_handler(
 @pytest.mark.parametrize(
     "model, overrides, key",
     [
-        pytest.param("openai/gpt-4o", {"azure_ad.client_id": "synthetic-client-id"}, None, id="azure-ad"),
+        pytest.param("azure/gpt-4o", {"azure_ad.client_id": "synthetic-client-id"}, None, id="azure-ad"),
         pytest.param("openai/gpt-4o", {"openai.api_base": "https://gateway.example/v1"}, None, id="custom-endpoint"),
         pytest.param("custom_openai/gpt-4o", {"openai.api_base": "https://gateway.example/v1"},
                      None, id="openai-compatible-endpoint"),
