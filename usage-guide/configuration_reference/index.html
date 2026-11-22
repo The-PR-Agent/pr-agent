@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">Configuration Reference | PR-Agent</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" property="og:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.pr-agent.ai/usage-guide/configuration_reference/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Configuration Reference | PR-Agent"><meta data-rh="true" name="description" content="This page is auto-generated and should not be edited by hand."><meta data-rh="true" property="og:description" content="This page is auto-generated and should not be edited by hand."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.pr-agent.ai/usage-guide/configuration_reference/"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/usage-guide/configuration_reference/" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/usage-guide/configuration_reference/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Configuration reference","item":"https://docs.pr-agent.ai/usage-guide/configuration_reference"}]}</script><script src="https://widget.kapa.ai/kapa-widget.bundle.js" data-website-id="5c89c0b1-b2ee-43c9-8c6f-43ed762b3c1e" data-project-name="PR-Agent" data-project-color="#2459db" data-project-logo="/img/favicon.svg" data-launcher-button-image="/img/favicon-white.svg" data-color-scheme-selector="[data-theme=&#39;dark&#39;]" async></script><link rel="stylesheet" href="/assets/css/styles.0fa13089.css">
-<script src="/assets/js/runtime~main.5ee5dec9.js" defer="defer"></script>
+<script src="/assets/js/runtime~main.6c0847d6.js" defer="defer"></script>
 <script src="/assets/js/main.8d9b03df.js" defer="defer"></script>
 </head>
 <body>
@@ -44,12 +44,13 @@ to-do list.</p>
 
 
 
+<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>max_webhook_request_body_bytes</code></td><td>5242880</td><td>maximum request body accepted by webhook servers (5 MiB)</td></tr><tr><td><code>bot_display_name</code></td><td>&quot;PR-Agent&quot;</td><td>product name shown in user-visible PR comments; host-only, repo settings and comment args cannot set it</td></tr></tbody></table>
+<p><strong>models</strong></p>
 
 
 
 
 
-<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>max_webhook_request_body_bytes</code></td><td>5242880</td><td>maximum request body accepted by webhook servers (5 MiB)</td></tr><tr><td><code>bot_display_name</code></td><td>&quot;PR-Agent&quot;</td><td>product name shown in user-visible PR comments; host-only, repo settings and comment args cannot set it</td></tr><tr><td><strong>models</strong></td><td></td><td></td></tr></tbody></table>
 
 
 
@@ -65,6 +66,8 @@ to-do list.</p>
 
 
 
+<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>model</code></td><td>&quot;gpt-6.1-sol&quot;</td><td></td></tr><tr><td><code>fallback_models</code></td><td>[&quot;gpt-6-luna&quot;]</td><td></td></tr></tbody></table>
+<p><strong>CLI</strong></p>
 
 
 
@@ -75,7 +78,6 @@ to-do list.</p>
 
 
 
-<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>model</code></td><td>&quot;gpt-6.1-sol&quot;</td><td></td></tr><tr><td><code>fallback_models</code></td><td>[&quot;gpt-6-luna&quot;]</td><td></td></tr><tr><td><strong>CLI</strong></td><td></td><td></td></tr></tbody></table>
 
 
 
@@ -101,6 +103,8 @@ to-do list.</p>
 
 
 
+<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>git_provider</code></td><td>&quot;github&quot;</td><td></td></tr><tr><td><code>publish_output</code></td><td>true</td><td></td></tr><tr><td><code>publish_output_progress</code></td><td>true</td><td></td></tr><tr><td><code>verbosity_level</code></td><td>0</td><td>0,1,2</td></tr><tr><td><code>use_extra_bad_extensions</code></td><td>false</td><td></td></tr></tbody></table>
+<p><strong>Log</strong></p>
 
 
 
@@ -116,7 +120,8 @@ to-do list.</p>
 
 
 
-<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>git_provider</code></td><td>&quot;github&quot;</td><td></td></tr><tr><td><code>publish_output</code></td><td>true</td><td></td></tr><tr><td><code>publish_output_progress</code></td><td>true</td><td></td></tr><tr><td><code>verbosity_level</code></td><td>0</td><td>0,1,2</td></tr><tr><td><code>use_extra_bad_extensions</code></td><td>false</td><td></td></tr><tr><td><strong>Log</strong></td><td></td><td></td></tr></tbody></table>
+<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>log_level</code></td><td>&quot;INFO&quot;</td><td></td></tr></tbody></table>
+<p><strong>Configurations</strong></p>
 
 
 
@@ -137,7 +142,6 @@ to-do list.</p>
 
 
 
-<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>log_level</code></td><td>&quot;INFO&quot;</td><td></td></tr><tr><td><strong>Configurations</strong></td><td></td><td></td></tr></tbody></table>
 
 
 
@@ -263,6 +267,8 @@ to-do list.</p>
 
 
 
+<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>use_repo_settings_file</code></td><td>true</td><td></td></tr><tr><td><code>use_global_settings_file</code></td><td>true</td><td></td></tr><tr><td><code>use_group_settings_file</code></td><td>false</td><td>host-only opt-in to GitLab closest-subgroup settings; also requires use_global_settings_file and a nonempty global_settings_repo</td></tr><tr><td><code>global_settings_repo</code></td><td>&quot;&quot;</td><td>host-only name of the repository, in the owning org/group/workspace, whose .pr_agent.toml applies to every repository there. Empty disables namespace-wide settings; set &quot;pr-agent-settings&quot; to keep the previous behaviour</td></tr><tr><td><code>enable_per_directory_settings</code></td><td>false</td><td>when true, merge per-directory .pr_agent.toml files found by walking up from the PR&#x27;s changed files (monorepo support). Adds bounded recursive tree discovery per MR; per-directory files may only override non-critical sections (see REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS). Nearest (deepest) directory wins on shared keys; equal-depth siblings resolve to the lexicographically-last path; when more files match than the per_directory_settings_max_files cap, shallower files are applied first and a partially capped depth keeps its later-path (winning) siblings; any overlap is logged as a warning.</td></tr><tr><td><code>per_directory_settings_max_files</code></td><td>20</td><td>hard ceiling on the number of per-directory .pr_agent.toml files applied per MR (deeper configs beyond the cap are skipped with a warning)</td></tr><tr><td><code>per_directory_settings_max_tree_pages</code></td><td>10</td><td>maximum GitLab recursive-tree pages (100 entries each); skip nested settings if discovery is incomplete. Root/host-controlled, independent of the settings-file cap.</td></tr><tr><td><code>extra_config_url</code></td><td>&quot;&quot;</td><td>optional URL or path to an additional .pr_agent.toml merged before the repo-local config; also settable via --extra_config_url or PR_AGENT_EXTRA_CONFIG_URL. See docs/docs/usage-guide/configuration_options.md#external-configuration-url.</td></tr><tr><td><code>disable_auto_feedback</code></td><td>false</td><td></td></tr><tr><td><code>enable_auto_approval</code></td><td>false</td><td>host-only. /review approves or withdraws its approval of the reviewed GitHub or GitLab commit; see docs/docs/commands/review.md</td></tr><tr><td><code>ai_timeout</code></td><td>120</td><td>2 minutes</td></tr><tr><td><code>http_request_timeout</code></td><td>60</td><td>host-only connect/read inactivity seconds for GitLab/Gitea and direct Bitbucket/Gerrit HTTP attempts; capped at 600</td></tr><tr><td><code>retry_same_model_on_timeout</code></td><td>true</td><td>when false, a timed-out call is not retried on the same model and moves on to fallback_models</td></tr><tr><td><code>retry_same_model_on_length</code></td><td>false</td><td>when true, an empty response truncated by the output cap is retried on the same model instead of moving straight to fallback_models</td></tr><tr><td><code>num_retries</code></td><td>4</td><td>same-model retries of a request the provider rejects (429, 5xx, connection error) before fallback_models, waiting for its Retry-After (up to 30 s) or with exponential backoff; 0 falls back at once. Timeouts and empty responses use retry_same_model_on_timeout / retry_same_model_on_length instead</td></tr><tr><td><code>skip_keys</code></td><td>[]</td><td></td></tr><tr><td><code>custom_reasoning_model</code></td><td>false</td><td>when true, disables system messages and temperature controls for models that don&#x27;t support chat-style inputs</td></tr><tr><td><code>system_instructions</code></td><td>&quot;&quot;</td><td>Host-only instructions appended to every command&#x27;s system prompt; repository settings and comment arguments cannot set it.</td></tr><tr><td><code>response_language</code></td><td>&quot;en-US&quot;</td><td>PR response locale (e.g., &quot;en-US&quot;, &quot;it-IT&quot;), also used for fixed comment text; applies only during each command. See additional_configurations.md.</td></tr><tr><td><code>repo_context_files</code></td><td>[&quot;AGENTS.md&quot;]</td><td>Prompt context files: paths, alternatives, globs, sibling entries; [] disables. See <a class="" href="/usage-guide/additional_configurations/">docs</a>.</td></tr><tr><td><code>repo_context_from_default_branch</code></td><td>true</td><td>Read repo context files from the repository default branch (trusts only default-branch content). Set to false to read from the PR target branch instead.</td></tr><tr><td><code>repo_context_max_lines</code></td><td>500</td><td>Maximum total rendered lines for repo context, including wrapper tags</td></tr><tr><td><code>repo_context_expand_imports</code></td><td>false</td><td>Expand @path imports in local context files; comment arguments cannot set it. See <a class="" href="/usage-guide/additional_configurations/">docs</a>.</td></tr><tr><td><code>repo_context_max_glob_matches</code></td><td>20</td><td>Maximum number of files one repo_context_files glob entry (e.g. &quot;docs/adr/*.md&quot;) expands to, in name order; each match is one file fetch. A repository&#x27;s .pr_agent.toml may set it, comment arguments cannot. Clamped to 100. Matches still share the repo_context_max_lines budget.</td></tr><tr><td><code>repo_context_sibling_repos</code></td><td>[]</td><td>Host-only list of approved sibling repository identifiers (GitHub owner/repo, GitLab group/project or numeric ID strings) that repo_context_files sibling entries may select. On GitHub and GitLab, this also approves repositories for cross-repository issue and ticket context. Empty disables sibling reads. Approve only repositories whose content may be disclosed in consuming PRs, because the actor check bounds who triggers a read, not who chose the target or where the output lands. Repository settings and comment arguments cannot change this list. Canonical identities and owning namespaces are checked after resolution</td></tr><tr><td><code>repo_context_sibling_namespaces</code></td><td>[]</td><td>Host-only list of additional org/group/workspace names an approved repo_context_sibling_repos entry (or an expanded gitlab.expand_submodule_diffs gitlink) may resolve into. Empty, the default, keeps the reviewed repository&#x27;s own namespace as the only approved one. Set it where a project&#x27;s dependencies live in sibling groups rather than its own, e.g. a submodule in a shared library group. It widens namespaces only: a repository still has to be in repo_context_sibling_repos, and the requester&#x27;s read access is still checked. Repository settings and comment arguments cannot change this list</td></tr><tr><td><code>repo_context_max_sibling_files</code></td><td>5</td><td>Maximum number of sibling-repository files fetched per repo-context build. The fetch count is bounded separately from repo_context_max_lines so selected sibling files cannot trigger an unbounded number of cross-repository calls; sibling files still compete for the repo_context_max_lines budget. Host-only (cannot be raised by a repository&#x27;s .pr_agent.toml or a comment command) and clamped to a hard ceiling of 20 fetches per build.</td></tr></tbody></table>
+<p><strong>token limits</strong></p>
 
 
 
@@ -288,7 +294,6 @@ to-do list.</p>
 
 
 
-<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>use_repo_settings_file</code></td><td>true</td><td></td></tr><tr><td><code>use_global_settings_file</code></td><td>true</td><td></td></tr><tr><td><code>use_group_settings_file</code></td><td>false</td><td>host-only opt-in to GitLab closest-subgroup settings; also requires use_global_settings_file and a nonempty global_settings_repo</td></tr><tr><td><code>global_settings_repo</code></td><td>&quot;&quot;</td><td>host-only name of the repository, in the owning org/group/workspace, whose .pr_agent.toml applies to every repository there. Empty disables namespace-wide settings; set &quot;pr-agent-settings&quot; to keep the previous behaviour</td></tr><tr><td><code>enable_per_directory_settings</code></td><td>false</td><td>when true, merge per-directory .pr_agent.toml files found by walking up from the PR&#x27;s changed files (monorepo support). Adds bounded recursive tree discovery per MR; per-directory files may only override non-critical sections (see REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS). Nearest (deepest) directory wins on shared keys; equal-depth siblings resolve to the lexicographically-last path; when more files match than the per_directory_settings_max_files cap, shallower files are applied first and a partially capped depth keeps its later-path (winning) siblings; any overlap is logged as a warning.</td></tr><tr><td><code>per_directory_settings_max_files</code></td><td>20</td><td>hard ceiling on the number of per-directory .pr_agent.toml files applied per MR (deeper configs beyond the cap are skipped with a warning)</td></tr><tr><td><code>per_directory_settings_max_tree_pages</code></td><td>10</td><td>maximum GitLab recursive-tree pages (100 entries each); skip nested settings if discovery is incomplete. Root/host-controlled, independent of the settings-file cap.</td></tr><tr><td><code>extra_config_url</code></td><td>&quot;&quot;</td><td>optional URL or path to an additional .pr_agent.toml merged before the repo-local config; also settable via --extra_config_url or PR_AGENT_EXTRA_CONFIG_URL. See docs/docs/usage-guide/configuration_options.md#external-configuration-url.</td></tr><tr><td><code>disable_auto_feedback</code></td><td>false</td><td></td></tr><tr><td><code>enable_auto_approval</code></td><td>false</td><td>host-only. /review approves or withdraws its approval of the reviewed GitHub or GitLab commit; see docs/docs/commands/review.md</td></tr><tr><td><code>ai_timeout</code></td><td>120</td><td>2 minutes</td></tr><tr><td><code>http_request_timeout</code></td><td>60</td><td>host-only connect/read inactivity seconds for GitLab/Gitea and direct Bitbucket/Gerrit HTTP attempts; capped at 600</td></tr><tr><td><code>retry_same_model_on_timeout</code></td><td>true</td><td>when false, a timed-out call is not retried on the same model and moves on to fallback_models</td></tr><tr><td><code>retry_same_model_on_length</code></td><td>false</td><td>when true, an empty response truncated by the output cap is retried on the same model instead of moving straight to fallback_models</td></tr><tr><td><code>num_retries</code></td><td>4</td><td>same-model retries of a request the provider rejects (429, 5xx, connection error) before fallback_models, waiting for its Retry-After (up to 30 s) or with exponential backoff; 0 falls back at once. Timeouts and empty responses use retry_same_model_on_timeout / retry_same_model_on_length instead</td></tr><tr><td><code>skip_keys</code></td><td>[]</td><td></td></tr><tr><td><code>custom_reasoning_model</code></td><td>false</td><td>when true, disables system messages and temperature controls for models that don&#x27;t support chat-style inputs</td></tr><tr><td><code>system_instructions</code></td><td>&quot;&quot;</td><td>Host-only instructions appended to every command&#x27;s system prompt; repository settings and comment arguments cannot set it.</td></tr><tr><td><code>response_language</code></td><td>&quot;en-US&quot;</td><td>PR response locale (e.g., &quot;en-US&quot;, &quot;it-IT&quot;), also used for fixed comment text; applies only during each command. See additional_configurations.md.</td></tr><tr><td><code>repo_context_files</code></td><td>[&quot;AGENTS.md&quot;]</td><td>Prompt context files: paths, alternatives, globs, sibling entries; [] disables. See <a class="" href="/usage-guide/additional_configurations/">docs</a>.</td></tr><tr><td><code>repo_context_from_default_branch</code></td><td>true</td><td>Read repo context files from the repository default branch (trusts only default-branch content). Set to false to read from the PR target branch instead.</td></tr><tr><td><code>repo_context_max_lines</code></td><td>500</td><td>Maximum total rendered lines for repo context, including wrapper tags</td></tr><tr><td><code>repo_context_expand_imports</code></td><td>false</td><td>Expand @path imports in local context files; comment arguments cannot set it. See <a class="" href="/usage-guide/additional_configurations/">docs</a>.</td></tr><tr><td><code>repo_context_max_glob_matches</code></td><td>20</td><td>Maximum number of files one repo_context_files glob entry (e.g. &quot;docs/adr/*.md&quot;) expands to, in name order; each match is one file fetch. A repository&#x27;s .pr_agent.toml may set it, comment arguments cannot. Clamped to 100. Matches still share the repo_context_max_lines budget.</td></tr><tr><td><code>repo_context_sibling_repos</code></td><td>[]</td><td>Host-only list of approved sibling repository identifiers (GitHub owner/repo, GitLab group/project or numeric ID strings) that repo_context_files sibling entries may select. On GitHub and GitLab, this also approves repositories for cross-repository issue and ticket context. Empty disables sibling reads. Approve only repositories whose content may be disclosed in consuming PRs, because the actor check bounds who triggers a read, not who chose the target or where the output lands. Repository settings and comment arguments cannot change this list. Canonical identities and owning namespaces are checked after resolution</td></tr><tr><td><code>repo_context_sibling_namespaces</code></td><td>[]</td><td>Host-only list of additional org/group/workspace names an approved repo_context_sibling_repos entry (or an expanded gitlab.expand_submodule_diffs gitlink) may resolve into. Empty, the default, keeps the reviewed repository&#x27;s own namespace as the only approved one. Set it where a project&#x27;s dependencies live in sibling groups rather than its own, e.g. a submodule in a shared library group. It widens namespaces only: a repository still has to be in repo_context_sibling_repos, and the requester&#x27;s read access is still checked. Repository settings and comment arguments cannot change this list</td></tr><tr><td><code>repo_context_max_sibling_files</code></td><td>5</td><td>Maximum number of sibling-repository files fetched per repo-context build. The fetch count is bounded separately from repo_context_max_lines so selected sibling files cannot trigger an unbounded number of cross-repository calls; sibling files still compete for the repo_context_max_lines budget. Host-only (cannot be raised by a repository&#x27;s .pr_agent.toml or a comment command) and clamped to a hard ceiling of 20 fetches per build.</td></tr><tr><td><strong>token limits</strong></td><td></td><td></td></tr></tbody></table>
 
 
 
@@ -309,6 +314,8 @@ to-do list.</p>
 
 
 
+<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>max_description_tokens</code></td><td>500</td><td></td></tr><tr><td><code>max_commits_tokens</code></td><td>500</td><td>Token cap on the commit messages sent to the model by /describe, /review, /improve and other commands. 0 means no limit; -1 sends none.</td></tr><tr><td><code>max_model_tokens</code></td><td>256000</td><td>Limits the maximum number of tokens that can be used by any model, regardless of the model&#x27;s default capabilities.</td></tr><tr><td><code>custom_model_max_tokens</code></td><td>-1</td><td>Override unknown models or Sol-tier GPT-6 on non-native custom providers.</td></tr><tr><td><code>max_output_tokens</code></td><td>0</td><td>0 = unset (the provider&#x27;s own default applies)</td></tr><tr><td><code>model_token_count_estimate_factor</code></td><td>0.3</td><td>factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate.</td></tr><tr><td><code>image_input_token_allowance</code></td><td>4096</td><td>reserve tokens per image when provider counting omits or underestimates image cost</td></tr></tbody></table>
+<p><strong>patch extension logic</strong></p>
 
 
 
@@ -339,7 +346,6 @@ to-do list.</p>
 
 
 
-<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>max_description_tokens</code></td><td>500</td><td></td></tr><tr><td><code>max_commits_tokens</code></td><td>500</td><td>Token cap on the commit messages sent to the model by /describe, /review, /improve and other commands. 0 means no limit; -1 sends none.</td></tr><tr><td><code>max_model_tokens</code></td><td>256000</td><td>Limits the maximum number of tokens that can be used by any model, regardless of the model&#x27;s default capabilities.</td></tr><tr><td><code>custom_model_max_tokens</code></td><td>-1</td><td>Override unknown models or Sol-tier GPT-6 on non-native custom providers.</td></tr><tr><td><code>max_output_tokens</code></td><td>0</td><td>0 = unset (the provider&#x27;s own default applies)</td></tr><tr><td><code>model_token_count_estimate_factor</code></td><td>0.3</td><td>factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate.</td></tr><tr><td><code>image_input_token_allowance</code></td><td>4096</td><td>reserve tokens per image when provider counting omits or underestimates image cost</td></tr><tr><td><strong>patch extension logic</strong></td><td></td><td></td></tr></tbody></table>
 
 
 
@@ -385,6 +391,8 @@ to-do list.</p>
 
 
 
+<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>patch_extension_skip_types</code></td><td>[&quot;.md&quot;, &quot;.txt&quot;]</td><td></td></tr><tr><td><code>allow_dynamic_context</code></td><td>true</td><td></td></tr><tr><td><code>max_extra_lines_before_dynamic_context</code></td><td>10</td><td>will try to include up to 10 extra lines before the hunk in the patch, until we reach an enclosing function or class</td></tr><tr><td><code>patch_extra_lines_before</code></td><td>5</td><td>Number of extra lines (+3 default ones) to include before each hunk in the patch</td></tr><tr><td><code>patch_extra_lines_after</code></td><td>1</td><td>Number of extra lines (+3 default ones) to include after each hunk in the patch</td></tr><tr><td><code>secret_provider</code></td><td>&quot;&quot;</td><td>&quot;&quot; (disabled), &quot;google_cloud_storage&quot;, or &quot;aws_secrets_manager&quot; for secure secret management</td></tr><tr><td><code>cli_mode</code></td><td>false</td><td></td></tr><tr><td><code>output_relevant_configurations</code></td><td>false</td><td></td></tr><tr><td><code>output_run_details</code></td><td>false</td><td>if true, append an agent run details section (model, tokens, time cost, AI calls) to generated PR comments</td></tr><tr><td><code>output_run_cost</code></td><td>false</td><td>if true, collect estimated LiteLLM API cost and include it inside the enabled run details section</td></tr><tr><td><code>large_patch_policy</code></td><td>&quot;clip&quot;</td><td>&quot;clip&quot; (default) or &quot;skip&quot;; a missing value is treated as &quot;clip&quot;</td></tr><tr><td><code>duplicate_prompt_examples</code></td><td>false</td><td></td></tr><tr><td><code>persistent_inline_comments</code></td><td>false</td><td>Enable persistent inline comments (issue #2037) to fingerprint each inline comment and embed a provider-compatible marker, then skip re-posting suggestions already present on the PR/MR across runs.</td></tr></tbody></table>
+<p><strong>seed</strong></p>
 
 
 
@@ -405,6 +413,8 @@ to-do list.</p>
 
 
 
+<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>seed</code></td><td>-1</td><td>set positive value to fix the seed (and ensure temperature=0)</td></tr><tr><td><code>temperature</code></td><td>0.2</td><td></td></tr></tbody></table>
+<p><strong>ignore logic</strong></p>
 
 
 
@@ -420,7 +430,6 @@ to-do list.</p>
 
 
 
-<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>patch_extension_skip_types</code></td><td>[&quot;.md&quot;, &quot;.txt&quot;]</td><td></td></tr><tr><td><code>allow_dynamic_context</code></td><td>true</td><td></td></tr><tr><td><code>max_extra_lines_before_dynamic_context</code></td><td>10</td><td>will try to include up to 10 extra lines before the hunk in the patch, until we reach an enclosing function or class</td></tr><tr><td><code>patch_extra_lines_before</code></td><td>5</td><td>Number of extra lines (+3 default ones) to include before each hunk in the patch</td></tr><tr><td><code>patch_extra_lines_after</code></td><td>1</td><td>Number of extra lines (+3 default ones) to include after each hunk in the patch</td></tr><tr><td><code>secret_provider</code></td><td>&quot;&quot;</td><td>&quot;&quot; (disabled), &quot;google_cloud_storage&quot;, or &quot;aws_secrets_manager&quot; for secure secret management</td></tr><tr><td><code>cli_mode</code></td><td>false</td><td></td></tr><tr><td><code>output_relevant_configurations</code></td><td>false</td><td></td></tr><tr><td><code>output_run_details</code></td><td>false</td><td>if true, append an agent run details section (model, tokens, time cost, AI calls) to generated PR comments</td></tr><tr><td><code>output_run_cost</code></td><td>false</td><td>if true, collect estimated LiteLLM API cost and include it inside the enabled run details section</td></tr><tr><td><code>large_patch_policy</code></td><td>&quot;clip&quot;</td><td>&quot;clip&quot; (default) or &quot;skip&quot;; a missing value is treated as &quot;clip&quot;</td></tr><tr><td><code>duplicate_prompt_examples</code></td><td>false</td><td></td></tr><tr><td><code>persistent_inline_comments</code></td><td>false</td><td>Enable persistent inline comments (issue #2037) to fingerprint each inline comment and embed a provider-compatible marker, then skip re-posting suggestions already present on the PR/MR across runs.</td></tr><tr><td><strong>seed</strong></td><td></td><td></td></tr></tbody></table>
 
 
 
@@ -446,7 +455,6 @@ to-do list.</p>
 
 
 
-<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>seed</code></td><td>-1</td><td>set positive value to fix the seed (and ensure temperature=0)</td></tr><tr><td><code>temperature</code></td><td>0.2</td><td></td></tr><tr><td><strong>ignore logic</strong></td><td></td><td></td></tr></tbody></table>
 
 
 
@@ -522,52 +530,8 @@ to-do list.</p>
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>ignore_pr_title</code></td><td>[&quot;^\[Auto\]&quot;]</td><td>a list of regular expressions to match against the PR title to ignore the PR agent</td></tr><tr><td><code>ignore_pr_target_branches</code></td><td>[]</td><td>a list of regular expressions of target branches to ignore from PR agent when an PR is created</td></tr><tr><td><code>ignore_pr_source_branches</code></td><td>[]</td><td>a list of regular expressions of source branches to ignore from PR agent when an PR is created</td></tr><tr><td><code>ignore_pr_labels</code></td><td>[]</td><td>labels to ignore from PR agent when an PR is created</td></tr><tr><td><code>include_pr_labels</code></td><td>[]</td><td>PR label allowlist (exact match; empty disables); see <a class="" href="/usage-guide/additional_configurations/#processing-only-prs-with-selected-labels">details</a></td></tr><tr><td><code>ignore_pr_authors</code></td><td>[]</td><td>authors to ignore from PR agent when an PR is created</td></tr><tr><td><code>reaction_on_start</code></td><td>&quot;eyes&quot;</td><td>added before the command runs</td></tr><tr><td><code>reaction_on_success</code></td><td>&quot;&quot;</td><td>replaces the start reaction when the command succeeded (GitHub App, GitLab webhook)</td></tr><tr><td><code>reaction_on_failure</code></td><td>&quot;&quot;</td><td>replaces the start reaction when the command failed (GitHub App, GitLab webhook)</td></tr><tr><td><code>ignore_repositories</code></td><td>[]</td><td>a list of regular expressions of repository full names (e.g. &quot;org/repo&quot;) to ignore from PR agent processing</td></tr><tr><td><code>ignore_language_framework</code></td><td>[]</td><td>a list of code-generation languages or frameworks (e.g. &#x27;protobuf&#x27;, &#x27;go_gen&#x27;) whose auto-generated source files will be excluded from analysis</td></tr><tr><td><code>bot_user_indicators</code></td><td>[&quot;codium&quot;, &quot;bot_&quot;, &quot;bot-&quot;, &quot;_bot&quot;, &quot;-bot&quot;]</td><td>Substring indicators used to skip bot users on webhook events. Currently consumed by the GitLab webhook (<code>is_bot_user</code>); other providers may adopt this list in future. The match is case-insensitive against the sender&#x27;s display name. Overriding this setting REPLACES the default list — include the entries below in your override if you want to keep them (e.g. <code>[&quot;codium&quot;, &quot;bot_&quot;, &quot;bot-&quot;, &quot;_bot&quot;, &quot;-bot&quot;, &quot;renovate&quot;]</code>).</td></tr><tr><td><code>restricted_mode</code></td><td>false</td><td>when true, skip operations that require elevated permissions (e.g. pushing code to the repository)</td></tr><tr><td><code>is_auto_command</code></td><td>false</td><td>will be auto-set to true if the command is triggered by an automation</td></tr><tr><td><code>skip_unchanged_diff</code></td><td>false</td><td>skip automatic or CLI /review and /describe when the PR is unchanged since their last successful run. See docs/docs/usage-guide/automations_and_usage.md</td></tr><tr><td><code>propagate_command_errors</code></td><td>false</td><td>when true, a command re-raises instead of swallowing an internal error, so a caller can tell a failed run from an empty one</td></tr><tr><td><code>enable_ai_metadata</code></td><td>false</td><td>will enable adding ai metadata</td></tr><tr><td><code>add_user_to_requests</code></td><td>false</td><td>send the current command and PR URL in the OpenAI-compatible &quot;user&quot; request field, for provider-side attribution of requests (e.g. OpenRouter &quot;external_user&quot;)</td></tr><tr><td><code>reasoning_effort</code></td><td>&quot;medium&quot;</td><td>&quot;none&quot;, &quot;minimal&quot;, &quot;low&quot;, &quot;medium&quot;, &quot;high&quot;, &quot;xhigh&quot;, &quot;max&quot;</td></tr><tr><td><code>additional_reasoning_effort_models</code></td><td>[]</td><td>Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is otherwise decided by litellm&#x27;s bundled model metadata (and the maintained Grok registry), so add an ID here when litellm does not know the model (custom OpenAI-compatible endpoints), or when another provider hosts a Sol-tier GPT-6 model under the same ID. Model IDs match exactly or through any provider prefix (e.g. &quot;deepseek-v4-flash-0731&quot; matches &quot;openai/deepseek-v4-flash-0731&quot;). LiteLLM whitelists reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not recognize, so the parameter reaches the endpoint. The default &quot;medium&quot; may be rejected by providers that accept a different subset (e.g. &quot;none&quot;/&quot;low&quot;/&quot;high&quot;/&quot;max&quot;); adding a custom model id now surfaces a provider-side error instead of the previous silent drop.</td></tr><tr><td><code>no_temperature_models</code></td><td>[&quot;deepseek/deepseek-reasoner&quot;, &quot;o1-mini&quot;, &quot;o1-mini-2024-09-12&quot;, &quot;o1&quot;, &quot;o1-2024-12-17&quot;, &quot;o3-mini&quot;, &quot;o3-mini-2025-01-31&quot;, &quot;o3&quot;, &quot;o3-2025-04-16&quot;, &quot;o4-mini&quot;, &quot;o4-mini-2025-04-16&quot;, &quot;gpt-5.1-codex&quot;, &quot;gpt-5.1-codex-mini&quot;, &quot;gpt-5.2-codex&quot;, &quot;gpt-5.3-codex&quot;, &quot;gpt-5-mini&quot;, &quot;moonshotai.kimi-k3&quot;, &quot;us.moonshotai.kimi-k3&quot;, &quot;global.moonshotai.kimi-k3&quot;, &quot;kimi-k3&quot;, &quot;kimi-k3.1-pro&quot;, &quot;zai.glm-5&quot;]</td><td>Optional: model IDs that must never receive the temperature parameter, on top of what litellm&#x27;s parameter metadata reports. Temperature support is otherwise decided by litellm.get_supported_openai_params() (mirroring reasoning_effort), so add an ID here when litellm reports temperature as supported but the provider rejects it, or when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking Claude models (Opus 4.7/4.8, Opus/Sonnet/Fable 5.x and Haiku 5.5) never receive temperature. Match model IDs exactly or through any provider prefix. For OpenRouter <code>:nitro</code> and <code>:floor</code> routing shortcuts, also match the suffix-free base ID (for example, match <code>future-model</code> to <code>openrouter/vendor/future-model:nitro</code>). Keep other model variants at their full ID. Preserve the former static registry entries below when litellm&#x27;s metadata still marks them temperature-capable; see #3611 (Derive temperature support from LiteLLM metadata and retire NO_SUPPORT_TEMPERATURE_MODELS) for the probe diff. Bedrock rejects temperature for Kimi K3 and GLM-5 (&quot;This model doesn&#x27;t support the temperature field&quot;); Moonshot/Kimi reasoning endpoints reject custom temperature.</td></tr><tr><td><strong>extended thinking for Claude reasoning models</strong></td><td></td><td></td></tr></tbody></table>
+<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>ignore_pr_title</code></td><td>[&quot;^\[Auto\]&quot;]</td><td>a list of regular expressions to match against the PR title to ignore the PR agent</td></tr><tr><td><code>ignore_pr_target_branches</code></td><td>[]</td><td>a list of regular expressions of target branches to ignore from PR agent when an PR is created</td></tr><tr><td><code>ignore_pr_source_branches</code></td><td>[]</td><td>a list of regular expressions of source branches to ignore from PR agent when an PR is created</td></tr><tr><td><code>ignore_pr_labels</code></td><td>[]</td><td>labels to ignore from PR agent when an PR is created</td></tr><tr><td><code>include_pr_labels</code></td><td>[]</td><td>PR label allowlist (exact match; empty disables); see <a class="" href="/usage-guide/additional_configurations/#processing-only-prs-with-selected-labels">details</a></td></tr><tr><td><code>ignore_pr_authors</code></td><td>[]</td><td>authors to ignore from PR agent when an PR is created</td></tr><tr><td><code>reaction_on_start</code></td><td>&quot;eyes&quot;</td><td>added before the command runs</td></tr><tr><td><code>reaction_on_success</code></td><td>&quot;&quot;</td><td>replaces the start reaction when the command succeeded (GitHub App, GitLab webhook)</td></tr><tr><td><code>reaction_on_failure</code></td><td>&quot;&quot;</td><td>replaces the start reaction when the command failed (GitHub App, GitLab webhook)</td></tr><tr><td><code>ignore_repositories</code></td><td>[]</td><td>a list of regular expressions of repository full names (e.g. &quot;org/repo&quot;) to ignore from PR agent processing</td></tr><tr><td><code>ignore_language_framework</code></td><td>[]</td><td>a list of code-generation languages or frameworks (e.g. &#x27;protobuf&#x27;, &#x27;go_gen&#x27;) whose auto-generated source files will be excluded from analysis</td></tr><tr><td><code>bot_user_indicators</code></td><td>[&quot;codium&quot;, &quot;bot_&quot;, &quot;bot-&quot;, &quot;_bot&quot;, &quot;-bot&quot;]</td><td>Substring indicators used to skip bot users on webhook events. Currently consumed by the GitLab webhook (<code>is_bot_user</code>); other providers may adopt this list in future. The match is case-insensitive against the sender&#x27;s display name. Overriding this setting REPLACES the default list — include the entries below in your override if you want to keep them (e.g. <code>[&quot;codium&quot;, &quot;bot_&quot;, &quot;bot-&quot;, &quot;_bot&quot;, &quot;-bot&quot;, &quot;renovate&quot;]</code>).</td></tr><tr><td><code>restricted_mode</code></td><td>false</td><td>when true, skip operations that require elevated permissions (e.g. pushing code to the repository)</td></tr><tr><td><code>is_auto_command</code></td><td>false</td><td>will be auto-set to true if the command is triggered by an automation</td></tr><tr><td><code>skip_unchanged_diff</code></td><td>false</td><td>skip automatic or CLI /review and /describe when the PR is unchanged since their last successful run. See docs/docs/usage-guide/automations_and_usage.md</td></tr><tr><td><code>propagate_command_errors</code></td><td>false</td><td>when true, a command re-raises instead of swallowing an internal error, so a caller can tell a failed run from an empty one</td></tr><tr><td><code>enable_ai_metadata</code></td><td>false</td><td>will enable adding ai metadata</td></tr><tr><td><code>add_user_to_requests</code></td><td>false</td><td>send the current command and PR URL in the OpenAI-compatible &quot;user&quot; request field, for provider-side attribution of requests (e.g. OpenRouter &quot;external_user&quot;)</td></tr><tr><td><code>reasoning_effort</code></td><td>&quot;medium&quot;</td><td>&quot;none&quot;, &quot;minimal&quot;, &quot;low&quot;, &quot;medium&quot;, &quot;high&quot;, &quot;xhigh&quot;, &quot;max&quot;</td></tr><tr><td><code>additional_reasoning_effort_models</code></td><td>[]</td><td>Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is otherwise decided by litellm&#x27;s bundled model metadata (and the maintained Grok registry), so add an ID here when litellm does not know the model (custom OpenAI-compatible endpoints), or when another provider hosts a Sol-tier GPT-6 model under the same ID. Model IDs match exactly or through any provider prefix (e.g. &quot;deepseek-v4-flash-0731&quot; matches &quot;openai/deepseek-v4-flash-0731&quot;). LiteLLM whitelists reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not recognize, so the parameter reaches the endpoint. The default &quot;medium&quot; may be rejected by providers that accept a different subset (e.g. &quot;none&quot;/&quot;low&quot;/&quot;high&quot;/&quot;max&quot;); adding a custom model id now surfaces a provider-side error instead of the previous silent drop.</td></tr><tr><td><code>no_temperature_models</code></td><td>[&quot;deepseek/deepseek-reasoner&quot;, &quot;o1-mini&quot;, &quot;o1-mini-2024-09-12&quot;, &quot;o1&quot;, &quot;o1-2024-12-17&quot;, &quot;o3-mini&quot;, &quot;o3-mini-2025-01-31&quot;, &quot;o3&quot;, &quot;o3-2025-04-16&quot;, &quot;o4-mini&quot;, &quot;o4-mini-2025-04-16&quot;, &quot;gpt-5.1-codex&quot;, &quot;gpt-5.1-codex-mini&quot;, &quot;gpt-5.2-codex&quot;, &quot;gpt-5.3-codex&quot;, &quot;gpt-5-mini&quot;, &quot;moonshotai.kimi-k3&quot;, &quot;us.moonshotai.kimi-k3&quot;, &quot;global.moonshotai.kimi-k3&quot;, &quot;kimi-k3&quot;, &quot;kimi-k3.1-pro&quot;, &quot;zai.glm-5&quot;]</td><td>Optional: model IDs that must never receive the temperature parameter, on top of what litellm&#x27;s parameter metadata reports. Temperature support is otherwise decided by litellm.get_supported_openai_params() (mirroring reasoning_effort), so add an ID here when litellm reports temperature as supported but the provider rejects it, or when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking Claude models (Opus 4.7/4.8, Opus/Sonnet/Fable 5.x and Haiku 5.5) never receive temperature. Match model IDs exactly or through any provider prefix. For OpenRouter <code>:nitro</code> and <code>:floor</code> routing shortcuts, also match the suffix-free base ID (for example, match <code>future-model</code> to <code>openrouter/vendor/future-model:nitro</code>). Keep other model variants at their full ID. Preserve the former static registry entries below when litellm&#x27;s metadata still marks them temperature-capable; see #3611 (Derive temperature support from LiteLLM metadata and retire NO_SUPPORT_TEMPERATURE_MODELS) for the probe diff. Bedrock rejects temperature for Kimi K3 and GLM-5 (&quot;This model doesn&#x27;t support the temperature field&quot;); Moonshot/Kimi reasoning endpoints reject custom temperature.</td></tr></tbody></table>
+<p><strong>extended thinking for Claude reasoning models</strong></p>
 
 
 
@@ -732,12 +696,8 @@ to-do list.</p>
 
 
 
-
-
-
-
-
-<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>require_score_review</code></td><td>false</td><td></td></tr><tr><td><code>require_tests_review</code></td><td>true</td><td></td></tr><tr><td><code>require_estimate_effort_to_review</code></td><td>true</td><td></td></tr><tr><td><code>require_can_be_split_review</code></td><td>false</td><td></td></tr><tr><td><code>require_security_review</code></td><td>true</td><td></td></tr><tr><td><code>require_estimate_contribution_time_cost</code></td><td>false</td><td></td></tr><tr><td><code>require_todo_scan</code></td><td>false</td><td></td></tr><tr><td><code>require_ticket_analysis_review</code></td><td>true</td><td></td></tr><tr><td><code>require_risk_assessment</code></td><td>false</td><td>ask the model for an overall risk level (low/medium/high)</td></tr><tr><td><code>require_merge_recommendation</code></td><td>false</td><td>ask the model for a merge recommendation: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge)</td></tr><tr><td><code>max_changed_lines</code></td><td>100</td><td>Host-only changed-line cap; a larger diff vetoes no_concerns_found. See docs/docs/commands/review.md</td></tr><tr><td><code>publish_merge_recommendation_status</code></td><td>false</td><td>Publish the computed verdict as a SHA-scoped check/commit status. See docs/docs/commands/review.md</td></tr><tr><td><code>require_failure_modes</code></td><td>false</td><td>ask for up to three concrete failure scenarios and their detection/coverage</td></tr><tr><td><code>require_artifact_findings</code></td><td>false</td><td>with a CI artifact, list up to five neutral facts from it, each with a quote checked against the artifact. See docs/docs/commands/review.md</td></tr><tr><td><code>require_priority_files</code></td><td>false</td><td>ask the model which files a human should inspect first</td></tr><tr><td><code>structural_reach_input_file</code></td><td>&quot;&quot;</td><td>JSON reach facts from a build-graph tool; when the file exists, adds a deterministic change-risk row. See docs/docs/commands/review.md</td></tr><tr><td><code>enable_risk_checks</code></td><td>true</td><td>Flag sensitive paths and risky change shapes; adds nothing when clean. See docs/docs/commands/review.md</td></tr><tr><td><code>sensitive_paths</code></td><td>[&quot;.github/workflows/<strong>&quot;, &quot;.github/actions/</strong>&quot;, &quot;.gitlab-ci.yml&quot;, &quot;Jenkinsfile*&quot;, &quot;.circleci/<strong>&quot;, &quot;azure-pipelines*.yml&quot;, &quot;.travis.yml&quot;, &quot;bitbucket-pipelines.yml&quot;, &quot;<em>CODEOWNERS&quot;, &quot;.pr_agent.toml&quot;, &quot;package.json&quot;, &quot;package-lock.json&quot;, &quot;yarn.lock&quot;, &quot;pnpm-lock.yaml&quot;, &quot;requirements</em>.txt&quot;, &quot;Pipfile&quot;, &quot;Pipfile.lock&quot;, &quot;pyproject.toml&quot;, &quot;poetry.lock&quot;, &quot;uv.lock&quot;, &quot;Cargo.toml&quot;, &quot;Cargo.lock&quot;, &quot;go.mod&quot;, &quot;go.sum&quot;, &quot;pom.xml&quot;, &quot;build.gradle*&quot;, &quot;Gemfile&quot;, &quot;Gemfile.lock&quot;, &quot;composer.json&quot;, &quot;composer.lock&quot;, &quot;<em>Dockerfile</em>&quot;, &quot;docker-compose*.yml&quot;, &quot;docker-compose*.yaml&quot;, &quot;<em>.dockerfile&quot;, &quot;</em>.tf&quot;, &quot;<em>.tfvars&quot;, &quot;</em>.hcl&quot;, &quot;<em>migrations</em>/</strong>&quot;, &quot;<em>migration</em>&quot;, &quot;db/migrate/<strong>&quot;, &quot;alembic/</strong>&quot;]</td><td>Glob patterns of sensitive paths flagging deterministic review risk findings. See docs/docs/commands/review.md</td></tr><tr><td><code>extra_risky_shapes</code></td><td>[]</td><td>Custom regex patterns flagging risky changes in diff hunks. See docs/docs/commands/review.md</td></tr><tr><td><strong>general options</strong></td><td></td><td></td></tr></tbody></table>
+<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>require_score_review</code></td><td>false</td><td></td></tr><tr><td><code>require_tests_review</code></td><td>true</td><td></td></tr><tr><td><code>require_estimate_effort_to_review</code></td><td>true</td><td></td></tr><tr><td><code>require_can_be_split_review</code></td><td>false</td><td></td></tr><tr><td><code>require_security_review</code></td><td>true</td><td></td></tr><tr><td><code>require_estimate_contribution_time_cost</code></td><td>false</td><td></td></tr><tr><td><code>require_todo_scan</code></td><td>false</td><td></td></tr><tr><td><code>require_ticket_analysis_review</code></td><td>true</td><td></td></tr><tr><td><code>require_risk_assessment</code></td><td>false</td><td>ask the model for an overall risk level (low/medium/high)</td></tr><tr><td><code>require_merge_recommendation</code></td><td>false</td><td>ask the model for a merge recommendation: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge)</td></tr><tr><td><code>max_changed_lines</code></td><td>100</td><td>Host-only changed-line cap; a larger diff vetoes no_concerns_found. See docs/docs/commands/review.md</td></tr><tr><td><code>publish_merge_recommendation_status</code></td><td>false</td><td>Publish the computed verdict as a SHA-scoped check/commit status. See docs/docs/commands/review.md</td></tr><tr><td><code>require_failure_modes</code></td><td>false</td><td>ask for up to three concrete failure scenarios and their detection/coverage</td></tr><tr><td><code>require_artifact_findings</code></td><td>false</td><td>with a CI artifact, list up to five neutral facts from it, each with a quote checked against the artifact. See docs/docs/commands/review.md</td></tr><tr><td><code>require_priority_files</code></td><td>false</td><td>ask the model which files a human should inspect first</td></tr><tr><td><code>structural_reach_input_file</code></td><td>&quot;&quot;</td><td>JSON reach facts from a build-graph tool; when the file exists, adds a deterministic change-risk row. See docs/docs/commands/review.md</td></tr><tr><td><code>enable_risk_checks</code></td><td>true</td><td>Flag sensitive paths and risky change shapes; adds nothing when clean. See docs/docs/commands/review.md</td></tr><tr><td><code>sensitive_paths</code></td><td>[&quot;.github/workflows/<strong>&quot;, &quot;.github/actions/</strong>&quot;, &quot;.gitlab-ci.yml&quot;, &quot;Jenkinsfile*&quot;, &quot;.circleci/<strong>&quot;, &quot;azure-pipelines*.yml&quot;, &quot;.travis.yml&quot;, &quot;bitbucket-pipelines.yml&quot;, &quot;<em>CODEOWNERS&quot;, &quot;.pr_agent.toml&quot;, &quot;package.json&quot;, &quot;package-lock.json&quot;, &quot;yarn.lock&quot;, &quot;pnpm-lock.yaml&quot;, &quot;requirements</em>.txt&quot;, &quot;Pipfile&quot;, &quot;Pipfile.lock&quot;, &quot;pyproject.toml&quot;, &quot;poetry.lock&quot;, &quot;uv.lock&quot;, &quot;Cargo.toml&quot;, &quot;Cargo.lock&quot;, &quot;go.mod&quot;, &quot;go.sum&quot;, &quot;pom.xml&quot;, &quot;build.gradle*&quot;, &quot;Gemfile&quot;, &quot;Gemfile.lock&quot;, &quot;composer.json&quot;, &quot;composer.lock&quot;, &quot;<em>Dockerfile</em>&quot;, &quot;docker-compose*.yml&quot;, &quot;docker-compose*.yaml&quot;, &quot;<em>.dockerfile&quot;, &quot;</em>.tf&quot;, &quot;<em>.tfvars&quot;, &quot;</em>.hcl&quot;, &quot;<em>migrations</em>/</strong>&quot;, &quot;<em>migration</em>&quot;, &quot;db/migrate/<strong>&quot;, &quot;alembic/</strong>&quot;]</td><td>Glob patterns of sensitive paths flagging deterministic review risk findings. See docs/docs/commands/review.md</td></tr><tr><td><code>extra_risky_shapes</code></td><td>[]</td><td>Custom regex patterns flagging risky changes in diff hunks. See docs/docs/commands/review.md</td></tr></tbody></table>
+<p><strong>general options</strong></p>
 
 
 
@@ -851,12 +811,8 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 
 
-
-
-
-
-
-<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>enable_review_labels_security</code></td><td>true</td><td></td></tr><tr><td><code>enable_review_labels_effort</code></td><td>true</td><td></td></tr><tr><td><strong>specific configurations for incremental review (/review -i)</strong></td><td></td><td></td></tr></tbody></table>
+<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>enable_review_labels_security</code></td><td>true</td><td></td></tr><tr><td><code>enable_review_labels_effort</code></td><td>true</td><td></td></tr></tbody></table>
+<p><strong>specific configurations for incremental review (/review -i)</strong></p>
 
 
 
@@ -980,12 +936,13 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 
 
+<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>publish_labels</code></td><td>false</td><td></td></tr><tr><td><code>add_original_user_description</code></td><td>true</td><td></td></tr><tr><td><code>generate_ai_title</code></td><td>false</td><td></td></tr><tr><td><code>extra_instructions</code></td><td>&quot;&quot;</td><td></td></tr><tr><td><code>enable_pr_type</code></td><td>true</td><td></td></tr><tr><td><code>enable_pr_description</code></td><td>true</td><td>adds a section with an AI-generated summary of the PR changes</td></tr><tr><td><code>final_update_message</code></td><td>true</td><td></td></tr><tr><td><code>enable_help_text</code></td><td>false</td><td></td></tr><tr><td><code>enable_help_comment</code></td><td>false</td><td></td></tr><tr><td><code>enable_pr_diagram</code></td><td>true</td><td>adds a section with a diagram of the PR changes</td></tr><tr><td><code>pr_diagram_direction</code></td><td>&quot;adaptive&quot;</td><td>&#x27;adaptive&#x27;, &#x27;LR&#x27;, &#x27;TD&#x27;. &#x27;adaptive&#x27; picks the direction from the shape of the diagram</td></tr><tr><td><code>pr_diagram_direction_threshold</code></td><td>5</td><td>with &#x27;adaptive&#x27;, a chain longer than this many nodes is drawn top-down</td></tr></tbody></table>
+<p><strong>describe as comment</strong></p>
 
 
 
 
 
-<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>publish_labels</code></td><td>false</td><td></td></tr><tr><td><code>add_original_user_description</code></td><td>true</td><td></td></tr><tr><td><code>generate_ai_title</code></td><td>false</td><td></td></tr><tr><td><code>extra_instructions</code></td><td>&quot;&quot;</td><td></td></tr><tr><td><code>enable_pr_type</code></td><td>true</td><td></td></tr><tr><td><code>enable_pr_description</code></td><td>true</td><td>adds a section with an AI-generated summary of the PR changes</td></tr><tr><td><code>final_update_message</code></td><td>true</td><td></td></tr><tr><td><code>enable_help_text</code></td><td>false</td><td></td></tr><tr><td><code>enable_help_comment</code></td><td>false</td><td></td></tr><tr><td><code>enable_pr_diagram</code></td><td>true</td><td>adds a section with a diagram of the PR changes</td></tr><tr><td><code>pr_diagram_direction</code></td><td>&quot;adaptive&quot;</td><td>&#x27;adaptive&#x27;, &#x27;LR&#x27;, &#x27;TD&#x27;. &#x27;adaptive&#x27; picks the direction from the shape of the diagram</td></tr><tr><td><code>pr_diagram_direction_threshold</code></td><td>5</td><td>with &#x27;adaptive&#x27;, a chain longer than this many nodes is drawn top-down</td></tr><tr><td><strong>describe as comment</strong></td><td></td><td></td></tr></tbody></table>
 
 
 
@@ -1001,6 +958,8 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 
 
+<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>publish_description_as_comment</code></td><td>false</td><td></td></tr><tr><td><code>publish_description_as_comment_persistent</code></td><td>true</td><td></td></tr></tbody></table>
+<p><strong>changes walkthrough section</strong></p>
 
 
 
@@ -1011,7 +970,6 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 
 
-<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>publish_description_as_comment</code></td><td>false</td><td></td></tr><tr><td><code>publish_description_as_comment_persistent</code></td><td>true</td><td></td></tr><tr><td><strong>changes walkthrough section</strong></td><td></td><td></td></tr></tbody></table>
 
 
 
@@ -1032,22 +990,8 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>enable_semantic_files_types</code></td><td>true</td><td></td></tr><tr><td><code>collapsible_file_list</code></td><td>&quot;adaptive&quot;</td><td>true, false, &#x27;adaptive&#x27;</td></tr><tr><td><code>collapsible_file_list_threshold</code></td><td>6</td><td></td></tr><tr><td><code>file_table_collapsible_open_by_default</code></td><td>false</td><td></td></tr><tr><td><strong>markers</strong></td><td></td><td></td></tr></tbody></table>
+<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>enable_semantic_files_types</code></td><td>true</td><td></td></tr><tr><td><code>collapsible_file_list</code></td><td>&quot;adaptive&quot;</td><td>true, false, &#x27;adaptive&#x27;</td></tr><tr><td><code>collapsible_file_list_threshold</code></td><td>6</td><td></td></tr><tr><td><code>file_table_collapsible_open_by_default</code></td><td>false</td><td></td></tr></tbody></table>
+<p><strong>markers</strong></p>
 
 
 
@@ -1360,12 +1304,8 @@ it cannot verify the status-changing actor or historical defaults. Dismissed fin
 
 
 
-
-
-
-
-
-<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>override_deployment_type</code></td><td>true</td><td>these toggles allows running the github app from custom deployments</td></tr><tr><td><strong>settings for &quot;pull_request&quot; event</strong></td><td></td><td></td></tr></tbody></table>
+<table><thead><tr><th>Key</th><th>Default</th><th>Description</th></tr></thead><tbody><tr><td><code>override_deployment_type</code></td><td>true</td><td>these toggles allows running the github app from custom deployments</td></tr></tbody></table>
+<p><strong>settings for &quot;pull_request&quot; event</strong></p>
 
 
 
