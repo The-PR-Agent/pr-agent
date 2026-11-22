@@ -217,5 +217,3 @@ The external file is loaded through the same secure loader as the repo-local `.p
 - Limits the response size to **1 MB**
 - Uses a **10-second** request timeout
 - Only accepts `http`, `https`, `file` schemes (or a bare local path)
-
-If the fetch fails, the request is logged and PR-Agent continues with the remaining configuration layers.
