@@ -20,9 +20,10 @@ from pr_agent.log import get_logger
 PR_URL = "https://gitlab.example.com/group/project/-/merge_requests/171"
 
 
-def _make_settings(add_user_to_requests, config_values=None, litellm_values=None):
+def _make_settings(add_user_to_requests, config_values=None, litellm_values=None, root_values=None):
     config_values = {"add_user_to_requests": add_user_to_requests, **(config_values or {})}
     litellm_values = litellm_values or {}
+    root_values = root_values or {}
 
     def config_get(self, key, default=None):
         return config_values.get(key, default)
@@ -38,9 +39,10 @@ def _make_settings(add_user_to_requests, config_values=None, litellm_values=None
             "get": config_get,
         })(),
         "litellm": type("LiteLLM", (), {
+            "custom_llm_provider": litellm_values.get("custom_llm_provider", ""),
             "get": lambda self, key, default=None: litellm_values.get(key, default),
         })(),
-        "get": lambda self, key, default=None: default,
+        "get": lambda self, key, default=None: root_values.get(key, default),
     })()
 
 
@@ -131,6 +133,64 @@ class TestRequestUserField:
         by_command = {p["command"]: p["pr_url"] for p in payloads}
         assert by_command["improve"].endswith("/a/-/merge_requests/1")
         assert by_command["review"].endswith("/b/-/merge_requests/2")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gpt-6.1-sol",
+            "openai/gpt-4o",
+            "azure/gpt-5",
+        ],
+    )
+    async def test_enabled_sets_user_field_for_prefixed_and_gpt5_gpt6_models(self, monkeypatch, model):
+        # GPT-5/GPT-6 models are normalized to openai/<model> or azure/<model>, and users
+        # may pass provider-prefixed OpenAI/Azure model IDs directly. LiteLLM's catalog
+        # check expects the unprefixed model name alongside custom_llm_provider.
+        kwargs = await _run(monkeypatch, model, True,
+                            log_context={"command": "review", "pr_url": PR_URL})
+        payload = json.loads(kwargs["user"])
+        assert payload == {"command": "review", "pr_url": PR_URL}
+        assert "extra_body" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_enabled_sets_user_field_for_azure_mode_bare_gpt5(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "gpt-5",
+            True,
+            log_context={"command": "review", "pr_url": PR_URL},
+            root_values={"OPENAI.API_TYPE": "azure"},
+        )
+        payload = json.loads(kwargs["user"])
+        assert payload == {"command": "review", "pr_url": PR_URL}
+        assert "extra_body" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_enabled_sets_user_field_for_custom_llm_provider_azure(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "my-gpt-deployment",
+            True,
+            log_context={"command": "review", "pr_url": PR_URL},
+            litellm_values={"custom_llm_provider": "azure"},
+        )
+        payload = json.loads(kwargs["user"])
+        assert payload == {"command": "review", "pr_url": PR_URL}
+        assert "extra_body" not in kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["openai/gpt-4o", "gpt-4o", "openrouter/gpt-4o"])
+    async def test_custom_llm_provider_openrouter_uses_extra_body(self, monkeypatch, model):
+        kwargs = await _run(
+            monkeypatch,
+            model,
+            True,
+            log_context={"command": "review", "pr_url": PR_URL},
+            litellm_values={"custom_llm_provider": "openrouter"},
+        )
+        assert "user" not in kwargs
+        assert json.loads(kwargs["extra_body"]["user"]) == {"command": "review", "pr_url": PR_URL}
 
     @pytest.mark.asyncio
     async def test_unsupported_provider_is_skipped(self, monkeypatch):
