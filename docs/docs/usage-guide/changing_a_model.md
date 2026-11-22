@@ -786,7 +786,7 @@ To use Codestral model with Codestral, for example, set:
 ```toml
 [config] # in configuration.toml
 model = "codestral/codestral-latest"
-fallback_models = ["codestral/codestral-2405"]
+fallback_models = []
 [codestral] # in .secrets.toml
 key = "..." # your Codestral api key
 ```
