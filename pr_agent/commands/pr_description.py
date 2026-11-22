@@ -1458,7 +1458,8 @@ def sanitize_diagram(diagram_raw: str) -> str:
 
 DIAGRAM_HEADER_PATTERN = re.compile(r'^(\s*(?:flowchart|graph)\s+)(?:TB|TD|BT|RL|LR)\b(.*)$')
 DIAGRAM_CONNECTOR_PATTERN = re.compile(r'(<?[-=.~]{2,}[->ox]?)')
-DIAGRAM_NODE_ID_PATTERN = re.compile(r'[A-Za-z0-9_]+')
+# Node ids may contain single inner hyphens (`api-gateway`); connectors are split out before this runs.
+DIAGRAM_NODE_ID_PATTERN = re.compile(r'[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*')
 DIAGRAM_QUOTED_LABEL_PATTERN = re.compile(r'"[^"]*"')
 DIAGRAM_PIPE_LABEL_PATTERN = re.compile(r'\|[^|]*\|')  # pipe-form edge labels: -->|text|
 DIAGRAM_SHAPE_PATTERN = re.compile(r'\[[^\[\]]*\]|\([^()]*\)|\{[^{}]*\}')
