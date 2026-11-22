@@ -15,7 +15,7 @@ Each PR-Agent command has a dedicated page that explains its behavior and usage:
 | **[Generate Labels (`/generate_labels`)](./generate_labels.md)** | Generate custom labels for the PR based on the code changes |
 | **[Similar Issues (`/similar_issue`)](./similar_issues.md)** | Find similar issues in the repository based on the current issue |
 | **[Help (`/help`)](./help.md)** | Provides a list of all the available commands |
-| **[Help Docs (`/help_docs`)](./help_docs.md)** | Answer a free-text question based on a git documentation folder |
+| **[Help Docs (`/help_docs`)](./help_docs.md)** | **Temporarily disabled.** Answers questions about a Git repository’s documentation. |
 | **[Update Changelog (`/update_changelog`)](./update_changelog.md)** | Automatically updating the CHANGELOG.md file with the PR changes |
 
 ## Usage examples
