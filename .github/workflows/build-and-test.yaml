@@ -34,13 +34,11 @@ jobs:
         shell: bash
         run: |
           # For PR merge commits, only changes outside the safe docs paths matter.
+          # Root docs may become directories containing source; never exclude them.
           if git rev-parse -q --verify 'HEAD^2' > /dev/null &&
              git diff --no-renames --quiet HEAD^1 HEAD -- . \
                ':(top,exclude,glob)docs/docs/**/*.md' \
-               ':(top,exclude,glob)docs/docs/**/*.mdx' \
-               ':(top,exclude)README.md' \
-               ':(top,exclude)CONTRIBUTING.md' \
-               ':(top,exclude)SECURITY.md'; then
+               ':(top,exclude,glob)docs/docs/**/*.mdx'; then
             echo 'docs_only=true' >> "$GITHUB_OUTPUT"
           fi
 
