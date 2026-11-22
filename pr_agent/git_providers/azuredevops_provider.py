@@ -62,6 +62,14 @@ _SUGGESTIONS_HEADER_PREFIX = "## PR Code Suggestions"
 _FALLBACK_SUGGESTIONS_HEADER = "## Unanchored Code Suggestions"
 
 
+_NOT_FOUND_MESSAGE_RE = re.compile(
+    r"(?i)\b(?:http(?:/\d(?:\.\d)?)?\s+404|"
+    r"status(?:_?code|\s+code)?(?:\s*[:=]\s*|\s+(?:is\s+)?)404|"
+    r"returned\s+(?:a\s+)?404\s+status\s+code|"
+    r"404(?:\s*[:)]\s*|\s+)(?:not\s+found|status\s+code))\b"
+)
+
+
 def _is_not_found_error(error: Exception) -> bool:
     status_code = getattr(error, "status_code", None)
     if status_code is None:
@@ -71,7 +79,7 @@ def _is_not_found_error(error: Exception) -> bool:
         return status_code == 404
     if getattr(error, "type_key", None) == "GitItemNotFoundException":
         return True
-    return re.search(r"\b404\b", str(error)) is not None
+    return _NOT_FOUND_MESSAGE_RE.search(str(error)) is not None
 
 
 def _is_code_suggestion_body(body: str) -> bool:
@@ -1111,9 +1119,7 @@ class AzureDevopsProvider(GitProvider):
                         f"Azure rename entry for {file} has no usable old path; using empty base content"
                     )
 
-                if edit_type == EDIT_TYPE.ADDED or (edit_type == EDIT_TYPE.RENAMED and old_filename is None):
-                    original_file_content_str = ""
-                elif incremental_active:
+                if incremental_active and not (edit_type == EDIT_TYPE.RENAMED and old_filename is None):
                     inc_version = GitVersionDescriptor(
                         version=self.incremental.last_seen_commit_sha, version_type="commit"
                     )
@@ -1127,8 +1133,14 @@ class AzureDevopsProvider(GitProvider):
                             include_content=True,
                         )
                         original_file_content_str = inc_original.content or ""
+                        if edit_type == EDIT_TYPE.ADDED:
+                            # A PR-level added file already present at the incremental baseline was
+                            # modified in the new commits, so classify it to match the incremental diff.
+                            edit_type = EDIT_TYPE.MODIFIED
                     except Exception as error:
-                        if (
+                        if edit_type == EDIT_TYPE.ADDED and _is_not_found_error(error):
+                            original_file_content_str = ""
+                        elif (
                             edit_type == EDIT_TYPE.RENAMED
                             and old_filename != file
                             and _is_not_found_error(error)
@@ -1158,6 +1170,8 @@ class AzureDevopsProvider(GitProvider):
                             )
                             original_file_content_str = ""
                             original_fetch_failed = True
+                elif edit_type == EDIT_TYPE.ADDED or (edit_type == EDIT_TYPE.RENAMED and old_filename is None):
+                    original_file_content_str = ""
                 else:
                     base_version = GitVersionDescriptor(
                         version=base_sha.commit_id, version_type="commit"
