@@ -114,7 +114,7 @@ Most values in the [configuration file](https://github.com/the-pr-agent/pr-agent
 
 ### Disabling all automatic feedback
 
-To easily disable all automatic feedback from PR-Agent (GitHub App, GitLab Webhook, BitBucket App, Azure DevOps Webhook), set in a configuration file:
+To easily disable all automatic feedback from PR-Agent (GitHub App, GitHub Action, GitLab Webhook, BitBucket App, Azure DevOps Webhook), set in a configuration file:
 
 ```toml
 [config]

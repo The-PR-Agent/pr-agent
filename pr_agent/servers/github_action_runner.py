@@ -56,6 +56,18 @@ def is_true(value: str | bool | int, default: bool = False, setting_name: str | 
     return _as_bool_setting(value, default=default, setting_name=setting_name)
 
 
+def _auto_feedback_disabled() -> bool:
+    """Whether config.disable_auto_feedback stops automatic GitHub Action commands."""
+    disable_auto_feedback = get_setting_or_env("CONFIG.DISABLE_AUTO_FEEDBACK", None)
+    if disable_auto_feedback is None:
+        disable_auto_feedback = get_settings().get("CONFIG.DISABLE_AUTO_FEEDBACK", False)
+    return is_true(
+        disable_auto_feedback,
+        default=True,
+        setting_name="config.disable_auto_feedback",
+    )
+
+
 def get_setting_or_env(key: str, default: str | bool = None) -> str | bool:
     try:
         value = get_settings().get(key, default)
@@ -240,14 +252,7 @@ async def _run_review_commands(event_payload):
         get_logger().info(f"Skipping draft PR for pull_request_review: {pr_url=}")
         return
 
-    disable_auto_feedback = get_setting_or_env("CONFIG.DISABLE_AUTO_FEEDBACK", None)
-    if disable_auto_feedback is None:
-        disable_auto_feedback = get_settings().get("CONFIG.DISABLE_AUTO_FEEDBACK", False)
-    if is_true(
-        disable_auto_feedback,
-        default=True,
-        setting_name="config.disable_auto_feedback",
-    ):
+    if _auto_feedback_disabled():
         get_logger().info(f"Auto feedback is disabled, skipping pull_request_review: {pr_url=}")
         return
 
@@ -348,6 +353,13 @@ async def run_action():
         get_logger().info(f"github action: failed to apply repo settings: {e}")
     if GITHUB_EVENT_NAME not in ("pull_request", "pull_request_target", "workflow_run"):
         settings_provider = None
+
+    if (
+        GITHUB_EVENT_NAME in ("pull_request", "pull_request_target", "workflow_run", "pull_request_review")
+        and _auto_feedback_disabled()
+    ):
+        get_logger().info(f"Auto feedback is disabled, skipping {GITHUB_EVENT_NAME}: {pr_url=}")
+        return
 
     # Gate on the active provider's key after repo settings are applied (a repo-level
     # .pr_agent.toml can select a different provider) but before model-backed commands run: carrying
