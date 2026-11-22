@@ -304,6 +304,39 @@ class TestHandleLineComments:
         assert "--line_start=14" in result
         assert "--line_end=14" in result
 
+    @pytest.mark.parametrize(
+        ("start_line", "start_side", "line", "side", "expected_selected"),
+        [
+            (49, "LEFT", 12, "RIGHT", "-old_a\n-old_b\n+new_a\n+new_b"),
+            (11, "RIGHT", 50, "LEFT", "+new_a\n mid\n-old_b"),
+            (11, "RIGHT", 12, "RIGHT", "-old_a\n-old_b\n+new_a\n+new_b"),
+        ],
+    )
+    def test_cross_side_and_same_side_ranges_select_expected_diff_lines(
+        self, start_line, start_side, line, side, expected_selected
+    ):
+        if start_side == "RIGHT" and side == "LEFT":
+            patch = "@@ -48,4 +10,4 @@\n ctx\n+new_a\n mid\n-old_b\n ctx2"
+        else:
+            patch = "@@ -48,4 +10,4 @@\n ctx\n-old_a\n-old_b\n+new_a\n+new_b\n ctx2"
+        body = self._payload(
+            start_line=start_line, start_side=start_side, line=line, side=side, diff_hunk=patch
+        )
+        result = github_app.handle_line_comments(body, "/ask why?")
+        assert f"--line_start={start_line}" in result
+        assert f"--line_end={line}" in result
+        assert f"--side={side}" in result
+        if start_side != side:
+            assert f"--start_side={start_side}" in result
+        else:
+            assert not any(arg.startswith("--start_side=") for arg in result)
+
+        hunk, selected = extract_hunk_lines_from_patch(
+            patch, "src/file.py", start_line, line, side, start_side=start_side
+        )
+        assert "@@ -48,4 +10,4 @@" in hunk
+        assert selected == expected_selected
+
     def test_sets_ask_diff_hunk_in_settings(self):
         from pr_agent.config_loader import get_settings
 

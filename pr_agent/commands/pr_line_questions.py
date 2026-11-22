@@ -100,6 +100,14 @@ class PR_LineQuestions:
         line_start = get_settings().get('line_start', '')
         line_end = get_settings().get('line_end', '')
         side = get_settings().get('side', 'RIGHT')
+        configured_start_side = get_settings().get('start_side', '')
+        if configured_start_side:
+            self._start_side = configured_start_side
+            get_settings().set('start_side', '')
+        start_side = getattr(self, '_start_side', '')
+        extract_kwargs = {"line_start": line_start, "line_end": line_end, "side": side}
+        if isinstance(start_side, str) and start_side and isinstance(side, str) and start_side.lower() != side.lower():
+            extract_kwargs["start_side"] = start_side
         file_name = get_settings().get('file_name', '')
         if get_settings().get("file_name_encoded", False):
             file_name = unquote(file_name)
@@ -108,21 +116,16 @@ class PR_LineQuestions:
             self.resolve_threads = False
             self.vars["resolve_threads"] = False
         if ask_diff:
-            self.patch_with_lines, self.selected_lines = extract_hunk_lines_from_patch(ask_diff,
-                                                                                       file_name,
-                                                                                       line_start=line_start,
-                                                                                       line_end=line_end,
-                                                                                       side=side
-                                                                                       )
+            self.patch_with_lines, self.selected_lines = extract_hunk_lines_from_patch(
+                ask_diff, file_name, **extract_kwargs
+            )
         else:
             diff_files = await run_diff_preparation(self.git_provider.get_diff_files)
             for file in diff_files:
                 if file.filename == file_name:
-                    self.patch_with_lines, self.selected_lines = extract_hunk_lines_from_patch(file.patch,
-                                                                                               file.filename,
-                                                                                               line_start=line_start,
-                                                                                               line_end=line_end,
-                                                                                               side=side)
+                    self.patch_with_lines, self.selected_lines = extract_hunk_lines_from_patch(
+                        file.patch, file.filename, **extract_kwargs
+                    )
         # A matched hunk always contributes its '@@' header; a miss leaves only the file
         # title. Gating on selected_lines instead would also silence the case where GitHub
         # truncates diff_hunk from the front but keeps the original header, which leaves the
