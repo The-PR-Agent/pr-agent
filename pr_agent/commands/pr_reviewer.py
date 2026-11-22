@@ -831,6 +831,7 @@ class PRReviewer:
         self._progress_response = None
         self._chunk_progress = None
         self._structured_review_data = None
+        self._merge_recommendation_status = None
         self._approval_model_fields = (None, None)
         self._review_done = self._review_degraded = self._review_labels_degraded = (
             self._review_output_touched
@@ -947,7 +948,6 @@ class PRReviewer:
                     and not self.review_failed_chunk_count
                 ):
                     hosted_markdown_artifact.set(pr_review)
-                self._publish_merge_recommendation_status()
                 review_completed = True
                 self._review_degraded = (
                     partial_review_error is not None
@@ -1214,8 +1214,12 @@ class PRReviewer:
             get_logger().warning(
                 f"Git provider does not support publishing merge recommendation status: {recommendation}"
             )
-        elif not publisher(recommendation):
-            get_logger().warning(f"Failed to publish merge recommendation status: {recommendation}")
+            return
+        try:
+            if not publisher(recommendation):
+                get_logger().warning(f"Failed to publish merge recommendation status: {recommendation}")
+        except Exception as e:
+            get_logger().warning(f"Failed to publish merge recommendation status: {recommendation}, error: {e}")
 
     def _review_finding_state_in_play(self) -> bool:
         if not get_settings().pr_reviewer.get("persistent_finding_state", True):
