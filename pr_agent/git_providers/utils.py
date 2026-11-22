@@ -307,6 +307,7 @@ def _apply_settings_from_file(path: str, label: str):
         get_logger().info(
             f"Applied {label} settings from {path} (sections merged: {sorted(merged_sections)})"
         )
+        return new_settings.as_dict()
     except Exception as e:
         get_logger().warning(f"Failed to apply {label} settings from {path}: {e}")
 
@@ -328,8 +329,22 @@ def _apply_settings_from_bytes(data: bytes, label: str):
             merged_sections.append(section_name)
         _reapply_env_overrides()
         get_logger().info(f"Applied {label} settings (sections merged: {sorted(merged_sections)})")
+        return parsed
     except Exception as e:
         get_logger().warning(f"Failed to apply {label} settings from frozen host configuration: {e}")
+
+
+def _extra_config_disables_message_logging(contents: dict | None) -> bool:
+    """Check the trusted extra config, not the mutable request settings."""
+    if not contents:
+        return False
+    disabled = False
+    for section, values in contents.items():
+        if section.lower() == "litellm" and isinstance(values, dict):
+            for key, value in values.items():
+                if key.lower() == "turn_off_message_logging":
+                    disabled = _as_bool_setting(value, setting_name="LITELLM.TURN_OFF_MESSAGE_LOGGING")
+    return disabled
 
 
 def apply_host_settings():
@@ -348,23 +363,28 @@ def apply_host_settings():
     try:
         if isinstance(extra_source, str) and extra_source.strip():
             extra_path, extra_is_temp = _resolve_extra_config_to_file(extra_source)
+            trusted_settings = None
             if context.exists() and context.get("automatic_host_settings_source") == extra_source.strip():
                 payload = context.get("extra_config_payloads", {}).get(extra_source.strip())
                 if payload is not None:
-                    _apply_settings_from_bytes(payload, label="extra")
+                    trusted_settings = _apply_settings_from_bytes(payload, label="extra")
             elif extra_path:
                 try:
-                    _apply_settings_from_file(extra_path, label="extra")
-                    # Retain a trusted logging opt-out before repository settings can override it.
-                    key = "LITELLM.TURN_OFF_MESSAGE_LOGGING"
-                    if context.exists() and _as_bool_setting(get_settings().get(key, False), setting_name=key):
-                        context["_pr_agent_host_message_logging_disabled"] = True
+                    trusted_settings = _apply_settings_from_file(extra_path, label="extra")
                 finally:
                     if extra_is_temp:
                         try:
                             os.remove(extra_path)
                         except Exception as error:
                             get_logger().error(f"Failed to remove temp extra config {extra_path}: {error}")
+            # Only elevate an effective opt-out that originated in trusted host TOML.
+            key = "LITELLM.TURN_OFF_MESSAGE_LOGGING"
+            if (
+                context.exists()
+                and _extra_config_disables_message_logging(trusted_settings)
+                and _as_bool_setting(get_settings().get(key, False), setting_name=key)
+            ):
+                context["_pr_agent_host_message_logging_disabled"] = True
         elif extra_source is not None and not isinstance(extra_source, str):
             get_logger().warning(f"Ignoring CONFIG.EXTRA_CONFIG_URL: expected str, got {type(extra_source).__name__}")
     finally:

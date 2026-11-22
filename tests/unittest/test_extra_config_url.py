@@ -864,6 +864,54 @@ def test_extra_logging_opt_out_survives_repo_override(tmp_path, monkeypatch, set
         assert litellm_handler._message_logging_disabled(get_settings()) is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host_toml", [
+    "[litellm]\nturn_off_message_logging = true\n",
+    '[litellm]\nturn_off_message_logging = "true"\n',
+    "[litellm]\nturn_off_message_logging = false\nTURN_OFF_MESSAGE_LOGGING = true\n",
+])
+async def test_frozen_extra_logging_opt_out_survives_repo_override(
+    tmp_path, monkeypatch, settings_sandbox, mock_git_provider, host_toml
+):
+    from pr_agent.servers.utils import load_host_settings_for_webhook
+
+    extra_path = _write_toml(tmp_path, "extra.toml", host_toml)
+    mock_git_provider["provider"] = _FakeGitProvider(b"[litellm]\nturn_off_message_logging = false\n")
+    monkeypatch.setattr(litellm_handler, "global_settings", {"LITELLM.TURN_OFF_MESSAGE_LOGGING": False})
+
+    with safe_request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        get_settings().set("CONFIG.EXTRA_CONFIG_URL", extra_path)
+        get_settings().set("CONFIG.USE_REPO_SETTINGS_FILE", True)
+        assert await load_host_settings_for_webhook() is True
+        apply_repo_settings("https://example.com/pr/1")
+
+        assert get_settings().get("LITELLM.TURN_OFF_MESSAGE_LOGGING") is False
+        assert litellm_handler._message_logging_disabled(get_settings()) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frozen", [False, True])
+async def test_repo_logging_opt_out_is_not_promoted_to_host_policy(
+    tmp_path, monkeypatch, settings_sandbox, mock_git_provider, frozen
+):
+    extra_path = _write_toml(tmp_path, "extra.toml", "[config]\nmodel = 'test-model'\n")
+    mock_git_provider["provider"] = _FakeGitProvider(b"[litellm]\nturn_off_message_logging = true\n")
+    monkeypatch.setattr(litellm_handler, "global_settings", {"LITELLM.TURN_OFF_MESSAGE_LOGGING": False})
+
+    with safe_request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        get_settings().set("CONFIG.EXTRA_CONFIG_URL", extra_path)
+        get_settings().set("CONFIG.USE_REPO_SETTINGS_FILE", True)
+        if frozen:
+            from pr_agent.servers.utils import load_host_settings_for_webhook
+
+            assert await load_host_settings_for_webhook() is True
+        apply_repo_settings("https://example.com/pr/1")
+        apply_repo_settings("https://example.com/pr/1")
+
+        get_settings().set("LITELLM.TURN_OFF_MESSAGE_LOGGING", False)
+        assert litellm_handler._message_logging_disabled(get_settings()) is False
+
+
 def test_extra_applied_when_repo_settings_empty(tmp_path, settings_sandbox, mock_git_provider):
     """If the repo has no .pr_agent.toml, extra values still take effect."""
     extra_path = _write_toml(tmp_path, "extra.toml", f"""
