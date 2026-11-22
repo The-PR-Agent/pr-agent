@@ -193,7 +193,41 @@ async def test_the_committed_file_is_written_to_the_pr_branch(committing_command
 # --------------------------------------------------------------------------------------
 
 
+def test_a_tilde_fence_is_stripped():
+    assert strip_wrapping_code_fence("~~~\n- Handle `None`\n~~~") == "- Handle `None`"
+
+
+def test_a_tilde_fence_with_an_info_string_is_stripped():
+    assert strip_wrapping_code_fence("~~~~markdown\n- one\n- two\n~~~~") == "- one\n- two"
+
+
+def test_a_tilde_wrapper_can_hold_a_backtick_code_block():
+    entry = "- one\n\n```python\nx = 1\n```"
+
+    assert strip_wrapping_code_fence(f"~~~markdown\n{entry}\n~~~") == entry
+
+
+def test_a_shorter_interior_fence_does_not_hide_the_real_closer():
+    text = "- entry\n~~~~python\n~~~\nx\n~~~\n~~~~"
+
+    assert strip_wrapping_code_fence(text) == text
+
+
+def test_a_closing_fence_shorter_than_the_opening_fence_is_content():
+
+    text = "~~~~\n- one\n~~~"
+
+    assert strip_wrapping_code_fence(text) == text
+
+
+def test_a_closing_fence_with_a_different_character_is_content():
+    text = "~~~\n- one\n```"
+
+    assert strip_wrapping_code_fence(text) == text
+
+
 def test_a_four_backtick_fence_is_stripped():
+
     assert strip_wrapping_code_fence("````yaml\n- Handle `None`\n````") == "- Handle `None`"
 
 
