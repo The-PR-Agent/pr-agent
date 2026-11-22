@@ -1173,7 +1173,7 @@ index 1111111..2222222 100644
 
         response.raise_for_status.assert_not_called()
 
-    @pytest.mark.parametrize("comment", [{"id": 123}, 123])
+    @pytest.mark.parametrize("comment", [{"id": 123}, 123, "123"])
     def test_remove_comment_accepts_returned_comment_or_stored_id(self, comment):
         provider = BitbucketProvider.__new__(BitbucketProvider)
         provider.pr = MagicMock()
@@ -1181,6 +1181,38 @@ index 1111111..2222222 100644
         provider.remove_comment(comment)
 
         provider.pr.delete.assert_called_once_with("comments/123")
+
+    def test_remove_comment_deletes_issue_comment_through_the_client(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        cloud_comment = MagicMock()
+        cloud_comment.raw = "failure notice"
+        provider.pr = MagicMock()
+        provider.pr.comments.return_value = [cloud_comment]
+
+        [comment] = provider.get_issue_comments()
+        provider.remove_comment(comment)
+
+        cloud_comment.delete.assert_called_once_with()
+        provider.pr.delete.assert_not_called()
+
+    def test_remove_comment_deletes_unwrapped_cloud_comment_through_the_client(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.pr = MagicMock()
+        cloud_comment = MagicMock()
+
+        provider.remove_comment(cloud_comment)
+
+        cloud_comment.delete.assert_called_once_with()
+        provider.pr.delete.assert_not_called()
+
+    @pytest.mark.parametrize("comment", [None, True, ""])
+    def test_remove_comment_does_not_delete_invalid_reference(self, comment):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.pr = MagicMock()
+
+        provider.remove_comment(comment)
+
+        provider.pr.delete.assert_not_called()
 
     def test_persistent_review_update_does_not_duplicate_when_status_message_fails(self):
         provider = BitbucketProvider.__new__(BitbucketProvider)
