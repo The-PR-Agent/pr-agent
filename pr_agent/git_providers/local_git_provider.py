@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from git import Repo
+from git import IndexObject, Repo, Submodule
 
 from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
@@ -12,6 +12,13 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.git_provider import GitProvider, cache_languages
 from pr_agent.log import get_logger
+
+
+def read_diff_side(blob: IndexObject | None) -> str:
+    # A gitlink has no file text in the superproject. Its commit ID is already in the patch.
+    if blob is None or blob.mode == Submodule.k_default_mode:
+        return ""
+    return blob.data_stream.read().decode("utf-8")
 
 
 class PullRequestMimic:
@@ -117,14 +124,8 @@ class LocalGitProvider(GitProvider):
             elif diff_item.renamed_file:
                 edit_type = EDIT_TYPE.RENAMED
             try:
-                if diff_item.a_blob is not None:
-                    original_file_content_str = diff_item.a_blob.data_stream.read().decode("utf-8")
-                else:
-                    original_file_content_str = ""  # empty file
-                if diff_item.b_blob is not None:
-                    new_file_content_str = diff_item.b_blob.data_stream.read().decode("utf-8")
-                else:
-                    new_file_content_str = ""  # empty file
+                original_file_content_str = read_diff_side(diff_item.a_blob)
+                new_file_content_str = read_diff_side(diff_item.b_blob)
                 patch = diff_item.diff.decode("utf-8")
             except UnicodeDecodeError as e:
                 # Keep the file in the inventory: the shared diff renderer shows a manual-review

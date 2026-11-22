@@ -6,6 +6,7 @@ from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.commands.pr_add_docs import PRAddDocs
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import gerrit_provider
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
@@ -217,6 +218,42 @@ def test_get_diff_files_deleted_file_falls_back_to_old_path(tmp_path):
     assert deleted[0].filename == "gone.py"
     # every diff file exposes a usable filename for downstream consumers.
     assert all(f.filename is not None for f in diff_files)
+
+
+@pytest.mark.parametrize("provider_name", ["local", "gerrit"])
+def test_submodule_bump_preserves_gitlink_patch_and_sibling(tmp_path, monkeypatch, provider_name):
+    dep = _make_repo(tmp_path / "dependency", ["lib.py"])
+    root = tmp_path / "project"
+    repo = _make_repo(root, ["app.py"])
+    target = repo.active_branch.name
+    module = repo.create_submodule("library", "library", url=dep.working_tree_dir)
+    old = module.hexsha
+    repo.index.commit("pin library")
+    repo.git.checkout("-b", "feature")
+    new = module.module().index.commit("update library").hexsha
+    (root / "app.py").write_text("updated\n")
+    repo.git.add("library", "app.py")
+    repo.index.commit("bump library and update caller")
+    repo.git.submodule("deinit", "--", "library")
+
+    snapshot = snapshot_settings(["pr_reviewer.inline_code_comments", "gerrit.url", "gerrit.user"])
+    try:
+        if provider_name == "local":
+            monkeypatch.chdir(root)
+            provider = LocalGitProvider(target)
+        else:
+            get_settings().set("gerrit.url", "ssh://gerrit.example.test:29418")
+            get_settings().set("gerrit.user", "reviewer")
+            monkeypatch.setattr(gerrit_provider, "prepare_repo", lambda *args: str(root))
+            provider = gerrit_provider.GerritProvider("project:refs/changes/01/1/1")
+        files = {file.filename: file for file in provider.pr.diff_files}
+    finally:
+        restore_settings(snapshot)
+
+    link = files["library"]
+    assert link.base_file == link.head_file == ""
+    assert f"-Subproject commit {old}\n+Subproject commit {new}" in link.patch
+    assert (files["app.py"].base_file, files["app.py"].head_file) == ("x\n", "updated\n")
 
 
 @pytest.mark.parametrize("change_type", ["added", "modified", "deleted"])
