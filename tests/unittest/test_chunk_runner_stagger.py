@@ -1,6 +1,9 @@
 """The staggered first chunk: cache-aware dispatch in run_chunk_batch (#4876)."""
 
 import asyncio
+from unittest.mock import AsyncMock
+
+import pytest
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -49,6 +52,47 @@ async def test_stagger_with_a_single_chunk_behaves_like_plain_gather():
     results = await run_chunk_batch([0], _recorder(order), stagger_first=True)
     assert results == [0]
     assert order == [("start", 0), ("end", 0)]
+
+
+async def test_stagger_cancellation_in_first_chunk_stops_remaining_chunks():
+    started = []
+    reporter = AsyncMock()
+
+    async def call(index):
+        started.append(index)
+        if index == 0:
+            raise asyncio.CancelledError
+        return index
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_chunk_batch([0, 1, 2], call, stagger_first=True, reporter=reporter)
+
+    assert started == [0]
+    assert reporter.record_settled.await_count == 1
+
+
+async def test_stagger_outer_cancellation_stops_even_if_reporter_fails():
+    started = []
+    first_started = asyncio.Event()
+    reporter = AsyncMock()
+    reporter.record_settled.side_effect = RuntimeError("reporter failed")
+
+    async def call(index):
+        started.append(index)
+        if index == 0:
+            first_started.set()
+            await asyncio.Future()
+        return index
+
+    task = asyncio.create_task(run_chunk_batch([0, 1, 2], call, stagger_first=True, reporter=reporter))
+    await first_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert started == [0]
+    assert reporter.record_settled.await_count == 1
 
 
 def test_prompt_cache_active_requires_points_and_a_claude_model(monkeypatch):
