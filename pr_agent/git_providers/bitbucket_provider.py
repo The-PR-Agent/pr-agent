@@ -660,8 +660,16 @@ class BitbucketProvider(GitProvider):
 
     def remove_comment(self, comment):
         try:
-            comment_id = comment["id"] if isinstance(comment, dict) else comment
-            self.pr.delete(f"comments/{comment_id}")
+            comment = self._get_cloud_comment(comment)
+            if isinstance(comment, dict):
+                comment = comment["id"]
+            if (isinstance(comment, int) and not isinstance(comment, bool)) or (
+                isinstance(comment, str) and comment.strip()
+            ):
+                self.pr.delete(f"comments/{str(comment).strip()}")
+            else:
+                # get_issue_comments returns wrapped client objects that delete themselves.
+                comment.delete()
         except Exception as e:
             get_logger().exception(f"Failed to remove comment, error: {e}")
 
