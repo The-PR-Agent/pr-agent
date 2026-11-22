@@ -106,17 +106,19 @@ def _reformat_quote_ask_command(comment_body: str) -> str | None:
 def handle_line_comments(body: dict, comment_body: [str, Any]):
     if not comment_body:
         return ""
-    start_line = body["comment"]["start_line"] or body["comment"].get("original_start_line")
-    end_line = body["comment"]["line"] or body["comment"].get("original_line")
+    comment = body["comment"]
+    start_line = comment["start_line"] or comment.get("original_start_line")
+    end_line = comment["line"] or comment.get("original_line")
+    side = comment["side"]
+    start_side = comment.get("start_side") if start_line else None
     start_line = end_line if not start_line else start_line
     # Strip only the command token, preserving /ask mentions within the question.
     parts = comment_body.strip().split(maxsplit=1)
     question = parts[1] if len(parts) > 1 else ""
-    diff_hunk = body["comment"]["diff_hunk"]
+    diff_hunk = comment["diff_hunk"]
     get_settings().set("ask_diff_hunk", diff_hunk)
-    path = body["comment"]["path"]
-    side = body["comment"]["side"]
-    comment_id = body["comment"]["id"]
+    path = comment["path"]
+    comment_id = comment["id"]
     if is_ask_command_comment(comment_body):
         # Build an argv list rather than concatenating into a shell-style
         # command string. PRAgent._handle_request() tokenises string requests
@@ -132,6 +134,8 @@ def handle_line_comments(body: dict, comment_body: [str, Any]):
             f"--file_name={path}",
             f"--comment_id={comment_id}",
         ]
+        if start_side and start_side != side:
+            cmd.insert(4, f"--start_side={start_side}")
         if question:
             cmd.append(question)
         return cmd

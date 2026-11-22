@@ -535,7 +535,8 @@ __old hunk__
 
 
 def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, side,
-                                  remove_trailing_chars: bool = True) -> tuple[str, str]:
+                                  remove_trailing_chars: bool = True,
+                                  start_side: str | None = None) -> tuple[str, str]:
     try:
         try:
             line_start = int(line_start)
@@ -550,10 +551,16 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
         patch_with_lines_str = f"\n\n## File: '{file_name.strip()}'\n\n"
         selected_lines = ""
         patch_lines = split_diff_lines(patch)
+        side_lower = (side or "").lower()
+        start_side_lower = (start_side or "").lower()
+        if start_side_lower not in ("left", "right"):
+            start_side_lower = side_lower
+        mixed_sides = side_lower in ("left", "right") and start_side_lower != side_lower
         match = None
         start1, size1, start2, size2 = -1, -1, -1, -1
         skip_hunk = False
         selected_lines_num = 0
+        left_pos = right_pos = 0
         for line in patch_lines:
             if line == NO_NEWLINE_AT_EOF_MARKER:
                 continue
@@ -570,22 +577,49 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
                 header_line = line
 
                 section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                left_pos = start1 + (1 if size1 == 0 else 0)
+                right_pos = start2 + (1 if size2 == 0 else 0)
 
                 # keep every hunk that overlaps the requested line range, so a
                 # range spanning multiple hunks is not silently truncated
-                if side.lower() == 'left':
+                if mixed_sides:
+                    if start_side_lower == "left":
+                        hunk_end_start = start1 + size1 - 1 if size1 > 0 else start1
+                        hunk_start_end = start2 if size2 > 0 else start2 + 1
+                    else:
+                        hunk_end_start = start2 + size2 - 1 if size2 > 0 else start2
+                        hunk_start_end = start1 if size1 > 0 else start1 + 1
+                    if not (line_start > 0 and line_end > 0
+                            and line_start <= hunk_end_start and hunk_start_end <= line_end):
+                        skip_hunk = True
+                        continue
+                elif side_lower == 'left':
                     if not (size1 > 0 and line_end >= start1 and line_start <= start1 + size1 - 1):
                         skip_hunk = True
                         continue
-                elif side.lower() == 'right':
+                elif side_lower == 'right':
                     if not (size2 > 0 and line_end >= start2 and line_start <= start2 + size2 - 1):
                         skip_hunk = True
                         continue
                 patch_with_lines_str += f'\n{header_line}\n'
 
             elif not skip_hunk:
-                side_lower = side.lower()
-                if side_lower in ("left", "right"):
+                if mixed_sides:
+                    if match is None:
+                        continue
+                    if start_side_lower == "left":
+                        started = left_pos > line_start if line.startswith("+") else left_pos >= line_start
+                        not_ended = right_pos <= line_end
+                    else:
+                        started = right_pos > line_start if line.startswith("-") else right_pos >= line_start
+                        not_ended = left_pos <= line_end
+                    if started and not_ended:
+                        selected_lines += line + '\n'
+                    if not line.startswith("+"):
+                        left_pos += 1
+                    if not line.startswith("-"):
+                        right_pos += 1
+                elif side_lower in ("left", "right"):
                     is_left = side_lower == "left"
                     hunk_start = start1 if is_left else start2
                     line_exists_on_side = not line.startswith("+" if is_left else "-")

@@ -740,29 +740,55 @@ def handle_file_question(body, data, mr_url):
     return ["/ask", f"--origin_comment_id={note_id}", encode_user_text_arg(question)]
 
 
+def _positive_line_number(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _gitlab_endpoint_line(endpoint: dict) -> tuple[int, str] | None:
+    """Resolve one GitLab line_range endpoint to (line_number, side), honoring explicit type."""
+    endpoint_type = endpoint.get("type")
+    old_line = _positive_line_number(endpoint.get("old_line"))
+    new_line = _positive_line_number(endpoint.get("new_line"))
+    if endpoint_type == "old" and old_line is not None:
+        return old_line, "LEFT"
+    if endpoint_type == "new" and new_line is not None:
+        return new_line, "RIGHT"
+    if new_line is not None:
+        return new_line, "RIGHT"
+    if old_line is not None:
+        return old_line, "LEFT"
+    return None
+
+
+def _resolve_gitlab_line_range(position: dict) -> tuple[int, int, str, str] | None:
+    """Resolve a GitLab DiffNote position into (start_line, end_line, start_side, side)."""
+    line_range = position.get("line_range")
+    if isinstance(line_range, dict):
+        start = line_range.get("start") if isinstance(line_range.get("start"), dict) else {}
+        end = line_range.get("end") if isinstance(line_range.get("end"), dict) else {}
+        start_resolved = _gitlab_endpoint_line(start)
+        end_resolved = _gitlab_endpoint_line(end)
+        if start_resolved is not None and end_resolved is not None:
+            return start_resolved[0], end_resolved[0], start_resolved[1], end_resolved[1]
+        if end_resolved is not None:
+            return end_resolved[0], end_resolved[0], end_resolved[1], end_resolved[1]
+
+    new_line = _positive_line_number(position.get("new_line"))
+    if new_line is not None:
+        return new_line, new_line, "RIGHT", "RIGHT"
+    old_line = _positive_line_number(position.get("old_line"))
+    if old_line is not None:
+        return old_line, old_line, "LEFT", "LEFT"
+    return None
+
+
 def handle_ask_line(body, data):
     try:
         position = data['object_attributes']['position']
-        line_range_ = position.get('line_range')
-        if line_range_ is None:
-            new_line = position.get('new_line')
-            old_line = position.get('old_line')
-            if isinstance(new_line, int) and not isinstance(new_line, bool) and new_line > 0:
-                start_line = end_line = new_line
-                side = 'RIGHT'
-            elif isinstance(old_line, int) and not isinstance(old_line, bool) and old_line > 0:
-                start_line = end_line = old_line
-                side = 'LEFT'
-            else:
-                return body
-        elif line_range_['start'].get('type', 'new') == 'old':
-            start_line = line_range_['start']['old_line']
-            end_line = line_range_['end']['old_line']
-            side = 'LEFT'
-        else:
-            start_line = line_range_['start']['new_line']
-            end_line = line_range_['end']['new_line']
-            side = 'RIGHT'
+        resolved = _resolve_gitlab_line_range(position)
+        if resolved is None:
+            return body
+        start_line, end_line, start_side, side = resolved
         parts = body.strip().split(maxsplit=1)
         question = parts[1] if len(parts) > 1 else ""
         path = position['new_path']
@@ -776,6 +802,8 @@ def handle_ask_line(body, data):
             f"--file_name={path}",
             f"--comment_id={comment_id}",
         ]
+        if start_side != side:
+            body.insert(4, f"--start_side={start_side}")
         origin_comment_id = data['object_attributes'].get('id')
         if origin_comment_id is not None:
             body.append(f"--origin_comment_id={origin_comment_id}")
