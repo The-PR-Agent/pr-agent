@@ -559,11 +559,14 @@ class BitbucketProvider(GitProvider):
                 if lines_removed is None:
                     lines_removed = patch_removed
 
+            old_path = diff.old.path
+            old_filename = old_path if old_path and old_path != file_path else None
             file_patch_canonic_structure = FilePatchInfo(
                 original_file_content_str,
                 new_file_content_str,
                 diff_split[index],
                 file_path,
+                old_filename=old_filename,
                 num_plus_lines=lines_added,
                 num_minus_lines=lines_removed,
             )
