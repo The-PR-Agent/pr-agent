@@ -2587,9 +2587,11 @@ def review_label_settings():
     settings.pr_reviewer.enable_review_labels_security = original["enable_review_labels_security"]
 
 
-def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels(review_label_settings):
+@pytest.mark.parametrize("stale_effort", ["REVIEW EFFORT 1/5", "Review effort: 1/5", "Review effort [1-5]: 1"])
+def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels(review_label_settings, stale_effort):
     git_provider = MagicMock()
-    git_provider.get_pr_labels.return_value = ["Review effort 1/5", "Possible security concern", "keep-me"]
+    user_labels = ["Review effort::high", "Possible security concern: triaged", "keep-me"]
+    git_provider.get_pr_labels.return_value = [stale_effort, "Possible security concern", *user_labels]
     reviewer = _make_reviewer(git_provider)
     data = {
         "review": {
@@ -2603,7 +2605,7 @@ def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels(re
     git_provider.publish_labels.assert_called_once_with([
         "Review effort 3/5",
         "Possible security concern",
-        "keep-me",
+        *user_labels,
     ])
 
 

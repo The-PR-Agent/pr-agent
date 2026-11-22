@@ -136,6 +136,9 @@ from pr_agent.servers.help import HelpMessage
 
 MAX_REVIEW_COVERAGE_FILES = 50
 
+# Include the older "Review effort: 3/5" and "Review effort [1-5]: 3" spellings.
+_REVIEW_EFFORT_LABEL_RE = re.compile(r"review effort(?::? [1-5]/5| \[1-5\]: [1-5])")
+
 _REVIEW_FAILURE_REASONS = (
     (
         ("credit balance is too low", "insufficient credits", "insufficient balance", "insufficient_quota"),
@@ -2716,14 +2719,11 @@ class PRReviewer:
                 if self._prepare_cancelled():
                     return
                 get_logger().debug(f"Current labels:\n{current_labels}")
-                if current_labels:
-                    current_labels_filtered = [label for label in current_labels if
-                                               (not (label.lower().startswith('review effort')
-                                                     and has_valid_effort_estimate) and
-                                                not (label.lower().startswith(
-                                                    'possible security concern') and has_valid_security_verdict))]
-                else:
-                    current_labels_filtered = []
+                current_labels_filtered = [
+                    label for label in current_labels
+                    if not (has_valid_effort_estimate and _REVIEW_EFFORT_LABEL_RE.fullmatch(label.lower()))
+                    and not (has_valid_security_verdict and label.lower() == "possible security concern")
+                ]
                 new_labels = review_labels + current_labels_filtered
                 if (current_labels or review_labels) and sorted(new_labels) != sorted(current_labels):
                     get_logger().info(f"Setting review labels:\n{review_labels + current_labels_filtered}")
