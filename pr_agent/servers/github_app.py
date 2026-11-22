@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import os
 import time
@@ -157,10 +158,12 @@ async def handle_comments_on_pr(body: dict[str, Any],
             get_logger().info("Ignoring comment not starting with /")
             return {}
     disable_eyes = False
+    review_comment = False
     if "issue" in body and "pull_request" in body["issue"] and "url" in body["issue"]["pull_request"]:
         api_url = body["issue"]["pull_request"]["url"]
     elif "comment" in body and "pull_request_url" in body["comment"]:
         api_url = body["comment"]["pull_request_url"]
+        review_comment = True
         try:
             if (is_ask_command_comment(comment_body) and
                     body["comment"].get("subject_type") in ("line", "file")):
@@ -179,6 +182,9 @@ async def handle_comments_on_pr(body: dict[str, Any],
     provider = get_git_provider_with_context(pr_url=api_url)
     if isinstance(sender, str) and sender and hasattr(provider, "set_command_actor"):
         provider.set_command_actor(sender)
+    if review_comment and hasattr(provider, "mark_review_comment"):
+        # Reactions on a review comment go through its own endpoints: the issue comment ones answer 404 for it.
+        provider.mark_review_comment(comment_id)
     with get_logger().contextualize(**log_context):
         if get_identity_provider().verify_eligibility("github", sender_id, api_url) is not Eligibility.NOT_ELIGIBLE:
             get_logger().info(f"Processing comment on PR {api_url=}, comment_body={comment_body}")
@@ -252,15 +258,21 @@ def _start_auto_command_check_run(provider, command) -> str | None:
     return name
 
 
-def _finish_auto_command_check_run(provider, name: str | None, command, succeeded: bool) -> None:
+def _finish_auto_command_check_run(provider, name: str | None, command, succeeded: bool,
+                                   cancelled: bool = False) -> None:
     """Complete the command's check run when its command did not, so it cannot stay in_progress."""
     if provider is None or name is None:
         return
     action, _ = _auto_command_check_run(command)
     bot_display_name = get_bot_display_name()
-    summary = f"{bot_display_name} ran {action}" if succeeded else f"{bot_display_name} could not finish {action}"
+    if cancelled:
+        conclusion, summary = "cancelled", f"{bot_display_name} stopped {action}: it was cancelled"
+    elif succeeded:
+        conclusion, summary = "success", f"{bot_display_name} ran {action}"
+    else:
+        conclusion, summary = "failure", f"{bot_display_name} could not finish {action}"
     try:
-        provider.finish_check_run(name, "success" if succeeded else "failure", summary)
+        provider.finish_check_run(name, conclusion, summary)
     except Exception as e:
         get_logger().warning(f"Failed to complete the {name} check run: {e}")
 
@@ -481,7 +493,54 @@ async def _dispatch_request(body: dict[str, Any], event: str, action: str):
     return {}
 
 
+# Running deliveries per pull request API URL, so closing the PR can cancel them, and the ones a close cancelled.
+_pr_tasks: dict[str, set[asyncio.Task]] = {}
+_closed_pr_tasks: set[asyncio.Task] = set()
+
+
+def _webhook_pr_url(body: dict[str, Any]) -> str:
+    """The API URL of the pull request a delivery concerns, or "" when it names none."""
+    return ((body.get("pull_request") or {}).get("url")
+            or ((body.get("issue") or {}).get("pull_request") or {}).get("url")
+            or (body.get("comment") or {}).get("pull_request_url")
+            or "")
+
+
 async def handle_request(body: dict[str, Any], event: str, delivery_id: str | None = None):
+    """Run a delivery as a task registered under its PR; a pull_request "closed" delivery cancels the PR's others.
+
+    Cancelling a task stops its work at the next await: remaining chunks and fallback models never start, the
+    in-flight model request is dropped, nothing is published, and push-backlog and delivery slots are released by
+    their context managers. Only deliveries handled by this process are cancelled.
+    """
+    pr_url = _webhook_pr_url(body)
+    if not pr_url:
+        return await _handle_request(body, event, delivery_id)
+    if event == "pull_request" and body.get("action") == "closed":
+        for running in _pr_tasks.get(pr_url, ()):
+            if running.done() or running.cancelling():
+                continue  # finished, or already cancelled for another reason: keep that reason and its cleanup
+            _closed_pr_tasks.add(running)
+            running.cancel()
+    task = asyncio.create_task(_handle_request(body, event, delivery_id))
+    tasks = _pr_tasks.setdefault(pr_url, set())
+    tasks.add(task)
+    try:
+        return await task
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if task not in _closed_pr_tasks or (current is not None and current.cancelling()):
+            raise  # not cancelled by the PR closing (server shutdown, or the work itself): propagate
+        get_logger().info("Cancelled a running request: the PR was closed", api_url=pr_url)
+        return {}
+    finally:
+        _closed_pr_tasks.discard(task)
+        tasks.discard(task)
+        if not tasks:
+            _pr_tasks.pop(pr_url, None)
+
+
+async def _handle_request(body: dict[str, Any], event: str, delivery_id: str | None = None):
     """
     Handle incoming GitHub webhook requests.
 
@@ -593,6 +652,11 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
                 # pull request that never got its review.
                 get_logger().warning(f"Command '{command}' reported success but recorded a failure")
                 command_succeeded = False
+        except asyncio.CancelledError:
+            # A closed PR or a shutdown cancelled the command: complete its check run (a synchronous call, so the
+            # cancellation cannot interrupt it) rather than leave it in_progress, then let the cancellation through.
+            _finish_auto_command_check_run(provider, check_run, command, False, cancelled=True)
+            raise
         except Exception as e:
             command_succeeded = False
             get_logger().error(f"Failed to perform command {command}: {e}")

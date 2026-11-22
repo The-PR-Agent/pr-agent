@@ -95,7 +95,10 @@ async def test_direct_auto_command_leaves_unexpected_constructor_error_unchanged
 @pytest.mark.parametrize(("value", "expected"), [
     ("false", False),
     ("off", False),
-    ("", False),
+    # #5047: an empty value falls back to the key's default in configuration.toml
+    # (True for publish_output), with a warning. Previously the #4823 shortcut
+    # defaulted to bool(value), so "" read False.
+    ("", True),
     ("true", True),
 ])
 async def test_direct_auto_command_normalizes_publish_output(value, expected):
