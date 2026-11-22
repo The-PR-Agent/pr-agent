@@ -236,14 +236,14 @@ Also, review the [.secrets_template.toml](https://github.com/the-pr-agent/pr-age
 
 ### Groq
 
-To use Llama3 model with Groq, for example, set:
+To use a [GroqCloud model](https://console.groq.com/docs/models), prefix its model ID with `groq/`:
 
 ```toml
 [config] # in configuration.toml
-model = "llama3-70b-8192"
-fallback_models = ["groq/llama3-70b-8192"]
+model = "groq/openai/gpt-oss-120b"
+fallback_models = []
 [groq] # in .secrets.toml
-key = ... # your Groq api key
+key = "..." # your Groq API key
 ```
 
 (you can obtain a Groq key from [here](https://console.groq.com/keys))
