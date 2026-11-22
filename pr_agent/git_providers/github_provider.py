@@ -51,6 +51,7 @@ from ..algo.token_budget import clip_tokens
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (
     find_line_number_of_relevant_line_in_file,
+    get_suggestion_fence,
     load_large_diff,
     replace_suggestion_blocks,
     set_file_languages,
@@ -3322,11 +3323,13 @@ class GithubProvider(GitProvider):
                                                                 improved_code.split('\n'), n=999)
                                     patch_orig = "\n".join(diff)
                                     patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
-                                    diff_code = (f"\n\n<details><summary>New proposed code:</summary>\n\n"
-                                                 f"```diff\n{patch.rstrip()}\n```")
+                                    fence = get_suggestion_fence(patch)
+                                    diff_code = (
+                                        f"\n\n<details><summary>New proposed code:</summary>\n\n"
+                                        f"{fence}diff\n{patch.rstrip()}\n{fence}\n\n</details>"
+                                    )
                                     # replace ```suggestion ... ``` with diff_code:
                                     body = replace_suggestion_blocks(body, diff_code)
-                                    body += "\n\n</details>"
                                     suggestion['body'] = body
                                 suggestion['relevant_lines_start'] = new_start
                                 suggestion['relevant_lines_end'] = new_end
