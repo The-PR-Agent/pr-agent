@@ -425,6 +425,8 @@ def test_code_spans_pair_up_like_github(text, expected):
     "| a |\n|---|\n" + "| `x " * 50000,
     "x\n" + "|---|---|\n" * 50000,
     "https://x.com/" + "a`" * 50000,
+    "https://x.com/" * 50000,
+    "| " + "a | " * 50000 + "\n|" + "---|" * 50000 + "\n" + "x\n" * 50000,
 ])
 def test_html_table_and_link_scans_stay_linear(prefix):
     assert neutralize_github_mentions(prefix + "\n\n@b") == neutralize_github_mentions(prefix) + f"\n\n@{ZWSP}b"

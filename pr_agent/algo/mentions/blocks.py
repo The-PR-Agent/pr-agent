@@ -154,7 +154,7 @@ def line_flags(text: str) -> tuple[dict[int, bool], list[int], set[int]]:
                 if not stripped:
                     boundary = True
                     in_table = paragraph = False
-                elif delimiter == len(_table_cells(header)):
+                elif delimiter and delimiter == len(_table_cells(header)):
                     boundary = in_table = True
                     paragraph = False
                     if prev_start is not None and (not boundaries or boundaries[-1] != prev_start):

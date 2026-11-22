@@ -32,10 +32,13 @@ def _is_valid_domain(domain: str) -> bool:
 
 def _url_ends(text: str) -> dict[int, int]:
     ends = {}
+    extent_end = 0
     for match in _GITHUB_URL_RE.finditer(text):
         domain = match.start() if match.group().startswith("www") else match.end()
         if _is_valid_domain(text[domain:_domain_end(text, domain)]):
-            ends[match.start()] = _EXTENT_RE.match(text, match.end()).end()
+            if match.end() >= extent_end:
+                extent_end = _EXTENT_RE.match(text, match.end()).end()
+            ends[match.start()] = extent_end
     return ends
 
 
