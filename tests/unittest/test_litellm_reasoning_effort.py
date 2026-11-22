@@ -1598,17 +1598,29 @@ class TestLiteLLMReasoningEffortGemini:
                 assert call_kwargs["model"] == model, f"model mutated for {model}: {call_kwargs['model']}"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("model", [
-        "gemini/gemini-4-argon",
-        "vertex_ai/gemini-4-argon",
-    ])
-    async def test_gemini_4_argon_gets_reasoning_effort(self, monkeypatch, mock_logger, model):
-        """Gemini 4 Argon receives the configured reasoning_effort through both provider prefixes.
+    @pytest.mark.parametrize(
+        ("model", "configured_effort", "expected_effort"),
+        [
+            ("gemini/gemini-4-argon", "high", "high"),
+            ("vertex_ai/gemini-4-argon", "high", "high"),
+            ("gemini/gemini-4-argon", "xhigh", "high"),
+            ("vertex_ai/gemini-4-argon", "max", "high"),
+            ("gemini/gemini-4-hydrogen", "xhigh", "xhigh"),
+            ("vertex_ai/gemini-4-hydrogen", "xhigh", "xhigh"),
+            ("gemini/gemini-4-hydrogen", "max", "xhigh"),
+            ("vertex_ai/gemini-4-hydrogen", "minimal", "low"),
+        ],
+    )
+    async def test_gemini_4_bundled_models_get_normalized_reasoning_effort(
+        self, monkeypatch, mock_logger, model, configured_effort, expected_effort
+    ):
+        """Bundled Gemini 4 models receive normalized reasoning_effort through both provider prefixes.
 
-        The bare "gemini-4-argon" spelling is not registered in litellm's cost map, so the
-        probe leaves it on the no-effort path; the provider prefixes are the documented ids.
+        Bare "gemini-4-argon" and "gemini-4-hydrogen" spellings are absent from litellm's bundled
+        cost map, so the probe leaves them on the no-effort path; the provider prefixes are the
+        documented ids.
         """
-        fake_settings = create_mock_settings("high")
+        fake_settings = create_mock_settings(configured_effort)
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
         self._isolate_env(monkeypatch)
 
@@ -1619,7 +1631,40 @@ class TestLiteLLMReasoningEffortGemini:
             await handler.chat_completion(model=model, system="test system", user="test user")
 
             call_kwargs = mock_completion.call_args[1]
-            assert call_kwargs["reasoning_effort"] == "high", f"failed for {model}"
+            assert call_kwargs["reasoning_effort"] == expected_effort, f"failed for {model}"
+
+    @pytest.mark.parametrize(
+        ("model", "configured_effort", "expected_thinking_level"),
+        [
+            ("gemini/gemini-4-argon", "minimal", "low"),
+            ("gemini/gemini-4-argon", "high", "high"),
+            ("gemini/gemini-4-argon", "xhigh", "high"),
+            ("vertex_ai/gemini-4-argon", "max", "high"),
+            ("gemini/gemini-4-hydrogen", "minimal", "low"),
+            ("gemini/gemini-4-hydrogen", "xhigh", "xhigh"),
+            ("vertex_ai/gemini-4-hydrogen", "xhigh", "xhigh"),
+            ("vertex_ai/gemini-4-hydrogen", "max", "xhigh"),
+        ],
+    )
+    def test_gemini_4_clamped_efforts_map_cleanly_in_litellm(
+        self, model, configured_effort, expected_thinking_level
+    ):
+        """Clamped Gemini 4 efforts translate through LiteLLM's real provider mapper without error."""
+        provider_name, bare_model = model.split("/", 1)
+        handler = object.__new__(LiteLLMAIHandler)
+        resolved = handler._resolve_reasoning_effort(model, configured_effort)
+
+        provider_config = litellm.utils.ProviderConfigManager.get_provider_chat_config(
+            model=bare_model,
+            provider=litellm.LlmProviders(provider_name),
+        )
+        mapped = provider_config.map_openai_params(
+            non_default_params={"reasoning_effort": resolved},
+            optional_params={},
+            model=bare_model,
+            drop_params=False,
+        )
+        assert mapped["thinkingConfig"]["thinkingLevel"] == expected_thinking_level
 
     @pytest.mark.asyncio
     async def test_non_listed_gemini_gets_no_reasoning_effort(self, monkeypatch, mock_logger):
@@ -1628,10 +1673,10 @@ class TestLiteLLMReasoningEffortGemini:
         Locks in the deliberate 3.x exclusions: gemini-3.1-flash and gemini-3.5-pro
         are absent from litellm's bundled cost map, and gemini-3.1-pro resolves
         only under the deepinfra/google/ prefix, so the metadata probe's suffix
-        lookup never flags their native spellings. The bare "gemini-4-argon"
-        spelling joins them because litellm registers only its gemini/ and
-        vertex_ai/ prefixed forms. Do not re-add them without checking the
-        bundled registry first.
+        lookup never flags their native spellings. The bare "gemini-4-argon" and
+        "gemini-4-hydrogen" spellings join them because litellm registers only their
+        gemini/ and vertex_ai/ prefixed forms. Do not re-add them without checking
+        the bundled registry first.
         """
         fake_settings = create_mock_settings("low")
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
@@ -1644,6 +1689,7 @@ class TestLiteLLMReasoningEffortGemini:
             "gemini/gemini-3.1-pro",
             "gemini-3.5-pro",
             "gemini-4-argon",
+            "gemini-4-hydrogen",
         ):
             with patch(ACOMPLETION_PATCH_TARGET, new_callable=AsyncMock) as mock_completion:
                 mock_completion.return_value = create_mock_acompletion_response()
@@ -1884,6 +1930,21 @@ class TestLiteLLMReasoningEffortGrok:
             ("gemini/gemini-4-argon", "none", "none"),
             ("gemini/gemini-4-argon", "low", "low"),
             ("gemini/gemini-4-argon", "high", "high"),
+            ("gemini/gemini-4-argon", "xhigh", "high"),
+            ("gemini/gemini-4-argon", "max", "high"),
+            ("gemini/gemini-3.7-flash", "xhigh", "high"),
+            ("gemini/gemini-3.8-flash", "max", "high"),
+            # Gemini 4 Hydrogen documents low/medium/high/xhigh thinking levels.
+            ("gemini-4-hydrogen", "minimal", "low"),
+            ("gemini/gemini-4-hydrogen", "minimal", "low"),
+            ("vertex_ai/gemini-4-hydrogen", "minimal", "low"),
+            ("openrouter/google/gemini-4-hydrogen:nitro", "minimal", "low"),
+            ("gemini/gemini-4-hydrogen", "none", "none"),
+            ("gemini/gemini-4-hydrogen", "low", "low"),
+            ("gemini/gemini-4-hydrogen", "high", "high"),
+            ("gemini/gemini-4-hydrogen", "xhigh", "xhigh"),
+            ("gemini/gemini-4-hydrogen", "max", "xhigh"),
+            ("vertex_ai/gemini-4-hydrogen", "max", "xhigh"),
             ("gemini/gemini-3.7-flash", "low", "low"),
             ("gemini/gemini-3.7-flash", "medium", "medium"),
             ("gemini/gemini-3.7-flash", "high", "high"),

@@ -2097,6 +2097,37 @@ class LiteLLMAIHandler(BaseAiHandler):
             )
             return False
 
+    @classmethod
+    def _openrouter_gemini_supports_reasoning(cls, model: str) -> bool:
+        """Probe ``gemini/`` and ``vertex_ai/`` metadata for scoped OpenRouter Google models.
+
+        LiteLLM's bundled cost map has no bare, ``google/``, or ``openrouter/``
+        entries for Gemini 4 ids; their reasoning metadata lives under ``gemini/``
+        and ``vertex_ai/``. Callers invoke this only when the resolved request
+        provider is OpenRouter, so non-OpenRouter overrides and bare direct
+        Gemini 4 ids stay off the reasoning path.
+        """
+        if not model.startswith("openrouter/"):
+            return False
+        segments = model.removeprefix("openrouter/").split("/")
+        if (
+            len(segments) != 2
+            or segments[0] != "google"
+            or segments[-1] not in cls._GEMINI_LOW_FLOOR_CEILING
+        ):
+            return False
+        bare = segments[-1]
+        try:
+            return any(
+                cls._model_cost_entry_supports_reasoning(candidate)
+                for candidate in (f"gemini/{bare}", f"vertex_ai/{bare}")
+            )
+        except Exception as e:
+            get_logger().warning(
+                f"Failed to probe litellm reasoning metadata for {model}: {e}"
+            )
+            return False
+
     @staticmethod
     def _litellm_supports_temperature(
         model: str,
@@ -2171,24 +2202,39 @@ class LiteLLMAIHandler(BaseAiHandler):
         normalized = model.lower().replace("_", "-").replace(".", "-")
         return re.search(r"claude(?:-|$)", normalized) is not None
 
-    @staticmethod
-    def _uses_gemini_low_reasoning_floor(model: str) -> bool:
-        """Return whether a model needs a floor for unsupported Gemini thinking levels.
+    _GEMINI_LOW_FLOOR_CEILING: dict[str, str] = {
+        "gemini-3.7-flash": "high",
+        "gemini-3.8-flash": "high",
+        "gemini-4-argon": "high",
+        "gemini-4-hydrogen": "xhigh",
+    }
 
-        These ids document low/medium/high only: clamp "minimal" to "low" on the
-        direct path, and clamp "none" to "low" on the OpenRouter path.
+    @classmethod
+    def _gemini_reasoning_ceiling_for(cls, model: str) -> str | None:
+        """Return the highest documented thinking level for a low-floor Gemini model.
+
+        These ids omit ``minimal`` (clamped to ``low`` on the direct path) and
+        ``none`` (clamped to ``low`` on the OpenRouter path), and cap upper
+        reasoning efforts at the returned ceiling.
         """
         normalized_model = model.rsplit(":", 1)[0] if model.startswith("openrouter/") else model
-        return any(
-            normalized_model == gemini_id or normalized_model.endswith("/" + gemini_id)
-            for gemini_id in ("gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon")
-        )
+        for gemini_id, ceiling in cls._GEMINI_LOW_FLOOR_CEILING.items():
+            if normalized_model == gemini_id or normalized_model.endswith("/" + gemini_id):
+                return ceiling
+        return None
 
     @classmethod
     def _clamp_gemini_reasoning_effort(cls, model: str, reasoning_effort: str) -> str:
-        """Map unsupported Gemini ``minimal`` effort to the nearest level."""
-        if cls._uses_gemini_low_reasoning_floor(model) and reasoning_effort == "minimal":
+        """Clamp unsupported Gemini reasoning efforts to the model's documented bounds."""
+        ceiling = cls._gemini_reasoning_ceiling_for(model)
+        if ceiling is None:
+            return reasoning_effort
+        if reasoning_effort == "minimal":
             return "low"
+        if reasoning_effort == "max":
+            return ceiling
+        if reasoning_effort == "xhigh" and ceiling == "high":
+            return "high"
         return reasoning_effort
 
     @staticmethod
@@ -2252,9 +2298,19 @@ class LiteLLMAIHandler(BaseAiHandler):
             )
             reasoning_effort = clamped_effort
 
-        if reasoning_effort == "none" and cls._uses_gemini_low_reasoning_floor(model):
-            get_logger().info(f"Gemini model {model} does not support reasoning_effort='none'; using 'low' instead.")
-            reasoning_effort = "low"
+        gemini_ceiling = cls._gemini_reasoning_ceiling_for(model)
+        if gemini_ceiling is not None:
+            if reasoning_effort == "none":
+                get_logger().info(
+                    f"Gemini model {model} does not support reasoning_effort='none'; using 'low' instead."
+                )
+                reasoning_effort = "low"
+            elif reasoning_effort == "max" or (reasoning_effort == "xhigh" and gemini_ceiling == "high"):
+                get_logger().info(
+                    f"Gemini model {model} does not support reasoning_effort="
+                    f"'{reasoning_effort}'; using '{gemini_ceiling}' instead."
+                )
+                reasoning_effort = gemini_ceiling
         return reasoning_effort
 
     @classmethod
@@ -2287,7 +2343,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             return reasoning_effort
 
     def _resolve_reasoning_effort(self, model: str, configured_effort) -> str:
-        """Validate a configured reasoning effort and clamp it to this model's Grok levels."""
+        """Validate a configured reasoning effort and clamp it to this model's supported levels."""
         reasoning_effort = self._validate_reasoning_effort(configured_effort)
         clamped_effort = self._clamp_grok_reasoning_effort(model, reasoning_effort)
         clamped_effort = self._clamp_gemini_reasoning_effort(model, clamped_effort)
@@ -3488,7 +3544,13 @@ class LiteLLMAIHandler(BaseAiHandler):
                     and (not preserved_gpt6_alias or terra_reasoning_support is True)
                     and not self._is_claude_family_model(reasoning_model)
                     and (
-                        self._litellm_supports_reasoning(reasoning_model)
+                        (
+                            self._litellm_supports_reasoning(reasoning_model)
+                            or (
+                                bool(openrouter_model)
+                                and self._openrouter_gemini_supports_reasoning(reasoning_model)
+                            )
+                        )
                         if terra_reasoning_support is None else terra_reasoning_support
                     )
                     or any(
