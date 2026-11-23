@@ -98,6 +98,10 @@ The answer is posted in the original file-comment thread with a link to the ques
 Earlier replies are included when `pr_questions.use_conversation_history` is enabled and the input budget allows.
 Text resembling command options is treated as part of the question.
 
+In the Azure DevOps webhook, `/ask`, `/ask_question`, or a mention of PR-Agent in a thread on a whole file also uses
+that file's complete diff, with the same filters, input budgets, and notes. The answer is posted in that thread with a
+link to the question, and earlier comments in the thread are included as described above.
+
 With `pr_questions.use_conversation_history=true` (the default), line questions on GitHub, GitLab, and Azure DevOps
 can include earlier comments from the same thread. Azure DevOps also supports history for threaded top-level questions.
 Other questions are answered independently.

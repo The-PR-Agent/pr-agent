@@ -168,6 +168,13 @@ def handle_line_comment(body: str, thread_id: int, comment_id: int, provider: Az
         side = "right"
     else:
         get_logger().info("No line range found in thread context", artifact={"thread_context": thread_context})
+        if isinstance(path, str) and path.strip():
+            # A thread on a whole file: PRQuestions reads the file and the thread from the request context
+            # and answers from that file's diff, in this thread.
+            context["file_question_path"] = path
+            context["file_question_comment_id"] = thread_id
+            context["file_question_origin_comment_id"] = comment_id
+            context["file_question_comment_url"] = f"{provider.get_pr_url()}?discussionId={thread_id}"
         return threaded_question
 
     start_line = getattr(start_position, "line", None)
