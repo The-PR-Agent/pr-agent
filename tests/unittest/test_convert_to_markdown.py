@@ -626,6 +626,13 @@ class TestBR:
         assert "<code>Optional&lt;User&gt;</code>" in file_change_description_br
         assert "<User>" not in file_change_description_br
 
+    def test_br_escapes_html_in_short_descriptions(self):
+        file_change_description = "Return `Optional<User>` <img src=x.png>"
+        file_change_description_br = insert_br_after_x_chars(file_change_description)
+        assert file_change_description_br == (
+            "Return <code>Optional&lt;User&gt;</code> &lt;img src=x.png&gt;"
+        )
+
 
 class TestExpandMinuteSuffix:
     """Tests for _expand_minute_suffix regex replacement."""

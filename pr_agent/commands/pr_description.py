@@ -1583,18 +1583,19 @@ def insert_br_after_x_chars(text: str, x=70, *, entity_aware=False):
             return len(html.unescape(re.sub("<[^>]+>", "", value)))
         return count_chars_without_html(value)
 
-    if display_length(text) < x:
-        return text
-
-    is_list = text.lstrip().startswith(("- ", "* "))
-
     if entity_aware:
         # replace odd instances of ` with <code> and even instances of ` with </code>
         text = replace_code_tags(text)
     else:
         # Plain text: escape it before adding <code> tags, so `List<str>` is not dropped as an unknown HTML tag.
+        # This runs before the short-text return, so short descriptions are escaped too.
         text = escape_and_replace_code_tags(text)
         entity_aware = True
+
+    if display_length(text) < x:
+        return text
+
+    is_list = text.lstrip().startswith(("- ", "* "))
 
     # convert list items to <li> only if the text is identified as a list
     if is_list:
