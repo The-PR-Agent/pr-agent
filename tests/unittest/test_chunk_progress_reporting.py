@@ -441,7 +441,7 @@ async def _run_chunked_describe(command, chunk_count=2, **overrides):
                 [],
                 [],
                 {},
-                [[f"file-{index}.py"] for index in range(chunk_count)],
+                [["a.py"] for _ in range(chunk_count)],
             ),
         ),
         patch(
