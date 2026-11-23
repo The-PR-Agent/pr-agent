@@ -795,6 +795,10 @@ class TestDiagramEdgeParsing:
     def test_fence_and_frontmatter_lines_produce_no_edges(self):
         assert _parse_diagram_edges(['```', '---', 'config:', '---']) == []
 
+    def test_hyphenated_node_ids_are_kept_whole(self):
+        lines = ['api-gateway["Gateway"] -- "routes" --> api-auth["Auth"]', 'api-auth --> db-users']
+        assert _parse_diagram_edges(lines) == [('api-gateway', 'api-auth'), ('api-auth', 'db-users')]
+
 
 class TestLongestDiagramChain:
 
@@ -873,6 +877,10 @@ class TestApplyDiagramDirection:
     def test_unparseable_threshold_leaves_diagram_untouched(self):
         diagram = _fenced(f'flowchart LR\n{LONG_CHAIN}')
         assert _adapt(diagram, threshold='not-a-number') == diagram
+
+    def test_long_chain_of_hyphenated_ids_becomes_vertical(self):
+        body = 'a-1 --> a-2 --> a-3 --> a-4 --> a-5 --> a-6'
+        assert _adapt(_fenced(f'flowchart LR\n{body}')) == _fenced(f'flowchart TD\n{body}')
 
     def test_subgraph_edges_are_counted(self):
         body = 'subgraph one\nA --> B --> C\nend\nsubgraph two\nC --> D --> E --> F\nend'
