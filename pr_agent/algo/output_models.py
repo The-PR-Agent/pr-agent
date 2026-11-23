@@ -319,13 +319,6 @@ class CodeDocumentation(BaseModel):
         return items
 
 
-class PRRankResponses(BaseModel):
-    which_response_was_better: Literal[0, 1, 2]
-    why: str
-    score_response1: int = Field(ge=1, le=10)
-    score_response2: int = Field(ge=1, le=10)
-
-
 class RelevantSection(BaseModel):
     file_name: str
     relevant_section_header_string: str

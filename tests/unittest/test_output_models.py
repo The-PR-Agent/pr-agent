@@ -21,7 +21,6 @@ from pr_agent.algo.output_models import (
     PRDescriptionAssembled,
     PRDescriptionHeaders,
     PRFilesWalkthrough,
-    PRRankResponses,
     PRReview,
     PRType,
     RelevantSection,
@@ -117,12 +116,6 @@ def test_review_model_does_not_expose_user_answer_insights():
             "relevant file": "src/app.py", "relevant line": 12, "doc placement": "after",
             "documentation": "Document the handler.",
         }]}),
-        (PRRankResponses, {
-            "which_response_was_better": 1,
-            "why": "It is clearer.",
-            "score_response1": 9,
-            "score_response2": 7,
-        }),
         (DocHelper, {"user_question": "How?", "response": "Use the helper.", "relevant_sections": [{
             "file_name": "docs/guide.md", "relevant_section_header_string": "## Usage",
         }], "question_is_relevant": 1}),
@@ -208,18 +201,12 @@ def test_review_accepts_extra_fields_while_nested_schemas_stay_strict():
 
 
 _INVALID_MODEL_PAYLOADS = [
-    (PRRankResponses, {
-        "which_response_was_better": 3, "why": "No", "score_response1": 1, "score_response2": 1,
-    }),
     (Review, {"key_issues_to_review": [], "can_be_split": [{"relevant_files": [], "title": "x"}] * 4}),
     (PRDescription, {"type": ["Tests"], "title": "x", "pr_files": [{
         "filename": "x", "changes_title": "x", "label": "x",
     }] * 21}),
     (Review, {"key_issues_to_review": [], "estimated_effort_to_review_[1-5]": 0}),
     (Review, {"key_issues_to_review": [], "score": 101}),
-    (PRRankResponses, {
-        "which_response_was_better": 1, "why": "x", "score_response1": 0, "score_response2": 11,
-    }),
     (DocHelper, {
         "user_question": "x", "response": "x", "relevant_sections": [], "question_is_relevant": 2,
     }),
@@ -414,7 +401,6 @@ PROMPT_MODELS = {
         "FileDescription": FileDescription, "PRFilesWalkthrough": PRFilesWalkthrough,
     },
     "pr_custom_labels.toml": {"Labels": Labels},
-    "pr_evaluate_prompt_response.toml": {"PRRankResponses": PRRankResponses},
     "pr_help_prompts.toml": {"relevant_section": RelevantSection, "DocHelper": DocHelper},
     "pr_help_docs_prompts.toml": {"relevant_section": RelevantSection, "DocHelper": DocHelper},
     "pr_help_docs_headings_prompts.toml": {"file_idx_and_path": FileIdxAndPath, "DocHeadingsHelper": DocHeadingsHelper},
@@ -485,13 +471,6 @@ def test_estimate_effort_example_is_a_strict_integer():
         "key_issues_to_review": [],
         "estimated_effort_to_review_[1-5]": load_yaml(text)["estimated_effort_to_review_[1-5]"],
     })
-
-
-def test_ranking_example_is_a_valid_numeric_payload():
-    text = 'which_response_was_better: 1\nwhy: "It is clearer."\nscore_response1: 9\nscore_response2: 7'
-    parsed = load_yaml(text)
-    assert isinstance(parsed["which_response_was_better"], int)
-    PRRankResponses.model_validate(parsed)
 
 
 @pytest.mark.parametrize("confidence", [-1, 11, 8.5])
