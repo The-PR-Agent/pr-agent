@@ -29,6 +29,7 @@ Before running a command:
 - Run it from inside the Git repository that contains the proposed change.
 - Keep the working tree clean. Check it with `git status --short`; the command compares committed `HEAD` content.
 - Make sure the target branch exists locally, for example with `git branch --list main`.
+- In a shallow checkout, fetch enough history for `git merge-base HEAD <target-branch>` to return a commit.
 - Configure the LLM provider required by your setup. A hosted Git provider token is not required for this mode.
 
 ## Basic usage

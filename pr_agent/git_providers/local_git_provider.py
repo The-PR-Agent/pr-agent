@@ -107,11 +107,14 @@ class LocalGitProvider(GitProvider):
         if cached_diff_files is not None:
             return cached_diff_files
 
-        diffs = self.repo.head.commit.diff(
-            self.repo.merge_base(self.repo.head, self.repo.branches[self.target_branch_name]),
-            create_patch=True,
-            R=True
-        )
+        head = self.repo.head.commit
+        merge_bases = self.repo.merge_base(head, self.repo.branches[self.target_branch_name])
+        if not merge_bases:
+            raise ValueError(
+                f"No merge base found between HEAD and {self.target_branch_name!r}. "
+                "If this is a shallow checkout, fetch more history."
+            )
+        diffs = head.diff(merge_bases[0], create_patch=True, R=True)
         diff_files = []
         for diff_item in diffs:
             filename = diff_item.b_path or diff_item.a_path
