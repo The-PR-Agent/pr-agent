@@ -1381,7 +1381,7 @@ class PRReviewer:
         return value if isinstance(value, str) else ""
 
     def _append_review_state_with_footer(self, review_body: str, state: dict) -> str:
-        """Append the custom comment footer and the review state, dropping the footer if both do not fit.
+        """Append the custom comment footer and the review state, dropping the footer unless it fits intact.
 
         Raises ValueError, like append_review_state, when the state does not fit even without the footer.
         """
@@ -1389,9 +1389,13 @@ class PRReviewer:
         footer = show_custom_comment_footer()
         if footer:
             try:
-                return append_review_state(review_body + footer, state, max_chars=max_chars)
+                with_footer = append_review_state(review_body + footer, state, max_chars=max_chars)
+                # append_review_state truncates the body to fit; keep the footer only if nothing was cut.
+                if with_footer == append_review_state(review_body + footer, state):
+                    return with_footer
             except ValueError:
-                get_logger().warning("Custom comment footer omitted so the review state fits the comment limit")
+                pass
+            get_logger().warning("Custom comment footer omitted so the review comment fits the comment limit")
         return append_review_state(review_body, state, max_chars=max_chars)
 
     def _review_comment_max_chars(self) -> int | None:

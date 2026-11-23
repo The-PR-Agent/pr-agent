@@ -147,6 +147,7 @@ _STATE = {"schema_version": STATE_SCHEMA_VERSION, "findings": [], "last_run": {}
 @pytest.mark.parametrize("max_chars, footer_kept", [
     pytest.param(None, True, id="no-limit"),
     pytest.param(400, False, id="footer-does-not-fit"),
+    pytest.param(200, False, id="footer-would-truncate-body"),
 ])
 def test_review_state_outranks_footer(footer_setting, max_chars, footer_kept):
     """The footer precedes the review-state marker, and is dropped rather than the state when both do not fit."""
@@ -159,6 +160,7 @@ def test_review_state_outranks_footer(footer_setting, max_chars, footer_kept):
 
     assert parse_review_state(output).valid
     assert (FOOTER * 8 in output) is footer_kept
+    assert "review body" in output and "..." not in output
     if max_chars is not None:
         assert len(output) <= reviewer._review_comment_max_chars()
 

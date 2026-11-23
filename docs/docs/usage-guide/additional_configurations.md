@@ -153,7 +153,8 @@ PR-Agent adds the text after a horizontal rule at the end of the result of `/rev
 `/describe` updates the PR description rather than posting a comment, the footer becomes part of the PR
 description. Progress, temporary and failure notices are left unchanged, and so are inline code suggestions
 (posted one per line, so a footer would repeat on every suggestion). If a `/review` comment and its persistent
-review state do not both fit the provider's comment size limit, the footer is omitted so the state is kept.
+review state do not fit the provider's comment size limit together with the footer, the footer is omitted so the
+review is not cut short.
 
 The setting is host-only: repository settings, namespace settings repositories, per-directory settings, and
 `/command --config.custom_comment_footer=...` arguments cannot set or remove it. An empty value disables it.
