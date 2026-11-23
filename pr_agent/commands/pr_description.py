@@ -13,7 +13,7 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import get_artifact_context
 from pr_agent.algo.code_fence import strip_wrapping_code_fence
-from pr_agent.algo.comment_identity import PRDescriptionHeader, PRDescriptionIdentity
+from pr_agent.algo.comment_identity import PRDescriptionHeader
 from pr_agent.algo.language_handler import filter_bad_extensions
 from pr_agent.algo.output_models import PRDescriptionAssembled
 from pr_agent.algo.output_sinks import _push_outputs_consumes_payload
@@ -183,6 +183,9 @@ class PRDescription:
         self._description_output_touched = False
         try:
             get_logger().info(f"Generating a PR description for pr_id: {self.pr_id}")
+            json_path = review_json_output_path.get() if get_settings().config.publish_output else None
+            if json_path:
+                self.git_provider.validate_description_json_path(json_path)
             relevant_configs = {'pr_description': dict(get_settings().pr_description),
                                 'config': dict(get_settings().config)}
             get_logger().debug("Relevant configs", artifact=relevant_configs)
@@ -220,6 +223,10 @@ class PRDescription:
                         raise
                     # Keep Markdown available even when a requested JSON file cannot be written.
                     record_command_failure()
+                else:
+                    if json_path:
+                        # The filesystem may recognize equivalent names only after the JSON file exists.
+                        self.git_provider.validate_description_json_path(json_path)
             else:
                 get_logger().warning(f"Empty prediction, PR: {self.pr_id}")
                 # A skipped Plain Diff description cannot satisfy an explicit
@@ -326,19 +333,10 @@ class PRDescription:
                 if get_settings().pr_description.publish_description_as_comment:
                     full_markdown_description = f"## Title\n\n{pr_title.strip()}\n\n___\n{pr_body}"
                     self._description_output_touched = True
-                    if get_settings().pr_description.publish_description_as_comment_persistent:
-                        self.git_provider.publish_persistent_comment(
-                            full_markdown_description,
-                            initial_header="## Title",
-                            update_header=True,
-                            name="describe",
-                            final_update_message=False,
-                            identity_marker=PRDescriptionIdentity.PERSISTENT.value,
-                            legacy_initial_header="## Title",
-                            require_agent_authorship=True,
-                        )
-                    else:
-                        self.git_provider.publish_comment(full_markdown_description)
+                    self.git_provider.publish_description_comment(
+                        full_markdown_description,
+                        persistent=get_settings().pr_description.publish_description_as_comment_persistent,
+                    )
                 else:
                     # Pass None when the title is not AI-generated so the provider
                     # leaves it untouched, avoiding reverting a manual edit (#2474).

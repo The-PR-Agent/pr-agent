@@ -245,7 +245,7 @@ enable_pr_diagram=true # adds a section with a diagram of the PR changes
 pr_diagram_direction='adaptive' # 'adaptive', 'LR', 'TD'. 'adaptive' picks the direction from the shape of the diagram
 pr_diagram_direction_threshold=5 # with 'adaptive', a chain longer than this many nodes is drawn top-down
 # describe as comment
-publish_description_as_comment=false
+publish_description_as_comment=false # When true, publish a comment; [local Git](local_git_provider.md#output-files) writes it to `local.description_path`.
 publish_description_as_comment_persistent=true
 ## changes walkthrough section
 enable_semantic_files_types=true

@@ -259,7 +259,7 @@ See [Describe](../commands/describe.md#configuration-options).
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `publish_description_as_comment` | false |  |
+| `publish_description_as_comment` | false | When true, publish a comment; [local Git](local_git_provider.md#output-files) writes it to `local.description_path`. |
 | `publish_description_as_comment_persistent` | true |  |
 
 **changes walkthrough section**

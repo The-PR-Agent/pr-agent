@@ -1,4 +1,5 @@
 import json
+import os
 from contextvars import ContextVar
 
 from pr_agent.log import get_logger
@@ -7,6 +8,15 @@ review_json_output_path: ContextVar[str | None] = ContextVar("review_json_output
 hosted_markdown_export: ContextVar[bool] = ContextVar("hosted_markdown_export", default=False)
 hosted_markdown_artifact: ContextVar[str | None] = ContextVar("hosted_markdown_artifact", default=None)
 hosted_markdown_config_error: ContextVar[bool] = ContextVar("hosted_markdown_config_error", default=False)
+
+
+def same_output_file(first: str | os.PathLike, second: str | os.PathLike) -> bool:
+    try:
+        if os.path.normcase(os.path.realpath(first)) == os.path.normcase(os.path.realpath(second)):
+            return True  # The output files need not exist yet.
+        return os.path.samefile(first, second)
+    except (OSError, ValueError):
+        return False
 
 
 def write_review_json_output(review: dict, path: str | None = None) -> None:
