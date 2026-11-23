@@ -10,6 +10,8 @@ the same as a quoted one.
 
 import re
 
+import pytest
+
 from pr_agent.algo.publish_firewall import firewall_model_output
 from pr_agent.commands.pr_reviewer import PRReviewer
 
@@ -267,7 +269,96 @@ def test_object_and_code_span_floods_stay_fast():
     assert _live_occurrences(result, "[a](b)") == []
 
 
-def test_the_pass_is_idempotent():
+RELATIVE = "![x](//evil.test/t.png)"
+
+
+def test_an_escaped_backtick_does_not_pair_into_a_code_span():
+    # "\`![x](url)`": the first backtick is escaped, so it is no delimiter, the
+    # last one is unpaired, and the image in between stays a live object.
+    result = firewall_model_output("\\`" + RELATIVE + "`")
+
+    assert _live_occurrences(result, RELATIVE) == []
+
+
+def test_a_tag_split_across_lines_is_escaped_at_the_opening_bracket():
+    result = firewall_model_output("<img\nsrc=//evil.test/t.png>")
+
+    assert _live_occurrences(result, "<img") == []
+    assert _live_occurrences(result, "//evil.test/t.png") == []
+
+
+def test_only_an_odd_backslash_run_escapes_the_next_character():
+    double, single = "\\\\<img src=x>", "\\<img src=x>"
+
+    assert _live_occurrences(firewall_model_output(double), "<img") == []
+    # Already escaped by the model: left alone, which is also what keeps the pass idempotent.
+    assert firewall_model_output(single) == single
+
+
+def test_reference_definitions_and_collapsed_references_are_escaped():
+    result = firewall_model_output("![x]\n\n[x]: //evil.test/t.png")
+
+    assert _live_occurrences(result, "![x]") == []
+    assert _live_occurrences(result, "[x]") == []
+
+
+def test_protocol_relative_urls_are_objects():
+    result = firewall_model_output("see //evil.test/t.png and src=//evil.test/t.png")
+
+    assert _live_occurrences(result, "//evil.test/t.png") == []
+    # An ordinary path with a double slash is not a URL and stays as written.
+    assert firewall_model_output("path a//b stays") == "path a//b stays"
+
+
+@pytest.mark.parametrize(
+    "opener",
+    [
+        "<?php",
+        "<!DOCTYPE html>",
+        "<!doctype html>",
+        "<![CDATA[",
+    ],
+)
+@pytest.mark.parametrize("fenced_ok", [True, False])
+def test_fences_inside_raw_markup_blocks_are_not_fences(opener, fenced_ok):
+    # These HTML blocks do not end at a blank line, so a ``` inside one never
+    # opens a fence on GitHub; the beacon after it must still be firewalled.
+    result = firewall_model_output(opener + "\n```\n" + RELATIVE, fenced_ok=fenced_ok)
+
+    assert _live_occurrences(result, RELATIVE) == []
+
+
+@pytest.mark.parametrize("opener", ["<pre>", "<pre class=\"x\">", "<script>", "<style>", "<textarea>"])
+def test_fences_inside_preformatted_and_script_blocks_are_not_fences(opener):
+    result = firewall_model_output(opener + "\n```\n" + RELATIVE)
+
+    assert _live_occurrences(result, RELATIVE) == []
+
+
+def test_a_stripped_comment_does_not_keep_later_fences_closed():
+    # A comment opener is not a raw-markup block: treating it as one left every
+    # later fence unopened, so fenced content ran through the prose rules.
+    body = f"Intro.\n{MARKER}\n```\n{MARKER}\n```\nOutro."
+
+    result = firewall_model_output(body)
+
+    assert result.count(MARKER) == 1  # the prose copy stripped, the fenced copy intact
+
+
+def test_an_invisible_only_line_does_not_end_an_html_block():
+    # "&#x200F;" on its own line is not blank to the renderer, though the prose
+    # rules empty it. Ending the block there would make the ``` above a real
+    # fence and leave everything after it unescaped. No blank line separates
+    # these lines, so the <div block is still open at the entity line.
+    body = "<div\n```\n&#x200F;\n<pre>\nhttps://e.com/t.png\n"
+
+    result = firewall_model_output(body)
+
+    assert _live_occurrences(result, "<pre>") == []
+    assert _live_occurrences(result, "https://e.com/t.png") == []
+
+
+def test_a_second_pass_is_a_no_op_when_block_structure_is_unchanged():
     composite = "\n".join([
         f"prose with {BEACON} and {MARKER}",
         "```",
@@ -283,7 +374,21 @@ def test_the_pass_is_idempotent():
     once = firewall_model_output(composite)
     twice = firewall_model_output(once)
 
-    assert twice == once  # a field that reaches the firewall twice is not double-escaped
+    assert twice == once  # escaped text matches no rule, so nothing is escaped twice
+
+
+def test_escaping_an_html_opener_can_change_what_the_later_lines_are():
+    # In the input, "<img" opens an HTML block, so the ``` two lines down is not a
+    # fence and the lines after it are raw markup: the firewall escapes them.
+    # After that escape the ``` is a real fence, so the same lines are now fenced
+    # code. The published output is safe either way; a second pass over it would
+    # see different structure, which is why each field is firewalled exactly once.
+    body = "<img\nsrc=x>\n```\n" + RELATIVE + "\n````\n"
+
+    once = firewall_model_output(body)
+
+    assert _live_occurrences(once, RELATIVE) == []  # treated as raw markup, not as a fence
+    assert _live_occurrences(firewall_model_output(once), RELATIVE) == []  # and still safe
 
 
 def test_object_extraction_stays_fast_on_unbalanced_input():

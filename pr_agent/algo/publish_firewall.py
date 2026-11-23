@@ -17,26 +17,41 @@ scope. Three rules:
    the same convention the finding-state markers use (#4778). Identity markers
    are appended by code after the firewall runs, so the control plane and model
    output never share a channel.
-2. Every syntax object in prose — images, reference images, links, raw HTML
-   tags, bare and ``www.`` URLs — is backslash-escaped in place, regardless of
-   origin. Byte provenance cannot prove intent: the model can compose a beacon
-   from scratch, so nothing that renders as an object survives on trust. The
-   quote stays visible and readable, the syntax goes inert, and no backticks
-   are inserted, so existing inline code spans cannot be reshuffled. Objects
-   already inside an inline code span are inert and left untouched.
+2. Every syntax object in prose — images, links, reference definitions, raw
+   HTML tags, and URLs of every spelling — is backslash-escaped in place,
+   regardless of origin. Byte provenance cannot prove intent: the model can
+   compose a beacon from scratch, so nothing that renders as an object survives
+   on trust. The quote stays visible and readable, the syntax goes inert, and
+   no backticks are inserted, so existing inline code spans cannot be
+   reshuffled. Objects already inside an inline code span are inert and left
+   untouched.
 3. Invisible and bidirectional characters are removed from prose, including
    numeric character references that decode to them (``&#8238;``).
 
 Everything inside a code fence stays byte-identical: fenced quoting is the
-legitimate channel for hostile text, and it is already inert. Structure follows
-the CommonMark rules where it changes safety: a fence closes only on a delimiter
-matching the opening one's character and length with nothing after it, a backtick
-fence's info string may not contain backticks (so ```` ```x``` ```` opens
-nothing), and a fence line inside an open HTML block is not a fence at all —
-the block's raw markup keeps getting the prose rules until a blank line ends it.
+legitimate channel for hostile text, and it is already inert. Which lines are
+fenced follows CommonMark, because every place the firewall's model of markdown
+disagrees with the renderer's is a bypass:
 
-The pass is idempotent: escaped text no longer matches any rule, so a field that
-reaches the firewall twice cannot be double-escaped.
+- a fence closes only on a delimiter matching the opening one's character and
+  length with nothing after it, and a backtick fence's info string may not
+  contain backticks;
+- a fence line inside an HTML block is not a fence. The blank-line-terminated
+  kinds end at a blank line as written: a line holding only an invisible
+  character is not blank to the renderer, even though the prose rules empty it.
+  Processing instructions, declarations, CDATA sections, and ``<pre>``,
+  ``<script>``, ``<style>``, ``<textarea>`` blocks are read to the end of the
+  field. CommonMark ends those on ``?>``, ``>``, ``]]>`` or a closing tag; this
+  takes the wider reading on purpose, since the prose rules are safe to apply
+  to raw markup and a fence wrongly honoured inside one is a bypass;
+- a backslash-escaped backtick does not open or close a code span, and a
+  backslash is only an escape when the run before the character is odd
+  (``\\\\<img>`` leaves the tag live, ``\\<img>`` does not).
+
+Escaped text no longer matches any rule, so a second pass leaves it alone. That
+holds for the whole field only where the pass changed no block structure: it
+escapes an unescaped HTML opener, which can turn a later line from "inside an
+HTML block" into a real fence. Each field is firewalled once per run.
 """
 
 from __future__ import annotations
@@ -63,15 +78,28 @@ _CHARACTER_REFERENCE = re.compile(r"&#(x[0-9a-fA-F]+|[0-9]+);")
 # must not contain backticks; a closing fence may not carry anything but spaces.
 _FENCE_LINE = re.compile(r"( {0,3})(`{3,}|~{3,})(.*)$")
 _BACKTICK_RUN = re.compile(r"`+")
+_BACKSLASH_RUN = re.compile(r"\\+")
 
-# An HTML block opener that stays unescaped in the output: a tag name with no
-# closing bracket anywhere on the line (complete tags are objects and get
-# escaped, which dissolves their blocks). The block then runs until a blank line.
+# HTML block starts that run to the end of the field: a processing instruction, a
+# declaration, or a CDATA section (CommonMark HTML block types 3, 4 and 5). An
+# HTML comment (type 2) is deliberately not here: the firewall strips comments
+# itself, and a comment opener that opened a to-the-end block would keep every
+# later fence closed.
+_HTML_BLOCK_TO_END = re.compile(r" {0,3}(<\?|<!\[CDATA\[|<![A-Za-z])", re.IGNORECASE)
+_RAW_TAG_BLOCK = re.compile(r" {0,3}<(?:script|pre|style|textarea)(?:[ \t>]|$)")
+# A link reference definition line: "[label]: destination", with an optional title.
+# Destination and title exclude their own closing character, so no branch can scan
+# past it and backtrack.
+_REFERENCE_DEFINITION = re.compile(
+    r" {0,3}\[[^\]\n]+\]:[ \t]*(?:<[^>\n]*>|[^\s\n]+)"
+    r"(?:[ \t]+(?:\"[^\"\n]*\"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$"
+)
+# A reference-style image or link with no destination in brackets: it takes its
+# URL from a definition, so it is an object whether or not the definition is here.
+_COLLAPSED_REFERENCE = re.compile(r"!?\[[^\]\n]+\](?![\[(])")
 _HTML_BLOCK_OPENER = re.compile(r" {0,3}<[a-zA-Z][a-zA-Z0-9-]*(?![^>]*>)")
 
 _TAG_PREFIX = re.compile(r"\s*/?[a-zA-Z]")
-
-_URL_PREFIXES = ("https://", "http://", "www.")
 
 # Characters whose backslash escape keeps the object from rendering as a link,
 # image, tag, or autolink while the text itself stays readable. The colon breaks
@@ -118,19 +146,34 @@ def _first_at_or_after(positions: list[int], bound: int):
     return positions[index] if index < len(positions) else None
 
 
+def _escaped_positions(text: str) -> frozenset[int]:
+    """Positions of characters a backslash escapes, in one linear pass.
+
+    A backslash escapes the next character only when the run of backslashes
+    before it is odd; an even run is itself escaped and leaves the character
+    live. Computing the set once keeps every escape check O(1), which is what
+    keeps the object scan linear on a flood of backslashes.
+    """
+    escaped = set()
+    for run in _BACKSLASH_RUN.finditer(text):
+        if len(run.group()) % 2 == 1:
+            end = run.end()
+            if end < len(text):
+                escaped.add(end)
+    return frozenset(escaped)
+
+
 def _active_object_spans(text: str) -> list[tuple[int, int]]:
     """Spans of the renderable objects, linear per family on hostile input.
 
     A regex alternation over ``[`` or ``<`` goes quadratic on unbalanced input (a
     50k-character diff line of stray brackets costs seconds), so each family is
-    anchored on its closing shape instead: ``](`` / ``][`` walk back to the nearest
-    bracket, ``<`` walks forward to ``>`` or the line end, and URL prefixes extend
-    to the next whitespace. Backward walks stay between consecutive anchors, and
-    closer lookups bisect a precomputed position list, so a far-away or missing
-    closer costs one logarithmic lookup instead of another linear scan.
+    anchored on its closing shape instead. Lookups go through precomputed
+    position lists and one escape set, so no step rescans the text.
     """
     spans = []
     lines = _LineIndex(text)
+    escaped = _escaped_positions(text)
     # Inline and reference links/images.
     for anchor_pair, closer in (("](", ")"), ("][", "]")):
         closer_positions = _positions(text, closer)
@@ -138,42 +181,65 @@ def _active_object_spans(text: str) -> list[tuple[int, int]]:
         anchor = text.find(anchor_pair, 0)
         while anchor != -1:
             bracket = text.rfind("[", max(floor, lines.start(anchor)), anchor)
-            escaped_bracket = bracket > 0 and text[bracket - 1] == "\\"
-            if bracket != -1 and not escaped_bracket and text.find("]", bracket + 1, anchor) == -1:
-                start = bracket - 1 if bracket > 0 and text[bracket - 1] == "!" else bracket
+            if (
+                bracket != -1
+                and bracket not in escaped
+                and text.find("]", bracket + 1, anchor) == -1
+            ):
+                bang = bracket > 0 and text[bracket - 1] == "!" and bracket - 1 not in escaped
+                start = bracket - 1 if bang else bracket
                 close = _first_at_or_after(closer_positions, anchor + 2)
                 if close is not None and close < lines.end(anchor):
                     spans.append((start, close + 1))
             floor = anchor
             anchor = text.find(anchor_pair, anchor + 2)
-    # Raw HTML tags. A "<" that a previous pass already escaped is left alone, so
-    # the firewall is idempotent.
+    # Raw HTML tags, closed or not: an open "<img" followed by "src=" on the next
+    # line still renders, so the escape happens at the "<" whatever follows.
     anchor = text.find("<", 0)
     while anchor != -1:
-        close = text.find(">", anchor)
-        already_escaped = anchor > 0 and text[anchor - 1] == "\\"
-        if (
-            not already_escaped
-            and close != -1
-            and close < lines.end(anchor)
-            and _TAG_PREFIX.match(text, anchor + 1)
-        ):
-            spans.append((anchor, close + 1))
-            anchor = text.find("<", close + 1)
+        if anchor not in escaped and _TAG_PREFIX.match(text, anchor + 1):
+            close = text.find(">", anchor)
+            end = close + 1 if close != -1 and close < lines.end(anchor) else anchor + 1
+            spans.append((anchor, end))
+            anchor = end if end > anchor + 1 else text.find("<", anchor + 1)
         else:
             anchor = text.find("<", anchor + 1)
-    # Bare and www URLs.
-    for prefix in _URL_PREFIXES:
+    # URL spellings: bare, www, and protocol-relative ("//host"). The character
+    # before must not continue a word, so "https://" does not also match at its
+    # "//" and "a//b" is left alone.
+    for prefix in ("https://", "http://", "www.", "//"):
         anchor = text.find(prefix, 0)
         while anchor != -1:
             line_end = lines.end(anchor)
-            if anchor == 0 or not (text[anchor - 1].isalnum() or text[anchor - 1] in "./-"):
+            before = text[anchor - 1] if anchor > 0 else ""
+            starts_token = not before or not (before.isalnum() or before in "_-/:")
+            if starts_token:
                 end = anchor + len(prefix)
-                while end < line_end and not text[end].isspace():
+                while end < line_end and not text[end].isspace() and text[end] not in ">)]\"'":
                     end += 1
-                spans.append((anchor, end))
+                # The "//" itself is not escaped, so a URL the pass already handled
+                # still matches here; the backslashes it gained mark it as done.
+                if "\\" not in text[anchor:end]:
+                    spans.append((anchor, end))
             anchor = text.find(prefix, anchor + len(prefix))
-    # Leftmost wins; at the same start, the longer object wins.
+    # Raw-markup openers ("<?php", "<!DOCTYPE", "<![CDATA[") that are not tags.
+    spans.extend(
+        (match.start(1), match.end(1))
+        for match in _HTML_BLOCK_TO_END.finditer(text)
+        if match.start(1) not in escaped
+    )
+    # Link reference definitions, one match per line.
+    spans.extend(
+        (match.start(), match.end())
+        for match in _REFERENCE_DEFINITION.finditer(text)
+        if match.start() not in escaped
+    )
+    # Reference-style images and links without an inline destination.
+    spans.extend(
+        (match.start(), match.end())
+        for match in _COLLAPSED_REFERENCE.finditer(text)
+        if match.start() not in escaped
+    )
     spans.sort(key=lambda span: (span[0], -span[1]))
     kept = []
     for span in spans:
@@ -248,14 +314,17 @@ def _closing_fence(line: str, opening_character: str, opening_length: int) -> bo
 def _inline_code_intervals(line: str) -> list[tuple[int, int]]:
     """Intervals of the line covered by an inline code span.
 
-    Follows the CommonMark delimiter rule closely enough for the decision at
-    hand: a backtick run of length N is closed by the next unused run of exactly
-    N. One pass, pairing through a per-length queue, stays linear in the number
-    of runs.
+    A backtick run of length N is closed by the next unused run of exactly N,
+    and a run whose first backtick is backslash-escaped is no delimiter at all:
+    `` \\`![x](url)` `` opens nothing, so the image in it stays an object. One
+    pass through the runs keeps it linear in their number.
     """
     intervals = []
     open_runs = {}
+    escaped = _escaped_positions(line)
     for match in _BACKTICK_RUN.finditer(line):
+        if match.start() in escaped:
+            continue
         length = len(match.group())
         waiting = open_runs.get(length)
         if waiting:
@@ -293,14 +362,14 @@ def _escape_active_objects(line: str) -> str:
 
 
 def _ends_html_block(line: str) -> bool:
-    """Whether the line terminates an HTML block: blank after the prose strips.
+    """Whether the line terminates a blank-line-terminated HTML block.
 
-    Stripping invisibles or removing an unclosed ``<!--`` can itself create a
-    blank line, and classification has to agree before and after those strips,
-    or a second pass over the output would see different block boundaries.
+    Judged on the line as written, because that is what the renderer sees. A line
+    holding only an invisible character or an entity such as ``&#x200F;`` is not
+    blank to the renderer even though the prose strips empty it, so it must not
+    end the block here either.
     """
-    residual = _strip_html_comments(_strip_invisible(line))
-    return residual.strip(" \t") == ""
+    return line.strip(" \t") == ""
 
 
 def firewall_model_output(markdown: str, *, fenced_ok: bool = True) -> str:
@@ -316,7 +385,8 @@ def firewall_model_output(markdown: str, *, fenced_ok: bool = True) -> str:
     lines = markdown.split("\n")
     result = []
     open_fence = None  # (character, length) of the fence currently protecting a block
-    html_block = False  # inside a detected HTML block: no fences, prose rules stay on
+    html_block = False  # inside a blank-line-terminated HTML block: prose rules stay on
+    raw_block = False  # inside a script/pre/raw block: the rest of the field is raw markup
     embedded = not fenced_ok  # a template-embedded field is prose throughout, blank lines included
     prose_buffer = []
     for line in lines:
@@ -327,6 +397,9 @@ def firewall_model_output(markdown: str, *, fenced_ok: bool = True) -> str:
             if _closing_fence(line, open_fence[0], open_fence[1]):
                 open_fence = None
             result.append(line)
+            continue
+        if raw_block:
+            prose_buffer.append(line)
             continue
         if html_block:
             if _ends_html_block(line):
@@ -339,7 +412,11 @@ def firewall_model_output(markdown: str, *, fenced_ok: bool = True) -> str:
             open_fence = fence
             result.append(line)
             continue
-        if _HTML_BLOCK_OPENER.match(line):
+        if _HTML_BLOCK_TO_END.match(line) or _RAW_TAG_BLOCK.match(line):
+            # These blocks do not end at a blank line, so no fence inside them
+            # is a fence; the prose rules keep running to the end of the field.
+            raw_block = True
+        elif _HTML_BLOCK_OPENER.match(line):
             html_block = True
         prose_buffer.append(line)
     _flush_prose(prose_buffer, result)
