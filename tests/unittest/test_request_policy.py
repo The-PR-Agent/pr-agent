@@ -22,6 +22,7 @@ def environment(monkeypatch):
     for rule in RULE_FIELDS.values():
         settings.set(f"config.{rule}", [])
     settings.set("config.include_pr_labels", [])
+    settings.set("config.include_pr_labels_match_all", False)
     provider = Mock()
     provider.get_request_policy_metadata.return_value = METADATA.copy()
     monkeypatch.setattr(git_providers, "get_git_provider_with_context", lambda *_a, **_kw: provider)
@@ -143,6 +144,32 @@ async def test_include_pr_labels_gates_real_command_entrypoint(environment, monk
     monkeypatch.setitem(agent.command2class, "review", factory)
 
     result = await agent.PRAgent().handle_request(URL, "/review", notify=notify)
+    assert result is (True if allowed else RequestOutcome.SKIPPED)
+    if allowed:
+        command.run.assert_awaited_once()
+        notify.assert_called_once()
+    else:
+        command.run.assert_not_awaited()
+        notify.assert_not_called()
+    provider.get_request_policy_metadata.assert_called_once_with({"labels"})
+
+
+@pytest.mark.parametrize(("labels", "allowed"), [
+    (["ai-review"], False),
+    (["ready-for-review"], False),
+    (["ai-review", "ready-for-review"], True),
+])
+async def test_all_required_labels_gate_real_command_dispatch(environment, monkeypatch, labels, allowed):
+    settings, provider = environment
+    settings.set("config.include_pr_labels", ["ai-review", "ready-for-review"])
+    settings.set("config.include_pr_labels_match_all", True)
+    provider.get_request_policy_metadata.return_value = {**METADATA, "labels": labels}
+    command = SimpleNamespace(run=AsyncMock())
+    notify = Mock()
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=command))
+
+    result = await agent.PRAgent().handle_request(URL, "/review", notify=notify)
+
     assert result is (True if allowed else RequestOutcome.SKIPPED)
     if allowed:
         command.run.assert_awaited_once()

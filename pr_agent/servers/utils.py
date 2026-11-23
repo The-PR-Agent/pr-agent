@@ -499,7 +499,7 @@ def should_process_pr_logic(
     """Determine whether a pull/merge request should be processed based on configuration.
 
     Evaluates PR selection and ignore rules configured in settings:
-      - CONFIG.INCLUDE_PR_LABELS: require at least one exact matching PR/MR label when nonempty
+      - CONFIG.INCLUDE_PR_LABELS: require any selected PR/MR label, or all when INCLUDE_PR_LABELS_MATCH_ALL is enabled
       - CONFIG.IGNORE_REPOSITORIES: regex match on repo_full_name
       - CONFIG.IGNORE_PR_AUTHORS: regex match on sender/author
       - CONFIG.IGNORE_PR_TITLE: regex match on title (supports str or list[str])
@@ -547,9 +547,20 @@ def should_process_pr_logic(
         if check_include_labels:
             include_pr_labels = get_include_pr_labels()
             if include_pr_labels:
-                if (not isinstance(labels, Sequence) or isinstance(labels, (str, bytes))
-                        or not any(label in include_pr_labels for label in labels)):
-                    get_logger().info("Skipping PR without a valid label in config.include_pr_labels")
+                require_all = _as_bool_setting(
+                    get_settings().get("CONFIG.INCLUDE_PR_LABELS_MATCH_ALL", False),
+                    setting_name="config.include_pr_labels_match_all",
+                )
+                has_required_labels = (
+                    isinstance(labels, Sequence)
+                    and not isinstance(labels, (str, bytes))
+                    and (
+                        all(label in labels for label in include_pr_labels)
+                        if require_all else any(label in include_pr_labels for label in labels)
+                    )
+                )
+                if not has_required_labels:
+                    get_logger().info("Skipping PR without required labels in config.include_pr_labels")
                     return False
 
         # Ignore PRs from specific repositories

@@ -758,12 +758,22 @@ To opt in only selected PRs or MRs to PR-Agent, specify one or more label names:
 include_pr_labels = ["ai-review"]
 ```
 
-When the list is nonempty, a PR must have **at least one** matching label to be processed.
-Names are matched exactly (case-sensitive), not as regular expressions. The default empty
-list leaves all PRs eligible. If a label appears in both `include_pr_labels` and
-`ignore_pr_labels`, the exclusion wins. This applies to automatic runs, comment commands,
+When the list is nonempty, a PR must have **at least one** matching label to be processed
+by default. To require **all** selected labels instead, configure:
+
+```toml
+[config]
+include_pr_labels = ["ai-review", "ready-for-review"]
+include_pr_labels_match_all = true
+```
+
+With the default `false`, any selected label suffices; with `true`, every listed label
+is required. An empty `include_pr_labels` disables the gate regardless of the mode.
+Names are matched exactly (case-sensitive), not as regular expressions. If a label
+appears in both `include_pr_labels` and `ignore_pr_labels`, the exclusion wins. This applies to automatic runs, comment commands,
 and CLI `--pr_url` requests, just like the existing exclusion rules. Repository settings
-may select the labels; individual comment or CLI command arguments cannot override this gate.
+may select the labels and matching mode; individual comment or CLI command arguments
+cannot override either.
 
 If the labels cannot be read, PR-Agent skips the request while this opt-in gate is enabled;
 GitHub, GitLab, Gitea and Azure DevOps supply labels through their PR/MR APIs. Inputs
