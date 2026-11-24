@@ -1605,10 +1605,6 @@ class TestNoLiteLLMDuplicates:
         "bedrock/converse/moonshotai.kimi-k3",
         "bedrock/converse/us.moonshotai.kimi-k3",
         "bedrock/converse/global.moonshotai.kimi-k3",
-        "bedrock/anthropic.claude-sonnet-4-20250514-v1:0",
-        "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
-        "bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0",
-        "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0",
     }
 
     # Models pinned in MAX_TOKENS because LiteLLM's bundled backup cost map (used
