@@ -900,11 +900,13 @@ Models under an active GitHub Copilot subscription are available through litellm
 
 ```toml
 [config]
-model = "github_copilot/gpt-4o"
-fallback_models = ["github_copilot/gpt-4.1"]
+model = "github_copilot/<model-id>"
+fallback_models = []
 ```
 
-The GitHub identity behind the model needs an active Copilot subscription. LiteLLM resolves token budgets for these models automatically, so `custom_model_max_tokens` is not required. PR-Agent still caps the effective window at `config.max_model_tokens`; raise that setting only if it is below the selected model's supported input limit.
+Replace `<model-id>` with a model ID supported by the [LiteLLM GitHub Copilot provider](https://docs.litellm.ai/docs/providers/github_copilot) and available for your [Copilot plan and model policies](https://docs.github.com/en/copilot/reference/ai-models/supported-models). Optionally list other available `github_copilot/` model IDs in `fallback_models`.
+
+The GitHub identity behind the model needs an active Copilot subscription. LiteLLM resolves token budgets for models with known metadata automatically, so `custom_model_max_tokens` is not required for those models. PR-Agent still caps the effective window at `config.max_model_tokens`; raise that setting only if it is below the selected model's supported input limit.
 
 Authentication uses the [GitHub Copilot provider](https://docs.litellm.ai/docs/providers/github_copilot) flow:
 
