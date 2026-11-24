@@ -399,21 +399,31 @@ def test_run_without_a_target_does_not_enter_settings_scope(monkeypatch, capsys)
     assert "usage:" in capsys.readouterr().out
 
 
+_MISPLACED_PR_URL = "--pr_url must appear before the command (for example: --pr_url=<URL> review)"
+_MISPLACED_ISSUE_URL = "--issue_url must appear before the command (for example: --issue_url=<URL> similar_issue)"
+_MISPLACED_STDIN = "--stdin must appear before the command (for example: --stdin review)"
+_MISPLACED_DIFF_FILE = "--diff-file must appear before the command (for example: --diff-file=<path> review)"
+
+
 @pytest.mark.parametrize(
-    ("inargs", "option"),
+    ("inargs", "message"),
     [
-        (["review", "--pr_url=https://example.com/org/repo/pull/1"], "--pr_url"),
-        (["review", "--pr_url", "https://example.com/org/repo/pull/1"], "--pr_url"),
-        (["similar_issue", "--issue_url=https://example.com/org/repo/issues/1"], "--issue_url"),
-        (["review", "--stdin"], "--stdin"),
-        (["review", "--diff-file=changes.diff"], "--diff-file"),
+        (["review", "--pr_url=https://example.com/org/repo/pull/1"], _MISPLACED_PR_URL),
+        (["review", "--pr_url", "https://example.com/org/repo/pull/1"], _MISPLACED_PR_URL),
+        (["similar_issue", "--issue_url=https://example.com/org/repo/issues/1"], _MISPLACED_ISSUE_URL),
+        (["review", "--stdin"], _MISPLACED_STDIN),
+        (["review", "--diff-file=changes.diff"], _MISPLACED_DIFF_FILE),
         (
             ["review", "--pr_reviewer.extra_instructions=x", "--pr_url=https://example.com/org/repo/pull/1"],
-            "--pr_url",
+            _MISPLACED_PR_URL,
         ),
+        # An abbreviation argparse accepts before the command is recognised after it too.
+        (["review", "--pr", "https://example.com/org/repo/pull/1"], _MISPLACED_PR_URL),
+        # The first misplaced target option is the one reported.
+        (["review", "--stdin", "--pr_url=https://example.com/org/repo/pull/1"], _MISPLACED_STDIN),
     ],
 )
-def test_run_rejects_target_option_after_command(monkeypatch, capsys, inargs, option):
+def test_run_rejects_target_option_after_command(monkeypatch, capsys, inargs, message):
     def fail_if_entered():
         pytest.fail("a misplaced target option must not enter the mutation scope")
 
@@ -431,7 +441,7 @@ def test_run_rejects_target_option_after_command(monkeypatch, capsys, inargs, op
         cli.run(inargs=inargs)
 
     assert exc_info.value.code == 2
-    assert f"{option} must appear before the command" in capsys.readouterr().err
+    assert f"error: {message}\n" in capsys.readouterr().err
 
 
 def test_run_forwards_target_option_text_after_correct_target(monkeypatch):
@@ -457,8 +467,7 @@ def test_run_forwards_target_option_text_after_correct_target(monkeypatch):
     assert len(seen) == 1
     target, request = seen[0]
     assert target == "https://example.com/org/repo/pull/1"
-    assert "--pr_url" in request
-    assert "matters" in request
+    assert request == ["ask", "why", "--pr_url", "matters"]
 
 
 @pytest.mark.parametrize("raised", [RuntimeError, KeyboardInterrupt])
@@ -655,4 +664,4 @@ def test_process_entrypoints_reject_target_option_after_command(
             completed.stdout,
             completed.stderr,
         )
-        assert "--pr_url" in completed.stderr, (entrypoint, completed.stderr)
+        assert f"error: {_MISPLACED_PR_URL}" in completed.stderr, (entrypoint, completed.stderr)
