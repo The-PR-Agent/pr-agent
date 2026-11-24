@@ -1523,6 +1523,8 @@ class PRReviewer:
         return t("review.no_major_issues") not in pr_review
 
     async def _prepare_prediction(self, model: str) -> None:
+        if not hasattr(self, "_chunked_primary_model"):
+            self._chunked_primary_model = model
         # Each model attempt owns a fresh result. A malformed primary must not
         # leave state that can be mistaken for a successful fallback response.
         self.prediction = None
@@ -1673,18 +1675,20 @@ class PRReviewer:
             multi_diff_kwargs.clear()
             prepared_diff = None
             patches_diff_list = coverage.chunks
-            self._chunked_patches_diff_list = patches_diff_list
-            self._chunked_remaining_files_list = coverage.remaining_files_list
-            self._chunked_partial_files_list = coverage.partial_files_list
-            self._chunked_primary_model = model
+            if not hasattr(self, "_chunked_primary_model"):
+                self._chunked_primary_model = model
             if len(patches_diff_list) == 1:
                 self.patches_diff = patches_diff_list[0]
                 self.remaining_files_list = coverage.remaining_files_list
                 self.partial_files_list = coverage.partial_files_list
+            if len(patches_diff_list) < 2:
+                # Cache only multi-chunk plans; single calls must replan on fallback.
+                get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
+                return False
+            self._chunked_patches_diff_list = patches_diff_list
+            self._chunked_remaining_files_list = coverage.remaining_files_list
+            self._chunked_partial_files_list = coverage.partial_files_list
         prepared_diff = None
-        if len(patches_diff_list) < 2:
-            get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
-            return False
 
         get_logger().info(f"Number of PR chunk calls: {len(patches_diff_list)}")
         get_logger().debug("PR diff chunks", artifact=patches_diff_list)

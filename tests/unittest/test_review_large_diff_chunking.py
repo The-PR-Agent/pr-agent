@@ -10,9 +10,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pr_agent.algo.pr_processing import PackedPRDiffs, PreparedPRDiff, _pack_pr_multi_diffs
+from pr_agent.algo.pr_processing import PackedPRDiffs, PreparedPRDiff, _pack_pr_multi_diffs, retry_with_fallback_models
 from pr_agent.algo.review_finding_state import ParsedReviewState, reconcile_review_findings
 from pr_agent.algo.review_json_output import hosted_markdown_artifact, hosted_markdown_export
+from pr_agent.algo.run_details import get_run_details
+from pr_agent.algo.token_budget import FallbackEligibleError
+from pr_agent.algo.token_handler import TokenHandler
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
@@ -301,6 +305,57 @@ async def test_a_diff_that_fits_in_one_chunk_is_reviewed_by_the_single_call_flow
     assert reviewer.patches_diff == "only-chunk"
     assert reviewer.remaining_files_list == []
     assert reviewer.partial_files_list == ["unused.py"]
+    assert not any(hasattr(reviewer, name) for name in (
+        "_chunked_patches_diff_list", "_chunked_remaining_files_list",
+        "_chunked_partial_files_list", "_chunked_results",
+    ))
+
+
+@pytest.mark.asyncio
+async def test_smaller_fallback_replans_a_single_clipped_chunk(chunking_enabled):
+    reviewer = _make_reviewer()
+    old_lines = [f"old_value_{i} = {i}\n" for i in range(300)]
+    new_lines = [f"source_marker_{i} = {i + 1}\n" for i in range(300)]
+    source_patch = "@@ -1,300 +1,300 @@\n" + "".join("-" + line for line in old_lines)
+    source_patch += "".join("+" + line for line in new_lines)
+    reviewer.git_provider.pr = SimpleNamespace(title="PR")
+    reviewer.git_provider.get_diff_files.return_value = [FilePatchInfo(
+        "".join(old_lines), "".join(new_lines), source_patch, "large.py", edit_type=EDIT_TYPE.MODIFIED,
+    )]
+    reviewer.git_provider.get_languages.return_value = {"Python": 100}
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = []
+    reviewer.vars = {"diff": ""}
+    reviewer._raw_prompt_vars = reviewer.vars.copy()
+    requests = []
+
+    async def chat_completion(*, model, user, **kwargs):
+        requests.append((model, user))
+        if model == "gpt-4o":
+            raise FallbackEligibleError("Primary request failed")
+        return CHUNK_A, "stop"
+
+    reviewer.ai_handler = SimpleNamespace(
+        chat_completion=chat_completion,
+        get_output_token_reserve=lambda model, default: default,
+    )
+    with (
+        patch.dict(get_settings().config, {
+            "model": "gpt-4o", "fallback_models": ["gpt-4o-mini"],
+            "large_patch_policy": "clip", "patch_extra_lines_before": 0, "patch_extra_lines_after": 0,
+        }),
+        patch.dict(get_settings().pr_review_prompt, {"system": "Review the source changes.", "user": "{{ diff }}"}),
+        patch("pr_agent.algo.token_budget.get_max_tokens",
+              side_effect=lambda model, **kwargs: 4000 if model == "gpt-4o" else 2400),
+    ):
+        await retry_with_fallback_models(reviewer._prepare_prediction)
+
+    assert isinstance(reviewer.token_handler, TokenHandler)
+    assert [model for model, _ in requests] == ["gpt-4o", "gpt-4o-mini"]
+    assert 0 < requests[1][1].count("source_marker_") < requests[0][1].count("source_marker_")
+    assert reviewer.partial_files_list == ["large.py"]
+    assert reviewer.remaining_files_list == []
+    assert reviewer._chunked_primary_model == "gpt-4o"
+    assert reviewer.review_chunk_count == 1
 
 
 @pytest.mark.asyncio
@@ -465,11 +520,11 @@ async def test_hosted_export_captures_completed_review_from_reviewer():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("has_successful_chunks,hosted_export", [
-    (True, False), (False, False), (True, True),
+@pytest.mark.parametrize("has_successful_chunks,hosted_export,primary_is_single", [
+    (True, False, False), (False, False, False), (True, True, False), (True, False, True),
 ])
 async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succeeded(
-    chunking_enabled, has_successful_chunks, hosted_export,
+    chunking_enabled, has_successful_chunks, hosted_export, primary_is_single,
 ):
     reviewer = _make_reviewer()
     reviewer.vars = {}
@@ -478,11 +533,14 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
     chunk_c = CHUNK_A.replace("a.py", "c.py").replace("the index is never checked", "the value is never checked")
     primary = [CHUNK_A, "review: {}", chunk_c] if has_successful_chunks else ["review: {}"] * 3
     fallback = [RuntimeError("context limit exceeded")] * (1 if has_successful_chunks else 3)
+    if primary_is_single:
+        primary, fallback = [FallbackEligibleError("primary request failed")], primary
     reviewer._get_prediction = AsyncMock(side_effect=primary + fallback)
     settings_values = {
         "config.model": "primary",
         "config.fallback_models": ["fallback"],
         "config.publish_output": not hosted_export,
+        "config.output_run_details": primary_is_single,
         "config.is_auto_command": False,
         "config.propagate_command_errors": False,
         "pr_reviewer.persistent_comment": False,
@@ -498,7 +556,9 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
                   return_value=({}, reviewer.token_handler)),
             patch("pr_agent.algo.pr_processing.route_primary_model", return_value=None),
             patch("pr_agent.algo.pr_processing._get_all_deployments", return_value=[None, None]),
-            patch("pr_agent.commands.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+            patch("pr_agent.commands.pr_reviewer.get_pr_diff", side_effect=[
+                ("diff", [] if primary_is_single else ["b.py"]), ("diff", ["b.py"]),
+            ]),
             patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
                   return_value=PackedPRDiffs(["chunk-a", "chunk-b", "chunk-c"], [], [])),
             patch.object(reviewer, "_prepare_pr_review", side_effect=lambda: _render_review(reviewer)) as render,
@@ -516,7 +576,12 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
         restore_settings(snapshot)
 
     calls = [call.args for call in reviewer._get_prediction.await_args_list]
-    assert calls[:3] == [("primary", "chunk-a"), ("primary", "chunk-b"), ("primary", "chunk-c")]
+    if primary_is_single:
+        assert calls == [("primary",), ("fallback", "chunk-a"), ("fallback", "chunk-b"), ("fallback", "chunk-c")]
+    else:
+        assert calls[:3] == [("primary", "chunk-a"), ("primary", "chunk-b"), ("primary", "chunk-c")]
+        retried = ["chunk-b"] if has_successful_chunks else ["chunk-a", "chunk-b", "chunk-c"]
+        assert calls[3:] == [("fallback", chunk) for chunk in retried]
     if hosted_export:
         reviewer.git_provider.publish_comment.assert_not_called()
         assert captured_export is None
@@ -527,10 +592,14 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
         assert reviewer._structured_review_data is None
         assert published == "Failed to review PR"
         assert reviewer.prediction_data is None
-        assert calls[3:] == [("fallback", chunk) for chunk in ("chunk-a", "chunk-b", "chunk-c")]
         return
 
-    assert calls[3:] == [("fallback", "chunk-b")]
+    details = get_run_details()
+    assert details.models_used == (["fallback"] if primary_is_single else ["primary"])
+    assert details.fallback_used is primary_is_single
+    if primary_is_single:
+        assert "Model: fallback (fallback)" in published
+    assert reviewer._chunked_primary_model == "primary"
     assert reviewer.review_chunk_count == 3
     assert reviewer.review_failed_chunk_count == 1
     assert reviewer.remaining_files_list == []
