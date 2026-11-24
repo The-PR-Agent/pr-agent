@@ -28,6 +28,12 @@ class KeyIssuesComponentLink(BaseModel):
     confidence: int | None = Field(default=None, ge=0, le=10)
     severity: Literal["important", "nit", "pre_existing"] | None = None
 
+    @field_validator("severity", mode="before")
+    @classmethod
+    def _normalise_severity(cls, value):
+        # An unknown value is kept, so validation still reports it.
+        return finding_severity({"severity": value}) or value
+
 
 class TodoSection(BaseModel):
     model_config = ConfigDict(extra="forbid")

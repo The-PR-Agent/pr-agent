@@ -29,7 +29,7 @@ from pr_agent.algo.comment_identity import (
     render_hidden_marker,
 )
 from pr_agent.algo.deterministic_risk import build_risk_checks
-from pr_agent.algo.findings import Finding
+from pr_agent.algo.findings import Finding, strip_severity_label
 from pr_agent.algo.git_patch_processing import split_diff_lines
 from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import (
@@ -1323,7 +1323,7 @@ class PRReviewer:
                     continue
                 finding = Finding(
                     path=thread.file,
-                    body=_without_fix_block(strip_markers(thread.suggestion).strip()),
+                    body=strip_severity_label(_without_fix_block(strip_markers(thread.suggestion).strip())),
                     line_start=thread.start_line,
                     line_end=thread.end_line,
                 )

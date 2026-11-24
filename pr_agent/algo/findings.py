@@ -8,9 +8,22 @@ from dataclasses import dataclass
 from typing import Any
 
 from pr_agent.algo.output_models import finding_severity
-from pr_agent.algo.utils import _as_line, finding_severity_label, get_require_finding_severity
+from pr_agent.algo.utils import SEVERITY_BADGES, _as_line, finding_severity_label, get_require_finding_severity
 
 _SUGGESTION_FENCE_RE = re.compile(r"```[ \t]*suggestion\b", re.IGNORECASE)
+_BADGES = "|".join(SEVERITY_BADGES.values())
+# The label text is translated, so match the badge and any short label after it.
+_SEVERITY_BEFORE_HEADER_RE = re.compile(rf"\*\*(?:{_BADGES}) [^*\n:]{{1,40}}: ")
+_SEVERITY_ONLY_HEADER_RE = re.compile(rf"\*\*(?:{_BADGES}) [^*\n:]{{1,40}}\*\*\n\n")
+
+
+def strip_severity_label(body: str) -> str:
+    """Return a published finding body without the severity label that display_body added."""
+    if match := _SEVERITY_BEFORE_HEADER_RE.match(body):
+        return "**" + body[match.end():]
+    if match := _SEVERITY_ONLY_HEADER_RE.match(body):
+        return body[match.end():]
+    return body
 
 
 @dataclass(frozen=True)

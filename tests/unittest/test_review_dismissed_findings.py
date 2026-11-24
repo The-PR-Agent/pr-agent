@@ -219,6 +219,22 @@ def test_dismissed_finding_with_a_fix_keeps_the_id_of_the_stored_finding(monkeyp
     assert normalize_finding(dismissed[0])["finding_id"] == normalize_finding(finding)["finding_id"]
 
 
+@pytest.mark.parametrize("language", ["en", "de"])
+@pytest.mark.parametrize("header", ["Possible Issue", ""])
+@pytest.mark.parametrize("severity", ["important", "nit", "pre_existing"])
+def test_dismissed_finding_with_a_severity_label_keeps_the_id_of_the_stored_finding(
+        monkeypatch, severity, header, language):
+    monkeypatch.setitem(get_settings().pr_reviewer, "require_finding_severity", True)
+    monkeypatch.setitem(get_settings().config, "response_language", language)
+    finding, comment, dismissed = _round_trip_dismissed(
+        monkeypatch, True, issue_header=header, issue_content="The lock is never released.",
+        existing_code="two\nthree", improved_code="TWO\nTHREE", severity=severity)
+
+    assert comment["body"].startswith("**" + {"important": "🔴", "nit": "🟡", "pre_existing": "🟣"}[severity])
+    assert dismissed[0].body == finding.rendered_body
+    assert normalize_finding(dismissed[0])["finding_id"] == normalize_finding(finding)["finding_id"]
+
+
 def test_dismissed_finding_without_a_fix_keeps_its_own_trailing_code_block(monkeypatch):
     finding, _, dismissed = _round_trip_dismissed(
         monkeypatch, False, issue_content="The lock is never released:\n```text\nlock.acquire()\n```")

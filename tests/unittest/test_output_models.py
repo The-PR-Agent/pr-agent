@@ -511,6 +511,20 @@ def test_key_issue_accepts_each_severity(severity):
     assert KeyIssuesComponentLink.model_validate(issue).severity == severity
 
 
+@pytest.mark.parametrize("value,expected", [("Pre-existing", "pre_existing"), (" NIT ", "nit"), (None, None)])
+def test_key_issue_validation_normalises_severity_spelling(value, expected):
+    issue = dict(_review_fixture()["review"]["key_issues_to_review"][0], severity=value)
+
+    assert KeyIssuesComponentLink.model_validate(issue).severity == expected
+
+
+def test_key_issue_validation_still_rejects_an_unknown_severity():
+    issue = dict(_review_fixture()["review"]["key_issues_to_review"][0], severity="critical")
+
+    with pytest.raises(ValueError):
+        KeyIssuesComponentLink.model_validate(issue)
+
+
 @pytest.mark.parametrize(
     "value,expected",
     [("important", "important"), (" Nit ", "nit"), ("Pre-existing", "pre_existing"),

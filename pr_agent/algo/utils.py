@@ -217,7 +217,7 @@ def get_min_finding_confidence() -> float:
     return threshold if 0 < threshold <= 10 else 0
 
 
-_SEVERITY_BADGES = {"important": "🔴", "nit": "🟡", "pre_existing": "🟣"}
+SEVERITY_BADGES = {"important": "🔴", "nit": "🟡", "pre_existing": "🟣"}
 
 
 def get_require_finding_severity() -> bool:
@@ -228,9 +228,9 @@ def get_require_finding_severity() -> bool:
 
 def finding_severity_label(severity: str | None) -> str:
     """Return the badge and label for a finding severity, such as "🔴 Important", or "" when there is none."""
-    if severity not in _SEVERITY_BADGES:
+    if severity not in SEVERITY_BADGES:
         return ""
-    return f"{_SEVERITY_BADGES[severity]} {t(f'review.severity_{severity}')}"
+    return f"{SEVERITY_BADGES[severity]} {t(f'review.severity_{severity}')}"
 
 
 def convert_to_markdown_v2(output_data: dict,
