@@ -155,6 +155,10 @@ FORBIDDEN_ARGS = [
     "--pr_update_changelog.changelog_path=docs/HISTORY.md",
     "--pr_update_changelog__changelog_path=docs/HISTORY.md",
     '--pr_update_changelog={"changelog_path": "docs/HISTORY.md"}',
+    # Plain-diff input and output files are the CLI's own settings, set directly for --diff-file and --stdin.
+    "--plain_diff.content=diff --git a/a.py b/a.py",
+    "--plain_diff__output_path=/tmp/review.md",
+    '--plain_diff={"json_output_path": "/tmp/review.json"}',
     "--pr_questions.resolve_threads=true",
     "--pr_similar_issue.force_update_dataset=true",
     "--pr_similar_issue={force_update_dataset: true, vectordb: qdrant}",
@@ -215,6 +219,9 @@ ALLOWED_ARGS_SINGLE = [
     "--gitlab.handle_push_trigger=true",
     "--bitbucket.identity_request_timeout=10",
     "--gitea.handle_push_trigger=true",
+    # the CLI passes a plain diff's title and description as arguments
+    "--plain_diff.title=Fix the parser",
+    "--plain_diff.description=Handles empty input",
     # non-flag arguments are not validated against the forbidden list
     "some-positional-arg",
     "yes",

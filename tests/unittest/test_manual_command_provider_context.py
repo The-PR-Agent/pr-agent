@@ -85,8 +85,7 @@ def hosted_provider_with_repo_diff(monkeypatch):
     return settings, hosted
 
 
-async def test_repository_diff_content_uses_plain_diff_provider(hosted_provider_with_repo_diff, monkeypatch):
-    settings, _ = hosted_provider_with_repo_diff
+async def _ask_provider(settings, monkeypatch):
     seen = []
 
     async def capture(command):
@@ -97,9 +96,21 @@ async def test_repository_diff_content_uses_plain_diff_provider(hosted_provider_
         assert await PRAgent(ai_handler=SimpleNamespace).handle_request(
             "https://github.com/example/repo/pull/1", ["ask", "Why?"]
         )
-
     assert len(seen) == 1
-    assert isinstance(seen[0], PlainDiffGitProvider)
+    return seen[0]
+
+
+async def test_repository_diff_content_keeps_the_hosted_provider(hosted_provider_with_repo_diff, monkeypatch):
+    settings, hosted = hosted_provider_with_repo_diff
+
+    assert await _ask_provider(settings, monkeypatch) is hosted
+
+
+async def test_host_diff_content_uses_plain_diff_provider(hosted_provider_with_repo_diff, monkeypatch):
+    settings, _ = hosted_provider_with_repo_diff
+    settings.set("plain_diff.content", "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n")
+
+    assert isinstance(await _ask_provider(settings, monkeypatch), PlainDiffGitProvider)
 
 
 async def test_extra_host_config_cannot_hide_stale_bootstrap_provider(
