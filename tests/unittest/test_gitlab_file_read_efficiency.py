@@ -133,6 +133,38 @@ def test_gitlab_diff_content_batching_preserves_files(count, batched_requests, i
     assert project.files.get.call_count == individual_reads
 
 
+@pytest.mark.parametrize(("limit", "graphql_calls", "rest_reads"), [
+    (0, 0, 0), (2, 0, 4), (5, 2, 0),
+])
+def test_gitlab_optional_full_reads_respect_limit(monkeypatch, limit, graphql_calls, rest_reads):
+    monkeypatch.setattr("pr_agent.git_providers.gitlab_provider.get_max_full_content_files", lambda: limit)
+    provider, gl, project = _diff_provider(6)
+
+    files = provider.get_diff_files()
+
+    assert [file.filename for file in files] == [f"src/file{i}.py" for i in range(6)]
+    for index, file in enumerate(files):
+        assert file.base_file == (f"base-sha: src/file{index}.py\n" if index < limit else "")
+        assert file.head_file == (f"head-sha: src/file{index}.py\n" if index < limit else "")
+        assert file.patch
+    assert gl.http_request.call_count == graphql_calls
+    assert project.files.get.call_count == rest_reads
+
+
+def test_gitlab_zero_optional_limit_still_reconstructs_missing_patches(monkeypatch):
+    monkeypatch.setattr("pr_agent.git_providers.gitlab_provider.get_max_full_content_files", lambda: 0)
+    provider, gl, project = _diff_provider(2, missing_patch=True)
+
+    files = provider.get_diff_files()
+
+    assert files[0].base_file == "base-sha: src/file0.py\n"
+    assert files[0].head_file == "head-sha: src/file0.py\n"
+    assert files[0].patch
+    assert files[1].head_file == files[1].base_file == ""
+    assert gl.http_request.call_count == 0
+    assert project.files.get.call_count == 2
+
+
 @pytest.mark.parametrize("failure", [None, "transport", "graphql", "malformed"])
 def test_gitlab_diff_batching_preserves_mixed_file_contents_on_failure(failure):
     provider, gl, project = _diff_provider(10, mixed=True, prefetch_failure=failure)

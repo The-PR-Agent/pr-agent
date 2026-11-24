@@ -75,6 +75,49 @@ class _RawFileTransport(BaseAdapter):
         pass
 
 
+@pytest.mark.parametrize(("limit", "expected_files"), [(0, 0), (2, 1), (4, 2)])
+def test_optional_full_reads_use_bitbucket_half_limit(monkeypatch, limit, expected_files):
+    diffstats = []
+    raw_patches = []
+    for index in range(4):
+        filename = f"src/file{index}.py"
+        diff = MagicMock()
+        diff.old.path = diff.new.path = filename
+        diff.old.get_data.return_value = {"self": {"href": f"base/{filename}"}}
+        diff.new.get_data.return_value = {"self": {"href": f"head/{filename}"}}
+        diff.data = {"status": "modified", "lines_added": 1, "lines_removed": 1}
+        diffstats.append(diff)
+        raw_patches.append(
+            f"diff --git a/{filename} b/{filename}\n"
+            "index 1111111..2222222 100644\n"
+            f"--- a/{filename}\n+++ b/{filename}\n"
+            "@@ -1 +1 @@\n-old\n+new\n"
+        )
+
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+    provider.pr = MagicMock()
+    provider.pr.diffstat.return_value = diffstats
+    provider.pr.diff.return_value = "".join(raw_patches)
+    provider.diff_files = None
+    provider._pending_diffstat = None
+    provider._get_pr_file_content = MagicMock(side_effect=lambda href: href)
+    monkeypatch.setattr("pr_agent.git_providers.bitbucket_provider.get_max_full_content_files", lambda: limit)
+    with (
+        patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", side_effect=lambda files, _: files),
+        patch("pr_agent.git_providers.bitbucket_provider.get_settings") as settings,
+    ):
+        settings.return_value.get.return_value = False
+        files = provider.get_diff_files()
+
+    expected = [f"src/file{i}.py" for i in range(expected_files)]
+    assert [file.filename for file in files if file.head_file] == expected
+    assert [file.filename for file in files if file.base_file] == expected
+    assert [call.args[0] for call in provider._get_pr_file_content.call_args_list] == [
+        href for filename in expected for href in (f"base/{filename}", f"head/{filename}")
+    ]
+    assert all(file.patch for file in files)
+
+
 class TestBitbucketProvider:
     @staticmethod
     def _source_write_provider():

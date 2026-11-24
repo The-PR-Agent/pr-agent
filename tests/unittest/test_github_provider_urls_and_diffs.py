@@ -1797,7 +1797,7 @@ class TestBatchedContentReads:
         assert (diffs[0].head_file, diffs[0].base_file) == ("head-sha content", "base-sha content")
 
     def test_batch_requests_the_reads_the_loop_makes(self, patched_helpers, monkeypatch):
-        monkeypatch.setattr(github_provider, "MAX_FILES_ALLOWED_FULL", 5)
+        monkeypatch.setattr(github_provider, "get_max_full_content_files", lambda: 4)
         files = [
             _make_file("added.py", "added"),
             _make_file("removed.py", "removed"),
@@ -1820,9 +1820,39 @@ class TestBatchedContentReads:
 
         provider = collect(requester)
 
-        assert len(loop_reads) == 8
-        assert sorted(requester.reads) == sorted(loop_reads)
+        expected_reads = {
+            ("head-sha", "added.py"),
+            ("base-sha", "removed.py"),
+            ("head-sha", "renamed.py"),
+            ("base-sha", "old/renamed.py"),
+            ("head-sha", "modified.py"),
+            ("base-sha", "modified.py"),
+            ("head-sha", "past-limit-without-patch.py"),
+            ("base-sha", "past-limit-without-patch.py"),
+        }
+        assert loop_reads == expected_reads
+        assert set(requester.reads) == expected_reads
         assert self._rest_reads(provider) == []
+
+    @pytest.mark.parametrize("limit", [0, 1, 2, 5])
+    def test_optional_full_reads_respect_configured_limit(self, patched_helpers, monkeypatch, limit):
+        monkeypatch.setattr(github_provider, "get_max_full_content_files", lambda: limit)
+        files = self._modified_files(5)
+        requester = _GraphqlRequester(error=GithubException(502, {"message": "Bad gateway"}, None))
+        provider = _make_provider_with_graphql(files, requester)
+
+        diffs = provider.get_diff_files()
+
+        expected_paths = [f"f{i}.py" for i in range(limit)]
+        expected_reads = {
+            (revision, filename)
+            for filename in expected_paths
+            for revision in ("head-sha", "base-sha")
+        }
+        assert set(self._rest_reads(provider)) == expected_reads
+        assert [file.filename for file in diffs if file.head_file] == expected_paths
+        assert [file.filename for file in diffs if file.base_file] == expected_paths
+        assert all(file.patch for file in diffs)
 
     def test_incremental_review_does_not_use_graphql(self, patched_helpers):
         files = self._modified_files(3)

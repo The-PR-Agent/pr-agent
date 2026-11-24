@@ -25,12 +25,12 @@ from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.algo.utils import find_line_number_of_relevant_line_in_file
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import (
-    MAX_FILES_ALLOWED_FULL,
     FilePatchInfo,
     GitProvider,
     IncompleteProviderPullRequestFilesError,
     IncrementalPR,
     cache_languages,
+    get_max_full_content_files,
     redact_credentials,
 )
 from pr_agent.git_providers.request_timeout import get_http_request_timeout
@@ -779,6 +779,7 @@ class GiteaProvider(GitProvider):
         matched_sections = set()
 
         invalid_files_names = []
+        full_content_limit = get_max_full_content_files()
         counter_valid = 0
         diff_files = []
         for file in diff_git_files:
@@ -850,9 +851,9 @@ class GiteaProvider(GitProvider):
             previous_filename = file.get("previous_filename") if status == "renamed" else None
             old_filename = previous_filename if isinstance(previous_filename, str) and previous_filename else None
 
-            if counter_valid >= MAX_FILES_ALLOWED_FULL and patch and not self.incremental.is_incremental:
+            if counter_valid > full_content_limit and patch and not self.incremental.is_incremental:
                 avoid_load = True
-                if counter_valid == MAX_FILES_ALLOWED_FULL:
+                if counter_valid == full_content_limit + 1:
                     self.logger.info("Too many files in PR, will avoid loading full content for rest of files")
 
             if avoid_load:

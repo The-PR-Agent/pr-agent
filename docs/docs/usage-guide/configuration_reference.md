@@ -25,6 +25,7 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | Key | Default | Description |
 | --- | --- | --- |
 | `max_webhook_request_body_bytes` | 5242880 | maximum request body accepted by webhook servers (5 MiB) |
+| `max_full_content_files` | 49 | optional full-file reads (0-200); old default 49, Bitbucket half; see docs/docs/usage-guide/configuration_options.md |
 | `bot_display_name` | "PR-Agent" | product name shown in user-visible PR comments; host-only, repo settings and comment args cannot set it |
 
 **models**
