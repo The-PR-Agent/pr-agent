@@ -15,6 +15,7 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
 from pr_agent.algo.run_details import get_run_details, record_command_failure
+from pr_agent.algo.run_output import show_custom_comment_footer
 from pr_agent.algo.token_budget import AttemptTokenBudget, prepare_model_token_limits
 from pr_agent.algo.utils import filter_generated_labels, get_user_labels, load_yaml, set_custom_labels
 from pr_agent.config_loader import get_settings
@@ -118,7 +119,7 @@ class PRGenerateLabels:
                             raise RuntimeError("Failed to publish PR labels")
                 elif pr_labels:
                     value = ', '.join(v for v in pr_labels)
-                    pr_labels_text = f"## PR Labels:\n{value}\n"
+                    pr_labels_text = f"## PR Labels:\n{value}\n" + show_custom_comment_footer()
                     self.git_provider.publish_comment(pr_labels_text, is_temporary=False)
         except Exception as e:
             get_logger().error(f"Error generating PR labels {self.pr_id}: {e}")

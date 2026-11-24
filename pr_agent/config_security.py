@@ -126,8 +126,11 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # arguments must not impersonate or disable automatic webhook processing.
     # system_instructions is appended to every model system prompt. A repository or comment
     # must not be able to remove or replace an operator's mandatory policy.
+    # custom_comment_footer is operator text published under the bot's comments, so a
+    # repository or comment must not be able to rewrite or remove it.
     "config": frozenset({
         "bot_display_name",
+        "custom_comment_footer",
         "extra_config_url",
         "description_issue_regex",
         "enable_auto_approval",

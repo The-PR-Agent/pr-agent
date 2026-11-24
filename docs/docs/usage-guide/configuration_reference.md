@@ -72,6 +72,7 @@ See [Configuration options](../usage-guide/configuration_options.md#global-confi
 | `skip_keys` | [] |  |
 | `custom_reasoning_model` | false | when true, disables system messages and temperature controls for models that don't support chat-style inputs |
 | `system_instructions` | "" | Host-only instructions appended to every command's system prompt; repository settings and comment arguments cannot set it. |
+| `custom_comment_footer` | "" | Host-only Markdown text added to the end of command results, including /describe PR descriptions. See [docs](additional_configurations.md). |
 | `response_language` | "en-US" | PR response locale (e.g., "en-US", "it-IT"), also used for fixed comment text; applies only during each command. See additional_configurations.md. |
 | `repo_context_files` | ["AGENTS.md"] | Prompt context files: paths, alternatives, globs, sibling entries; [] disables. See [docs](additional_configurations.md). |
 | `repo_context_from_default_branch` | true | Read repo context files from the repository default branch (trusts only default-branch content). Set to false to read from the PR target branch instead. |

@@ -92,6 +92,7 @@ from pr_agent.algo.run_output import (
     append_run_details,
     github_action_output,
     push_outputs_async,
+    show_custom_comment_footer,
     show_relevant_configurations,
 )
 from pr_agent.algo.setting_utils import _as_bool_setting
@@ -1386,6 +1387,24 @@ class PRReviewer:
             return ""
         return value if isinstance(value, str) else ""
 
+    def _append_review_state_with_footer(self, review_body: str, state: dict) -> str:
+        """Append the custom comment footer and the review state, dropping the footer unless it fits intact.
+
+        Raises ValueError, like append_review_state, when the state does not fit even without the footer.
+        """
+        max_chars = self._review_comment_max_chars()
+        footer = show_custom_comment_footer()
+        if footer:
+            try:
+                with_footer = append_review_state(review_body + footer, state, max_chars=max_chars)
+                # append_review_state truncates the body to fit; keep the footer only if nothing was cut.
+                if with_footer == append_review_state(review_body + footer, state):
+                    return with_footer
+            except ValueError:
+                pass
+            get_logger().warning("Custom comment footer omitted so the review comment fits the comment limit")
+        return append_review_state(review_body, state, max_chars=max_chars)
+
     def _review_comment_max_chars(self) -> int | None:
         for attribute in ("max_comment_chars", "max_comment_length"):
             value = getattr(self.git_provider, attribute, None)
@@ -2205,16 +2224,15 @@ class PRReviewer:
             markdown_text += show_relevant_configurations(relevant_section='pr_reviewer')
 
         # Output the fallback-model note, and the agent run details (model, tokens, time cost) if enabled
-        markdown_text = append_run_details(markdown_text, self.git_provider)
+        # The custom footer is added with the review state below, so it cannot crowd the state out.
+        markdown_text = append_run_details(markdown_text, self.git_provider, include_footer=False)
 
-        if self._review_state_result is not None:
+        if self._review_state_result is None:
+            markdown_text = (markdown_text or "") + show_custom_comment_footer()
+        else:
             state_result = self._review_state_result
             try:
-                markdown_text = append_review_state(
-                    markdown_text or "",
-                    state_result.state,
-                    max_chars=self._review_comment_max_chars(),
-                )
+                markdown_text = self._append_review_state_with_footer(markdown_text or "", state_result.state)
             except ValueError as error:
                 # The delta section is the first thing to sacrifice: advancing the state
                 # outranks showing it.
@@ -2224,11 +2242,7 @@ class PRReviewer:
                         f"\n\n{lifecycle_summary}\n\n", "\n", 1
                     ).replace(f"\n\n{lifecycle_summary}", "", 1)
                     try:
-                        markdown_text = append_review_state(
-                            body_without_summary,
-                            state_result.state,
-                            max_chars=self._review_comment_max_chars(),
-                        )
+                        markdown_text = self._append_review_state_with_footer(body_without_summary, state_result.state)
                         degraded = False
                     except ValueError:
                         markdown_text = body_without_summary
@@ -2243,11 +2257,7 @@ class PRReviewer:
                     )
                     if previous_state is not None:
                         try:
-                            markdown_text = append_review_state(
-                                markdown_text or "",
-                                previous_state,
-                                max_chars=self._review_comment_max_chars(),
-                            )
+                            markdown_text = self._append_review_state_with_footer(markdown_text or "", previous_state)
                         except ValueError as previous_error:
                             get_logger().warning(
                                 f"Previous persistent review state also did not fit the provider "
