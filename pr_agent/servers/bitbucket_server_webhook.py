@@ -27,6 +27,7 @@ from pr_agent.servers.utils import (
     get_pr_commands,
     is_command_comment,
     payload_log_summary,
+    preload_host_settings_for_new_automatic_event,
     push_trigger_slot,
     shared_should_process_pr_logic,
     verify_signature,
@@ -152,6 +153,11 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
     # push events without a pull request are already ignored above
     if (data["eventKey"] == "pr:opened"
             or data["eventKey"] in ["pr:from_ref_updated", "repo:refs_changed"]):
+        if not await preload_host_settings_for_new_automatic_event():
+            get_logger().warning("Request ignored: host settings could not be loaded", **log_context)
+            return JSONResponse(
+                status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "Host settings unavailable"})
+            )
         apply_repo_settings(pr_url)
         if not should_process_pr_logic(data):
             get_logger().info("PR ignored due to config settings", **log_context)

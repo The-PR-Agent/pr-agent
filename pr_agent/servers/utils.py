@@ -110,6 +110,19 @@ def host_settings_unavailable() -> bool:
     return bool(source) and source in payloads and payloads[source] is None
 
 
+async def preload_host_settings_for_new_automatic_event() -> bool:
+    """Preload the external Host source before repository settings for automatic events."""
+    source = get_settings().get("CONFIG.EXTRA_CONFIG_URL")
+    if source is None or source is False:
+        return True
+    if not isinstance(source, str):
+        get_logger().warning("Request ignored: invalid Host settings source")
+        return False
+    if not source.strip():
+        return True
+    return await load_host_settings_for_webhook() and not host_settings_unavailable()
+
+
 def payload_log_summary(data: object, identifying_fields: Sequence[str] = ()) -> dict:
     """Return a webhook payload's top-level keys and identifying string fields, never its values."""
     if not isinstance(data, dict):
