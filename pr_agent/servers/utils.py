@@ -6,7 +6,7 @@ import re
 import secrets
 import time
 from collections import defaultdict
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -258,8 +258,8 @@ class DefaultDictWithTimeout(defaultdict):
 
     def __init__(
         self,
-        default_factory: Callable[[], Any] = None,
-        ttl: int = None,
+        default_factory: Callable[[], Any] | None = None,
+        ttl: int | None = None,
         refresh_interval: int = 60,
         update_key_time_on_get: bool = True,
         *args,
@@ -349,7 +349,7 @@ def _get_push_trigger_state(key: str, ttl: int | None) -> _PushTriggerState:
 
 
 @asynccontextmanager
-async def push_trigger_slot(key: str, *, allow_backlog: bool, ttl: int | None) -> AsyncIterator[bool]:
+async def push_trigger_slot(key: str, *, allow_backlog: bool, ttl: int | None) -> AsyncGenerator[bool, None]:
     """Run one push per PR, optionally keeping one delegate for subsequent pushes.
 
     State is process-local. TTL bounds idle cache retention; active runs and
