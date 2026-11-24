@@ -1856,6 +1856,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
                 "require_security_review": True,
                 "require_todo_scan": False,
                 "min_finding_confidence": 0,
+                "require_finding_severity": False,
                 "require_estimate_effort_to_review": True,
                 "require_risk_assessment": False,
                 "require_merge_recommendation": False,

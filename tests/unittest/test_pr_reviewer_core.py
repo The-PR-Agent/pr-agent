@@ -3447,6 +3447,42 @@ def test_convert_to_markdown_renders_the_confidence_the_filter_compares(monkeypa
     assert markdown.count("confidence:") == (3 if rendered else 0)
 
 
+@pytest.mark.parametrize("gfm_supported", [True, False])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_convert_to_markdown_renders_finding_severity_when_enabled(monkeypatch, enabled, gfm_supported):
+    monkeypatch.setitem(get_settings().pr_reviewer, "require_finding_severity", enabled)
+    output = {"review": {"key_issues_to_review": [
+        _key_issue(issue_content="bug", severity="important"),
+        _key_issue(issue_content="style", severity="Nit"),
+        _key_issue(issue_content="old", severity="pre-existing"),
+        _key_issue(issue_content="unknown", severity="critical"),
+        _key_issue(issue_content="missing"),
+    ]}}
+
+    markdown = convert_to_markdown_v2(output, gfm_supported=gfm_supported)
+
+    assert ("🔴 Important: Possible Issue" in markdown) is enabled
+    assert ("🟡 Nit: Possible Issue" in markdown) is enabled
+    assert ("🟣 Pre-existing: Possible Issue" in markdown) is enabled
+    assert markdown.count("Possible Issue") == 5
+
+
+def test_inline_finding_comment_shows_severity_without_changing_finding_identity(monkeypatch):
+    issue = _key_issue(start_line=1, end_line=1, severity="important")
+    diff_files = {"app.py": SimpleNamespace(filename="app.py", head_file="x = 1\n")}
+    reviewer = PRReviewer.__new__(PRReviewer)
+
+    monkeypatch.setitem(get_settings().pr_reviewer, "require_finding_severity", False)
+    plain = reviewer._build_key_issue_comment(PRReviewer._review_finding_from_issue(issue), diff_files)
+    monkeypatch.setitem(get_settings().pr_reviewer, "require_finding_severity", True)
+    finding = PRReviewer._review_finding_from_issue(issue)
+    labeled = reviewer._build_key_issue_comment(finding, diff_files)
+
+    assert plain["body"] == "**Possible Issue**\n\nThe new branch never releases the lock."
+    assert labeled["body"] == "**🔴 Important: Possible Issue**\n\nThe new branch never releases the lock."
+    assert finding.rendered_body == plain["body"]
+
+
 def test_fix_keeps_git_line_numbers_around_unicode_separators(committable_on):
     issue = _key_issue(start_line=3, end_line=3, existing_code="c = 3", improved_code="c = 4")
     reviewer, data = _reviewer_with_findings(issue, head_file="a = 1\nb = '\u2028'\nc = 3\n")

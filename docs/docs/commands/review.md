@@ -179,6 +179,10 @@ for the authoritative default values.
     <td><b>min_finding_confidence</b></td>
     <td>When above 0, the model reports an integer confidence from 0 to 10 for each finding, shown in its header in the review summary (inline comments do not show it). Findings below this value are dropped before publishing, and in a chunked review they are dropped before the <code>num_max_findings</code> cut, so they cannot displace a more confident finding. A run that dropped findings does not mark earlier findings as resolved. A missing or out-of-range confidence is treated as absent: the finding is kept. A threshold outside 0-10 is treated as 0 (disabled). Default is 0: keep all findings, and the model is not asked for a confidence.</td>
   </tr>
+  <tr>
+    <td><b>require_finding_severity</b></td>
+    <td>If set to true, the model labels each finding with a severity, shown before its header in the review summary and in inline comments: 🔴 <code>important</code> (a bug that should be fixed before merging), 🟡 <code>nit</code> (a minor issue, worth fixing but not blocking) or 🟣 <code>pre_existing</code> (a problem that already existed before this PR in the code it changes). The model may then also report nits and pre-existing problems, listing important findings first; all of them still count toward <code>num_max_findings</code>. A missing or unknown severity shows no label. The label does not change how a finding is matched across runs, so turning this on does not reopen or duplicate earlier findings. Default is false.</td>
+  </tr>
 </table>
 
 </details>

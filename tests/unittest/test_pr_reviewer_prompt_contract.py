@@ -151,6 +151,23 @@ def test_pr_review_prompt_asks_for_a_confidence_only_when_filtering(monkeypatch,
     assert "Below 50" not in rendered
 
 
+@pytest.mark.parametrize("setting,asks_for_severity", [(False, False), (True, True), ("true", True), ("false", False)])
+def test_pr_review_prompt_asks_for_a_severity_only_when_enabled(monkeypatch, setting, asks_for_severity):
+    monkeypatch.setitem(get_settings().pr_reviewer, "require_finding_severity", setting)
+    reviewer = _build_reviewer(monkeypatch)
+    reviewer.vars["duplicate_prompt_examples"] = True
+    environment = Environment(autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
+
+    system = environment.from_string(get_settings().pr_review_prompt.system).render(reviewer.vars)
+    user = environment.from_string(get_settings().pr_review_prompt.user).render(reviewer.vars)
+
+    assert reviewer.vars["require_finding_severity"] is asks_for_severity
+    assert ('severity: Literal["important", "nit", "pre_existing"]' in system) is asks_for_severity
+    assert ("severity: important" in system) is asks_for_severity
+    assert ("(severity pre_existing)" in system) is asks_for_severity
+    assert ("severity: ..." in user) is asks_for_severity
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_failure_modes_prompt_follows_captured_setting(monkeypatch, enabled):
     settings = get_settings()

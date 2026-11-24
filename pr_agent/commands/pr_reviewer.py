@@ -110,6 +110,7 @@ from pr_agent.algo.utils import (
     ModelType,
     convert_to_markdown_v2,
     get_min_finding_confidence,
+    get_require_finding_severity,
     get_suggestion_fence,
     is_value_no,
     load_yaml,
@@ -422,6 +423,7 @@ class PRReviewer:
             'require_security_review': get_settings().pr_reviewer.require_security_review,
             'require_todo_scan': get_settings().pr_reviewer.get("require_todo_scan", False),
             'min_finding_confidence': get_min_finding_confidence(),
+            'require_finding_severity': get_require_finding_severity(),
             "extra_instructions": self._extra_instructions(),
             "artifact_context": get_artifact_context("pr_reviewer"),
             "skills_context": get_skills_context(),
@@ -2422,7 +2424,7 @@ class PRReviewer:
             line_start=start_line,
             line_end=end_line,
         )
-        body = finding.rendered_body
+        body = finding.display_body
         improved_code = (finding.improved_code or "").strip("\n")
         if not improved_code.strip():
             return finding.to_inline_comment(body, fallback_to_pr_comment=False)

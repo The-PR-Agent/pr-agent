@@ -41,7 +41,8 @@ from pr_agent.algo.git_patch_processing import (
 from pr_agent.algo.i18n import t
 from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.merge_verdict import render_merge_recommendation_checks
-from pr_agent.algo.output_models import PRType, SubPR, finding_confidence, parse_failure_modes
+from pr_agent.algo.output_models import PRType, SubPR, finding_confidence, finding_severity, parse_failure_modes
+from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.structural_reach import render_structural_reach
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_bot_display_name, get_settings, get_verbosity_level
@@ -214,6 +215,22 @@ def get_min_finding_confidence() -> float:
     except (TypeError, ValueError):
         return 0
     return threshold if 0 < threshold <= 10 else 0
+
+
+_SEVERITY_BADGES = {"important": "🔴", "nit": "🟡", "pre_existing": "🟣"}
+
+
+def get_require_finding_severity() -> bool:
+    """Return pr_reviewer.require_finding_severity as a bool; string and 0/1 values are accepted."""
+    return _as_bool_setting(get_settings().pr_reviewer.get("require_finding_severity", False),
+                            setting_name="pr_reviewer.require_finding_severity")
+
+
+def finding_severity_label(severity: str | None) -> str:
+    """Return the badge and label for a finding severity, such as "🔴 Important", or "" when there is none."""
+    if severity not in _SEVERITY_BADGES:
+        return ""
+    return f"{_SEVERITY_BADGES[severity]} {t(f'review.severity_{severity}')}"
 
 
 def convert_to_markdown_v2(output_data: dict,
@@ -501,6 +518,10 @@ def convert_to_markdown_v2(output_data: dict,
                         confidence = finding_confidence(issue) if get_min_finding_confidence() > 0 else None
                         if confidence is not None:
                             issue_header = f"{issue_header} (confidence: {confidence:g})"
+                        if get_require_finding_severity():
+                            severity_label = finding_severity_label(finding_severity(issue))
+                            if severity_label:
+                                issue_header = f"{severity_label}: {issue_header}"
                         start_line = _as_line(issue.get('start_line')) or 0
                         end_line = _as_line(issue.get('end_line')) or start_line
                         valid_lines = 0 < start_line <= end_line
