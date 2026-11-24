@@ -13,6 +13,7 @@ from pr_agent.algo import review_merge
 from pr_agent.algo.output_models import PRReview
 from pr_agent.algo.review_merge import all_key_issues, chunk_hit_findings_limit, merge_review_chunks
 from pr_agent.algo.utils import convert_to_markdown_v2
+from pr_agent.config_loader import get_settings
 
 
 def _chunk(**review):
@@ -102,6 +103,22 @@ def test_the_finding_cap_keeps_chunk_order_and_drops_from_the_tail():
                                  max_findings=2)
 
     assert merged["review"]["key_issues_to_review"] == [first, second]
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_the_finding_cap_keeps_important_findings_from_later_chunks(monkeypatch, enabled):
+    monkeypatch.setitem(get_settings().pr_reviewer, "require_finding_severity", enabled)
+    nit = dict(_issue(file="a.py", content="naming"), severity="nit")
+    old = dict(_issue(file="b.py", content="old bug"), severity="pre_existing")
+    unlabeled = _issue(file="c.py", content="no severity")
+    important = dict(_issue(file="d.py", content="crash"), severity="Important")
+    merged = merge_review_chunks([
+        _chunk(key_issues_to_review=[nit, old]),
+        _chunk(key_issues_to_review=[unlabeled, important]),
+    ], max_findings=3)
+
+    expected = [important, unlabeled, nit] if enabled else [nit, old, unlabeled]
+    assert merged["review"]["key_issues_to_review"] == expected
 
 
 def test_a_review_within_the_limit_is_kept_whole():
