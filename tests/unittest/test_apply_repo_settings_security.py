@@ -77,6 +77,7 @@ SNAPSHOT_SECTIONS = (
     "GERRIT",
     "JIRA",
     "LINEAR",
+    "PLAIN_DIFF",
     "LANGUAGE_EXTENSION_MAP_ORG",
 )
 
