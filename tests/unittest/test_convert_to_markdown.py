@@ -610,11 +610,28 @@ class TestBR:
         file_change_description_br = insert_br_after_x_chars(file_change_description)
         assert file_change_description_br == (
             "Created a new class <code>ColorPaletteResourcesCollection</code> which "
-            "extends <br><code>AvaloniaDictionary<ThemeVariant, ColorPaletteResources>"
+            "extends <br><code>AvaloniaDictionary&lt;ThemeVariant, ColorPaletteResources&gt;"
             "</code> and implements <br>aaa"
         )
         # print("-----")
         # print(file_change_description_br)
+
+    def test_br_escapes_html_in_long_descriptions(self):
+        # GitHub drops unknown tags such as <User> from the walkthrough table, so they must be escaped.
+        file_change_description = (
+            "Changed the parser to return `Optional<User>` instead of raising when "
+            "the user record is missing from the cache"
+        )
+        file_change_description_br = insert_br_after_x_chars(file_change_description)
+        assert "<code>Optional&lt;User&gt;</code>" in file_change_description_br
+        assert "<User>" not in file_change_description_br
+
+    def test_br_escapes_html_in_short_descriptions(self):
+        file_change_description = "Return `Optional<User>` <img src=x.png>"
+        file_change_description_br = insert_br_after_x_chars(file_change_description)
+        assert file_change_description_br == (
+            "Return <code>Optional&lt;User&gt;</code> &lt;img src=x.png&gt;"
+        )
 
 
 class TestExpandMinuteSuffix:

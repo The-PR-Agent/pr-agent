@@ -42,6 +42,9 @@ from pr_agent.algo.utils import (
     load_yaml,
     set_custom_labels,
 )
+from pr_agent.algo.utils import (
+    replace_code_tags as escape_and_replace_code_tags,
+)
 from pr_agent.commands.progress_comment import ChunkProgressReporter
 from pr_agent.commands.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
@@ -1700,13 +1703,19 @@ def insert_br_after_x_chars(text: str, x=70, *, entity_aware=False):
             return len(html.unescape(re.sub("<[^>]+>", "", value)))
         return count_chars_without_html(value)
 
+    if entity_aware:
+        # replace odd instances of ` with <code> and even instances of ` with </code>
+        text = replace_code_tags(text)
+    else:
+        # Plain text: escape it before adding <code> tags, so `List<str>` is not dropped as an unknown HTML tag.
+        # This runs before the short-text return, so short descriptions are escaped too.
+        text = escape_and_replace_code_tags(text)
+        entity_aware = True
+
     if display_length(text) < x:
         return text
 
     is_list = text.lstrip().startswith(("- ", "* "))
-
-    # replace odd instances of ` with <code> and even instances of ` with </code>
-    text = replace_code_tags(text)
 
     # convert list items to <li> only if the text is identified as a list
     if is_list:
