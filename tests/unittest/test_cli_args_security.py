@@ -4,6 +4,11 @@ import pytest
 
 import pr_agent.agent.pr_agent as pr_agent_module
 from pr_agent.algo.cli_args import _MAPPING_TOO_COMPLEX_ARG, CliArgs
+from pr_agent.config_security import (
+    CLI_HOST_ONLY_KEYS_BY_SECTION,
+    REPO_HOST_ONLY_KEYS_BY_SECTION,
+    canonical_setting_name,
+)
 
 FORBIDDEN_ARGS = [
     "--linear.api_token=secret",
@@ -244,6 +249,42 @@ HOST_ONLY_ARGS = [
 ]
 
 
+_UNICODE_LOOKALIKES = (
+    ("ffi", "ﬃ"),
+    ("ffl", "ﬄ"),
+    ("ff", "ﬀ"),
+    ("fi", "ﬁ"),
+    ("fl", "ﬂ"),
+    ("ss", "ß"),
+    ("st", "ﬅ"),
+    ("s", "ſ"),
+    ("i", "ı"),
+)
+
+
+def _unicode_spelling(name: str) -> str:
+    for ascii_text, lookalike in _UNICODE_LOOKALIKES:
+        if ascii_text in name:
+            return name.replace(ascii_text, lookalike, 1)
+    return name
+
+
+def _unicode_host_only_settings(maps):
+    seen = set()
+    for host_only_map in maps:
+        for section, keys in host_only_map.items():
+            for key in keys:
+                spelling = (_unicode_spelling(section), _unicode_spelling(key))
+                if spelling not in seen:
+                    seen.add(spelling)
+                    yield section, key, *spelling
+
+
+UNICODE_HOST_ONLY_SETTINGS = list(
+    _unicode_host_only_settings((REPO_HOST_ONLY_KEYS_BY_SECTION, CLI_HOST_ONLY_KEYS_BY_SECTION))
+)
+
+
 @pytest.mark.parametrize("forbidden", FORBIDDEN_ARGS)
 def test_validate_user_args_rejects_forbidden(forbidden):
     ok, offending = CliArgs.validate_user_args([forbidden])
@@ -258,6 +299,21 @@ def test_validate_user_args_rejects_keys_not_in_repo_allowlist(host_only):
     ok, offending = CliArgs.validate_user_args([host_only])
     assert ok is False
     assert offending.lstrip('.') in host_only.lower().replace('__', '.')
+
+
+@pytest.mark.parametrize(("section", "key", "spelled_section", "spelled_key"), UNICODE_HOST_ONLY_SETTINGS)
+def test_validate_user_args_rejects_unicode_spellings_of_host_only_keys(section, key, spelled_section, spelled_key):
+    ok, offending = CliArgs.validate_user_args([f"--{spelled_section}.{spelled_key}=untrusted"])
+    assert ok is False
+    assert offending.lstrip(".") == f"{section}.{key}"
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [(" GitHub ", "github"), ("ſecret", "secret"), ("api_baſe", "api_base"), ("Bug fix", "bug fix")],
+)
+def test_canonical_setting_name(name, expected):
+    assert canonical_setting_name(name) == expected
 
 
 @pytest.mark.parametrize("allowed", ALLOWED_ARGS_SINGLE)

@@ -148,10 +148,15 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
 }
 
 
+def canonical_setting_name(name) -> str:
+    """Normalise a setting name the way Dynaconf resolves it on lookup."""
+    return str(name).strip().upper().lower()
+
+
 def is_repo_host_only_key(section: str, key: str) -> bool:
     """Return whether a repository must not override a setting."""
-    section = section.lower()
-    key = key.lower()
+    section = canonical_setting_name(section)
+    key = canonical_setting_name(key)
     allowed_keys = REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section)
     if allowed_keys is not None and key not in allowed_keys:
         return True
@@ -166,12 +171,12 @@ def is_repo_host_only_key(section: str, key: str) -> bool:
 
 def should_skip_config_key(section: str, key: str, skip_keys=()) -> bool:
     """Return whether a setting must be omitted from published configuration output."""
-    key_lower = str(key).lower()
-    if is_repo_host_only_key(str(section), key_lower):
+    key_name = canonical_setting_name(key)
+    if is_repo_host_only_key(str(section), key_name):
         return True
-    if key_lower in {str(skip_key).lower() for skip_key in skip_keys}:
+    if key_name in {canonical_setting_name(skip_key) for skip_key in skip_keys}:
         return True
-    return any(part in key_lower for part in ("key", "secret", "token", "private"))
+    return any(part in key_name for part in ("key", "secret", "token", "private"))
 
 
 # Keys that repositories may still configure from their own default-branch settings but that
