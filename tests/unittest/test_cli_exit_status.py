@@ -399,6 +399,68 @@ def test_run_without_a_target_does_not_enter_settings_scope(monkeypatch, capsys)
     assert "usage:" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    ("inargs", "option"),
+    [
+        (["review", "--pr_url=https://example.com/org/repo/pull/1"], "--pr_url"),
+        (["review", "--pr_url", "https://example.com/org/repo/pull/1"], "--pr_url"),
+        (["similar_issue", "--issue_url=https://example.com/org/repo/issues/1"], "--issue_url"),
+        (["review", "--stdin"], "--stdin"),
+        (["review", "--diff-file=changes.diff"], "--diff-file"),
+        (
+            ["review", "--pr_reviewer.extra_instructions=x", "--pr_url=https://example.com/org/repo/pull/1"],
+            "--pr_url",
+        ),
+    ],
+)
+def test_run_rejects_target_option_after_command(monkeypatch, capsys, inargs, option):
+    def fail_if_entered():
+        pytest.fail("a misplaced target option must not enter the mutation scope")
+
+    async def fail_if_dispatched(*_args, **_kwargs):
+        pytest.fail("a misplaced target option must not dispatch a request")
+
+    monkeypatch.setattr(cli, "_cli_settings_scope", fail_if_entered)
+    monkeypatch.setattr(
+        cli,
+        "PRAgent",
+        lambda: SimpleNamespace(handle_request=fail_if_dispatched),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.run(inargs=inargs)
+
+    assert exc_info.value.code == 2
+    assert f"{option} must appear before the command" in capsys.readouterr().err
+
+
+def test_run_forwards_target_option_text_after_correct_target(monkeypatch):
+    seen = []
+
+    async def recording_handle_request(target, request, notify=None):
+        seen.append((target, request))
+        return True
+
+    monkeypatch.setattr(
+        cli,
+        "PRAgent",
+        lambda: SimpleNamespace(handle_request=recording_handle_request),
+    )
+    monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
+    monkeypatch.setattr(cli, "litellm_callbacks_registered", lambda: False)
+
+    status = cli.run(
+        inargs=["--pr_url=https://example.com/org/repo/pull/1", "ask", "why", "--pr_url", "matters"]
+    )
+
+    assert status is None
+    assert len(seen) == 1
+    target, request = seen[0]
+    assert target == "https://example.com/org/repo/pull/1"
+    assert "--pr_url" in request
+    assert "matters" in request
+
+
 @pytest.mark.parametrize("raised", [RuntimeError, KeyboardInterrupt])
 def test_run_restores_outer_context_when_dispatch_raises(monkeypatch, raised):
     outer_settings = copy.deepcopy(global_settings)
@@ -571,3 +633,26 @@ def test_process_entrypoints_preserve_argparse_status(
             completed.stdout,
             completed.stderr,
         )
+
+
+def test_process_entrypoints_reject_target_option_after_command(
+    argparse_entrypoints,
+    controlled_process_env,
+):
+    for entrypoint in argparse_entrypoints:
+        completed = subprocess.run(
+            [*entrypoint, "review", "--pr_url=https://example.com/org/repo/pull/1"],
+            cwd=Path(__file__).parents[2],
+            env=controlled_process_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+        assert completed.returncode == 2, (
+            entrypoint,
+            completed.stdout,
+            completed.stderr,
+        )
+        assert "--pr_url" in completed.stderr, (entrypoint, completed.stderr)
