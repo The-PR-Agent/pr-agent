@@ -13,7 +13,8 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
-from pr_agent.algo.run_details import record_command_failure
+from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
+from pr_agent.algo.run_details import get_run_details, record_command_failure
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.algo.token_budget import AttemptTokenBudget, prepare_model_token_limits
 from pr_agent.algo.utils import _as_line, get_suggestion_fence, load_yaml
@@ -23,7 +24,42 @@ from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFil
 from pr_agent.log import get_logger
 
 
+def _has_usable_documentation_fields(entry):
+    required_fields = {'relevant file', 'relevant line', 'doc placement', 'documentation'}
+    if not isinstance(entry, dict) or not required_fields.issubset(entry):
+        return False
+    if not all(isinstance(entry[field], str) for field in ('relevant file', 'doc placement', 'documentation')):
+        return False
+    if not entry['relevant file'].strip() or entry['doc placement'].strip() not in {"before", "after"}:
+        return False
+    return _as_line(entry['relevant line']) is not None
+
+
 class PRAddDocs:
+    @staticmethod
+    def _write_json_output(entries: list) -> None:
+        if not review_json_output_path.get():
+            return
+        proposals = [
+            {
+                "relevant_file": entry["relevant file"],
+                "relevant_line": _as_line(entry["relevant line"]),
+                "doc_placement": entry["doc placement"].strip(),
+                "documentation": entry["documentation"],
+            }
+            for entry in entries
+            if _has_usable_documentation_fields(entry) and entry["documentation"].strip()
+        ]
+        details = get_run_details()
+        usage = {}
+        if details is not None and details.has_token_usage:
+            usage = {
+                "prompt_tokens": details.prompt_tokens,
+                "completion_tokens": details.completion_tokens,
+                "total_tokens": details.total_tokens,
+            }
+        write_review_json_output({"documentation_proposals": proposals, "usage": usage})
+
     def __init__(self, pr_url: str, cli_mode=False, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
 
@@ -85,10 +121,16 @@ class PRAddDocs:
                         get_logger().warning(f"Failed to publish the documentation failure comment: {detail}")
                 raise
             if self.prediction is None:
+                self._write_json_output([])
                 return
             if (not data) or ("Code Documentation" not in data):
+                if review_json_output_path.get():
+                    raise RuntimeError("No parsed documentation proposals to export")
                 get_logger().info('No code documentation found for PR.')
                 return
+
+            failure_stage = "writing documentation JSON"
+            self._write_json_output(data["Code Documentation"])
 
             if get_settings().config.publish_output:
                 get_logger().info('Pushing PR documentation...')
@@ -112,6 +154,7 @@ class PRAddDocs:
             record_command_failure()
             if (
                 isinstance(e, IncompleteProviderPullRequestFilesError)
+                or review_json_output_path.get()
                 or get_settings().config.get("propagate_command_errors", False)
             ):
                 raise
@@ -269,18 +312,9 @@ class PRAddDocs:
                                  artifact={} if getattr(self, "_attempt_uses_repo_context", False)
                                  else {'prediction': docs})
             raise FallbackEligibleError("The model did not return a Code Documentation list")
-        required_fields = {'relevant file', 'relevant line', 'doc placement', 'documentation'}
-
-        def has_usable_fields(entry):
-            if not isinstance(entry, dict) or not required_fields.issubset(entry):
-                return False
-            if not all(isinstance(entry[field], str) for field in ('relevant file', 'doc placement', 'documentation')):
-                return False
-            if not entry['relevant file'].strip() or entry['doc placement'].strip() not in {"before", "after"}:
-                return False
-            return _as_line(entry['relevant line']) is not None
-
-        if data['Code Documentation'] and not any(has_usable_fields(entry) for entry in data['Code Documentation']):
+        if data['Code Documentation'] and not any(
+            _has_usable_documentation_fields(entry) for entry in data['Code Documentation']
+        ):
             raise FallbackEligibleError("The model did not return any documentation entries")
         return data
 

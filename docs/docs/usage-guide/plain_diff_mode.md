@@ -30,7 +30,7 @@ python -m pr_agent.cli --diff-file changes.diff --output review.md review
 | `--stdin` | Read a unified diff from stdin |
 | `--diff-file <path>` | Read a unified diff from a file |
 | `--output <path>` | Write Markdown produced by a compatible Plain Diff command to a file in addition to stdout |
-| `--json-output <path>` | Write structured results and token usage for `review`, `describe`, `ask`, or `generate_labels` (including aliases; `improve` runs `review`; also available with `--pr_url`) |
+| `--json-output <path>` | Write structured results and token usage for `review`, `describe`, `ask`, `generate_labels`, or `add_docs` (including aliases; `improve` runs `review`; also available with `--pr_url`) |
 
 `--stdin` and `--diff-file` are mutually exclusive. At least one must be provided to
 enter plain-diff mode; omitting both falls back to the normal `--pr_url` flow.
@@ -38,11 +38,12 @@ Output options must appear before the command. For example, use
 `--stdin --output result.md review`, not `--stdin review --output result.md`.
 The Markdown and JSON output paths must point to different files.
 
-You can also save structured results from a local description or label run:
+You can also save structured results from a local description, label, or documentation run:
 
 ```bash
 python -m pr_agent.cli --diff-file changes.diff --json-output description.json describe
 python -m pr_agent.cli --diff-file changes.diff --json-output labels.json generate_labels
+python -m pr_agent.cli --diff-file changes.diff --json-output docs.json add_docs
 ```
 
 These files contain the parsed model result and a `usage` object, while the normal
@@ -56,6 +57,8 @@ not existing human-applied PR labels.
 `review`, `describe`, and `ask` are supported, along with their
 `review_pr`, `describe_pr`, and `ask_question` aliases. `improve` and `improve_code` run `review`.
 `generate_labels` also works with raw diffs and can write its filtered labels as JSON.
+`add_docs` can export documentation proposals as JSON without a working tree; see
+[Add Docs](../commands/add_docs.md#export-documentation-proposals-as-json).
 `update_changelog` can generate a changelog draft to stdout (`--output` is not supported for it),
 but cannot read or update an existing repository changelog file in this mode.
 Because there is no hosting
@@ -110,6 +113,8 @@ that use it, but does not add model requests.
    `ask`/`ask_question` writes the `question`, `answer`, and `usage`, including a note when no diff is analyzable.
    `generate_labels` writes the filtered `labels` list and `usage`; it never
    combines existing user labels into that list.
+   `add_docs` writes the `documentation_proposals` list and `usage`, including an empty
+   list when there are no proposals or analyzable files. These are drafts, not validated edits.
    With `--json-output`, a run whose command fails or that the request policy skips exits with status 1;
    parser errors, such as an unreadable diff file or empty input, exit with status 2.
    A skipped run (for example, `config.include_pr_labels` is set and a diff has no labels) writes no JSON file.
