@@ -149,6 +149,29 @@ def test_get_files_returns_new_path_for_renamed_file(tmp_path):
     assert provider.get_files() == ["new.py"]
 
 
+def test_shallow_checkout_requires_history_for_local_comparison(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    repo = _make_repo(source, ["app.py"])
+    target = repo.active_branch.name
+    repo.git.checkout("-b", "feature")
+    (source / "app.py").write_text("changed = True\n")
+    repo.index.add(["app.py"])
+    repo.index.commit("Change app.py")
+
+    checkout = git.Repo.clone_from(source.as_uri(), tmp_path / "checkout", depth=1, no_single_branch=True)
+    checkout.create_head(target, f"origin/{target}")
+    monkeypatch.chdir(checkout.working_tree_dir)
+    snapshot = snapshot_settings(["pr_reviewer.inline_code_comments"])
+    try:
+        with pytest.raises(ValueError, match="No merge base"):
+            LocalGitProvider(target)
+
+        checkout.git.fetch("--unshallow")
+        assert LocalGitProvider(target).get_files() == ["app.py"]
+    finally:
+        restore_settings(snapshot)
+
+
 def test_local_diff_applies_ignore_rules_to_files_and_patches(tmp_path):
     names = ["generated/schema.py", "generated/uv.lock", "src/app.py", "yarn.lock"]
     repo = _make_repo(tmp_path, names)
