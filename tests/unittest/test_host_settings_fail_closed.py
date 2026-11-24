@@ -7,22 +7,29 @@ import pytest
 from fastapi import BackgroundTasks
 from starlette_context import request_cycle_context
 
-from pr_agent.config_loader import global_settings
+from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.servers import bitbucket_app, gitea_app, github_app, gitlab_webhook
 from pr_agent.servers.utils import host_settings_unavailable, load_host_settings_for_webhook
 
 PR_URL = "https://git.example.test/org/repo/pulls/1"
 
 
-@pytest.fixture(params=["missing", "available"])
+@pytest.fixture(params=["missing", "available", "disabled", "malformed", "forbidden", "scalar", "non_string"])
 def host_settings(request, tmp_path):
     """Return a settings object whose host source cannot, or can, be loaded."""
     source = tmp_path / "host.toml"
     if request.param == "available":
         source.write_text('[config]\nignore_pr_title = ["^Blocked"]\n')
+    elif request.param == "malformed":
+        source.write_text("[config\n")
+    elif request.param == "forbidden":
+        source.write_text('[config]\npreload = ["untrusted.toml"]\n')
+    elif request.param == "scalar":
+        source.write_text('ignore_pr_title = ["^Blocked"]\n')
     settings = copy.deepcopy(global_settings)
-    settings.set("CONFIG.EXTRA_CONFIG_URL", str(source))
-    return settings, request.param == "missing"
+    source_value = {"non_string": 42, "disabled": False}.get(request.param, str(source))
+    settings.set("CONFIG.EXTRA_CONFIG_URL", source_value)
+    return settings, request.param not in ("available", "disabled")
 
 
 @pytest.mark.asyncio
@@ -133,3 +140,64 @@ async def test_bitbucket_automatic_event_is_skipped_when_host_settings_fail(monk
         await tasks()
 
     assert oauth.await_count == (0 if failed else 1)
+
+
+@pytest.mark.asyncio
+async def test_frozen_host_settings_fail_if_env_overrides_cannot_be_restored(monkeypatch, tmp_path):
+    from pr_agent.git_providers import utils as git_utils
+
+    host = tmp_path / "host.toml"
+    host.write_text("[config]\nenable_auto_approval = false\npublish_output = false\n")
+    settings = copy.deepcopy(global_settings)
+    settings.set("CONFIG.EXTRA_CONFIG_URL", str(host))
+    settings.set("CONFIG.ENABLE_AUTO_APPROVAL", True)
+    settings.set("CONFIG.PUBLISH_OUTPUT", True)
+    monkeypatch.setattr(git_utils.env_loader, "load", Mock(side_effect=RuntimeError("unavailable")))
+
+    with request_cycle_context({"settings": settings}):
+        await load_host_settings_for_webhook()
+        assert host_settings_unavailable() is True
+        assert get_settings().get("CONFIG.ENABLE_AUTO_APPROVAL") is True
+        assert get_settings().get("CONFIG.PUBLISH_OUTPUT") is True
+
+
+@pytest.mark.asyncio
+async def test_invalid_frozen_host_settings_do_not_apply_preceding_inline_table(tmp_path):
+    host = tmp_path / "host.toml"
+    host.write_text('config = {ignore_pr_title = ["^Blocked"]}\ninvalid = 42\n')
+    settings = copy.deepcopy(global_settings)
+    settings.set("CONFIG.EXTRA_CONFIG_URL", str(host))
+    settings.set("CONFIG.IGNORE_PR_TITLE", [])
+
+    with request_cycle_context({"settings": settings}):
+        await load_host_settings_for_webhook()
+        assert host_settings_unavailable() is True
+        assert get_settings().get("CONFIG.IGNORE_PR_TITLE") == []
+
+
+@pytest.mark.asyncio
+async def test_automatic_command_is_skipped_when_frozen_host_replay_fails(monkeypatch, tmp_path):
+    from pr_agent.agent import pr_agent as agent
+    from pr_agent.agent.request_policy import RequestOutcome
+    from pr_agent.git_providers import utils as git_utils
+
+    host = tmp_path / "host.toml"
+    host.write_text("[config]\n")
+    settings = copy.deepcopy(global_settings)
+    settings.set("CONFIG.EXTRA_CONFIG_URL", str(host))
+    settings.set("CONFIG.USE_REPO_SETTINGS_FILE", False)
+    settings.set("CONFIG.IS_AUTO_COMMAND", True)
+    monkeypatch.setattr(git_utils, "get_git_provider_with_context", lambda _url: Mock())
+    notify, factory = Mock(), Mock()
+    monkeypatch.setitem(agent.command2class, "review", factory)
+    monkeypatch.setattr(agent, "flush_telemetry", Mock())
+
+    with request_cycle_context({"settings": settings}):
+        await load_host_settings_for_webhook()
+        assert host_settings_unavailable() is False
+        monkeypatch.setattr(git_utils.env_loader, "load", Mock(side_effect=RuntimeError("unavailable")))
+        assert await agent.PRAgent().handle_request(PR_URL, "/review", notify=notify) is RequestOutcome.SKIPPED
+        assert host_settings_unavailable() is True
+
+    factory.assert_not_called()
+    notify.assert_not_called()
