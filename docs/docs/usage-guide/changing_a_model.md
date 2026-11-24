@@ -179,16 +179,16 @@ E.g. to use a new model locally via Ollama, set in `.secrets.toml` or in a confi
 [config]
 model = "ollama/qwen2.5-coder:32b"
 fallback_models=[]
-custom_model_max_tokens=64000 # set the maximal input tokens for the model
+custom_model_max_tokens=32768 # match the Ollama server's effective context window
 duplicate_prompt_examples=true # will duplicate the examples in the prompt, to help the model to generate structured output
 
 [ollama]
 api_base = "http://localhost:11434" # or whatever port you're running Ollama on
 ```
 
-Ollama's context window may be too small for PR-Agent prompts and pull-request diffs. Set `OLLAMA_CONTEXT_LENGTH` to suit your model and available memory; for example, `OLLAMA_CONTEXT_LENGTH=64000 ollama serve` sets a 64K window matching the example configuration above. This example follows [Ollama's context-length recommendation for coding and agent workloads](https://docs.ollama.com/context-length), not an Ollama default.
+Ollama's context window may be too small for PR-Agent prompts and pull-request diffs. Set `OLLAMA_CONTEXT_LENGTH` to suit your model and available memory. For the [32K `qwen2.5-coder:32b` tag](https://ollama.com/library/qwen2.5-coder/tags) used above, start the server with `OLLAMA_CONTEXT_LENGTH=32768 ollama serve`. [Ollama's context-length guide](https://docs.ollama.com/context-length) recommends at least 64K for coding and agent workloads when the model and available memory allow it.
 
-Please note that the `custom_model_max_tokens` setting should be configured in accordance with the `OLLAMA_CONTEXT_LENGTH`. Failure to do so may result in unexpected model output.
+Verify the effective context with `ollama ps` and set `custom_model_max_tokens` no higher than that context or the model's supported limit.
 
 :::note[Local models vs commercial models]
 PR-Agent is compatible with almost any AI model, but analyzing complex code repositories and pull requests requires a model specifically optimized for code analysis.
