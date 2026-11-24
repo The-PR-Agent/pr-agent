@@ -13,6 +13,11 @@ _MAPPING_MAX_VISITS = 128
 _MAPPING_TOO_COMPLEX_ARG = '.mapping_value_too_complex'
 
 
+def _normalize_setting_name(name: str) -> str:
+    # Match the uppercase mapping used by the settings updater, then look up lowercase policy keys.
+    return name.replace('__', '.').upper().lower()
+
+
 class CliArgs:
     @staticmethod
     def _host_only_setting_arg(arg: str) -> str | None:
@@ -23,7 +28,7 @@ class CliArgs:
         them, so a name written e.g. ``--github. seconds_between_requests`` must validate as
         the same host-only key it would set.
         """
-        setting_name = ''.join(arg.lstrip('-').split('=', 1)[0].split()).replace('__', '.')
+        setting_name = _normalize_setting_name(''.join(arg.lstrip('-').split('=', 1)[0].split()))
         section, separator, key = setting_name.partition('.')
         if not separator:
             if (section in REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION
@@ -45,7 +50,7 @@ class CliArgs:
     @staticmethod
     def _blocked_setting_path(path: str, forbidden_cli_args: list) -> str | None:
         """Return the blocked token for a dotted section.key path, else None."""
-        arg_word = f'--{path}=x'.replace('__', '.').lower()
+        arg_word = f'--{_normalize_setting_name(path)}=x'
         host_only_arg = CliArgs._host_only_setting_arg(arg_word)
         if host_only_arg:
             return host_only_arg
@@ -127,7 +132,7 @@ class CliArgs:
         setting_name, parsed_value = _fix_key_value(setting_name, value_text)
         if not isinstance(parsed_value, dict):
             return None
-        return setting_name.replace('__', '.').lower(), parsed_value
+        return _normalize_setting_name(setting_name), parsed_value
 
     @staticmethod
     def is_mapping_arg(arg: str) -> bool:
@@ -205,9 +210,9 @@ class CliArgs:
             for arg in args:
                 arg = arg.strip()
                 if arg.startswith('--'):
-                    arg_word = arg.lower()
-                    # replace double underscore with dot, e.g. --openai__key -> --openai.key
-                    arg_word = arg_word.replace('__', '.')
+                    name, separator, value = arg.partition('=')
+                    # Normalize only the setting name; preserve existing matching of free-text values.
+                    arg_word = _normalize_setting_name(name) + separator + value.lower().replace('__', '.')
                     host_only_arg = CliArgs._host_only_setting_arg(arg_word)
                     if host_only_arg:
                         return False, host_only_arg

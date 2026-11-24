@@ -151,6 +151,16 @@ FORBIDDEN_ARGS = [
     "--pr_reviewer.max_commits_per_review=0",
     '--config.fallback_models=["gpt-4.1"]',
     "--config.num_retries=10",
+    # Validation must agree with the uppercase normalization used when settings are applied.
+    "--conf\u0131g.num_retries=10",
+    "--config.num_retrie\u017f=10",
+    "--CONFIG__NUM_RETRIE\u017f=10",
+    "--g\u0131thub.api_retries=3",
+    # Apply the same case mapping to denylist-only names, including nested mapping paths.
+    "--config.\u017fkip_keys=foo",
+    "--config__g\u0131t_provider=github",
+    "--config.de\u017fcription_path=docs-output",
+    '--qdrant={u\u017fer: "example"}',
     "--pr_update_changelog.push_changelog_changes=true",
     "--pr_update_changelog.changelog_path=docs/HISTORY.md",
     "--pr_update_changelog__changelog_path=docs/HISTORY.md",
@@ -207,6 +217,7 @@ ALLOWED_ARGS_SINGLE = [
     "--skills.enabled=true",
     "--skills.max_skills_tokens=1000",
     "--config.response_language=zh-tw",
+    "--pr_reviewer.extra_instructions=Keep the literal .u\u017fer name in this example",
     "--config.approve_pr_on_self_review=true",
     "--pr_description.publish_labels=false",
     # a mapping value whose nested keys are all allowed stays accepted
