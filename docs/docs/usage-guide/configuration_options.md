@@ -28,11 +28,13 @@ If you set `config.output_relevant_configurations` to True, each command will al
 
 ## Local configuration file
 
-`Platforms supported: GitHub, GitLab, Bitbucket, Azure DevOps`
+`Platforms supported: GitHub, GitLab, Bitbucket Cloud, Bitbucket Server, Azure DevOps, Gitea, Gerrit, CodeCommit`
 
-By uploading a local `.pr_agent.toml` file to the root of the repo's default branch, you can customize parameters that support repository-level overrides. Note that you need to upload or update `.pr_agent.toml` before using the PR Agent commands (either at PR creation or via manual trigger) for the configuration to take effect.
+By placing a local `.pr_agent.toml` file at the repository root on the ref read by your Git provider (usually the default branch; see the provider branch behavior below), you can customize parameters that support repository-level overrides. Note that you need to upload or update `.pr_agent.toml` before using the PR Agent commands (either at PR creation or via manual trigger) for the configuration to take effect.
 
 Provider endpoint settings are host-controlled: `openai.api_base`, `openai.api_type`, `openai.api_version`, `azure_ad.api_base`, `databricks.api_base`, `huggingface.api_base`, `moonshot.api_base`, `ollama.api_base`, and `openrouter.api_base` are ignored when set in repository-local `.pr_agent.toml` and must be configured on the host. The same restriction applies to provider authentication and TLS settings: `github.deployment_type`, `bitbucket.auth_type`, `gitlab.auth_type`, `gitlab.ssl_verify`, `gitea.skip_ssl_verification`, and `gitea.ssl_ca_cert`. Jira ticket lookups run with the host's Atlassian credentials, so `jira.cloud_id`, `jira.jira_site`, `jira.jira_api_email`, and `jira.project_keys` are host-controlled as well. These settings are also rejected in command arguments.
+
+For Gitea, enable repository-local settings in the host environment with `GITEA__REPO_SETTING=.pr_agent.toml`; this setting is unset by default.
 
 For example, if you set in `.pr_agent.toml`:
 
@@ -73,8 +75,9 @@ By default, configuration is read from the **default branch**, so only users who
 :::note[Provider branch behavior]
 Branch selection is currently implemented for GitHub and GitLab. Gitea ignores these options and reads
 the local `.pr_agent.toml` from the pull request target ref, which may differ from the default branch.
-Gerrit also ignores these options, but reads the file from the cloned default branch. Other platforms
-retain their provider-specific settings source.
+Gerrit also ignores these options, but reads the file from the cloned default branch. CodeCommit reads
+it from the first pull request target's destination commit, including on multi-target pull requests.
+Other platforms retain their provider-specific settings source.
 :::
 
 ## Global configuration file
@@ -150,7 +153,7 @@ Set `use_group_settings_file = false` to disable subgroup lookups while preservi
 
 ## External configuration URL
 
-`Platforms supported: GitHub, GitLab, Bitbucket, Azure DevOps`
+`Platforms supported: GitHub, GitLab, Bitbucket Cloud, Bitbucket Server, Azure DevOps, Gitea, Gerrit, CodeCommit`
 
 When running PR-Agent from the CLI (or any wrapper that exposes its arguments), you can merge an additional `.pr_agent.toml` from any URL or local path before the repo-local and global configurations are applied. This is useful when:
 
@@ -204,7 +207,7 @@ External-URL settings are applied **first**, so every other layer overrides them
 built-in defaults
   < --extra_config_url
     < global pr-agent-settings
-      < local .pr_agent.toml (repo default branch)
+      < local .pr_agent.toml (provider-specific ref)
         < environment variables (SECTION__KEY)
 ```
 
