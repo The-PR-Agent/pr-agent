@@ -103,7 +103,7 @@ def _reformat_quote_ask_command(comment_body: str) -> str | None:
     return '/ask' + after + ' \n' + before.strip().lstrip('>')
 
 
-def handle_line_comments(body: dict, comment_body: [str, Any]):
+def handle_line_comments(body: dict, comment_body: str):
     if not comment_body:
         return ""
     comment = body["comment"]
