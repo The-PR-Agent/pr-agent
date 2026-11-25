@@ -21,6 +21,40 @@ Invoke the command manually by commenting `/add_docs` on any PR:
 
 The command will generate documentation suggestions as inline code suggestions.
 
+### Export documentation proposals as JSON
+
+To review or consume documentation proposals in a script or CI job without
+publishing PR suggestions, run:
+
+```bash
+pr-agent --pr_url https://github.com/org/repo/pull/123 --json-output docs.json add_docs \
+  --config.publish_output=false
+```
+
+You can also analyze a standalone diff, even without a working tree:
+
+```bash
+git diff main...HEAD | pr-agent --stdin --json-output docs.json add_docs
+```
+
+The JSON contains a `documentation_proposals` list and the run's token `usage`
+(empty when unavailable). Each proposal contains `relevant_file`,
+`relevant_line` (a positive integer), `doc_placement` (`before` or `after`),
+and `documentation`. Only structurally usable, non-blank proposals are
+included. An empty result or a diff with no analyzable files writes an empty list.
+
+These are model-proposed locations and documentation, not validated edits or
+confirmation of publication. File paths retain the model-reported text, and
+the line and indentation must be checked before applying any proposal.
+Unlike inline suggestions, the JSON draft does not require complete source
+files. It may contain proposals that cannot be published as inline suggestions,
+and does not guarantee that the entire PR was analyzed.
+
+The JSON is written before permanent suggestion publication. An export failure
+stops publication and a failed or policy-skipped run exits nonzero; check the
+exit status before consuming the artifact because a failed run does not remove
+a previous file. Without `--json-output`, existing behavior is unchanged.
+
 ### Language-specific documentation styles
 
 The command automatically detects the programming language and generates documentation in the appropriate format:

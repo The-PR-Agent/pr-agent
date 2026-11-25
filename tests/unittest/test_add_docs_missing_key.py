@@ -1,5 +1,6 @@
 """Clear the progress comment when an /add_docs response carries no documentation."""
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, call
 
@@ -7,6 +8,7 @@ import pytest
 from opentelemetry.trace import StatusCode
 
 import pr_agent.agent.pr_agent as pr_agent_module
+from pr_agent.algo.review_json_output import review_json_output_path
 from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.commands.pr_add_docs import PRAddDocs, get_suggestion_fence
@@ -290,7 +292,10 @@ def test_filtered_documentation_does_not_publish_an_empty_batch(publish_output, 
     assert command_failed() is False
 
 
-def test_run_skips_without_recording_failure_when_all_changed_files_are_filtered(publish_output, monkeypatch):
+@pytest.mark.parametrize("export_json", [False, True])
+def test_run_skips_without_recording_failure_when_all_changed_files_are_filtered(
+    publish_output, monkeypatch, tmp_path, export_json,
+):
     async def prepare_once(fn, **_kwargs):
         await fn("primary-model")
 
@@ -308,12 +313,67 @@ def test_run_skips_without_recording_failure_when_all_changed_files_are_filtered
     command.prediction = None
     init_run_details()
 
-    asyncio.run(command.run())
+    output = tmp_path / "docs.json"
+    token = review_json_output_path.set(str(output) if export_json else None)
+    try:
+        asyncio.run(command.run())
+    finally:
+        review_json_output_path.reset(token)
 
     assert results(command.git_provider) == []
     assert command.git_provider.suggestions == []
     assert command.git_provider.initial_comment_removed
     assert command_failed() is False
+    if export_json:
+        assert json.loads(output.read_text(encoding="utf-8")) == {
+            "documentation_proposals": [], "usage": {},
+        }
+    else:
+        assert not output.exists()
+
+
+def test_json_export_with_publication_disabled(publish_output, monkeypatch, tmp_path):
+    publish_output.set("config.publish_output", False)
+    details = init_run_details()
+    details.prompt_tokens = 31
+    details.completion_tokens = 9
+    details.total_tokens = 40
+    output = tmp_path / "docs.json"
+    prediction = DOCUMENTED.replace("relevant file: |\n    src/app.py", 'relevant file: " src/app.py "')
+    prediction = prediction.replace("documentation: |", "documentation: |-")
+    token = review_json_output_path.set(str(output))
+    try:
+        provider = run(prediction, monkeypatch)
+    finally:
+        review_json_output_path.reset(token)
+
+    assert provider.comments == []
+    assert provider.suggestions == []
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        "documentation_proposals": [{
+            "relevant_file": " src/app.py ",
+            "relevant_line": 1,
+            "doc_placement": "before",
+            "documentation": '"""Do the thing."""',
+        }],
+        "usage": {"prompt_tokens": 31, "completion_tokens": 9, "total_tokens": 40},
+    }
+
+
+def test_json_write_failure_prevents_permanent_publication(publish_output, monkeypatch, tmp_path):
+    init_run_details()
+    provider = FakeGitProvider()
+    token = review_json_output_path.set(str(tmp_path / "missing" / "docs.json"))
+    try:
+        with pytest.raises(OSError):
+            run(DOCUMENTED, monkeypatch, provider)
+    finally:
+        review_json_output_path.reset(token)
+
+    assert provider.suggestions == []
+    assert results(provider) == []
+    assert provider.initial_comment_removed
+    assert command_failed() is True
 
 
 @pytest.mark.parametrize("include_valid", [False, True])

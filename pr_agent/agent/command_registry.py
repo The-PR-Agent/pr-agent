@@ -44,7 +44,7 @@ class CommandSpec:
     check_run: str | None = None
     takes_comment_id: bool = False
     plain_diff_markdown: bool = False
-    json_output: str | None = None  # "review" | "describe" | "labels" | "ask"
+    json_output: str | None = None  # "review" | "describe" | "labels" | "ask" | "add_docs"
 
 
 COMMAND_SPECS: dict[str, CommandSpec] = {
@@ -81,7 +81,7 @@ COMMAND_SPECS: dict[str, CommandSpec] = {
     "settings": CommandSpec(PRConfig, plain_diff_markdown=True),
     "help": CommandSpec(PRHelpMessage, plain_diff_markdown=True),
     "similar_issue": CommandSpec(PRSimilarIssue),
-    "add_docs": CommandSpec(PRAddDocs),
+    "add_docs": CommandSpec(PRAddDocs, json_output="add_docs"),
     "generate_labels": CommandSpec(PRGenerateLabels, json_output="labels"),
     # SECURITY: "/help_docs" is temporarily disabled while the clone-target validation
     # fix is reviewed (see issue #2445). Re-enable by restoring `"help_docs": PRHelpDocs`
