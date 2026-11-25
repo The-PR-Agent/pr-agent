@@ -100,7 +100,10 @@ object or a stray backslash:
 - A fence, and an indented code block, lasts as long as the renderer keeps it:
   to its closing fence, or to the end of the container it sits in. A blank line
   inside a list item does not end it, and a closing fence is measured in
-  columns, tabs included.
+  columns, tabs included. Each line is judged as the renderer gets it: a line
+  outside the container as it stands is published as prose, rules 1 and 3
+  first, and what they take out may move it inside the container, where the
+  renderer keeps the block open.
 - Wherever the structure cannot be followed, nothing is taken for code from
   there on: at a table, whose rows are cut at their pipes before any inline
   parsing; at a tab in a line's indentation or in the markers of a quote or a
@@ -164,15 +167,17 @@ _THEMATIC_BREAK = re.compile(r"([-_*])(?:[ \t]*\1){2,}[ \t]*$")
 # A list item that ends the paragraph above it: a bullet, or an ordered item
 # numbered 1, then whitespace and content.
 _ITEM_ENDS_PARAGRAPH = re.compile(r"(?:[-+*]|0{0,8}1[.)])[ \t]+\S")
-# The marker itself; what follows it is read by ``_item_start``.
+# The marker itself, and the whitespace that follows it; what comes next is read
+# by ``_item_start``.
 _ITEM_MARKER = re.compile(r"(?P<marker>[-+*]|[0-9]{1,9}[.)])")
+_ITEM_SPACE = re.compile(r"[ \t]*")
 _QUOTE_MARKER = re.compile(r" {0,3}>[ \t]?")
 _QUOTE_MARKERS = re.compile(r" {0,3}(?:>[ \t]?)+")
 
-# A fence that opens, per the CommonMark rules: up to three leading spaces, at
-# least three backticks or tildes, then the info string. A backtick fence's info
-# string must not contain backticks.
-_FENCE_LINE = re.compile(r"( {0,3})(`{3,}|~{3,})(.*)$")
+# A fence that opens, per the CommonMark rules: at least three backticks or
+# tildes at the place the block begins, then the info string. A backtick fence's
+# info string must not contain backticks.
+_FENCE_DELIMITER = re.compile(r"`{3,}|~{3,}")
 _BACKTICK_RUN = re.compile(r"`+")
 _BACKSLASH_RUN = re.compile(r"\\+")
 # A backtick string longer than this is never a code span delimiter.
@@ -180,8 +185,6 @@ _MAX_BACKTICKS = 80
 
 # What may precede a table row on its line: indentation and block quote markers.
 _TABLE_PREFIX = re.compile(r"[\s>]*")
-# The same for the place a block begins in: where a tag would open an HTML block.
-_CONTENT_START = re.compile(r"(?:[ \t>]|(?:[-+*]|[0-9]{1,9}[.)])[ \t]+)*\Z")
 _DELIMITER_ROW_CHARACTERS = frozenset("-:| \t\v\f")
 # The opener of a PR-Agent control marker, where code is published as it stands.
 _CONTROL_MARKER_OPENER = re.compile(r"<!--(?=\s*pr-agent)")
@@ -260,25 +263,29 @@ def _strip_invisible(segment: str) -> str:
         digits = match.group(1)
         if digits is None:
             return ""
+        if len(digits) > (5 if digits[0] in "xX" else 4):
+            # Larger than any of these characters. ``int`` refuses longer decimal strings anyway.
+            return match.group()
         codepoint = int(digits[1:], 16) if digits[0] in "xX" else int(digits)
         return "" if codepoint in _INVISIBLE_CODEPOINTS else match.group()
 
     return _CHARACTER_REFERENCE.sub(drop_if_invisible, segment)
 
 
-def _opening_fence(line: str):
-    """Return (character, length) when the line opens a fence, else None.
+def _opening_fence(line: str, start: int = 0):
+    """Return (character, length) when a fence opens at ``start``, else None.
 
     Per CommonMark, a backtick fence's info string cannot contain backticks, so
-    ```` ```x``` ```` opens nothing and the line stays prose.
+    ```` ```x``` ```` opens nothing and the line stays prose. The line is read
+    from ``start`` without slicing the rest of it off.
     """
-    match = _FENCE_LINE.match(line)
-    if match is None:
+    delimiter = _FENCE_DELIMITER.match(line, start)
+    if delimiter is None:
         return None
-    _indent, delimiter, info = match.groups()
-    if delimiter[0] == "`" and "`" in info:
+    run = delimiter.group()
+    if run[0] == "`" and line.find("`", delimiter.end()) != -1:
         return None
-    return delimiter[0], len(delimiter)
+    return run[0], len(run)
 
 
 def _leading_spaces(text: str, position: int) -> int:
@@ -348,22 +355,39 @@ def _opens_block(line: str) -> bool:
     return "0" <= head <= "9" and _ITEM_ENDS_PARAGRAPH.match(stripped) is not None
 
 
-def _match_chain(line: str, chain: list, childless: bool = False) -> tuple[int, int, bool]:
+def _leading_items(chain: list) -> int:
+    """How many list items stand at the head of ``chain``, before its first quote."""
+    for index, token in enumerate(chain):
+        if token == "quote":
+            return index
+    return len(chain)
+
+
+def _match_chain(
+    line: str, chain: list, childless: bool = False, leading: int | None = None
+) -> tuple[int, int, bool]:
     """How many of the open containers the line continues, and where it ends.
 
     ``chain`` holds the open containers, outermost first: ``"quote"`` or the
     content indent of a list item, counted from where the containers around it
     end on the line. ``childless`` says the last of them is an item nothing has
-    been put in yet. The last value says a tab was met in the prefixes, whose
-    width depends on the column it stands in.
+    been put in yet, and ``leading`` may say how many items stand at the head of
+    the chain, which spares a walk down it on a blank line. The last value says
+    a tab was met in the prefixes, whose width depends on the column it stands in.
 
     Containers are matched as the renderer matches them: a quote needs its
     marker and an item its indent, except that a blank line lies in every item
     that has content, so a blank line closes paragraphs and quotes and nothing
-    else.
+    else. The line is read where each container starts and never sliced, so a
+    line of many markers costs by its length alone.
     """
+    if leading is not None and not childless and not line.strip(" \t"):
+        # Every item matches a blank line and no quote does, and none of it moves.
+        return leading, 0, False
     position = 0
     matched = 0
+    width = _leading_spaces(line, position)
+    content_end = len(line.rstrip(" \t"))  # where the line's last non-blank character ends
     for depth, token in enumerate(chain):
         if token == "quote":
             marker = _QUOTE_MARKER.match(line, position)
@@ -372,19 +396,22 @@ def _match_chain(line: str, chain: list, childless: bool = False) -> tuple[int, 
             if "\t" in marker.group(0):
                 return matched, position, True
             position = marker.end()
+            width = _leading_spaces(line, position)
             matched += 1
             continue
-        width = _leading_spaces(line, position)
-        rest = line[position + width :]
-        empty = not rest.strip(" \t")
+        at = position + width
+        empty = at >= content_end
         needs_indent = not empty or (childless and depth == len(chain) - 1)
-        if rest[:1] == "\t":
+        if line[at : at + 1] == "\t":
             # The tab may reach this item's indent or a deeper one's: neither is read here.
             if needs_indent or childless:
                 return matched, position, True
         elif width < token and needs_indent:
             break
-        position += token if width >= token else len(line)
+        if width >= token:
+            position, width = position + token, width - token
+        else:
+            position, width = len(line), 0
         matched += 1
     return matched, position, False
 
@@ -405,22 +432,23 @@ def _item_start(line: str, start: int, interrupting: bool) -> tuple[int, int, bo
     if marker is None:
         return None
     length = marker.end("marker") - start
-    after = line[marker.end("marker") :]
-    if after[:1] not in ("", " ", "\t"):
+    behind = marker.end("marker")
+    if line[behind : behind + 1] not in ("", " ", "\t"):
         return None
-    spaces = len(after) - len(after.lstrip(" \t"))
-    content = after[spaces:]
+    spaces = _ITEM_SPACE.match(line, behind).end() - behind
+    content = behind + spaces
+    blank = content == len(line)
     digits = marker.group("marker")[:-1]
-    if interrupting and (not content or (digits and int(digits) != 1)):
+    if interrupting and (blank or (digits and int(digits) != 1)):
         return None
-    tabbed = "\t" in after[:spaces]
-    if not content or spaces >= 5:
-        return length + 1, start + length + (1 if spaces else 0), not content, tabbed
+    tabbed = "\t" in line[behind:content]
+    if blank or spaces >= 5:
+        return length + 1, start + length + (1 if spaces else 0), blank, tabbed
     return length + spaces, start + length + spaces, False, tabbed
 
 
 def _parse_line(
-    line: str, chain: list, paragraph_open: bool, childless: bool = False
+    line: str, chain: list, paragraph_open: bool, childless: bool = False, leading: int | None = None
 ) -> tuple[int, list, str, str]:
     """Match the open containers against a line and parse the containers it opens.
 
@@ -428,14 +456,18 @@ def _parse_line(
     the text after all those prefixes, and what that text is: ``"text"`` (a
     paragraph line), ``"blank"``, ``"start"`` (a block of its own: a heading, a
     fence, a thematic break, a setext underline), ``"code"`` (indented code) or
-    ``"untracked"`` (a tab in the prefixes, which is not followed).
+    ``"untracked"`` (a tab in the prefixes, which is not followed). ``leading``
+    goes through to ``_match_chain``.
 
     Block starts are judged by the CommonMark rule that a block may interrupt a
     paragraph only from inside the paragraph's own container. A list item
     numbered 2 continues the paragraph it sits in, and starts a list when the
     open paragraph lies deeper, in a quote or in another item.
+
+    The line is read in place: the rest of it is cut off once, at the end, and
+    not once per marker, so that a line of many nested markers stays linear.
     """
-    matched, position, tabbed = _match_chain(line, chain, childless)
+    matched, position, tabbed = _match_chain(line, chain, childless, leading)
     if tabbed:
         return matched, [], "", "untracked"
     opened: list = []
@@ -445,29 +477,29 @@ def _parse_line(
     here = paragraph_open and matched == len(chain)
     lazy = paragraph_open and matched < len(chain)
     thematic_from, thematic_until = _thematic_span(line)
+    content_end = len(line.rstrip(" \t"))  # where the line's last non-blank character ends
     while True:
         width = _leading_spaces(line, position)
-        rest = line[position + width :]
-        if rest[:1] == "\t" and rest.strip(" \t"):
-            return matched, opened, "", "untracked"
         start = position + width
-        if not rest.strip(" \t"):
+        if start < content_end and line[start] == "\t":
+            return matched, opened, "", "untracked"
+        if start >= content_end:
             return matched, opened, "", "blank"
         if width >= 4:
-            return matched, opened, rest, "text" if here or lazy else "code"
+            return matched, opened, line[start:], "text" if here or lazy else "code"
         if (
             thematic_from <= start <= thematic_until
-            or _ATX_HEADING.match(rest) is not None
-            or (rest[:1] in "`~" and _opening_fence(rest) is not None)
-            or (here and _SETEXT_UNDERLINE.match(rest) is not None)
+            or _ATX_HEADING.match(line, start) is not None
+            or (line[start] in "`~" and _opening_fence(line, start) is not None)
+            or (here and _SETEXT_UNDERLINE.match(line, start) is not None)
         ):
-            return matched, opened, rest, "start"
-        quote = _QUOTE_MARKER.match(rest)
+            return matched, opened, line[start:], "start"
+        quote = _QUOTE_MARKER.match(line, start)
         if quote is not None:
             if "\t" in quote.group(0):
                 return matched, opened, "", "untracked"
             opened.append("quote")
-            position = start + quote.end()
+            position = quote.end()
             here = lazy = False
             continue
         item = _item_start(line, start, here)
@@ -481,7 +513,7 @@ def _parse_line(
                 return matched, opened, "", "blank"
             here = lazy = False
             continue
-        return matched, opened, rest, "text"
+        return matched, opened, line[start:], "text"
 
 
 class _Containers:
@@ -489,19 +521,23 @@ class _Containers:
 
     def __init__(self, containers=()) -> None:
         self.chain: list = list(containers)  # outermost first, as in ``_match_chain``
+        self.leading: int = _leading_items(self.chain)  # the list items at its head
         self.paragraph = False  # whether a paragraph is open at the end of ``chain``
         self.childless = False  # whether the last container is an item nothing has been put in yet
 
     def read(self, line: str) -> tuple[int, list, str, str]:
         """Read one line into the state; the return value is ``_parse_line``'s."""
-        taken = _parse_line(line, self.chain, self.paragraph, self.childless)
+        taken = _parse_line(line, self.chain, self.paragraph, self.childless, self.leading)
         matched, opened, _content, kind = taken
         before = self.chain
         # A paragraph line that lies outside some open container goes on with
         # that paragraph and closes nothing.
         lazy = kind == "text" and self.paragraph and matched < len(self.chain) and not opened
-        if not lazy and kind != "untracked":
+        if not lazy and kind != "untracked" and (opened or matched != len(self.chain)):
+            # Only the head of the chain can lose its quote, or meet the new items.
             self.chain = self.chain[:matched] + opened
+            if matched <= self.leading:
+                self.leading = matched + _leading_items(opened)
         self.paragraph = kind == "text"
         # What is known about the last container holds on only over a blank line
         # that closes nothing: any other line puts something in it or ends it.
@@ -694,15 +730,27 @@ def _opens_markup(text: str, position: int) -> bool:
     return character in ("!", "?") or (character.isascii() and character.isalpha())
 
 
-def _starts_content(segment: str, position: int) -> bool:
-    """Whether only indentation, quote markers and list markers precede ``position`` on its line.
+def _content_start(line: str, start: int = 0) -> int:
+    """Where a block begins in a line: the first position not preceded only by
+    indentation, quote markers and list markers, each with the whitespace after it.
 
-    That is where a block begins inside a container, so it is where a tag would
-    open an HTML block in the published text. Each step of the pattern is fixed
-    by the next character, a marker needing whitespace after it, so it cannot
-    backtrack.
+    That is where a tag would open an HTML block inside a container. The line
+    is read once, in place: each step is fixed by the character it stands on,
+    and a marker counts only with a space or a tab after it, at most nine
+    digits before its ``.`` or ``)``. A pattern for this would be ambiguous,
+    since whitespace after a marker also reads as indentation, and would
+    backtrack over every reading of a line such as ``*\\t\\t*\\t\\t...``.
     """
-    return _CONTENT_START.match(segment, segment.rfind("\n", 0, position) + 1, position) is not None
+    position = start
+    while position < len(line):
+        if line[position] in " \t>":
+            position += 1
+            continue
+        marker = _ITEM_MARKER.match(line, position)
+        if marker is None or line[marker.end() : marker.end() + 1] not in (" ", "\t"):
+            break
+        position = marker.end() + 1
+    return position
 
 
 def _url_escapes(segment: str, spans: list[tuple[int, int]]) -> list[int]:
@@ -742,12 +790,25 @@ def _object_escapes(segment: str, spans: list[tuple[int, int]], *, tags: bool) -
     """Positions to put a backslash before: the objects outside code spans."""
     escaped = _escaped_positions(segment)
     positions = []
+    # Where a block begins on the line being read. A tag inside a code span is
+    # asked for it once per tag, so the line is read once per line, not once per tag.
+    line_end = 0
+    block_at = 0
+
+    def starts_block(position: int) -> bool:
+        nonlocal line_end, block_at
+        if position >= line_end:
+            following = segment.find("\n", position)
+            line_end = len(segment) if following == -1 else following + 1
+            block_at = _content_start(segment, segment.rfind("\n", 0, position) + 1)
+        return position <= block_at
+
     for character in ("[", "]", "<") if tags else ("[", "]"):
         position = segment.find(character)
         while position != -1:
             if position not in escaped and (
                 not _inside(spans, position)
-                or (character == "<" and _starts_content(segment, position))
+                or (character == "<" and starts_block(position))
             ):
                 if character != "<" or _opens_markup(segment, position):
                     positions.append(position)
@@ -777,19 +838,23 @@ def _published_lines(lines: list[str]) -> list[list]:
     about what a line says.
     """
     text = "\n".join(_strip_invisible(line) for line in lines)
+    closers = _positions(text, "-->")
     published: list[list] = []
+    parts: list[str] = []  # the current line's text, joined at its end: a long line is not recopied per piece
     current = [0, 0, ""]
     raw = 0
     position = 0
 
     def keep(piece: str) -> None:
-        nonlocal raw, current
-        for number, part in enumerate(piece.split("\n")):
-            if number:  # a line break survives: the published line ends here
-                published.append(current)
-                raw += 1
-                current = [raw, raw, ""]
-            current[2] += part
+        nonlocal raw, current, parts
+        pieces = piece.split("\n")
+        parts.append(pieces[0])
+        for part in pieces[1:]:  # a line break survives: the published line ends here
+            current[2] = "".join(parts)
+            published.append(current)
+            raw += 1
+            current = [raw, raw, ""]
+            parts = [part]
 
     while True:
         opener = text.find("<!--", position)
@@ -797,14 +862,15 @@ def _published_lines(lines: list[str]) -> list[list]:
             keep(text[position:])
             break
         keep(text[position:opener])
-        closer = text.find("-->", opener + 4)
-        if closer == -1:
+        closer = _first_at_or_after(closers, opener + 4)
+        if closer is None:
             position = opener + 4  # an unclosed opener swallows nothing but itself
             continue
         # The comment goes, its line breaks with it: what follows joins the line.
         raw += text.count("\n", opener, closer + 3)
         current[1] = raw
         position = closer + 3
+    current[2] = "".join(parts)
     published.append(current)
     return published
 
@@ -898,7 +964,7 @@ def _code_block(
 
     The line is published as given, marker openers aside. The return value is
     the block's state for ``_field_blocks``: its kind, its fence for a fence,
-    and the containers it sits in.
+    the containers it sits in, and how many list items stand at their head.
     """
     if kind == "start" and (fence := _opening_fence(content)) is not None:
         shape = ("fence", fence[0], fence[1])
@@ -908,7 +974,7 @@ def _code_block(
         return None
     # A code block begins a block of its own, so it ends every container it is not in.
     blocks.append([True, first, raw, [_quiet_markers(line)], False, []])
-    return (*shape, containers)
+    return (*shape, containers, _leading_items(containers))
 
 
 def _field_blocks(lines: list[str], *, joined: bool = False, prose_only: bool = False) -> list[list]:
@@ -937,15 +1003,17 @@ def _field_blocks(lines: list[str], *, joined: bool = False, prose_only: bool = 
     Containers are followed as ``_inline_runs`` follows them, so a code block
     inside a quote or a list item lasts exactly as long as that container does:
     the renderer closes it where the container ends, and keeps it over a blank
-    line where the container stays open. Where the structure cannot be followed,
-    the field is lost from there on: at a table, whose rows are cut at their
-    pipes before any inline parsing; at a tab in the indentation or in the
-    markers of a quote or a list item, whose width depends on the column it
-    stands in. A lost field is picked up again where the renderer can have
-    nothing open, at a line that follows a blank line and starts at column 0,
-    unless a fence has been opened since, because where that closes is not
-    known. ``prose_only`` loses the whole field, for one whose first line reads
-    differently under the template's branches.
+    line where the container stays open. That too is read off the line as it is
+    published: one that leaves the container as it stands is published as prose,
+    and what rules 1 and 3 take out of it may move it back in. Where the
+    structure cannot be followed, the field is lost from there on: at a table,
+    whose rows are cut at their pipes before any inline parsing; at a tab in the
+    indentation or in the markers of a quote or a list item, whose width depends
+    on the column it stands in. A lost field is picked up again where the
+    renderer can have nothing open, at a line that follows a blank line and
+    starts at column 0, unless a fence has been opened since, because where that
+    closes is not known. ``prose_only`` loses the whole field, for one whose
+    first line reads differently under the template's branches.
     """
     if not lines:
         return []
@@ -958,14 +1026,18 @@ def _field_blocks(lines: list[str], *, joined: bool = False, prose_only: bool = 
         starts.append(offset)
         offset += len(line) + 1
     text = "\n".join(texts)
+    # Found once: an opener with no closer behind it must not search for one each time.
+    openers = _positions(text, "<!--")
+    closers = _positions(text, "-->")
+    newlines = _positions(text, "\n")
     blocks: list[list] = []
     state = _Containers()
-    inert = None  # ("fence" | "code", character, length, containers): the block published as it stands
+    inert = None  # ("fence" | "code", character, length, containers, items at their head): published as it stands
     lost = False
     after_blank = False  # in a lost field: a blank line has passed
     fenced = False  # in a lost field: a fence may have been opened
     header_at = -1  # raw line the last prose line began on, the header row of a possible table
-    header = ""
+    header_text = False  # whether that line has text
     raw = 0
 
     def prose(first: int, last: int, body, containers: list) -> None:
@@ -980,24 +1052,55 @@ def _field_blocks(lines: list[str], *, joined: bool = False, prose_only: bool = 
         else:
             blocks.append([False, first, last, [body], False, list(containers)])
 
+    def without_comments(position: int, raw: int) -> tuple[str, int]:
+        """Rule 1 over the published line that starts at ``position``, on raw line ``raw``.
+
+        Returns what is left of the line and the raw line it ends on, since a
+        comment takes the line breaks inside it along.
+        """
+        kept: list[str] = []  # what rule 1 leaves of this published line
+        while True:
+            opener = _first_at_or_after(openers, position)
+            newline = _first_at_or_after(newlines, position)
+            if opener is not None and (newline is None or opener < newline):
+                kept.append(text[position:opener])
+                closer = _first_at_or_after(closers, opener + 4)
+                if closer is None:
+                    position = opener + 4  # an unclosed opener goes, and nothing with it
+                    continue
+                raw += text.count("\n", opener, closer + 3)  # the comment takes its line breaks along
+                position = closer + 3
+                continue
+            kept.append(text[position : newline if newline is not None else len(text)])
+            return "".join(kept), raw
+
     while raw < len(lines):
         line = lines[raw]
         if inert is not None:
-            matched, position, tabbed = _match_chain(line, inert[3])
+            # Judged on the line as the renderer gets it. In the block that is the line as it
+            # stands; outside it, the line is published as prose, rules 1 and 3 first. What
+            # they take out moves what follows it, so that line may lie in the block's
+            # containers after all, where the renderer keeps the block open.
+            published, last = line, raw
+            matched, position, tabbed = _match_chain(line, inert[3], leading=inert[4])
             inside = matched == len(inert[3]) and not tabbed
+            if not inside:
+                published, last = without_comments(starts[raw], raw)
+                matched, position, tabbed = _match_chain(published, inert[3], leading=inert[4])
+                inside = matched == len(inert[3]) and not tabbed
             if inside:
-                indent, end = _indentation(line, position)
+                indent, end = _indentation(published, position)
                 if inert[0] == "fence":
-                    run = len(line) - end - len(line[end:].lstrip(inert[1]))
+                    run = len(published) - end - len(published[end:].lstrip(inert[1]))
                     # The closing fence stands at most three columns in and has nothing after it.
-                    if indent <= 3 and run >= inert[2] and not line[end + run :].strip(" \t"):
+                    if indent <= 3 and run >= inert[2] and not published[end + run :].strip(" \t"):
                         inert = None
-                elif line.strip(" \t") and indent < 4:
+                elif published.strip(" \t") and indent < 4:
                     inside = False  # indented code goes on over blank lines and indented lines only
             if inside:
-                blocks[-1][2] = raw
-                blocks[-1][3].append(_quiet_markers(line))
-                raw += 1
+                blocks[-1][2] = last
+                blocks[-1][3].append(_quiet_markers(published))
+                raw = last + 1
                 continue
             inert = None  # the container ended, and the code block with it
         first = raw  # the raw line the published line begins on
@@ -1005,31 +1108,16 @@ def _field_blocks(lines: list[str], *, joined: bool = False, prose_only: bool = 
         newline = text.find("\n", position)
         whole = text[position : newline if newline != -1 else len(text)]  # comments kept
         taken = (0, [], whole, "text") if first == 0 and joined else _parse_line(
-            whole, state.chain, state.paragraph, state.childless
+            whole, state.chain, state.paragraph, state.childless, state.leading
         )
-        if not lost and taken[3] != "untracked" and (
+        if not lost and taken[3] in ("start", "code") and (
             found := _code_block(taken[3], taken[2], whole, first, raw, blocks, state.chain[: taken[0]] + taken[1])
         ) is not None:
             inert, state.chain = found, found[3]
-            state.paragraph, state.childless, header_at = False, False, -1
+            state.paragraph, state.childless, state.leading, header_at = False, False, found[4], -1
             raw += 1
             continue
-        kept: list[str] = []  # what rule 1 leaves of this published line
-        while True:
-            opener = text.find("<!--", position)
-            newline = text.find("\n", position)
-            if opener != -1 and (newline == -1 or opener < newline):
-                kept.append(text[position:opener])
-                closer = text.find("-->", opener + 4)
-                if closer == -1:
-                    position = opener + 4  # an unclosed opener goes, and nothing with it
-                    continue
-                raw += text.count("\n", opener, closer + 3)  # the comment takes its line breaks along
-                position = closer + 3
-                continue
-            kept.append(text[position : newline if newline != -1 else len(text)])
-            break
-        body = "".join(kept)
+        body, raw = without_comments(position, raw)
         if lost:
             if body.strip(" \t") and after_blank and not fenced and body[:1] not in " \t":
                 lost, state, after_blank = False, _Containers(), False
@@ -1049,7 +1137,7 @@ def _field_blocks(lines: list[str], *, joined: bool = False, prose_only: bool = 
         if kind == "untracked":
             lost, after_blank, fenced, header_at = True, False, False, -1
             prose(first, raw, None, [])
-        elif header_at >= 0 and header.strip(" \t") and _possible_delimiter_row(body):
+        elif header_at >= 0 and header_text and _possible_delimiter_row(body):
             # A table: its header row is the line above, and a row is cut at
             # its pipes before any inline parsing.
             blocks[-1][3].pop()
@@ -1067,7 +1155,7 @@ def _field_blocks(lines: list[str], *, joined: bool = False, prose_only: bool = 
             # With the template's markup before it on its line, the first line has text
             # whatever it holds, and can be a table's header row.
             header_at = first
-            header = body or ("x" if first == 0 and joined else "")
+            header_text = bool(body.strip(" \t")) or (not body and first == 0 and joined)
         raw += 1
     return blocks
 

@@ -11,6 +11,7 @@ GitHub uses, and are written as the template places the fields.
 """
 
 import re
+from time import perf_counter
 
 import pytest
 
@@ -276,6 +277,30 @@ def test_a_tab_before_the_closer_of_an_items_fence_is_measured_in_columns():
     assert _live(firewall_model_output("- ```\n  a\n   \t```\n  " + IMAGE), IMAGE) == []
 
 
+@pytest.mark.parametrize("body", [
+    # The opener goes by rule 1, and the line moves into the item: there its ``` closes the fence.
+    f"1. ```\n     code\n  <!-- ```\n     {IMAGE}",
+    # The line moves into the item and closes nothing: the fence ends on the next line instead.
+    f"1. ```\n     code\n  <!-- -|- ```\n{IMAGE} ``` y ```",
+])
+def test_a_fence_is_followed_on_the_line_the_renderer_gets(body):
+    assert _live(firewall_model_output(body), IMAGE) == []
+
+
+def test_a_fence_is_followed_on_the_line_the_renderer_gets_under_a_list_marker():
+    # The template's marker makes an item of the first line, an empty one.
+    body = f"\n\n1. ```\n  <!-- -|- ```\n{IMAGE} ``` y ```"
+
+    assert _live(firewall_model_output(body, after="item"), IMAGE) == []
+
+
+def test_a_fence_is_followed_on_the_line_rule_three_leaves():
+    # A line feed is whitespace to the scanners and dropped by rule 3, which moves the line into the item.
+    body = f" - ~~~  info\n \x0b  >   {BEACON} ---"
+
+    assert firewall_model_output(body) == f" - ~~~  info\n   >   {BEACON} ---"
+
+
 def test_an_empty_item_is_closed_by_a_blank_line():
     # The template's marker makes an item of the first line, with an empty one in it.
     result = firewall_model_output(f"-   \n\n    {IMAGE}", after="item")
@@ -451,6 +476,50 @@ def test_object_and_code_span_floods_stay_fast():
 
 def test_unbalanced_floods_stay_fast():
     assert firewall_model_output("[" * 25000 + "<" * 25000) == "\\[" * 25000 + "<" * 25000
+
+
+def test_whitespace_after_a_marker_is_read_once_and_not_backtracked():
+    # Whitespace after a list marker also reads as indentation. A pattern for where a block
+    # begins would try every reading of "*\t\t*\t\t...", two to the power of the markers.
+    hostile = "*\t\t" * 30 + "x`<a>`"
+    started = perf_counter()
+
+    assert firewall_model_output(hostile, after="markup") == hostile
+    assert perf_counter() - started < 5.0
+
+
+def test_a_blank_line_does_not_walk_down_the_open_items():
+    # The items on the first line all stay open over a blank line, so it is not matched against each.
+    hostile = "- " * 4000 + "x" + "\n\n" * 3000
+    started = perf_counter()
+
+    assert firewall_model_output(hostile) == hostile
+    assert perf_counter() - started < 5.0
+
+
+def test_a_line_of_markers_is_read_in_place():
+    # Cutting the rest off the line at each marker would copy it once per marker.
+    hostile = ">" * 300000
+    started = perf_counter()
+
+    assert firewall_model_output(hostile) == hostile
+    assert perf_counter() - started < 5.0
+
+
+def test_many_tags_in_one_code_span_do_not_reread_the_line():
+    # Where a block begins on the line is read once per line, not once per tag.
+    hostile = " " * 100000 + "`" + "<a>" * 30000 + "`"
+    started = perf_counter()
+
+    assert firewall_model_output(hostile, after="markup") == hostile
+    assert perf_counter() - started < 5.0
+
+
+def test_a_long_numeric_reference_is_left_as_it_is():
+    # int() refuses a decimal string of more than 4300 digits.
+    hostile = "a &#" + "9" * 5000 + "; b &#8238; c"
+
+    assert firewall_model_output(hostile) == "a &#" + "9" * 5000 + "; b  c"
 
 
 def test_a_second_pass_is_a_no_op_when_block_structure_is_unchanged():
