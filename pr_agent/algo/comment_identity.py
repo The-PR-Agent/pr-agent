@@ -124,6 +124,20 @@ def hidden_marker_forms(identity: str) -> tuple[str, ...]:
     return (identity,)
 
 
+def escape_hidden_markers(text: str) -> str:
+    """Wrap lines equal to a known hidden marker in backticks so echoed text carries no identity."""
+    if not isinstance(text, str):
+        return text
+    markers = {form for identity in _ALL_COMMENT_IDENTITIES for form in hidden_marker_forms(identity)}
+    lines = text.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        content = line.splitlines()[0]
+        marker = content.strip()
+        if marker in markers:
+            lines[index] = content.replace(marker, f"`{marker}`", 1) + line[len(content):]
+    return "".join(lines)
+
+
 def render_hidden_marker(identity: str, git_provider=None) -> str:
     """Use a link reference on providers that escape HTML comments."""
     forms = hidden_marker_forms(identity)

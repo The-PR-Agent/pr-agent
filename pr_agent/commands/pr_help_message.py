@@ -12,6 +12,7 @@ from litellm import token_counter
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.comment_identity import escape_hidden_markers
 from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
 from pr_agent.algo.run_details import init_run_details, record_command_failure
 from pr_agent.algo.run_output import append_run_details, show_custom_comment_footer
@@ -523,9 +524,9 @@ class PRHelpMessage:
                 if isinstance(response_yaml, str):
                     get_logger().warning(f"failing to parse response: {response_yaml}, publishing the response as is")
                     if get_settings().config.publish_output:
-                        answer_str = f"### Question: \n{self.question_str}\n\n"
+                        answer_str = f"### Question: \n{escape_hidden_markers(self.question_str)}\n\n"
                         answer_str += "### Answer:\n\n"
-                        answer_str += response_yaml
+                        answer_str += escape_hidden_markers(response_yaml)
                         self.git_provider.publish_comment(append_run_details(answer_str, self.git_provider))
                     return ""
                 response_str = response_yaml.get('response')
@@ -534,7 +535,7 @@ class PRHelpMessage:
                 if not relevant_sections:
                     get_logger().info(f"Could not find relevant answer for the question: {self.question_str}")
                     if get_settings().config.publish_output:
-                        answer_str = f"### Question: \n{self.question_str}\n\n"
+                        answer_str = f"### Question: \n{escape_hidden_markers(self.question_str)}\n\n"
                         answer_str += "### Answer:\n\n"
                         answer_str += (
                             "Could not find relevant information to answer the question. "
@@ -547,8 +548,8 @@ class PRHelpMessage:
                 answer_str = ""
                 if response_str:
                     source_urls = self._format_relevant_sources(relevant_sections, self._model_visible_docs_files)
-                    answer_str += f"### Question: \n{self.question_str}\n\n"
-                    answer_str += f"### Answer:\n{response_str.strip()}\n\n"
+                    answer_str += f"### Question: \n{escape_hidden_markers(self.question_str)}\n\n"
+                    answer_str += f"### Answer:\n{escape_hidden_markers(response_str.strip())}\n\n"
                     if source_urls:
                         answer_str += "#### Relevant Sources:\n\n"
                     for docs_url in source_urls:

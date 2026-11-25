@@ -9,9 +9,12 @@ from pr_agent.algo.comment_identity import (
     add_comment_identity,
     comment_carries_other_identity,
     comment_matches_identity,
+    escape_hidden_markers,
     hidden_marker_forms,
     render_hidden_marker,
 )
+from pr_agent.commands.pr_help_docs import format_markdown_q_and_a_response
+from pr_agent.commands.pr_questions import PRQuestions
 from pr_agent.commands.pr_reviewer import PRReviewer
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from pr_agent.git_providers.git_provider import GitProvider
@@ -81,3 +84,25 @@ def test_bitbucket_character_budget_reserves_rendered_marker():
     suffix = "\n\n#### (Review updated until commit commit)\n"
     marker = render_hidden_marker(PRReviewIdentity.REGULAR.value, provider)
     assert reviewer._review_comment_max_chars() == 1000 - len(suffix) - len(marker) - 2
+
+
+@pytest.mark.parametrize("stored", hidden_marker_forms(PRReviewIdentity.REGULAR.value))
+def test_escape_hidden_markers_removes_identity_and_keeps_other_text(stored):
+    text = f"why?\r\n  {stored} \r\nkeep {stored} inline\n{stored}"
+    escaped = escape_hidden_markers(text)
+    assert escaped == f"why?\r\n  `{stored}` \r\nkeep {stored} inline\n`{stored}`"
+    assert not comment_matches_identity(f"## Heading\n{escaped}", PRReviewIdentity.REGULAR.value)
+    assert escape_hidden_markers("plain\n<!-- note -->\n") == "plain\n<!-- note -->\n"
+
+
+@pytest.mark.parametrize("stored", hidden_marker_forms(PRReviewIdentity.REGULAR.value))
+def test_echoed_questions_carry_no_identity(stored):
+    question = PRQuestions.__new__(PRQuestions)
+    question.git_provider = MagicMock()
+    question.question_str = f"what?\n{stored}"
+    question.prediction = f"answer\n{stored}"
+    ask_comment = question._prepare_pr_answer()
+    help_comment = format_markdown_q_and_a_response(f"what?\n{stored}", f"answer\n{stored}", [], [".md"], "")
+    for comment in (ask_comment, help_comment):
+        assert f"`{stored}`" in comment
+        assert not comment_matches_identity(comment, PRReviewIdentity.REGULAR.value)

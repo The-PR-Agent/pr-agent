@@ -11,6 +11,7 @@ from jinja2.sandbox import SandboxedEnvironment
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.comment_identity import escape_hidden_markers
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     FallbackEligibleError,
@@ -213,8 +214,8 @@ def format_markdown_q_and_a_response(question_str: str, response_str: str,
     try:
         base_url_prefix = base_url_prefix.strip('/')  # Sanitize base_url_prefix
         answer_str = ""
-        answer_str += f"### Question: \n{question_str}\n\n"
-        answer_str += f"### Answer:\n{response_str.strip()}\n\n"
+        answer_str += f"### Question: \n{escape_hidden_markers(question_str)}\n\n"
+        answer_str += f"### Answer:\n{escape_hidden_markers(response_str.strip())}\n\n"
         source_links = []
         if not isinstance(relevant_sections, list):
             get_logger().warning("Skipping malformed relevant source collection: expected a list")
