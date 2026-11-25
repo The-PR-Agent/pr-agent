@@ -42,6 +42,7 @@ from pr_agent.git_providers.diff_parsing import to_hunk_only_patch
 from ..algo.comment_identity import (
     PRCodeSuggestionsHeader,
     PRCodeSuggestionsIdentity,
+    PRCommandNoticeIdentity,
     comment_matches_any_identity,
     get_pr_review_comment_identifiers,
 )
@@ -96,7 +97,7 @@ class IncompleteGitLabDiffError(DiffNotFoundError, IncompleteProviderPullRequest
         "split an unusually large merge request into smaller ones."
     )
     notice = notice_template.format(bot_name="PR-Agent")
-    notice_marker = "<!-- pr-agent:gitlab-incomplete-diff -->"
+    notice_marker = PRCommandNoticeIdentity.INCOMPLETE_GITLAB_DIFF.value
 
 
 class GitLabDiffNotReadyError(IncompleteGitLabDiffError):

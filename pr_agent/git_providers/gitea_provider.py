@@ -10,6 +10,7 @@ import giteapy
 from giteapy.rest import ApiException
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
+from pr_agent.algo.comment_identity import PRCommandNoticeIdentity
 from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.git_patch_processing import (
     NO_NEWLINE_AT_EOF_MARKER,
@@ -112,7 +113,7 @@ class IncompleteGiteaPullRequestFilesError(IncompleteProviderPullRequestFilesErr
         "Retry the command and check the pull request's changed files and diff in Gitea if the problem persists."
     )
     notice = notice_template.format(bot_name="PR-Agent")
-    notice_marker = "<!-- pr-agent:gitea-incomplete-files -->"
+    notice_marker = PRCommandNoticeIdentity.INCOMPLETE_GITEA_FILES.value
 
 
 class _GiteaCommitAdapter:

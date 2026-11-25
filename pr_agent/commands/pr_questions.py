@@ -8,7 +8,7 @@ from starlette_context import context
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import get_artifact_context
-from pr_agent.algo.comment_identity import format_pr_questions_header
+from pr_agent.algo.comment_identity import escape_hidden_markers, format_pr_questions_header
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
@@ -56,7 +56,8 @@ FILE_QUESTION_BUDGET_NOTE = (
 
 def _sanitize_slash_commands(text: str) -> str:
     # make sure no line starts with "/", so the published comment cannot trigger quick actions
-    sanitized = text.replace("\n/", "\n /").replace("\r/", "\r /")
+    # and no line is a hidden marker, so it cannot pass for another PR-Agent comment
+    sanitized = escape_hidden_markers(text).replace("\n/", "\n /").replace("\r/", "\r /")
     if sanitized.startswith("/"):
         sanitized = " " + sanitized
     return sanitized
