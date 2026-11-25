@@ -28,7 +28,7 @@ from pr_agent.algo.comment_identity import (
     parse_commit_review_records,
     render_hidden_marker,
 )
-from pr_agent.algo.deterministic_risk import build_risk_checks, normalize_file_path
+from pr_agent.algo.deterministic_risk import build_risk_checks
 from pr_agent.algo.findings import Finding
 from pr_agent.algo.git_patch_processing import split_diff_lines
 from pr_agent.algo.i18n import t
@@ -231,21 +231,18 @@ _STATE_BLOCK_REVIEW_DATA = "review_data"
 _STATE_BLOCK_SIZE = "state_size"
 
 
-def _changed_file_paths(file) -> set[str]:
-    """Return the normalized paths a changed-file entry names: GitHub-style objects or GitLab change dicts."""
-    if isinstance(file, dict):
-        candidates = (file.get("new_path"), file.get("old_path"), file.get("filename"))
-    else:
-        candidates = (getattr(file, "filename", None), getattr(file, "old_filename", None),
-                      getattr(file, "previous_filename", None))
-    return {path for path in map(normalize_file_path, candidates) if path}
+def _changed_file_path(file) -> str | None:
+    """Return a changed-file entry's current path exactly as the provider gives it:
+    `filename` on GitHub-style objects, `new_path` on GitLab change dicts."""
+    path = file.get("new_path") if isinstance(file, dict) else getattr(file, "filename", None)
+    return path if isinstance(path, str) and path else None
 
 
 def _count_unread_files(model_files, complete_files) -> int:
-    """Count the files of the complete PR diff that are absent from the diff the model read,
+    """Count the files of the complete PR diff whose current path is absent from the diff the model read,
     such as files removed by the ignore rules or the file-type filter. An entry without a path counts as unread."""
-    read_paths = set().union(*(_changed_file_paths(file) for file in model_files or []))
-    return sum(1 for file in complete_files if not _changed_file_paths(file) & read_paths)
+    read_paths = {path for file in model_files or [] if (path := _changed_file_path(file))}
+    return sum(1 for file in complete_files if _changed_file_path(file) not in read_paths)
 
 
 def _is_structural_reach_key(key) -> bool:

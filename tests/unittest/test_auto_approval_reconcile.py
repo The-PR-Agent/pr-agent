@@ -1,6 +1,7 @@
 """PRReviewer reconciles the auto-approval once per /review run (issue #4698)."""
 
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -305,7 +306,16 @@ def _gitlab_change(new_path, old_path=None, **flags):
                      id="gitlab-ignored-file"),
         pytest.param([_model_file("new.py")], [_gitlab_change("new.py", "old.py", renamed_file=True)], True,
                      id="gitlab-rename-read"),
-        pytest.param([_model_file("/app.py")], [_gitlab_change("app.py")], True, id="leading-slash"),
+        pytest.param([_model_file("vendor/lib.py")], [_model_file("vendor/lib.py"), _model_file("vendor\\lib.py")],
+                     False, id="backslash-twin"),
+        pytest.param([_model_file("vendor/lib.py")], [_model_file("vendor/lib.py"), _model_file("vendor/lib.py ")],
+                     False, id="trailing-space-twin"),
+        pytest.param([replace(_model_file("new.py"), old_filename="old.py")],
+                     [replace(_model_file("new.py"), old_filename="old.py"), _model_file("old.py")], False,
+                     id="github-recreated-at-renamed-path"),
+        pytest.param([replace(_model_file("new.py"), old_filename="old.py")],
+                     [_gitlab_change("new.py", "old.py", renamed_file=True), _gitlab_change("old.py", new_file=True)],
+                     False, id="gitlab-recreated-at-renamed-path"),
     ],
 )
 @pytest.mark.asyncio
