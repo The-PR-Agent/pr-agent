@@ -31,6 +31,9 @@ class PRCodeSuggestionsIdentity(StrEnum):
 
 class PRCommandNoticeIdentity(StrEnum):
     INCOMPLETE_BITBUCKET_FILES = "<!-- pr-agent:bitbucket-incomplete-files -->"
+    INCOMPLETE_GITHUB_FILES = "<!-- pr-agent:github-incomplete-files -->"
+    INCOMPLETE_GITLAB_DIFF = "<!-- pr-agent:gitlab-incomplete-diff -->"
+    INCOMPLETE_GITEA_FILES = "<!-- pr-agent:gitea-incomplete-files -->"
     REVIEWED_COMMITS = "<!-- pr-agent:review:commits -->"
     UNCHANGED_DIFF = "<!-- pr-agent:unchanged-diff -->"
     REVIEW_FAILURE = "<!-- pr-agent:review:failure -->"
@@ -128,7 +131,8 @@ def escape_hidden_markers(text: str) -> str:
     """Wrap lines equal to a known hidden marker in backticks so echoed text carries no identity."""
     if not isinstance(text, str):
         return text
-    markers = {form for identity in _ALL_COMMENT_IDENTITIES for form in hidden_marker_forms(identity)}
+    identities = (*_ALL_COMMENT_IDENTITIES, *PRCommandNoticeIdentity)
+    markers = {form for identity in identities for form in hidden_marker_forms(identity)}
     lines = text.splitlines(keepends=True)
     for index, line in enumerate(lines):
         content = line.splitlines()[0]

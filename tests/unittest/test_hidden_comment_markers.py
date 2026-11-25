@@ -5,6 +5,7 @@ import pytest
 
 from pr_agent.algo.comment_identity import (
     PRCodeSuggestionsIdentity,
+    PRCommandNoticeIdentity,
     PRReviewIdentity,
     add_comment_identity,
     comment_carries_other_identity,
@@ -106,3 +107,14 @@ def test_echoed_questions_carry_no_identity(stored):
     for comment in (ask_comment, help_comment):
         assert f"`{stored}`" in comment
         assert not comment_matches_identity(comment, PRReviewIdentity.REGULAR.value)
+
+
+@pytest.mark.parametrize("notice", list(PRCommandNoticeIdentity))
+def test_echoed_notice_markers_carry_no_identity(notice):
+    question = PRQuestions.__new__(PRQuestions)
+    question.git_provider = MagicMock()
+    question.question_str = f"what?\n{notice.value}"
+    question.prediction = "answer"
+    answer = question._prepare_pr_answer()
+    assert f"`{notice.value}`" in answer
+    assert not comment_matches_identity(answer, notice.value)

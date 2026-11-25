@@ -133,7 +133,7 @@ class IncompletePullRequestFilesError(IncompleteProviderPullRequestFilesError):
         "split it into smaller pull requests and run the command again. Otherwise, retry the command."
     )
     notice = notice_template.format(bot_name="PR-Agent")
-    notice_marker = "<!-- pr-agent:github-incomplete-files -->"
+    notice_marker = PRCommandNoticeIdentity.INCOMPLETE_GITHUB_FILES.value
 
 
 class IncompleteBitbucketPullRequestFilesError(IncompleteProviderPullRequestFilesError):
