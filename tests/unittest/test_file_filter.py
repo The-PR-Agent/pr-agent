@@ -292,6 +292,18 @@ class TestIgnoreFilter:
         assert complete is False
         assert time.monotonic() - start < 3
 
+    def test_regex_over_the_length_cap_is_skipped_and_marks_result_incomplete(self, monkeypatch):
+        monkeypatch.setitem(global_settings.ignore, 'regex', ['x' * 1025, r'^file2\..*$'])
+        monkeypatch.setitem(global_settings.ignore, 'glob', [])
+        files = [
+            type('', (object,), {'filename': 'x' * 1025})(),
+            type('', (object,), {'filename': 'file1.py'})(),
+            type('', (object,), {'filename': 'file2.java'})(),
+        ]
+        kept, complete = filter_ignored_with_status(files)
+        assert [f.filename for f in kept] == ['x' * 1025, 'file1.py']
+        assert complete is False
+
     def test_invalid_regex(self, monkeypatch):
         """
         Test invalid patterns are quietly ignored.

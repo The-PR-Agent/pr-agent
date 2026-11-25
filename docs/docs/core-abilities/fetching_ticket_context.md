@@ -106,7 +106,8 @@ Branch names can also be used to link issues, for example:
 On **GitHub**, matching also supports `feature/123-fix-bug` and the optional `config.branch_issue_regex` setting.
 The custom regex must have a capturing group for the issue number; an invalid regex disables branch detection,
 while a regex without a capturing group falls back to the default pattern (up to six digits after a slash or at the start).
-A custom regex that runs longer than 50 ms on the branch name finds no issue and logs a warning.
+A custom regex that runs longer than 50 ms on the branch name, is longer than 1024 characters, or has counted repeats
+such as `{100}` that multiply to more than 10,000 finds no issue, and the reason is logged.
 On **GitLab**, only branches starting with a 1–6 digit ASCII issue number (no leading zeros) followed by a
 hyphen are recognized.
 The source and target projects must be the same; fork MRs and patterns such as `feature/123-fix-bug` are not inferred.

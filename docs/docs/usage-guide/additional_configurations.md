@@ -104,7 +104,9 @@ regex = ['.*\.py$']
 
 Each `regex` pattern is matched with a time limit: a match that takes longer than 50 ms counts as no match, logs a
 warning and skips that pattern for the rest of the PR, and the patterns share a budget of one second per filter pass.
-The result is then marked incomplete, as it is for a pattern that does not compile.
+The result is then marked incomplete, as it is for a pattern that does not compile. A pattern longer than 1024
+characters, or whose counted repeats such as `{100}` multiply to more than 10,000, is skipped the same way,
+before it is compiled.
 
 A `**/` segment in a `glob` pattern matches zero or more directories, so `src/**/generated_*.py` also ignores `src/generated_pb.py` and not only `src/api/generated_pb.py`. Note that `*` still matches across `/`, as in `['*.py']` above.
 
@@ -759,6 +761,8 @@ Where the `ignore_repositories` is a list of regex patterns to match the reposit
 The regex patterns of `ignore_repositories`, `ignore_pr_authors`, `ignore_pr_title`, `ignore_pr_source_branches` and
 `ignore_pr_target_branches` are matched with a time limit of 50 ms per match and one second for all of them together;
 a pattern that runs out of time counts as not matching, so the PR is processed, and a warning is logged.
+A pattern longer than 1024 characters, or whose counted repeats such as `{100}` multiply to more than 10,000, is
+treated like one that does not compile.
 
 
 ### Ignoring PRs not from specific folders

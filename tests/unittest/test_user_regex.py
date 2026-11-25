@@ -27,6 +27,27 @@ def test_compile_keeps_re_error_for_invalid_patterns():
         compile_user_regex("(")
 
 
+def test_compile_rejects_patterns_over_the_length_cap():
+    assert compile_user_regex("a" * user_regex.USER_REGEX_MAX_LENGTH).search("a" * 2000)
+    with pytest.raises(re.error, match="limit is 1024"):
+        compile_user_regex("a" * (user_regex.USER_REGEX_MAX_LENGTH + 1))
+
+
+@pytest.mark.parametrize("pattern", [r"(?:a{9999}){9999}", r"(?:a{9999,}){2}", r"(?:\w{101,200}){100}"])
+def test_compile_rejects_counted_repeats_over_the_cap(pattern):
+    start = time.monotonic()
+    with pytest.raises(re.error, match="repeats more than 10000"):
+        compile_user_regex(pattern)
+    assert time.monotonic() - start < 0.5
+
+
+@pytest.mark.parametrize("pattern", [
+    r"^\d{4}-\d{2}-\d{2}$", r"[0-9a-f]{40}", r"(?:a{100}){100}", r"a{0,99999}", r"a{,99999}", r"\{99999\}",
+])
+def test_compile_accepts_counted_repeats_within_the_cap(pattern):
+    assert compile_user_regex(pattern).pattern == pattern
+
+
 def test_compile_rejects_non_string_patterns_like_re():
     with pytest.raises(TypeError):
         compile_user_regex(123)

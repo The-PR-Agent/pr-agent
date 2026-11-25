@@ -12,6 +12,7 @@ pattern on every provider.
 
 import copy
 import importlib
+import re
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -539,6 +540,24 @@ def test_catastrophic_ignore_pattern_times_out_as_no_match(ignore_settings, sett
 
     ignore_settings.set(setting, [r"(a|aa)+$", "!$"])
     assert shared_should_process_pr_logic(**_fields(**{field: slow_value}), raise_on_error=True) is False
+
+
+@pytest.mark.parametrize(
+    "setting, field",
+    [
+        ("CONFIG.IGNORE_REPOSITORIES", "repo_full_name"),
+        ("CONFIG.IGNORE_PR_AUTHORS", "sender"),
+        ("CONFIG.IGNORE_PR_TITLE", "title"),
+        ("CONFIG.IGNORE_PR_SOURCE_BRANCHES", "source_branch"),
+        ("CONFIG.IGNORE_PR_TARGET_BRANCHES", "target_branch"),
+    ],
+)
+def test_ignore_pattern_over_the_length_cap_is_an_invalid_pattern(ignore_settings, setting, field):
+    """Reject an oversized pattern before compiling it, the way an unparsable one is handled."""
+    ignore_settings.set(setting, ["x" * 1025])
+    assert shared_should_process_pr_logic(**_fields(**{field: "x" * 1025})) is True
+    with pytest.raises(re.error):
+        shared_should_process_pr_logic(**_fields(**{field: "x" * 1025}), raise_on_error=True)
 
 
 def test_shared_helper_defaults_to_processing(ignore_settings):
