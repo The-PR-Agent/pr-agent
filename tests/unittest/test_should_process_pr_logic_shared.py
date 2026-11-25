@@ -12,6 +12,7 @@ pattern on every provider.
 
 import copy
 import importlib
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -516,6 +517,28 @@ def test_an_invalid_pattern_does_not_filter_out_every_pull_request(providers, ig
     """Process the PR when a rule cannot be evaluated; the opposite silently disables the agent."""
     ignore_settings.set("CONFIG.IGNORE_PR_TITLE", ["("])
     _assert_all(providers, _fields(), True, "an unparsable ignore_pr_title regex")
+
+
+@pytest.mark.parametrize(
+    "setting, field",
+    [
+        ("CONFIG.IGNORE_REPOSITORIES", "repo_full_name"),
+        ("CONFIG.IGNORE_PR_AUTHORS", "sender"),
+        ("CONFIG.IGNORE_PR_TITLE", "title"),
+        ("CONFIG.IGNORE_PR_SOURCE_BRANCHES", "source_branch"),
+        ("CONFIG.IGNORE_PR_TARGET_BRANCHES", "target_branch"),
+    ],
+)
+def test_catastrophic_ignore_pattern_times_out_as_no_match(ignore_settings, setting, field):
+    """Bound a backtracking pattern from repository settings; a later pattern in the list still applies."""
+    slow_value = "a" * 40 + "!"
+    ignore_settings.set(setting, [r"(a|aa)+$"])
+    start = time.monotonic()
+    assert shared_should_process_pr_logic(**_fields(**{field: slow_value}), raise_on_error=True) is True
+    assert time.monotonic() - start < 3
+
+    ignore_settings.set(setting, [r"(a|aa)+$", "!$"])
+    assert shared_should_process_pr_logic(**_fields(**{field: slow_value}), raise_on_error=True) is False
 
 
 def test_shared_helper_defaults_to_processing(ignore_settings):

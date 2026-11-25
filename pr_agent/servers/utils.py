@@ -2,7 +2,6 @@ import asyncio
 import copy
 import hashlib
 import hmac
-import re
 import secrets
 import time
 from collections import defaultdict
@@ -16,6 +15,7 @@ from starlette_context import context
 
 from pr_agent.algo.command_words import split_command_words
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
+from pr_agent.algo.user_regex import UserRegexBudget, compile_user_regex
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -44,6 +44,11 @@ _MISSING = object()
 def _ignore_patterns(value):
     """Keep a scalar ignore setting as one pattern rather than its characters."""
     return normalize_setting_list(value)
+
+
+def _matches_any(patterns, string, budget, setting) -> bool:
+    """Search ``string`` with each settings pattern within the shared time budget."""
+    return any(budget.run(compile_user_regex(pattern), "search", string, setting) for pattern in patterns)
 
 
 def get_include_pr_labels() -> list[str]:
@@ -571,10 +576,12 @@ def should_process_pr_logic(
                     get_logger().info("Skipping PR without a valid label in config.include_pr_labels")
                     return False
 
+        regex_budget = UserRegexBudget()
+
         # Ignore PRs from specific repositories
         ignore_repos = _ignore_patterns(get_settings().get("CONFIG.IGNORE_REPOSITORIES", []))
         if repo_full_name and ignore_repos:
-            if any(re.search(regex, repo_full_name) for regex in ignore_repos):
+            if _matches_any(ignore_repos, repo_full_name, regex_budget, "config.ignore_repositories"):
                 get_logger().info(
                     f"Ignoring PR from repository '{repo_full_name}' due to 'config.ignore_repositories' setting"
                 )
@@ -583,14 +590,14 @@ def should_process_pr_logic(
         # Ignore PRs from specific users
         ignore_pr_users = _ignore_patterns(get_settings().get("CONFIG.IGNORE_PR_AUTHORS", []))
         if sender and ignore_pr_users:
-            if any(re.search(regex, sender) for regex in ignore_pr_users):
+            if _matches_any(ignore_pr_users, sender, regex_budget, "config.ignore_pr_authors"):
                 get_logger().info(f"Ignoring PR from user '{sender}' due to 'config.ignore_pr_authors' setting")
                 return False
 
         # Ignore PRs with specific titles
         if title:
             ignore_pr_title_re = _ignore_patterns(get_settings().get("CONFIG.IGNORE_PR_TITLE", []))
-            if ignore_pr_title_re and any(re.search(regex, title) for regex in ignore_pr_title_re):
+            if ignore_pr_title_re and _matches_any(ignore_pr_title_re, title, regex_budget, "config.ignore_pr_title"):
                 get_logger().info(f"Ignoring PR with title '{title}' due to config.ignore_pr_title setting")
                 return False
 
@@ -606,12 +613,14 @@ def should_process_pr_logic(
         ignore_pr_source_branches = _ignore_patterns(get_settings().get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", []))
         ignore_pr_target_branches = _ignore_patterns(get_settings().get("CONFIG.IGNORE_PR_TARGET_BRANCHES", []))
         if ignore_pr_source_branches or ignore_pr_target_branches:
-            if source_branch and any(re.search(regex, source_branch) for regex in ignore_pr_source_branches):
+            if source_branch and _matches_any(
+                    ignore_pr_source_branches, source_branch, regex_budget, "config.ignore_pr_source_branches"):
                 get_logger().info(
                     f"Ignoring PR with source branch '{source_branch}' due to config.ignore_pr_source_branches settings"
                 )
                 return False
-            if target_branch and any(re.search(regex, target_branch) for regex in ignore_pr_target_branches):
+            if target_branch and _matches_any(
+                    ignore_pr_target_branches, target_branch, regex_budget, "config.ignore_pr_target_branches"):
                 get_logger().info(
                     f"Ignoring PR with target branch '{target_branch}' due to config.ignore_pr_target_branches settings"
                 )

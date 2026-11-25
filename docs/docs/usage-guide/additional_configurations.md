@@ -102,6 +102,10 @@ And to ignore Python files in all PRs using `regex` pattern, set in a configurat
 regex = ['.*\.py$']
 ```
 
+Each `regex` pattern is matched with a time limit: a match that takes longer than 50 ms counts as no match, logs a
+warning and skips that pattern for the rest of the PR, and the patterns share a budget of one second per filter pass.
+The result is then marked incomplete, as it is for a pattern that does not compile.
+
 A `**/` segment in a `glob` pattern matches zero or more directories, so `src/**/generated_*.py` also ignores `src/generated_pb.py` and not only `src/api/generated_pb.py`. Note that `*` still matches across `/`, as in `['*.py']` above.
 
 Each ignore-glob list keeps at most 256 additional, distinct zero-directory regexes. Patterns with more than six standalone `**/` segments or more than 256 characters are not expanded. Configured patterns and the existing root-level form of a leading `**/` are always kept and do not count toward the limit. Skipped variants are reported once per list; files only those variants match are still analyzed.
@@ -751,6 +755,10 @@ ignore_repositories = ["my-org/my-repo1", "my-org/my-repo2"]
 ```
 
 Where the `ignore_repositories` is a list of regex patterns to match the repositories you want to ignore. This is useful when you have multiple repositories and want to exclude certain ones from analysis.
+
+The regex patterns of `ignore_repositories`, `ignore_pr_authors`, `ignore_pr_title`, `ignore_pr_source_branches` and
+`ignore_pr_target_branches` are matched with a time limit of 50 ms per match and one second for all of them together;
+a pattern that runs out of time counts as not matching, so the PR is processed, and a warning is logged.
 
 
 ### Ignoring PRs not from specific folders

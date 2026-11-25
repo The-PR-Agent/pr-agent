@@ -138,6 +138,24 @@ class TestExtractTicketsLinkFromBranchName:
         )
         assert result == ["https://github.com/org/repo/issues/1"]
 
+    def test_catastrophic_custom_regex_times_out_as_no_match(self, monkeypatch):
+        """A backtracking branch_issue_regex stops within its time budget and finds no issue."""
+        import time
+
+        fake_settings = type("Settings", (), {})()
+        fake_settings.get = lambda key, default=None: (
+            True if key in ("extract_issue_from_branch", "config.extract_issue_from_branch") else (
+                r"(\d+)(a|aa)+$" if key in ("branch_issue_regex", "config.branch_issue_regex") else default
+            )
+        )
+        monkeypatch.setattr(tpc, "get_settings", lambda: fake_settings)
+        start = time.monotonic()
+        result = tpc.extract_ticket_links_from_branch_name(
+            "1" + "a" * 40 + "!", "org/repo", "https://github.com"
+        )
+        assert result == []
+        assert time.monotonic() - start < 3
+
     def test_empty_repo_path_returns_empty(self):
         """Empty repo_path -> [] (guard in function)"""
         result = tpc.extract_ticket_links_from_branch_name(
