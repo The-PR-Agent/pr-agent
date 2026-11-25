@@ -9,6 +9,8 @@ import re
 from dataclasses import dataclass
 from urllib.parse import quote, unquote
 
+from starlette_context import context
+
 from pr_agent.algo.comment_identity import PRCommandNoticeIdentity, comment_authorship_available
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.config_loader import get_settings
@@ -104,9 +106,11 @@ def _record_usable(git_provider) -> bool:
 
 def _automatic_run() -> bool:
     # A command typed in a comment always runs and never writes the record: arguments typed with it could
-    # narrow the review, so it must not stand in for the automatic run.
-    config = get_settings().config
-    return bool(config.get("is_auto_command", False) or config.get("cli_mode", False))
+    # narrow the review, so it must not stand in for the automatic run. A comment can set config.cli_mode,
+    # so a CLI run is recognised by the flag the CLI entry point sets instead.
+    if get_settings().config.get("is_auto_command", False):
+        return True
+    return context.exists() and bool(context.get("_pr_agent_cli_invocation", False))
 
 
 def _may_skip(tool: str) -> bool:
