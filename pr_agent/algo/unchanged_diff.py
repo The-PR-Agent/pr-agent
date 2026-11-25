@@ -9,6 +9,8 @@ import re
 from dataclasses import dataclass
 from urllib.parse import quote, unquote
 
+from starlette_context import context
+
 from pr_agent.algo.comment_identity import PRCommandNoticeIdentity, comment_authorship_available
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.config_loader import get_settings
@@ -102,12 +104,17 @@ def _record_usable(git_provider) -> bool:
     return comment_authorship_available(git_provider) and git_provider.supports_html_comment_markers() is not False
 
 
+def _automatic_run() -> bool:
+    # A command typed in a comment always runs and never writes the record: arguments typed with it could
+    # narrow the review, so it must not stand in for the automatic run. A comment can set config.cli_mode,
+    # so a CLI run is recognised by the flag the CLI entry point sets instead.
+    if get_settings().config.get("is_auto_command", False):
+        return True
+    return context.exists() and bool(context.get("_pr_agent_cli_invocation", False))
+
+
 def _may_skip(tool: str) -> bool:
-    config = get_settings().config
-    # A command someone typed in a comment always runs.
-    if not (config.get("is_auto_command", False) or config.get("cli_mode", False)):
-        return False
-    return not _output_tied_to_head_commit(tool)
+    return _automatic_run() and not _output_tied_to_head_commit(tool)
 
 
 class UnchangedDiffGuard:
@@ -120,7 +127,7 @@ class UnchangedDiffGuard:
         self._diff_comparable = False
 
     def should_skip(self) -> bool:
-        # A run that may not skip still reads the record: it takes down its own notice and records on success.
+        # A run that may not skip still reads the comment to take down its own notice.
         if not _record_usable(self.git_provider):
             return False
         try:
@@ -152,6 +159,8 @@ class UnchangedDiffGuard:
         if self._state is None:
             if replaced_output:
                 self.invalidate()
+            return
+        if not _automatic_run():
             return
         try:
             records, skipped = self._read()
