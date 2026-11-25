@@ -24,7 +24,7 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d  # v10.4.0
         with:
-          version: '0.13.8'
+          version: '0.13.10'
           resolution-strategy: lowest
 
       - name: Install dependencies
