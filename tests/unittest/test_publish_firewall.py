@@ -295,7 +295,7 @@ def test_a_fence_is_followed_on_the_line_the_renderer_gets_under_a_list_marker()
 
 
 def test_a_fence_is_followed_on_the_line_rule_three_leaves():
-    # A line feed is whitespace to the scanners and dropped by rule 3, which moves the line into the item.
+    # Rule 3 drops the line feed, and the line moves into the item, where the fence stays open.
     body = f" - ~~~  info\n \x0b  >   {BEACON} ---"
 
     assert firewall_model_output(body) == f" - ~~~  info\n   >   {BEACON} ---"
