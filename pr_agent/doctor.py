@@ -10,6 +10,7 @@ additional basic settings check, without constructing sinks or probing their des
 
 import os
 import sys
+from importlib.util import find_spec
 
 from pr_agent.algo.ai_handlers.cloud_auth import (
     DUMMY_LITELLM_API_KEY,
@@ -85,6 +86,33 @@ def _check_config(model: str) -> tuple[bool, str]:
     return False, "config.model is empty; set it in configuration.toml or CONFIG__MODEL"
 
 
+def _has_databricks_sdk_environment_auth() -> bool:
+    """Recognize explicit SDK workspace credentials without initializing the SDK."""
+    if not os.environ.get("DATABRICKS_HOST", "").strip():
+        return False
+    auth_type = os.environ.get("DATABRICKS_AUTH_TYPE", "")
+    token = os.environ.get("DATABRICKS_TOKEN", "")
+    client_id = os.environ.get("DATABRICKS_CLIENT_ID", "")
+    client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "")
+    # The SDK rejects mixed PAT/OAuth settings unless an auth type is selected.
+    if not auth_type and token and (client_id or client_secret):
+        return False
+    pat = auth_type in ("", "pat") and token.strip() not in ("", DUMMY_LITELLM_API_KEY)
+    oauth = (
+        auth_type in ("", "oauth-m2m")
+        and client_id.strip() not in ("", DUMMY_LITELLM_API_KEY)
+        and client_secret.strip() not in ("", DUMMY_LITELLM_API_KEY)
+    )
+    if not (pat or oauth):
+        return False
+    # LiteLLM delegates these credentials to its optional Databricks SDK.
+    # Do not instantiate WorkspaceClient: even initialization can perform authentication I/O.
+    try:
+        return find_spec("databricks.sdk") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def _uses_ambient_auth_or_custom_endpoint(provider: str, handler: LiteLLMAIHandler) -> bool:
     """Defer static key checks for ambient authentication and explicit endpoints."""
     if provider in ("watsonx", "watsonx_text"):
@@ -93,8 +121,7 @@ def _uses_ambient_auth_or_custom_endpoint(provider: str, handler: LiteLLMAIHandl
     settings = get_settings()
     anthropic_token = (handler._anthropic_auth_token or "").strip()
     ambient = (
-        settings.get("AZURE_AD.CLIENT_ID", None)
-        or provider.startswith(("bedrock", "azure"))
+        provider.startswith(("bedrock", "azure"))
         or (
             provider == "anthropic"
             and anthropic_token not in ("", DUMMY_LITELLM_API_KEY)
@@ -229,6 +256,8 @@ def _check_provider_key(handler: LiteLLMAIHandler, provider: str) -> tuple[bool,
         source = next((name for name in env_vars if os.environ.get(name)), None)
         origin = f"env {source}" if source else "settings"
         return True, f"API key for '{provider}' found ({origin})"
+    if provider == "databricks" and not key and _has_databricks_sdk_environment_auth():
+        return True, "Databricks SDK authentication configured; ping decides"
     if _uses_ambient_auth_or_custom_endpoint(provider, handler):
         return True, f"no static key for '{provider}' (ambient auth or custom endpoint); ping decides"
     if provider in _KEYLESS_DEFAULT_ENDPOINT_PROVIDERS:

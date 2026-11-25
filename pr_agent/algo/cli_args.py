@@ -5,6 +5,7 @@ from pr_agent.config_security import (
     CLI_HOST_ONLY_KEYS_BY_SECTION,
     REPO_HOST_ONLY_KEYS_BY_SECTION,
     REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION,
+    canonical_setting_name,
     is_repo_host_only_key,
 )
 
@@ -45,7 +46,7 @@ class CliArgs:
     @staticmethod
     def _blocked_setting_path(path: str, forbidden_cli_args: list) -> str | None:
         """Return the blocked token for a dotted section.key path, else None."""
-        arg_word = f'--{path}=x'.replace('__', '.').lower()
+        arg_word = canonical_setting_name(f'--{path}=x'.replace('__', '.'))
         host_only_arg = CliArgs._host_only_setting_arg(arg_word)
         if host_only_arg:
             return host_only_arg
@@ -205,7 +206,7 @@ class CliArgs:
             for arg in args:
                 arg = arg.strip()
                 if arg.startswith('--'):
-                    arg_word = arg.lower()
+                    arg_word = canonical_setting_name(arg)
                     # replace double underscore with dot, e.g. --openai__key -> --openai.key
                     arg_word = arg_word.replace('__', '.')
                     host_only_arg = CliArgs._host_only_setting_arg(arg_word)

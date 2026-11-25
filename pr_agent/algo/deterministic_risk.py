@@ -184,6 +184,60 @@ def normalize_file_path(path: str | None) -> str:
     return norm[:MAX_PATH_LENGTH]
 
 
+def _globstar_match(path_parts: tuple[str, ...], pat: str) -> bool:
+    """Match POSIX path segments against a glob containing a standalone `**` segment.
+
+    Python 3.12's `PurePosixPath.match()` treats `**` as a single-segment wildcard, so
+    patterns like `alembic/**` miss deeply nested paths and `**/auth/**` misses root-level
+    paths. Relative patterns match at any directory boundary (like `PurePosixPath.match`),
+    while leading-`/` patterns anchor at repository root. A trailing `**` requires at least
+    one child segment beneath its parent. Worst-case segment matching is O(|path| * |pat|),
+    bounded by MAX_PATH_LENGTH and MAX_GLOB_LENGTH without regex backtracking across `**`.
+    """
+    anchored = pat.startswith("/")
+    raw_parts = [part for part in pat.split("/") if part and part != "."]
+    if "**" not in raw_parts:
+        return False
+    if pat.endswith("/"):
+        raw_parts.append("**")
+
+    pat_parts: list[str] = [] if anchored else ["**"]
+    for part in raw_parts:
+        if part == "**" and pat_parts and pat_parts[-1] == "**":
+            continue
+        pat_parts.append(part)
+
+    # A trailing `**` must match at least one segment beneath its parent directory.
+    if pat_parts[-1] == "**":
+        if not path_parts:
+            return False
+        target_parts = path_parts[:-1]
+    else:
+        target_parts = path_parts
+
+    pi = ti = 0
+    star_pi = -1
+    star_ti = 0
+    while ti < len(target_parts):
+        if pi < len(pat_parts) and pat_parts[pi] == "**":
+            star_pi = pi
+            star_ti = ti
+            pi += 1
+        elif pi < len(pat_parts) and fnmatchcase(target_parts[ti], pat_parts[pi]):
+            pi += 1
+            ti += 1
+        elif star_pi != -1:
+            star_ti += 1
+            ti = star_ti
+            pi = star_pi + 1
+        else:
+            return False
+
+    while pi < len(pat_parts) and pat_parts[pi] == "**":
+        pi += 1
+    return pi == len(pat_parts)
+
+
 def matches_sensitive_path(path: str, patterns: Sequence[str] | None = None) -> str | None:
     """Check if normalized path matches any sensitive path glob. Returns the matched glob or None."""
     norm = normalize_file_path(path)
@@ -191,6 +245,7 @@ def matches_sensitive_path(path: str, patterns: Sequence[str] | None = None) -> 
         return None
     globs = patterns if patterns is not None else DEFAULT_SENSITIVE_PATHS
     parsed = None
+    path_parts = None
     for pat in globs:
         if not isinstance(pat, str) or not pat or len(pat) > MAX_GLOB_LENGTH:
             continue
@@ -203,6 +258,11 @@ def matches_sensitive_path(path: str, patterns: Sequence[str] | None = None) -> 
         # Also check basename for simple filename patterns like *.tf or package.json
         if fnmatchcase(parsed.name, pat):
             return pat
+        if "**" in pat and "**" in pat.split("/"):
+            if path_parts is None:
+                path_parts = tuple(part for part in norm.split("/") if part and part != ".")
+            if _globstar_match(path_parts, pat):
+                return pat
     return None
 
 

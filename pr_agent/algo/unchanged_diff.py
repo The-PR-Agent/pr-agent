@@ -155,8 +155,12 @@ class UnchangedDiffGuard:
             get_logger().warning(f"Could not check whether /{self.tool} can be skipped, running it: {e}")
             return False
 
-    def record(self) -> None:
-        if self._state is None or not _automatic_run():
+    def record(self, *, replaced_output: bool = True) -> None:
+        if self._state is None:
+            if replaced_output:
+                self.invalidate()
+            return
+        if not _automatic_run():
             return
         try:
             records, skipped = self._read()
@@ -166,8 +170,20 @@ class UnchangedDiffGuard:
         except Exception as e:
             get_logger().warning(f"Could not record the /{self.tool} run, the next run will not be skipped: {e}")
 
+    def invalidate(self) -> None:
+        try:
+            if not _record_usable(self.git_provider):
+                return
+            records, skipped = self._read()
+            had_record = records.pop(self.tool, None) is not None
+            had_notice = skipped.pop(self.tool, None) is not None
+            if had_record or had_notice:
+                self._publish(records, skipped)
+        except Exception as e:
+            get_logger().warning(f"Could not clear the /{self.tool} record: {e}")
+
     def _skip_reason(self, stored: RunState | None) -> str | None:
-        if stored is None:
+        if stored is None or self._state is None:
             return None
         current = self._state
         if (current.head_sha and current.target_branch
@@ -186,7 +202,11 @@ class UnchangedDiffGuard:
 
     def _publish(self, records: dict[str, RunState], skipped: dict[str, str]) -> None:
         # Another command's notice says its last output still applies; drop it once that is no longer true.
-        skipped = {tool: reason for tool, reason in skipped.items() if self._skip_reason(records.get(tool))}
+        skipped = {
+            tool: reason
+            for tool, reason in skipped.items()
+            if tool in records and (self._state is None or self._skip_reason(records.get(tool)))
+        }
         self.git_provider.publish_persistent_comment_full(
             _render(records, skipped), initial_header=_IDENTITY, update_header=False,
             final_update_message=False, identity_marker=_IDENTITY, require_agent_authorship=True,

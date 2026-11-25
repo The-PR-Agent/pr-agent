@@ -54,6 +54,13 @@ _JSON_ASK_COMMANDS = frozenset(
     name for name, spec in COMMAND_SPECS.items() if spec.json_output == "ask"
 )
 _OUTPUT_OPTIONS = ("--output", "--json-output")
+# Options that select what to work on, with a correct invocation to show when one follows the command.
+_TARGET_OPTION_EXAMPLES = {
+    "--pr_url": "--pr_url=<URL> review",
+    "--issue_url": "--issue_url=<URL> similar_issue",
+    "--stdin": "--stdin review",
+    "--diff-file": "--diff-file=<path> review",
+}
 _CLI_CONTEXT_CACHES = (
     "git_provider", "repo_settings", "git_files", "diff_files", "authenticated_provider_settings",
     "extra_config_payloads",
@@ -76,9 +83,9 @@ def _cli_settings_scope():
         yield
 
 
-def _resolve_output_option(parser, arg):
+def _resolve_option(parser, arg, options):
     option_text = arg.partition("=")[0]
-    if option_text in _OUTPUT_OPTIONS:
+    if option_text in options:
         return option_text
     if not option_text.startswith("--") or not parser.allow_abbrev:
         return None
@@ -87,9 +94,23 @@ def _resolve_output_option(parser, arg):
     # own option table so misplaced options follow the parser's abbreviation
     # rules and future ambiguous prefixes are left untouched.
     matches = parser._get_option_tuples(option_text)
-    if len(matches) == 1 and matches[0][1] in _OUTPUT_OPTIONS:
+    if len(matches) == 1 and matches[0][1] in options:
         return matches[0][1]
     return None
+
+
+def _resolve_output_option(parser, arg):
+    return _resolve_option(parser, arg, _OUTPUT_OPTIONS)
+
+
+def _reject_misplaced_target_option(parser, args):
+    for arg in getattr(args, "rest", []):
+        option = _resolve_option(parser, arg, _TARGET_OPTION_EXAMPLES)
+        if option:
+            parser.error(
+                f"{option} must appear before the command "
+                f"(for example: {_TARGET_OPTION_EXAMPLES[option]})"
+            )
 
 
 def _validate_output_options(parser, args, diff_mode):
@@ -263,10 +284,14 @@ def run(inargs=None, args=None):
             except UnicodeDecodeError as e:
                 parser.error(f"--diff-file '{args.diff_file}' is not valid UTF-8 text: {e}")
         else:
-            diff_content = sys.stdin.read()
+            try:
+                diff_content = sys.stdin.read()
+            except UnicodeDecodeError as e:
+                parser.error(f"Could not decode --stdin: {e}")
         if not diff_content.strip():
             parser.error("No diff content received (empty stdin/file)")
     elif not args.pr_url and not args.issue_url:
+        _reject_misplaced_target_option(parser, args)
         parser.print_help()
         return
 

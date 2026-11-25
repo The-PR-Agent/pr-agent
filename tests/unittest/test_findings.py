@@ -1,6 +1,6 @@
 from pr_agent.algo.findings import Finding
 from pr_agent.algo.inline_comment_dedup import key_issue_fingerprint
-from pr_agent.algo.review_finding_state import normalize_finding, reconcile_review_findings
+from pr_agent.algo.review_finding_state import normalize_finding
 
 
 def test_review_finding_conversion_preserves_legacy_fingerprint_and_confidence():
@@ -27,40 +27,6 @@ def test_review_finding_conversion_preserves_legacy_fingerprint_and_confidence()
     )
 
 
-def test_code_suggestion_finding_can_be_resolved_and_reopened():
-    finding = Finding.from_code_suggestion(
-        {
-            "relevant_file": "src/app.py",
-            "relevant_lines_start": 12,
-            "relevant_lines_end": 13,
-            "suggestion_content": "Handle the missing value.",
-            "label": "possible bug",
-            "existing_code": "return value",
-            "improved_code": "return value or default",
-            "score": 8,
-        }
-    )
-    assert finding is not None
-    assert (finding.path, finding.line_start, finding.line_end) == ("src/app.py", 12, 13)
-    assert finding.label == "possible bug"
-    assert finding.existing_code == "return value"
-    assert finding.improved_code == "return value or default"
-    assert finding.score == 8
-
-    first = reconcile_review_findings(
-        None, [finding], allow_resolution=False, head_sha="head-1"
-    )
-    resolved = reconcile_review_findings(
-        first.state, [], allow_resolution=True, head_sha="head-2"
-    )
-    reopened = reconcile_review_findings(
-        resolved.state, [finding], allow_resolution=False, head_sha="head-3"
-    )
-
-    assert first.state["findings"][0]["body"] == "Handle the missing value."
-    assert resolved.state["findings"][0]["state"] == "RESOLVED"
-    assert reopened.state["findings"][0]["state"] == "ACTIVE"
-    assert reopened.state["findings"][0]["reopened_count"] == 1
 
 
 def test_from_review_issue_carries_fix():

@@ -11,7 +11,7 @@ from starlette_context import context
 
 from pr_agent.agent.pr_agent import (
     PRAgent,
-    _normalize_publish_output_setting,
+    _normalize_boolean_settings,
     parse_command,
     publish_incomplete_files_comment,
     response_language_instructions,
@@ -56,7 +56,19 @@ def is_true(value: str | bool | int, default: bool = False, setting_name: str | 
     return _as_bool_setting(value, default=default, setting_name=setting_name)
 
 
-def get_setting_or_env(key: str, default: str | bool = None) -> str | bool:
+def _auto_feedback_disabled() -> bool:
+    """Whether config.disable_auto_feedback stops automatic GitHub Action commands."""
+    disable_auto_feedback = get_setting_or_env("CONFIG.DISABLE_AUTO_FEEDBACK", None)
+    if disable_auto_feedback is None:
+        disable_auto_feedback = get_settings().get("CONFIG.DISABLE_AUTO_FEEDBACK", False)
+    return is_true(
+        disable_auto_feedback,
+        default=True,
+        setting_name="config.disable_auto_feedback",
+    )
+
+
+def get_setting_or_env(key: str, default: str | bool | None = None) -> str | bool | None:
     try:
         value = get_settings().get(key, default)
     except AttributeError:  # TBD still need to debug why this happens on GitHub Actions
@@ -170,7 +182,7 @@ async def _run_auto_command(command_class, pr_url):
     # behind by a previous command; the command replaces it with its own on entry.
     init_run_details()
     _refresh_shared_provider(pr_url)
-    _normalize_publish_output_setting()
+    _normalize_boolean_settings()
     try:
         # Like PRAgent.handle_request: the LiteLLM handler reads pr_url from the log
         # context to build the session id.
@@ -182,6 +194,7 @@ async def _run_auto_command(command_class, pr_url):
     if result is False:
         _mark_action_failed()
     _fail_on_recorded_command_error()
+
 
 async def _run_review_commands(event_payload):
     action = event_payload.get("action")
@@ -225,10 +238,12 @@ async def _run_review_commands(event_payload):
         get_logger().info(f"Skipping pull_request_review with {review_state=}: state is not configured")
         return
 
-    review_commands = dedupe_review_commands(get_list_setting_or_env(
-        "GITHUB_ACTION_CONFIG.REVIEW_COMMANDS",
-        get_settings().get("GITHUB_APP.REVIEW_COMMANDS", []),
-    ))
+    review_commands = dedupe_review_commands(
+        get_list_setting_or_env(
+            "GITHUB_ACTION_CONFIG.REVIEW_COMMANDS",
+            get_settings().get("GITHUB_APP.REVIEW_COMMANDS", []),
+        )
+    )
     if not review_commands:
         get_logger().info("No review_commands configured, skipping pull_request_review")
         return
@@ -240,14 +255,7 @@ async def _run_review_commands(event_payload):
         get_logger().info(f"Skipping draft PR for pull_request_review: {pr_url=}")
         return
 
-    disable_auto_feedback = get_setting_or_env("CONFIG.DISABLE_AUTO_FEEDBACK", None)
-    if disable_auto_feedback is None:
-        disable_auto_feedback = get_settings().get("CONFIG.DISABLE_AUTO_FEEDBACK", False)
-    if is_true(
-        disable_auto_feedback,
-        default=True,
-        setting_name="config.disable_auto_feedback",
-    ):
+    if _auto_feedback_disabled():
         get_logger().info(f"Auto feedback is disabled, skipping pull_request_review: {pr_url=}")
         return
 
@@ -320,7 +328,7 @@ async def run_action():
         # in github_app.py. Otherwise a plain comment is lexed as an unknown
         # command, PRAgent.handle_request returns False and the action exits 1.
         if isinstance(comment_body, str) and not comment_body.lstrip().startswith("/"):
-            reformatted = _reformat_quote_ask_command(comment_body) if '/ask' in comment_body else None
+            reformatted = _reformat_quote_ask_command(comment_body) if "/ask" in comment_body else None
             if reformatted is not None:
                 comment_body = reformatted
                 get_logger().info(f"Reformatting comment_body so command is at the beginning: {comment_body}")
@@ -349,6 +357,13 @@ async def run_action():
     if GITHUB_EVENT_NAME not in ("pull_request", "pull_request_target", "workflow_run"):
         settings_provider = None
 
+    if (
+        GITHUB_EVENT_NAME in ("pull_request", "pull_request_target", "workflow_run", "pull_request_review")
+        and _auto_feedback_disabled()
+    ):
+        get_logger().info(f"Auto feedback is disabled, skipping {GITHUB_EVENT_NAME}: {pr_url=}")
+        return
+
     # Gate on the active provider's key after repo settings are applied (a repo-level
     # .pr_agent.toml can select a different provider) but before model-backed commands run: carrying
     # on with the placeholder only fails every call a full run later (#4195, #4324).
@@ -372,12 +387,12 @@ async def run_action():
         correction = PROVIDER_AUTH_CORRECTIONS.get(env_var_names)
         if correction is not None:
             raise SystemExit(
-                f"Stopping before any command runs: {correction} "
-                "'pr-agent doctor' preflights the same check by hand."
+                f"Stopping before any command runs: {correction} 'pr-agent doctor' preflights the same check by hand."
             )
         key_hint = (
             f"Set {' or '.join(env_var_names)} in this workflow's env."
-            if env_var_names else "Replace the placeholder key in provider settings or workflow env."
+            if env_var_names
+            else "Replace the placeholder key in provider settings or workflow env."
         )
         raise SystemExit(
             "Stopping before any command runs: no usable API key for the active model's provider. "
@@ -392,8 +407,10 @@ async def run_action():
         action = event_payload.get("action")
 
         # Retrieve the list of actions from the configuration
-        pr_actions = normalize_setting_list(get_settings().get(
-            "GITHUB_ACTION_CONFIG.PR_ACTIONS", ["opened", "reopened", "ready_for_review", "review_requested"]),
+        pr_actions = normalize_setting_list(
+            get_settings().get(
+                "GITHUB_ACTION_CONFIG.PR_ACTIONS", ["opened", "reopened", "ready_for_review", "review_requested"]
+            ),
             split_commas=True,
         )
 
@@ -453,8 +470,12 @@ async def run_action():
         if action in pr_actions:
             pull_request = event_payload.get("pull_request") or {}
             created_at = pull_request.get("created_at")
-            if (action == "review_requested" and "opened" in pr_actions
-                    and created_at and created_at == pull_request.get("updated_at")):
+            if (
+                action == "review_requested"
+                and "opened" in pr_actions
+                and created_at
+                and created_at == pull_request.get("updated_at")
+            ):
                 # The configured opened event already runs the initial automatic command batch.
                 get_logger().info("Skipping initial review_requested event")
                 return
@@ -635,8 +656,7 @@ def _inject_ci_conclusion(conclusion):
                     extra_instructions = str(setting.extra_instructions or "")
                     if text not in extra_instructions:
                         setting.extra_instructions = (
-                            extra_instructions + separator + text
-                            if extra_instructions else text
+                            extra_instructions + separator + text if extra_instructions else text
                         )
 
 

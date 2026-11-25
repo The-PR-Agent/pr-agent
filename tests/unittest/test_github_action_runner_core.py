@@ -95,7 +95,10 @@ async def test_direct_auto_command_leaves_unexpected_constructor_error_unchanged
 @pytest.mark.parametrize(("value", "expected"), [
     ("false", False),
     ("off", False),
-    ("", False),
+    # #5047: an empty value falls back to the key's default in configuration.toml
+    # (True for publish_output), with a warning. Previously the #4823 shortcut
+    # defaulted to bool(value), so "" read False.
+    ("", True),
     ("true", True),
 ])
 async def test_direct_auto_command_normalizes_publish_output(value, expected):
@@ -489,7 +492,7 @@ async def _run_review_action_with_settings(
     settings.set("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
     settings.set("GITHUB_APP.REVIEW_COMMANDS", app_review_commands)
     settings.set("GITHUB_APP.FEEDBACK_ON_DRAFT_PR", False)
-    settings.set("CONFIG.DISABLE_AUTO_FEEDBACK", disable_auto_feedback)
+    monkeypatch.setitem(settings.store["config"], "disable_auto_feedback", disable_auto_feedback)
     settings.set("GITHUB_ACTION_CONFIG", dict(action_config or {}), merge=False)
 
     handled = []
@@ -985,11 +988,13 @@ async def test_auto_actions_apply_policy_after_repo_settings_without_rebuilding_
         get_commits=Mock(return_value=[SimpleNamespace(sha="head")]),
     )
     repo = Mock(full_name="org/repo", default_branch="main")
+    pr.base.repo = repo
     repo.get_pull.return_value = pr
     repo.get_contents.return_value = SimpleNamespace(decoded_content=repo_settings)
     client = Mock()
-    client.get_repo.return_value = repo
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: client)
+    pull_request = Mock(return_value=pr)
+    monkeypatch.setattr("pr_agent.git_providers.github_provider.PullRequest", pull_request)
     commands = [Mock(return_value=SimpleNamespace(run=AsyncMock())) for _ in range(2)]
     for name, command in zip(("PRDescription", "PRReviewer"), commands, strict=True):
         monkeypatch.setattr(github_action_runner, name, command)
@@ -1012,8 +1017,9 @@ async def test_auto_actions_apply_policy_after_repo_settings_without_rebuilding_
         assert command.call_count == expected_calls
         assert command.return_value.run.await_count == expected_calls
     # The policy reuses the instance that already loaded .pr_agent.toml; each command that runs re-reads the PR once.
-    client.get_repo.assert_called_once_with("org/repo")
-    assert repo.get_pull.call_count == 1 + sum(command.call_count for command in commands)
+    pull_request.assert_called_once()
+    client.get_repo.assert_not_called()
+    assert repo.get_pull.call_count == sum(command.call_count for command in commands)
     pr.get_commits.assert_called_once()
     repo.get_contents.assert_called_once()
 
@@ -2358,3 +2364,152 @@ async def test_failed_run_resets_the_request_scope(monkeypatch):
         await github_action_runner._run_action_and_drain()
 
     assert not context.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disable_value", [True, "true", "y"])
+@pytest.mark.parametrize(
+    "event_name,payload",
+    [
+        (
+            "pull_request",
+            {"action": "opened", "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/1"}},
+        ),
+        (
+            "pull_request_target",
+            {"action": "opened", "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/1"}},
+        ),
+        (
+            "pull_request",
+            {
+                "action": "synchronize",
+                "before": "aaa",
+                "after": "bbb",
+                "sender": {"type": "User"},
+                "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/1"},
+            },
+        ),
+        (
+            "workflow_run",
+            {
+                "action": "completed",
+                "workflow_run": {
+                    "id": 9999,
+                    "event": "pull_request",
+                    "conclusion": "success",
+                    "pull_requests": [{"url": "https://api.github.com/repos/org/repo/pulls/1", "number": 1}],
+                },
+            },
+        ),
+        (
+            "pull_request_review",
+            {
+                "action": "submitted",
+                "sender": {"type": "User"},
+                "review": {"state": "changes_requested", "user": {"type": "User"}},
+                "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/1", "draft": False},
+            },
+        ),
+    ],
+    ids=["pr-opened", "pr-target-opened", "pr-synchronize", "workflow-run", "pr-review-submitted"],
+)
+async def test_disable_auto_feedback_skips_automatic_events_and_key_gate(
+    monkeypatch, tmp_path, restore_github_settings, event_name, payload, disable_value
+):
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    settings = get_settings()
+    monkeypatch.setitem(settings.store["config"], "disable_auto_feedback", False)
+    settings.set("GITHUB_ACTION_CONFIG.HANDLE_PUSH_TRIGGER", True)
+    settings.set("GITHUB_ACTION_CONFIG.PUSH_COMMANDS", ["/review"])
+    settings.set("GITHUB_APP.REVIEW_COMMANDS", ["/review"])
+    revoked = []
+    monkeypatch.setattr(github_action_runner, "revoke_auto_approval_on_push", revoked.append)
+    monkeypatch.setattr(
+        github_action_runner,
+        "apply_repo_settings",
+        lambda _url: monkeypatch.setitem(settings.store["config"], "disable_auto_feedback", disable_value),
+    )
+    monkeypatch.setattr(
+        github_action_runner,
+        "missing_provider_key_env_vars",
+        lambda: ("openai", ("OPENAI_API_KEY",)),
+    )
+    runs = []
+
+    class UnexpectedCommand:
+        def __init__(self, pr_url):
+            runs.append(pr_url)
+
+        async def run(self):
+            runs.append("run")
+
+    async def unexpected_handle(url, command, notify=None):
+        runs.append((url, command))
+
+    monkeypatch.setattr(github_action_runner, "PRDescription", UnexpectedCommand)
+    monkeypatch.setattr(github_action_runner, "PRReviewer", UnexpectedCommand)
+    monkeypatch.setattr(github_action_runner, "_handle_request", unexpected_handle)
+
+    await github_action_runner.run_action()
+
+    assert runs == []
+    if event_name in ("pull_request", "pull_request_target"):
+        assert revoked == [payload]
+
+
+@pytest.mark.asyncio
+async def test_disable_auto_feedback_string_false_allows_pr_auto_commands(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    event_path = tmp_path / "event.json"
+    event_path.write_text(
+        json.dumps({"action": "opened", "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/1"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    settings = get_settings()
+    monkeypatch.setitem(settings.store["config"], "disable_auto_feedback", "false")
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda _url: None)
+    runs = []
+
+    class FakeCommand:
+        def __init__(self, pr_url):
+            self.pr_url = pr_url
+
+        async def run(self):
+            runs.append(self.pr_url)
+
+    monkeypatch.setattr(github_action_runner, "PRDescription", FakeCommand)
+    monkeypatch.setattr(github_action_runner, "PRReviewer", FakeCommand)
+
+    await github_action_runner.run_action()
+
+    assert runs == [
+        "https://api.github.com/repos/org/repo/pulls/1",
+        "https://api.github.com/repos/org/repo/pulls/1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_disable_auto_feedback_still_allows_manual_comment_commands(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    handled = []
+    _patch_issue_comment_deps(monkeypatch, handled)
+    settings = get_settings()
+    monkeypatch.setitem(settings.store["config"], "disable_auto_feedback", True)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_issue_comment_event(tmp_path, "User")))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/review")]

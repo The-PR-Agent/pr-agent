@@ -8,6 +8,7 @@ from gitlab.exceptions import GitlabGetError
 from starlette_context import context, request_cycle_context
 
 from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.config_security import REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS
 from pr_agent.git_providers import utils as git_utils
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
@@ -520,6 +521,29 @@ Num_Max_Findings = 4
 
         assert get_settings().pr_reviewer.num_max_findings == 4
 
+    def test_padded_section_name_overlays_siblings(self, per_dir_settings, monkeypatch):
+        # A quoted TOML section keeps its whitespace, so canonicalising only the allowlist
+        # lookup would miss the real section and replace it with just the overridden key.
+        nested = b"""
+[" pr_reviewer "]
+num_max_findings = 4
+"""
+        expected_keys = set(get_settings().as_dict()["PR_REVIEWER"])
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                root_settings=ROOT_TOML,
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": nested},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        assert get_settings().pr_reviewer.num_max_findings == 4
+        assert set(get_settings().as_dict()["PR_REVIEWER"]) == expected_keys
+
     def test_list_values_replace_not_concatenate(self, per_dir_settings, monkeypatch):
         monkeypatch.setattr(
             "pr_agent.git_providers.utils.get_git_provider_with_context",
@@ -599,6 +623,51 @@ num_max_findings = 4
         assert get_settings().get("openai.api_base", None) != "https://evil.example.com"
         assert get_settings().pr_reviewer.num_max_findings == 4
 
+    def test_overridable_sections_exist_in_default_settings(self, fresh_global_settings):
+        """Every per-directory section must be a real settings section.
+
+        `pr_help` has no defaults but is read by the help command, so it is the only exception.
+        """
+        default_sections = {section.lower() for section in global_settings.as_dict()}
+
+        missing = set(REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS) - default_sections - {"pr_help"}
+
+        assert missing == set()
+
+    def test_removed_command_section_is_ignored_with_warning(self, per_dir_settings, monkeypatch):
+        from loguru import logger as loguru_logger
+
+        config = b"""
+[pr_analyze]
+enable_help_text = true
+
+[pr_reviewer]
+num_max_findings = 4
+"""
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                root_settings=b"",
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": config},
+                files=["services/api.py"],
+            ),
+        )
+
+        captured_lines = []
+        sink_id = loguru_logger.add(
+            lambda msg: captured_lines.append(str(msg)),
+            level="WARNING",
+        )
+        try:
+            git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+        finally:
+            loguru_logger.remove(sink_id)
+
+        assert get_settings().get("pr_analyze", None) is None
+        assert get_settings().pr_reviewer.num_max_findings == 4
+        assert any("Ignoring section [pr_analyze] from per-directory settings" in line for line in captured_lines)
+
     def test_write_or_url_trigger_keys_are_dropped_in_per_directory(self, per_dir_settings, monkeypatch):
         config = b"""
 [pr_update_changelog]
@@ -672,16 +741,6 @@ use_ticket_context = true
 
 [pr_code_suggestions]
 committable_code_suggestions = true
-# Deprecated alias of the key above: it must be denied per directory too, otherwise a nested
-# file could flip /improve to inline publishing through the spelling the fallback still reads.
-commitable_code_suggestions = true
-# Dual publishing posts suggestions inline through the same path, so it is denied per directory too.
-dual_publishing_score_threshold = 1
-num_code_suggestions_per_chunk = 2
-max_number_of_calls = 99
-parallel_calls = true
-max_discussion_context_chars = 999999
-demand_code_suggestions_self_review = true
 
 [pr_similar_issue]
 force_update_dataset = true
@@ -695,8 +754,6 @@ use_original_title = false
 use_conversation_history = false
 [pr_similar_issue]
 skip_comments = true
-[pr_code_suggestions]
-dual_publishing_score_threshold = 7
 """
 
     @pytest.fixture
@@ -746,9 +803,6 @@ dual_publishing_score_threshold = 7
         assert get_settings().pr_description.enable_large_pr_handling != 999999
         assert get_settings().pr_description.max_ai_calls != 400
         assert get_settings().pr_description.async_ai_calls is True
-        assert get_settings().pr_code_suggestions.max_number_of_calls != 99
-        assert get_settings().pr_code_suggestions.parallel_calls is True
-        assert get_settings().pr_code_suggestions.max_discussion_context_chars != 999999
 
     def test_merge_verdict_limits_stay_host_controlled(self, per_dir_settings, monkeypatch):
         settings = get_settings()
@@ -784,11 +838,6 @@ dual_publishing_score_threshold = 7
 
         assert settings.pr_reviewer.extra_risky_shapes == ["HOST_RISK"]
 
-    def test_self_review_demand_stays_root_controlled(self, host_only_keys_applied):
-        # The self-review workflow stays root-controlled: a nested file cannot make
-        # /improve demand a self-review checklist.
-        assert get_settings().pr_code_suggestions.demand_code_suggestions_self_review is False
-
     def test_ask_context_collection_stays_root_controlled(self, host_only_keys_applied):
         # A nested file cannot enable ticket reads or re-enable sending private thread bodies.
         assert get_settings().pr_questions.use_conversation_history is False
@@ -799,9 +848,6 @@ dual_publishing_score_threshold = 7
         assert get_settings().pr_description.use_ai_title is True
         assert get_settings().pr_questions.static_questions == ["default"]
         assert get_settings().pr_code_suggestions.committable_code_suggestions is False
-        assert get_settings().pr_code_suggestions.get("commitable_code_suggestions") is None
-        assert get_settings().pr_code_suggestions.dual_publishing_score_threshold == 7
-        assert get_settings().pr_code_suggestions.num_code_suggestions_per_chunk == 2
         assert get_settings().pr_similar_issue.use_original_title is False
 
     def test_per_directory_ignore_allows_only_glob(self, per_dir_settings, monkeypatch):

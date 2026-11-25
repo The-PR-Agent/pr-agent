@@ -34,7 +34,6 @@ LONG_DESCRIPTION_ALLOWLIST = {
     ("pr_reviewer", "max_previous_findings_chars"),
     ("pr_reviewer", "inline_key_issues"),
     ("pr_reviewer", "enable_large_pr_chunking"),
-    ("pr_code_suggestions", "max_suggestions_per_file"),
     ("github", "agent_login"),
     ("github", "ratelimit_retries"),
     ("github", "polling_repositories"),
@@ -74,7 +73,7 @@ def _documented_keys(text: str) -> Counter:
 
 def test_config_reference_covers_every_active_key():
     keys = _toml_keys(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert sum(keys.values()) == 326
+    assert sum(keys.values()) == 303
 
     assert {
         "model",
@@ -120,6 +119,26 @@ def test_config_reference_page_matches_generator_output():
         "docs/docs/usage-guide/configuration_reference.md does not match the generator; "
         "run scripts/generate_config_reference.py"
     )
+
+
+def test_config_reference_group_labels_have_table_boundaries():
+    """Group labels must be separate blocks, not cells in the preceding table."""
+    module = _generator()
+    sections = module.load_sections(CONFIG_TOML.read_text(encoding="utf-8"))
+    lines = module.render_page(sections).splitlines()
+    expected = Counter(f"**{key['label']}**" for section in sections for key in section["keys"] if key["label"])
+    actual = Counter()
+
+    for index, line in enumerate(lines):
+        if line not in expected:
+            continue
+        actual[line] += 1
+        assert index > 0 and lines[index - 1] == "", f"{line} is inside the previous table"
+        assert index < 2 or lines[index - 2] != "", f"{line} has redundant blank lines"
+        assert lines[index + 1 : index + 4] == ["", *module.TABLE_HEADER.splitlines()], (
+            f"{line} must precede its own table"
+        )
+    assert actual == expected
 
 
 def test_config_reference_keeps_the_azure_dismissal_note():

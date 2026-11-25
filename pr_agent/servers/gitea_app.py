@@ -21,6 +21,7 @@ from pr_agent.servers.utils import (
     dedupe_review_commands,
     get_include_pr_labels,
     get_pr_commands,
+    host_settings_unavailable,
     is_command_comment,
     load_host_settings_for_webhook,
     push_trigger_slot,
@@ -91,6 +92,10 @@ async def handle_request(body: dict[str, Any], event: str):
         if action not in ["opened", "reopened", "synchronized"]:
             return {}
         await load_host_settings_for_webhook()
+        if host_settings_unavailable():
+            # Fail closed: without the host layer its exclusions would not apply.
+            get_logger().warning("Request ignored: host settings could not be loaded")
+            return {}
         prefilter_allowed = (
             shared_should_process_pr_logic(body, provider="gitea", check_include_labels=False)
             if get_include_pr_labels() else should_process_pr_logic(body)

@@ -1,7 +1,6 @@
 """Handle malformed YAML without silently accepting unusable suggestion predictions."""
 import pytest
 
-from pr_agent.algo.pr_processing import FallbackEligibleError
 from pr_agent.algo.utils import load_yaml
 
 UNPARSEABLE = "::: not : valid : yaml :::\n\t- ["
@@ -38,16 +37,6 @@ def test_reviewer_reports_the_parse_failure_instead_of_crashing():
     assert reviewer._prepare_pr_review() == ""
 
 
-def test_code_suggestions_retries_an_unparseable_prediction():
-    """Malformed output must reach the configured fallback chain."""
-    from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
-
-    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
-
-    with pytest.raises(FallbackEligibleError, match="Invalid code suggestions response"):
-        command._prepare_pr_code_suggestions(UNPARSEABLE)
-
-
 def test_generate_labels_rejects_an_unparseable_prediction():
     """Let /generate_labels retry another model when its output cannot be parsed."""
     from pr_agent.commands.pr_generate_labels import PRGenerateLabels
@@ -57,25 +46,3 @@ def test_generate_labels_rejects_an_unparseable_prediction():
 
     with pytest.raises(ValueError):
         command._prepare_data()
-
-
-@pytest.mark.parametrize("payload", ["code_suggestions:\n", "code_suggestions: 5\n",
-                                     "code_suggestions:\n  a: 1\n"])
-def test_a_non_list_code_suggestions_value_is_rejected(payload):
-    """Invalid suggestion containers are eligible for model fallback."""
-    from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
-
-    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
-
-    with pytest.raises(FallbackEligibleError, match="Invalid code suggestions response"):
-        command._prepare_pr_code_suggestions(payload)
-
-
-@pytest.mark.parametrize("payload", ["[]", "code_suggestions: []"])
-def test_valid_empty_suggestions_do_not_trigger_fallback(payload):
-    """An explicit empty list is a valid model result, not an error."""
-    from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
-
-    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
-
-    assert command._prepare_pr_code_suggestions(payload) == {"code_suggestions": []}

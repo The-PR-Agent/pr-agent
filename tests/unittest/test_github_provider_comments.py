@@ -1398,3 +1398,89 @@ def test_validate_comments_inside_hunks_does_not_partially_update_on_render_erro
     assert result["relevant_lines_start"] == 9
     assert result["relevant_lines_end"] == 11
     assert result["body"] == original_body
+
+
+def test_validate_comments_inside_hunks_closes_details_before_trailing_markers():
+    provider = _make_provider()
+    provider.get_diff_files = lambda: [
+        SimpleNamespace(
+            filename="src/example.py",
+            patch="@@ -10,2 +10,2 @@\n-old\n+new\n ctx",
+            language="python",
+        )
+    ]
+    marker = "<!-- pr-agent-dedup: aabbccddeeff -->\n<!-- pr-agent-key-issue-location: 112233445566 -->"
+    suggestion = {
+        "body": f"**Possible Issue**\n\nUse safe lookup.\n\n```suggestion\nvalue = data.get('k')\n```\n\n{marker}",
+        "relevant_file": "src/example.py",
+        "relevant_lines_start": 9,
+        "relevant_lines_end": 11,
+        "original_suggestion": {
+            "existing_code": "value = data['k']",
+            "improved_code": "value = data.get('k')",
+        },
+    }
+
+    validated = provider.validate_comments_inside_hunks([suggestion])
+    body = validated[0]["body"]
+
+    assert "</details>" in body
+    assert body.index("</details>") < body.index("<!-- pr-agent-dedup: aabbccddeeff -->")
+    assert body.rstrip().endswith(marker)
+
+
+def test_validate_comments_inside_hunks_omits_stray_details_without_suggestion_block():
+    provider = _make_provider()
+    provider.get_diff_files = lambda: [
+        SimpleNamespace(
+            filename="src/example.py",
+            patch="@@ -10,2 +10,2 @@\n-old\n+new\n ctx",
+            language="python",
+        )
+    ]
+    original_body = "**Possible Issue**\n\nExplain the fix without a suggestion block."
+    suggestion = {
+        "body": original_body,
+        "relevant_file": "src/example.py",
+        "relevant_lines_start": 9,
+        "relevant_lines_end": 11,
+        "original_suggestion": {
+            "existing_code": "old",
+            "improved_code": "new",
+        },
+    }
+
+    validated = provider.validate_comments_inside_hunks([suggestion])
+    result = validated[0]
+
+    assert result["relevant_lines_start"] == 10
+    assert result["relevant_lines_end"] == 11
+    assert "</details>" not in result["body"]
+    assert result["body"] == original_body
+
+
+def test_validate_comments_inside_hunks_fences_triple_backticks_in_fallback_diff():
+    provider = _make_provider()
+    provider.get_diff_files = lambda: [
+        SimpleNamespace(
+            filename="docs/example.md",
+            patch="@@ -10,2 +10,2 @@\n-old\n+new\n ctx",
+            language="markdown",
+        )
+    ]
+    suggestion = {
+        "body": "Update snippet\n\n````suggestion\n```python\nx = 2\n```\n````",
+        "relevant_file": "docs/example.md",
+        "relevant_lines_start": 9,
+        "relevant_lines_end": 11,
+        "original_suggestion": {
+            "existing_code": "```python\nx = 1\n```",
+            "improved_code": "```python\nx = 2\n```",
+        },
+    }
+
+    validated = provider.validate_comments_inside_hunks([suggestion])
+    body = validated[0]["body"]
+
+    assert "````diff\n" in body
+    assert "\n````\n\n</details>" in body

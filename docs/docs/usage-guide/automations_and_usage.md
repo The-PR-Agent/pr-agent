@@ -53,7 +53,7 @@ For a quick preflight that needs no token and no PR, run:
 pr-agent doctor
 ```
 
-It checks that `config.model` is set and that a completion against the configured model succeeds. Where required, it also checks for a real static API key. The check reads the host configuration files and environment variables only: overrides such as `--config.model=...` are ignored after `doctor` and rejected before it, and neither the repository's `.pr_agent.toml` nor `--extra_config_url` is loaded. It can therefore validate a different model than a PR command would use, so set the model and the other options in a host configuration file or through environment variables. Azure AD, Bedrock IAM, Anthropic bearer tokens without captured API keys, keyless local endpoints, and custom endpoints defer authentication validation to the completion. For Watsonx, an API URL alone is insufficient: configure an API key, `WATSONX_TOKEN`, `WATSONX_ZENAPIKEY`, or an explicit `Authorization` header. Watsonx checks these credentials in header, bearer-token, Zen-key, then API-key order; placeholder credentials are not accepted. An Anthropic bearer token must also be non-placeholder. Keyless local providers and eligible OpenRouter gateway fallbacks defer placeholder-key validation to the model completion. Native providers that require a real key still reject placeholders. The exit code is `0` only when every check passes, so CI setups can gate on it. It ships with the package, unlike the fuller health check below, which exercises real commands on a real PR.
+It checks that `config.model` is set and that a completion against the configured model succeeds. Where required, it also checks for a real static API key. The check reads the host configuration files and environment variables only: overrides such as `--config.model=...` are ignored after `doctor` and rejected before it, and neither the repository's `.pr_agent.toml` nor `--extra_config_url` is loaded. It can therefore validate a different model than a PR command would use, so set the model and the other options in a host configuration file or through environment variables. Azure AD, Bedrock IAM, Anthropic bearer tokens without captured API keys, keyless local endpoints, and custom endpoints defer authentication validation to the completion. For Watsonx, an API URL alone is insufficient: configure an API key, `WATSONX_TOKEN`, `WATSONX_ZENAPIKEY`, or an explicit `Authorization` header. Watsonx checks these credentials in header, bearer-token, Zen-key, then API-key order; placeholder credentials are not accepted. An Anthropic bearer token must also be non-placeholder. Keyless local providers and eligible OpenRouter gateway fallbacks defer placeholder-key validation to the model completion. Native providers that require a real key still reject placeholders. For Databricks, if the optional `databricks-sdk` package is installed and `DATABRICKS_HOST` is set with `DATABRICKS_TOKEN` (PAT) or `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET` (OAuth M2M), preflight also defers to the completion when no native API key is set. If both PAT and OAuth settings are present, set `DATABRICKS_AUTH_TYPE` to the matching authentication method. Other SDK credential sources are not inspected by the static check. The exit code is `0` only when every check passes, so CI setups can gate on it. It ships with the package, unlike the fuller health check below, which exercises real commands on a real PR.
 
 In Docker, run it from the CLI image (`pragent/pr-agent:<version>` or `pragent/pr-agent:latest`), whose entrypoint takes the command directly:
 
@@ -114,7 +114,7 @@ Most values in the [configuration file](https://github.com/the-pr-agent/pr-agent
 
 ### Disabling all automatic feedback
 
-To easily disable all automatic feedback from PR-Agent (GitHub App, GitLab Webhook, BitBucket App, Azure DevOps Webhook), set in a configuration file:
+To easily disable all automatic feedback from PR-Agent (GitHub App, GitHub Action, GitLab Webhook, BitBucket App, Azure DevOps Webhook), set in a configuration file:
 
 ```toml
 [config]
@@ -137,7 +137,7 @@ An automatic or CLI `/review` or `/describe` run is then skipped, with no model 
 - The head commit and the target branch name are the same. The branch is compared by name, not by its latest commit, so new commits on the target branch do not trigger a run. This check needs the provider to report the target branch.
 - The diff is the same, for example after a rebase that changed no content. Hunk line numbers are ignored, so a rebase that only moves the changes within their files counts as the same diff. This check is off when a file has no patch, such as a binary file, because its content can change without changing the diff.
 
-PR-Agent keeps its record in one comment on the PR, and edits it to say when a run was skipped and why. The record is written only after a command succeeds, so a failed run is retried next time.
+PR-Agent keeps its record in one comment on the PR, and edits it to say when a run was skipped and why. The record is written only after a command finishes cleanly, so a failed, partial, or degraded run is retried next time, and clears that command's earlier record if it attempted to update the PR's output or labels.
 
 - A command typed in a PR comment, such as `/review`, always runs. It takes down that command's skip notice but does not update the record, because arguments typed with it can change what the review covers.
 - Incremental review (`/review -i`) and per commit review always run.
@@ -337,8 +337,8 @@ For detailed step-by-step examples of configuring different models (Gemini, Clau
 **Common Model Configuration Patterns:**
 
 - **OpenAI**: Set `config.model: "<openai-model>"` and `OPENAI_KEY`
-- **Gemini**: Set `config.model: "gemini/gemini-3.8-flash"` and `GOOGLE_AI_STUDIO.GEMINI_API_KEY` (no `OPENAI_KEY` needed)
-- **Claude**: Set `config.model: "anthropic/claude-opus-5"` and `ANTHROPIC.KEY` (no `OPENAI_KEY` needed)
+- **Gemini**: Set `config.model` to a `gemini/` model ID and `GOOGLE_AI_STUDIO.GEMINI_API_KEY` (no `OPENAI_KEY` needed)
+- **Claude**: Set `config.model` to an `anthropic/` model ID and `ANTHROPIC.KEY` (no `OPENAI_KEY` needed)
 - **Azure OpenAI**: Set `OPENAI.API_TYPE: "azure"`, `OPENAI.API_BASE`, and `OPENAI.DEPLOYMENT_ID`
 - **Local Models**: Set `config.model: "ollama/model-name"` and `OLLAMA.API_BASE`
 

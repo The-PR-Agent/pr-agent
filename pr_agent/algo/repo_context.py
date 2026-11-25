@@ -709,14 +709,33 @@ def render_instruction_files_with_line_budget(
     return "\n".join(parts).strip()
 
 
-def build_repo_context(git_provider) -> str:
+def build_repo_context(
+    git_provider, *, return_status: bool = False, local_only: bool = False
+) -> str | tuple[str, bool]:
+    """Optionally report whether all attempted instruction fetches succeeded."""
     repo_context_config = _get_repo_context_config()
     if repo_context_config is None:
-        return ""
+        return ("", True) if return_status else ""
 
     context_files, max_lines = repo_context_config
+    if local_only:
+        # Publishing commands must not feed sibling/private-repository guidance
+        # into suggestions that could be posted to a public pull request.
+        # Publishing commands can only read local paths or local-path alternatives.
+        # Reject all structured/unknown objects, not only plain dictionaries.
+        local_files = []
+        for entry in context_files:
+            if isinstance(entry, str):
+                local_files.append(entry)
+            elif isinstance(entry, list):
+                local_paths = [path for path in entry if isinstance(path, str)]
+                if local_paths:
+                    local_files.append(local_paths)
+        context_files = local_files
+        if not context_files:
+            return ("", True) if return_status else ""
     if not _provider_supports_repo_context(git_provider):
-        return ""
+        return ("", True) if return_status else ""
 
     # Sibling repositories change independently of the requesting repo, so the current-repo
     # revision cannot reconstruct their default-branch content. Bypass the revision-keyed cache
@@ -754,7 +773,7 @@ def build_repo_context(git_provider) -> str:
             git_provider, context_files, max_lines, context_ref, expand_imports
         )
         if cached_repo_context is not _REPO_CONTEXT_CACHE_MISS:
-            return cached_repo_context
+            return (cached_repo_context, True) if return_status else cached_repo_context
 
     load_state = _RepoContextLoadState()
     files = _iter_repo_context_files(
@@ -770,4 +789,4 @@ def build_repo_context(git_provider) -> str:
         _store_repo_context(
             git_provider, context_files, max_lines, context_ref, repo_context, expand_imports
         )
-    return repo_context
+    return (repo_context, not load_state.had_fetch_error) if return_status else repo_context

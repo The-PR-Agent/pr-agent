@@ -18,8 +18,9 @@ budget. Each tool keeps what it publishes and reports as failed when chunks fail
 this runner only hands it the aligned results to decide from.
 
 A chunk that raises a `BaseException` which is not an `Exception` (cancellation,
-keyboard interrupt) is re-raised after its siblings settle, so a cancelled run
-still waits for the in-flight chunks instead of abandoning them mid-call.
+keyboard interrupt) is re-raised after any already-dispatched siblings settle, so
+a cancelled run waits for in-flight chunks instead of abandoning them mid-call
+while avoiding launching later chunks that have not started yet.
 """
 
 from __future__ import annotations
@@ -56,7 +57,9 @@ async def run_chunk_batch[T, R](
     will apply: an Anthropic cache entry only becomes readable once the first
     response begins, so concurrent siblings each write their own entry — running
     the first chunk ahead lets the siblings read the entry it wrote (#4876). A
-    failed first chunk does not stop the rest, matching the gather semantics.
+    failed first chunk does not stop the rest, matching the gather semantics, while
+    a non-`Exception` `BaseException` (such as cancellation) propagates before the
+    remaining chunks are dispatched.
     """
 
     async def _run_one(item: T) -> R:
@@ -70,6 +73,8 @@ async def run_chunk_batch[T, R](
     if parallel:
         if stagger_first and len(items) > 1:
             (first,) = await asyncio.gather(_run_one(items[0]), return_exceptions=True)
+            if isinstance(first, BaseException) and not isinstance(first, Exception):
+                raise first
             rest = await asyncio.gather(*[_run_one(item) for item in items[1:]], return_exceptions=True)
             results = [first, *rest]
         else:

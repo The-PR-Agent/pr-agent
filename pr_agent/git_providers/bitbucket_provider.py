@@ -559,11 +559,14 @@ class BitbucketProvider(GitProvider):
                 if lines_removed is None:
                     lines_removed = patch_removed
 
+            old_path = diff.old.path
+            old_filename = old_path if old_path and old_path != file_path else None
             file_patch_canonic_structure = FilePatchInfo(
                 original_file_content_str,
                 new_file_content_str,
                 diff_split[index],
                 file_path,
+                old_filename=old_filename,
                 num_plus_lines=lines_added,
                 num_minus_lines=lines_removed,
             )
@@ -657,8 +660,16 @@ class BitbucketProvider(GitProvider):
 
     def remove_comment(self, comment):
         try:
-            comment_id = comment["id"] if isinstance(comment, dict) else comment
-            self.pr.delete(f"comments/{comment_id}")
+            comment = self._get_cloud_comment(comment)
+            if isinstance(comment, dict):
+                comment = comment["id"]
+            if (isinstance(comment, int) and not isinstance(comment, bool)) or (
+                isinstance(comment, str) and comment.strip()
+            ):
+                self.pr.delete(f"comments/{str(comment).strip()}")
+            else:
+                # get_issue_comments returns wrapped client objects that delete themselves.
+                comment.delete()
         except Exception as e:
             get_logger().exception(f"Failed to remove comment, error: {e}")
 

@@ -107,7 +107,9 @@ def _copy_repository(destination: Path) -> None:
     shutil.copytree(
         REPOSITORY_ROOT,
         destination,
-        ignore=shutil.ignore_patterns(".git", ".venv", "build", "dist", "__pycache__", ".pytest_cache"),
+        ignore=shutil.ignore_patterns(
+            ".git", ".venv", "build", "dist", "__pycache__", ".pytest_cache", "node_modules", ".docusaurus"
+        ),
     )
 
 
@@ -342,3 +344,21 @@ def test_lambda_layout_loads_materialized_help_docs(tmp_path):
         document for document in expected_documents if _is_help_doc_included(PurePosixPath(document))
     }
     assert result["model_calls"] == 1
+
+
+def test_copy_repository_ignores_local_docs_build_artifacts(tmp_path, monkeypatch):
+    fake_repo = tmp_path / "repo"
+    (fake_repo / "docs" / "docs").mkdir(parents=True)
+    (fake_repo / "docs" / "docs" / "guide.md").write_text("# Guide\n", encoding="utf-8")
+    (fake_repo / "docs" / "node_modules" / "pkg").mkdir(parents=True)
+    (fake_repo / "docs" / "node_modules" / "pkg" / "index.js").write_text("", encoding="utf-8")
+    (fake_repo / "docs" / ".docusaurus").mkdir(parents=True)
+    (fake_repo / "docs" / ".docusaurus" / "registry.js").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(sys.modules[__name__], "REPOSITORY_ROOT", fake_repo)
+    destination = tmp_path / "copy"
+    _copy_repository(destination)
+
+    assert (destination / "docs" / "docs" / "guide.md").is_file()
+    assert not (destination / "docs" / "node_modules").exists()
+    assert not (destination / "docs" / ".docusaurus").exists()

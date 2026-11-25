@@ -143,3 +143,68 @@ def test_refresh_raises_and_assigns_nothing_when_github_cannot_be_reached(failin
     assert provider.git_files is files and provider.pr_commits is commits and provider.comments is comments
     assert provider.last_commit_id is last_commit
     assert provider._pr_revision_loaded == ("h1", "b1", 1)
+
+
+
+def _commit(sha, message):
+    return SimpleNamespace(sha=sha, commit=SimpleNamespace(message=message))
+
+
+def _with_commits(pr, commits):
+    pr.commits = len(commits)
+    pr.get_commits.return_value = commits
+    return pr
+
+
+def test_commit_messages_reuse_the_commits_read_for_the_current_head():
+    loaded = _with_commits(_pr("h1"), [_commit("h1", "Add feature")])
+    provider = _provider(loaded)
+    moved = _with_commits(_pr("h2", changed_files=2), [_commit("h1", "Add feature"), _commit("h2", "Fix typo")])
+    provider._get_pr = Mock(return_value=moved)
+
+    assert provider.get_commit_messages() == "1. Add feature"
+    provider.refresh_pr_for_command()
+    assert provider.get_commit_messages() == "1. Add feature\n2. Fix typo"
+
+    loaded.get_commits.assert_called_once()
+    moved.get_commits.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("loaded_shas", "reported", "base_moved", "reads_again"),
+    [
+        (["h1"], 2, False, True),  # the list was read before it showed the head
+        (["h0", "h2"], 3, False, True),  # a commit is missing although the head is listed
+        (["h1"], 1, False, True),  # the count matches but the list ends before the head
+        (["h2"], 1, True, True),  # PullRequest.edit() reported a new base for the loaded PR
+        ([f"c{i}" for i in range(250)], 300, False, True),  # past GitHub's cap the list cannot be checked
+        (["h1", "h2"], 2, False, False),  # complete for the current revision
+    ],
+)
+def test_commit_messages_read_the_commits_again_unless_the_loaded_list_matches_the_pr(
+    loaded_shas, reported, base_moved, reads_again,
+):
+    loaded = _with_commits(_pr("h2"), [_commit("h2", "Fresh read")])
+    loaded.commits = reported
+    provider = _provider(loaded)
+    provider.pr_commits = [_commit(sha, "Loaded") for sha in loaded_shas]
+    if base_moved:
+        loaded.base = SimpleNamespace(sha="b2", ref="release")
+
+    messages = provider.get_commit_messages()
+
+    loaded_messages = "\n".join(f"{i + 1}. Loaded" for i in range(len(loaded_shas)))
+    assert messages == ("1. Fresh read" if reads_again else loaded_messages)
+    assert loaded.get_commits.call_count == 1 + reads_again
+
+
+def test_commit_messages_are_read_again_after_switching_pull_requests():
+    # Same head and count as the loaded PR, so only dropping its commits makes the new PR's messages appear.
+    provider = _provider(_with_commits(_pr("h1"), [_commit("h1", "Add feature")]))
+    provider.pr_num = 1
+    other = _with_commits(_pr("h1"), [_commit("h1", "Other change")])
+    provider._get_pr = Mock(return_value=other)
+
+    provider.set_pr("https://github.com/org/repo/pull/2")
+
+    assert provider.get_commit_messages() == "1. Other change"

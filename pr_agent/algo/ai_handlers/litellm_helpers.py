@@ -8,6 +8,7 @@ import httpx
 import litellm
 import openai
 
+from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -611,7 +612,9 @@ def litellm_callbacks_registered() -> bool:
     embedding pr-agent can register callbacks without touching configuration.toml.
     """
     litellm_settings = get_settings().get("litellm", {})
-    if litellm_settings and litellm_settings.get("enable_callbacks", False):
+    if litellm_settings and _as_bool_setting(
+        litellm_settings.get("enable_callbacks", False), setting_name="LITELLM.ENABLE_CALLBACKS"
+    ):
         return True
     for name in _LITELLM_CALLBACK_ATTRS:
         registered = getattr(litellm, name, None)

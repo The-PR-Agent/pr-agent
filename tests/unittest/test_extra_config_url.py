@@ -2,7 +2,7 @@ import copy
 import os
 import tempfile
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 from urllib.error import HTTPError
 
 import pytest
@@ -377,12 +377,108 @@ async def test_gitlab_auth_pins_host_source_before_loading_provider_token(tmp_pa
     settings.set("CONFIG.IGNORE_PR_TITLE", [])
     settings.set("GITLAB.SHARED_SECRET", "example-shared-secret")
     settings.set("GITLAB.PERSONAL_ACCESS_TOKEN", "")
-    request = SimpleNamespace(headers={"X-Gitlab-Token": "example-shared-secret"})
+    request = SimpleNamespace(
+        headers={"X-Gitlab-Token": "example-shared-secret"},
+        json=AsyncMock(return_value={"object_kind": "merge_request"}),
+    )
     with request_cycle_context({"settings": settings}):
         assert await gitlab_webhook.authenticate_gitlab_webhook(request, {}) is None
         assert context["automatic_host_settings_source"] == str(original)
         git_utils.apply_host_settings()
         assert get_settings().get("CONFIG.IGNORE_PR_TITLE") == ["^Blocked"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("webhook_token", ["example-shared-secret", "invalid"])
+async def test_gitlab_auth_rejects_missing_api_token_with_malformed_json(monkeypatch, webhook_token):
+    from pr_agent.servers import gitlab_webhook
+
+    settings = copy.deepcopy(global_settings)
+    settings.set("GITLAB.SHARED_SECRET", "example-shared-secret")
+    settings.set("GITLAB.PERSONAL_ACCESS_TOKEN", "")
+    load_host = Mock()
+    monkeypatch.setattr(gitlab_webhook, "apply_host_settings", load_host)
+    request = SimpleNamespace(
+        headers={"X-Gitlab-Token": webhook_token},
+        json=AsyncMock(side_effect=ValueError("Invalid JSON")),
+    )
+    with request_cycle_context({"settings": settings}):
+        response = await gitlab_webhook.authenticate_gitlab_webhook(request, {})
+        assert response.status_code == 401
+        assert not context.get("automatic_host_settings_source")
+
+    if webhook_token == "example-shared-secret":
+        request.json.assert_awaited_once()
+        load_host.assert_called_once()
+    else:
+        request.json.assert_not_awaited()
+        load_host.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handoff", [False, True])
+@pytest.mark.parametrize("event_kind", ["note", "merge_request"])
+@pytest.mark.parametrize("invalid_section", [False, True])
+async def test_gitlab_host_credentials_respect_event_loading_policy(
+    tmp_path, monkeypatch, handoff, event_kind, invalid_section
+):
+    from starlette.background import BackgroundTasks
+
+    from pr_agent.servers import gitlab_webhook, lambda_handoff
+    from pr_agent.servers.utils import host_settings_unavailable
+
+    host = tmp_path / "host.toml"
+    host.write_text(
+        ("invalid = 42\n" if invalid_section else "")
+        + '[gitlab]\npersonal_access_token = "example-api-token"\n'
+        + '[config]\nignore_pr_title = ["^Blocked"]\n'
+    )
+    settings = copy.deepcopy(global_settings)
+    settings.set("CONFIG.EXTRA_CONFIG_URL", str(host))
+    settings.set("GITLAB.SHARED_SECRET", "example-shared-secret")
+    settings.set("GITLAB.PERSONAL_ACCESS_TOKEN", "")
+    monkeypatch.setattr(gitlab_webhook, "global_settings", settings)
+    monkeypatch.setattr(lambda_handoff, "global_settings", settings)
+    monkeypatch.setattr(lambda_handoff, "handoff_enabled", lambda: False)
+    payload = {"object_kind": event_kind}
+    rejected = event_kind == "merge_request" and invalid_section
+    seen = []
+
+    async def process(data, _log_context):
+        assert data == payload
+        seen.append((
+            get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN"),
+            get_settings().get("CONFIG.IGNORE_PR_TITLE"),
+            context.get("automatic_host_settings_source"),
+        ))
+
+    monkeypatch.setattr(gitlab_webhook, "process_gitlab_event", process)
+    if handoff:
+        event = lambda_handoff.build_handoff_event("gitlab", payload, {})
+        if rejected:
+            with pytest.raises(RuntimeError, match="No GitLab API credential"):
+                await lambda_handoff._run_handoff(lambda_handoff.extract_handoff(event))
+        else:
+            assert await lambda_handoff._run_handoff(lambda_handoff.extract_handoff(event)) == {}
+    else:
+        request = SimpleNamespace(
+            headers={"X-Gitlab-Token": "example-shared-secret"},
+            json=AsyncMock(return_value=payload),
+        )
+        tasks = BackgroundTasks()
+        with request_cycle_context({}):
+            response = await gitlab_webhook.gitlab_webhook(tasks, request)
+            assert response.status_code == (401 if rejected else 200)
+            if rejected:
+                assert host_settings_unavailable() is True
+            await tasks()
+
+    if rejected:
+        assert seen == []
+    else:
+        assert seen == [(
+            "example-api-token", ["^Blocked"], str(host) if event_kind == "merge_request" else None
+        )]
 
 
 def test_resolve_injects_auth_header_from_env(urlopen_stub, monkeypatch):
@@ -862,6 +958,54 @@ def test_extra_logging_opt_out_survives_repo_override(tmp_path, monkeypatch, set
 
         assert get_settings().get("LITELLM.TURN_OFF_MESSAGE_LOGGING") is False
         assert litellm_handler._message_logging_disabled(get_settings()) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host_toml", [
+    "[litellm]\nturn_off_message_logging = true\n",
+    '[litellm]\nturn_off_message_logging = "true"\n',
+    "[litellm]\nturn_off_message_logging = false\nTURN_OFF_MESSAGE_LOGGING = true\n",
+])
+async def test_frozen_extra_logging_opt_out_survives_repo_override(
+    tmp_path, monkeypatch, settings_sandbox, mock_git_provider, host_toml
+):
+    from pr_agent.servers.utils import load_host_settings_for_webhook
+
+    extra_path = _write_toml(tmp_path, "extra.toml", host_toml)
+    mock_git_provider["provider"] = _FakeGitProvider(b"[litellm]\nturn_off_message_logging = false\n")
+    monkeypatch.setattr(litellm_handler, "global_settings", {"LITELLM.TURN_OFF_MESSAGE_LOGGING": False})
+
+    with safe_request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        get_settings().set("CONFIG.EXTRA_CONFIG_URL", extra_path)
+        get_settings().set("CONFIG.USE_REPO_SETTINGS_FILE", True)
+        assert await load_host_settings_for_webhook() is True
+        apply_repo_settings("https://example.com/pr/1")
+
+        assert get_settings().get("LITELLM.TURN_OFF_MESSAGE_LOGGING") is False
+        assert litellm_handler._message_logging_disabled(get_settings()) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frozen", [False, True])
+async def test_repo_logging_opt_out_is_not_promoted_to_host_policy(
+    tmp_path, monkeypatch, settings_sandbox, mock_git_provider, frozen
+):
+    extra_path = _write_toml(tmp_path, "extra.toml", "[config]\nmodel = 'test-model'\n")
+    mock_git_provider["provider"] = _FakeGitProvider(b"[litellm]\nturn_off_message_logging = true\n")
+    monkeypatch.setattr(litellm_handler, "global_settings", {"LITELLM.TURN_OFF_MESSAGE_LOGGING": False})
+
+    with safe_request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        get_settings().set("CONFIG.EXTRA_CONFIG_URL", extra_path)
+        get_settings().set("CONFIG.USE_REPO_SETTINGS_FILE", True)
+        if frozen:
+            from pr_agent.servers.utils import load_host_settings_for_webhook
+
+            assert await load_host_settings_for_webhook() is True
+        apply_repo_settings("https://example.com/pr/1")
+        apply_repo_settings("https://example.com/pr/1")
+
+        get_settings().set("LITELLM.TURN_OFF_MESSAGE_LOGGING", False)
+        assert litellm_handler._message_logging_disabled(get_settings()) is False
 
 
 def test_extra_applied_when_repo_settings_empty(tmp_path, settings_sandbox, mock_git_provider):

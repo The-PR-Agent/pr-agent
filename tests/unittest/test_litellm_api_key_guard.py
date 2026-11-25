@@ -7594,7 +7594,7 @@ def header_only_native_auth(monkeypatch):
 
 
 @pytest.mark.parametrize("route", (
-    "neosantara", "tensormesh", "parasail", "meta", "pinstripes",
+    "neosantara", "tensormesh", "parasail", "empiriolabs", "meta", "pinstripes",
     "xai", "ragflow", "ragflow_agent", "azure_ai", "azure_ai_key",
 ))
 @pytest.mark.parametrize("entrypoint", ("chat", "probe"))
@@ -7695,9 +7695,7 @@ def test_json_responses_native_config_contract():
         "cortecs", "prism", "sail", "coralbricks", "inferenceapis", "aiand", "openinfer",
         "refuseless", "zerogpu",
     }
-    # Pinned native HTTP client selection rejects this registry-only provider
-    # before authentication; do not claim transport coverage for that path.
-    assert providers - {provider.value for provider in litellm.LlmProviders} == {"empiriolabs"}
+    assert providers <= {provider.value for provider in litellm.LlmProviders}
     for provider in providers:
         # The native manager checks Python overrides before the JSON registry.
         selected = ProviderConfigManager.get_provider_responses_api_config(provider, model="test-model")

@@ -20,16 +20,18 @@ from pr_agent.log import get_logger
 PR_URL = "https://gitlab.example.com/group/project/-/merge_requests/171"
 
 
-def _make_settings(add_user_to_requests):
+def _make_settings(add_user_to_requests, config_values=None, litellm_values=None, root_values=None):
+    config_values = {"add_user_to_requests": add_user_to_requests, **(config_values or {})}
+    litellm_values = litellm_values or {}
+    root_values = root_values or {}
+
     def config_get(self, key, default=None):
-        if key == "add_user_to_requests":
-            return add_user_to_requests
-        return default
+        return config_values.get(key, default)
 
     return type("Settings", (), {
         "config": type("Config", (), {
             "ai_timeout": 30,
-            "custom_reasoning_model": False,
+            "custom_reasoning_model": config_values.get("custom_reasoning_model", False),
             "max_model_tokens": 32000,
             "verbosity_level": 0,
             "seed": -1,
@@ -37,9 +39,10 @@ def _make_settings(add_user_to_requests):
             "get": config_get,
         })(),
         "litellm": type("LiteLLM", (), {
-            "get": lambda self, key, default=None: default,
+            "custom_llm_provider": litellm_values.get("custom_llm_provider", ""),
+            "get": lambda self, key, default=None: litellm_values.get(key, default),
         })(),
-        "get": lambda self, key, default=None: default,
+        "get": lambda self, key, default=None: root_values.get(key, default),
     })()
 
 
@@ -51,18 +54,18 @@ def _mock_response():
     return mock
 
 
-async def _run(monkeypatch, model, add_user_to_requests, log_context=None):
+async def _run(monkeypatch, model, add_user_to_requests, log_context=None, temperature=0.2, **settings):
     monkeypatch.setattr(litellm_handler, "get_settings",
-                        lambda: _make_settings(add_user_to_requests))
+                        lambda: _make_settings(add_user_to_requests, **settings))
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
                new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
         handler = litellm_handler.LiteLLMAIHandler()
         if log_context:
             with get_logger().contextualize(**log_context):
-                await handler.chat_completion(model=model, system="sys", user="usr")
+                await handler.chat_completion(model=model, system="sys", user="usr", temperature=temperature)
         else:
-            await handler.chat_completion(model=model, system="sys", user="usr")
+            await handler.chat_completion(model=model, system="sys", user="usr", temperature=temperature)
     return mock_call.call_args[1]
 
 
@@ -132,6 +135,64 @@ class TestRequestUserField:
         assert by_command["review"].endswith("/b/-/merge_requests/2")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gpt-6.1-sol",
+            "openai/gpt-4o",
+            "azure/gpt-5",
+        ],
+    )
+    async def test_enabled_sets_user_field_for_prefixed_and_gpt5_gpt6_models(self, monkeypatch, model):
+        # GPT-5/GPT-6 models are normalized to openai/<model> or azure/<model>, and users
+        # may pass provider-prefixed OpenAI/Azure model IDs directly. LiteLLM's catalog
+        # check expects the unprefixed model name alongside custom_llm_provider.
+        kwargs = await _run(monkeypatch, model, True,
+                            log_context={"command": "review", "pr_url": PR_URL})
+        payload = json.loads(kwargs["user"])
+        assert payload == {"command": "review", "pr_url": PR_URL}
+        assert "extra_body" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_enabled_sets_user_field_for_azure_mode_bare_gpt5(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "gpt-5",
+            True,
+            log_context={"command": "review", "pr_url": PR_URL},
+            root_values={"OPENAI.API_TYPE": "azure"},
+        )
+        payload = json.loads(kwargs["user"])
+        assert payload == {"command": "review", "pr_url": PR_URL}
+        assert "extra_body" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_enabled_sets_user_field_for_custom_llm_provider_azure(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "my-gpt-deployment",
+            True,
+            log_context={"command": "review", "pr_url": PR_URL},
+            litellm_values={"custom_llm_provider": "azure"},
+        )
+        payload = json.loads(kwargs["user"])
+        assert payload == {"command": "review", "pr_url": PR_URL}
+        assert "extra_body" not in kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["openai/gpt-4o", "gpt-4o", "openrouter/gpt-4o"])
+    async def test_custom_llm_provider_openrouter_uses_extra_body(self, monkeypatch, model):
+        kwargs = await _run(
+            monkeypatch,
+            model,
+            True,
+            log_context={"command": "review", "pr_url": PR_URL},
+            litellm_values={"custom_llm_provider": "openrouter"},
+        )
+        assert "user" not in kwargs
+        assert json.loads(kwargs["extra_body"]["user"]) == {"command": "review", "pr_url": PR_URL}
+
+    @pytest.mark.asyncio
     async def test_unsupported_provider_is_skipped(self, monkeypatch):
         # gemini's parameter mapping does not accept "user": the field is skipped
         # instead of breaking the call when litellm.drop_params is off.
@@ -139,3 +200,70 @@ class TestRequestUserField:
                             log_context={"command": "improve", "pr_url": PR_URL})
         assert "user" not in kwargs
         assert "extra_body" not in kwargs
+
+
+class TestStringFalseFlags:
+    # Dynaconf leaves "FALSE" or a quoted "false" as a str, so plain truthiness reads it as on
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["false", "FALSE"])
+    async def test_add_user_to_requests_string_false_is_off(self, monkeypatch, value):
+        kwargs = await _run(monkeypatch, "gpt-4o", value,
+                            log_context={"command": "improve", "pr_url": PR_URL})
+        assert "user" not in kwargs
+        assert "extra_body" not in kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["false", "FALSE"])
+    async def test_enable_callbacks_string_false_is_off(self, monkeypatch, value):
+        add_callbacks = MagicMock(side_effect=lambda kwargs: kwargs)
+        monkeypatch.setattr(litellm_handler.LiteLLMAIHandler, "add_litellm_callbacks",
+                            lambda self, kwargs: add_callbacks(kwargs))
+        await _run(monkeypatch, "gpt-4o", False, litellm_values={"enable_callbacks": value})
+        add_callbacks.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["false", "FALSE"])
+    async def test_add_session_id_string_false_is_off(self, monkeypatch, value):
+        kwargs = await _run(monkeypatch, "gpt-4o", False,
+                            log_context={"command": "improve", "pr_url": PR_URL},
+                            litellm_values={"add_session_id_to_requests": value})
+        assert "litellm_session_id" not in kwargs
+        assert "x-litellm-session-id" not in (kwargs.get("headers") or {})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["false", "FALSE"])
+    async def test_custom_reasoning_model_string_false_keeps_system_message(self, monkeypatch, value):
+        kwargs = await _run(monkeypatch, "gpt-4o", False,
+                            config_values={"custom_reasoning_model": value})
+        assert kwargs["messages"][0]["role"] == "system"
+        assert "temperature" in kwargs
+
+    @pytest.mark.asyncio
+    async def test_add_user_to_requests_string_true_still_works(self, monkeypatch):
+        kwargs = await _run(monkeypatch, "gpt-4o", "true",
+                            log_context={"command": "improve", "pr_url": PR_URL})
+        assert json.loads(kwargs["user"])["command"] == "improve"
+
+
+class TestSeedSetting:
+
+    @pytest.mark.asyncio
+    async def test_numeric_string_seed_is_sent_as_int(self, monkeypatch):
+        kwargs = await _run(monkeypatch, "gpt-4o", False, temperature=0,
+                            config_values={"seed": "42"})
+        assert kwargs["seed"] == 42
+
+    @pytest.mark.asyncio
+    async def test_invalid_seed_is_ignored(self, monkeypatch):
+        kwargs = await _run(monkeypatch, "gpt-4o", False, temperature=0,
+                            config_values={"seed": "abc"})
+        assert "seed" not in kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [True, -0.5, 3.7])
+    async def test_bool_or_fractional_seed_is_ignored(self, monkeypatch, value):
+        # int() would quietly turn these into 1, 0 or 3 and switch a fixed seed on
+        kwargs = await _run(monkeypatch, "gpt-4o", False, temperature=0,
+                            config_values={"seed": value})
+        assert "seed" not in kwargs

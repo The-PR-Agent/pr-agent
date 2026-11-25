@@ -6,7 +6,7 @@ import re
 import secrets
 import time
 from collections import defaultdict
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -62,7 +62,11 @@ def pin_host_settings_source_for_webhook() -> bool:
     if context.get("automatic_host_settings_source"):
         return True
     source = get_settings().get("CONFIG.EXTRA_CONFIG_URL")
-    if not isinstance(source, str) or not source.strip():
+    if not isinstance(source, str):
+        if source is not None and source is not False:
+            context["invalid_host_settings_source"] = True
+        return False
+    if not source.strip():
         return False
 
     # Some webhook entry points create a request context without preloading
@@ -95,6 +99,34 @@ async def load_host_settings_for_webhook() -> bool:
                 context.setdefault("extra_config_payloads", {})[source] = None
         get_logger().warning(f"Unable to preload Host settings for webhook ({type(error).__name__})")
     return True
+
+
+def host_settings_unavailable() -> bool:
+    """Return True when this webhook's host settings source was pinned but could not be loaded.
+
+    Call it after ``load_host_settings_for_webhook()``. A failed load leaves ``None`` for the
+    source in the request's payload cache; a source that was never loaded is not a failure.
+    """
+    if not context.exists():
+        return False
+    if context.get("invalid_host_settings_source"):
+        return True
+    source = context.get("automatic_host_settings_source")
+    payloads = context.get("extra_config_payloads") or {}
+    return bool(source) and source in payloads and payloads[source] is None
+
+
+async def preload_host_settings_for_new_automatic_event() -> bool:
+    """Preload the external Host source before repository settings for automatic events."""
+    source = get_settings().get("CONFIG.EXTRA_CONFIG_URL")
+    if source is None or source is False:
+        return True
+    if not isinstance(source, str):
+        get_logger().warning("Request ignored: invalid Host settings source")
+        return False
+    if not source.strip():
+        return True
+    return await load_host_settings_for_webhook() and not host_settings_unavailable()
 
 
 def payload_log_summary(data: object, identifying_fields: Sequence[str] = ()) -> dict:
@@ -245,8 +277,8 @@ class DefaultDictWithTimeout(defaultdict):
 
     def __init__(
         self,
-        default_factory: Callable[[], Any] = None,
-        ttl: int = None,
+        default_factory: Callable[[], Any] | None = None,
+        ttl: int | None = None,
         refresh_interval: int = 60,
         update_key_time_on_get: bool = True,
         *args,
@@ -336,7 +368,7 @@ def _get_push_trigger_state(key: str, ttl: int | None) -> _PushTriggerState:
 
 
 @asynccontextmanager
-async def push_trigger_slot(key: str, *, allow_backlog: bool, ttl: int | None) -> AsyncIterator[bool]:
+async def push_trigger_slot(key: str, *, allow_backlog: bool, ttl: int | None) -> AsyncGenerator[bool, None]:
     """Run one push per PR, optionally keeping one delegate for subsequent pushes.
 
     State is process-local. TTL bounds idle cache retention; active runs and

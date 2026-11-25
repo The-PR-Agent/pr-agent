@@ -34,10 +34,11 @@ async def test_manual_commands_reuse_request_provider(monkeypatch, action):
     repo.get_languages.return_value = {"Python": 1}
     pr = MagicMock(title="Example", body="Description", html_url=pr_url, changed_files=1)
     pr.head = SimpleNamespace(sha="head", ref="feature")
-    pr.base = SimpleNamespace(sha="base", ref="main")
+    pr.base = SimpleNamespace(sha="base", ref="main", repo=repo)
     pr.get_commits.return_value = [SimpleNamespace(sha="head", commit=SimpleNamespace(message="Change"))]
     pr.get_files.return_value = [SimpleNamespace(filename="app.py")]
     repo.get_pull.return_value = pr
+    monkeypatch.setattr("pr_agent.git_providers.github_provider.PullRequest", lambda *_args, **_kwargs: pr)
     clients = []
 
     def github_client(**_kwargs):
@@ -84,8 +85,7 @@ def hosted_provider_with_repo_diff(monkeypatch):
     return settings, hosted
 
 
-async def test_repository_diff_content_uses_plain_diff_provider(hosted_provider_with_repo_diff, monkeypatch):
-    settings, _ = hosted_provider_with_repo_diff
+async def _ask_provider(settings, monkeypatch):
     seen = []
 
     async def capture(command):
@@ -96,9 +96,21 @@ async def test_repository_diff_content_uses_plain_diff_provider(hosted_provider_
         assert await PRAgent(ai_handler=SimpleNamespace).handle_request(
             "https://github.com/example/repo/pull/1", ["ask", "Why?"]
         )
-
     assert len(seen) == 1
-    assert isinstance(seen[0], PlainDiffGitProvider)
+    return seen[0]
+
+
+async def test_repository_diff_content_keeps_the_hosted_provider(hosted_provider_with_repo_diff, monkeypatch):
+    settings, hosted = hosted_provider_with_repo_diff
+
+    assert await _ask_provider(settings, monkeypatch) is hosted
+
+
+async def test_host_diff_content_uses_plain_diff_provider(hosted_provider_with_repo_diff, monkeypatch):
+    settings, _ = hosted_provider_with_repo_diff
+    settings.set("plain_diff.content", "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n")
+
+    assert isinstance(await _ask_provider(settings, monkeypatch), PlainDiffGitProvider)
 
 
 async def test_extra_host_config_cannot_hide_stale_bootstrap_provider(
@@ -222,11 +234,13 @@ async def test_github_head_refreshes_after_automatic_command_boundary(monkeypatc
     new_pr = MagicMock(title="PR", body="", changed_files=2)
     for pr, sha in ((old_pr, "old-head"), (new_pr, "new-head")):
         pr.head = SimpleNamespace(sha=sha, ref="feature")
-        pr.base = SimpleNamespace(sha="base", ref="main")
+        pr.base = SimpleNamespace(sha="base", ref="main", repo=repo)
         pr.get_commits.return_value = [SimpleNamespace(sha=sha, commit=SimpleNamespace(message="Update"))]
         pr.get_files.return_value = [SimpleNamespace(filename="app.py")]
     active_pr = {"value": old_pr}
     repo.get_pull.side_effect = lambda _number: active_pr["value"]
+    monkeypatch.setattr("pr_agent.git_providers.github_provider.PullRequest",
+                        lambda *_args, **_kwargs: repo.get_pull(1))
 
     def github_client(**_kwargs):
         client = MagicMock()

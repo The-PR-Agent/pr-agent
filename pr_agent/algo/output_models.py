@@ -190,33 +190,6 @@ class PRReview(BaseModel):
     review: Review
 
 
-class CodeSuggestion(BaseModel):
-    relevant_file: str
-    language: str
-    existing_code: str
-    suggestion_content: str
-    improved_code: str
-    one_sentence_summary: str
-    label: str
-
-
-class PRCodeSuggestions(BaseModel):
-    code_suggestions: list[CodeSuggestion]
-
-
-class CodeSuggestionFeedback(BaseModel):
-    suggestion_summary: str
-    relevant_file: str
-    relevant_lines_start: int
-    relevant_lines_end: int
-    suggestion_score: int = Field(ge=0, le=10)
-    why: str
-
-
-class PRCodeSuggestionsFeedback(BaseModel):
-    code_suggestions: list[CodeSuggestionFeedback]
-
-
 class PRType(StrEnum):
     BUG_FIX = "Bug fix"
     TESTS = "Tests"
@@ -344,13 +317,6 @@ class CodeDocumentation(BaseModel):
         if len(serialized) != len(set(serialized)):
             raise ValueError("Code Documentation items must be unique")
         return items
-
-
-class PRRankResponses(BaseModel):
-    which_response_was_better: Literal[0, 1, 2]
-    why: str
-    score_response1: int = Field(ge=1, le=10)
-    score_response2: int = Field(ge=1, le=10)
 
 
 class RelevantSection(BaseModel):

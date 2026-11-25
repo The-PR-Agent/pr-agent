@@ -1,4 +1,3 @@
-import asyncio
 import itertools
 import re
 from unittest.mock import MagicMock, patch
@@ -16,7 +15,6 @@ from urllib3.exceptions import ProxyError as Urllib3ProxyError
 
 import pr_agent.git_providers as providers
 from pr_agent.algo import inline_comment_dedup as dedup
-from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 
 
@@ -166,37 +164,6 @@ def test_context_line_suggestion_sends_both_gitlab_line_numbers():
     position = p.mr.discussions.create.call_args.args[0]['position']
     assert position['old_line'] == 2
     assert position['new_line'] == 2
-
-
-@pytest.mark.parametrize("as_review", [False, True])
-@pytest.mark.parametrize("start,old_line", [(1, None), (2, 2)])
-def test_patch_only_suggestion_publishes_at_its_addition_or_context_line(as_review, start, old_line):
-    target = _FakeTargetFile()
-    target.head_file = ""
-    target.patch = "@@ -1,2 +1,2 @@\n-old line1\n+line1\n line2\n\\ No newline at end of file\n"
-    p = _gl_provider()
-    p.get_diff_files.return_value = [target]
-    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    command.git_provider = p
-    command.progress_response = None
-    suggestion = _suggestion(relevant_lines_start=start, relevant_lines_end=start, existing_code=f'line{start}')
-    gs = _settings(as_review=as_review)
-    try:
-        asyncio.run(command.push_inline_code_suggestions({"code_suggestions": [suggestion]},
-                                                     include_coverage_footer=False))
-    finally:
-        gs.stop()
-
-    create = p.mr.draft_notes.create if as_review else p.mr.discussions.create
-    create.assert_called_once()
-    assert '```suggestion:-0+0' in create.call_args.args[0]['note' if as_review else 'body']
-    position = create.call_args.args[0]['position']
-    assert position['new_line'] == start
-    assert position.get('old_line') == old_line
-    p.get_relevant_diff.assert_called_once_with('a.py', f'line{start}')
-    if as_review:
-        p.mr.draft_notes.bulk_publish.assert_called_once()
-        assert p.mr.draft_notes.list(get_all=True) == []
 
 
 @pytest.mark.parametrize("start, expected", [
@@ -1129,95 +1096,6 @@ def test_empty_draft_body_is_not_recorded_as_a_published_finding(publication_pro
     assert p.mr.draft_notes.list() == []
     assert len(p.get_recent_inline_comment_bodies()) == 1
     assert "fix it" in p.get_recent_inline_comment_bodies()[0]
-
-
-@pytest.mark.parametrize("failure", ["bulk", "list", "drafts-unsupported"])
-@pytest.mark.parametrize("count", [1, 2])
-def test_improve_caller_retries_queued_batch_but_not_live_fallback(publication_provider, failure, count):
-    p = publication_provider
-    if failure == "drafts-unsupported":
-        p.mr.draft_notes.create.side_effect = GitlabCreateError("drafts unsupported", response_code=400)
-        p.mr.draft_notes.list.side_effect = RequestException("cannot list")
-    else:
-        operation = p.mr.draft_notes.bulk_publish if failure == "bulk" else p.mr.draft_notes.list
-        original = operation.side_effect
-        failed = False
-
-        def fail_once_after_queue(*args, **kwargs):
-            nonlocal failed
-            if p.mr.draft_notes.create.called and not failed:
-                failed = True
-                raise RequestException("transient failure")
-            return original(*args, **kwargs)
-
-        operation.side_effect = fail_once_after_queue
-    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    command.git_provider = p
-    command.progress_response = None
-    command._validate_suggestion = lambda *args: (True, "", True)
-    command.dedent_code = lambda filename, line, code: code
-    command._validate_python_replacement_syntax = lambda *args: True
-    suggestions = [_suggestion()]
-    if count == 2:
-        suggestions.append(_suggestion(suggestion_content="second", improved_code="x = 3"))
-    asyncio.run(command.push_inline_code_suggestions({"code_suggestions": suggestions},
-                                                include_coverage_footer=False))
-    assert command._output_published is True
-    p.mr.notes.create.assert_not_called()  # no duplicate summary on top of delivered comments
-    assert p.get_recent_inline_comment_bodies()
-    if failure == "drafts-unsupported":
-        assert p.mr.discussions.create.call_count == count
-        p.mr.draft_notes.bulk_publish.assert_not_called()
-    else:
-        assert p.mr.draft_notes.create.call_count == count
-        assert p.mr.draft_notes.list() == []
-
-
-@pytest.mark.parametrize("unqueued_first", [False, True])
-@pytest.mark.parametrize("recovers", [False, True])
-def test_improve_caller_retries_unsettled_suggestion(publication_provider, unqueued_first, recovers):
-    p = publication_provider
-    manager = p.mr.draft_notes
-    create = manager.create.side_effect
-    publish = manager.bulk_publish.side_effect
-    reject = True
-    failed = False
-
-    def create_or_reject(payload):
-        if reject and "unqueued" in payload["note"]:
-            raise GitlabCreateError("cannot create draft", response_code=400)
-        return create(payload)
-
-    def fail_first_publish(*args, **kwargs):
-        nonlocal failed, reject
-        if not failed:
-            failed = True
-            reject = not recovers
-            raise RequestException("cannot publish batch")
-        return publish(*args, **kwargs)
-
-    manager.create.side_effect = create_or_reject
-    manager.bulk_publish.side_effect = fail_first_publish
-    p.mr.discussions.create.side_effect = GitlabCreateError("cannot create live discussion", response_code=400)
-    p.mr.notes.create.side_effect = GitlabCreateError("cannot create live note", response_code=400)
-    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    command.git_provider = p
-    command.progress_response = None
-    command._validate_suggestion = lambda *args: (True, "", True)
-    command.dedent_code = lambda filename, line, code: code
-    command._validate_python_replacement_syntax = lambda *args: True
-    queued = _suggestion(suggestion_content="queued", improved_code="x = 3")
-    unqueued = _suggestion(suggestion_content="unqueued", improved_code="x = 4")
-    suggestions = [unqueued, queued] if unqueued_first else [queued, unqueued]
-    asyncio.run(command.push_inline_code_suggestions({"code_suggestions": suggestions},
-                                                include_coverage_footer=False))
-    assert command._output_published is True
-    assert manager.list() == []
-    bodies = p.get_recent_inline_comment_bodies()
-    assert sum("queued" in body and "unqueued" not in body for body in bodies) == 1
-    assert sum("unqueued" in body for body in bodies) == int(recovers)
-    # Preserve the caller's existing partial-success policy, not a per-input summary guarantee.
-    p.mr.notes.create.assert_called()  # initial unqueued suggestion exhausted live fallback too
 
 
 def test_cached_provider_publishes_new_batch_without_retrying_previous_failure(publication_provider):

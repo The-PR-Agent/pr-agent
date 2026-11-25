@@ -661,7 +661,17 @@ def line_question_settings():
     truly removed during teardown, rather than being restored as ``None``.
     """
     settings = get_settings()
-    keys = ("comment_id", "origin_comment_id", "file_name", "file_name_encoded", "line_start", "line_end", "side")
+    keys = (
+        "comment_id",
+        "origin_comment_id",
+        "file_name",
+        "file_name_encoded",
+        "line_start",
+        "line_end",
+        "side",
+        "start_side",
+        "ask_diff_hunk",
+    )
     saved = snapshot_settings(keys)
     try:
         yield settings
@@ -693,6 +703,35 @@ async def test_line_question_decodes_webhook_file_path(monkeypatch, line_questio
 
     extract_hunk.assert_called_once_with("diff", file_name, line_start=8, line_end=8, side="right")
     lq.git_provider.reply_to_comment_from_comment_id.assert_called_once_with(22, "answer")
+
+
+@pytest.mark.asyncio
+async def test_line_question_forwards_and_clears_mixed_start_side(monkeypatch, line_question_settings):
+    patch = "@@ -48,4 +10,4 @@\n ctx\n-old_a\n-old_b\n+new_a\n+new_b\n ctx2"
+    line_question_settings.set("file_name", "src/app.py")
+    line_question_settings.set("ask_diff_hunk", patch)
+    line_question_settings.set("line_start", 49)
+    line_question_settings.set("line_end", 12)
+    line_question_settings.set("side", "RIGHT")
+    line_question_settings.set("start_side", "LEFT")
+    line_question_settings.set("comment_id", 22)
+
+    lq = _make_line_questions()
+
+    async def get_answer(*args, **kwargs):
+        return "answer"
+
+    monkeypatch.setattr("pr_agent.commands.pr_line_questions.retry_with_fallback_models", get_answer)
+
+    await lq.run()
+
+    assert lq.selected_lines == "-old_a\n-old_b\n+new_a\n+new_b"
+    assert line_question_settings.get("start_side") == ""
+    lq.git_provider.reply_to_comment_from_comment_id.assert_called_once_with(22, "answer")
+
+    # Retrying run() on the same instance retains its captured start_side.
+    await lq.run()
+    assert lq.selected_lines == "-old_a\n-old_b\n+new_a\n+new_b"
 
 
 class TestLoadConversationHistory:

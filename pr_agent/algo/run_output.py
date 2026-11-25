@@ -3,20 +3,57 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from importlib.metadata import PackageNotFoundError, version
+from threading import Event
 
 import yaml
 
 from pr_agent.algo.i18n import t
-from pr_agent.algo.output_sinks import OUTPUT_SINK_TYPES, _selected_output_commands, create_output_sink
+from pr_agent.algo.output_sinks import (
+    OUTPUT_SINK_TYPES,
+    FileSink,
+    SlackSink,
+    StdoutSink,
+    TeamsSink,
+    TelegramSink,
+    WebhookSink,
+    _selected_output_commands,
+    create_output_sink,
+)
 from pr_agent.algo.run_details import get_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings
 from pr_agent.config_security import should_skip_config_key
 from pr_agent.git_providers.git_provider import redact_credentials
 from pr_agent.log import get_logger
+
+# Keep one unavailable HTTP destination from occupying another destination's workers.
+# Threads start lazily; match asyncio's default pool capacity per destination.
+_NETWORK_WORKERS = min(32, (os.cpu_count() or 1) + 4)
+_NETWORK_EXECUTORS = {
+    channel: ThreadPoolExecutor(max_workers=_NETWORK_WORKERS, thread_name_prefix=f"pr-agent-{channel}")
+    for channel in ("webhook", "slack", "telegram", "teams")
+}
+_BUILTIN_SINKS = {
+    "stdout": StdoutSink,
+    "file": FileSink,
+    "webhook": WebhookSink,
+    "slack": SlackSink,
+    "telegram": TelegramSink,
+    "teams": TeamsSink,
+}
+
+
+def _send_output(channel: str, record: dict, cfg: dict) -> None:
+    """Keep individual destination failures non-fatal and credential-safe."""
+    try:
+        create_output_sink(channel).send(record, cfg)
+    except Exception as e:
+        get_logger().warning(f"push_outputs: {channel} failed: {type(e).__name__}")
 
 
 def github_action_output(output_data: dict, key_name: str):
@@ -47,37 +84,39 @@ def _pr_identity(git_provider) -> dict | None:
     return identity
 
 
-def push_outputs(
+def _dispatch_outputs(
     message_type: str,
     payload: dict | None = None,
     markdown: str | None = None,
     git_provider=None,
-) -> None:
-    """Emit a command's output to external sinks, including its PR identity when available.
-
-    Controlled by the [push_outputs] config section (disabled by default). Supported channels:
-    "stdout" (one JSON line), "file" (append JSONL), "webhook" (POST the generic record),
-    "slack" (POST {"text": ...} to a Slack Incoming Webhook), and "telegram"
-    (sendMessage to a configured chat). Non-fatal: never raises.
-    """
+    defer_network: bool = False,
+) -> list[tuple[str, dict, dict]]:
+    """Build one record, write local outputs, and optionally defer other destinations."""
+    pending = []
     try:
         cfg = get_settings().get("push_outputs", {}) or {}
         enable = cfg.get("enable", False)
         if isinstance(enable, str):
             enable = enable.strip()
         if not _as_bool_setting(enable, default=bool(enable)):
-            return
+            return pending
 
         commands = _selected_output_commands(cfg)
         if commands is None:
             get_logger().warning("push_outputs: invalid push_outputs.commands setting")
-            return
+            return pending
         if message_type not in commands:
-            return
+            return pending
 
         channels = cfg.get("channels", []) or []
         if isinstance(channels, str):
             channels = normalize_setting_list(channels, split_commas=True)
+        if defer_network:
+            # Custom strategies (including local overrides) can mutate records and ContextVars.
+            defer_network = all(
+                OUTPUT_SINK_TYPES[name] is _BUILTIN_SINKS.get(name)
+                for name in OUTPUT_SINK_TYPES if name in channels
+            )
         record = {
             "type": message_type,
             "timestamp": datetime.now(UTC).isoformat(),
@@ -93,12 +132,84 @@ def push_outputs(
             if channel not in channels:
                 continue
             try:
-                create_output_sink(channel).send(record, cfg)
+                if defer_network and channel in _NETWORK_EXECUTORS:
+                    pending.append((channel, record, cfg))
+                else:
+                    _send_output(channel, record, cfg)
             except Exception as e:
                 get_logger().warning(f"push_outputs: {channel} failed: {type(e).__name__}")
     except Exception as e:
         # Log only the exception type: requests errors embed the (secret-bearing) URL in their text.
         get_logger().warning(f"push_outputs failed: {type(e).__name__}")
+    return pending
+
+
+def _wait_for_outputs(futures) -> None:
+    for channel, future in futures:
+        try:
+            future.result()
+        except Exception as e:
+            get_logger().warning(f"push_outputs: {channel} failed: {type(e).__name__}")
+
+
+def _submit_outputs(message_type, payload, markdown, git_provider, started: Event, futures: list) -> None:
+    """Submit deliveries without holding a shared executor worker while they run."""
+    def submit(channel, record, cfg):
+        ready = Event()
+        accepted = False
+        context = copy_context()
+
+        def send_if_accepted():
+            ready.wait()
+            if accepted:
+                context.run(_send_output, channel, record, cfg)
+
+        try:
+            future = _NETWORK_EXECUTORS[channel].submit(send_if_accepted)
+            accepted = True
+            return future
+        except Exception:
+            # submit() can enqueue before raising; its unaccepted worker must not send.
+            return None
+        finally:
+            ready.set()
+
+    try:
+        network = _dispatch_outputs(
+            message_type, payload, markdown, git_provider, defer_network=True,
+        )
+        fallback = []
+        for channel, record, cfg in network:
+            future = submit(channel, record, cfg)
+            if future is None:
+                fallback.append((channel, record, cfg))
+            else:
+                futures.append((channel, future))
+
+        # Submit healthy destinations before retrying rejected destinations in this worker.
+        for channel, record, cfg in fallback:
+            _send_output(channel, record, cfg)
+    except BaseException:
+        # An interrupted submission must not leave earlier accepted sends unfinished.
+        _wait_for_outputs(futures)
+        raise
+    finally:
+        started.set()
+
+
+def _drain_cancelled_outputs(started: Event, futures: list) -> None:
+    started.wait()
+    _wait_for_outputs(futures)
+
+
+def push_outputs(
+    message_type: str,
+    payload: dict | None = None,
+    markdown: str | None = None,
+    git_provider=None,
+) -> None:
+    """Emit output to configured sinks synchronously; failures are non-fatal."""
+    _dispatch_outputs(message_type, payload, markdown, git_provider)
 
 
 async def push_outputs_async(
@@ -109,14 +220,35 @@ async def push_outputs_async(
 ) -> None:
     """Emit a command's output to external sinks without blocking the event loop.
 
-    The sinks do blocking HTTP and file I/O, so the delivery runs in a worker thread.
-    Awaiting it keeps the event loop free for other work and still delivers the output
-    before the command returns.
+    Built-in HTTP sinks run in parallel, so a slow destination does not delay healthy
+    destinations. Await all deliveries before returning, including on AWS Lambda.
     """
-    await asyncio.to_thread(
-        push_outputs, message_type, payload=payload, markdown=markdown,
-        git_provider=git_provider,
+    started = Event()
+    futures = []
+    loop = asyncio.get_running_loop()
+    # Submit directly to the default executor: unlike a shielded to_thread Task,
+    # its queued Future is not cancelled by asyncio.run() task teardown.
+    submission = loop.run_in_executor(
+        None, copy_context().run, _submit_outputs,
+        message_type, payload, markdown, git_provider, started, futures,
     )
+    try:
+        await asyncio.shield(submission)
+        results = await asyncio.gather(
+            *(asyncio.shield(asyncio.wrap_future(future)) for _, future in futures),
+            return_exceptions=True,
+        )
+        for (channel, _), result in zip(futures, results, strict=True):
+            if isinstance(result, BaseException):
+                get_logger().warning(f"push_outputs: {channel} failed: {type(result).__name__}")
+    except asyncio.CancelledError:
+        # Only cancelled commands need a default-executor waiter: asyncio.run()
+        # drains those workers before shutdown, even when submission is unfinished.
+        try:
+            loop.run_in_executor(None, _drain_cancelled_outputs, started, futures)
+        except RuntimeError:
+            get_logger().warning("push_outputs: cancellation drain unavailable")
+        raise
 
 
 def _render_setting_value(value) -> str:
@@ -247,20 +379,30 @@ def show_fallback_note() -> str:
     return f"\n\n> {note}\n"
 
 
-def append_run_details(body: str, git_provider) -> str:
+def append_run_details(body: str, git_provider, include_footer: bool = True) -> str:
     """Append the fallback note and the opt-in run-details section to a comment body.
 
     The fallback note is added whenever a fallback model produced the output. The
     run-details section is skipped when ``config.output_run_details`` is off, or when the
     current run recorded no model (so a message that needed no AI call stays clean).
-    A provider without capability checks gets the plain-text section.
+    A provider without capability checks gets the plain-text section. The host's
+    ``config.custom_comment_footer`` text, when set, comes last unless ``include_footer`` is
+    False (for a caller that appends it itself).
     """
     body += show_fallback_note()
-    if not get_settings().get("config.output_run_details", False):
-        return body
-    is_supported = getattr(git_provider, "is_supported", None)
-    gfm_supported = bool(callable(is_supported) and is_supported("gfm_markdown"))
-    return body + show_run_details(gfm_supported)
+    if get_settings().get("config.output_run_details", False):
+        is_supported = getattr(git_provider, "is_supported", None)
+        gfm_supported = bool(callable(is_supported) and is_supported("gfm_markdown"))
+        body += show_run_details(gfm_supported)
+    return (body + show_custom_comment_footer()) if include_footer else body
+
+
+def show_custom_comment_footer() -> str:
+    """Render the operator's ``config.custom_comment_footer`` text, or "" when it is unset or blank."""
+    footer = get_settings().get("config.custom_comment_footer", "")
+    if not isinstance(footer, str) or not footer.strip():
+        return ""
+    return f"\n\n___\n\n{footer.strip()}\n"
 
 
 def get_version() -> str:

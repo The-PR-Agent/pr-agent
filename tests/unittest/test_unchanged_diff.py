@@ -300,6 +300,31 @@ def test_a_file_without_a_patch_keeps_the_commit_check(enabled):
     assert UnchangedDiffGuard("review", provider).should_skip() is True
 
 
+def test_a_failed_skip_check_invalidates_stale_record_and_keeps_sibling_notice(enabled, monkeypatch):
+    provider = FakeProvider()
+    _reviewed(provider, "review")
+    _reviewed(provider, "describe")
+    assert UnchangedDiffGuard("describe", provider).should_skip() is True
+    assert "unchanged-diff-skipped:describe" in provider.record_body()
+
+    provider.head = NEW_HEAD
+    provider.get_diff_files = lambda: (_ for _ in ()).throw(RuntimeError("transient diff failure"))
+    guard = UnchangedDiffGuard("review", provider)
+    assert guard.should_skip() is False
+
+    guard.record(replaced_output=False)
+    records, _ = parse_unchanged_diff_comment(provider.record_body())
+    assert set(records) == {"review", "describe"}
+
+    guard.record(replaced_output=True)
+    records, _ = parse_unchanged_diff_comment(provider.record_body())
+    assert set(records) == {"describe"}
+    assert "unchanged-diff-skipped:describe" in provider.record_body()
+
+    monkeypatch.setitem(enabled, "skip_unchanged_diff", "not-a-bool")
+    guard.invalidate()
+
+
 def test_an_unknown_target_branch_disables_the_commit_check(enabled):
     provider = FakeProvider(target="")
     _reviewed(provider)

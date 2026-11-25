@@ -14,7 +14,6 @@ from unittest.mock import MagicMock
 import pytest
 from github import GithubException, RateLimitExceededException
 
-from pr_agent.commands.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.github_provider import GithubProvider
@@ -232,20 +231,6 @@ async def test_describe_swallows_a_provider_error(publishing):
     command.pr_id = "org/repo/1"
 
     await command.run()
-
-
-async def test_improve_reports_a_provider_error_to_the_pr(publishing):
-    provider = MagicMock()
-    provider.supports_code_suggestion_state = lambda: False
-    provider.get_files.side_effect = RATE_LIMITED
-    command = PRCodeSuggestions.__new__(PRCodeSuggestions)
-    command.git_provider = provider
-    command.pr_url = "https://github.com/org/repo/pull/1"
-    command.progress_response = None
-
-    await command.run()
-
-    provider.publish_command_failure.assert_called_once_with("improve", "Failed to generate code suggestions for PR")
 
 
 async def test_one_unreadable_ticket_link_keeps_the_others(monkeypatch):

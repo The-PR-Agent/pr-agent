@@ -40,7 +40,7 @@ System/user prompt strings live as TOML files under `pr_agent/settings/` and are
 
 - `pr_reviewer.py` ↔ `pr_reviewer_prompts.toml`
 - `pr_description.py` ↔ `pr_description_prompts.toml`
-- `pr_code_suggestions.py` ↔ `code_suggestions/pr_code_suggestions_prompts.toml` (plus its related variants)
+- `pr_questions.py` ↔ `pr_questions_prompts.toml`
 
 New prompt files must also be registered in the `settings_files=[...]` list in `pr_agent/config_loader.py` or they will not be loaded into `global_settings`.
 
@@ -111,7 +111,7 @@ Ruff is the single linting tool: `pyproject.toml` configures it and the pre-comm
 - Follow `CONTRIBUTING.md`: keep changes focused, add or update tests, and use Conventional Commit-style messages (e.g., `fix: handle missing repo settings gracefully`).
 - Target branch names follow `feature/<name>` or `fix/<issue>` patterns for substantial work.
 - Reference related issues and update README or docs when user-facing behavior shifts.
-- Before requesting review, run the relevant local checks above and make sure the corresponding CI workflows (`build-and-test`, `pre-commit`) pass; coverage is collected and uploaded by `build-and-test`, and `docs-ci` builds the documentation on every pull request that touches `docs/**` (publishing only on pushes to `main` and `add-docs-portal`). That build fails on broken links and anchors, and also runs `scripts/check_docs_urls.py` to confirm the documentation URLs hardcoded in `pr_agent/` and the README still resolve.
+- Before requesting review, run the relevant local checks above and make sure the corresponding CI workflows (`build-and-test`, `pre-commit`) pass; coverage is collected and uploaded by `build-and-test` except on docs-page-only PRs, which run packaging and documentation checks instead; `docs-ci` builds the documentation on every pull request that touches `docs/**` (publishing only on pushes to `main` and `add-docs-portal`). That build fails on broken links and anchors, and also runs `scripts/check_docs_urls.py` to confirm the documentation URLs hardcoded in `pr_agent/` and the README still resolve.
 - Include screenshots or terminal captures when modifying user-visible output or documentation previews.
 
 ## Safety and Permissions

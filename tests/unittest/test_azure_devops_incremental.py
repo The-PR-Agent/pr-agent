@@ -6,6 +6,7 @@ import pytest
 from azure.devops.released.git import GitCommitRef, GitUserDate
 
 from pr_agent.algo.comment_identity import PRReviewIdentity
+from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.azuredevops_provider import _AzureCommitAdapter, _to_naive_utc
 from pr_agent.git_providers.git_provider import IncrementalPR
@@ -201,12 +202,6 @@ class TestGetIncrementalCommits:
 
         assert provider.get_previous_review(full=True, incremental=False) is agent
 
-    def test_supports_review_and_suggestions_kinds(self):
-        provider = self._make_provider()
-
-        assert provider.supports_incremental_kind("review") is True
-        assert provider.supports_incremental_kind("suggestions") is True
-        assert provider.supports_incremental_kind("unknown") is False
 
     @pytest.mark.parametrize("suggestions_header", [
         "## PR Code Suggestions ✨",
@@ -611,6 +606,158 @@ class TestIncrementalDiffHead:
             "last_merge_source_commit" in str(call)
             for call in logger.return_value.warning.call_args_list
         )
+
+    def test_incremental_added_file_edited_after_baseline_diffs_against_baseline(self):
+        provider = self._provider(source_head="commit-2")
+        provider._get_pr_iteration_changes = MagicMock(return_value=[
+            {"item": {"path": self.PATH, "gitObjectType": "blob"}, "changeType": "add"},
+        ])
+        self._activate_incremental(provider)
+
+        def get_item(**kwargs):
+            ver = kwargs["version_descriptor"].version
+            if ver == "commit-2":
+                return SimpleNamespace(content="line1\nline2\nline3_edited\n")
+            if ver == "last-seen-source":
+                return SimpleNamespace(content="line1\nline2\nline3\n")
+            raise AssertionError(f"Unexpected version: {ver}")
+
+        provider.azure_devops_client.get_item = MagicMock(side_effect=get_item)
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.edit_type == EDIT_TYPE.MODIFIED
+        assert diff_file.base_file == "line1\nline2\nline3\n"
+        assert diff_file.head_file == "line1\nline2\nline3_edited\n"
+        assert diff_file.content_fetch_failed is False
+        assert "-line3" in diff_file.patch
+        assert "+line3_edited" in diff_file.patch
+        assert "+line1" not in diff_file.patch
+        assert provider.unreviewed_files_map[self.PATH] == diff_file.patch
+
+    def test_incremental_newly_added_file_missing_at_baseline_stays_added(self):
+        provider = self._provider(source_head="commit-2")
+        provider._get_pr_iteration_changes = MagicMock(return_value=[
+            {"item": {"path": self.PATH, "gitObjectType": "blob"}, "changeType": "add"},
+        ])
+        self._activate_incremental(provider)
+
+        not_found = RuntimeError("Item not found")
+        not_found.type_key = "GitItemNotFoundException"
+
+        def get_item(**kwargs):
+            ver = kwargs["version_descriptor"].version
+            if ver == "commit-2":
+                return SimpleNamespace(content="brand_new\n")
+            if ver == "last-seen-source":
+                raise not_found
+            raise AssertionError(f"Unexpected version: {ver}")
+
+        provider.azure_devops_client.get_item = MagicMock(side_effect=get_item)
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.edit_type == EDIT_TYPE.ADDED
+        assert diff_file.base_file == ""
+        assert diff_file.content_fetch_failed is False
+        assert "+brand_new" in diff_file.patch
+
+    def test_incremental_added_file_non_404_baseline_error_fails_closed(self):
+        provider = self._provider(source_head="commit-2")
+        provider._get_pr_iteration_changes = MagicMock(return_value=[
+            {"item": {"path": self.PATH, "gitObjectType": "blob"}, "changeType": "add"},
+        ])
+        self._activate_incremental(provider)
+
+        server_error = RuntimeError("Service unavailable")
+        server_error.status_code = 500
+
+        def get_item(**kwargs):
+            ver = kwargs["version_descriptor"].version
+            if ver == "commit-2":
+                return SimpleNamespace(content="brand_new\n")
+            if ver == "last-seen-source":
+                raise server_error
+            raise AssertionError(f"Unexpected version: {ver}")
+
+        provider.azure_devops_client.get_item = MagicMock(side_effect=get_item)
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.content_fetch_failed is True
+        assert diff_file.patch == ""
+
+    @pytest.mark.parametrize("path", ["/errors/http-404.html", "/errors/status404.html"])
+    def test_incremental_added_file_error_mentioning_404_in_path_fails_closed(self, path):
+        provider = self._provider(source_head="commit-2")
+        provider._get_pr_iteration_changes = MagicMock(return_value=[
+            {"item": {"path": path, "gitObjectType": "blob"}, "changeType": "add"},
+        ])
+        provider.diff_files = None
+        provider.incremental = IncrementalPR(True)
+        provider.incremental.last_seen_commit = SimpleNamespace(sha="last-seen-source")
+        provider.unreviewed_files_map = {path: "stale patch"}
+
+        def get_item(**kwargs):
+            ver = kwargs["version_descriptor"].version
+            if ver == "commit-2":
+                return SimpleNamespace(content="<h1>404</h1>\n")
+            if ver == "last-seen-source":
+                raise RuntimeError(f"Access denied reading {path}")
+            raise AssertionError(f"Unexpected version: {ver}")
+
+        provider.azure_devops_client.get_item = MagicMock(side_effect=get_item)
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.content_fetch_failed is True
+        assert diff_file.patch == ""
+
+    @pytest.mark.parametrize("message", [
+        "Operation returned a 404 status code.",
+        "404: Not Found",
+        "(404) Not Found",
+        "status_code=404",
+        "statusCode: 404",
+        "HTTP/1.1 404",
+    ])
+    def test_incremental_added_file_explicit_404_messages_stay_added(self, message):
+        provider = self._provider(source_head="commit-2")
+        provider._get_pr_iteration_changes = MagicMock(return_value=[
+            {"item": {"path": self.PATH, "gitObjectType": "blob"}, "changeType": "add"},
+        ])
+        self._activate_incremental(provider)
+
+        def get_item(**kwargs):
+            ver = kwargs["version_descriptor"].version
+            if ver == "commit-2":
+                return SimpleNamespace(content="brand_new\n")
+            if ver == "last-seen-source":
+                raise RuntimeError(message)
+            raise AssertionError(f"Unexpected version: {ver}")
+
+        provider.azure_devops_client.get_item = MagicMock(side_effect=get_item)
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.edit_type == EDIT_TYPE.ADDED
+        assert diff_file.content_fetch_failed is False
+        assert "+brand_new" in diff_file.patch
+
+    def test_full_review_added_file_skips_base_read(self):
+        provider = self._provider(source_head="commit-2")
+        provider._get_pr_iteration_changes = MagicMock(return_value=[
+            {"item": {"path": self.PATH, "gitObjectType": "blob"}, "changeType": "add"},
+        ])
+        provider.diff_files = None
+        provider.incremental = IncrementalPR(False)
+        provider.unreviewed_files_map = {}
+        requested = self._record_versions(provider)
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert requested == ["merge-commit"]
+        assert diff_file.edit_type == EDIT_TYPE.ADDED
 
 
 class TestPrReviewerGuard:
