@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from atlassian.bitbucket import Bitbucket
 from requests.exceptions import ReadTimeout, RequestException
 from starlette_context import request_cycle_context
 
@@ -30,6 +31,7 @@ from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.commands.pr_reviewer import PRReviewer, _code_lines, _review_failure_comment
 from pr_agent.config_loader import get_settings, safe_request_cycle_context
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
 from pr_agent.git_providers.git_provider import (
     GitProvider,
     IncompleteBitbucketPullRequestFilesError,
@@ -2968,6 +2970,41 @@ async def test_nonpersistent_review_adds_identity_for_incremental_capable_provid
     ]
     assert len(published_review) == 1
     assert expected_identity in published_review[0].args[0]
+
+
+@pytest.mark.parametrize("persistent", [True, False], ids=["persistent", "nonpersistent"])
+async def test_bitbucket_server_publishes_review_with_markdown_identity(monkeypatch, persistent):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    client = MagicMock(spec=Bitbucket)
+    client.url = "https://git.example.com"
+    client.get.return_value = {"version": "10.2.8"}
+    client.get_pull_request.return_value = {"fromRef": {"latestCommit": "head"}}
+    client.get_pull_requests_changes.return_value = [{"path": {"toString": "example.py"}, "type": "ADD"}]
+    client.get_content_of_file.return_value = "value = 1\n"
+    client.get_pull_requests_activities.return_value = []
+    provider = BitbucketServerProvider(
+        f"{client.url}/projects/PROJ/repos/repo/pull-requests/1", bitbucket_client=client,
+    )
+    reviewer = _make_prediction_reviewer(provider)
+    reviewer.vars = {}
+    header = "## PR Reviewer Guide 🔍"
+    reviewer._prepare_pr_review = lambda: f"{header}\n\nSome findings"
+
+    async def fake_retry(*args, **kwargs):
+        reviewer.prediction = _VALID_PREDICTION
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", fake_retry)
+    settings = get_settings()
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.config, "propagate_command_errors", True)
+    monkeypatch.setitem(settings.pr_reviewer, "persistent_comment", persistent)
+
+    await reviewer.run()
+
+    marker = "[pr-agent:review:full]: https://github.com/The-PR-Agent/pr-agent"
+    client.add_pull_request_comment.assert_called_once_with("PROJ", "repo", 1, f"{header}\n\n{marker}\n\nSome findings")
 
 
 async def _render_review_capturing_push(reviewer, publish_output):

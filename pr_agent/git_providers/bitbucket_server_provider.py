@@ -399,6 +399,9 @@ class BitbucketServerProvider(GitProvider):
             )
         return None
 
+    def supports_html_comment_markers(self) -> bool:
+        return False
+
     def supports_review_comment_identity(self) -> bool:
         return True
 
