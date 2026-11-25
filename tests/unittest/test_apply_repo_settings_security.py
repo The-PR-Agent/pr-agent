@@ -13,17 +13,27 @@ These tests verify:
 """
 
 import copy
+import json
 import os
 import tempfile
+import tomllib
 from contextlib import suppress
+from pathlib import Path
 
 import pytest
 
 from pr_agent.algo.cli_args import CliArgs
 from pr_agent.config_loader import get_settings
-from pr_agent.config_security import is_repo_host_only_key
+from pr_agent.config_security import (
+    PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION,
+    REPO_HOST_ONLY_KEYS_BY_SECTION,
+    canonical_setting_name,
+    is_repo_host_only_key,
+    should_skip_config_key,
+)
 from pr_agent.git_providers import utils as git_utils
 from pr_agent.git_providers.utils import apply_repo_settings
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
 class FakeGitProvider:
@@ -136,6 +146,40 @@ def _install_provider(monkeypatch, provider):
     monkeypatch.setattr(git_utils, "get_git_provider_with_context", fake_get_git_provider_with_context)
     monkeypatch.setattr(git_utils, "handle_configurations_errors", fake_handle_configurations_errors)
     return captured
+
+
+_UNICODE_LOOKALIKES = (
+    ("ffi", "ﬃ"),
+    ("ffl", "ﬄ"),
+    ("ff", "ﬀ"),
+    ("fi", "ﬁ"),
+    ("fl", "ﬂ"),
+    ("ss", "ß"),
+    ("st", "ﬅ"),
+    ("s", "ſ"),
+    ("i", "ı"),
+)
+
+
+def _unicode_spelling(name: str) -> str:
+    for ascii_text, lookalike in _UNICODE_LOOKALIKES:
+        if ascii_text in name:
+            return name.replace(ascii_text, lookalike, 1)
+    return name
+
+
+def _unicode_host_only_settings(host_only_map):
+    seen = set()
+    for section, keys in host_only_map.items():
+        for key in keys:
+            spelling = (_unicode_spelling(section), _unicode_spelling(key))
+            if spelling not in seen:
+                seen.add(spelling)
+                yield section, key, *spelling
+
+
+UNICODE_REPO_HOST_ONLY_SETTINGS = list(_unicode_host_only_settings(REPO_HOST_ONLY_KEYS_BY_SECTION))
+UNICODE_PER_DIRECTORY_HOST_ONLY_SETTINGS = list(_unicode_host_only_settings(PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION))
 
 
 def test_disabled_repo_settings_skips_provider_fetch(monkeypatch, settings_snapshot):
@@ -609,6 +653,45 @@ def test_provider_connection_keys_are_host_only_for_repo_and_cli(section, key):
     assert CliArgs.validate_user_args([f"--{section}.{key}=untrusted"])[0] is False
 
 
+def _assert_unicode_host_only_key_is_dropped(tmp_path, setting_name, spelled_section, spelled_key, scope):
+    settings = get_settings()
+    snapshot = snapshot_settings([setting_name])
+    try:
+        settings.set(setting_name, "host-controlled")
+        settings_file = tmp_path / "settings.toml"
+        settings_file.write_text(
+            f"[{json.dumps(spelled_section, ensure_ascii=False)}]\n"
+            f"{json.dumps(spelled_key, ensure_ascii=False)} = 'repo-controlled'\n",
+            encoding="utf-8",
+        )
+        git_utils._apply_repo_settings_file(str(settings_file), repo_settings_scope=scope)
+        assert settings.get(setting_name) == "host-controlled"
+    finally:
+        restore_settings(snapshot)
+        vars(settings).pop("_per_directory_original_values", None)
+
+
+@pytest.mark.parametrize(("section", "key", "spelled_section", "spelled_key"), UNICODE_REPO_HOST_ONLY_SETTINGS)
+def test_repo_settings_cannot_override_unicode_spelling_of_host_only_key(
+    tmp_path, section, key, spelled_section, spelled_key
+):
+    _assert_unicode_host_only_key_is_dropped(tmp_path, f"{section}.{key}", spelled_section, spelled_key, "repo")
+
+
+@pytest.mark.parametrize(("section", "key", "spelled_section", "spelled_key"), UNICODE_PER_DIRECTORY_HOST_ONLY_SETTINGS)
+def test_per_directory_settings_cannot_override_unicode_spelling_of_host_only_key(
+    tmp_path, section, key, spelled_section, spelled_key
+):
+    _assert_unicode_host_only_key_is_dropped(
+        tmp_path, f"{section}.{key}", spelled_section, spelled_key, "per_directory"
+    )
+
+
+@pytest.mark.parametrize("name", ["secret", "ſecret", "prıvate_token", "api_key"])
+def test_should_skip_config_key_uses_dynaconf_spelling(name):
+    assert should_skip_config_key("config", name) is True
+
+
 @pytest.mark.parametrize("repo_settings_bytes", [
     b"[gerrit]\ncommand_timeout_seconds = 999\n",
     b"[gerrit.command_timeout_seconds]\nx = 999\n",
@@ -931,3 +1014,19 @@ def test_repo_settings_cannot_override_group_settings_opt_in(monkeypatch, settin
     assert captured["errors"] is None
     assert settings.config.use_group_settings_file is host_enabled
     assert settings.pr_reviewer.num_max_findings == 11
+
+
+def test_canonical_setting_name_matches_lower_for_shipped_settings():
+    settings_dir = Path(__file__).resolve().parents[2] / "pr_agent" / "settings"
+
+    def check_names(value):
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                assert canonical_setting_name(key) == str(key).lower()
+                check_names(nested)
+        elif isinstance(value, list):
+            for item in value:
+                check_names(item)
+
+    for path in settings_dir.glob("*.toml"):
+        check_names(tomllib.loads(path.read_text(encoding="utf-8")))

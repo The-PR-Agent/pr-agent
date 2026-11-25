@@ -21,6 +21,7 @@ from pr_agent.config_security import (
     PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION,
     REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION,
     REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS,
+    canonical_setting_name,
     is_repo_host_only_key,
 )
 from pr_agent.custom_merge_loader import MAX_TOML_SIZE_IN_BYTES, validate_file_security
@@ -480,7 +481,7 @@ def _restore_per_directory_settings():
         contents = copy.deepcopy(settings.as_dict().get(section, {}))
         for key, (present, value) in original_values.items():
             for current_key in list(contents):
-                if current_key.lower() == key:
+                if canonical_setting_name(current_key) == key:
                     del contents[current_key]
             if present:
                 contents[key] = value
@@ -537,6 +538,8 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
         if not isinstance(contents, dict) or not contents:
             get_logger().debug(f"Skipping non-table or empty section: {section}")
             continue
+        section = canonical_setting_name(section)
+        section_name = section
         if "__" in section or "." in section:
             get_logger().warning(f"Ignoring section [{section}] from repo settings: '__' and '.' are not allowed here")
             continue
@@ -547,25 +550,27 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
             if not contents:
                 continue
         if repo_settings_scope == "per_directory":
-            if section.lower() not in REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS:
+            if section_name not in REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS:
                 get_logger().warning(
                     f"Ignoring section [{section}] from per-directory settings: only "
                     f"{sorted(REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS)} may be set per directory"
                 )
                 continue
-            per_dir_allowed_keys = REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS[section.lower()]
+            per_dir_allowed_keys = REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS[section_name]
             if isinstance(per_dir_allowed_keys, frozenset):
-                rejected = [k for k in contents if k.lower() not in per_dir_allowed_keys]
+                rejected = [k for k in contents if canonical_setting_name(k) not in per_dir_allowed_keys]
                 if rejected:
                     get_logger().warning(
                         f"Ignoring non-overridable key(s) {rejected} in section [{section}] from "
                         f"per-directory settings; only {sorted(per_dir_allowed_keys)} may be set here"
                     )
-                contents = {k: v for k, v in contents.items() if k.lower() in per_dir_allowed_keys}
+                contents = {
+                    k: v for k, v in contents.items() if canonical_setting_name(k) in per_dir_allowed_keys
+                }
                 if not contents:
                     continue
-            if section.lower() == "pr_description":
-                normalized_contents = {key.lower(): value for key, value in contents.items()}
+            if section_name == "pr_description":
+                normalized_contents = {canonical_setting_name(key): value for key, value in contents.items()}
                 threshold = normalized_contents.get("collapsible_file_list_threshold")
                 if (
                     "collapsible_file_list_threshold" in normalized_contents
@@ -581,21 +586,23 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
                     )
                     contents = {
                         key: value for key, value in contents.items()
-                        if key.lower() != "collapsible_file_list_threshold"
+                        if canonical_setting_name(key) != "collapsible_file_list_threshold"
                     }
                     if not contents:
                         continue
-            per_dir_host_only_keys = PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION.get(section.lower(), frozenset())
-            rejected = [k for k in contents if k.lower() in per_dir_host_only_keys]
+            per_dir_host_only_keys = PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION.get(section_name, frozenset())
+            rejected = [k for k in contents if canonical_setting_name(k) in per_dir_host_only_keys]
             if rejected:
                 get_logger().warning(
                     f"Ignoring host-only key(s) {rejected} in section [{section}] from per-directory settings"
                 )
-            contents = {k: v for k, v in contents.items() if k.lower() not in per_dir_host_only_keys}
+            contents = {
+                k: v for k, v in contents.items() if canonical_setting_name(k) not in per_dir_host_only_keys
+            }
             if not contents:
                 continue
-            if section.lower() == "config":
-                normalized_contents = {key.lower(): value for key, value in contents.items()}
+            if section_name == "config":
+                normalized_contents = {canonical_setting_name(key): value for key, value in contents.items()}
                 invalid_config_keys = [
                     key for key in ("model", "model_weak", "model_reasoning", "response_language")
                     if key in normalized_contents
@@ -606,7 +613,8 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
                         f"Ignoring non-string or empty setting(s) {invalid_config_keys} from per-directory settings"
                     )
                     contents = {
-                        key: value for key, value in contents.items() if key.lower() not in invalid_config_keys
+                        key: value for key, value in contents.items()
+                        if canonical_setting_name(key) not in invalid_config_keys
                     }
                 if not contents:
                     continue
@@ -624,18 +632,21 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
                         "Ignoring invalid temperature setting from per-directory settings; expected a finite number "
                         "between 0 and 2"
                     )
-                    contents = {key: value for key, value in contents.items() if key.lower() != "temperature"}
+                    contents = {
+                        key: value for key, value in contents.items()
+                        if canonical_setting_name(key) != "temperature"
+                    }
                 if not contents:
                     continue
-        allowed_keys = REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section.lower())
+        allowed_keys = REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section_name)
         if allowed_keys is not None:
-            rejected = [k for k in contents if k.lower() not in allowed_keys]
+            rejected = [k for k in contents if canonical_setting_name(k) not in allowed_keys]
             if rejected:
                 get_logger().warning(
                     f"Ignoring host-only key(s) {rejected} in section [{section}] from repo "
                     f"settings; only {sorted(allowed_keys)} may be set per-repo for this section"
                 )
-            contents = {k: v for k, v in contents.items() if k.lower() in allowed_keys}
+            contents = {k: v for k, v in contents.items() if canonical_setting_name(k) in allowed_keys}
             if not contents:
                 continue
         else:
@@ -651,10 +662,11 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
         if repo_settings_scope == "per_directory":
             previous = vars(get_settings()).setdefault("_per_directory_original_values", {})
             original_values = previous.setdefault(section.upper(), {})
-            normalized = {key.lower(): value for key, value in section_dict.items()}
+            normalized = {canonical_setting_name(key): value for key, value in section_dict.items()}
             for key in contents:
+                key_name = canonical_setting_name(key)
                 original_values.setdefault(
-                    key.lower(), (key.lower() in normalized, copy.deepcopy(normalized.get(key.lower()))))
+                    key_name, (key_name in normalized, copy.deepcopy(normalized.get(key_name))))
         _merge_section_keys(section_dict, contents)
         get_settings().unset(section)
         get_settings().set(section, section_dict, merge=False)
