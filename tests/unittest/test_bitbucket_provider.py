@@ -2107,7 +2107,7 @@ class TestBitbucketServerProvider:
             legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
         )
         first_body = provider.bitbucket_client.add_pull_request_comment.call_args.args[3]
-        html_marker, markdown_marker = hidden_marker_forms(PRReviewIdentity.REGULAR.value)
+        html_marker, *_, markdown_marker = hidden_marker_forms(PRReviewIdentity.REGULAR.value)
         assert first_body == f"{header}\n\n{markdown_marker}\n\nfirst review"
         provider.bitbucket_client.get_pull_requests_activities.return_value = [
             self._comment_activity(first_body),
@@ -2154,7 +2154,7 @@ class TestBitbucketServerProvider:
         project, repo, pr_id, comment_id, updated_body, version = (
             provider.bitbucket_client.update_pull_request_comment.call_args.args
         )
-        html_marker, markdown_marker = hidden_marker_forms(PRReviewIdentity.REGULAR.value)
+        html_marker, *_, markdown_marker = hidden_marker_forms(PRReviewIdentity.REGULAR.value)
         assert (project, repo, pr_id, comment_id, version) == ("AAA", "my-repo", 1, 7, 3)
         assert updated_body.startswith(f"## Team Review 🔍\n\n{markdown_marker}\n\n")
         assert html_marker not in updated_body
