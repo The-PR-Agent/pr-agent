@@ -87,6 +87,7 @@ SNAPSHOT_SECTIONS = (
     "GERRIT",
     "JIRA",
     "LINEAR",
+    "PLAIN_DIFF",
     "LANGUAGE_EXTENSION_MAP_ORG",
 )
 
@@ -285,6 +286,22 @@ def test_repo_settings_cannot_override_host_only_pacing_and_call_limits(
 
     assert captured["errors"] is None
     assert settings.get(f"{section}.{key}") == host_value
+
+
+@pytest.mark.parametrize("key", ["content", "output_path", "json_output_path"])
+def test_repo_settings_cannot_set_plain_diff_host_keys(monkeypatch, settings_snapshot, key):
+    """Any plain_diff.content selects the plain-diff provider, which writes to the two output paths on the host."""
+    repo_settings = f'[plain_diff]\n{key} = "repo value"\ntitle = "Repo title"\n'
+    provider = FakeGitProvider(repo_settings_bytes=repo_settings.encode())
+    captured = _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    assert settings.get(f"plain_diff.{key}") is None
+    assert settings.get("plain_diff.title") == "Repo title"
 
 
 def test_repo_settings_can_override_ai_timeout(monkeypatch, settings_snapshot):

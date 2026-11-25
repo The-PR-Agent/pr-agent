@@ -76,6 +76,9 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "ollama": frozenset({"api_base"}),
     "openai": frozenset({"api_base", "api_type", "api_version"}),
     "openrouter": frozenset({"api_base"}),
+    # The CLI sets these for --diff-file and --stdin. Any plain_diff.content switches the command to the
+    # plain-diff provider, which writes its output to output_path and json_output_path on the host.
+    "plain_diff": frozenset({"content", "json_output_path", "output_path"}),
     # structural_reach_input_file is read from the host and echoed into the review, and outside
     # GITHUB_WORKSPACE nothing bounds the path. extra_risky_shapes contains custom regex patterns
     # compiled and run against diff hunks, so repository settings must not specify untrusted patterns.
@@ -217,6 +220,8 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "ignore": frozenset({"regex"}),
     "litellm": frozenset({"add_session_id_to_requests", "turn_off_message_logging"}),
     "openrouter": frozenset({"reasoning_effort", "reasoning_max_tokens"}),
+    # Host-only in repository settings too (see REPO_HOST_ONLY_KEYS_BY_SECTION); the CLI sets them directly.
+    "plain_diff": frozenset({"content", "json_output_path", "output_path"}),
     "pr_description": frozenset({"max_ai_calls"}),
     # PR comments must not enable ticket reads performed with the operator's credentials.
     "pr_questions": frozenset({"resolve_threads", "use_ticket_context"}),
