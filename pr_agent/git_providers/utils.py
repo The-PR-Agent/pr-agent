@@ -524,7 +524,8 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
         if not isinstance(contents, dict) or not contents:
             get_logger().debug(f"Skipping non-table or empty section: {section}")
             continue
-        section_name = canonical_setting_name(section)
+        section = canonical_setting_name(section)
+        section_name = section
         if "__" in section or "." in section:
             get_logger().warning(f"Ignoring section [{section}] from repo settings: '__' and '.' are not allowed here")
             continue
