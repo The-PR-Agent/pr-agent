@@ -206,7 +206,7 @@ def _restore_authenticated_provider_settings():
             get_settings().set(key, value)
 
 
-def _reapply_env_overrides():
+def _reapply_env_overrides(*, raise_on_error: bool = False):
     """
     Re-run dynaconf's env_loader against the global settings so env-sourced
     values win over any keys just merged from a config file.
@@ -220,9 +220,10 @@ def _reapply_env_overrides():
     try:
         env_loader.load(get_settings())
     except Exception as e:
-        # Never let a precedence-restoration error block apply_repo_settings;
-        # log and continue with whatever state the merge left.
+        # Preserve best-effort repository settings, but fail closed on frozen Host settings.
         get_logger().warning(f"Failed to re-apply env-var overrides: {e}")
+        if raise_on_error:
+            raise
     finally:
         _restore_authenticated_provider_settings()
 
@@ -314,12 +315,19 @@ def _apply_settings_from_file(path: str, label: str):
 
 def _apply_settings_from_bytes(data: bytes, label: str):
     """Replay a trusted, frozen host TOML snapshot without needing a writable temp directory."""
+    previous_settings = None
     try:
         parsed = tomllib.loads(data.decode("utf-8"))
         validate_file_security(parsed, "host configuration")
+        for section, contents in parsed.items():
+            if not isinstance(contents, dict):
+                raise ValueError(f"Host settings section '{section}' must be a table")
+        # Keep a request-local rollback point before merging any Host sections.
+        if context.exists() and context.get("settings") is not None:
+            previous_settings = copy.deepcopy(get_settings())
         merged_sections = []
         for section, contents in parsed.items():
-            if not isinstance(contents, dict) or not contents:
+            if not contents:
                 continue
             section_name = section.upper()
             section_dict = copy.deepcopy(get_settings().as_dict().get(section_name, {}))
@@ -327,11 +335,17 @@ def _apply_settings_from_bytes(data: bytes, label: str):
             get_settings().unset(section_name)
             get_settings().set(section_name, section_dict, merge=False)
             merged_sections.append(section_name)
-        _reapply_env_overrides()
+        _reapply_env_overrides(raise_on_error=True)
         get_logger().info(f"Applied {label} settings (sections merged: {sorted(merged_sections)})")
         return parsed
     except Exception as e:
+        if previous_settings is not None:
+            context["settings"] = previous_settings
         get_logger().warning(f"Failed to apply {label} settings from frozen host configuration: {e}")
+        if context.exists():
+            source = context.get("automatic_host_settings_source")
+            if source:
+                context.setdefault("extra_config_payloads", {})[source] = None
 
 
 def _extra_config_disables_message_logging(contents: dict | None) -> bool:

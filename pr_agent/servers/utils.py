@@ -62,7 +62,11 @@ def pin_host_settings_source_for_webhook() -> bool:
     if context.get("automatic_host_settings_source"):
         return True
     source = get_settings().get("CONFIG.EXTRA_CONFIG_URL")
-    if not isinstance(source, str) or not source.strip():
+    if not isinstance(source, str):
+        if source is not None and source is not False:
+            context["invalid_host_settings_source"] = True
+        return False
+    if not source.strip():
         return False
 
     # Some webhook entry points create a request context without preloading
@@ -105,6 +109,8 @@ def host_settings_unavailable() -> bool:
     """
     if not context.exists():
         return False
+    if context.get("invalid_host_settings_source"):
+        return True
     source = context.get("automatic_host_settings_source")
     payloads = context.get("extra_config_payloads") or {}
     return bool(source) and source in payloads and payloads[source] is None
