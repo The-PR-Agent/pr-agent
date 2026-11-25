@@ -28,7 +28,7 @@ from pr_agent.algo.comment_identity import (
     parse_commit_review_records,
     render_hidden_marker,
 )
-from pr_agent.algo.deterministic_risk import build_risk_checks
+from pr_agent.algo.deterministic_risk import build_risk_checks, normalize_file_path
 from pr_agent.algo.findings import Finding
 from pr_agent.algo.git_patch_processing import split_diff_lines
 from pr_agent.algo.i18n import t
@@ -229,6 +229,23 @@ _STATE_BLOCK_INVALID_MARKER = "invalid_marker"
 _STATE_BLOCK_READ_ERROR = "read_error"
 _STATE_BLOCK_REVIEW_DATA = "review_data"
 _STATE_BLOCK_SIZE = "state_size"
+
+
+def _changed_file_paths(file) -> set[str]:
+    """Return the normalized paths a changed-file entry names: GitHub-style objects or GitLab change dicts."""
+    if isinstance(file, dict):
+        candidates = (file.get("new_path"), file.get("old_path"), file.get("filename"))
+    else:
+        candidates = (getattr(file, "filename", None), getattr(file, "old_filename", None),
+                      getattr(file, "previous_filename", None))
+    return {path for path in map(normalize_file_path, candidates) if path}
+
+
+def _count_unread_files(model_files, complete_files) -> int:
+    """Count the files of the complete PR diff that are absent from the diff the model read,
+    such as files removed by the ignore rules or the file-type filter. An entry without a path counts as unread."""
+    read_paths = set().union(*(_changed_file_paths(file) for file in model_files or []))
+    return sum(1 for file in complete_files if not _changed_file_paths(file) & read_paths)
 
 
 def _is_structural_reach_key(key) -> bool:
@@ -834,6 +851,7 @@ class PRReviewer:
         self._structured_review_data = None
         self._merge_recommendation_status = None
         self._approval_model_fields = (None, None)
+        self._approval_unread_file_count = 0
         self._review_done = self._review_degraded = self._review_labels_degraded = (
             self._review_output_touched
         ) = self._review_published = False
@@ -2044,6 +2062,8 @@ class PRReviewer:
                 get_logger().warning(f"Could not retrieve the complete PR diff for merge recommendation: {error}")
                 verdict_diff_files = None
             risk_diff_files = verdict_diff_files
+            if verdict_diff_files is not None:
+                self._approval_unread_file_count = _count_unread_files(diff_files, verdict_diff_files)
             if self._prepare_cancelled():
                 return ""
         else:
@@ -2771,7 +2791,8 @@ class PRReviewer:
             model_risk_level=model_risk_level,
             is_incremental=self.incremental.is_incremental,
             unreviewed_file_count=len(getattr(self, "remaining_files_list", []) or [])
-            + len(getattr(self, "partial_files_list", []) or []),
+            + len(getattr(self, "partial_files_list", []) or [])
+            + getattr(self, "_approval_unread_file_count", 0),
             failed_chunk_count=getattr(self, "review_failed_chunk_count", 0),
             partial_review_error=partial_review_error,
             state_blocked=getattr(self, "_review_state_blocked", False),
