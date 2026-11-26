@@ -2149,12 +2149,15 @@ def process_description(description_full: str) -> tuple[str, list]:
                         elif not long_summary.startswith('*'):
                             long_summary = f"* {long_summary}"
 
-                        files.append({
+                        file_metadata = {
                             'short_file_name': short_filename,
                             'full_file_name': long_filename,
                             'short_summary': short_summary,
                             'long_summary': long_summary
-                        })
+                        }
+                        if not escaped:
+                            file_metadata["_legacy_filename"] = True
+                        files.append(file_metadata)
                     elif '<code>...</code>' in file_data:
                         pass # PR with many files. some did not get analyzed
                     else:

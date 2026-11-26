@@ -827,6 +827,196 @@ class TestProcessPRFilesPrediction:
 # Round-trip: process_description recovers structured files from rendering
 # ---------------------------------------------------------------------------
 class TestRoundTripWithProcessDescription:
+    @pytest.mark.parametrize("variant", ["src/a.py ", " src/a.py"])
+    @pytest.mark.parametrize("reverse", [False, True])
+    @pytest.mark.parametrize("mode", ["current", "legacy", "missing"])
+    @patch("pr_agent.commands.pr_description.get_settings")
+    def test_metadata_preserves_exact_filename_identity(self, mock_get_settings, variant, reverse, mode):
+        mock_get_settings.return_value = _settings(collapsible_file_list=False)
+        obj = _make_instance()
+        names = ["src/a.py", variant]
+        if reverse:
+            names.reverse()
+        diff_files = [FilePatchInfo("", "", "", name) for name in names]
+        obj.git_provider = MagicMock()
+        obj.git_provider.is_supported.return_value = True
+        obj.git_provider.get_diff_files.return_value = diff_files
+        obj.git_provider.get_line_link.return_value = "https://example.test/file"
+        obj.git_provider.get_verdict_diff_files.return_value = [SimpleNamespace(filename=name) for name in names]
+        rows = [(name, title, "- Details") for name, title in [
+            ("src/a.py", "Plain file"), (variant, "Whitespace file")
+        ] if mode == "current" or name == variant]
+        if reverse:
+            rows.reverse()
+        table = obj.process_pr_files_prediction("", {"backend": rows})
+        if mode == "legacy":
+            table = table.replace("<!-- pr-agent:file-walkthrough-escaped -->\n", "")
+        description = (
+            f"<details><summary><h3>{PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>"
+            f"{table}</details>"
+        )
+
+        _, metadata = process_description(description)
+        add_ai_metadata_to_diff_files(obj.git_provider, metadata)
+
+        by_name = {file.filename: file.ai_file_summary for file in diff_files}
+        if mode == "legacy":
+            assert len(metadata) == 1
+            assert metadata[0]["full_file_name"] == "src/a.py"
+            assert metadata[0]["_legacy_filename"] is True
+            assert all(value is None for value in by_name.values())
+        else:
+            assert by_name[variant]["short_summary"] == "Whitespace file"
+            if mode == "current":
+                assert by_name["src/a.py"]["short_summary"] == "Plain file"
+            else:
+                assert by_name["src/a.py"] is None
+
+    @pytest.mark.parametrize("reverse", [False, True])
+    @pytest.mark.parametrize("mode", [
+        "legacy-only", "mixed", "duplicate-current", "duplicate-current-with-legacy", "duplicate-legacy", "mismatch",
+    ])
+    def test_metadata_rejects_ambiguous_or_unmatched_rows(self, reverse, mode):
+        current = {"full_file_name": "src/a.py", "long_summary": "Current"}
+        legacy = {"full_file_name": "src/a.py", "long_summary": "Legacy", "_legacy_filename": True}
+        rows, expected = {
+            "legacy-only": ([legacy], legacy),
+            "mixed": ([legacy, current], current),
+            "duplicate-current": ([current, {**current, "long_summary": "Other"}], None),
+            "duplicate-current-with-legacy": ([current, {**current, "long_summary": "Other"}, legacy], None),
+            "duplicate-legacy": ([legacy, {**legacy, "long_summary": "Other"}], None),
+            "mismatch": ([{**current, "full_file_name": "src/a.py "}], None),
+        }[mode]
+        if reverse:
+            rows.reverse()
+        actual = FilePatchInfo("", "", "", "src/a.py")
+        provider = MagicMock()
+        provider.get_diff_files.return_value = [actual]
+        provider.get_verdict_diff_files.return_value = [SimpleNamespace(filename=actual.filename)]
+
+        add_ai_metadata_to_diff_files(provider, rows)
+
+        assert actual.ai_file_summary is expected
+
+    @pytest.mark.parametrize("case", ["duplicate", "unverified", "missing", "empty"])
+    @patch("pr_agent.algo.pr_processing.get_logger")
+    def test_rejected_metadata_clears_cached_summary(self, mock_logger, case):
+        actual = FilePatchInfo("", "", "", "src/a.py")
+        provider = MagicMock()
+        provider.get_diff_files.return_value = [actual]
+        provider.get_verdict_diff_files.return_value = None
+        current = {"full_file_name": actual.filename, "long_summary": "Current"}
+        add_ai_metadata_to_diff_files(provider, [current])
+        assert actual.ai_file_summary is current
+
+        rows = {
+            "duplicate": [current, {**current, "long_summary": "Other"}],
+            "unverified": [{**current, "_legacy_filename": True}],
+            "missing": [{**current, "full_file_name": "src/b.py"}],
+            "empty": [],
+        }[case]
+
+        add_ai_metadata_to_diff_files(provider, rows)
+
+        assert actual.ai_file_summary is None
+        mock_logger.return_value.error.assert_not_called()
+        if rows:
+            mock_logger.return_value.info.assert_called_once_with(
+                "No unambiguous AI metadata matched the current diff."
+            )
+
+    @pytest.mark.parametrize("shape", ["github", "gitlab"])
+    @pytest.mark.parametrize("case", ["unique", "collision", "rename", "missing-origin"])
+    def test_legacy_metadata_checks_complete_diff_inventory(self, shape, case):
+        actual = FilePatchInfo("", "", "", "src/a.py")
+
+        def entry(path, previous=None, renamed=False):
+            if shape == "github":
+                return SimpleNamespace(filename=path, previous_filename=previous,
+                                       status="renamed" if renamed else "modified")
+            return {"new_path": path, "old_path": previous, "renamed_file": renamed}
+
+        entries = [entry(actual.filename, actual.filename)]
+        if case == "collision":
+            entries.append(entry("src/a.py ", "src/a.py "))
+        elif case == "rename":
+            entries.append(entry("src/b.py", "src/a.py ", renamed=True))
+        elif case == "missing-origin":
+            entries.append(entry("src/b.py", renamed=True))
+
+        provider = MagicMock()
+        provider.get_diff_files.return_value = [actual]
+        provider.get_verdict_diff_files.return_value = entries
+        legacy = {"full_file_name": actual.filename, "_legacy_filename": True, "long_summary": "Legacy"}
+
+        add_ai_metadata_to_diff_files(provider, [legacy])
+
+        assert actual.ai_file_summary is (legacy if case == "unique" else None)
+        provider.get_verdict_diff_files.assert_called_once_with()
+        provider.get_pr_file_paths.assert_not_called()
+
+    def test_legacy_collision_does_not_reject_unrelated_summary(self):
+        paths = ["src/a.py", "src/a.py ", "src/b.py"]
+        files = [FilePatchInfo("", "", "", path) for path in paths]
+        provider = MagicMock()
+        provider.get_diff_files.return_value = files
+        provider.get_verdict_diff_files.return_value = [SimpleNamespace(filename=path) for path in paths]
+        legacy_a, legacy_b = [
+            {"full_file_name": path, "_legacy_filename": True, "long_summary": path}
+            for path in ("src/a.py", "src/b.py")
+        ]
+
+        add_ai_metadata_to_diff_files(provider, [legacy_a, legacy_b])
+
+        assert [file.ai_file_summary for file in files] == [None, None, legacy_b]
+
+    def test_legacy_metadata_requires_exact_path_in_full_pr_listing(self):
+        actual = FilePatchInfo("", "", "", "src/a.py")
+        provider = MagicMock()
+        provider.get_diff_files.return_value = [actual]
+        provider.get_verdict_diff_files.return_value = [SimpleNamespace(filename="src/a.py ")]
+        legacy = {"full_file_name": actual.filename, "_legacy_filename": True}
+
+        add_ai_metadata_to_diff_files(provider, [legacy])
+
+        assert actual.ai_file_summary is None
+
+    @pytest.mark.parametrize("inventory", [None, ["src/a.py"], [SimpleNamespace(filename="src/a.py"), {}]])
+    def test_unverified_inventory_does_not_block_current_metadata(self, inventory):
+        legacy_file = FilePatchInfo("", "", "", "src/a.py")
+        current_file = FilePatchInfo("", "", "", "src/b.py")
+        provider = MagicMock()
+        provider.get_diff_files.return_value = [legacy_file, current_file]
+        provider.get_verdict_diff_files.return_value = inventory
+        provider.get_pr_file_paths.return_value = [legacy_file.filename, current_file.filename]
+        legacy = {"full_file_name": legacy_file.filename, "_legacy_filename": True}
+        current = {"full_file_name": current_file.filename, "long_summary": "Current"}
+
+        add_ai_metadata_to_diff_files(provider, [legacy, current])
+
+        assert legacy_file.ai_file_summary is None
+        assert current_file.ai_file_summary is current
+        provider.get_pr_file_paths.assert_not_called()
+
+    def test_unavailable_full_pr_paths_do_not_block_current_metadata(self):
+        legacy_file = FilePatchInfo("", "", "", "src/a.py")
+        current_file = FilePatchInfo("", "", "", "src/b.py")
+        provider = MagicMock()
+        provider.get_diff_files.return_value = [legacy_file, current_file]
+        provider.get_verdict_diff_files.side_effect = RuntimeError("Unavailable")
+        legacy = {"full_file_name": legacy_file.filename, "_legacy_filename": True}
+        current = {"full_file_name": current_file.filename, "long_summary": "Current"}
+
+        add_ai_metadata_to_diff_files(provider, [legacy, current])
+
+        assert legacy_file.ai_file_summary is None
+        assert current_file.ai_file_summary is current
+
+        provider.get_verdict_diff_files.reset_mock()
+        add_ai_metadata_to_diff_files(provider, [current])
+        provider.get_verdict_diff_files.assert_not_called()
+        provider.get_pr_file_paths.assert_not_called()
+
     @pytest.mark.parametrize("predicted", ["/src/app.py/", "src/APP.py"], ids=["slashes", "case"])
     @patch("pr_agent.commands.pr_description.get_settings")
     def test_normalized_diff_path_readback_attaches_ai_metadata(self, mock_get_settings, predicted):
@@ -978,6 +1168,7 @@ class TestRoundTripWithProcessDescription:
         assert files == [{
             "short_file_name": "app.py", "full_file_name": "src/app.py",
             "short_summary": "First change", "long_summary": "* Details",
+            "_legacy_filename": True,
         }]
         assert elapsed < 1.0, f"Walkthrough readback took {elapsed:.2f}s"
 
@@ -1008,6 +1199,7 @@ class TestRoundTripWithProcessDescription:
             "full_file_name": "src/a&amp;b.py",
             "short_summary": "Keep &amp; names",
             "long_summary": expected_long_summary,
+            "_legacy_filename": True,
         }]
 
     @pytest.mark.parametrize("collapsible", [False, True], ids=["flat", "collapsible"])
