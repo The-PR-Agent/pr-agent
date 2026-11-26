@@ -10,7 +10,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pr_agent.algo.pr_processing import PackedPRDiffs, PreparedPRDiff, _pack_pr_multi_diffs, retry_with_fallback_models
+from pr_agent.algo.git_patch_processing import quote_diff_filename
+from pr_agent.algo.pr_processing import (
+    PackedPRDiffs,
+    PreparedPRDiff,
+    _pack_pr_multi_diffs,
+    add_ai_summary_top_patch,
+    retry_with_fallback_models,
+)
 from pr_agent.algo.review_finding_state import ParsedReviewState, reconcile_review_findings
 from pr_agent.algo.review_json_output import hosted_markdown_artifact, hosted_markdown_export
 from pr_agent.algo.run_details import get_run_details
@@ -1110,23 +1117,26 @@ async def test_cached_chunks_are_used_when_fallback_diff_fits(chunking_enabled):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fallback_fits", [True, False])
-async def test_larger_fallback_includes_omitted_files_without_repeating_successes(chunking_enabled, fallback_fits):
+@pytest.mark.parametrize("filename", ["c.py", " c.py ", "c.py\n", r"c.py\n"])
+async def test_larger_fallback_includes_omitted_files_without_repeating_successes(
+    chunking_enabled, fallback_fits, filename,
+):
     reviewer = _make_reviewer()
     reviewer.token_handler.prompt_tokens = 0
     reviewer.token_handler.count_tokens.side_effect = len
     get_settings().set("pr_reviewer.max_number_of_calls", 2)
     chunk_a = "## File: 'a.py'\n+first change\n"
     chunk_b = "## File: 'b.py'\n+second change\n"
-    chunk_c = "## File: 'c.py'\n+previously omitted change\n"
+    chunk_c = f"## File: {quote_diff_filename(filename)}\n+previously omitted change\n"
     reviewer._get_prediction = AsyncMock(side_effect=[CHUNK_A, RuntimeError("model refused"), CHUNK_B])
 
     with (
         patch("pr_agent.commands.pr_reviewer.get_pr_diff", side_effect=[
-            (chunk_a, ["b.py", "c.py"]),
+            (chunk_a, ["b.py", filename]),
             (chunk_a + chunk_b + chunk_c, []),
         ]) as get_diff,
         patch("pr_agent.commands.pr_reviewer.get_pr_multi_diffs",
-              return_value=PackedPRDiffs([chunk_a, chunk_b], ["c.py"], [])) as get_multi,
+              return_value=PackedPRDiffs([chunk_a, chunk_b], [filename], [])) as get_multi,
         patch("pr_agent.algo.token_budget.get_max_tokens",
               return_value=10000 if fallback_fits else 1500 + len(chunk_b)),
     ):
@@ -1145,9 +1155,52 @@ async def test_larger_fallback_includes_omitted_files_without_repeating_successe
     assert chunk_a not in fallback_diff
     assert chunk_b in fallback_diff
     assert (chunk_c in fallback_diff) is fallback_fits
-    assert reviewer.remaining_files_list == ([] if fallback_fits else ["c.py"])
+    assert reviewer.remaining_files_list == ([] if fallback_fits else [filename])
     assert reviewer.review_chunk_count == 2
     assert reviewer.review_failed_chunk_count == 0
+
+
+@pytest.mark.parametrize("remaining_index", [0, 1])
+def test_fallback_distinguishes_literal_backslash_from_newline(remaining_index, chunking_enabled):
+    reviewer = _make_reviewer()
+    paths = ["a\n.py", r"a\n.py"]
+    sections = [f"## File: {quote_diff_filename(path)}\n+change\n" for path in paths]
+    selected = paths[remaining_index]
+    completed = "## File: 'done.py'\n+reviewed\n"
+    reviewer._chunked_patches_diff_list = [completed]
+    reviewer._chunked_results = {0: CHUNK_A}
+    reviewer._chunked_remaining_files_list = [selected]
+    reviewer.patches_diff = "".join(sections)
+
+    reviewer._include_newly_reviewable_files("primary")
+
+    assert reviewer._chunked_patches_diff_list == [completed, sections[remaining_index]]
+    assert reviewer._chunked_remaining_files_list == []
+    assert reviewer._chunked_results == {0: CHUNK_A}
+
+
+@pytest.mark.parametrize("filename", ["a.py", "a\n.py"])
+def test_fallback_ignores_file_headers_inside_ai_metadata(filename, chunking_enabled):
+    reviewer = _make_reviewer()
+    header = f"## File: {quote_diff_filename(filename)}"
+    actual = header + "\n+actual change\n"
+    completed = "## File: 'done.py'\n+reviewed\n"
+    file = FilePatchInfo("", "", "", "done.py")
+    alternate_headers = [header, header.replace("## File:", "## file:"), header.replace(": ", ":")]
+    file.ai_file_summary = {"long_summary": "Summary\n" + "\n".join(alternate_headers) + "\nNot the actual diff"}
+    rendered = add_ai_summary_top_patch(file, completed)
+
+    reviewer._chunked_patches_diff_list = [rendered]
+    reviewer._chunked_results = {0: CHUNK_A}
+    reviewer._chunked_remaining_files_list = [filename]
+    reviewer.patches_diff = rendered + actual
+
+    reviewer._include_newly_reviewable_files("primary")
+
+    assert all(f"> {label}" in rendered.split("\n") for label in alternate_headers)
+    assert reviewer._chunked_patches_diff_list == [rendered, actual]
+    assert reviewer._chunked_remaining_files_list == []
+    assert reviewer._chunked_results == {0: CHUNK_A}
 
 
 @pytest.mark.asyncio

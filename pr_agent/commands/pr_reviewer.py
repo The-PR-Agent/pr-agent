@@ -30,7 +30,7 @@ from pr_agent.algo.comment_identity import (
 )
 from pr_agent.algo.deterministic_risk import build_risk_checks
 from pr_agent.algo.findings import Finding
-from pr_agent.algo.git_patch_processing import split_diff_lines
+from pr_agent.algo.git_patch_processing import quote_diff_filename, split_diff_lines
 from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
@@ -1840,7 +1840,7 @@ class PRReviewer:
             if attempt_budget.count_tokens(chunk) <= chunk_limit:
                 resized.append(chunk)
                 continue
-            sections = re.split(r"(?=^## File: ')", chunk, flags=re.MULTILINE)
+            sections = re.split(r"""(?=^## File: ['"])""", chunk, flags=re.MULTILINE)
             parts, current = [], ""
             for section in sections:
                 if current and attempt_budget.count_tokens(current + section) > chunk_limit:
@@ -1873,21 +1873,22 @@ class PRReviewer:
         max_calls = get_settings().pr_reviewer.get("max_number_of_calls", 3)
         included = set()
         metadata_only = set(getattr(self, "_review_deleted_files", []))
-        for section in re.split(r"(?=^## File: ')", self.patches_diff or "", flags=re.MULTILINE):
-            match = re.match(r"## File: '(.*)'\n", section)
-            if not match or match[1] not in remaining or match[1] in included or match[1] in metadata_only:
+        names_by_label = {f"## File: {quote_diff_filename(name)}": name for name in remaining}
+        for section in re.split(r"""(?=^## File: ['"])""", self.patches_diff or "", flags=re.MULTILINE):
+            filename = names_by_label.get(section.partition("\n")[0])
+            if filename is None or filename in included or filename in metadata_only:
                 continue
             for index in pending:
                 combined = chunks[index] + "\n\n" + section
                 if attempt_budget.count_tokens(combined) <= chunk_limit:
                     chunks[index] = combined
-                    included.add(match[1])
+                    included.add(filename)
                     break
             else:
                 if len(chunks) < max_calls and attempt_budget.count_tokens(section) <= chunk_limit:
                     pending.append(len(chunks))
                     chunks.append(section)
-                    included.add(match[1])
+                    included.add(filename)
         self._chunked_remaining_files_list = [name for name in remaining if name not in included]
 
     def _review_attempt_budget(self, model: str) -> AttemptTokenBudget:

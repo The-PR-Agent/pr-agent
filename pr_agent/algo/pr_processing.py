@@ -14,6 +14,7 @@ from pr_agent.algo.git_patch_processing import (
     decouple_and_convert_to_hunks_with_lines_numbers,
     extend_patch,
     handle_patch_deletions,
+    quote_diff_filename,
 )
 from pr_agent.algo.language_handler import (
     AUTO_GENERATED_FILES_EXACT,
@@ -649,7 +650,7 @@ def _unreadable_file_notice(file) -> str:
     explicitly keeps the failure visible so it can flag the file for manual review.
     """
     return (
-        f"\n\n## File: '{file.filename.strip()}'\n\n"
+        f"\n\n## File: {quote_diff_filename(file.filename)}\n\n"
         f"> **This file could not be read.** PR-Agent failed to fetch its contents, so no diff "
         f"is available and nothing in it was reviewed. Do not assume this file is correct, "
         f"unchanged, or free of issues: flag it for manual review.\n"
@@ -731,7 +732,8 @@ def pr_generate_extended_diff(pr_languages: list,
                     full_extended_patch = decouple_and_convert_to_hunks_with_lines_numbers(extended_patch, file)
                 else:
                     extended_patch = extended_patch.replace('\n@@ ', '\n\n@@ ') # add extra line before each hunk
-                    full_extended_patch = f"\n\n## File: '{file.filename.strip()}'\n\n{extended_patch.strip("\r\n")}\n"
+                    file_label = quote_diff_filename(file.filename)
+                    full_extended_patch = f"\n\n## File: {file_label}\n\n{extended_patch.strip("\r\n")}\n"
 
                 # add AI-summary metadata to the patch
                 if file.ai_file_summary and get_settings().get("config.enable_ai_metadata", False):
@@ -891,7 +893,7 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, soft_token_bud
 
         if patch:
             if not convert_hunks_to_line_numbers:
-                patch_final = f"\n\n## File: '{filename.strip()}'\n\n{patch.strip("\r\n")}\n"
+                patch_final = f"\n\n## File: {quote_diff_filename(filename)}\n\n{patch.strip("\r\n")}\n"
             else:
                 patch_final = "\n\n" + patch.strip("\r\n")
             if rendered_patch_token_cache is not None and filename in rendered_patch_token_cache:
@@ -1198,7 +1200,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         if add_line_numbers:
             patch = decouple_and_convert_to_hunks_with_lines_numbers(patch, file)
         else:
-            patch = f"\n\n## File: '{file.filename.strip()}'\n\n{patch.strip("\r\n")}\n"
+            patch = f"\n\n## File: {quote_diff_filename(file.filename)}\n\n{patch.strip("\r\n")}\n"
 
         # add AI-summary metadata to the patch
         if file.ai_file_summary and get_settings().get("config.enable_ai_metadata", False):
@@ -1296,10 +1298,13 @@ def add_ai_summary_top_patch(file, full_extended_patch):
         # below every instance of '## File: ...' in the patch, add the ai-summary metadata
         full_extended_patch_lines = full_extended_patch.split("\n")
         for i, line in enumerate(full_extended_patch_lines):
-            if line.startswith("## File:") or line.startswith("## file:"):
-                full_extended_patch_lines.insert(
-                    i + 1, f"### AI-generated changes summary:\n{file.ai_file_summary['long_summary']}"
+            if line.startswith(("## File:", "## file:")):
+                # Metadata is prose, not an authoritative file boundary.
+                summary = "\n".join(
+                    "> " + line if line.startswith(("## File:", "## file:")) else line
+                    for line in file.ai_file_summary["long_summary"].split("\n")
                 )
+                full_extended_patch_lines.insert(i + 1, f"### AI-generated changes summary:\n{summary}")
                 full_extended_patch = "\n".join(full_extended_patch_lines)
                 return full_extended_patch
 
