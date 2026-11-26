@@ -1235,14 +1235,22 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
     # the label and the blanks that follow it share a single optional group: two separate
     # blank runs would let the engine try every way of splitting a long run of blanks
     # when the fence is not followed by a line break, which backtracks quadratically
-    unfenced = re.sub(r'^```[ \t]*(?:(?i:yaml|yml)[ \t]*)?(?=\r?\n)', '', response_text)
+    opening_fence = ""
+    fence_match = re.match(r'^(?P<fence>`{3,})[ \t]*(?:(?i:yaml|yml)[ \t]*)?(?=\r?\n)', response_text)
+    if fence_match:
+        opening_fence = fence_match.group("fence")
+        unfenced = response_text[fence_match.end():]
+    else:
+        unfenced = response_text
     if unfenced == response_text:
         # Strip an unfenced "yaml" label only when it is a complete line, so a key such as
         # "yaml_config" is not truncated. A bare removeprefix('yaml') would shorten it to "_config".
         unfenced = re.sub(r'^yaml(?:[ \t]*\r?\n|\Z)', '', response_text, count=1)
     response_text = unfenced.rstrip()
     response_text = drop_sign_off_after_wrapper_fence(response_text)
-    if response_text.split('\n')[-1] == '```':
+    if opening_fence:
+        response_text = re.sub(rf'(?m)^{re.escape(opening_fence)}`*[ \t]*\Z', '', response_text)
+    elif response_text.split('\n')[-1] == '```':
         response_text = response_text.removesuffix('```')
     response_text = sanitize_yaml_control_chars(response_text)
     response_text_original_sanitized = sanitize_yaml_control_chars(response_text_original, log=False)
