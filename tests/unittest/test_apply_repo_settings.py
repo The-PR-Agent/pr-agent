@@ -3,6 +3,7 @@ import copy
 import pytest
 from starlette_context import context, request_cycle_context
 
+from pr_agent.algo import merge_verdict as mv
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import utils as git_utils
 
@@ -66,6 +67,21 @@ class TestApplyRepoSettings:
             assert git_utils.apply_repo_settings("https://git.example/projects/A/repos/a/pull-requests/1") is provider
             assert "MARKER-FROM-REPO-A" in _extra_instructions("pr_reviewer")
             assert "MARKER-FROM-REPO-A" in _extra_instructions("pr_code_suggestions")
+
+    def test_repo_settings_cannot_disable_a_merge_verdict_check(self, fresh_global_settings, monkeypatch):
+        repo_toml = b"""
+[pr_reviewer]
+enable_merge_verdict_ci_check = false
+"""
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: FakeGitProvider(repo_toml),
+        )
+        with request_cycle_context({}):
+            context["settings"] = copy.deepcopy(global_settings)
+            git_utils.apply_repo_settings("https://git.example/projects/A/repos/a/pull-requests/1")
+            assert get_settings().pr_reviewer.get("enable_merge_verdict_ci_check") is True
+            assert mv._check_enabled("pr_reviewer.enable_merge_verdict_ci_check") is True
 
     def test_repo_without_toml_does_not_inherit_previous_repo_settings(
         self, fresh_global_settings, monkeypatch

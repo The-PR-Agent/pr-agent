@@ -216,3 +216,37 @@ def test_with_merge_verdict_drops_keys_that_normalise_to_the_recommendation():
     review = {"Merge_Recommendation": "changes_required", "merge recommendation": "changes_required"}
     updated = _with_merge_verdict(review, _verdict())
     assert list(updated) == ["merge_recommendation", "merge_recommendation_checks"]
+
+
+@pytest.mark.parametrize(
+    ("key", "check_name"),
+    [
+        ("enable_merge_verdict_ci_check", "CI on reviewed head"),
+        ("enable_merge_verdict_staleness_check", "Head is current with its base"),
+        ("enable_merge_verdict_authors_check", "Human authors"),
+        ("enable_merge_verdict_risk_check", "No sensitive paths or risky changes"),
+        ("enable_merge_verdict_changed_lines_check", "Changed lines within cap"),
+    ],
+)
+def test_disabled_check_is_skipped(key, check_name):
+    settings = get_settings()
+    snapshot = snapshot_settings([f"pr_reviewer.{key}"])
+    try:
+        settings.set(f"pr_reviewer.{key}", False)
+        result = _verdict()
+        assert check_name not in [check["name"] for check in result["checks"]]
+        assert result["recommendation"] == "no_concerns_found"
+    finally:
+        restore_settings(snapshot)
+
+
+def test_disabled_ci_check_ignores_a_failing_ci():
+    settings = get_settings()
+    snapshot = snapshot_settings(["pr_reviewer.enable_merge_verdict_ci_check"])
+    try:
+        settings.set("pr_reviewer.enable_merge_verdict_ci_check", False)
+        result = _verdict(git_provider=_provider(ci="failed"))
+        assert "CI on reviewed head" not in [check["name"] for check in result["checks"]]
+        assert result["recommendation"] == "no_concerns_found"
+    finally:
+        restore_settings(snapshot)

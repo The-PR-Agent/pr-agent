@@ -15,6 +15,7 @@ from typing import Any
 
 from pr_agent.algo.deterministic_risk import build_risk_checks
 from pr_agent.algo.git_patch_processing import count_patch_lines, to_hunk_only_patch
+from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.config_loader import get_settings
 
 MERGE_RECOMMENDATIONS = ("no_concerns_found", "needs_review", "changes_required")
@@ -40,6 +41,13 @@ def _read_provider_check(git_provider: Any, method_name: str) -> Any:
         return method()
     except Exception:
         return None
+
+
+def _check_enabled(dotted: str) -> bool:
+    """Return whether a deterministic merge-verdict check is enabled."""
+    section, key = dotted.split(".", 1)
+    settings = getattr(get_settings(), section)
+    return _as_bool_setting(settings.get(key, True), default=True, setting_name=dotted)
 
 
 def _ci_check(git_provider: Any) -> dict:
@@ -165,13 +173,17 @@ def compute_merge_verdict(git_provider: Any,
     `risk_checks` lets the caller reuse the row already built for the review, so the diff
     is not scanned twice. Passing `max_changed_lines` overrides the configured cap.
     """
-    checks = [
-        _ci_check(git_provider),
-        _staleness_check(git_provider),
-        _authors_check(git_provider),
-        _risk_check(diff_files, risk_checks),
-        _changed_lines_check(diff_files, max_changed_lines),
-    ]
+    checks = []
+    if _check_enabled("pr_reviewer.enable_merge_verdict_ci_check"):
+        checks.append(_ci_check(git_provider))
+    if _check_enabled("pr_reviewer.enable_merge_verdict_staleness_check"):
+        checks.append(_staleness_check(git_provider))
+    if _check_enabled("pr_reviewer.enable_merge_verdict_authors_check"):
+        checks.append(_authors_check(git_provider))
+    if _check_enabled("pr_reviewer.enable_merge_verdict_risk_check"):
+        checks.append(_risk_check(diff_files, risk_checks))
+    if _check_enabled("pr_reviewer.enable_merge_verdict_changed_lines_check"):
+        checks.append(_changed_lines_check(diff_files, max_changed_lines))
     failures = [check["name"] for check in checks if not check["passed"]]
     base_rank = 0 if not failures else _RECOMMENDATION_RANK["needs_review"]
 

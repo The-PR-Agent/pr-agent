@@ -181,6 +181,11 @@ See [Review](../commands/review.md#configuration-options).
 | `require_merge_recommendation` | false | ask the model for a merge recommendation: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge) |
 | `max_changed_lines` | 100 | Host-only changed-line cap; a larger diff vetoes no_concerns_found. See docs/docs/commands/review.md |
 | `publish_merge_recommendation_status` | false | Publish the computed verdict as a SHA-scoped check/commit status. See docs/docs/commands/review.md |
+| `enable_merge_verdict_ci_check` | true | Gate the CI check on the reviewed head. Disable when the repository has no CI. |
+| `enable_merge_verdict_staleness_check` | true | Gate the base-staleness check on the reviewed head. |
+| `enable_merge_verdict_authors_check` | true | Gate the human-authors check on the reviewed head. |
+| `enable_merge_verdict_risk_check` | true | Gate the sensitive-path and risky-shape check. |
+| `enable_merge_verdict_changed_lines_check` | true | Gate the changed-line cap check. |
 | `require_failure_modes` | false | ask for up to three concrete failure scenarios and their detection/coverage |
 | `require_artifact_findings` | false | with a CI artifact, list up to five neutral facts from it, each with a quote checked against the artifact. See docs/docs/commands/review.md |
 | `require_priority_files` | false | ask the model which files a human should inspect first |
