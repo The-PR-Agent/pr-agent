@@ -189,14 +189,7 @@ ___
 </div>
 <hr>
 
-<h4><a href="https://github.com/the-pr-agent/pr-agent/pull/732#issuecomment-1975099159">/improve</a></h4>
-<div align="center">
-<p float="center">
-<kbd>
-<img src="https://raw.githubusercontent.com/The-PR-Agent/pr-agent/main/docs/static/img/improve_new_short_main.png" width="512">
-</kbd>
-</p>
-</div>
+After v0.50.0, `/improve` was folded into `/review` rather than generating standalone code suggestions. See [fixes and committable suggestions](https://docs.pr-agent.ai/commands/review/#fixes-and-committable-suggestions) for the new behavior, or the [v0.50.0 documentation](https://github.com/The-PR-Agent/pr-agent/blob/v0.50.0/docs/docs/tools/improve.mdx) for the previous behavior.
 
 <hr>
 
