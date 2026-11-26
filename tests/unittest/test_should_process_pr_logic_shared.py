@@ -12,6 +12,8 @@ pattern on every provider.
 
 import copy
 import importlib
+import re
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -506,6 +508,31 @@ def test_scalar_ignore_setting_is_one_pattern(providers, ignore_settings, settin
     _assert_all(providers, _fields(**non_matching), True, f"{setting} does not match", only_with_labels=labels_only)
 
 
+@pytest.mark.parametrize(
+    "setting, matching, non_matching",
+    [
+        ("CONFIG.IGNORE_REPOSITORIES", {"repo_full_name": "org/2024"}, {"repo_full_name": "org/repo"}),
+        ("CONFIG.IGNORE_PR_AUTHORS", {"sender": "user2024"}, {"sender": "alice"}),
+        ("CONFIG.IGNORE_PR_TITLE", {"title": "Release 2024"}, {"title": "Add cache"}),
+        ("CONFIG.IGNORE_PR_LABELS", {"labels": ("2024",)}, {"labels": ("ready",)}),
+        ("CONFIG.IGNORE_PR_SOURCE_BRANCHES", {"source_branch": "release/2024"}, {"source_branch": "feature/cache"}),
+        ("CONFIG.IGNORE_PR_TARGET_BRANCHES", {"target_branch": "2024"}, {"target_branch": "main"}),
+    ],
+)
+@pytest.mark.parametrize("value", [2024, [2024]])
+def test_numeric_ignore_setting_is_matched_as_text(ignore_settings, setting, matching, non_matching, value):
+    """An environment value such as CONFIG__IGNORE_PR_LABELS=2024 arrives as an int, not a string."""
+    ignore_settings.set(setting, value)
+    assert shared_should_process_pr_logic(**_fields(**matching)) is False
+    assert shared_should_process_pr_logic(**_fields(**non_matching)) is True
+
+
+def test_zero_ignore_label_is_not_dropped(ignore_settings):
+    ignore_settings.set("CONFIG.IGNORE_PR_LABELS", 0)
+    assert shared_should_process_pr_logic(labels=["0"]) is False
+    assert shared_should_process_pr_logic(labels=["ready"]) is True
+
+
 @pytest.mark.parametrize("setting", IGNORE_KEYS)
 def test_empty_scalar_ignore_setting_does_not_filter_any_pr(providers, ignore_settings, setting):
     ignore_settings.set(setting, "")
@@ -516,6 +543,46 @@ def test_an_invalid_pattern_does_not_filter_out_every_pull_request(providers, ig
     """Process the PR when a rule cannot be evaluated; the opposite silently disables the agent."""
     ignore_settings.set("CONFIG.IGNORE_PR_TITLE", ["("])
     _assert_all(providers, _fields(), True, "an unparsable ignore_pr_title regex")
+
+
+@pytest.mark.parametrize(
+    "setting, field",
+    [
+        ("CONFIG.IGNORE_REPOSITORIES", "repo_full_name"),
+        ("CONFIG.IGNORE_PR_AUTHORS", "sender"),
+        ("CONFIG.IGNORE_PR_TITLE", "title"),
+        ("CONFIG.IGNORE_PR_SOURCE_BRANCHES", "source_branch"),
+        ("CONFIG.IGNORE_PR_TARGET_BRANCHES", "target_branch"),
+    ],
+)
+def test_catastrophic_ignore_pattern_times_out_as_no_match(ignore_settings, setting, field):
+    """Bound a backtracking pattern from repository settings; a later pattern in the list still applies."""
+    slow_value = "a" * 40 + "!"
+    ignore_settings.set(setting, [r"(a|aa)+$"])
+    start = time.monotonic()
+    assert shared_should_process_pr_logic(**_fields(**{field: slow_value}), raise_on_error=True) is True
+    assert time.monotonic() - start < 3
+
+    ignore_settings.set(setting, [r"(a|aa)+$", "!$"])
+    assert shared_should_process_pr_logic(**_fields(**{field: slow_value}), raise_on_error=True) is False
+
+
+@pytest.mark.parametrize(
+    "setting, field",
+    [
+        ("CONFIG.IGNORE_REPOSITORIES", "repo_full_name"),
+        ("CONFIG.IGNORE_PR_AUTHORS", "sender"),
+        ("CONFIG.IGNORE_PR_TITLE", "title"),
+        ("CONFIG.IGNORE_PR_SOURCE_BRANCHES", "source_branch"),
+        ("CONFIG.IGNORE_PR_TARGET_BRANCHES", "target_branch"),
+    ],
+)
+def test_ignore_pattern_over_the_length_cap_is_an_invalid_pattern(ignore_settings, setting, field):
+    """Reject an oversized pattern before compiling it, the way an unparsable one is handled."""
+    ignore_settings.set(setting, ["x" * 1025])
+    assert shared_should_process_pr_logic(**_fields(**{field: "x" * 1025})) is True
+    with pytest.raises(re.error):
+        shared_should_process_pr_logic(**_fields(**{field: "x" * 1025}), raise_on_error=True)
 
 
 def test_shared_helper_defaults_to_processing(ignore_settings):

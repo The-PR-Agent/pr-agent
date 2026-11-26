@@ -90,13 +90,17 @@ its webhook command names remain case-sensitive.
 
 If no matching diff hunk is found for the selected lines, the command explains this without calling a model.
 
-In the GitHub App and GitHub Actions, a file comment whose first non-whitespace token is `/ask` or `/ask_question`
-uses that file's complete diff as context. These two command names are case-insensitive.
+In the GitHub App, GitHub Actions, and GitLab webhook, a file comment whose first non-whitespace token is `/ask` or
+`/ask_question` uses that file's complete diff as context. These two command names are case-insensitive.
 The existing file filters and input budgets still apply. If the file has no analyzable diff, or the question cannot
 be prepared within the configured input budget, the command explains this without calling a model.
 The answer is posted in the original file-comment thread with a link to the question.
 Earlier replies are included when `pr_questions.use_conversation_history` is enabled and the input budget allows.
 Text resembling command options is treated as part of the question.
+
+In the Azure DevOps webhook, `/ask`, `/ask_question`, or a mention of PR-Agent in a thread on a whole file also uses
+that file's complete diff, with the same filters, input budgets, and notes. The answer is posted in that thread with a
+link to the question, and earlier comments in the thread are included as described above.
 
 With `pr_questions.use_conversation_history=true` (the default), line questions on GitHub, GitLab, and Azure DevOps
 can include earlier comments from the same thread. Azure DevOps also supports history for threaded top-level questions.

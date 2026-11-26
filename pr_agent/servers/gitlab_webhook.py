@@ -21,6 +21,7 @@ from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, _as_ssl_verify_setting, normalize_setting_list
+from pr_agent.algo.utils import encode_user_text_arg
 from pr_agent.config_loader import get_bot_display_name, get_settings, global_settings
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.git_providers.request_timeout import get_http_request_timeout, refresh_session_request_timeout
@@ -393,10 +394,14 @@ async def authenticate_gitlab_webhook(request: Request, log_context: dict):
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
                                 content=jsonable_encoder({"message": "unauthorized"}))
     if not get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None):
-        # Authentication can be the first reader of external host settings.
-        # Pin the source before that read changes EXTRA_CONFIG_URL.
-        pin_host_settings_source_for_webhook()
-        await asyncio.to_thread(apply_host_settings)
+        # The webhook credential has been verified. Classify the event before
+        # choosing strict frozen loading; manual notes retain best-effort loading.
+        try:
+            event_data = await request.json()
+        except ValueError:
+            # Preserve the missing-API-token rejection for malformed JSON bodies.
+            event_data = {}
+        await _load_gitlab_host_credentials(event_data)
     gitlab_token = get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
     if not gitlab_token:
         get_logger().error("No gitlab token found")
@@ -406,7 +411,15 @@ async def authenticate_gitlab_webhook(request: Request, log_context: dict):
     return None
 
 
-async def restore_gitlab_handoff_auth(auth: dict | None, log_context: dict):
+async def _load_gitlab_host_credentials(data: dict):
+    """Use frozen Host settings only for automatic merge-request events."""
+    if isinstance(data, dict) and data.get("object_kind") == "merge_request":
+        # Pin before a successful Host load can change EXTRA_CONFIG_URL.
+        pin_host_settings_source_for_webhook()
+    await asyncio.to_thread(apply_host_settings)
+
+
+async def restore_gitlab_handoff_auth(auth: dict | None, log_context: dict, *, body: dict):
     """Restore API credentials for an IAM-authorized, already authenticated hand-off."""
     if not isinstance(auth, dict) or "secret_name" not in auth:
         raise ValueError("Missing GitLab hand-off authentication outcome")
@@ -429,8 +442,7 @@ async def restore_gitlab_handoff_auth(auth: dict | None, log_context: dict):
         context["authenticated_provider_settings"] = {"gitlab.personal_access_token": gitlab_token}
         log_context["token_id"] = secret_dict.get("token_name", secret_dict.get("id", "unknown"))
     if not get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None):
-        pin_host_settings_source_for_webhook()
-        await asyncio.to_thread(apply_host_settings)
+        await _load_gitlab_host_credentials(body)
     if not get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None):
         raise RuntimeError("No GitLab API credential available for the hand-off")
 
@@ -510,8 +522,7 @@ async def process_gitlab_event(data: dict, log_context: dict):
     """
     get_logger().info("GitLab data", artifact=payload_log_summary(data, ("object_kind",)))
     if data.get("object_kind") != "merge_request" and context.exists():
-        # Authentication may pin the source before the event type is known.
-        # Keep manual note commands' existing host-loading behavior unchanged.
+        # Manual commands must not inherit a frozen automatic Host source.
         context.pop("automatic_host_settings_source", None)
     try:
         if data.get("object_kind") == "merge_request":
@@ -682,8 +693,9 @@ async def process_gitlab_event(data: dict, log_context: dict):
             if (discussion_id and command_takes_comment_id(command) and (
                     not note_type or (note_type == "DiscussionNote" and command in ("/ask", "/ask_question")))):
                 body = f"{body} --comment_id={discussion_id}"
-            if note_type == 'DiffNote' and is_ask_command_comment(body):  # /ask_line
-                body = handle_ask_line(body, data)
+            if note_type == 'DiffNote' and is_ask_command_comment(body):
+                # /ask on a whole file asks about that file; on lines it becomes /ask_line
+                body = handle_file_question(body, data, url) or handle_ask_line(body, data)
 
             # A fresh collector, so the verdict below can only come from this command.
             init_run_details()
@@ -712,29 +724,81 @@ async def process_gitlab_event(data: dict, log_context: dict):
                 provider.react_to_outcome, comment_id, bool(result) and not command_failed())
 
 
+def handle_file_question(body, data, mr_url):
+    """Turn /ask or /ask_question on a whole file into a question about that file's diff.
+
+    The file and the note's discussion go into the request context, where PRQuestions reads them to
+    answer in that discussion. Returns None for any other note.
+    """
+    attributes = data['object_attributes']
+    position = attributes.get('position')
+    if (not isinstance(position, dict) or position.get('position_type') != 'file'
+            or body.split(maxsplit=1)[0].lower() not in ("/ask", "/ask_question")):
+        return None
+    path = position.get('new_path')
+    discussion_id = attributes.get('discussion_id')
+    note_id = attributes.get('id')
+    if not isinstance(path, str) or not path.strip() or not discussion_id or note_id is None:
+        return None
+    parts = body.strip().split(maxsplit=1)
+    question = parts[1] if len(parts) > 1 else ""
+    context["file_question_path"] = path
+    context["file_question_comment_id"] = discussion_id
+    context["file_question_origin_comment_id"] = note_id
+    context["file_question_comment_url"] = attributes.get('url') or f"{mr_url}#note_{note_id}"
+    # The provider reads the notes before this one in the discussion as its history.
+    return ["/ask", f"--origin_comment_id={note_id}", encode_user_text_arg(question)]
+
+
+def _positive_line_number(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _gitlab_endpoint_line(endpoint: dict) -> tuple[int, str] | None:
+    """Resolve one GitLab line_range endpoint to (line_number, side), honoring explicit type."""
+    endpoint_type = endpoint.get("type")
+    old_line = _positive_line_number(endpoint.get("old_line"))
+    new_line = _positive_line_number(endpoint.get("new_line"))
+    if endpoint_type == "old" and old_line is not None:
+        return old_line, "LEFT"
+    if endpoint_type == "new" and new_line is not None:
+        return new_line, "RIGHT"
+    if new_line is not None:
+        return new_line, "RIGHT"
+    if old_line is not None:
+        return old_line, "LEFT"
+    return None
+
+
+def _resolve_gitlab_line_range(position: dict) -> tuple[int, int, str, str] | None:
+    """Resolve a GitLab DiffNote position into (start_line, end_line, start_side, side)."""
+    line_range = position.get("line_range")
+    if isinstance(line_range, dict):
+        start = line_range.get("start") if isinstance(line_range.get("start"), dict) else {}
+        end = line_range.get("end") if isinstance(line_range.get("end"), dict) else {}
+        start_resolved = _gitlab_endpoint_line(start)
+        end_resolved = _gitlab_endpoint_line(end)
+        if start_resolved is not None and end_resolved is not None:
+            return start_resolved[0], end_resolved[0], start_resolved[1], end_resolved[1]
+        if end_resolved is not None:
+            return end_resolved[0], end_resolved[0], end_resolved[1], end_resolved[1]
+
+    new_line = _positive_line_number(position.get("new_line"))
+    if new_line is not None:
+        return new_line, new_line, "RIGHT", "RIGHT"
+    old_line = _positive_line_number(position.get("old_line"))
+    if old_line is not None:
+        return old_line, old_line, "LEFT", "LEFT"
+    return None
+
+
 def handle_ask_line(body, data):
     try:
         position = data['object_attributes']['position']
-        line_range_ = position.get('line_range')
-        if line_range_ is None:
-            new_line = position.get('new_line')
-            old_line = position.get('old_line')
-            if isinstance(new_line, int) and not isinstance(new_line, bool) and new_line > 0:
-                start_line = end_line = new_line
-                side = 'RIGHT'
-            elif isinstance(old_line, int) and not isinstance(old_line, bool) and old_line > 0:
-                start_line = end_line = old_line
-                side = 'LEFT'
-            else:
-                return body
-        elif line_range_['start'].get('type', 'new') == 'old':
-            start_line = line_range_['start']['old_line']
-            end_line = line_range_['end']['old_line']
-            side = 'LEFT'
-        else:
-            start_line = line_range_['start']['new_line']
-            end_line = line_range_['end']['new_line']
-            side = 'RIGHT'
+        resolved = _resolve_gitlab_line_range(position)
+        if resolved is None:
+            return body
+        start_line, end_line, start_side, side = resolved
         parts = body.strip().split(maxsplit=1)
         question = parts[1] if len(parts) > 1 else ""
         path = position['new_path']
@@ -748,6 +812,8 @@ def handle_ask_line(body, data):
             f"--file_name={path}",
             f"--comment_id={comment_id}",
         ]
+        if start_side != side:
+            body.insert(4, f"--start_side={start_side}")
         origin_comment_id = data['object_attributes'].get('id')
         if origin_comment_id is not None:
             body.append(f"--origin_comment_id={origin_comment_id}")

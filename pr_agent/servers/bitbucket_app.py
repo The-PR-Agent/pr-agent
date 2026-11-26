@@ -381,6 +381,9 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
             early_host_settings = False
             if data.get("event", "") in ("pullrequest:created", "pullrequest:updated"):
                 extra_source = get_settings().get("CONFIG.EXTRA_CONFIG_URL")
+                if extra_source is not None and extra_source is not False and not isinstance(extra_source, str):
+                    get_logger().warning("Request ignored: invalid Host settings source")
+                    return "OK"
                 if isinstance(extra_source, str) and extra_source.strip():
                     installed_app_key = get_settings().get("BITBUCKET.APP_KEY")
                     context["settings"] = copy.deepcopy(global_settings)

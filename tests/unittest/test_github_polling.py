@@ -452,9 +452,27 @@ async def test_polling_loop_keeps_notification_unread_when_drift_retry_times_out
 @pytest.mark.parametrize(("comment_body", "expected_request"), [
     ("@bot /review", "/review"),
     ("No mention", None),
+    ("@BoT /review", "/review"),
+    ("@BoT incidental @bot review", "review"),
+    ('@bot "/ask" Why is @bot /review failing?', '"/ask" Why is @bot /review failing?'),
+    ("@bot \u00a0review then @bot /ask", "review then @bot /ask"),
+    ("CC @BoT-helper then @bot /review", "/review"),
+    ("@BoT unrelated text @bot /review", "/review"),
+    ('@bot "/ask" Why does @bot /review fail?', '"/ask" Why does @bot /review fail?'),
+    ("ops@bot.io reference then @bot /review", "/review"),
+    ("@BoT unrelated text @bOt /review", "/review"),
+    ("@BoT unrelated text @BoT /review", "/review"),
+    ("CC @BoT-helper then @BoT /review", "/review"),
+    ("CC @bot-helper then @bot /review", "/review"),
+    ('@BoT /ask "Why does @bOt appear here?"', '/ask "Why does @bOt appear here?"'),
     ("@bot /ask Why does @bot appear here?", "/ask Why does @bot appear here?"),
     ('@bot /ask "Why does @bot appear here?"', '/ask "Why does @bot appear here?"'),
-], ids=["valid-command", "invalid-notification", "repeated-mention", "quoted-repeated-mention"])
+], ids=["valid-command", "invalid-notification", "mixed-case-mention",
+     "legacy-exact-case-bare-command", "quoted-action", "unicode-leading-space", "longer-name-prefix",
+     "incidental-mention", "quoted-command", "email-before-mention",
+     "later-mixed-case-command", "later-identical-case-command",
+     "longer-name-same-case", "longer-name-lowercase", "mixed-case-repeated-mention",
+     "repeated-mention", "quoted-repeated-mention"])
 @pytest.mark.asyncio
 async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monkeypatch, comment_body, expected_request):
     valid_command = expected_request is not None
@@ -854,3 +872,362 @@ async def test_polling_loop_stops_after_worker_start_failure(workers, monkeypatc
     with pytest.raises(github_polling._PollingWorkerStartError, match="startup failed"):
         await asyncio.wait_for(github_polling.polling_loop(), timeout=2)
     start.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("latest_body", "older_body", "expected_mention"), [
+    ("@bot /review", None, "@bot"),
+    ("@BoT /review", None, "@BoT"),
+    ("@BoT /review\u00a0", None, "@BoT"),
+    ("@BoT /review\u00a0\t", None, "@BoT"),
+    ("@BoT \"/ask\"\u00a0", None, "@BoT"),
+    ("@BoT", None, None),
+    ("@BoT just a mention", None, None),
+    ("@BoT /unknown", None, None),
+    ("@BoT just a mention", "@bot /review", "@bot"),
+    ("@BoT incidental @bot review", None, "@bot"),
+    ('@bot "/ask" Why is @bot /review failing?', None, "@bot"),
+    ("@bot \u00a0review then @bot /ask", None, "@bot"),
+    ("CC @BoT-helper then @bot /review", None, "@bot"),
+    ("@BoT unrelated text @bot /review", None, "@bot"),
+    ('@bot "/ask" Why does @bot /review fail?', None, "@bot"),
+    ("ops@bot.io reference then @bot /review", None, "@bot"),
+    ("@BoT unrelated text @bOt /review", None, "@bOt"),
+    ("@BoT unrelated text @BoT /review", None, "@BoT"),
+    ("CC @BoT-helper then @BoT /review", None, "@BoT"),
+    ("CC @bot-helper then @bot /review", None, "@bot"),
+    ("CC @BoT-helper", "@bot /review", "@bot"),
+])
+async def test_latest_comment_dispatches_case_insensitive_mention(
+    monkeypatch, latest_body, older_body, expected_mention
+):
+    pr_url = "https://api.github.com/repos/owner/repo/pulls/1"
+    latest_url = "https://api.github.com/repos/owner/repo/issues/comments/42"
+    notification = {
+        "reason": "mention",
+        "repository": {"full_name": "owner/repo"},
+        "subject": {"type": "PullRequest", "url": pr_url, "latest_comment_url": latest_url},
+    }
+    latest = {"id": 42, "body": latest_body, "user": {"login": "human"}}
+    older = {"id": 41, "body": older_body, "user": {"login": "human"}} if older_body else None
+
+    class Response:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def json(self):
+            return latest
+
+    class Session:
+        def get(self, url, headers):
+            assert url == latest_url
+            return Response()
+
+    history = AsyncMock(return_value=[older, latest] if older else [])
+    monkeypatch.setattr(github_polling, "_fetch_comment_history", history)
+    result = await github_polling.is_valid_notification(notification, {}, set(), Session(), "bot")
+
+    if expected_mention is None:
+        assert result[0] is False
+        history.assert_awaited_once()
+        return
+
+    assert result[0] is True
+    assert result[3].startswith(expected_mention)
+    assert result[3] in (older_body or latest_body)
+    assert result[5] == expected_mention
+    if '"/ask"\u00a0' in latest_body:
+        expected_command = '"/ask"'
+    elif '"/ask" Why is' in latest_body:
+        expected_command = '"/ask" Why is @bot /review failing?'
+    elif '"/ask" Why does' in latest_body:
+        expected_command = '"/ask" Why does @bot /review fail?'
+    elif "@BoT incidental @bot review" in latest_body:
+        expected_command = "review"
+    elif "\u00a0review" in latest_body:
+        expected_command = "review then @bot /ask"
+    else:
+        expected_command = "/review"
+    assert result[3].split(result[5], 1)[1].strip() == expected_command
+    if older:
+        history.assert_awaited_once()
+    else:
+        history.assert_not_awaited()
+
+
+def test_mention_matcher_skips_email_addresses():
+    import re
+
+    pattern = re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])", re.IGNORECASE | re.ASCII
+    )
+    assert github_polling._find_command_mention("ops@bot.io /review", pattern, "@bot") is None
+
+
+def test_mention_matcher_avoids_copying_every_long_comment_suffix():
+    import re
+
+    pattern = re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])", re.IGNORECASE | re.ASCII
+    )
+    comment = ("@BoT unrelated " * 1000) + "@bot /review"
+    match = github_polling._find_command_mention(comment, pattern, "@bot")
+    assert match is not None
+    assert comment[match.start():] == "@bot /review"
+
+
+def test_mention_scanner_keeps_prior_bare_command_behavior():
+    pattern = github_polling.re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])",
+        github_polling.re.IGNORECASE | github_polling.re.ASCII,
+    )
+    # An incidental earlier canonical mention prevented this from executing before.
+    body = "@bot wrote notes, then @bot review fewer things"
+    match = github_polling._find_command_mention(body, pattern, "@bot")
+    assert body[match.start():] == body
+
+    # Previously the first exact-case mention was the later one; retain that behavior.
+    body = "@BoT wrote notes, then @bot review changes"
+    match = github_polling._find_command_mention(body, pattern, "@bot")
+    assert body[match.start():] == "@bot review changes"
+
+
+def test_mention_scanner_handles_repeated_noncommand_mentions():
+    pattern = github_polling.re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])",
+        github_polling.re.IGNORECASE | github_polling.re.ASCII,
+    )
+    for repeated in ("@BoT." * 2000, "@BoT\\ " * 2000):
+        body = repeated + "@BoT /review"
+        match = github_polling._find_command_mention(body, pattern, "@bot")
+        assert match is not None
+        assert body[match.start():] == "@BoT /review"
+
+
+@pytest.mark.parametrize(("first_action", "expect_second"), [
+    ("/" * 39 + "ask", False),
+    ("/" * 37 + "askX", True),
+    ('""' * 40 + "/ask", False),
+    ("/similar_issue" + '""' * 20 + "X", True),
+    ('"' + r"\\/" * 80 + 'review"', True),
+])
+def test_mention_scanner_parses_complete_first_token(first_action, expect_second):
+    pattern = github_polling.re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])",
+        github_polling.re.IGNORECASE | github_polling.re.ASCII,
+    )
+    body = "@BoT " + first_action + " Explain this @bOt /review"
+    match = github_polling._find_command_mention(body, pattern, "@bot")
+    assert match is not None
+    assert (match.start() != 0) is expect_second
+
+
+def test_mixed_case_mention_without_command_is_not_actionable():
+    pattern = github_polling.re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])",
+        github_polling.re.IGNORECASE | github_polling.re.ASCII,
+    )
+    for comment in ("@BoT", "@BoT please take a look", "@BoT /unknown"):
+        assert github_polling._find_command_mention(comment, pattern, "@bot") is None
+
+    # Exact-case bare mentions keep their prior fallback behavior.
+    assert github_polling._find_command_mention("@bot hello", pattern, "@bot") is not None
+
+
+@pytest.mark.parametrize("action", [
+    "/" * 40 + "ask",
+    "/" * 400 + "ask",
+    '"' + "/" * 400 + 'ask"',
+    r"\/" * 400 + "ask",
+])
+def test_mention_scanner_preserves_long_slash_prefix_commands(action):
+    pattern = github_polling.re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])",
+        github_polling.re.IGNORECASE | github_polling.re.ASCII,
+    )
+    body = "@BoT " + action + " Why? @bOt /review"
+    match = github_polling._find_command_mention(body, pattern, "@bot")
+    assert match is not None
+    assert match.start() == 0
+
+
+@pytest.mark.parametrize("repeated", [
+    "@BoT/" * 50,
+    "@BoT/" * 500,
+    "@BoT\\/" * 500,
+])
+def test_mention_scanner_does_not_lose_later_command_after_overlapping_tokens(repeated):
+    pattern = github_polling.re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])",
+        github_polling.re.IGNORECASE | github_polling.re.ASCII,
+    )
+    body = repeated + " @BoT /review"
+    match = github_polling._find_command_mention(body, pattern, "@bot")
+    assert match is not None
+    assert body[match.start():] == "@BoT /review"
+
+
+def test_mention_scanner_prefers_earlier_action_when_both_are_valid():
+    pattern = github_polling.re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])",
+        github_polling.re.IGNORECASE | github_polling.re.ASCII,
+    )
+    body = "@BoT /ask Why? Then @BoT /review"
+    match = github_polling._find_command_mention(body, pattern, "@bot")
+    assert match is not None
+    assert match.start() == 0
+
+
+@pytest.mark.parametrize("first_mention", ["@bot", "@BoT"])
+def test_mention_scanner_keeps_first_command_when_arguments_contain_mentions(first_mention):
+    pattern = github_polling.re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])",
+        github_polling.re.IGNORECASE | github_polling.re.ASCII,
+    )
+    body = first_mention + ' /ask Explain "' + "@BoT/" * 20 + '" then @BoT /review'
+    match = github_polling._find_command_mention(body, pattern, "@bot")
+    assert match is not None
+    assert match.start() == 0
+
+
+@pytest.mark.parametrize("body", [
+    "@BoT /review\u00a0",
+    "@BoT /review\u00a0\t",
+    '@BoT "/ask"\u00a0',
+])
+def test_mention_scanner_trims_trailing_request_whitespace(body):
+    pattern = github_polling.re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])",
+        github_polling.re.IGNORECASE | github_polling.re.ASCII,
+    )
+    mention = github_polling._find_command_mention(body, pattern, "@bot")
+    assert mention is not None
+    assert mention.start() == 0
+
+
+@pytest.mark.asyncio
+async def test_polling_ignores_own_login_with_different_capitalization(monkeypatch):
+    pr_url = "https://api.github.com/repos/owner/repo/pulls/1"
+    latest_url = "https://api.github.com/repos/owner/repo/issues/comments/42"
+    notification = {
+        "reason": "mention",
+        "repository": {"full_name": "owner/repo"},
+        "subject": {"type": "PullRequest", "url": pr_url, "latest_comment_url": latest_url},
+    }
+    latest = {"id": 42, "body": "@BoT /review", "user": {"login": "BOT"}}
+    older = {"id": 41, "body": "@BoT /ask", "user": {"login": "BoT"}}
+
+    class Response:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def json(self):
+            return latest
+
+    class Session:
+        def get(self, url, headers):
+            assert url == latest_url
+            return Response()
+
+    history = AsyncMock(return_value=[older, latest])
+    monkeypatch.setattr(github_polling, "_fetch_comment_history", history)
+    result = await github_polling.is_valid_notification(notification, {}, set(), Session(), "bot")
+
+    assert result[0] is False
+    history.assert_awaited_once()
+
+
+@pytest.mark.parametrize("count", [50, 120, 500])
+def test_mention_scanner_keeps_command_before_trailing_glued_mentions(count):
+    pattern = github_polling.re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])",
+        github_polling.re.IGNORECASE | github_polling.re.ASCII,
+    )
+    body = "@BoT unrelated text @BoT /review " + "@BoT/" * count
+    match = github_polling._find_command_mention(body, pattern, "@bot")
+    assert match is not None
+    assert body[match.start():].startswith("@BoT /review ")
+
+
+@pytest.mark.parametrize("count", [50, 500])
+def test_mention_scanner_keeps_command_after_leading_glued_mentions(count):
+    pattern = github_polling.re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])",
+        github_polling.re.IGNORECASE | github_polling.re.ASCII,
+    )
+    body = "@BoT/" * count + " @BoT /review"
+    match = github_polling._find_command_mention(body, pattern, "@bot")
+    assert match is not None
+    assert body[match.start():] == "@BoT /review"
+
+
+@pytest.mark.parametrize(("repeated", "command"), [
+    ('@BoT""', "/review"),
+    ('@BoT/""', "/review"),
+    ('@BoT"review"', "/ask"),
+    ('@BoT" "', "/review"),
+    ('@BoT"x y"', "/ask"),
+])
+@pytest.mark.parametrize("count", [50, 500])
+def test_mention_scanner_skips_glued_quoted_mentions(repeated, command, count):
+    pattern = github_polling.re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])",
+        github_polling.re.IGNORECASE | github_polling.re.ASCII,
+    )
+    body = repeated * count + " @BoT " + command
+    match = github_polling._find_command_mention(body, pattern, "@bot")
+    assert match is not None
+    assert body[match.start():] == "@BoT " + command
+
+
+def test_exact_case_first_mention_keeps_legacy_precedence():
+    pattern = github_polling.re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])",
+        github_polling.re.IGNORECASE | github_polling.re.ASCII,
+    )
+    for later in ("@bot /review", "@BoT /review"):
+        body = "@bot commented here; later " + later
+        match = github_polling._find_command_mention(body, pattern, "@bot")
+        assert match is not None
+        assert match.start() == 0
+
+    # A later exact-case mention retains its pre-change precedence.
+    body = "@BoT /review Why? @bot unrelated"
+    match = github_polling._find_command_mention(body, pattern, "@bot")
+    assert match is not None
+    assert body[match.start():] == "@bot unrelated"
+
+
+def test_mixed_case_later_bare_word_does_not_trigger_command():
+    pattern = github_polling.re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])",
+        github_polling.re.IGNORECASE | github_polling.re.ASCII,
+    )
+    body = "@BoT unrelated text\n@bOt review"
+    assert github_polling._find_command_mention(body, pattern, "@bot") is None
+    explicit = body.replace("@bOt review", "@bOt /review")
+    match = github_polling._find_command_mention(explicit, pattern, "@bot")
+    assert match is not None
+    assert explicit[match.start():] == "@bOt /review"
+
+
+@pytest.mark.parametrize("body", [
+    "@BoT /review#please",
+    "@BoT #note\n/review",
+])
+def test_mixed_case_mentions_follow_dispatcher_comment_rules(body):
+    pattern = github_polling.re.compile(
+        r"(?<![a-z0-9_-])@bot(?![a-z0-9_-])",
+        github_polling.re.IGNORECASE | github_polling.re.ASCII,
+    )
+    assert github_polling._find_command_mention(body, pattern, "@bot") is None

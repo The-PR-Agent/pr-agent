@@ -2,11 +2,10 @@ import asyncio
 import copy
 import hashlib
 import hmac
-import re
 import secrets
 import time
 from collections import defaultdict
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -16,6 +15,7 @@ from starlette_context import context
 
 from pr_agent.algo.command_words import split_command_words
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
+from pr_agent.algo.user_regex import UserRegexBudget, compile_user_regex
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -41,9 +41,24 @@ _DEFAULT_PR_COMMANDS_BY_PROVIDER = {
 _MISSING = object()
 
 
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _ignore_patterns(value):
-    """Keep a scalar ignore setting as one pattern rather than its characters."""
-    return normalize_setting_list(value)
+    """Keep a scalar ignore setting as one pattern rather than its characters.
+
+    An environment value such as CONFIG__IGNORE_PR_LABELS=123 arrives as a number, so numbers
+    (including zero) are kept as their text, like config.include_pr_labels.
+    """
+    if _is_number(value):
+        return [str(value)]
+    return [str(pattern) if _is_number(pattern) else pattern for pattern in normalize_setting_list(value)]
+
+
+def _matches_any(patterns, string, budget, setting) -> bool:
+    """Search ``string`` with each settings pattern within the shared time budget."""
+    return any(budget.run(compile_user_regex(pattern), "search", string, setting) for pattern in patterns)
 
 
 def get_include_pr_labels() -> list[str]:
@@ -62,7 +77,11 @@ def pin_host_settings_source_for_webhook() -> bool:
     if context.get("automatic_host_settings_source"):
         return True
     source = get_settings().get("CONFIG.EXTRA_CONFIG_URL")
-    if not isinstance(source, str) or not source.strip():
+    if not isinstance(source, str):
+        if source is not None and source is not False:
+            context["invalid_host_settings_source"] = True
+        return False
+    if not source.strip():
         return False
 
     # Some webhook entry points create a request context without preloading
@@ -105,9 +124,24 @@ def host_settings_unavailable() -> bool:
     """
     if not context.exists():
         return False
+    if context.get("invalid_host_settings_source"):
+        return True
     source = context.get("automatic_host_settings_source")
     payloads = context.get("extra_config_payloads") or {}
     return bool(source) and source in payloads and payloads[source] is None
+
+
+async def preload_host_settings_for_new_automatic_event() -> bool:
+    """Preload the external Host source before repository settings for automatic events."""
+    source = get_settings().get("CONFIG.EXTRA_CONFIG_URL")
+    if source is None or source is False:
+        return True
+    if not isinstance(source, str):
+        get_logger().warning("Request ignored: invalid Host settings source")
+        return False
+    if not source.strip():
+        return True
+    return await load_host_settings_for_webhook() and not host_settings_unavailable()
 
 
 def payload_log_summary(data: object, identifying_fields: Sequence[str] = ()) -> dict:
@@ -258,8 +292,8 @@ class DefaultDictWithTimeout(defaultdict):
 
     def __init__(
         self,
-        default_factory: Callable[[], Any] = None,
-        ttl: int = None,
+        default_factory: Callable[[], Any] | None = None,
+        ttl: int | None = None,
         refresh_interval: int = 60,
         update_key_time_on_get: bool = True,
         *args,
@@ -349,7 +383,7 @@ def _get_push_trigger_state(key: str, ttl: int | None) -> _PushTriggerState:
 
 
 @asynccontextmanager
-async def push_trigger_slot(key: str, *, allow_backlog: bool, ttl: int | None) -> AsyncIterator[bool]:
+async def push_trigger_slot(key: str, *, allow_backlog: bool, ttl: int | None) -> AsyncGenerator[bool, None]:
     """Run one push per PR, optionally keeping one delegate for subsequent pushes.
 
     State is process-local. TTL bounds idle cache retention; active runs and
@@ -552,10 +586,12 @@ def should_process_pr_logic(
                     get_logger().info("Skipping PR without a valid label in config.include_pr_labels")
                     return False
 
+        regex_budget = UserRegexBudget()
+
         # Ignore PRs from specific repositories
         ignore_repos = _ignore_patterns(get_settings().get("CONFIG.IGNORE_REPOSITORIES", []))
         if repo_full_name and ignore_repos:
-            if any(re.search(regex, repo_full_name) for regex in ignore_repos):
+            if _matches_any(ignore_repos, repo_full_name, regex_budget, "config.ignore_repositories"):
                 get_logger().info(
                     f"Ignoring PR from repository '{repo_full_name}' due to 'config.ignore_repositories' setting"
                 )
@@ -564,14 +600,14 @@ def should_process_pr_logic(
         # Ignore PRs from specific users
         ignore_pr_users = _ignore_patterns(get_settings().get("CONFIG.IGNORE_PR_AUTHORS", []))
         if sender and ignore_pr_users:
-            if any(re.search(regex, sender) for regex in ignore_pr_users):
+            if _matches_any(ignore_pr_users, sender, regex_budget, "config.ignore_pr_authors"):
                 get_logger().info(f"Ignoring PR from user '{sender}' due to 'config.ignore_pr_authors' setting")
                 return False
 
         # Ignore PRs with specific titles
         if title:
             ignore_pr_title_re = _ignore_patterns(get_settings().get("CONFIG.IGNORE_PR_TITLE", []))
-            if ignore_pr_title_re and any(re.search(regex, title) for regex in ignore_pr_title_re):
+            if ignore_pr_title_re and _matches_any(ignore_pr_title_re, title, regex_budget, "config.ignore_pr_title"):
                 get_logger().info(f"Ignoring PR with title '{title}' due to config.ignore_pr_title setting")
                 return False
 
@@ -587,12 +623,14 @@ def should_process_pr_logic(
         ignore_pr_source_branches = _ignore_patterns(get_settings().get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", []))
         ignore_pr_target_branches = _ignore_patterns(get_settings().get("CONFIG.IGNORE_PR_TARGET_BRANCHES", []))
         if ignore_pr_source_branches or ignore_pr_target_branches:
-            if source_branch and any(re.search(regex, source_branch) for regex in ignore_pr_source_branches):
+            if source_branch and _matches_any(
+                    ignore_pr_source_branches, source_branch, regex_budget, "config.ignore_pr_source_branches"):
                 get_logger().info(
                     f"Ignoring PR with source branch '{source_branch}' due to config.ignore_pr_source_branches settings"
                 )
                 return False
-            if target_branch and any(re.search(regex, target_branch) for regex in ignore_pr_target_branches):
+            if target_branch and _matches_any(
+                    ignore_pr_target_branches, target_branch, regex_budget, "config.ignore_pr_target_branches"):
                 get_logger().info(
                     f"Ignoring PR with target branch '{target_branch}' due to config.ignore_pr_target_branches settings"
                 )

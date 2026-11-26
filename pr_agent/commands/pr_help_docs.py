@@ -11,11 +11,13 @@ from jinja2.sandbox import SandboxedEnvironment
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.comment_identity import escape_hidden_markers
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     FallbackEligibleError,
     retry_with_fallback_models,
 )
+from pr_agent.algo.run_output import append_run_details
 from pr_agent.algo.token_budget import AttemptTokenBudget, FittedPrompt, clip_tokens
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType, load_yaml
@@ -212,8 +214,8 @@ def format_markdown_q_and_a_response(question_str: str, response_str: str,
     try:
         base_url_prefix = base_url_prefix.strip('/')  # Sanitize base_url_prefix
         answer_str = ""
-        answer_str += f"### Question: \n{question_str}\n\n"
-        answer_str += f"### Answer:\n{response_str.strip()}\n\n"
+        answer_str += f"### Question: \n{escape_hidden_markers(question_str)}\n\n"
+        answer_str += f"### Answer:\n{escape_hidden_markers(response_str.strip())}\n\n"
         source_links = []
         if not isinstance(relevant_sections, list):
             get_logger().warning("Skipping malformed relevant source collection: expected a list")
@@ -559,7 +561,7 @@ class PRHelpDocs:
                 return answer_str
             #Otherwise, publish the answer if answer is non-empty and publish is not turned off:
             if answer_str and get_settings().config.publish_output:
-                self.git_provider.publish_comment(answer_str)
+                self.git_provider.publish_comment(append_run_details(answer_str, self.git_provider))
             else:
                 get_logger().info("Answer:", artifacts={'answer_str': answer_str})
             return answer_str

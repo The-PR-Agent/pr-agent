@@ -28,7 +28,13 @@ from pr_agent.git_providers.azuredevops_provider import AZURE_AGENT_RESPONSE_MAR
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.request_body_limit import create_server_app
-from pr_agent.servers.utils import auto_feedback_disabled, basic_auth_matches, dedupe_review_commands, get_pr_commands
+from pr_agent.servers.utils import (
+    auto_feedback_disabled,
+    basic_auth_matches,
+    dedupe_review_commands,
+    get_pr_commands,
+    preload_host_settings_for_new_automatic_event,
+)
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
@@ -168,6 +174,13 @@ def handle_line_comment(body: str, thread_id: int, comment_id: int, provider: Az
         side = "right"
     else:
         get_logger().info("No line range found in thread context", artifact={"thread_context": thread_context})
+        if isinstance(path, str) and path.strip():
+            # A thread on a whole file: PRQuestions reads the file and the thread from the request context
+            # and answers from that file's diff, in this thread.
+            context["file_question_path"] = path
+            context["file_question_comment_id"] = thread_id
+            context["file_question_origin_comment_id"] = comment_id
+            context["file_question_comment_url"] = f"{provider.get_pr_url()}?discussionId={thread_id}"
         return threaded_question
 
     start_line = getattr(start_position, "line", None)
@@ -211,6 +224,10 @@ def authorize(credentials: HTTPBasicCredentials = Depends(security)):  # noqa: B
 
 
 async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: str, log_context: dict):
+    # RawContextMiddleware preserves request context through Starlette BackgroundTasks.
+    if not await preload_host_settings_for_new_automatic_event():
+        get_logger().warning("Request ignored: host settings could not be loaded", **log_context)
+        return
     apply_repo_settings(api_url)
     # auto commands for PR, and auto feedback is disabled
     if auto_feedback_disabled():

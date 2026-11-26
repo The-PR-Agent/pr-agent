@@ -10,7 +10,7 @@ from pr_agent.algo.unchanged_diff import (
     format_unchanged_diff_marker,
     parse_unchanged_diff_comment,
 )
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, safe_request_cycle_context
 from pr_agent.git_providers.git_provider import GitProvider
 
 HEAD = "a" * 40
@@ -207,15 +207,15 @@ def test_markers_in_a_comment_pr_agent_did_not_write_are_ignored(enabled):
     assert len(provider.comments) == 2
 
 
-@pytest.mark.parametrize("is_auto, cli_mode, skipped",
+@pytest.mark.parametrize("is_auto, cli, skipped",
                          [(True, False, True), (False, True, True), (False, False, False)])
-def test_only_automatic_and_cli_runs_are_skipped(enabled, monkeypatch, is_auto, cli_mode, skipped):
+def test_only_automatic_and_cli_runs_are_skipped(enabled, monkeypatch, is_auto, cli, skipped):
     provider = FakeProvider()
     _reviewed(provider)
     monkeypatch.setitem(get_settings().config, "is_auto_command", is_auto)
-    monkeypatch.setitem(get_settings().config, "cli_mode", cli_mode)
 
-    assert UnchangedDiffGuard("review", provider).should_skip() is skipped
+    with safe_request_cycle_context({"_pr_agent_cli_invocation": cli}):
+        assert UnchangedDiffGuard("review", provider).should_skip() is skipped
 
 
 def test_setting_off_writes_nothing(enabled, monkeypatch):
@@ -387,7 +387,8 @@ def test_a_typed_run_never_skips_even_when_the_record_matches(enabled, monkeypat
     assert UnchangedDiffGuard("review", provider).should_skip() is False
 
 
-def test_a_typed_run_clears_the_skip_notice_and_refreshes_the_record(enabled, monkeypatch):
+def test_a_typed_run_clears_the_skip_notice_but_never_writes_the_record(enabled, monkeypatch):
+    # Arguments typed with the command could narrow the review; it must not stand in for the automatic run.
     provider = FakeProvider()
     _skipped_once(provider)
     before, _ = parse_unchanged_diff_comment(provider.record_body())
@@ -398,7 +399,23 @@ def test_a_typed_run_clears_the_skip_notice_and_refreshes_the_record(enabled, mo
 
     assert "unchanged-diff-skipped:review" not in provider.record_body()
     after, _ = parse_unchanged_diff_comment(provider.record_body())
-    assert after["review"].diff_hash != before["review"].diff_hash
+    assert after == before
+
+
+def test_a_typed_run_that_sets_cli_mode_neither_skips_nor_writes_the_record(enabled, monkeypatch):
+    # A PR comment can pass --config.cli_mode=true; only the CLI entry point marks a real CLI run.
+    provider = FakeProvider()
+    _reviewed(provider)
+    before, _ = parse_unchanged_diff_comment(provider.record_body())
+    _typed(monkeypatch, enabled)
+    monkeypatch.setitem(enabled.config, "cli_mode", True)
+    assert UnchangedDiffGuard("review", provider).should_skip() is False
+    provider.files = [FilePatchInfo("a", "b", "@@ -1 +1 @@\n x\n-a\n+b\n", "x.py")]  # target moved
+
+    _reviewed(provider)
+
+    after, _ = parse_unchanged_diff_comment(provider.record_body())
+    assert after == before
 
 
 def test_a_head_commit_setting_turned_on_after_a_skip_clears_the_notice(enabled, monkeypatch):

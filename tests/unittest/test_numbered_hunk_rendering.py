@@ -34,7 +34,7 @@ def test_multi_hunk_rendering_preserves_spacing_and_line_numbers(with_file):
         "20 +added  "
     )
     if with_file:
-        expected = "\n\n## File: 'example.py'\n" + expected
+        expected = "\n\n## File: ' example.py '\n" + expected
 
     assert decouple_and_convert_to_hunks_with_lines_numbers(patch, file) == expected
 

@@ -50,9 +50,7 @@ _install_botocore_credential_filter()
 
 def setup_logger(level: str = "INFO", fmt: LoggingFormat = LoggingFormat.CONSOLE):
     _install_botocore_credential_filter()
-    level: int = logging.getLevelName(level.upper())
-    if type(level) is not int:
-        level = logging.INFO
+    level = logging.getLevelNamesMapping().get(level.upper(), logging.INFO)
 
     if fmt == LoggingFormat.JSON and os.getenv("LOG_SANE", "0").lower() == "0":  # better debugging github_app
         logger.remove(None)
@@ -66,7 +64,7 @@ def setup_logger(level: str = "INFO", fmt: LoggingFormat = LoggingFormat.CONSOLE
             diagnose=False,
             backtrace=False,
         )
-    elif fmt == LoggingFormat.CONSOLE: # does not print the 'extra' fields
+    elif fmt == LoggingFormat.CONSOLE:  # does not print the 'extra' fields
         logger.remove(None)
         logger.add(
             sys.stdout,

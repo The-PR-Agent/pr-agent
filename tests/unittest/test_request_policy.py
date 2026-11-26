@@ -186,6 +186,19 @@ async def test_numeric_include_labels_still_gate_command_entrypoint(environment,
     command.run.assert_awaited_once()
 
 
+@pytest.mark.parametrize("numeric_label", [0, 123])
+async def test_numeric_ignore_labels_still_skip_command_entrypoint(environment, monkeypatch, numeric_label):
+    settings, provider = environment
+    settings.set("config.ignore_pr_labels", numeric_label)
+    command = SimpleNamespace(run=AsyncMock())
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=command))
+
+    provider.get_request_policy_metadata.return_value = {**METADATA, "labels": [str(numeric_label)]}
+    assert await agent.PRAgent().handle_request(URL, "/review") is RequestOutcome.SKIPPED
+    provider.get_request_policy_metadata.assert_called_with({"labels"})
+    command.run.assert_not_awaited()
+
+
 async def test_provider_without_metadata_uses_empty_default(environment, monkeypatch):
     from pr_agent.git_providers.git_provider import GitProvider
     settings, provider = environment

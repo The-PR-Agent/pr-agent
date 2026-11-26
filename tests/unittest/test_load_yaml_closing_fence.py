@@ -44,6 +44,18 @@ def test_a_primed_answer_keeps_its_value_intact():
     assert load_yaml("response: |\n  hello\n```")["response"] == "hello\n"
 
 
+def test_strip_a_four_backtick_wrapper_around_content_with_its_own_fence():
+    wrapped = "````yaml\nresponse: |\n  ```python\n  print(1)\n  ```\n````"
+
+    assert load_yaml(wrapped)["response"].strip() == "```python\nprint(1)\n```"
+
+
+def test_a_wrapped_block_scalar_keeps_its_trailing_newline():
+    wrapped = "```yaml\nresponse: |\n  hello\n```"
+
+    assert load_yaml(wrapped)["response"] == "hello\n"
+
+
 def test_an_unfenced_response_parses_unchanged():
     """Keep the ordinary unfenced case working."""
     assert load_yaml("response: |\n  hello\n")["response"].strip() == "hello"

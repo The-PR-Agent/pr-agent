@@ -11,6 +11,7 @@ import aiohttp
 from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
 from pr_agent.algo.token_budget import AttemptTokenBudget, FallbackEligibleError
 from pr_agent.algo.token_handler import TokenHandler
+from pr_agent.algo.user_regex import UserRegexBudget, compile_user_regex
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
@@ -1088,7 +1089,7 @@ def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html=
     custom_regex_str = settings.get("branch_issue_regex") or settings.get("config.branch_issue_regex", "") or ""
     if custom_regex_str:
         try:
-            pattern = re.compile(custom_regex_str)
+            pattern = compile_user_regex(custom_regex_str)
             if pattern.groups < 1:
                 get_logger().error(
                     "branch_issue_regex must contain at least one capturing group for the issue number; "
@@ -1100,7 +1101,11 @@ def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html=
             return []
     else:
         pattern = BRANCH_ISSUE_PATTERN
-    for match in pattern.finditer(branch_name):
+    if pattern is BRANCH_ISSUE_PATTERN:
+        matches = pattern.finditer(branch_name)
+    else:
+        matches = UserRegexBudget().run(pattern, "finditer", branch_name, "config.branch_issue_regex") or []
+    for match in matches:
         try:
             issue_number = match.group(1)
         except IndexError:

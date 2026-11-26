@@ -30,7 +30,7 @@ from pr_agent.git_providers.git_provider import (
     get_git_ssl_env,
     redact_credentials,
 )
-from pr_agent.git_providers.local_git_provider import PullRequestMimic
+from pr_agent.git_providers.local_git_provider import PullRequestMimic, read_diff_side
 from pr_agent.git_providers.request_timeout import get_http_request_timeout
 from pr_agent.log import get_logger
 
@@ -440,14 +440,8 @@ class GerritProvider(GitProvider):
             elif diff_item.renamed_file:
                 edit_type = EDIT_TYPE.RENAMED
             try:
-                if diff_item.a_blob is not None:
-                    original_file_content_str = diff_item.a_blob.data_stream.read().decode("utf-8")
-                else:
-                    original_file_content_str = ""  # empty file
-                if diff_item.b_blob is not None:
-                    new_file_content_str = diff_item.b_blob.data_stream.read().decode("utf-8")
-                else:
-                    new_file_content_str = ""  # empty file
+                original_file_content_str = read_diff_side(diff_item.a_blob)
+                new_file_content_str = read_diff_side(diff_item.b_blob)
                 patch = diff_item.diff.decode("utf-8")
             except UnicodeDecodeError as e:
                 # Keep the file in the inventory: the shared diff renderer shows a manual-review

@@ -1235,14 +1235,22 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
     # the label and the blanks that follow it share a single optional group: two separate
     # blank runs would let the engine try every way of splitting a long run of blanks
     # when the fence is not followed by a line break, which backtracks quadratically
-    unfenced = re.sub(r'^```[ \t]*(?:(?i:yaml|yml)[ \t]*)?(?=\r?\n)', '', response_text)
+    opening_fence = ""
+    fence_match = re.match(r'^(?P<fence>`{3,})[ \t]*(?:(?i:yaml|yml)[ \t]*)?(?=\r?\n)', response_text)
+    if fence_match:
+        opening_fence = fence_match.group("fence")
+        unfenced = response_text[fence_match.end():]
+    else:
+        unfenced = response_text
     if unfenced == response_text:
         # Strip an unfenced "yaml" label only when it is a complete line, so a key such as
         # "yaml_config" is not truncated. A bare removeprefix('yaml') would shorten it to "_config".
         unfenced = re.sub(r'^yaml(?:[ \t]*\r?\n|\Z)', '', response_text, count=1)
     response_text = unfenced.rstrip()
     response_text = drop_sign_off_after_wrapper_fence(response_text)
-    if response_text.split('\n')[-1] == '```':
+    if opening_fence:
+        response_text = re.sub(rf'(?m)^{re.escape(opening_fence)}`*[ \t]*\Z', '', response_text)
+    elif response_text.split('\n')[-1] == '```':
         response_text = response_text.removesuffix('```')
     response_text = sanitize_yaml_control_chars(response_text)
     response_text_original_sanitized = sanitize_yaml_control_chars(response_text_original, log=False)
@@ -1617,9 +1625,22 @@ def set_custom_labels(variables, git_provider=None):
 def filter_generated_labels(labels: list[str]) -> list[str]:
     """Keep model-generated labels within the enabled vocabulary, not user labels."""
     names = [label.value for label in PRType]
+
+    def description_key(text: str) -> str:
+        # The prompt shows a description with its newlines and quotes escaped; a model may echo either form.
+        return " ".join(text.replace("\\n", " ").replace("\\'", "'").split()).lower()
+
+    by_description = {}
     if get_settings().config.get("enable_custom_labels", False):
         custom_labels = get_settings().get("custom_labels", {}) or _DEFAULT_CUSTOM_LABELS
         names.extend(str(label) for label in custom_labels)
+        if isinstance(custom_labels, dict):
+            for name, value in custom_labels.items():
+                description = value.get("description", "") if isinstance(value, dict) else str(value)
+                key = description_key(description) if isinstance(description, str) else ""
+                if key:
+                    # A description shared by several labels names none of them.
+                    by_description[key] = None if key in by_description else str(name)
     allowed = {name.lower() for name in names}
     # Resolve prompt enum keys (e.g. bug_fix) to allowed display names.
     aliases = {name.lower().replace(" ", "_"): name for name in names}
@@ -1630,6 +1651,9 @@ def filter_generated_labels(labels: list[str]) -> list[str]:
             accepted.append(label.strip())
         elif isinstance(label, str) and label.strip().lower() in aliases:
             accepted.append(aliases[label.strip().lower()])
+        # The prompt enum's value is the description, and a model may answer with it instead of the key.
+        elif isinstance(label, str) and (name := by_description.get(description_key(label))):
+            accepted.append(name)
         else:
             dropped.append(label)
     if dropped:
@@ -2133,12 +2157,15 @@ def process_description(description_full: str) -> tuple[str, list]:
                         elif not long_summary.startswith('*'):
                             long_summary = f"* {long_summary}"
 
-                        files.append({
+                        file_metadata = {
                             'short_file_name': short_filename,
                             'full_file_name': long_filename,
                             'short_summary': short_summary,
                             'long_summary': long_summary
-                        })
+                        }
+                        if not escaped:
+                            file_metadata["_legacy_filename"] = True
+                        files.append(file_metadata)
                     elif '<code>...</code>' in file_data:
                         pass # PR with many files. some did not get analyzed
                     else:

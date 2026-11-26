@@ -76,6 +76,9 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "ollama": frozenset({"api_base"}),
     "openai": frozenset({"api_base", "api_type", "api_version"}),
     "openrouter": frozenset({"api_base"}),
+    # The CLI sets these for --diff-file and --stdin. Any plain_diff.content switches the command to the
+    # plain-diff provider, which writes its output to output_path and json_output_path on the host.
+    "plain_diff": frozenset({"content", "json_output_path", "output_path"}),
     # structural_reach_input_file is read from the host and echoed into the review, and outside
     # GITHUB_WORKSPACE nothing bounds the path. extra_risky_shapes contains custom regex patterns
     # compiled and run against diff hunks, so repository settings must not specify untrusted patterns.
@@ -126,8 +129,11 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # arguments must not impersonate or disable automatic webhook processing.
     # system_instructions is appended to every model system prompt. A repository or comment
     # must not be able to remove or replace an operator's mandatory policy.
+    # custom_comment_footer is operator text published under the bot's comments, so a
+    # repository or comment must not be able to rewrite or remove it.
     "config": frozenset({
         "bot_display_name",
+        "custom_comment_footer",
         "extra_config_url",
         "description_issue_regex",
         "enable_auto_approval",
@@ -145,10 +151,15 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
 }
 
 
+def canonical_setting_name(name) -> str:
+    """Normalise a setting name the way Dynaconf resolves it on lookup."""
+    return str(name).strip().upper().lower()
+
+
 def is_repo_host_only_key(section: str, key: str) -> bool:
     """Return whether a repository must not override a setting."""
-    section = section.lower()
-    key = key.lower()
+    section = canonical_setting_name(section)
+    key = canonical_setting_name(key)
     allowed_keys = REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section)
     if allowed_keys is not None and key not in allowed_keys:
         return True
@@ -163,12 +174,12 @@ def is_repo_host_only_key(section: str, key: str) -> bool:
 
 def should_skip_config_key(section: str, key: str, skip_keys=()) -> bool:
     """Return whether a setting must be omitted from published configuration output."""
-    key_lower = str(key).lower()
-    if is_repo_host_only_key(str(section), key_lower):
+    key_name = canonical_setting_name(key)
+    if is_repo_host_only_key(str(section), key_name):
         return True
-    if key_lower in {str(skip_key).lower() for skip_key in skip_keys}:
+    if key_name in {canonical_setting_name(skip_key) for skip_key in skip_keys}:
         return True
-    return any(part in key_lower for part in ("key", "secret", "token", "private"))
+    return any(part in key_name for part in ("key", "secret", "token", "private"))
 
 
 # Keys that repositories may still configure from their own default-branch settings but that
@@ -209,6 +220,8 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "ignore": frozenset({"regex"}),
     "litellm": frozenset({"add_session_id_to_requests", "turn_off_message_logging"}),
     "openrouter": frozenset({"reasoning_effort", "reasoning_max_tokens"}),
+    # Host-only in repository settings too (see REPO_HOST_ONLY_KEYS_BY_SECTION); the CLI sets them directly.
+    "plain_diff": frozenset({"content", "json_output_path", "output_path"}),
     "pr_description": frozenset({"max_ai_calls"}),
     # PR comments must not enable ticket reads performed with the operator's credentials.
     "pr_questions": frozenset({"resolve_threads", "use_ticket_context"}),

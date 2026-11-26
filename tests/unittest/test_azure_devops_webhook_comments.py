@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import unquote
 
 import pytest
+from starlette_context import context, request_cycle_context
 
 from pr_agent.agent import pr_agent as pr_agent_module
 from pr_agent.algo.run_details import record_command_failure
@@ -86,23 +87,96 @@ def test_addressed_pr_comment_becomes_threaded_ask():
                        "__pr_agent_encoded_text__:check%20this%20PR")
 
 
-def test_addressed_comment_without_line_range_becomes_threaded_ask():
+FILE_QUESTION_CONTEXT_KEYS = (
+    "file_question_path",
+    "file_question_comment_id",
+    "file_question_origin_comment_id",
+    "file_question_comment_url",
+)
+# A thread on a whole file: its context has the file's path and no line range.
+FILE_THREAD_CONTEXT = SimpleNamespace(
+    file_path="/src/app.cs",
+    left_file_start=None,
+    left_file_end=None,
+    right_file_start=None,
+    right_file_end=None,
+)
+
+
+async def _dispatch_comment_event(content, thread_context):
+    """Deliver a comment in thread 22 to the webhook handler and return each request it hands to PRAgent, with the
+    file question recorded in the request context at that point."""
     provider = MagicMock()
     provider.get_agent_mention_aliases.return_value = AGENT_ALIASES
-    provider.get_thread_context.return_value = SimpleNamespace(
-        file_path="/src/app.cs",
-        left_file_start=None,
-        left_file_end=None,
-        right_file_start=None,
-        right_file_end=None,
-    )
+    provider.get_thread_context.return_value = thread_context
+    provider.get_pr_url.return_value = URL
+    dispatched = []
 
-    command = webhook.handle_line_comment(
-        "@<agent@example.com> check this thread", thread_id=22, comment_id=31, provider=provider
-    )
+    class RecordingAgent:
+        async def handle_request(self, pr_url, request, notify=None, propagate_command_errors=None):
+            dispatched.append((pr_url, request, {key: context.get(key) for key in FILE_QUESTION_CONTEXT_KEYS}))
+            return True
 
-    assert command == ("/ask --comment_id=22 --origin_comment_id=31 "
-                       "__pr_agent_encoded_text__:check%20this%20thread")
+    event = {
+        "eventType": "ms.vss-code.git-pullrequest-comment-event",
+        "resourceVersion": "2.0",
+        "resource": {
+            "comment": {
+                "id": 31,
+                "content": content,
+                "_links": {"threads": {
+                    "href": "https://dev.azure.com/org/_apis/git/repositories/repo/pullRequests/1/threads/22",
+                }},
+            },
+            "pullRequest": {"pullRequestId": 1, "repository": {"webUrl": "https://dev.azure.com/org/proj/_git/repo"}},
+        },
+    }
+    with request_cycle_context({}), patch.object(webhook, "PRAgent", RecordingAgent), \
+            patch.object(webhook, "get_git_provider_with_context", return_value=provider):
+        response = await webhook.handle_request_azure(event, {})
+    assert response.status_code == 202
+    return dispatched
+
+
+@pytest.mark.parametrize("comment", [
+    "/ask check this file",
+    "/ask_question check this file",
+    "@<agent@example.com> check this file",
+])
+async def test_question_in_a_thread_on_a_whole_file_is_asked_about_that_file(comment):
+    dispatched = await _dispatch_comment_event(comment, FILE_THREAD_CONTEXT)
+
+    # Answered in the thread from that file's diff, with the thread's other comments as history.
+    assert dispatched == [(
+        URL,
+        "/ask --comment_id=22 --origin_comment_id=31 __pr_agent_encoded_text__:check%20this%20file",
+        {
+            "file_question_path": "/src/app.cs",
+            "file_question_comment_id": 22,
+            "file_question_origin_comment_id": 31,
+            "file_question_comment_url": f"{URL}?discussionId=22",
+        },
+    )]
+
+
+@pytest.mark.parametrize(("thread_context", "expected_request"), [
+    # A thread on the PR has no context: the question is about the whole PR.
+    (None, "/ask --comment_id=22 --origin_comment_id=31 __pr_agent_encoded_text__:check%20this"),
+    # Without a file path there is no file to ask about.
+    (SimpleNamespace(**{**vars(FILE_THREAD_CONTEXT), "file_path": None}),
+     "/ask --comment_id=22 --origin_comment_id=31 __pr_agent_encoded_text__:check%20this"),
+    (SimpleNamespace(**{**vars(FILE_THREAD_CONTEXT), "file_path": " "}),
+     "/ask --comment_id=22 --origin_comment_id=31 __pr_agent_encoded_text__:check%20this"),
+    # A question on lines becomes /ask_line.
+    (SimpleNamespace(**{**vars(FILE_THREAD_CONTEXT), "right_file_start": SimpleNamespace(line=8),
+                        "right_file_end": SimpleNamespace(line=10)}),
+     "/ask_line --line_start=8 --line_end=10 --side=right --file_name=%2Fsrc%2Fapp.cs --file_name_encoded=true "
+     "--comment_id=22 --origin_comment_id=31 __pr_agent_encoded_text__:check%20this"),
+])
+async def test_question_outside_a_thread_on_a_whole_file_records_no_file_question(thread_context, expected_request):
+    dispatched = await _dispatch_comment_event("/ask check this", thread_context)
+
+    assert dispatched == [(URL, expected_request, dict.fromkeys(FILE_QUESTION_CONTEXT_KEYS))]
 
 
 def test_addressed_comment_uses_available_line_position():

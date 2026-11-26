@@ -17,9 +17,10 @@ class NoLinearMembership(list):
 
 
 @pytest.mark.parametrize("available_tokens", [300, 14])
-def test_compressed_diff_metadata_reuses_included_file_membership(monkeypatch, available_tokens):
+@pytest.mark.parametrize("return_prepared", [False, True])
+def test_compressed_diff_metadata_reuses_included_file_membership(monkeypatch, available_tokens, return_prepared):
     included_files = NoLinearMembership(["included.py"])
-    included_files.forbid_iteration = available_tokens == 14
+    included_files.forbid_iteration = available_tokens == 14 and not return_prepared
     file_dict = {
         "included.py": {"edit_type": EDIT_TYPE.MODIFIED},
         "added.py": {"edit_type": EDIT_TYPE.ADDED},
@@ -51,7 +52,10 @@ def test_compressed_diff_metadata_reuses_included_file_membership(monkeypatch, a
         get_filtered_diff_file_names=lambda: [],
     )
 
-    result = pr_processing.get_pr_diff(provider, handler, "test-model")
+    result = pr_processing.get_pr_diff(provider, handler, "test-model", return_prepared=return_prepared)
+    if return_prepared:
+        assert result.deleted_files_list == ["deleted.py"]
+        result = result.diff
 
     assert result.startswith("original diff")
     assert included_files == ["included.py"]

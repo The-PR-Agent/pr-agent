@@ -149,18 +149,15 @@ def parse_review_state(comment_body: str) -> ParsedReviewState:
 
 
 def split_review_state_marker(comment_body: str) -> tuple[str, str]:
-    """Split a comment into its human text and its hidden state marker.
-
-    Returns ``(body, marker)``; ``marker`` is ``""`` when the comment carries no
-    complete marker. Providers that cap comment length use this to keep the
-    marker intact while truncating only the human text.
-    """
     raw = comment_body or ""
-    match = _STATE_MARKER_RE.search(raw)
-    if match is None:
+    body = raw.rstrip()
+    start = body.rfind(_STATE_MARKER_NAMESPACE)
+    match = _STATE_MARKER_RE.fullmatch(body, start) if start >= 0 else None
+    # a payload holding "-->" would end the hidden comment early and show the rest
+    if (match is None or "-->" in match.group("payload") or "--!>" in match.group("payload")
+            or not parse_review_state(match.group()).valid):
         return raw, ""
-    body = (raw[: match.start()] + raw[match.end():]).rstrip()
-    return body, match.group(0)
+    return body[:start].rstrip(), match.group()
 
 
 def serialize_review_state(state: Mapping[str, Any]) -> str:

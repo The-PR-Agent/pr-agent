@@ -18,6 +18,7 @@ from starlette_context import context
 from pr_agent.algo.comment_identity import (
     PRCommandNoticeIdentity,
     PRDescriptionHeader,
+    PRDescriptionIdentity,
     add_pr_review_identity,
     comment_carries_other_identity,
     comment_matches_identity,
@@ -133,7 +134,7 @@ class IncompletePullRequestFilesError(IncompleteProviderPullRequestFilesError):
         "split it into smaller pull requests and run the command again. Otherwise, retry the command."
     )
     notice = notice_template.format(bot_name="PR-Agent")
-    notice_marker = "<!-- pr-agent:github-incomplete-files -->"
+    notice_marker = PRCommandNoticeIdentity.INCOMPLETE_GITHUB_FILES.value
 
 
 class IncompleteBitbucketPullRequestFilesError(IncompleteProviderPullRequestFilesError):
@@ -680,6 +681,25 @@ class GitProvider(ABC):
         # and update only the description. Implementations must not write the
         # title in that case.
         pass
+
+    def validate_description_json_path(self, path: str) -> None:
+        """Reject a JSON destination that conflicts with a provider's description file, if any."""
+        return None
+
+    def publish_description_comment(self, body: str, *, persistent: bool) -> None:
+        if persistent:
+            self.publish_persistent_comment(
+                body,
+                initial_header="## Title",
+                update_header=True,
+                name="describe",
+                final_update_message=False,
+                identity_marker=PRDescriptionIdentity.PERSISTENT.value,
+                legacy_initial_header="## Title",
+                require_agent_authorship=True,
+            )
+        else:
+            self.publish_comment(body)
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         """Publish code suggestions through provider-specific preparation and payload hooks."""

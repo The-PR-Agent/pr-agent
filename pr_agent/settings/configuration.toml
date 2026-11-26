@@ -39,6 +39,7 @@ num_retries = 4 # same-model retries of a request the provider rejects (429, 5xx
 skip_keys = []
 custom_reasoning_model = false # when true, disables system messages and temperature controls for models that don't support chat-style inputs
 system_instructions="" # Host-only instructions appended to every command's system prompt; repository settings and comment arguments cannot set it.
+custom_comment_footer="" # Host-only Markdown text added to the end of command results, including /describe PR descriptions. See [docs](additional_configurations.md).
 response_language="en-US" # PR response locale (e.g., "en-US", "it-IT"), also used for fixed comment text; applies only during each command. See additional_configurations.md.
 repo_context_files = ["AGENTS.md"] # Prompt context files: paths, alternatives, globs, sibling entries; [] disables. See [docs](additional_configurations.md).
 # The repo-context cache is keyed on the revision read: the PR target commit for target-branch
@@ -245,7 +246,7 @@ enable_pr_diagram=true # adds a section with a diagram of the PR changes
 pr_diagram_direction='adaptive' # 'adaptive', 'LR', 'TD'. 'adaptive' picks the direction from the shape of the diagram
 pr_diagram_direction_threshold=5 # with 'adaptive', a chain longer than this many nodes is drawn top-down
 # describe as comment
-publish_description_as_comment=false
+publish_description_as_comment=false # When true, publish a comment; [local Git](local_git_provider.md#output-files) writes it to `local.description_path`.
 publish_description_as_comment_persistent=true
 ## changes walkthrough section
 enable_semantic_files_types=true
@@ -546,13 +547,14 @@ allow_fallbacks = true # when provider_order is set, allow routing beyond the li
 # (probed against litellm's bundled reasoning metadata or the Grok registry,
 # or listed in additional_reasoning_effort_models).
 # Valid values: "none", "minimal", "low", "medium", "high", "xhigh", "max".
-# OpenRouter normalizes "max" to "xhigh" for LiteLLM/OpenRouter compatibility.
+# After model-specific clamps, OpenRouter normalizes remaining "max" values to "xhigh"
+# for LiteLLM/OpenRouter compatibility.
 # Model-specific support varies. For models not covered by PR-Agent's clamps, do not
 # assume "none" disables reasoning; check the selected model and provider's support.
 reasoning_effort = ""
 # Use a positive value to override global effort and non-none OpenRouter-specific efforts.
 # Keep reasoning disabled for explicit openrouter.reasoning_effort = "none", except on
-# Grok 4.5/4.6, Gemini 3.7/3.8 Flash, Gemini 4 Argon, and the GPT-6 models whose pages omit "none"
+# Grok 4.5/4.6, Gemini 3.7/3.8 Flash, Gemini 4 Argon/Hydrogen, and the GPT-6 models whose pages omit "none"
 # (GPT-6 Astra and GPT-6.1 Sol). Clamp "none" to the lowest supported effort there
 # before applying the budget, so a positive budget wins.
 # Keep max_tokens greater than the reasoning budget where the provider requires it.

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from atlassian.bitbucket import Bitbucket
 from requests.exceptions import ReadTimeout, RequestException
 from starlette_context import request_cycle_context
 
@@ -30,6 +31,7 @@ from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.commands.pr_reviewer import PRReviewer, _code_lines, _review_failure_comment
 from pr_agent.config_loader import get_settings, safe_request_cycle_context
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
 from pr_agent.git_providers.git_provider import (
     GitProvider,
     IncompleteBitbucketPullRequestFilesError,
@@ -76,6 +78,87 @@ def test_merge_recommendation_status_is_opt_in(monkeypatch):
     monkeypatch.setitem(settings.config, "publish_output", False)
     reviewer._publish_merge_recommendation_status()
     provider.publish_merge_recommendation_status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_merge_recommendation_status_published_once_when_review_comment_suppressed(monkeypatch):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    provider = MagicMock()
+    provider.get_files.return_value = ["app.py"]
+    provider.get_diff_files.return_value = []
+    provider.publish_merge_recommendation_status.return_value = True
+
+    reviewer = _make_reviewer(provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+
+    def prepare_review():
+        reviewer._merge_recommendation_status = "no_concerns_found"
+        return "## PR Reviewer Guide\n\nNo major issues detected"
+
+    async def predict(*args, **kwargs):
+        reviewer.prediction = "review:\n  key_issues_to_review: []\n"
+
+    reviewer._prepare_pr_review = prepare_review
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", predict)
+
+    settings = get_settings()
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.config, "is_auto_command", True)
+    monkeypatch.setitem(settings.pr_reviewer, "publish_output_no_suggestions", False)
+    monkeypatch.setitem(settings.pr_reviewer, "publish_merge_recommendation_status", True)
+
+    await reviewer._run_review()
+
+    provider.publish_comment.assert_not_called()
+    provider.publish_merge_recommendation_status.assert_called_once_with("no_concerns_found")
+
+
+@pytest.mark.asyncio
+async def test_merge_recommendation_status_error_does_not_skip_finalizer(monkeypatch, tmp_path):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    output = tmp_path / "review.json"
+    provider = MagicMock()
+    provider.get_files.return_value = ["app.py"]
+    provider.get_diff_files.return_value = []
+    provider.publish_merge_recommendation_status.side_effect = RuntimeError("status API down")
+
+    reviewer = _make_reviewer(provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    expected = {"review": {"merge_recommendation": "no_concerns_found"}, "usage": {}}
+
+    def prepare_review():
+        reviewer._merge_recommendation_status = "no_concerns_found"
+        reviewer._structured_review_data = expected
+        return "## PR Reviewer Guide\n\nNo major issues detected"
+
+    async def predict(*args, **kwargs):
+        reviewer.prediction = "review:\n  key_issues_to_review: []\n"
+
+    reviewer._prepare_pr_review = prepare_review
+    reviewer.auto_approve_logic = MagicMock()
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", predict)
+
+    settings = get_settings()
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.config, "is_auto_command", True)
+    monkeypatch.setitem(settings.pr_reviewer, "publish_output_no_suggestions", False)
+    monkeypatch.setitem(settings.pr_reviewer, "publish_merge_recommendation_status", True)
+
+    token = review_json_output_path.set(str(output))
+    try:
+        await reviewer._run_review()
+    finally:
+        review_json_output_path.reset(token)
+
+    provider.publish_merge_recommendation_status.assert_called_once_with("no_concerns_found")
+    reviewer.auto_approve_logic.assert_called_once_with(None, review_completed=True)
+    assert json.loads(output.read_text(encoding="utf-8")) == expected
 
 
 @pytest.mark.asyncio
@@ -235,6 +318,8 @@ async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_r
         add_line_numbers_to_hunks=True,
         disable_extra_lines=False,
         return_remaining_files=True,
+        return_prepared=True,
+        defer_file_notices=True,
     )
     assert reviewer.patches_diff == "diff"
     assert reviewer.remaining_files_list == ["src/one.py", "docs/two.md"]
@@ -2227,6 +2312,55 @@ async def test_run_does_not_publish_an_empty_review(
     git_provider.remove_comment.assert_called_once_with(progress_comment)
 
 
+def test_github_action_output_uses_computed_merge_verdict():
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = MagicMock()
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.get_verdict_diff_files.return_value = []
+    reviewer.git_provider.get_pr_file_paths.return_value = ["src/app.py"]
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.git_provider.publish_structured_review = None
+    reviewer.pr_url = "https://example/pr/1"
+    reviewer.token_handler = MagicMock()
+    reviewer.remaining_files_list = []
+    reviewer.partial_files_list = []
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {"require_merge_recommendation": True}
+    reviewer.prediction = (
+        "review:\n"
+        "  merge_recommendation: no_concerns_found\n"
+        "  risk_level: low\n"
+        "  key_issues_to_review: []\n"
+    )
+    reviewer.prediction_data = None
+    reviewer.review_chunk_count = 1
+    reviewer.review_failed_chunk_count = 0
+    checks = [{"name": "CI status", "passed": False, "details": "failed"}]
+    snapshots = []
+
+    def snapshot_action_output(data, key_name):
+        snapshots.append(copy.deepcopy(data))
+
+    with (
+        patch(
+            "pr_agent.commands.pr_reviewer.github_action_output",
+            side_effect=snapshot_action_output,
+        ) as action_output,
+        patch(
+            "pr_agent.commands.pr_reviewer.compute_merge_verdict",
+            return_value={"recommendation": "needs_review", "checks": checks, "decided_by": ["CI status"]},
+        ),
+        patch("pr_agent.commands.pr_reviewer.convert_to_markdown_v2", return_value="review"),
+    ):
+        reviewer._prepare_pr_review()
+
+    action_output.assert_called_once()
+    review = snapshots[0]["review"]
+    assert review["merge_recommendation"] == "needs_review"
+    assert review["merge_recommendation_checks"] == checks
+
+
 @pytest.mark.asyncio
 async def test_run_publishes_failure_result_when_progress_comment_has_no_handle(monkeypatch):
     from pr_agent.commands import pr_reviewer as pr_reviewer_module
@@ -2587,9 +2721,11 @@ def review_label_settings():
     settings.pr_reviewer.enable_review_labels_security = original["enable_review_labels_security"]
 
 
-def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels(review_label_settings):
+@pytest.mark.parametrize("stale_effort", ["REVIEW EFFORT 1/5", "Review effort: 1/5", "Review effort [1-5]: 1"])
+def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels(review_label_settings, stale_effort):
     git_provider = MagicMock()
-    git_provider.get_pr_labels.return_value = ["Review effort 1/5", "Possible security concern", "keep-me"]
+    user_labels = ["Review effort::high", "Possible security concern: triaged", "keep-me"]
+    git_provider.get_pr_labels.return_value = [stale_effort, "Possible security concern", *user_labels]
     reviewer = _make_reviewer(git_provider)
     data = {
         "review": {
@@ -2603,7 +2739,7 @@ def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels(re
     git_provider.publish_labels.assert_called_once_with([
         "Review effort 3/5",
         "Possible security concern",
-        "keep-me",
+        *user_labels,
     ])
 
 
@@ -2885,6 +3021,41 @@ async def test_nonpersistent_review_adds_identity_for_incremental_capable_provid
     ]
     assert len(published_review) == 1
     assert expected_identity in published_review[0].args[0]
+
+
+@pytest.mark.parametrize("persistent", [True, False], ids=["persistent", "nonpersistent"])
+async def test_bitbucket_server_publishes_review_with_markdown_identity(monkeypatch, persistent):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    client = MagicMock(spec=Bitbucket)
+    client.url = "https://git.example.com"
+    client.get.return_value = {"version": "10.2.8"}
+    client.get_pull_request.return_value = {"fromRef": {"latestCommit": "head"}}
+    client.get_pull_requests_changes.return_value = [{"path": {"toString": "example.py"}, "type": "ADD"}]
+    client.get_content_of_file.return_value = "value = 1\n"
+    client.get_pull_requests_activities.return_value = []
+    provider = BitbucketServerProvider(
+        f"{client.url}/projects/PROJ/repos/repo/pull-requests/1", bitbucket_client=client,
+    )
+    reviewer = _make_prediction_reviewer(provider)
+    reviewer.vars = {}
+    header = "## PR Reviewer Guide 🔍"
+    reviewer._prepare_pr_review = lambda: f"{header}\n\nSome findings"
+
+    async def fake_retry(*args, **kwargs):
+        reviewer.prediction = _VALID_PREDICTION
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", fake_retry)
+    settings = get_settings()
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.config, "propagate_command_errors", True)
+    monkeypatch.setitem(settings.pr_reviewer, "persistent_comment", persistent)
+
+    await reviewer.run()
+
+    marker = "[pr-agent:review:full]: https://github.com/The-PR-Agent/pr-agent"
+    client.add_pull_request_comment.assert_called_once_with("PROJ", "repo", 1, f"{header}\n\n{marker}\n\nSome findings")
 
 
 async def _render_review_capturing_push(reviewer, publish_output):

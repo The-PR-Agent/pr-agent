@@ -5,7 +5,6 @@ import posixpath
 import re
 import time
 import urllib.parse
-from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from http.client import HTTPException
@@ -43,6 +42,7 @@ from pr_agent.git_providers.diff_parsing import to_hunk_only_patch
 from ..algo.comment_identity import (
     PRCodeSuggestionsHeader,
     PRCodeSuggestionsIdentity,
+    PRCommandNoticeIdentity,
     comment_matches_any_identity,
     get_pr_review_comment_identifiers,
 )
@@ -58,6 +58,8 @@ from ..algo.inline_comment_dedup import (
     marker_fingerprints,
 )
 from ..algo.language_handler import is_valid_file
+from ..algo.mentions import neutralize_gitlab_mentions as _neutralize_gitlab_mentions
+from ..algo.review_finding_state import split_review_state_marker
 from ..algo.token_budget import clip_tokens
 from ..algo.utils import load_large_diff
 from ..config_loader import get_settings
@@ -95,7 +97,7 @@ class IncompleteGitLabDiffError(DiffNotFoundError, IncompleteProviderPullRequest
         "split an unusually large merge request into smaller ones."
     )
     notice = notice_template.format(bot_name="PR-Agent")
-    notice_marker = "<!-- pr-agent:gitlab-incomplete-diff -->"
+    notice_marker = PRCommandNoticeIdentity.INCOMPLETE_GITLAB_DIFF.value
 
 
 class GitLabDiffNotReadyError(IncompleteGitLabDiffError):
@@ -129,315 +131,6 @@ query($project: ID!, $ref: String!, $paths: [String!]!) {
   }
 }
 """
-
-
-# GitLab matches references after an ASCII-only boundary (Ruby's \w), and decodes entities for @ first.
-# Underscores before the mention can open emphasis (`_@user_`), which leaves the mention live.
-_GITLAB_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_])_*(?:@|&#0{0,5}64;|&#[xX]0{0,4}40;|&commat;)(?=[\w-])")
-_GITLAB_ZERO_WIDTH_SPACE = "\u200b"
-# Autolinked URLs render as links, which GitLab never scans for references. The span stops at Markdown
-# delimiters, so a mention right after a link, code span, quote, emphasis, table cell or escape is still neutralised.
-_GITLAB_AUTOLINK_RE = re.compile(r"(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{1,31}://[^\s<>`()\[\]\"'*~|\\]+")
-_GITLAB_TICK_RUN_RE = re.compile(r"`+")
-_GITLAB_FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})")
-_GITLAB_ATX_RE = re.compile(r" {0,3}#{1,6}(?:\s|$)")
-_GITLAB_THEMATIC_RE = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
-_GITLAB_SETEXT_RE = re.compile(r" {0,3}(?:=+|-+)[ \t]*$")
-_GITLAB_QUOTE_RE = re.compile(r" {0,3}>")
-_GITLAB_LIST_RE = re.compile(r"( *)([-+*]|\d{1,9}[.)])( +|$)")
-_GITLAB_TABLE_CELL_RE = re.compile(r":?-+:?")
-_GITLAB_HTML_BLOCK_TAGS = (
-    "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|"
-    "dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|"
-    "header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|"
-    "param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul"
-)
-# CommonMark HTML blocks that can interrupt paragraph
-# An empty tuple means block ends at a blank line
-_GITLAB_HTML_BLOCK_STARTS = (
-    (re.compile(r"<(?:pre|script|style|textarea)(?:[\s>]|$)", re.IGNORECASE),
-     ("</pre>", "</script>", "</style>", "</textarea>")),
-    (re.compile(r"<!--"), ("-->",)),
-    (re.compile(r"<\?"), ("?>",)),
-    (re.compile(r"<![A-Za-z]"), (">",)),
-    (re.compile(r"<!\[CDATA\["), ("]]>",)),
-    (re.compile(rf"</?(?:{_GITLAB_HTML_BLOCK_TAGS})(?:[\s>]|/>|$)", re.IGNORECASE), ()),
-)
-
-
-def _gitlab_html_block_ends(line: str) -> tuple[str, ...] | None:
-    """Return the end markers of the HTML block the line starts, or None."""
-    for start, ends in _GITLAB_HTML_BLOCK_STARTS:
-        if start.match(line):
-            return ends
-    return None
-
-
-def _is_gitlab_table_delimiter(line: str) -> bool:
-    """Return True when the line is a GFM table delimiter row."""
-    if "|" not in line:
-        return False
-    cells = line.strip()
-    cells = cells.removeprefix("|")
-    cells = cells.removesuffix("|")
-    parts = cells.split("|")
-    if len(parts) < 2:
-        return False
-    return all(_GITLAB_TABLE_CELL_RE.fullmatch(part.strip()) for part in parts)
-
-
-def _gitlab_line_flags(text: str) -> tuple[dict[int, bool], list[int], set[int]]:
-    """Classify each line as code and collect offsets where a new block or an HTML block line starts."""
-    code_by_start: dict[int, bool] = {}
-    html_starts: set[int] = set()
-    boundaries: list[int] = []
-    fence_char = None
-    fence_size = 0
-    html_ends: tuple[str, ...] | None = None
-    indented_code = False
-    list_indents: list[int] = []
-    in_table = False
-    prev_blank = True
-    prev_paragraph = False
-    boundary_next = False
-    prev_start = None
-    offset = 0
-
-    for raw_line in text.split("\n"):
-        line = raw_line.removesuffix("\r")
-        stripped = line.strip()
-        is_code = False
-        boundary = boundary_next
-        boundary_next = False
-        paragraph = False
-        in_html = html_ends is not None
-
-        if in_html:
-            boundary = True
-            if html_ends and any(end in line.lower() for end in html_ends):
-                html_ends = None
-                boundary_next = True
-            elif not html_ends and not stripped:
-                html_ends = None
-        elif fence_char is not None:
-            is_code = True
-            fence = _GITLAB_FENCE_RE.match(line)
-            if (fence and fence.group(1)[0] == fence_char and len(fence.group(1)) >= fence_size
-                    and not line[fence.end():].strip()):
-                fence_char = None
-                fence_size = 0
-        else:
-            fence = _GITLAB_FENCE_RE.match(line)
-            if fence and not (fence.group(1)[0] == "`" and "`" in line[fence.end():]):
-                marker = fence.group(1)
-                fence_char, fence_size = marker[0], len(marker)
-                is_code = True
-                boundary = True
-
-        if not in_html and not is_code and fence_char is None:
-            indent = 0
-            for char in line:
-                if char == " ":
-                    indent += 1
-                elif char == "\t":
-                    indent += 4 - (indent % 4)
-                else:
-                    break
-
-            if stripped:
-                while list_indents and indent < list_indents[-1]:
-                    list_indents.pop()
-            base_indent = list_indents[-1] if list_indents else 0
-            relative_indent = indent - base_indent
-
-            if indented_code:
-                if not stripped:
-                    is_code = True
-                elif relative_indent >= 4:
-                    is_code = True
-                else:
-                    indented_code = False
-
-            if (not is_code and not indented_code and stripped and prev_blank
-                    and relative_indent >= 4):
-                indented_code = True
-                is_code = True
-                boundary = True
-
-            html_block = None
-            if not is_code and stripped and relative_indent <= 3:
-                html_block = _gitlab_html_block_ends(line.lstrip(" \t"))
-            if html_block is not None:
-                in_html = True
-                boundary = True
-                in_table = False
-                if not html_block:
-                    html_ends = html_block
-                elif any(end in line.lstrip(" \t")[1:].lower() for end in html_block):
-                    boundary_next = True
-                else:
-                    html_ends = html_block
-            elif not is_code:
-                list_match = _GITLAB_LIST_RE.match(line)
-                is_list_item = bool(list_match) and relative_indent <= 3
-                single_line_block = False
-                if not stripped:
-                    boundary = True
-                    in_table = False
-                elif _is_gitlab_table_delimiter(line):
-                    boundary = True
-                    in_table = True
-                    if prev_start is not None and (not boundaries or boundaries[-1] != prev_start):
-                        boundaries.append(prev_start)
-                elif in_table and "|" in line and not (
-                        _GITLAB_ATX_RE.match(line) or _GITLAB_QUOTE_RE.match(line) or is_list_item):
-                    boundary = True
-                else:
-                    in_table = False
-                    single_line_block = bool(
-                        _GITLAB_ATX_RE.match(line) or _GITLAB_THEMATIC_RE.match(line)
-                        or (prev_paragraph and _GITLAB_SETEXT_RE.match(line)))
-                    if single_line_block:
-                        boundary = True
-                        boundary_next = True
-                    elif _GITLAB_QUOTE_RE.match(line):
-                        boundary = True
-                    else:
-                        paragraph = True
-                        if is_list_item:
-                            boundary = True
-
-                if is_list_item and not single_line_block:
-                    leading = len(list_match.group(1))
-                    marker = list_match.group(2)
-                    spaces = len(list_match.group(3))
-                    content_indent = leading + len(marker) + (spaces if 1 <= spaces <= 4 else 1)
-                    list_indents.append(content_indent)
-
-        code_by_start[offset] = is_code
-        if in_html:
-            html_starts.add(offset)
-        if boundary:
-            boundaries.append(offset)
-        prev_blank = not stripped
-        prev_paragraph = paragraph
-        prev_start = offset
-        offset += len(raw_line) + 1
-
-    return code_by_start, boundaries, html_starts
-
-
-def _gitlab_autolink_spans(text: str) -> tuple[list[int], list[int]]:
-    """Return the sorted start and end offsets of bare URLs that GitLab autolinks."""
-    spans = [(match.start(), match.end()) for match in _GITLAB_AUTOLINK_RE.finditer(text)]
-    return [start for start, _ in spans], [end for _, end in spans]
-
-
-def _in_gitlab_autolink(position: int, url_spans: tuple[list[int], list[int]]) -> bool:
-    """Return True when the offset sits inside an autolinked URL."""
-    starts, ends = url_spans
-    span_index = bisect_right(starts, position) - 1
-    return span_index >= 0 and position < ends[span_index]
-
-
-def _neutralize_gitlab_mentions(text: str) -> str:
-    """Disable GitLab notifications while leaving Markdown code spans untouched."""
-    if not text:
-        return text
-
-    tick_runs: dict[int, list[int]] = {}
-    for run in _GITLAB_TICK_RUN_RE.finditer(text):
-        tick_runs.setdefault(len(run.group()), []).append(run.start())
-
-    code_by_start, boundaries, html_starts = _gitlab_line_flags(text)
-    url_spans = _gitlab_autolink_spans(text)
-
-    output = []
-    index = 0
-    inline_ticks = 0
-    line_start = True
-    line_offset = 0
-
-    while index < len(text):
-        if text[index] == "\n":
-            output.append("\n")
-            index += 1
-            line_start = True
-            line_offset = index
-            continue
-
-        if line_start and not inline_ticks and code_by_start.get(index):
-            line_end = text.find("\n", index)
-            if line_end < 0:
-                line_end = len(text)
-            output.append(text[index:line_end])
-            index = line_end
-            line_start = False
-            continue
-
-        if text[index] == "`":
-            end = index + 1
-            while end < len(text) and text[end] == "`":
-                end += 1
-            ticks = end - index
-            if not inline_ticks:
-                backslashes = 0
-                while index - backslashes > 0 and text[index - backslashes - 1] == "\\":
-                    backslashes += 1
-                if backslashes % 2:
-                    output.append("`")
-                    index += 1
-                    line_start = False
-                    continue
-
-                runs = tick_runs.get(ticks)
-                # Backticks inside a raw HTML block are literal text, not code spans
-                if runs and line_offset not in html_starts:
-                    closer_index = bisect_left(runs, end)
-                    boundary_index = bisect_left(boundaries, end)
-                    boundary = boundaries[boundary_index] if boundary_index < len(boundaries) else len(text)
-                    if closer_index < len(runs) and runs[closer_index] < boundary:
-                        inline_ticks = ticks
-            elif ticks == inline_ticks:
-                inline_ticks = 0
-            output.append(text[index:end])
-            index = end
-            line_start = False
-            continue
-
-        if inline_ticks:
-            char = text[index]
-            output.append(char)
-            index += 1
-            line_start = char == "\n"
-            if line_start:
-                line_offset = index
-            continue
-
-        next_special = index + 1
-        while next_special < len(text) and text[next_special] not in "@`\n":
-            next_special += 1
-        search_start = index
-        while search_start and text[search_start - 1] == "_":
-            search_start -= 1
-        copied = index
-        for mention in _GITLAB_MENTION_RE.finditer(text, search_start, next_special):
-            if _in_gitlab_autolink(mention.start(), url_spans):
-                continue
-            output.append(text[copied:mention.end()])
-            output.append(_GITLAB_ZERO_WIDTH_SPACE)
-            copied = mention.end()
-        output.append(text[copied:next_special])
-        index = next_special
-        if index < len(text) and text[index] == "\n":
-            output.append("\n")
-            index += 1
-            line_start = True
-            line_offset = index
-        else:
-            line_start = False
-
-    return "".join(output)
 
 
 def _is_stale_file_update_error(error: GitlabUpdateError) -> bool:
@@ -685,6 +378,10 @@ class GitLabProvider(GitProvider):
         self.temp_comments = []
         self._published_inline_comment_bodies: list[str] = []
         self._submodule_cache: dict[tuple[str, str, str], list[dict]] = {}
+        # Expanded submodule path -> web address in the submodule's own project.
+        self._submodule_links: dict[str, str] = {}
+        # Submodule project path -> the web address GitLab reported when the project was resolved.
+        self._submodule_web_urls: dict[str, str] = {}
         self.pr_url = merge_request_url
         self._set_merge_request(merge_request_url)
         self.RE_HUNK_HEADER = re.compile(
@@ -905,6 +602,8 @@ class GitLabProvider(GitProvider):
                 get_logger().warning(f"[submodule] skipping {proj_path}: not an authorized sibling repository")
                 self._submodule_cache[key] = []
                 return []
+            if isinstance(web_url := getattr(proj, "web_url", None), str):
+                self._submodule_web_urls[proj_path] = web_url.rstrip("/")
             cmp = proj.repository_compare(old_sha, new_sha)
             if isinstance(cmp, dict):
                 diffs = cmp.get("diffs", []) or []
@@ -980,10 +679,20 @@ class GitLabProvider(GitProvider):
 
             get_logger().info(f"[submodule] {sub_path} url={repo_url} -> proj_path={proj_path}")
             sub_diffs = self._compare_submodule(proj_path, old_sha, new_sha)
+            # gitlab.url is the API address, which need not be the one people browse; it is only the fallback.
+            sub_web_url = self._submodule_web_urls.get(proj_path) or f"{self.gl.url}/{quote(proj_path, safe='/')}"
+            if sub_diffs:
+                self._submodule_links[sub_path] = f"{sub_web_url}/-/compare/{old_sha}...{new_sha}"
             for sd in sub_diffs:
                 sd_diff = sd.get("diff") or ""
                 sd_old = sd.get("old_path") or sd.get("a_path") or ""
                 sd_new = sd.get("new_path") or sd.get("b_path") or sd_old
+                if sd_new:
+                    # A file deleted by the bump only exists at the old commit.
+                    sd_sha = old_sha if sd.get("deleted_file") else new_sha
+                    self._submodule_links[f"{sub_path}/{sd_new}"] = (
+                        f"{sub_web_url}/-/blob/{sd_sha}/{quote(sd_new, safe='/')}"
+                    )
                 out.append({
                     "old_path": f"{sub_path}/{sd_old}" if sd_old else sub_path,
                     "new_path": f"{sub_path}/{sd_new}" if sd_new else sub_path,
@@ -2437,8 +2146,7 @@ class GitLabProvider(GitProvider):
         if is_temporary and not get_settings().config.publish_output_progress:
             get_logger().debug(f"Skipping publish_comment for temporary comment: {mr_comment}")
             return None
-        mr_comment = self.limit_output_characters(
-            _neutralize_gitlab_mentions(mr_comment), self.max_comment_chars)
+        note_body = self._publishable_note(mr_comment)
         # Reply to the triggering GitLab discussion only when explicitly enabled and available.
         if (not is_temporary and self.should_reply_to_trigger_comment()
                 and (comment_id := get_settings().get("comment_id", ""))):
@@ -2451,7 +2159,7 @@ class GitLabProvider(GitProvider):
         # thread (discussion) instead of a plain note. Temporary progress comments are never threaded.
         if as_thread and not is_temporary:
             try:
-                discussion = self.mr.discussions.create({'body': mr_comment})
+                discussion = self.mr.discussions.create({'body': note_body})
             except (GitlabError, RequestException) as e:
                 get_logger().warning(f"Failed to publish comment as a thread, falling back to a note: {e}")
             else:
@@ -2463,14 +2171,22 @@ class GitLabProvider(GitProvider):
                 except (GitlabError, RequestException, KeyError, IndexError, TypeError) as e:
                     get_logger().warning(f"Published review thread but failed to fetch its note: {e}")
                     return None
-        comment = self.mr.notes.create({'body': mr_comment})
+        comment = self.mr.notes.create({'body': note_body})
         if is_temporary:
             self.temp_comments.append(comment)
         return comment
 
     def edit_comment(self, comment, body: str):
-        body = self.limit_output_characters(_neutralize_gitlab_mentions(body), self.max_comment_chars)
-        self.mr.notes.update(comment.id,{'body': body} )
+        self.mr.notes.update(comment.id, {'body': self._publishable_note(body)})
+
+    def _publishable_note(self, body: str) -> str:
+        text, marker = split_review_state_marker(body)
+        text = _neutralize_gitlab_mentions(text)
+        if not marker:
+            return self.limit_output_characters(text, self.max_comment_chars)
+        # the state marker is hidden and must stay byte for byte, or the next run sees changed findings
+        text = self.limit_output_characters(text, max(self.max_comment_chars - len(marker) - 3, 0))
+        return "\n\n".join(part for part in (text, marker) if part) + "\n"
 
     def unresolve_comment_thread(self, comment):
         try:
@@ -2788,7 +2504,7 @@ class GitLabProvider(GitProvider):
         return comments
 
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
-        body = self.limit_output_characters(_neutralize_gitlab_mentions(body), self.max_comment_chars)
+        body = self._publishable_note(body)
         discussion = self.mr.discussions.get(comment_id)
         return discussion.notes.create({'body': body})
 
@@ -3894,19 +3610,15 @@ class GitLabProvider(GitProvider):
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
+        # A file expanded from a submodule is not in this project, so link into the submodule's own.
+        link = getattr(self, "_submodule_links", {}).get(relevant_file) or (
+            f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
+        )
         if relevant_line_start == -1:
-            link = f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
-        elif relevant_line_end:
-            link = (
-                f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
-                f"#L{relevant_line_start}-{relevant_line_end}"
-            )
-        else:
-            link = (
-                f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
-                f"#L{relevant_line_start}"
-            )
-        return link
+            return link
+        if relevant_line_end:
+            return f"{link}#L{relevant_line_start}-{relevant_line_end}"
+        return f"{link}#L{relevant_line_start}"
 
 
     #Clone related

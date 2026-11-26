@@ -25,6 +25,7 @@ from pr_agent.algo.review_json_output import (
     hosted_markdown_config_error,
     hosted_markdown_export,
     review_json_output_path,
+    same_output_file,
 )
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.run_output import get_version
@@ -54,6 +55,13 @@ _JSON_ASK_COMMANDS = frozenset(
     name for name, spec in COMMAND_SPECS.items() if spec.json_output == "ask"
 )
 _OUTPUT_OPTIONS = ("--output", "--json-output")
+# Options that select what to work on, with a correct invocation to show when one follows the command.
+_TARGET_OPTION_EXAMPLES = {
+    "--pr_url": "--pr_url=<URL> review",
+    "--issue_url": "--issue_url=<URL> similar_issue",
+    "--stdin": "--stdin review",
+    "--diff-file": "--diff-file=<path> review",
+}
 _CLI_CONTEXT_CACHES = (
     "git_provider", "repo_settings", "git_files", "diff_files", "authenticated_provider_settings",
     "extra_config_payloads",
@@ -76,9 +84,9 @@ def _cli_settings_scope():
         yield
 
 
-def _resolve_output_option(parser, arg):
+def _resolve_option(parser, arg, options):
     option_text = arg.partition("=")[0]
-    if option_text in _OUTPUT_OPTIONS:
+    if option_text in options:
         return option_text
     if not option_text.startswith("--") or not parser.allow_abbrev:
         return None
@@ -87,9 +95,23 @@ def _resolve_output_option(parser, arg):
     # own option table so misplaced options follow the parser's abbreviation
     # rules and future ambiguous prefixes are left untouched.
     matches = parser._get_option_tuples(option_text)
-    if len(matches) == 1 and matches[0][1] in _OUTPUT_OPTIONS:
+    if len(matches) == 1 and matches[0][1] in options:
         return matches[0][1]
     return None
+
+
+def _resolve_output_option(parser, arg):
+    return _resolve_option(parser, arg, _OUTPUT_OPTIONS)
+
+
+def _reject_misplaced_target_option(parser, args):
+    for arg in getattr(args, "rest", []):
+        option = _resolve_option(parser, arg, _TARGET_OPTION_EXAMPLES)
+        if option:
+            parser.error(
+                f"{option} must appear before the command "
+                f"(for example: {_TARGET_OPTION_EXAMPLES[option]})"
+            )
 
 
 def _validate_output_options(parser, args, diff_mode):
@@ -130,20 +152,8 @@ def _validate_output_options(parser, args, diff_mode):
             )
         if not diff_mode and (not args.pr_url or args.issue_url):
             parser.error("--json-output requires --pr_url, --stdin, or --diff-file")
-    if output is not None and json_output is not None:
-        try:
-            same_destination = os.path.normcase(os.path.realpath(output)) == os.path.normcase(
-                os.path.realpath(json_output)
-            )
-        except (OSError, ValueError):
-            same_destination = False  # Invalid paths will be handled by the output write.
-        if not same_destination:
-            try:
-                same_destination = os.path.samefile(output, json_output)
-            except (OSError, ValueError):
-                pass  # Missing or invalid paths cannot be compared as existing files.
-        if same_destination:
-            parser.error("--output and --json-output must use different files")
+    if output is not None and json_output is not None and same_output_file(output, json_output):
+        parser.error("--output and --json-output must use different files")
 
 
 def _encode_plain_diff_context_args(args):
@@ -263,10 +273,14 @@ def run(inargs=None, args=None):
             except UnicodeDecodeError as e:
                 parser.error(f"--diff-file '{args.diff_file}' is not valid UTF-8 text: {e}")
         else:
-            diff_content = sys.stdin.read()
+            try:
+                diff_content = sys.stdin.read()
+            except UnicodeDecodeError as e:
+                parser.error(f"Could not decode --stdin: {e}")
         if not diff_content.strip():
             parser.error("No diff content received (empty stdin/file)")
     elif not args.pr_url and not args.issue_url:
+        _reject_misplaced_target_option(parser, args)
         parser.print_help()
         return
 

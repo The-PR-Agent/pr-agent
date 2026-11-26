@@ -219,7 +219,7 @@ async def test_invalid_webhook_secret_never_loads_host_settings(monkeypatch):
     assert not calls
 
 
-async def test_cancelled_authentication_does_not_parse_or_dispatch_the_webhook(monkeypatch, tmp_path):
+async def test_cancelled_host_credential_loading_does_not_dispatch_the_webhook(monkeypatch, tmp_path):
     import pr_agent.servers.gitlab_webhook as webhook
 
     config = tmp_path / "host.toml"
@@ -241,6 +241,11 @@ async def test_cancelled_authentication_does_not_parse_or_dispatch_the_webhook(m
             finished.set()
 
     monkeypatch.setattr(webhook, "apply_host_settings", blocked_host_settings)
+    dispatch = AsyncMock()
+    handoff = AsyncMock()
+    monkeypatch.setattr(webhook, "process_gitlab_event", dispatch)
+    monkeypatch.setattr(webhook.lambda_handoff, "handoff_enabled", lambda: True)
+    monkeypatch.setattr(webhook.lambda_handoff, "try_handoff", handoff)
     request = SimpleNamespace(headers={"X-Gitlab-Token": "secret"}, json=AsyncMock(return_value=_note_event()))
     background = BackgroundTasks()
     with request_cycle_context({}):
@@ -250,7 +255,11 @@ async def test_cancelled_authentication_does_not_parse_or_dispatch_the_webhook(m
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            request.json.assert_not_awaited()
+            # The webhook secret was verified before parsing to choose the Host policy.
+            # Cancellation must prevent further parsing, hand-off and local dispatch.
+            request.json.assert_awaited_once()
+            handoff.assert_not_awaited()
+            dispatch.assert_not_awaited()
             assert not background.tasks
         finally:
             released.set()

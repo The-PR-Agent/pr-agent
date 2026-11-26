@@ -16,6 +16,7 @@ from requests.utils import get_encoding_from_headers
 from pr_agent.algo.comment_identity import (
     PRReviewHeader,
     PRReviewIdentity,
+    hidden_marker_forms,
 )
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import global_settings
@@ -1022,7 +1023,76 @@ index 1111111..2222222 100644
         )
 
         assert diff_file.filename == "new name.py"
+        assert diff_file.old_filename == "old name.py"
         assert diff_file.edit_type == EDIT_TYPE.RENAMED
+
+    def test_get_diff_files_preserves_old_filename_for_risk_checks_and_omits_for_non_renames(self):
+        from pr_agent.algo.deterministic_risk import build_risk_checks
+
+        renamed = self._get_single_diff_file(
+            "diff --git a/.pr_agent.toml b/notes.py\n"
+            "similarity index 90%\n"
+            "rename from .pr_agent.toml\n"
+            "rename to notes.py\n"
+            "--- a/.pr_agent.toml\n"
+            "+++ b/notes.py\n"
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "+new\n",
+            "renamed",
+            1,
+            1,
+            "notes.py",
+            ".pr_agent.toml",
+        )
+        added = self._get_single_diff_file(
+            "diff --git a/added.py b/added.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/added.py\n"
+            "@@ -0,0 +1 @@\n"
+            "+x = 1\n",
+            "added",
+            1,
+            0,
+            "added.py",
+            None,
+        )
+        removed = self._get_single_diff_file(
+            "diff --git a/removed.py b/removed.py\n"
+            "deleted file mode 100644\n"
+            "--- a/removed.py\n"
+            "+++ /dev/null\n"
+            "@@ -1 +0,0 @@\n"
+            "-x = 1\n",
+            "removed",
+            0,
+            1,
+            None,
+            "removed.py",
+        )
+        modified = self._get_single_diff_file(
+            "diff --git a/app.py b/app.py\n"
+            "--- a/app.py\n"
+            "+++ b/app.py\n"
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "+new\n",
+            "modified",
+            1,
+            1,
+            "app.py",
+            "app.py",
+        )
+
+        assert renamed.old_filename == ".pr_agent.toml"
+        assert added.old_filename is None
+        assert removed.old_filename is None
+        assert modified.old_filename is None
+
+        risk = build_risk_checks([renamed])
+        assert risk is not None
+        assert any(entry["file"] == ".pr_agent.toml" for entry in risk["sensitive_paths"])
 
     @pytest.mark.parametrize("patch_paths", [
         ["src/first.py", "src/other.py"],
@@ -1173,7 +1243,7 @@ index 1111111..2222222 100644
 
         response.raise_for_status.assert_not_called()
 
-    @pytest.mark.parametrize("comment", [{"id": 123}, 123])
+    @pytest.mark.parametrize("comment", [{"id": 123}, 123, "123"])
     def test_remove_comment_accepts_returned_comment_or_stored_id(self, comment):
         provider = BitbucketProvider.__new__(BitbucketProvider)
         provider.pr = MagicMock()
@@ -1181,6 +1251,38 @@ index 1111111..2222222 100644
         provider.remove_comment(comment)
 
         provider.pr.delete.assert_called_once_with("comments/123")
+
+    def test_remove_comment_deletes_issue_comment_through_the_client(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        cloud_comment = MagicMock()
+        cloud_comment.raw = "failure notice"
+        provider.pr = MagicMock()
+        provider.pr.comments.return_value = [cloud_comment]
+
+        [comment] = provider.get_issue_comments()
+        provider.remove_comment(comment)
+
+        cloud_comment.delete.assert_called_once_with()
+        provider.pr.delete.assert_not_called()
+
+    def test_remove_comment_deletes_unwrapped_cloud_comment_through_the_client(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.pr = MagicMock()
+        cloud_comment = MagicMock()
+
+        provider.remove_comment(cloud_comment)
+
+        cloud_comment.delete.assert_called_once_with()
+        provider.pr.delete.assert_not_called()
+
+    @pytest.mark.parametrize("comment", [None, True, ""])
+    def test_remove_comment_does_not_delete_invalid_reference(self, comment):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.pr = MagicMock()
+
+        provider.remove_comment(comment)
+
+        provider.pr.delete.assert_not_called()
 
     def test_persistent_review_update_does_not_duplicate_when_status_message_fails(self):
         provider = BitbucketProvider.__new__(BitbucketProvider)
@@ -2005,6 +2107,8 @@ class TestBitbucketServerProvider:
             legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
         )
         first_body = provider.bitbucket_client.add_pull_request_comment.call_args.args[3]
+        html_marker, *_, markdown_marker = hidden_marker_forms(PRReviewIdentity.REGULAR.value)
+        assert first_body == f"{header}\n\n{markdown_marker}\n\nfirst review"
         provider.bitbucket_client.get_pull_requests_activities.return_value = [
             self._comment_activity(first_body),
         ]
@@ -2023,13 +2127,18 @@ class TestBitbucketServerProvider:
         update_args = provider.bitbucket_client.update_pull_request_comment.call_args.args
         assert update_args[:4] == ("AAA", "my-repo", 1, 7)
         assert update_args[5] == 3
-        assert PRReviewIdentity.REGULAR.value in update_args[4]
+        assert markdown_marker in update_args[4]
+        assert html_marker not in update_args[4]
         assert "second review" in update_args[4]
 
-    def test_persistent_review_migrates_legacy_heading_to_stable_identity(self):
+    @pytest.mark.parametrize("previous_body", [
+        "## PR Reviewer Guide 🔍\n\nprevious review",
+        f"## Custom Review 🔍\n\n{PRReviewIdentity.REGULAR.value}\n\nprevious review",
+    ], ids=["legacy-heading", "html-marker"])
+    def test_persistent_review_migrates_to_markdown_identity(self, previous_body):
         provider = self._persistent_provider()
         provider.bitbucket_client.get_pull_requests_activities.return_value = [
-            self._comment_activity("## PR Reviewer Guide 🔍\n\nprevious review"),
+            self._comment_activity(previous_body),
         ]
 
         provider.publish_persistent_comment(
@@ -2041,9 +2150,15 @@ class TestBitbucketServerProvider:
         )
 
         provider.bitbucket_client.add_pull_request_comment.assert_not_called()
-        updated_body = provider.bitbucket_client.update_pull_request_comment.call_args.args[4]
-        assert updated_body.startswith("## Team Review 🔍\n\n")
-        assert PRReviewIdentity.REGULAR.value in updated_body
+        provider.bitbucket_client.update_pull_request_comment.assert_called_once()
+        project, repo, pr_id, comment_id, updated_body, version = (
+            provider.bitbucket_client.update_pull_request_comment.call_args.args
+        )
+        html_marker, *_, markdown_marker = hidden_marker_forms(PRReviewIdentity.REGULAR.value)
+        assert (project, repo, pr_id, comment_id, version) == ("AAA", "my-repo", 1, 7, 3)
+        assert updated_body.startswith(f"## Team Review 🔍\n\n{markdown_marker}\n\n")
+        assert html_marker not in updated_body
+        assert updated_body.endswith("\n\nnew review")
 
     def test_edit_comment_retries_once_with_refreshed_version_after_conflict(self):
         provider = self._persistent_provider()

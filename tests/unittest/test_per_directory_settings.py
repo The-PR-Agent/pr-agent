@@ -521,6 +521,29 @@ Num_Max_Findings = 4
 
         assert get_settings().pr_reviewer.num_max_findings == 4
 
+    def test_padded_section_name_overlays_siblings(self, per_dir_settings, monkeypatch):
+        # A quoted TOML section keeps its whitespace, so canonicalising only the allowlist
+        # lookup would miss the real section and replace it with just the overridden key.
+        nested = b"""
+[" pr_reviewer "]
+num_max_findings = 4
+"""
+        expected_keys = set(get_settings().as_dict()["PR_REVIEWER"])
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                root_settings=ROOT_TOML,
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": nested},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        assert get_settings().pr_reviewer.num_max_findings == 4
+        assert set(get_settings().as_dict()["PR_REVIEWER"]) == expected_keys
+
     def test_list_values_replace_not_concatenate(self, per_dir_settings, monkeypatch):
         monkeypatch.setattr(
             "pr_agent.git_providers.utils.get_git_provider_with_context",

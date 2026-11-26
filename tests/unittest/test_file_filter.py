@@ -273,6 +273,37 @@ class TestIgnoreFilter:
             f"but got {[file.filename for file in filtered_files]}."
         )
 
+    def test_catastrophic_regex_times_out_and_marks_result_incomplete(self, monkeypatch):
+        """A backtracking ignore.regex stops within the time budget; other ignore rules still apply."""
+        import time
+
+        monkeypatch.setitem(global_settings.ignore, 'regex', [r'(a|aa)+$', r'^file2\..*$'])
+        monkeypatch.setitem(global_settings.ignore, 'glob', ['*.cpp'])
+        slow = [type('', (object,), {'filename': 'a' * 40 + '!'})() for _ in range(50)]
+        files = slow + [
+            type('', (object,), {'filename': 'file1.py'})(),
+            type('', (object,), {'filename': 'file2.java'})(),
+            type('', (object,), {'filename': 'file3.cpp'})(),
+        ]
+
+        start = time.monotonic()
+        kept, complete = filter_ignored_with_status(files)
+        assert [f.filename for f in kept] == [f.filename for f in slow] + ['file1.py']
+        assert complete is False
+        assert time.monotonic() - start < 3
+
+    def test_regex_over_the_length_cap_is_skipped_and_marks_result_incomplete(self, monkeypatch):
+        monkeypatch.setitem(global_settings.ignore, 'regex', ['x' * 1025, r'^file2\..*$'])
+        monkeypatch.setitem(global_settings.ignore, 'glob', [])
+        files = [
+            type('', (object,), {'filename': 'x' * 1025})(),
+            type('', (object,), {'filename': 'file1.py'})(),
+            type('', (object,), {'filename': 'file2.java'})(),
+        ]
+        kept, complete = filter_ignored_with_status(files)
+        assert [f.filename for f in kept] == ['x' * 1025, 'file1.py']
+        assert complete is False
+
     def test_invalid_regex(self, monkeypatch):
         """
         Test invalid patterns are quietly ignored.

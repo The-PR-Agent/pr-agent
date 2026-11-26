@@ -103,9 +103,6 @@ class CodeCommitProvider(GitProvider):
         if pr_url:
             self.set_pr(pr_url)
 
-    def provider_name(self):
-        return "CodeCommit"
-
     def is_supported(self, capability: str) -> bool:
         if capability in [
             "get_labels",

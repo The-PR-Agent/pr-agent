@@ -46,8 +46,14 @@ pr-agent --pr_url https://github.com/org/repo/pull/123 --json-output review.json
 ```
 
 The JSON file is written after the review completes. Place `--json-output` before `review` or `review_pr`.
-Its `coverage` object lists the files the token budget or chunk-call limit kept out of the review (`files_not_reviewed`)
-and those whose patches were clipped to fit the token budget (`files_partially_reviewed`).
+Its `coverage` object lists files omitted by the token budget or chunk-call limit, as well as
+deletions represented only by filename notices (`files_not_reviewed`), and those whose patches
+were clipped to fit the token budget (`files_partially_reviewed`).
+Files excluded by file-type filtering are not included in these coverage lists.
+Filename notices are optional context, not reviewed source; filtered-file notices take priority
+when both kinds compete for the remaining request budget.
+Filename notices supplement source changes and do not trigger a model call on their own.
+A deletion-only PR without source changes to analyze is skipped, even when deletion patches are available.
 The JSON includes the full lists even when the Markdown footer summarizes them.
 It also includes `total_chunks` and `failed_chunks` for the final analysis plan, after fallback recovery.
 These count analysis chunks, not model requests or retry attempts. A nonzero `failed_chunks` means that the
@@ -157,7 +163,7 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>enable_review_coverage_footer</b></td>
-    <td>If set to true, the command will display a review coverage footer when the token budget leaves files out of the review.</td>
+    <td>If set to true, the command will display a review coverage footer when source changes were not reviewed or were only partially reviewed, including deleted files represented by filename notices.</td>
   </tr>
   <tr>
     <td><b>enable_large_pr_chunking</b></td>
@@ -294,9 +300,10 @@ for the authoritative default values.
   <tr>
     <td><b>extra_risky_shapes</b></td>
     <td>
-      List of custom regular expression patterns to scan within added or modified lines in diff hunks. Patterns matching a
-      line flag a deterministic risk finding. Host configuration only: a repository settings file or comment cannot set it.
-      Default is empty.
+      List of custom regular expression patterns to scan within added and removed lines in diff hunks. Patterns matching a
+      line flag a deterministic risk finding. Patterns longer than 200 characters, or with a quantified group that holds a
+      nested quantifier or an alternation (such as `(a+)+` or `(a|b)+`), are skipped with a logged warning. Host
+      configuration only: a repository settings file or comment cannot set it. Default is empty.
     </td>
   </tr>
 </table>
@@ -354,7 +361,10 @@ Edit this field to enable/disable the command, or to change the configurations u
 The `review` command can automatically add labels to your Pull Requests:
 
 - **`Possible security concern`**: This label is applied if the command detects a potential [security vulnerability](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L147) in the PR's code. This feedback is controlled by the 'enable_review_labels_security' flag (default is true).
-- **`review effort [x/5]`**: This label estimates the [effort](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L119) required to review the PR on a relative scale of 1 to 5, where 'x' represents the assessed effort. This feedback is controlled by the 'enable_review_labels_effort' flag (default is true).
+- **`Review effort 3/5`**: This label estimates the [effort](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L119) required to review the PR on a scale of 1 to 5. This feedback is controlled by the 'enable_review_labels_effort' flag (default is true).
+
+The command matches these label names and earlier 1–5 effort formats case-insensitively.
+Other labels, such as `Review effort::high`, are left unchanged.
 
 Ticket compliance is reported in the review comment, not as a PR label. It is controlled by
 `pr_reviewer.require_ticket_analysis_review` and requires available ticket context. The command does not add
@@ -686,9 +696,11 @@ When no findings are detected, the row is omitted completely so clean reviews st
 - **Sensitive paths**: Flags changes to files matching glob patterns in `sensitive_paths`. By default, this covers
   CI/CD pipelines and local composite actions, package manager manifests and lockfiles, Dockerfiles, Terraform and
   infrastructure configs, and database migrations.
-- **Risky change shapes**: Scans added or modified lines in diff hunks for destructive SQL (`DROP TABLE`, `ALTER ... RENAME`,
+- **Risky change shapes**: Scans added and removed lines in diff hunks for destructive SQL (`DROP TABLE`, `ALTER ... RENAME`,
   `REVOKE ... ON/FROM`, `TRUNCATE`), authentication and secrets keywords, cache invalidations, and any custom patterns
-  configured in `extra_risky_shapes`.
+  configured in `extra_risky_shapes`. Removed lines are also checked for removed function signatures (Python, JS/TS, Go,
+  Rust) and, in `.toml`, `.yaml`, `.yml`, `.json`, `.ini` and `.env` files, removed configuration defaults. Changes to
+  prompt files (`*prompt*.toml`, `*prompt*.yaml`, or files under a `*prompts*/` directory) are flagged as well.
 - **Deleted files**: Flags removed files.
 
 **Custom patterns.** Additional regular expressions can be configured via `extra_risky_shapes`. Because regex execution
@@ -731,7 +743,7 @@ evaluated, the verdict fails closed. The review includes each check and its resu
   Host-only.
 - `pr_reviewer.max_changed_lines`: host-only changed-line cap for `no_concerns_found`. Counts added and removed
   lines.
-- `pr_reviewer.extra_risky_shapes`: host-only custom regex patterns scanned in added/modified diff lines.
+- `pr_reviewer.extra_risky_shapes`: host-only custom regex patterns scanned in added and removed diff lines.
 - `publish_merge_recommendation_status`: publishes the verdict for the exact reviewed head SHA. GitHub uses the
   `PR Agent - Review` check run; GitLab uses a commit status.
 
@@ -760,8 +772,8 @@ GitHub and GitLab approves the exact commit it reviewed only when all of these h
 - the computed merge recommendation is `no_concerns_found`;
 - the model returned both a merge recommendation and a risk level, so `require_merge_recommendation` and
   `require_risk_assessment` must be enabled;
-- the review covered the whole pull request: not an incremental review, no file left out or cut short to fit the
-  model's context, and no part of the diff failed;
+- the review covered the whole pull request: not an incremental review, no file left out by the ignore rules or the
+  file-type filter, no file left out or cut short to fit the model's context, and no part of the diff failed;
 - the review completed and its finding state could be updated.
 
 Each `/review` run withdraws the approval PR-Agent gave when it starts, and approves again only when it ends with all

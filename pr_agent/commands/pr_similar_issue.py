@@ -9,6 +9,7 @@ import tiktoken
 from pydantic import BaseModel, ConfigDict, Field
 
 from pr_agent.algo import MAX_TOKENS
+from pr_agent.algo.run_output import show_custom_comment_footer
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.log import get_logger
@@ -516,7 +517,7 @@ class PRSimilarIssue:
                     from pr_agent.git_providers import get_git_provider_with_context
 
                     provider = get_git_provider_with_context(self.issue_url)
-                    provider.publish_comment(message)
+                    provider.publish_comment(message + show_custom_comment_footer())
                 except Exception as e:
                     get_logger().warning(
                         "Failed to publish /similar_issue unsupported message",
@@ -593,7 +594,7 @@ class PRSimilarIssue:
                 url = list(islice(issue.get_comments(), comment_index, comment_index + 1))[0].html_url
             similar_issues_str += f"{i + 1}. **[{title}]({url})** (score={score_list[i]})\n\n"
         if get_settings().config.publish_output:
-            issue_main.create_comment(similar_issues_str)
+            issue_main.create_comment(similar_issues_str + show_custom_comment_footer())
         get_logger().info(similar_issues_str)
         get_logger().info("Done")
 

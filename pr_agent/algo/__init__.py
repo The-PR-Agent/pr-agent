@@ -244,7 +244,7 @@ _claude_tokens, _claude_extended_thinking = (
 )
 
 
-GPT6_MODELS = ('gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol')
+GPT6_MODELS = ('gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-6.1-terra')
 GPT6_OPENROUTER_ROUTING_SUFFIXES = (":nitro", ":floor", ":online", ":exacto")
 # Sol-tier models share the OpenAI-compatible bridge: a non-native provider gets max_tokens
 # instead of max_completion_tokens. On such a provider the id is a custom model, so reasoning
@@ -252,10 +252,17 @@ GPT6_OPENROUTER_ROUTING_SUFFIXES = (":nitro", ":floor", ":online", ":exacto")
 # reasoning_effort. The tier advances on its own cadence, so GPT-6.1 Sol revises GPT-6 Sol
 # rather than starting a new family.
 GPT6_SOL_TIER_MODELS = ('gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol')
+# Terra shares provider-bridge routing but not all Sol-tier reasoning rules.
+GPT6_PROVIDER_BRIDGE_MODELS = (*GPT6_SOL_TIER_MODELS, 'gpt-6.1-terra')
 # GPT-6 models whose reasoning.effort omits "none", per their OpenAI model pages: their levels
 # are low, medium (default), high, xhigh and max, so a configured "none" is clamped to "low".
 GPT6_MODELS_WITHOUT_NONE_EFFORT = ('gpt-6-astra', 'gpt-6.1-sol')
-GPT6_MAX_INPUT_TOKENS = {"gpt-6-sol": 922000, "gpt-6-luna": 922000, "gpt-6.1-sol": 922000}
+GPT6_MAX_INPUT_TOKENS = {
+    "gpt-6-sol": 922000,
+    "gpt-6-luna": 922000,
+    "gpt-6.1-sol": 922000,
+    "gpt-6.1-terra": 922000,
+}
 
 
 # MAX_TOKENS holds only entries that deliberately deviate from (or are absent
@@ -288,6 +295,7 @@ MAX_TOKENS = {
     'gpt-6-sol': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'gpt-6-luna': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'gpt-6.1-sol': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
+    'gpt-6.1-terra': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'o1-mini': 128000,  # 128K, but may be limited by config.max_model_tokens
     'o1-mini-2024-09-12': 128000,  # 128K, but may be limited by config.max_model_tokens
     'o1-2024-12-17': 204800,  # 200K, but may be limited by config.max_model_tokens
@@ -319,12 +327,6 @@ MAX_TOKENS = {
     'gemini/gemini-4-carbon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'gemini/gemini-4-hydrogen': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'gemini/gemini-4-neon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
-    # -- Bedrock Claude ----------------------------------------------------
-    'bedrock/anthropic.claude-sonnet-4-20250514-v1:0': 200000,
-    # -- Bedrock Claude (cross-region) -------------------------------------
-    "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
-    "bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
-    "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
     # -- Non-Claude models -------------------------------------------------
     "bedrock_mantle/xai.grok-4.3": 1000000,
     # 1M context, but may be limited by config.max_model_tokens

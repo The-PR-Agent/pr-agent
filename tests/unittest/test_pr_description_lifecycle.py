@@ -1,5 +1,6 @@
 import asyncio
 import threading
+from functools import partial
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
@@ -11,6 +12,7 @@ from pr_agent.commands import pr_description as pr_description_module
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import (
+    GitProvider,
     IncompleteBitbucketPullRequestFilesError,
     IncompletePullRequestFilesError,
 )
@@ -390,6 +392,7 @@ async def test_run_propagates_cancellation_after_description_update(published_de
 @pytest.mark.parametrize("persistent", [False, True])
 async def test_run_keeps_description_comment_delivery_failures_strict(published_description, persistent):
     description, provider, progress_comment = published_description
+    provider.publish_description_comment = partial(GitProvider.publish_description_comment, provider)
     settings = get_settings()
     settings.config.propagate_command_errors = True
     settings.pr_description.publish_description_as_comment = True

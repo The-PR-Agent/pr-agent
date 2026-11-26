@@ -296,6 +296,7 @@ def render_page(sections: list) -> str:
         for key in keys:
             if key["label"]:
                 if table_open:
+                    out.append("")
                     table_open = False
                 pending_label = "**" + key["label"] + "**"
             if not table_open:
