@@ -53,12 +53,15 @@ from pr_agent.algo.output_models import (
     parse_failure_modes,
 )
 from pr_agent.algo.pr_processing import (
+    DELETED_FILES_,
+    FILTERED_FILES_,
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
     FallbackEligibleError,
     PreparedPRDiff,
+    _append_metadata_section,
+    _filtered_file_entries,
     add_ai_metadata_to_diff_files,
-    append_filtered_file_names,
     get_pr_diff,
     get_pr_multi_diffs,
     retry_with_fallback_models,
@@ -834,7 +837,7 @@ class PRReviewer:
         init_run_details()
         self.partial_files_list = []
         for name in ("_chunked_patches_diff_list", "_chunked_remaining_files_list", "_chunked_partial_files_list",
-                     "_chunked_results", "_chunked_primary_model"):
+                     "_chunked_results", "_chunked_primary_model", "_review_deleted_files"):
             self.__dict__.pop(name, None)
         progress_response = None
         partial_review_error = None
@@ -1585,15 +1588,18 @@ class PRReviewer:
             "add_line_numbers_to_hunks": True,
             "disable_extra_lines": False,
             "return_remaining_files": True,
+            "return_prepared": True,
+            "defer_file_notices": True,
         }
         if callable(output_token_reserve):
             diff_kwargs["output_token_reserve"] = output_token_reserve
-        if chunking_enabled:
-            diff_kwargs["return_prepared"] = True
         output = await run_diff_preparation(get_pr_diff, self.git_provider, self.token_handler, model, **diff_kwargs)
-        if isinstance(output, PreparedPRDiff):
+        prepared = isinstance(output, PreparedPRDiff)
+        deleted_files = getattr(self, "_review_deleted_files", [])
+        if prepared:
             self.patches_diff = output.diff
             self.remaining_files_list = output.remaining_files_list
+            deleted_files = list(dict.fromkeys([*deleted_files, *(output.deleted_files_list or [])]))
         elif isinstance(output, tuple):
             self.patches_diff, self.remaining_files_list = output
         else:
@@ -1603,24 +1609,35 @@ class PRReviewer:
         # Resume an incomplete chunk plan even when a fallback model can fit the full diff.
         # Otherwise, the single-call path would bypass cached successful chunks.
         has_incomplete_chunk_plan = hasattr(self, "_chunked_patches_diff_list")
-        if chunking_enabled and (self.remaining_files_list or has_incomplete_chunk_plan):
-            chunk_coro = self._prepare_chunked_prediction(
-                model, output if isinstance(output, PreparedPRDiff) else None
-            )
+        should_chunk = chunking_enabled and (self.remaining_files_list or has_incomplete_chunk_plan)
+        # Deleted source is never analyzed by the line-number renderer. Keep all known
+        # deletions for this review, independently of the model's chunk plan.
+        self._review_deleted_files = deleted_files
+        # Do not chunk just to send a deletion notice.
+        if deleted_files:
+            self.remaining_files_list = list(dict.fromkeys([*self.remaining_files_list, *deleted_files]))
+        if should_chunk:
+            chunk_coro = self._prepare_chunked_prediction(model, output if prepared else None)
             del output
             if await chunk_coro:
                 return
         else:
             del output
 
+        if (prepared or should_chunk) and self.patches_diff:
+            remaining = set(self.remaining_files_list)
+            self.patches_diff = self._append_review_file_notices(
+                model, self.patches_diff, deleted_files=[name for name in deleted_files if name in remaining],
+            )
+
         if self.patches_diff:
             get_logger().debug("PR diff", diff=self.patches_diff)
             prediction = await self._get_prediction(model)
             self._load_valid_review_yaml(prediction)
             self.prediction = prediction
-        elif not self.remaining_files_list and not self.partial_files_list:
-            # Every changed file was filtered out (lockfile, asset, ignore rule), so there is
-            # nothing left to review. Skip the model chain instead of failing the command.
+        elif not self.partial_files_list and not set(self.remaining_files_list).difference(deleted_files):
+            # Filtered files and deletion-only notices provide no source to review.
+            # Skip the model chain, but retain fallback for omitted source changes.
             get_logger().info(f"PR has no analyzable files: {self.pr_url}, skipping review")
             self._review_done = True
         else:
@@ -1663,7 +1680,12 @@ class PRReviewer:
         Returns False when chunking does not apply, leaving the single-call flow in place.
         """
         patches_diff_list = getattr(self, "_chunked_patches_diff_list", None)
+        # Prediction preparation tracks deletions across both single and multi-chunk attempts.
+        deleted_files = getattr(self, "_review_deleted_files", [])
         if patches_diff_list is not None:
+            self._chunked_remaining_files_list = list(dict.fromkeys([
+                *self._chunked_remaining_files_list, *deleted_files,
+            ]))
             self._resize_pending_review_chunks(model)
             patches_diff_list = self._chunked_patches_diff_list
         if patches_diff_list is not None and self._chunked_remaining_files_list:
@@ -1690,18 +1712,19 @@ class PRReviewer:
             multi_diff_kwargs.clear()
             prepared_diff = None
             patches_diff_list = coverage.chunks
+            remaining_files = list(dict.fromkeys([*coverage.remaining_files_list, *deleted_files]))
             if not hasattr(self, "_chunked_primary_model"):
                 self._chunked_primary_model = model
             if len(patches_diff_list) == 1:
                 self.patches_diff = patches_diff_list[0]
-                self.remaining_files_list = coverage.remaining_files_list
+                self.remaining_files_list = remaining_files
                 self.partial_files_list = coverage.partial_files_list
             if len(patches_diff_list) < 2:
                 # Cache only multi-chunk plans; single calls must replan on fallback.
                 get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
                 return False
             self._chunked_patches_diff_list = patches_diff_list
-            self._chunked_remaining_files_list = coverage.remaining_files_list
+            self._chunked_remaining_files_list = remaining_files
             self._chunked_partial_files_list = coverage.partial_files_list
         prepared_diff = None
 
@@ -1709,22 +1732,12 @@ class PRReviewer:
         get_logger().debug("PR diff chunks", artifact=patches_diff_list)
         chunk_results = getattr(self, "_chunked_results", {})
         pending_indices = [index for index in range(len(patches_diff_list)) if index not in chunk_results]
-        filtered_files = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
-        if isinstance(filtered_files, (list, tuple)) and filtered_files:
-            attempt_budget = self._review_attempt_budget(model)
-            attempt_token_handler = attempt_budget.token_handler
-            max_tokens = attempt_token_handler.prompt_tokens + attempt_budget.available_tokens(
-                OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True, clamp=False,
-            )
+        remaining = set(self._chunked_remaining_files_list)
+        deleted_notices = [name for name in deleted_files if name in remaining]
 
-            async def _run_chunk(index: int):
-                prompt = append_filtered_file_names(
-                    patches_diff_list[index], self.git_provider, attempt_token_handler, max_tokens,
-                )
-                return await self._get_prediction(model, prompt)
-        else:
-            async def _run_chunk(index: int):
-                return await self._get_prediction(model, patches_diff_list[index])
+        async def _run_chunk(index: int):
+            prompt = self._append_review_file_notices(model, patches_diff_list[index], deleted_files=deleted_notices)
+            return await self._get_prediction(model, prompt)
         # A fallback model starts a new batch, so clear the previous attempt's line first.
         # Otherwise it stays on screen at "N of N" and the new attempt's first chunk rewinds
         # it; the chunks an earlier attempt finished are counted through `completed` below.
@@ -1772,6 +1785,41 @@ class PRReviewer:
             raise FallbackEligibleError("No valid review output was produced for one or more chunks")
 
         return self._merge_cached_review_chunks()
+
+    def _append_review_file_notices(self, model: str, diff: str, *,
+                                  deleted_files: list[str]) -> str:
+        """Append filename notices only when the complete request still fits."""
+        sections = []
+        filtered_files = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
+        if isinstance(filtered_files, (list, tuple)) and filtered_files:
+            entries = _filtered_file_entries(filtered_files)
+            # Preserve the filtered context already available to packed reviews.
+            sections.append((FILTERED_FILES_ + "\n" + "\n".join(entries), entries))
+        if deleted_files:
+            sections.append((DELETED_FILES_ + "\n" + "\n".join(deleted_files), deleted_files))
+        if not sections:
+            return diff
+        budget = self._review_attempt_budget(model)
+        max_tokens = budget.input_token_limit(OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True)
+
+        def fits_request(candidate):
+            variables = dict(getattr(self, "vars", {}), diff=candidate)
+            try:
+                system, user = budget.render_prompt_templates(variables)
+                return budget.prepare_request(self.ai_handler, system, user).input_tokens <= max_tokens
+            except Exception as error:
+                # Reject only this optional candidate. The final prediction still validates the
+                # required prompt and propagates any errors in its rendering or preparation.
+                get_logger().debug(f"Rejected optional review file notice: {type(error).__name__}")
+                return False
+
+        token_count = budget.prompt_tokens + budget.count_tokens(diff)
+        for section, filenames in sections:
+            diff, token_count, _ = _append_metadata_section(
+                diff, token_count, section, max_tokens, budget.token_handler,
+                whole_lines=True, fits_request=fits_request, metadata_filenames=filenames,
+            )
+        return diff
 
     def _resize_pending_review_chunks(self, model: str) -> None:
         """Split oversized pending chunks at file boundaries while preserving result order."""
@@ -1824,10 +1872,11 @@ class PRReviewer:
         )
         max_calls = get_settings().pr_reviewer.get("max_number_of_calls", 3)
         included = set()
+        metadata_only = set(getattr(self, "_review_deleted_files", []))
         names_by_label = {f"## File: {quote_diff_filename(name)}": name for name in remaining}
         for section in re.split(r"""(?=^## File: ['"])""", self.patches_diff or "", flags=re.MULTILINE):
             filename = names_by_label.get(section.partition("\n")[0])
-            if filename is None or filename in included:
+            if filename is None or filename in included or filename in metadata_only:
                 continue
             for index in pending:
                 combined = chunks[index] + "\n\n" + section
@@ -2030,9 +2079,20 @@ class PRReviewer:
             data["review"]["artifact_findings"] = parse_artifact_findings(
                 data["review"]["artifact_findings"], getattr(self, "vars", {}).get("artifact_context")
             )
+        require_merge_recommendation = getattr(self, "vars", {}).get("require_merge_recommendation", False)
+        action_output_written = False
+
+        def _write_action_output():
+            nonlocal action_output_written
+            if action_output_written:
+                return
+            github_action_output(data, 'review')
+            action_output_written = True
+
         if self._prepare_cancelled():
             return ""
-        github_action_output(data, 'review')
+        if not require_merge_recommendation:
+            _write_action_output()
 
         if not isinstance(data, dict) or not isinstance(data.get('review'), dict) or not data['review']:
             if self._review_finding_state_enabled():
@@ -2040,6 +2100,7 @@ class PRReviewer:
                 self._review_state_block_reason = _STATE_BLOCK_REVIEW_DATA
                 get_logger().warning("Review data is invalid; preserving persistent finding state")
             get_logger().exception("Failed to parse review data", artifact={"data": data})
+            _write_action_output()
             return ""
 
         structural_reach = build_structural_reach(resolve_artifact_path)
@@ -2048,8 +2109,8 @@ class PRReviewer:
 
         diff_files = self.git_provider.get_diff_files()
         if self._prepare_cancelled():
+            _write_action_output()
             return ""
-        require_merge_recommendation = getattr(self, "vars", {}).get("require_merge_recommendation", False)
         unfiltered_files = None
         verdict_diff_files = None
         if require_merge_recommendation:
@@ -2063,6 +2124,7 @@ class PRReviewer:
             if verdict_diff_files is not None:
                 self._approval_unread_file_count = _count_unread_files(diff_files, verdict_diff_files)
             if self._prepare_cancelled():
+                _write_action_output()
                 return ""
         else:
             risk_diff_files = diff_files
@@ -2083,6 +2145,7 @@ class PRReviewer:
             except Exception:
                 unfiltered_files = None
             if self._prepare_cancelled():
+                _write_action_output()
                 return ""
         if not incremental_scope and not unfiltered_files and hasattr(self.git_provider, "get_files"):
             try:
@@ -2112,6 +2175,7 @@ class PRReviewer:
 
         if require_merge_recommendation:
             if self._prepare_cancelled():
+                _write_action_output()
                 return ""
             verdict = compute_merge_verdict(
                 self.git_provider,
@@ -2122,6 +2186,7 @@ class PRReviewer:
             )
             self._merge_recommendation_status = verdict["recommendation"]
             data["review"] = _with_merge_verdict(data["review"], verdict)
+        _write_action_output()
 
         structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
         if callable(structured_publisher) or review_json_output_path.get():
@@ -2219,7 +2284,7 @@ class PRReviewer:
 
         if get_settings().pr_reviewer.enable_review_coverage_footer:
             for files, explanation in (
-                (self.remaining_files_list, "were not included in this review because of the token budget"),
+                (self.remaining_files_list, "had no source changes analyzed in this review"),
                 (self.partial_files_list,
                  "had patches clipped before analysis to fit the token budget (partial input coverage)"),
             ):

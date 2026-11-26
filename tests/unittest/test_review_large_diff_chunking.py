@@ -61,12 +61,418 @@ def _make_reviewer():
     reviewer.token_handler = MagicMock()
     reviewer.token_handler.prompt_tokens = 0
     reviewer.token_handler.count_tokens.side_effect = len
+    reviewer.token_handler.system = ""
+    reviewer.token_handler.user = "{{ diff }}"
     reviewer.pr_url = "https://example/pr/1"
     reviewer.incremental = SimpleNamespace(is_incremental=False)
     reviewer.remaining_files_list = []
     reviewer.partial_files_list = []
     reviewer.prediction = None
     return reviewer
+
+
+def _make_file_notice_reviewer(source_count, patchless, user_template="{{ diff }}", include_notices=True):
+    from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+
+    files = []
+    for index in range(source_count):
+        old = "".join(f"old_value_{line} = {line}\n" for line in range(300))
+        new = "".join(f"source_marker_{line} = {line + 1}\n" for line in range(300))
+        patch_text = "@@ -1,300 +1,300 @@\n"
+        patch_text += "".join("-" + line for line in old.splitlines(keepends=True))
+        patch_text += "".join("+" + line for line in new.splitlines(keepends=True))
+        files.append(FilePatchInfo(old, new, patch_text, f"large{index}.py", edit_type=EDIT_TYPE.MODIFIED))
+    if include_notices:
+        files.append(FilePatchInfo("gone\n", "", "" if patchless else "@@ -1 +0,0 @@\n-gone\n",
+                                   "gone.py", edit_type=EDIT_TYPE.DELETED))
+    reviewer = _make_reviewer()
+    reviewer.git_provider.get_diff_files.return_value = files
+    reviewer.git_provider.get_languages.return_value = {"Python": 100}
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = ["vendor.lock"] if include_notices else []
+    reviewer.vars = {"diff": ""}
+    reviewer._raw_prompt_vars = reviewer.vars.copy()
+    reviewer.token_handler = TokenHandler(None, reviewer.vars, "Review.", user_template, model="gpt-4o")
+    reviewer.ai_handler = LiteLLMAIHandler()
+    reviewer.ai_handler.chat_completion = AsyncMock(return_value=(CHUNK_A, "stop"))
+    return reviewer
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_count", [1, 2])
+@pytest.mark.parametrize("patchless", [False, True])
+async def test_source_chunks_retain_deleted_and_filtered_notices(chunking_enabled, monkeypatch,
+                                                                source_count, patchless):
+    monkeypatch.setitem(get_settings().config, "large_patch_policy", "clip")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "system", "Review.")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "user", "{{ diff }}")
+    control = _make_file_notice_reviewer(source_count, patchless, include_notices=False)
+    reviewer = _make_file_notice_reviewer(source_count, patchless)
+    with patch("pr_agent.algo.token_budget.get_max_tokens", return_value=4000):
+        await control._prepare_prediction("gpt-4o")
+        await reviewer._prepare_prediction("gpt-4o")
+        budget = reviewer._review_attempt_budget("gpt-4o")
+        prompts = reviewer.ai_handler.chat_completion.await_args_list
+        control_prompts = control.ai_handler.chat_completion.await_args_list
+        assert len(prompts) == len(control_prompts) == source_count
+        for call, control_call in zip(prompts, control_prompts, strict=True):
+            assert call.kwargs["user"].startswith(control_call.kwargs["user"])
+            assert "Deleted files:\n\ngone.py" in call.kwargs["user"]
+            assert "vendor.lock" in call.kwargs["user"]
+            request = budget.prepare_request(reviewer.ai_handler, call.kwargs["system"], call.kwargs["user"])
+            assert request.input_tokens <= budget.input_token_limit(1000, preserve_minimum=True)
+    assert reviewer.partial_files_list == [f"large{index}.py" for index in range(source_count)]
+    assert reviewer.remaining_files_list == ["gone.py"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_count", [1, 2])
+@pytest.mark.parametrize("notice_branch", [
+    "{{ diff * 10 }}", "{{ missing_notice_variable }}", "{{ 1 / 0 }}", "{{ diff + 1 }}",
+])
+async def test_chunk_notices_cannot_displace_source_in_a_custom_prompt(
+    chunking_enabled, monkeypatch, source_count, notice_branch,
+):
+    template = (
+        "{% if 'Deleted files:' in diff or 'file-type filtering:' in diff %}"
+        + notice_branch + "{% else %}{{ diff }}{% endif %}"
+    )
+    monkeypatch.setitem(get_settings().config, "large_patch_policy", "clip")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "system", "Review.")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "user", template)
+    control = _make_file_notice_reviewer(source_count, True, template, include_notices=False)
+    reviewer = _make_file_notice_reviewer(source_count, True, template)
+    with patch("pr_agent.algo.token_budget.get_max_tokens", return_value=4000):
+        await control._prepare_prediction("gpt-4o")
+        await reviewer._prepare_prediction("gpt-4o")
+    prompts = reviewer.ai_handler.chat_completion.await_args_list
+    control_prompts = control.ai_handler.chat_completion.await_args_list
+    assert len(prompts) == len(control_prompts) == source_count
+    assert [call.kwargs["user"] for call in prompts] == [call.kwargs["user"] for call in control_prompts]
+    assert reviewer.remaining_files_list == ["gone.py"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_count", [1, 2])
+async def test_optional_notices_cannot_abort_request_preparation(chunking_enabled, monkeypatch, source_count):
+    from pr_agent.algo.token_budget import AttemptTokenBudget
+
+    monkeypatch.setitem(get_settings().config, "large_patch_policy", "clip")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "system", "Review.")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "user", "{{ diff }}")
+    reviewer = _make_file_notice_reviewer(source_count, True)
+    control = _make_file_notice_reviewer(source_count, True, include_notices=False)
+    prepare_request = AttemptTokenBudget.prepare_request
+    rejected = []
+
+    def prepare(budget, ai_handler, system_prompt, user_prompt, **kwargs):
+        if "Deleted files:" in user_prompt or "file-type filtering:" in user_prompt:
+            rejected.append(user_prompt)
+            raise TypeError("optional request preparation failed")
+        return prepare_request(budget, ai_handler, system_prompt, user_prompt, **kwargs)
+
+    with (
+        patch("pr_agent.algo.token_budget.get_max_tokens", return_value=4000),
+        patch.object(AttemptTokenBudget, "prepare_request", prepare),
+    ):
+        await control._prepare_prediction("gpt-4o")
+        await reviewer._prepare_prediction("gpt-4o")
+
+    assert rejected
+    prompts = reviewer.ai_handler.chat_completion.await_args_list
+    control_prompts = control.ai_handler.chat_completion.await_args_list
+    assert len(prompts) == len(control_prompts) == source_count
+    assert [call.kwargs["user"] for call in prompts] == [call.kwargs["user"] for call in control_prompts]
+    assert reviewer.remaining_files_list == ["gone.py"]
+
+    def fail_source(budget, ai_handler, system_prompt, user_prompt, **kwargs):
+        raise TypeError("required request preparation failed")
+
+    with (
+        patch("pr_agent.algo.token_budget.get_max_tokens", return_value=4000),
+        patch.object(AttemptTokenBudget, "prepare_request", fail_source),
+        pytest.raises(TypeError, match="required request preparation failed"),
+    ):
+        await reviewer._get_prediction("gpt-4o", "source_marker")
+
+    assert reviewer.ai_handler.chat_completion.await_count == source_count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunking", [False, True])
+@pytest.mark.parametrize("source_size", ["none", "small", "large"])
+@pytest.mark.parametrize("patchless", [True, False])
+async def test_deletion_notice_and_coverage_with_or_without_chunking(chunking_enabled, monkeypatch,
+                                                                   chunking, source_size, patchless):
+    monkeypatch.setitem(get_settings().pr_reviewer, "enable_large_pr_chunking", chunking)
+    monkeypatch.setitem(get_settings().config, "large_patch_policy", "clip")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "system", "Review.")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "user", "{{ diff }}")
+    reviewer = _make_file_notice_reviewer(0 if source_size == "none" else 1, patchless)
+    if source_size == "none":
+        # Exercise a genuinely deletion-only PR, with no filtered-file context.
+        reviewer.git_provider.get_filtered_diff_file_names.return_value = []
+    if source_size == "small":
+        reviewer.git_provider.get_diff_files.return_value[0] = FilePatchInfo(
+            "old\n", "source_marker\n", "@@ -1 +1 @@\n-old\n+source_marker\n",
+            "active.py", edit_type=EDIT_TYPE.MODIFIED,
+        )
+
+    with patch("pr_agent.algo.token_budget.get_max_tokens", return_value=4000):
+        await reviewer._prepare_prediction("gpt-4o")
+
+    if source_size == "none":
+        reviewer.ai_handler.chat_completion.assert_not_awaited()
+        assert reviewer._review_done
+        assert not reviewer.patches_diff
+    else:
+        reviewer.ai_handler.chat_completion.assert_awaited_once()
+        call = reviewer.ai_handler.chat_completion.await_args
+        assert "gone.py" in call.kwargs["user"]
+        assert "vendor.lock" in call.kwargs["user"]
+        assert "-gone" not in call.kwargs["user"]
+        if source_size == "small" or chunking:
+            assert "source_marker" in call.kwargs["user"]
+    assert reviewer.remaining_files_list == (
+        ["large0.py", "gone.py"] if source_size == "large" and not chunking else ["gone.py"]
+    )
+    assert reviewer.partial_files_list == (["large0.py"] if source_size == "large" and chunking else [])
+    if not chunking:
+        assert not hasattr(reviewer, "_chunked_patches_diff_list")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_input,fits", [(1700, False), (4000, True)])
+async def test_multiline_deletion_filename_is_an_atomic_notice(monkeypatch, max_input, fits):
+    monkeypatch.setitem(get_settings().pr_reviewer, "enable_large_pr_chunking", False)
+    monkeypatch.setitem(get_settings().pr_review_prompt, "system", "Review.")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "user", "{{ diff }}")
+    reviewer = _make_file_notice_reviewer(1, True)
+    filename = "dir/first.py\n" + "segment/" * 400 + "tail.py"
+    reviewer.git_provider.get_diff_files.return_value[-1].filename = filename
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = []
+
+    with patch("pr_agent.algo.token_budget.get_max_tokens", return_value=max_input):
+        await reviewer._prepare_prediction("gpt-4o")
+
+    assert filename in reviewer.remaining_files_list
+    reviewer.ai_handler.chat_completion.assert_awaited_once()
+    user = reviewer.ai_handler.chat_completion.await_args.kwargs["user"]
+    assert (filename in user) is fits
+    assert ("dir/first.py" in user) is fits
+    assert "dir/first.py\\n" not in user
+
+
+@pytest.mark.asyncio
+async def test_reusing_a_reviewer_clears_deleted_file_notices():
+    reviewer = _make_reviewer()
+    reviewer._review_deleted_files = ["old.py"]
+    reviewer.git_provider.get_files.return_value = []
+
+    await reviewer.run()
+
+    assert not hasattr(reviewer, "_review_deleted_files")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rule,patterns", [
+    ("glob", ["generated/**"]), ("regex", [r"^generated/"]), ("regex", ["[", r"^generated/"]),
+])
+@pytest.mark.parametrize("source_count", [0, 1])
+async def test_patchless_deletion_notices_respect_path_ignores(chunking_enabled, monkeypatch,
+                                                             rule, patterns, source_count):
+    monkeypatch.setitem(get_settings().ignore, rule, patterns)
+    monkeypatch.setitem(get_settings().config, "large_patch_policy", "clip")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "system", "Review.")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "user", "{{ diff }}")
+    reviewer = _make_file_notice_reviewer(source_count, True)
+    reviewer.git_provider.get_diff_files.return_value.append(
+        FilePatchInfo("secret\n", "", "", "generated/hidden.py", edit_type=EDIT_TYPE.DELETED)
+    )
+
+    with patch("pr_agent.algo.token_budget.get_max_tokens", return_value=4000):
+        await reviewer._prepare_prediction("gpt-4o")
+
+    if source_count:
+        user = reviewer.ai_handler.chat_completion.await_args.kwargs["user"]
+        assert "gone.py" in user
+        assert "generated/hidden.py" not in user
+    else:
+        # Deletions plus filtered filenames cannot trigger a notice-only call.
+        reviewer.ai_handler.chat_completion.assert_not_awaited()
+        assert reviewer._review_done
+    assert reviewer.remaining_files_list == ["gone.py"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_count", [1, 2])
+@pytest.mark.parametrize("patchless,fetch_failed", [(False, False), (True, False), (True, True)])
+async def test_fallback_keeps_deleted_source_unreviewed_and_reuses_successes(chunking_enabled, monkeypatch,
+                                                                          source_count, patchless, fetch_failed):
+    monkeypatch.setitem(get_settings().config, "large_patch_policy", "clip")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "system", "Review.")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "user", "{{ diff }}")
+    reviewer = _make_file_notice_reviewer(source_count, patchless)
+    reviewer.git_provider.get_diff_files.return_value[-1].content_fetch_failed = fetch_failed
+    reviewer.ai_handler.chat_completion.side_effect = (
+        [(CHUNK_A, "stop")] * (source_count - 1) + [RuntimeError("model refused")]
+    )
+
+    with patch("pr_agent.algo.token_budget.get_max_tokens",
+               side_effect=lambda model, **kwargs: 4000 if model == "gpt-4o" else 20000):
+        with pytest.raises(RuntimeError, match="model refused"):
+            await reviewer._prepare_prediction("gpt-4o")
+        reviewer.ai_handler.chat_completion.side_effect = None
+        await reviewer._prepare_prediction("gpt-4o-mini")
+
+    calls = reviewer.ai_handler.chat_completion.await_args_list
+    assert len(calls) == source_count + 1
+    assert ("large0.py" in calls[-1].kwargs["user"]) is (source_count == 1)
+    assert f"large{source_count - 1}.py" in calls[-1].kwargs["user"]
+    assert "gone.py" in calls[-1].kwargs["user"]
+    # The line-number renderer never emits deleted source, even on a full-diff retry.
+    assert "-gone" not in calls[-1].kwargs["user"]
+    assert reviewer.remaining_files_list == ["gone.py"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunking", [False, True])
+async def test_fallback_retains_previously_known_deletions(chunking_enabled, monkeypatch, chunking):
+    monkeypatch.setitem(get_settings().pr_reviewer, "enable_large_pr_chunking", chunking)
+    monkeypatch.setitem(get_settings().config, "large_patch_policy", "clip")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "system", "Review.")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "user", "{{ diff }}")
+    reviewer = _make_file_notice_reviewer(1, True)
+    reviewer.ai_handler.chat_completion.side_effect = [RuntimeError("retry"), (CHUNK_A, "stop")]
+
+    with patch("pr_agent.algo.token_budget.get_max_tokens",
+               side_effect=lambda model, **kwargs: 4000 if chunking and model == "gpt-4o" else 20000):
+        with pytest.raises(RuntimeError, match="retry"):
+            await reviewer._prepare_prediction("gpt-4o")
+        assert reviewer.remaining_files_list == ["gone.py"]
+        assert "gone.py" in reviewer.ai_handler.chat_completion.await_args.kwargs["user"]
+
+        # Even if subsequent preparation no longer lists a deletion, it has not
+        # been reviewed. Retain the known omission for this run.
+        reviewer.git_provider.get_diff_files.return_value.pop()
+        await reviewer._prepare_prediction("gpt-4o-mini")
+
+    assert reviewer.ai_handler.chat_completion.await_count == 2
+    user = reviewer.ai_handler.chat_completion.await_args.kwargs["user"]
+    assert "source_marker" in user
+    assert "gone.py" in user
+    assert reviewer.remaining_files_list == ["gone.py"]
+
+
+@pytest.mark.asyncio
+async def test_cached_fallback_tracks_newly_prepared_deletions(chunking_enabled, monkeypatch):
+    monkeypatch.setitem(get_settings().config, "large_patch_policy", "clip")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "system", "Review.")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "user", "{{ diff }}")
+    reviewer = _make_file_notice_reviewer(2, True, include_notices=False)
+    reviewer.ai_handler.chat_completion.side_effect = [(CHUNK_A, "stop"), RuntimeError("retry")]
+
+    with patch("pr_agent.algo.token_budget.get_max_tokens",
+               side_effect=lambda model, **kwargs: 4000 if model == "gpt-4o" else 20000):
+        with pytest.raises(RuntimeError, match="retry"):
+            await reviewer._prepare_prediction("gpt-4o")
+        reviewer.git_provider.get_diff_files.return_value.append(
+            FilePatchInfo("gone\n", "", "", "gone.py", edit_type=EDIT_TYPE.DELETED),
+        )
+        reviewer.ai_handler.chat_completion.side_effect = None
+        await reviewer._prepare_prediction("gpt-4o-mini")
+
+    assert reviewer.ai_handler.chat_completion.await_count == 3
+    user = reviewer.ai_handler.chat_completion.await_args.kwargs["user"]
+    assert "large0.py" not in user
+    assert "large1.py" in user
+    assert "gone.py" in user
+    assert reviewer.remaining_files_list == ["gone.py"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunking", [False, True])
+async def test_filtered_only_pr_still_skips_model_calls(chunking_enabled, monkeypatch, chunking):
+    monkeypatch.setitem(get_settings().pr_reviewer, "enable_large_pr_chunking", chunking)
+    monkeypatch.setitem(get_settings().pr_review_prompt, "system", "Review.")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "user", "{{ diff }}")
+    reviewer = _make_file_notice_reviewer(0, False, include_notices=False)
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = ["uv.lock"]
+
+    await reviewer._prepare_prediction("gpt-4o")
+
+    reviewer.ai_handler.chat_completion.assert_not_awaited()
+    assert reviewer.remaining_files_list == []
+
+
+@pytest.mark.asyncio
+async def test_file_notices_do_not_hide_a_source_request_overflow(chunking_enabled, monkeypatch):
+    template = "{{ diff * 10 }}"
+    monkeypatch.setitem(get_settings().config, "large_patch_policy", "clip")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "system", "Review.")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "user", template)
+    reviewer = _make_file_notice_reviewer(1, True, template)
+
+    with patch("pr_agent.algo.token_budget.get_max_tokens", return_value=4000):
+        with pytest.raises(FallbackEligibleError, match="required prompt exceeds"):
+            await reviewer._prepare_prediction("gpt-4o")
+
+    reviewer.ai_handler.chat_completion.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunking", [False, True])
+async def test_full_fitting_source_survives_oversized_deletion_metadata(chunking_enabled, monkeypatch, chunking):
+    monkeypatch.setitem(get_settings().pr_reviewer, "enable_large_pr_chunking", chunking)
+    template = "{% if 'gone.py' in diff %}{{ diff * 200 }}{% else %}{{ diff }}{% endif %}"
+    monkeypatch.setitem(get_settings().pr_review_prompt, "system", "Review.")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "user", template)
+    reviewer = _make_file_notice_reviewer(1, True, template)
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = []
+    reviewer.git_provider.get_diff_files.return_value[0] = FilePatchInfo(
+        "old\n", "source_marker\n", "@@ -1 +1 @@\n-old\n+source_marker\n",
+        "active.py", edit_type=EDIT_TYPE.MODIFIED,
+    )
+
+    with patch("pr_agent.algo.token_budget.get_max_tokens", return_value=4000):
+        await reviewer._prepare_prediction("gpt-4o")
+
+    reviewer.ai_handler.chat_completion.assert_awaited_once()
+    user = reviewer.ai_handler.chat_completion.await_args.kwargs["user"]
+    assert "source_marker" in user
+    assert "gone.py" not in user
+    assert reviewer.remaining_files_list == ["gone.py"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multiline_filtered", [False, True])
+async def test_chunked_notices_keep_filtered_context_with_many_deletions(
+    chunking_enabled, monkeypatch, multiline_filtered,
+):
+    monkeypatch.setitem(get_settings().config, "large_patch_policy", "clip")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "system", "Review.")
+    monkeypatch.setitem(get_settings().pr_review_prompt, "user", "{{ diff }}")
+    reviewer = _make_file_notice_reviewer(2, True)
+    names = [f"archive/old_package/legacy_component/deleted_{index}.py" for index in range(300)]
+    reviewer.git_provider.get_diff_files.return_value.extend(
+        FilePatchInfo("old", "", "", name, edit_type=EDIT_TYPE.DELETED) for name in names
+    )
+    filtered = ["uv.lock"]
+    if multiline_filtered:
+        filtered.append("dir/first_fragment.lock\n" + "segment/" * 1000 + "tail.lock")
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = filtered
+
+    with patch("pr_agent.algo.token_budget.get_max_tokens", return_value=4000):
+        await reviewer._prepare_prediction("gpt-4o")
+
+    assert reviewer.ai_handler.chat_completion.await_count == 2
+    for call in reviewer.ai_handler.chat_completion.await_args_list:
+        user = call.kwargs["user"]
+        assert "source_marker" in user
+        assert "uv.lock" in user
+        assert "gone.py" in user
+        assert "dir/first_fragment.lock" not in user
+        assert names[-1] not in user
+    assert set(reviewer.remaining_files_list) == {"gone.py", *names}
 
 
 @pytest.fixture
@@ -1091,7 +1497,7 @@ def test_review_coverage_caps_each_category_and_preserves_failed_chunk_note(enab
         return
     assert (
         rendered.index("Chunked review")
-        < rendered.index("not included")
+        < rendered.index("no source changes analyzed")
         < rendered.index("had patches clipped before analysis")
     )
     for prefix in ("omitted", "clipped"):
