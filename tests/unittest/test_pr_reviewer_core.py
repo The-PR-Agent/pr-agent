@@ -2310,6 +2310,55 @@ async def test_run_does_not_publish_an_empty_review(
     git_provider.remove_comment.assert_called_once_with(progress_comment)
 
 
+def test_github_action_output_uses_computed_merge_verdict():
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = MagicMock()
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.get_verdict_diff_files.return_value = []
+    reviewer.git_provider.get_pr_file_paths.return_value = ["src/app.py"]
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.git_provider.publish_structured_review = None
+    reviewer.pr_url = "https://example/pr/1"
+    reviewer.token_handler = MagicMock()
+    reviewer.remaining_files_list = []
+    reviewer.partial_files_list = []
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {"require_merge_recommendation": True}
+    reviewer.prediction = (
+        "review:\n"
+        "  merge_recommendation: no_concerns_found\n"
+        "  risk_level: low\n"
+        "  key_issues_to_review: []\n"
+    )
+    reviewer.prediction_data = None
+    reviewer.review_chunk_count = 1
+    reviewer.review_failed_chunk_count = 0
+    checks = [{"name": "CI status", "passed": False, "details": "failed"}]
+    snapshots = []
+
+    def snapshot_action_output(data, key_name):
+        snapshots.append(copy.deepcopy(data))
+
+    with (
+        patch(
+            "pr_agent.commands.pr_reviewer.github_action_output",
+            side_effect=snapshot_action_output,
+        ) as action_output,
+        patch(
+            "pr_agent.commands.pr_reviewer.compute_merge_verdict",
+            return_value={"recommendation": "needs_review", "checks": checks, "decided_by": ["CI status"]},
+        ),
+        patch("pr_agent.commands.pr_reviewer.convert_to_markdown_v2", return_value="review"),
+    ):
+        reviewer._prepare_pr_review()
+
+    action_output.assert_called_once()
+    review = snapshots[0]["review"]
+    assert review["merge_recommendation"] == "needs_review"
+    assert review["merge_recommendation_checks"] == checks
+
+
 @pytest.mark.asyncio
 async def test_run_publishes_failure_result_when_progress_comment_has_no_handle(monkeypatch):
     from pr_agent.commands import pr_reviewer as pr_reviewer_module

@@ -2029,9 +2029,20 @@ class PRReviewer:
             data["review"]["artifact_findings"] = parse_artifact_findings(
                 data["review"]["artifact_findings"], getattr(self, "vars", {}).get("artifact_context")
             )
+        require_merge_recommendation = getattr(self, "vars", {}).get("require_merge_recommendation", False)
+        action_output_written = False
+
+        def _write_action_output():
+            nonlocal action_output_written
+            if action_output_written:
+                return
+            github_action_output(data, 'review')
+            action_output_written = True
+
         if self._prepare_cancelled():
             return ""
-        github_action_output(data, 'review')
+        if not require_merge_recommendation:
+            _write_action_output()
 
         if not isinstance(data, dict) or not isinstance(data.get('review'), dict) or not data['review']:
             if self._review_finding_state_enabled():
@@ -2039,6 +2050,7 @@ class PRReviewer:
                 self._review_state_block_reason = _STATE_BLOCK_REVIEW_DATA
                 get_logger().warning("Review data is invalid; preserving persistent finding state")
             get_logger().exception("Failed to parse review data", artifact={"data": data})
+            _write_action_output()
             return ""
 
         structural_reach = build_structural_reach(resolve_artifact_path)
@@ -2047,8 +2059,8 @@ class PRReviewer:
 
         diff_files = self.git_provider.get_diff_files()
         if self._prepare_cancelled():
+            _write_action_output()
             return ""
-        require_merge_recommendation = getattr(self, "vars", {}).get("require_merge_recommendation", False)
         unfiltered_files = None
         verdict_diff_files = None
         if require_merge_recommendation:
@@ -2062,6 +2074,7 @@ class PRReviewer:
             if verdict_diff_files is not None:
                 self._approval_unread_file_count = _count_unread_files(diff_files, verdict_diff_files)
             if self._prepare_cancelled():
+                _write_action_output()
                 return ""
         else:
             risk_diff_files = diff_files
@@ -2082,6 +2095,7 @@ class PRReviewer:
             except Exception:
                 unfiltered_files = None
             if self._prepare_cancelled():
+                _write_action_output()
                 return ""
         if not incremental_scope and not unfiltered_files and hasattr(self.git_provider, "get_files"):
             try:
@@ -2111,6 +2125,7 @@ class PRReviewer:
 
         if require_merge_recommendation:
             if self._prepare_cancelled():
+                _write_action_output()
                 return ""
             verdict = compute_merge_verdict(
                 self.git_provider,
@@ -2121,6 +2136,7 @@ class PRReviewer:
             )
             self._merge_recommendation_status = verdict["recommendation"]
             data["review"] = _with_merge_verdict(data["review"], verdict)
+        _write_action_output()
 
         structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
         if callable(structured_publisher) or review_json_output_path.get():
