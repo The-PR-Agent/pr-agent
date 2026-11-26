@@ -164,7 +164,7 @@ def test_review_prompt_vars_are_sanitized_without_mutating_provider(monkeypatch)
         ai_handler=lambda: SimpleNamespace(main_pr_language=None),
     )
 
-    rendered = Environment().from_string(get_settings().pr_review_prompt.user).render(reviewer.vars)
+    rendered = Environment(autoescape=True).from_string(get_settings().pr_review_prompt.user).render(reviewer.vars)
 
     assert reviewer.vars["title"] == "Visible title "
     assert "HIDDEN_DETAILS_INSTRUCTION" not in reviewer.vars["description"]
@@ -187,7 +187,11 @@ def test_describe_prompt_vars_are_sanitized_without_mutating_provider(monkeypatc
         ai_handler=lambda: SimpleNamespace(main_pr_language=None),
     )
 
-    rendered = Environment().from_string(get_settings().pr_description_prompt.user).render(description.vars)
+    rendered = (
+        Environment(autoescape=True)
+        .from_string(get_settings().pr_description_prompt.user)
+        .render(description.vars)
+    )
 
     assert description.vars["title"] == "Visible title "
     assert "HIDDEN_DETAILS_INSTRUCTION" not in description.vars["description"]
