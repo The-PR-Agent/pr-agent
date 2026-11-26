@@ -155,7 +155,7 @@ _INVISIBLE_CHARACTERS = re.compile("[\v\f\u200b\u200c\u200d\u200e\u200f\u2060\uf
 # closing semicolon too, so that semicolon is optional here. The names are the
 # ones HTML defines for this set.
 _CHARACTER_REFERENCE = re.compile(
-    r"&#(x[0-9a-fA-F]+|[0-9]+);?"
+    r"&#([xX][0-9a-fA-F]+|[0-9]+);?"
     r"|&(?:NegativeMediumSpace|NegativeThickSpace|NegativeThinSpace|NegativeVeryThinSpace"
     r"|NoBreak|ZeroWidthSpace|lrm|rlm|zwj|zwnj);"
 )
@@ -263,10 +263,13 @@ def _strip_invisible(segment: str) -> str:
         digits = match.group(1)
         if digits is None:
             return ""
-        if len(digits) > (5 if digits[0] in "xX" else 4):
-            # Larger than any of these characters. ``int`` refuses longer decimal strings anyway.
+        hexadecimal = digits[0] in "xX"
+        # Leading zeros do not change the value: &#0008238; is &#8238;.
+        value = (digits[1:] if hexadecimal else digits).lstrip("0") or "0"
+        if len(value) > (4 if hexadecimal else 5):
+            # Larger than any of these characters, 0xFEFF at most. ``int`` refuses longer decimal strings anyway.
             return match.group()
-        codepoint = int(digits[1:], 16) if digits[0] in "xX" else int(digits)
+        codepoint = int(value, 16) if hexadecimal else int(value)
         return "" if codepoint in _INVISIBLE_CODEPOINTS else match.group()
 
     return _CHARACTER_REFERENCE.sub(drop_if_invisible, segment)

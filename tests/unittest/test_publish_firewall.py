@@ -144,6 +144,24 @@ def test_invisible_characters_and_their_references_are_removed():
     assert result == "the token reads admincheck, admincheck, reversed and ab"
 
 
+@pytest.mark.parametrize("reference", [
+    "&#X202E;",  # the renderer reads an uppercase x too
+    "&#0008238;", "&#x000202E;", "&#X0000202e",  # leading zeros do not change the value
+    "&#65279;",  # the byte order mark is 65279 in decimal
+])
+def test_a_reference_to_an_invisible_character_is_dropped_however_it_is_written(reference):
+    assert firewall_model_output(f"a {reference} b") == "a  b"
+
+
+def test_a_padded_reference_is_compared_by_its_value():
+    # int() refuses a decimal string of more than 4300 digits, and raises on an empty one.
+    padded = "&#" + "0" * 5000
+
+    result = firewall_model_output(f"{padded}8238; a {padded}65; b &#0000; c &#x0000; d")
+
+    assert result == f" a {padded}65; b &#0000; c &#x0000; d"
+
+
 def test_direction_marks_and_their_entities_are_removed():
     result = firewall_model_output("marks \u200e\u200f here and &#8207; plus &#x200F; too")
 
