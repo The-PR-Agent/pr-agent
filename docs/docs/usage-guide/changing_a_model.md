@@ -177,8 +177,10 @@ E.g. to use a new model locally via Ollama, set in `.secrets.toml` or in a confi
 
 ```toml
 [config]
-model = "ollama/qwen2.5-coder:32b"
+model = "ollama/qwen3.8:27b"
 fallback_models=[]
+reasoning_effort = "none" # disable thinking for this example
+additional_reasoning_effort_models = ["ollama/qwen3.8:27b"]
 custom_model_max_tokens=32768 # match the Ollama server's effective context window
 duplicate_prompt_examples=true # will duplicate the examples in the prompt, to help the model to generate structured output
 
@@ -186,9 +188,11 @@ duplicate_prompt_examples=true # will duplicate the examples in the prompt, to h
 api_base = "http://localhost:11434" # or whatever port you're running Ollama on
 ```
 
-Ollama's context window may be too small for PR-Agent prompts and pull-request diffs. Set `OLLAMA_CONTEXT_LENGTH` to suit your model and available memory. For the [32K `qwen2.5-coder:32b` tag](https://ollama.com/library/qwen2.5-coder/tags) used above, start the server with `OLLAMA_CONTEXT_LENGTH=32768 ollama serve`. [Ollama's context-length guide](https://docs.ollama.com/context-length) recommends at least 64K for coding and agent workloads when the model and available memory allow it.
+Ollama's context window may be too small for PR-Agent prompts and pull-request diffs. Set `OLLAMA_CONTEXT_LENGTH` to suit your model and available memory. For the [`qwen3.8:27b` tag](https://ollama.com/library/qwen3.8:27b) used above, start the server with `OLLAMA_CONTEXT_LENGTH=32768 ollama serve` to match the example's 32K budget rather than assuming the tag's full 256K context is available. [Ollama's context-length guide](https://docs.ollama.com/context-length) recommends at least 64K for coding and agent workloads when the model and available memory allow it.
 
 Verify the effective context with `ollama ps` and set `custom_model_max_tokens` no higher than that context or the model's supported limit.
+
+Qwen3.8 enables thinking by default. The example explicitly registers the tagged model for `reasoning_effort` forwarding even when LiteLLM lacks matching metadata; `"none"` maps to Ollama's [`think: false`](https://docs.ollama.com/capabilities/thinking). If you enable thinking, allow additional time and output-token headroom.
 
 :::note[Local models vs commercial models]
 PR-Agent is compatible with almost any AI model, but analyzing complex code repositories and pull requests requires a model specifically optimized for code analysis.
