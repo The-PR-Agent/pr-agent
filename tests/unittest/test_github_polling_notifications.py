@@ -561,17 +561,30 @@ async def test_comment_history_uses_only_page_number_from_link(prefix):
 @pytest.mark.asyncio
 async def test_comment_history_shares_deadline_across_pages(monkeypatch):
     calls = []
+    timeouts = []
+    elapsed = 0.0
+    clock = SimpleNamespace(time=lambda: elapsed)
+    monkeypatch.setattr(github_polling, "asyncio", SimpleNamespace(get_running_loop=lambda: clock))
     monkeypatch.setattr(github_polling, "_get_polling_request_timeout", lambda: 0.5)
 
     async def fallback(request):
+        nonlocal elapsed
         calls.append(int(request.query.get("page", 1)))
-        await asyncio.sleep(0.3)
+        elapsed += 0.3
         return _page_response(request, list(range(1, 205)))
 
     async with _server(fallback) as url, aiohttp.ClientSession() as session:
-        with pytest.raises(asyncio.TimeoutError):
-            await github_polling._fetch_comment_history(session, f"{url}/repos/owner/repo/issues/1/comments", {})
+        def get(url, *, timeout, **kwargs):
+            # Record the remaining budget without using it to schedule a real timer.
+            timeouts.append(timeout.total)
+            return session.get(url, **kwargs)
+
+        with pytest.raises(asyncio.TimeoutError, match="Comment history request timed out"):
+            await github_polling._fetch_comment_history(
+                SimpleNamespace(get=get), f"{url}/repos/owner/repo/issues/1/comments", {}
+            )
     assert calls == [1, 3]
+    assert timeouts == pytest.approx([0.5, 0.2])
 
 
 @pytest.mark.parametrize(
