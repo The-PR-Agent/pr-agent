@@ -176,9 +176,39 @@ def _looks_like_diff(text: str) -> bool:
     return bool(_DIFF_FENCE_RE.search(text) or _DIFF_HEADER_RE.search(text) or _UNIFIED_HUNK_RE.search(text))
 
 
+_DIFF_FENCE_OPEN_RE = re.compile(r"(`{3,})[ \t]*diff[ \t]*$", re.IGNORECASE)
+
+
+def _split_fenced_diffs(text: str) -> tuple[list[str], str]:
+    """Return the bodies of the ```diff blocks in text, and the text with those blocks replaced by a space.
+
+    A block closes only on a line of backticks at least as long as its opening fence. Diff lines start
+    with ' ', '+', '-' or '\\', so a ``` inside a changed or context line stays part of the diff.
+    An unclosed block is left in the text.
+    """
+    bodies, prose = [], []
+    body, fence, before_fence = None, "", ""
+    for line in text.splitlines(keepends=True):
+        if body is None:
+            opening = _DIFF_FENCE_OPEN_RE.search(line.rstrip("\r\n"))
+            if opening:
+                fence, before_fence, body = opening.group(1), line[: opening.start()], [line]
+            else:
+                prose.append(line)
+        elif (closing := line.rstrip()).startswith(fence) and not closing.strip("`"):
+            bodies.append("".join(body[1:]))
+            prose.extend((before_fence, " "))
+            body = None
+        else:
+            body.append(line)
+    if body is not None:
+        prose.extend(body)
+    return bodies, "".join(prose)
+
+
 def _extract_diff(text: str) -> str:
     """Return the unified-diff body, unwrapping a ```diff fence if present."""
-    fences = re.findall(r"```\s*diff\s*\n(.*?)```", text, re.IGNORECASE | re.DOTALL)
+    fences, _ = _split_fenced_diffs(text)
     if fences:
         return fences[-1]
     return text
@@ -190,8 +220,8 @@ def _diff_prose(text: str) -> str:
     default 'review' into 'ask'. A genuine question in the surrounding prose (e.g.
     'what changed here?') is preserved."""
     # Drop a fenced ```diff ... ``` block entirely.
-    without_fence = re.sub(r"```\s*diff\s*\n.*?```", " ", text, flags=re.IGNORECASE | re.DOTALL)
-    if without_fence != text:
+    fences, without_fence = _split_fenced_diffs(text)
+    if fences:
         return without_fence
     kept, in_diff = [], False
     for line in text.split("\n"):

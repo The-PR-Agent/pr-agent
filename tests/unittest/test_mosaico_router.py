@@ -1177,6 +1177,42 @@ class TestProseAfterRawDiff:
         assert seen["verb"] == "review"
 
 
+class TestBackticksInsideFencedDiff:
+    # The README hunk adds a Markdown code block, so its ``` lines are diff content, not the closing fence.
+    DIFF_BODY = ("diff --git a/README.md b/README.md\n"
+                 "--- a/README.md\n"
+                 "+++ b/README.md\n"
+                 "@@ -1,1 +1,4 @@\n"
+                 " # Tool\n"
+                 "+```bash\n"
+                 "+pip install tool\n"
+                 "+```\n"
+                 "diff --git a/app.py b/app.py\n"
+                 "--- a/app.py\n"
+                 "+++ b/app.py\n"
+                 "@@ -1,1 +1,1 @@\n"
+                 "-x = a if a else b\n"
+                 "+x = a if a is not None else b  # why? None must fall through\n")
+
+    @pytest.mark.asyncio
+    async def test_every_file_of_the_fenced_diff_is_reviewed(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        await route_and_run(f"```diff\n{self.DIFF_BODY}```")
+        assert seen["verb"] == "review"
+        assert seen["files"] == ["README.md", "app.py"]
+
+    def test_patch_body_is_not_read_as_prose(self):
+        assert _diff_prose(f"review this:\n```diff\n{self.DIFF_BODY}```\n").strip() == "review this:"
+
+    def test_fence_opened_after_prose_on_the_same_line(self):
+        prose = _diff_prose(f"what changed here? ```diff\n{self.DIFF_BODY}```")
+        assert prose.strip() == "what changed here?"
+
+    def test_unclosed_fence_is_left_in_the_text(self):
+        text = f"```diff\n{self.DIFF_BODY}"
+        assert dispatch._extract_diff(text) == text
+
+
 class TestExtendedHeaderNotLeaked:
     RENAME_DIFF = ("diff --git a/a.py b/improve.py\n"
                    "similarity index 95%\n"
