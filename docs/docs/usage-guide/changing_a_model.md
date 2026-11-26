@@ -202,18 +202,23 @@ Hence, for production workflows and real-world usage, we recommend using commerc
 
 ### Hugging Face
 
-To use a new model with Hugging Face Inference Endpoints, for example, set:
+To use a model deployed with Hugging Face Inference Endpoints, such as [Gemma 4 12B IT](https://huggingface.co/google/gemma-4-12B-it), set:
 
 ```toml
 [config] # in configuration.toml
-model = "huggingface/meta-llama/Llama-2-7b-chat-hf"
+model = "huggingface/google/gemma-4-12B-it"
 fallback_models=[]
-custom_model_max_tokens=... # set the maximal input tokens for the model
+reasoning_effort = "none" # avoid requesting thinking when forwarded
+custom_model_max_tokens=32768 # example; use your deployed endpoint's supported input-token limit
 
 [huggingface] # in .secrets.toml
-key = ... # your Hugging Face api key
-api_base = ... # the base url for your Hugging Face inference endpoint
+key = "..." # your Hugging Face API key
+api_base = "..." # the base URL for your Hugging Face inference endpoint
 ```
+
+Deploy the selected model first (see the [verified Inference Endpoints deployment recipe](https://endpoints.huggingface.co/new/google/gemma-4-12B-it)), accept its access terms if required, and adjust `custom_model_max_tokens` to the endpoint's supported input-token limit, not its total context window.
+
+Gemma 4's [vLLM reasoning mode](https://docs.vllm.ai/en/latest/features/reasoning_outputs/) is opt-in by default. PR-Agent only forwards `reasoning_effort` when reasoning support is recognized or explicitly configured; `"none"` avoids enabling thinking if the parameter is forwarded.
 
 (you can obtain a Hugging Face access token from [here](https://huggingface.co/settings/tokens))
 
