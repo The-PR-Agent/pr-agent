@@ -1159,6 +1159,47 @@ async def test_artifact_findings_reach_output_consumers_only_when_enabled(enable
             {**quoted, "quoted": True}, {**invented, "quoted": False}]
 
 
+@pytest.mark.parametrize("source", ["prediction", "prediction_data"])
+async def test_the_firewall_rewrites_a_copy_that_only_the_publishers_read(source):
+    reviewer = _make_prediction_reviewer()
+    reviewer.vars = {"require_failure_modes": True}
+    url = "https://x.io/1"
+    prose = "must not embed ![x](//evil.test/p.png)"
+    data = {"review": {
+        "key_issues_to_review": [],
+        "security_concerns": f"None. See {prose}",
+        "ticket_compliance_check": [{"ticket_url": url, "ticket_requirements": prose}],
+    }}
+    reviewer.prediction = "unused prediction"
+    if source == "prediction_data":  # a merged chunked review, which the reviewer keeps holding
+        reviewer.prediction_data = data
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.set_review_labels = MagicMock()
+    reviewer._prepare_review_finding_state = MagicMock(wraps=reviewer._prepare_review_finding_state)
+    with (
+        patch("pr_agent.commands.pr_reviewer.load_yaml", return_value=data),
+        patch("pr_agent.commands.pr_reviewer.github_action_output") as action_output,
+        patch("pr_agent.commands.pr_reviewer.convert_to_markdown_v2", return_value="review") as render,
+        patch("pr_agent.commands.pr_reviewer.push_outputs_async") as push,
+    ):
+        reviewer._prepare_pr_review()
+        await reviewer._deliver_sink_output()
+
+    # What stores or processes the review reads it as the model wrote it.
+    for stored in (action_output.call_args.args[0], reviewer.git_provider.publish_structured_review.call_args.args[0],
+                   reviewer._prepare_review_finding_state.call_args.args[0]):
+        assert stored["review"]["ticket_compliance_check"][0] == {"ticket_url": url, "ticket_requirements": prose}
+    assert push.call_args.kwargs["payload"]["ticket_compliance_check"][0]["ticket_url"] == url
+    assert data["review"]["ticket_compliance_check"][0]["ticket_url"] == url
+    # The comment is rendered from a firewalled copy.
+    escaped = r"must not embed !\[x\](//evil.test/p.png)"
+    published = render.call_args.args[0]["review"]
+    (ticket,) = published["ticket_compliance_check"]
+    assert (ticket["ticket_url"], ticket["ticket_requirements"]) == (r"https\://x\.io/1", escaped)
+    assert published["security_concerns"] == f"None. See {escaped}"
+
+
 def test_review_schema_allows_fields_requested_through_extra_instructions():
     reviewer = _make_prediction_reviewer()
     with patch("pr_agent.commands.pr_reviewer.get_logger") as get_logger:

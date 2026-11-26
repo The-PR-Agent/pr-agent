@@ -1332,6 +1332,20 @@ class PRReviewer:
     def _review_finding_from_issue(issue: dict) -> Finding | None:
         return Finding.from_review_issue(issue)
 
+    def _firewalled_for_publishing(self, data: dict) -> dict:
+        """Return a copy of the review whose model-authored prose is firewalled (#4999).
+
+        Only what publishes the review reads the copy: the comment, the inline comments
+        and the markdown the sinks deliver. The review itself stays as the model wrote
+        it, which is what the action output, the finding state, the structured review
+        and the sink payload read.
+        """
+        publish_data = copy.deepcopy(data)
+        self._firewall_review_prose(publish_data)
+        if isinstance(publish_data.get("review"), dict):
+            self._firewall_artifact_prose(publish_data["review"])
+        return publish_data
+
     def _firewall_review_prose(self, data) -> None:
         """Run the publish-boundary firewall over the model-authored prose fields (#4999).
 
@@ -2109,14 +2123,12 @@ class PRReviewer:
         if self.prediction_data is None:
             self._validate_review_schema(data)
             self._filter_low_confidence_findings(data)
-        self._firewall_review_prose(data)
         if isinstance(data, dict) and isinstance(data.get("review"), dict) and "failure_modes" in data["review"]:
             data["review"]["failure_modes"] = parse_failure_modes(data["review"]["failure_modes"])
         if isinstance(data, dict) and isinstance(data.get("review"), dict) and "artifact_findings" in data["review"]:
             data["review"]["artifact_findings"] = parse_artifact_findings(
                 data["review"]["artifact_findings"], getattr(self, "vars", {}).get("artifact_context")
             )
-            self._firewall_artifact_prose(data["review"])
         if self._prepare_cancelled():
             return ""
         github_action_output(data, 'review')
@@ -2245,6 +2257,10 @@ class PRReviewer:
         if self._prepare_cancelled():
             return ""
         self._prepare_review_finding_state(data)
+        # The finding state and the outputs above it read the review as the model wrote it. What follows
+        # publishes it, so it reads a copy with the prose firewalled (#4999).
+        model_data = data
+        data = self._firewalled_for_publishing(data)
         # Inline publication returns a pruned copy; the external sinks get the complete review, as /improve's do.
         complete_data = data
         if self._prepare_cancelled():
@@ -2397,10 +2413,10 @@ class PRReviewer:
                     files=self.git_provider.get_diff_files(), commit_review=commit_review_markdown_text)
             if self._prepare_cancelled():
                 return ""
-            self._pending_sink_output = ("review", complete_data.get('review', {}), sink_markdown)
+            self._pending_sink_output = ("review", model_data.get('review', {}), sink_markdown)
 
         # Add custom labels from the review prediction (effort, security)
-        self.set_review_labels(data)
+        self.set_review_labels(model_data)
 
         if markdown_text is None or len(markdown_text) == 0:
             markdown_text = ""

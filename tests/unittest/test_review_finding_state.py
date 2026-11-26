@@ -394,6 +394,31 @@ def test_resolved_render_is_collapsed_and_state_marker_is_hidden():
     assert "<!-- pr-agent-review-state:v1" in body
 
 
+def test_the_resolved_section_publishes_the_body_firewalled_and_the_marker_keeps_it_as_written():
+    prose = "Remove ![x](//evil.test/p.png) and www.evil.test/x."
+    previous = reconcile_review_findings(
+        None,
+        [_finding(f"**Possible Issue**\n\n{prose}")],
+        allow_resolution=True,
+        head_sha="head-1",
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    resolved = reconcile_review_findings(
+        previous,
+        [],
+        allow_resolution=True,
+        head_sha="head-2",
+        timestamp="2026-01-01T00:01:00Z",
+    ).state
+
+    comment = append_review_state("## PR Reviewer Guide\n\nCurrent review", resolved)
+
+    section = comment.split("<!-- pr-agent-review-state", 1)[0]
+    assert prose not in section
+    assert r"Remove !\[x\](//evil.test/p.png) and www\.evil\.test/x\." in section
+    assert parse_review_state(comment).state["findings"][0]["body"] == f"**Possible Issue**\n\n{prose}"
+
+
 def test_append_review_state_reserves_space_for_complete_marker():
     state = reconcile_review_findings(
         None,
