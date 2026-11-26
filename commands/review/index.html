@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">Review | PR-Agent</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" property="og:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.pr-agent.ai/commands/review/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Review | PR-Agent"><meta data-rh="true" name="description" content="Overview"><meta data-rh="true" property="og:description" content="Overview"><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.pr-agent.ai/commands/review/"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/commands/review/" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/commands/review/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Review","item":"https://docs.pr-agent.ai/commands/review"}]}</script><script src="https://widget.kapa.ai/kapa-widget.bundle.js" data-website-id="5c89c0b1-b2ee-43c9-8c6f-43ed762b3c1e" data-project-name="PR-Agent" data-project-color="#2459db" data-project-logo="/img/favicon.svg" data-launcher-button-image="/img/favicon-white.svg" data-color-scheme-selector="[data-theme=&#39;dark&#39;]" async></script><link rel="stylesheet" href="/assets/css/styles.0fa13089.css">
-<script src="/assets/js/runtime~main.5ad06dba.js" defer="defer"></script>
+<script src="/assets/js/runtime~main.15c43680.js" defer="defer"></script>
 <script src="/assets/js/main.8d9b03df.js" defer="defer"></script>
 </head>
 <body>
@@ -30,8 +30,14 @@ The command can be triggered automatically every time a new PR is <a class="" hr
 <p>From the CLI, save the parsed review and token usage as JSON for a later CI step:</p>
 <div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token plain">pr-agent </span><span class="token parameter variable" style="color:hsl(207, 82%, 66%)">--pr_url</span><span class="token plain"> https://github.com/org/repo/pull/123 --json-output review.json review</span><br></div></code></pre></div></div>
 <p>The JSON file is written after the review completes. Place <code>--json-output</code> before <code>review</code> or <code>review_pr</code>.
-Its <code>coverage</code> object lists the files the token budget or chunk-call limit kept out of the review (<code>files_not_reviewed</code>)
-and those whose patches were clipped to fit the token budget (<code>files_partially_reviewed</code>).
+Its <code>coverage</code> object lists files omitted by the token budget or chunk-call limit, as well as
+deletions represented only by filename notices (<code>files_not_reviewed</code>), and those whose patches
+were clipped to fit the token budget (<code>files_partially_reviewed</code>).
+Files excluded by file-type filtering are not included in these coverage lists.
+Filename notices are optional context, not reviewed source; filtered-file notices take priority
+when both kinds compete for the remaining request budget.
+Filename notices supplement source changes and do not trigger a model call on their own.
+A deletion-only PR without source changes to analyze is skipped, even when deletion patches are available.
 The JSON includes the full lists even when the Markdown footer summarizes them.
 It also includes <code>total_chunks</code> and <code>failed_chunks</code> for the final analysis plan, after fallback recovery.
 These count analysis chunks, not model requests or retry attempts. A nonzero <code>failed_chunks</code> means that the
@@ -124,7 +130,7 @@ for the authoritative default values.</p>
   </tr>
   <tr>
     <td><b>enable_review_coverage_footer</b></td>
-    <td>If set to true, the command will display a review coverage footer when the token budget leaves files out of the review.</td>
+    <td>If set to true, the command will display a review coverage footer when source changes were not reviewed or were only partially reviewed, including deleted files represented by filename notices.</td>
   </tr>
   <tr>
     <td><b>enable_large_pr_chunking</b></td>
