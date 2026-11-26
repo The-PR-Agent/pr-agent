@@ -9,6 +9,7 @@ NOISE_FRACTION = 0.2
 TITLE = re.compile(r"^\*\*([^*\n]+)\*\*\s*$", re.MULTILINE)
 FINDINGS_START = "Recommended focus areas"
 FINDINGS_END = "Agent run details"
+RENDERED_FIELDS = ("relevant_file", "issue_header", "issue_content")
 
 
 def findings_from_review(review):
@@ -17,7 +18,9 @@ def findings_from_review(review):
     issues = (review or {}).get("review", {}).get("key_issues_to_review") or []
     out = []
     for issue in issues if isinstance(issues, list) else []:
-        if not isinstance(issue, dict):
+        # The same issues the comment renderer skips (pr_agent/algo/utils.py), so only posted findings count.
+        if not issue or not isinstance(issue, dict) or any(
+                f in issue and not isinstance(issue[f], str) for f in RENDERED_FIELDS):
             continue
         body = f"{str(issue.get('relevant_file', '')).strip()} lines {issue.get('start_line')}-" \
                f"{issue.get('end_line')}\n{str(issue.get('issue_content', '')).strip()}"

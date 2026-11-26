@@ -28,8 +28,9 @@ REPO = HERE.parent.parent
 REPLAY = HERE / "replay.py"
 BRANCH_PREFIX = "review-eval-base-"
 MAX_DIFF = 60_000
+STDERR_TAIL = 3000
 PASS_ENV = ("PATH", "HOME", "TMPDIR", "SSL_CERT_FILE")
-SECRET_ENV = {"openai": ("OPENAI__KEY", "OPENAI_KEY")}
+SECRET_ENV = {"openai": ("OPENAI__KEY", "OPENAI_KEY", "OPENAI_API_KEY")}  # the first is what pr-agent reads
 OVERRIDE_SECTIONS = {"CONFIG", "PR_REVIEWER"}
 OVERRIDE_DENY = {"KEY", "KEYS", "TOKEN", "SECRET", "PASSWORD", "BASE", "URL", "PROXY", "HEADER", "HEADERS", "TYPE",
                  "ENDPOINT", "MODEL", "MODELS", "CERT", "SSL", "BUNDLE", "HOST"}
@@ -43,6 +44,11 @@ def has(sha):
     return subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=REPO, capture_output=True).returncode == 0
 
 
+def base_branch(out, key):
+    """Namespaced by --out, so evaluations sharing a checkout never delete each other's branches."""
+    return f"{BRANCH_PREFIX}{digest(str(out))[:8]}-{key}"
+
+
 def prepare(case, out, remote):
     """A detached worktree at the reviewed commit and a local branch at its merge base (the local provider diffs
     against merge-base(target, HEAD))."""
@@ -52,7 +58,7 @@ def prepare(case, out, remote):
     wt = out / "wt" / case["key"]
     if not wt.exists():
         git("worktree", "add", "-q", "--detach", str(wt), case["reviewed_sha"])
-    git("branch", "-f", BRANCH_PREFIX + case["key"], case["merge_base"])
+    git("branch", "-f", base_branch(out, case["key"]), case["merge_base"])
     return wt
 
 
@@ -62,9 +68,12 @@ def digest(*parts):
 
 def fingerprints(model, judge_model, overrides, cases_file):
     """(review inputs, judge inputs) hashes: cached reviews are only valid for the same model, settings, cases,
-    pr-agent code (committed tree plus uncommitted edits such as an overlay), lockfile and replay script; cached
-    verdicts also for the same judge model and the code that builds and scores judge inputs."""
+    pr-agent code (committed tree plus uncommitted edits such as an overlay, and untracked files), lockfile and
+    replay script; cached verdicts also for the same judge model and the code that builds and scores judge inputs."""
     code = git("rev-parse", "HEAD:pr_agent").strip() + git("diff", "HEAD", "--", "pr_agent")
+    for path in sorted(git("ls-files", "--others", "--exclude-standard", "-z", "--", "pr_agent").split("\0")):
+        if path and not (REPO / path).is_symlink():
+            code += f"\0{path}\0{(REPO / path).read_bytes().hex()}"
     review_fp = digest(model, json.dumps(overrides, sort_keys=True), cases_file.read_text(), code,
                        (REPO / "uv.lock").read_text(), REPLAY.read_text())
     judge_code = "".join((HERE / f).read_text() for f in ("judge.py", "score.py", "run_eval.py"))
@@ -88,7 +97,7 @@ def cleanup(out, cases):
         wt = out / "wt" / case["key"]
         if wt.exists():
             git("worktree", "remove", "--force", str(wt), check=False)
-        git("branch", "-D", BRANCH_PREFIX + case["key"], check=False)
+        git("branch", "-D", base_branch(out, case["key"]), check=False)
 
 
 def parse_overrides(items):
@@ -114,11 +123,19 @@ def child_env(model, overrides):
                 "CONFIG__MODEL_REASONING": model, "CONFIG__FALLBACK_MODELS": "[]"})
     env.update(overrides)
     provider = model.split("/", 1)[0] if "/" in model else "openai"
-    keys = [k for k in SECRET_ENV.get(provider, ()) if os.environ.get(k)]
+    names = SECRET_ENV.get(provider, ())
+    keys = [k for k in names if os.environ.get(k)]
     if not keys:
-        raise SystemExit(f"no API key in the environment for model {model!r} (need one of {SECRET_ENV.get(provider)})")
-    env.update({k: os.environ[k] for k in keys})
+        raise SystemExit(f"no API key in the environment for model {model!r} (need one of {names})")
+    env[names[0]] = os.environ[keys[0]]  # an alias is passed under the name pr-agent reads
     return env
+
+
+def redact(text, env):
+    for name, value in env.items():  # status.json is uploaded: never let a log line echo a key
+        if name.endswith(("KEY", "TOKEN")) and len(value) >= 8:
+            text = text.replace(value, "[redacted]")
+    return text
 
 
 def review(case, rep, out, wt, env):
@@ -131,16 +148,21 @@ def review(case, rep, out, wt, env):
         (run / stale).unlink(missing_ok=True)
     (run / "case.json").write_text(json.dumps({k: case[k] for k in ("title", "branch", "description", "tickets")}))
     env = {**env, "REVIEW_EVAL_RUN_DIR": str(run), "REVIEW_EVAL_CASE": str(run / "case.json"),
-           "REVIEW_EVAL_TARGET_BRANCH": BRANCH_PREFIX + case["key"]}
+           "REVIEW_EVAL_TARGET_BRANCH": base_branch(out, case["key"])}
+    stderr = ""
     try:
         p = subprocess.run([sys.executable, str(REPLAY)], cwd=wt, env=env, capture_output=True, text=True,
                            timeout=900)
-        (run / "stderr.log").write_text(p.stderr[-20000:])
+        stderr = p.stderr[-20000:]
+        (run / "stderr.log").write_text(stderr)
     except subprocess.TimeoutExpired:
         status.write_text(json.dumps({"ok": False, "error": "timeout", "usage": [], "finish": []}))
     if not status.exists():
-        status.write_text(json.dumps({"ok": False, "error": "replay crashed, see stderr.log", "usage": [],
-                                      "finish": []}))
+        status.write_text(json.dumps({"ok": False, "error": "replay crashed", "usage": [], "finish": []}))
+    st = json.loads(status.read_text())
+    if not st["ok"]:  # stderr.log stays local; the uploaded status carries a redacted tail for CI readers
+        st["stderr_tail"] = redact(stderr, env)[-STDERR_TAIL:]  # redact first: a key split by the cut would leak
+        status.write_text(json.dumps(st))
     return run
 
 
@@ -164,25 +186,27 @@ def judge_run(case, run, wt, judge_model):
         found = score.findings((run / "final.md").read_text(errors="replace"))
     text = "\n\n".join(f"[{i}] {t}\n{b}" for i, (t, b) in enumerate(found))
     res = {"findings": len(found), "usage": []}
-    if case["kind"] == "catch":
-        known = case["known_findings"]
-        if found:
-            try:
+    try:
+        if case["kind"] == "catch":
+            known = case["known_findings"]
+            a = b = {k["label"]: "missed" for k in known}
+            if found:
                 a, ua = judge.judge_catch(judge_model, known, text)
                 b, ub = judge.judge_catch(judge_model, known, text, reverse=True)
-            except RuntimeError as e:  # counted as a failed run and redone on the next invocation
-                res.update({"judge_error": str(e), "catch": {k["label"]: ["missed", "missed"] for k in known}})
-                f.write_text(json.dumps(res, indent=1))
-                return res
-            res["usage"] += ua + ub
+                res["usage"] += ua + ub
+            res["catch"] = {k["label"]: [a[k["label"]], b[k["label"]]] for k in known}
+        elif found:
+            res["valid"], u = judge.judge_precision(judge_model, context(case, wt), found, wt)
+            res["usage"] += u
         else:
-            a = b = {k["label"]: "missed" for k in known}
-        res["catch"] = {k["label"]: [a[k["label"]], b[k["label"]]] for k in known}
-    elif found:
-        res["valid"], u = judge.judge_precision(judge_model, context(case, wt), found, wt)
-        res["usage"] += u
-    else:
-        res["valid"] = []
+            res["valid"] = []
+    except Exception as e:  # noqa: BLE001  counted as a failed run and redone on the next invocation
+        # Only our own messages are kept: a provider error is uploaded with judged.json and could echo request data.
+        res["judge_error"] = str(e) if isinstance(e, RuntimeError) else type(e).__name__
+        if case["kind"] == "catch":
+            res["catch"] = {k["label"]: ["missed", "missed"] for k in case["known_findings"]}
+        else:
+            res["valid"] = []
     f.write_text(json.dumps(res, indent=1))
     return res
 
@@ -299,7 +323,12 @@ def main():
             f.write(text)
     print(text)
     if args.write_baseline:
-        args.write_baseline.write_text(json.dumps(m, indent=1) + "\n")
+        # Run-quality failures only (failed runs, output caps): a deliberate catch change may become the baseline.
+        quality, _ = score.gate(m, None, args.repeats)
+        if quality:
+            print(f"not writing {args.write_baseline}: {'; '.join(quality)}; rerun the same --out to redo them")
+        else:
+            args.write_baseline.write_text(json.dumps(m, indent=1) + "\n")
     sys.exit(1 if failures else 0)
 
 

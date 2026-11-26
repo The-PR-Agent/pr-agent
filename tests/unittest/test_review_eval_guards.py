@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import pathlib
 import sys
 
@@ -68,6 +69,82 @@ def test_catch_judge_fails_instead_of_caching_missed(monkeypatch):
     monkeypatch.setattr(judge, "complete", lambda *a, **k: ("not json", {"input": 1, "output": 1}))
     with pytest.raises(RuntimeError):
         judge.judge_catch("openai/m", KNOWN, "review")
+
+
+@pytest.mark.parametrize("reply", ['{"verdicts": null}', '{"verdicts": [{"label": ["a"], "verdict": "caught"}]}'])
+def test_catch_judge_retries_a_malformed_reply(monkeypatch, reply):
+    replies = iter([reply, '{"verdicts": [{"label": "a", "verdict": "caught"}, {"label": "b", "verdict": "partial"}]}'])
+    monkeypatch.setattr(judge, "complete", lambda *a, **k: (next(replies), {"input": 1, "output": 1}))
+    assert judge.judge_catch("openai/m", KNOWN, "review")[0] == {"a": "caught", "b": "partial"}
+
+
+FOUND = [("t0", "b0"), ("t1", "b1")]
+
+
+def test_precision_judge_retries_an_incomplete_reply(monkeypatch, tmp_path):
+    replies = iter(['{"lookups": []}', '{"verdicts": null}', '{"verdicts": [{"id": 0, "valid": "yes"}]}',
+                    '{"verdicts": [{"id": 0, "valid": "Yes"}, {"id": 1, "valid": "no"}]}'])
+    monkeypatch.setattr(judge, "complete", lambda *a, **k: (next(replies), {"input": 1, "output": 1}))
+    verdicts, usage = judge.judge_precision("openai/m", "ctx", FOUND, tmp_path)
+    assert verdicts == ["yes", "no"] and len(usage) == 4
+
+
+def test_precision_judge_fails_instead_of_caching_unsure(monkeypatch, tmp_path):
+    monkeypatch.setattr(judge, "complete", lambda *a, **k: ('{"verdicts": [{"id": 0, "valid": "maybe"}]}',
+                                                            {"input": 1, "output": 1}))
+    with pytest.raises(RuntimeError):
+        judge.judge_precision("openai/m", "ctx", FOUND, tmp_path)
+
+
+@pytest.mark.parametrize("kind", ["catch", "precision"])
+def test_judge_errors_are_recorded_for_a_retry_without_the_provider_message(monkeypatch, tmp_path, kind):
+    class ProviderError(Exception):
+        pass
+
+    def boom(*a, **k):
+        raise ProviderError("request body with secrets")
+
+    monkeypatch.setattr(run_eval.judge, "judge_catch", boom)
+    monkeypatch.setattr(run_eval.judge, "judge_precision", boom)
+    monkeypatch.setattr(run_eval, "context", lambda case, wt: "ctx")
+    (tmp_path / "status.json").write_text('{"ok": true}')
+    (tmp_path / "review.json").write_text('{"review": {"key_issues_to_review": [{"relevant_file": "a.py", '
+                                          '"issue_header": "H", "issue_content": "c"}]}}')
+    case = {"kind": kind, "known_findings": KNOWN}
+    res = run_eval.judge_run(case, tmp_path, tmp_path, "openai/m")
+    assert res["judge_error"] == "ProviderError" and "secrets" not in (tmp_path / "judged.json").read_text()
+
+
+def test_child_env_passes_a_key_alias_under_the_name_pr_agent_reads(monkeypatch):
+    for name in run_eval.SECRET_ENV["openai"]:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-123456")
+    env = run_eval.child_env("openai/m", {})
+    assert env["OPENAI__KEY"] == "sk-test-123456" and "OPENAI_API_KEY" not in env
+
+
+def test_redact_hides_key_values():
+    assert run_eval.redact("error sk-test-123456 here", {"OPENAI__KEY": "sk-test-123456"}) == "error [redacted] here"
+
+
+def test_failed_run_status_carries_a_redacted_tail_without_a_split_key(monkeypatch, tmp_path):
+    key = "sk-test-0123456789abcdef"
+    stderr = "x" + key + "y" * (run_eval.STDERR_TAIL - 10)  # the key straddles the tail's cut
+
+    def replay(cmd, cwd, env, **k):
+        (pathlib.Path(env["REVIEW_EVAL_RUN_DIR"]) / "status.json").write_text('{"ok": false, "error": "e"}')
+        return type("P", (), {"stderr": stderr})()
+
+    monkeypatch.setattr(run_eval.subprocess, "run", replay)
+    case = {"key": "k", "title": "t", "branch": "b", "description": "d", "tickets": []}
+    run = run_eval.review(case, 1, tmp_path, tmp_path, {"OPENAI__KEY": key})
+    tail = json.loads((run / "status.json").read_text())["stderr_tail"]
+    assert key[-8:] not in tail and len(tail) <= run_eval.STDERR_TAIL
+
+
+def test_base_branches_are_namespaced_by_out(tmp_path):
+    a, b = run_eval.base_branch(tmp_path / "a", "k"), run_eval.base_branch(tmp_path / "b", "k")
+    assert a != b and a.startswith(run_eval.BRANCH_PREFIX) and a.endswith("-k")
 
 
 def test_cache_refuses_other_review_inputs_and_drops_verdicts_of_another_judge(tmp_path):

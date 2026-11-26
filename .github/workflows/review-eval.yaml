@@ -55,8 +55,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     # Job-level, so an event whose job is skipped (another label) never joins the group and cancels a running eval.
+    # Tier, model and repeats are in the group, so a fast and a full run of the same ref both finish.
     concurrency:
-      group: review-eval-${{ inputs.pr_number || github.event.pull_request.number || github.ref }}
+      group: >-
+        review-eval-${{ inputs.pr_number || github.event.pull_request.number || github.ref }}-${{ inputs.tier ||
+        'fast' }}-${{ inputs.model || 'default' }}-${{ inputs.repeats || '2' }}
       cancel-in-progress: true
     permissions:
       contents: read

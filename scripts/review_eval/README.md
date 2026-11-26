@@ -31,7 +31,9 @@ uv run python scripts/review_eval/run_eval.py --model openai/gpt-6.1-sol \
 The full tier with two repeats makes about 110 review calls and 220 judge calls. Runs and verdicts are cached under
 `--out`, so an interrupted eval resumes; reviews from other inputs are refused and verdicts from another judge are
 redone. `--limit 1` runs one case of each kind as a smoke test, `--set SECTION__KEY=VALUE` tries a setting, and
-`--write-baseline scripts/review_eval/baseline_<tier>.json` records an accepted run.
+`--write-baseline scripts/review_eval/baseline_<tier>.json` records an accepted run (refused while any run failed or
+too many hit the output cap; rerun the same `--out` to redo them). A failed run's `status.json` carries a redacted
+tail of its log.
 
 In CI, `.github/workflows/review-eval.yaml` runs it only on demand and never blocks a merge (it is not a required
 check). A maintainer runs it from the Actions tab, optionally with a pull request number: `overlay_pr.py` applies that

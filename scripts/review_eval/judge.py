@@ -11,6 +11,7 @@ import litellm
 KEY_ENV = {"openai": ("OPENAI__KEY", "OPENAI_KEY", "OPENAI_API_KEY")}
 API_BASE = {"openai": "https://api.openai.com/v1"}
 VERDICTS = {"caught", "partial", "missed"}
+PRECISION_VERDICTS = {"yes", "no", "unsure"}
 CATCH_ATTEMPTS = 3
 MAX_LOOKUPS, READ_LINES, GREP_LINES, MAX_TEXT = 8, 120, 40, 200
 
@@ -107,8 +108,9 @@ def judge_catch(model, known, review, reverse=False):
     for _ in range(CATCH_ATTEMPTS):  # an unusable reply must never be cached as "missed"
         out, u = complete(model, CATCH_SYSTEM, msgs)
         usage.append(u)
-        got = {v.get("label"): str(v.get("verdict", "")).lower()
-               for v in parse_json(out).get("verdicts", []) if isinstance(v, dict)}
+        verdicts = parse_json(out).get("verdicts")
+        got = {v["label"]: str(v.get("verdict", "")).lower() for v in verdicts if isinstance(v, dict)
+               and isinstance(v.get("label"), str)} if isinstance(verdicts, list) else {}
         if all(got.get(k["label"]) in VERDICTS for k in known):
             return {k["label"]: got[k["label"]] for k in known}, usage
     raise RuntimeError(f"catch judge gave no usable verdict for every known finding after {CATCH_ATTEMPTS} tries")
@@ -153,9 +155,15 @@ def judge_precision(model, context, found, worktree):
     lookups = [lk for lk in parse_json(out).get("lookups", []) if isinstance(lk, dict)][:MAX_LOOKUPS]
     results = "\n\n".join(lookup(worktree, lk) for lk in lookups) or "(no lookups)"
     msgs += [{"role": "assistant", "content": out}, {"role": "user", "content": PRECISION_B.format(results=results)}]
-    out, u2 = complete(model, PRECISION_SYSTEM, msgs)
-    got = {}
-    for v in parse_json(out).get("verdicts", []):
-        if isinstance(v, dict) and str(v.get("id", "")).isdigit():
-            got[int(v["id"])] = str(v.get("valid", "unsure")).lower()
-    return [got.get(i, "unsure") for i in range(len(found))], [u1, u2]
+    usage = [u1]
+    for _ in range(CATCH_ATTEMPTS):  # an unusable reply must never be cached as lower precision
+        out, u = complete(model, PRECISION_SYSTEM, msgs)
+        usage.append(u)
+        verdicts = parse_json(out).get("verdicts")
+        got = {}
+        for v in verdicts if isinstance(verdicts, list) else []:
+            if isinstance(v, dict) and str(v.get("id", "")).isdigit():
+                got[int(v["id"])] = str(v.get("valid", "")).lower()
+        if all(got.get(i) in PRECISION_VERDICTS for i in range(len(found))):
+            return [got[i] for i in range(len(found))], usage
+    raise RuntimeError(f"precision judge gave no usable verdict for every finding after {CATCH_ATTEMPTS} tries")

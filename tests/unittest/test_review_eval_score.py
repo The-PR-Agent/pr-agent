@@ -62,6 +62,14 @@ def test_findings_from_review_export_carry_location_and_fix():
     assert score.findings_from_review({}) == []
 
 
+def test_findings_from_review_skip_issues_the_comment_does_not_render():
+    review = {"review": {"key_issues_to_review": [
+        {}, {"relevant_file": ["a.py"], "issue_header": "H", "issue_content": "c"},
+        {"relevant_file": "a.py", "issue_header": 3, "issue_content": "c"},
+        {"relevant_file": "b.py", "issue_header": "Kept", "issue_content": "c"}]}}
+    assert [t for t, _ in score.findings_from_review(review)] == ["Kept"]
+
+
 def test_gate_skips_a_baseline_from_another_case_set_or_tier():
     failures, notes = score.gate(metrics(catch=0.0, cases_hash="a", tier="fast"),
                                  metrics(cases_hash="b", tier="fast"), 2)

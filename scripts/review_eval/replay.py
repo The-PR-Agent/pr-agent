@@ -79,21 +79,27 @@ async def main():
     init_run_details()  # PRReviewer swallows model errors and records them here, as the CLI expects
     review_json_output_path.set(str(RUN / "review.json"))  # the parsed findings, with file and lines
     try:
-        await PRReviewer(os.environ["REVIEW_EVAL_TARGET_BRANCH"]).run()
-        return "the review recorded a failure (see stderr.log)" if command_failed() else None
+        reviewer = PRReviewer(os.environ["REVIEW_EVAL_TARGET_BRANCH"])
+        await reviewer.run()
+        if command_failed():
+            return "the review recorded a failure (see stderr_tail)"
+        # Large-PR chunking can publish a partial review without recording a failure; a retry can complete it.
+        if getattr(reviewer, "review_failed_chunk_count", 0):
+            return f"{reviewer.review_failed_chunk_count} review chunk(s) failed"
+        return None
     except Exception:  # noqa: BLE001  recorded in status.json so the run counts as failed
-        text = traceback.format_exc()[-4000:]
+        text = traceback.format_exc()
         for name, value in os.environ.items():  # status.json is uploaded: never let a provider error echo a key
             if name.endswith(("KEY", "TOKEN")) and len(value) >= 8:
                 text = text.replace(value, "[redacted]")
-        return text
+        return text[-4000:]  # cut after redacting, so a key split by the cut cannot leak
 
 
 for stale in ("final.md", "review.json"):
     (RUN / stale).unlink(missing_ok=True)
 error = asyncio.run(main())
-final = RUN / "final.md"
+# The structured export is the result; final.md is absent when a review with no findings is not published.
 (RUN / "status.json").write_text(json.dumps({
-    "ok": error is None and final.exists() and final.stat().st_size > 0 and (RUN / "review.json").exists(),
+    "ok": error is None and (RUN / "review.json").exists(),
     "error": error, "usage": usage, "finish": finish}))
 sys.exit(0)
