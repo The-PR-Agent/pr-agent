@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 
 import openai
 
+from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.git_patch_processing import (
     decouple_and_convert_to_hunks_with_lines_numbers,
     extend_patch,
@@ -65,8 +66,10 @@ def _append_metadata_section(
     max_tokens: int,
     token_handler: TokenHandler,
     whole_lines: bool = False,
+    fits_request: Callable[[str], bool] | None = None,
+    metadata_filenames: list[str] | None = None,
 ) -> tuple[str, int, str]:
-    """Append metadata within the input budget, optionally keeping every line complete."""
+    """Append bounded metadata, retaining whole filename entries when supplied."""
     if not section:
         return final_diff, curr_token, section
 
@@ -79,10 +82,11 @@ def _append_metadata_section(
 
     if whole_lines:
         # Split only metadata delimiters; other line separators can belong to filenames.
-        lines = section.removesuffix("\n").split("\n")
+        lines = section.removesuffix("\n").split("\n", 2 if metadata_filenames is not None else -1)
         # Omit headings without filenames.
         if len(lines) > 2:
-            heading, filenames = lines[:2], lines[2:]
+            heading = lines[:2]
+            filenames = lines[2:] if metadata_filenames is None else metadata_filenames
             result = (final_diff, curr_token, "")
 
             def fits(prefix: list[str]) -> bool:
@@ -92,7 +96,7 @@ def _append_metadata_section(
                 candidate_tokens = token_handler.prompt_tokens + _count_raw_and_stripped_tokens(
                     token_handler, candidate
                 )
-                if candidate_tokens <= max_tokens:
+                if candidate_tokens <= max_tokens and (fits_request is None or fits_request(candidate)):
                     result = (candidate, candidate_tokens, clipped_section)
                     return True
                 return False
@@ -108,7 +112,7 @@ def _append_metadata_section(
         if clipped_section:
             candidate = final_diff + separator + clipped_section
             candidate_tokens = token_handler.prompt_tokens + _count_raw_and_stripped_tokens(token_handler, candidate)
-            if candidate_tokens <= max_tokens:
+            if candidate_tokens <= max_tokens and (fits_request is None or fits_request(candidate)):
                 return candidate, candidate_tokens, clipped_section
 
     return final_diff, curr_token, ""
@@ -135,14 +139,17 @@ def _prioritized_filtered_files(filtered_files: list | tuple) -> list[str]:
     )
 
 
+def _filtered_file_entries(filtered_files: list | tuple) -> list[str]:
+    entries = _prioritized_filtered_files(filtered_files)[:MAX_FILTERED_FILES_TO_PROMPT]
+    if len(filtered_files) > MAX_FILTERED_FILES_TO_PROMPT:
+        entries.append(f"... and {len(filtered_files) - MAX_FILTERED_FILES_TO_PROMPT} more")
+    return entries
+
+
 def _filtered_file_section(filtered_files: list | tuple) -> str:
     if not filtered_files:
         return ""
-    ordered = _prioritized_filtered_files(filtered_files)
-    section = FILTERED_FILES_ + "\n" + "\n".join(ordered[:MAX_FILTERED_FILES_TO_PROMPT])
-    if len(filtered_files) > MAX_FILTERED_FILES_TO_PROMPT:
-        section += f"\n... and {len(filtered_files) - MAX_FILTERED_FILES_TO_PROMPT} more"
-    return section
+    return FILTERED_FILES_ + "\n" + "\n".join(_filtered_file_entries(filtered_files))
 
 
 def _find_verified_fitting_prefix_length(items, max_length: int, fits: Callable[[list], bool]) -> int:
@@ -190,6 +197,8 @@ class PreparedPRDiff:
     add_line_numbers_to_hunks: bool = False
     token_handler: TokenHandler | None = None
     attempt_budget: AttemptTokenBudget | None = None
+    # Deletions omitted from this diff, regardless of room for a filename notice.
+    deleted_files_list: list[str] | None = None
 
 
 def cap_and_log_extra_lines(value, direction) -> int:
@@ -216,7 +225,10 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 return_remaining_files=False,
                 return_prepared=False,
                 output_token_reserve: Callable[[str, int], int] | None = None,
-                excluded_extensions: list | None = None):
+                excluded_extensions: list | None = None,
+                *, defer_file_notices: bool = False):
+    # The reviewer can attach optional notices after validating the rendered request.
+    defer_file_notices = return_prepared and defer_file_notices
     budget = AttemptTokenBudget.for_attempt(
         model, token_handler, output_token_reserve=output_token_reserve
     )
@@ -245,6 +257,20 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
 
     # get pr languages
     pr_languages = sort_files_by_main_languages(git_provider.get_languages(), diff_files)
+    notice_only_deleted_files = []
+    if defer_file_notices:
+        # The line-number renderer substitutes a notice for every deleted file,
+        # even when the provider has supplied a patch. Keep those out of source packing.
+        notice_only = [file for language in pr_languages for file in language["files"]
+                       if file.edit_type == EDIT_TYPE.DELETED and (add_line_numbers_to_hunks or not file.patch)]
+        if notice_only:
+            # Providers may retain patchless deletions even when path rules exclude them.
+            notice_only_deleted_files = [file.filename for file in filter_ignored(notice_only, platform="plain_diff")]
+            notice_only_ids = {id(file) for file in notice_only}
+            pr_languages = [
+                {**language, "files": [file for file in language["files"] if id(file) not in notice_only_ids]}
+                for language in pr_languages
+            ]
     if pr_languages:
         try:
             get_logger().info(f"PR main language: {pr_languages[0]['language']}")
@@ -256,7 +282,7 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
         pr_languages, token_handler, add_line_numbers_to_hunks,
         patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE, patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER,
         # Retain per-file counts when filtered-file metadata may force repacking.
-        skip_file_tokens_below=None if filtered_files else soft_token_budget,
+        skip_file_tokens_below=None if filtered_files and not defer_file_notices else soft_token_budget,
         overflow_token_budget=soft_token_budget)
 
     # Return early only when no files produced a patch (as opposed to patches released on overflow).
@@ -264,7 +290,8 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
         if return_prepared:
             return PreparedPRDiff("", [], model=model,
                                   add_line_numbers_to_hunks=add_line_numbers_to_hunks,
-                                  token_handler=token_handler, attempt_budget=budget)
+                                  token_handler=token_handler, attempt_budget=budget,
+                                  deleted_files_list=notice_only_deleted_files)
         return ""
 
     if total_tokens - token_handler.prompt_tokens < soft_token_budget:
@@ -272,7 +299,7 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                           f"returning full diff.")
         full_diff = "\n".join(patches_extended)
         full_diff_is_usable = True
-        if filtered_files:
+        if filtered_files and not defer_file_notices:
             full_diff_with_metadata, _, included_section = _append_metadata_section(
                 full_diff,
                 token_handler.prompt_tokens + token_handler.count_tokens(full_diff),
@@ -293,7 +320,8 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
             if return_prepared:
                 return PreparedPRDiff(full_diff, [], model=model,
                                       add_line_numbers_to_hunks=add_line_numbers_to_hunks,
-                                      token_handler=token_handler, attempt_budget=budget)
+                                      token_handler=token_handler, attempt_budget=budget,
+                                      deleted_files_list=notice_only_deleted_files)
             return full_diff
 
     # Release the discarded full diff before constructing compressed patches.
@@ -329,16 +357,20 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
     curr_token = token_handler.prompt_tokens + token_handler.count_tokens(final_diff)
     delta_tokens = 10
     added_list_str = modified_list_str = deleted_list_str = ""
+    deleted_notice_files = list(dict.fromkeys([*deleted_files_list, *notice_only_deleted_files]))
     unprocessed_files = []
-    # generate the added, modified, and deleted files lists
-    if (max_tokens - curr_token) > delta_tokens:
+    # Record omissions independently of whether their notices can fit.
+    has_metadata_room = (max_tokens - curr_token) > delta_tokens
+    if has_metadata_room or return_prepared:
         included_files = set(files_in_patch)
-        if deleted_files_list:
-            deleted_list_str = DELETED_FILES_ + "\n" + "\n".join(deleted_files_list)
         for filename, file_values in file_dict.items():
             if filename in included_files:
                 continue
-            if file_values['edit_type'] == EDIT_TYPE.ADDED:
+            if file_values['edit_type'] == EDIT_TYPE.DELETED:
+                deleted_notice_files.append(filename)
+            elif not has_metadata_room:
+                continue
+            elif file_values['edit_type'] == EDIT_TYPE.ADDED:
                 unprocessed_files.append(filename)
                 if not added_list_str:
                     added_list_str = ADDED_FILES_ + f"\n{filename}"
@@ -350,13 +382,9 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                     modified_list_str = MORE_MODIFIED_FILES_ + f"\n{filename}"
                 else:
                     modified_list_str = modified_list_str + f"\n{filename}"
-            elif file_values['edit_type'] == EDIT_TYPE.DELETED:
-                # the file was deleted, so no need to add it to unprocessed files
-                # unprocessed_files.append(filename)
-                if not deleted_list_str:
-                    deleted_list_str = DELETED_FILES_ + f"\n{filename}"
-                else:
-                    deleted_list_str = deleted_list_str + f"\n{filename}"
+    deleted_notice_files = list(dict.fromkeys(deleted_notice_files))
+    if has_metadata_room and deleted_notice_files and not defer_file_notices:
+        deleted_list_str = DELETED_FILES_ + "\n" + "\n".join(deleted_notice_files)
 
     # prune the added, modified, and deleted files lists, and add them to the final diff
     final_diff, curr_token, added_list_str = _append_metadata_section(
@@ -365,12 +393,13 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
     final_diff, curr_token, modified_list_str = _append_metadata_section(
         final_diff, curr_token, modified_list_str, max_tokens, token_handler, whole_lines=True
     )
-    final_diff, curr_token, deleted_list_str = _append_metadata_section(
-        final_diff, curr_token, deleted_list_str, max_tokens, token_handler, whole_lines=True
-    )
-    final_diff, curr_token, filtered_list_str = _append_metadata_section(
-        final_diff, curr_token, _filtered_file_section(filtered_files), max_tokens, token_handler, whole_lines=True
-    )
+    if not defer_file_notices:
+        final_diff, curr_token, deleted_list_str = _append_metadata_section(
+            final_diff, curr_token, deleted_list_str, max_tokens, token_handler, whole_lines=True
+        )
+        final_diff, curr_token, _ = _append_metadata_section(
+            final_diff, curr_token, _filtered_file_section(filtered_files), max_tokens, token_handler, whole_lines=True
+        )
 
     get_logger().debug(f"After pruning, added_list_str: {added_list_str}, modified_list_str: {modified_list_str}, "
                        f"deleted_list_str: {deleted_list_str}")
@@ -389,6 +418,7 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
             add_line_numbers_to_hunks=add_line_numbers_to_hunks,
             token_handler=token_handler,
             attempt_budget=budget,
+            deleted_files_list=deleted_notice_files,
         )
     if not return_remaining_files:
         return final_diff

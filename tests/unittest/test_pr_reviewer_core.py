@@ -318,6 +318,8 @@ async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_r
         add_line_numbers_to_hunks=True,
         disable_extra_lines=False,
         return_remaining_files=True,
+        return_prepared=True,
+        defer_file_notices=True,
     )
     assert reviewer.patches_diff == "diff"
     assert reviewer.remaining_files_list == ["src/one.py", "docs/two.md"]

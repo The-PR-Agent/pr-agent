@@ -46,8 +46,14 @@ pr-agent --pr_url https://github.com/org/repo/pull/123 --json-output review.json
 ```
 
 The JSON file is written after the review completes. Place `--json-output` before `review` or `review_pr`.
-Its `coverage` object lists the files the token budget or chunk-call limit kept out of the review (`files_not_reviewed`)
-and those whose patches were clipped to fit the token budget (`files_partially_reviewed`).
+Its `coverage` object lists files omitted by the token budget or chunk-call limit, as well as
+deletions represented only by filename notices (`files_not_reviewed`), and those whose patches
+were clipped to fit the token budget (`files_partially_reviewed`).
+Files excluded by file-type filtering are not included in these coverage lists.
+Filename notices are optional context, not reviewed source; filtered-file notices take priority
+when both kinds compete for the remaining request budget.
+Filename notices supplement source changes and do not trigger a model call on their own.
+A deletion-only PR without source changes to analyze is skipped, even when deletion patches are available.
 The JSON includes the full lists even when the Markdown footer summarizes them.
 It also includes `total_chunks` and `failed_chunks` for the final analysis plan, after fallback recovery.
 These count analysis chunks, not model requests or retry attempts. A nonzero `failed_chunks` means that the
@@ -157,7 +163,7 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>enable_review_coverage_footer</b></td>
-    <td>If set to true, the command will display a review coverage footer when the token budget leaves files out of the review.</td>
+    <td>If set to true, the command will display a review coverage footer when source changes were not reviewed or were only partially reviewed, including deleted files represented by filename notices.</td>
   </tr>
   <tr>
     <td><b>enable_large_pr_chunking</b></td>
