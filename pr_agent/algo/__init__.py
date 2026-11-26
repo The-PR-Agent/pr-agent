@@ -386,6 +386,14 @@ MAX_TOKENS = {
     # but may be limited by config.max_model_tokens
     'xiaomi_mimo/mimo-v2.5-pro': 1048576,
     # 1M, matching the LiteLLM registry for mimo-v2.5-pro, but may be limited by config.max_model_tokens
+    # Sarvam AI, context_length from GET https://api.sarvam.ai/v2/models; may be limited by config.max_model_tokens
+    'sarvam/sarvam-105b': 128000,
+    'sarvam/sarvam-105b-conversations': 32000,
+    'sarvam/glm5.3': 1048576,
+    'sarvam/glm5.3-flash': 1048576,
+    'sarvam/gemma4': 262144,
+    'sarvam/deepseekv4.1-flash-1017': 1048576,
+    'sarvam/deepseekv4.1-flash-1017-interactive': 1048576,
     # Provider-prefixed Claude model IDs generated from _CLAUDE_MODEL_FAMILIES
     **_claude_tokens,
 }

@@ -184,6 +184,11 @@ _IMAGE_NOT_ALIVE_MESSAGE = (
     "(see [instructions](https://docs.pr-agent.ai/commands/ask/#ask-on-images))."
 )
 OPENAI_DEFAULT_API_BASE = "https://api.openai.com/v1"
+# LiteLLM 1.110's JSON-defined Sarvam provider defaults to https://api.sarvam.ai/v1, which serves only
+# sarvam-105b. Every Sarvam chat model is served on /v2.
+SARVAM_DEFAULT_API_BASE = "https://api.sarvam.ai/v2"
+# Sarvam's GLM models accept only "low", "high" and "max"; its other models accept every level.
+SARVAM_GLM_REASONING_EFFORT_MAP = {"none": "low", "minimal": "low", "medium": "high", "xhigh": "max"}
 
 # Token-count allowances used when estimating the cached prompt prefix for the
 # cache_control_injection_points pre-call warning. Mirrors pr_help_message.py.
@@ -219,6 +224,7 @@ PROVIDER_SETTING_PATHS = {
     "openrouter": {"api_key": "OPENROUTER.KEY", "api_base": "OPENROUTER.API_BASE"},
     "replicate": {"api_key": "REPLICATE.KEY"},
     "sambanova": {"api_key": "SAMBANOVA.KEY"},
+    "sarvam": {"api_key": "SARVAM.KEY", "api_base": "SARVAM.API_BASE"},
     "text-completion-codestral": {"api_key": "CODESTRAL.KEY"},
     "xai": {"api_key": "XAI.KEY"},
     "xiaomi_mimo": {"api_key": "XIAOMI_MIMO.KEY"},
@@ -1702,6 +1708,12 @@ class LiteLLMAIHandler(BaseAiHandler):
             or _has_live_provider_api_key_environment("openrouter")
         ):
             params["api_base"] = "https://openrouter.ai/api/v1"
+        if provider == "sarvam" and "api_base" not in params and (
+            params.get("api_key")
+            or provider_environment_api_keys.get("sarvam")
+            or _has_live_provider_api_key_environment("sarvam")
+        ):
+            params["api_base"] = SARVAM_DEFAULT_API_BASE
         volcengine_responses = provider == "volcengine" and _uses_openai_responses_transport(
             transport_model or model, transport_provider,
         )
@@ -2328,6 +2340,13 @@ class LiteLLMAIHandler(BaseAiHandler):
         return "low"
 
     @staticmethod
+    def _clamp_sarvam_reasoning_effort(model: str, reasoning_effort: str) -> str:
+        """Map a configured reasoning effort to the closest level Sarvam's GLM models accept."""
+        if not model.startswith("sarvam/glm"):
+            return reasoning_effort
+        return SARVAM_GLM_REASONING_EFFORT_MAP.get(reasoning_effort, reasoning_effort)
+
+    @staticmethod
     def _validate_reasoning_effort(configured_effort) -> str:
         """Normalize a configured reasoning effort, falling back to MEDIUM for an unknown level."""
         try:
@@ -2347,6 +2366,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         reasoning_effort = self._validate_reasoning_effort(configured_effort)
         clamped_effort = self._clamp_grok_reasoning_effort(model, reasoning_effort)
         clamped_effort = self._clamp_gemini_reasoning_effort(model, clamped_effort)
+        clamped_effort = self._clamp_sarvam_reasoning_effort(model, clamped_effort)
         if clamped_effort != reasoning_effort:
             get_logger().info(
                 f"Model {model} does not support reasoning_effort='{reasoning_effort}'; "

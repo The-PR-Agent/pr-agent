@@ -1166,6 +1166,30 @@ class TestGetMaxTokens:
 
         assert get_max_tokens(model) == 1048576
 
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("sarvam/sarvam-105b", 128000),
+            ("sarvam/sarvam-105b-conversations", 32000),
+            ("sarvam/glm5.3", 1048576),
+            ("sarvam/glm5.3-flash", 1048576),
+            ("sarvam/gemma4", 262144),
+            ("sarvam/deepseekv4.1-flash-1017", 1048576),
+            ("sarvam/deepseekv4.1-flash-1017-interactive", 1048576),
+        ],
+    )
+    def test_sarvam_model_max_tokens(self, monkeypatch, model, expected):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0
+            })()
+        })()
+
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == expected
+
     # --- LiteLLM fallback tests (issue #2957) ---
 
     def test_max_tokens_takes_precedence_over_litellm(self, monkeypatch):

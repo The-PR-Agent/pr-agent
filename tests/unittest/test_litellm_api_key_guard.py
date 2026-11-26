@@ -2994,6 +2994,7 @@ async def test_openai_like_blocks_unrelated_openai_fallback(monkeypatch, fallbac
     ("replicate/model", "REPLICATE_API_TOKEN"),
     ("sambanova/model", "SAMBANOVA_API_KEY"),
     ("sap/model", "AICORE_SERVICE_KEY"),
+    ("sarvam/sarvam-105b", "SARVAM_API_KEY"),
     ("text-completion-codestral/codestral-latest", "CODESTRAL_API_KEY"),
     ("text-completion-inception/model", "INCEPTION_API_KEY"),
     ("veniceai/model", "VENICE_AI_API_KEY"),
@@ -6381,6 +6382,59 @@ async def test_opencode_go_key_is_not_replaced_by_openai_guard(monkeypatch):
     assert kwargs["api_key"] == "native-opencode-key"
 
 
+@pytest.mark.parametrize("model", ("sarvam/sarvam-105b", "sarvam/glm5.3-flash", "sarvam/gemma4"))
+@pytest.mark.asyncio
+async def test_sarvam_environment_key_uses_v2_endpoint(monkeypatch, model):
+    monkeypatch.setenv("SARVAM_API_KEY", "native-sarvam-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "unrelated-openai-key")
+
+    kwargs = await _call(LiteLLMAIHandler(), model)
+
+    assert kwargs["api_key"] == "native-sarvam-key"
+    assert kwargs["api_base"] == "https://api.sarvam.ai/v2"
+
+
+@pytest.mark.asyncio
+async def test_sarvam_configured_key_and_endpoint_override_environment(monkeypatch):
+    monkeypatch.setenv("SARVAM_API_KEY", "native-sarvam-key")
+    monkeypatch.setenv("SARVAM_API_BASE", "https://environment.example/v2")
+    overrides = {
+        "SARVAM.KEY": "configured-sarvam-key",
+        "SARVAM.API_BASE": "https://configured.example/v2",
+    }
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings(overrides))
+
+    kwargs = await _call(LiteLLMAIHandler(), "sarvam/sarvam-105b")
+
+    assert kwargs["api_key"] == "configured-sarvam-key"
+    assert kwargs["api_base"] == "https://configured.example/v2"
+    assert os.environ["SARVAM_API_KEY"] == "native-sarvam-key"
+
+
+@pytest.mark.asyncio
+async def test_sarvam_environment_endpoint_overrides_default(monkeypatch):
+    monkeypatch.setenv("SARVAM_API_KEY", "native-sarvam-key")
+    monkeypatch.setenv("SARVAM_API_BASE", "https://environment.example/v2")
+
+    kwargs = await _call(LiteLLMAIHandler(), "sarvam/sarvam-105b")
+
+    assert kwargs["api_base"] == "https://environment.example/v2"
+
+
+@pytest.mark.asyncio
+async def test_sarvam_without_native_key_keeps_openai_gateway(monkeypatch):
+    overrides = {
+        "OPENAI.KEY": "gateway-key",
+        "OPENAI.API_BASE": "https://gateway.example/v1",
+    }
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings(overrides))
+
+    kwargs = await _call(LiteLLMAIHandler(), "sarvam/sarvam-105b")
+
+    assert kwargs["api_key"] == "gateway-key"
+    assert kwargs["api_base"] == "https://gateway.example/v1"
+
+
 @pytest.mark.asyncio
 async def test_native_compatible_provider_environment_ignores_openai_gateway(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "native-deepseek-key")
@@ -6559,6 +6613,7 @@ async def test_azure_deployment_id_is_not_used_for_non_azure_probe(monkeypatch):
     ("DASHSCOPE.KEY", "dashscope/qwen3.8-max", "dashscope-key"),
     ("XIAOMI_MIMO.KEY", "xiaomi_mimo/mimo-v2-flash", "xiaomi-key"),
     ("OPENCODE_GO.KEY", "opencode_go/deepseek-v4.1-flash", "opencode-go-key"),
+    ("SARVAM.KEY", "sarvam/sarvam-105b", "sarvam-key"),
     ("DEEPINFRA.KEY", "deepinfra/meta-llama/model", "deepinfra-key"),
     ("MISTRAL.KEY", "mistral/mistral-large-latest", "mistral-key"),
     ("CODESTRAL.KEY", "codestral/codestral-latest", "codestral-key"),
