@@ -799,14 +799,14 @@ To use a model hosted on Databricks (e.g. an Azure Databricks serving endpoint),
 
 ```toml
 [config] # in configuration.toml
-model = "databricks/databricks-claude-sonnet-4"
+model = "databricks/<endpoint-name>"
 fallback_models = []
 [databricks] # in .secrets.toml
 api_key = "..." # your Databricks personal access token (PAT)
 api_base = "https://adb-xxxx.azuredatabricks.net/serving-endpoints" # your workspace serving-endpoints URL
 ```
 
-The model name after the `databricks/` prefix is the name of your serving endpoint. See LiteLLM's [Databricks provider docs](https://docs.litellm.ai/docs/providers/databricks) for details.
+Replace `<endpoint-name>` with the name of an available chat model serving endpoint in your workspace. For Databricks-hosted models, consult the model catalog for your cloud ([Azure](https://learn.microsoft.com/en-us/azure/databricks/machine-learning/foundation-model-apis/supported-models), [AWS](https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/supported-models), or [Google Cloud](https://docs.databricks.com/gcp/en/machine-learning/foundation-model-apis/supported-models)) and confirm that the model can be queried through a serving endpoint in your workspace. If neither PR-Agent nor LiteLLM can resolve the endpoint's input-token limit, set `config.custom_model_max_tokens` to its verified positive input-token limit. See LiteLLM's [Databricks provider docs](https://docs.litellm.ai/docs/providers/databricks) for details.
 
 The configured PAT and endpoint are captured per handler. When both `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET` are set, LiteLLM performs an OAuth M2M exchange even if a PAT is supplied. An exchange failure can abort the request; after a successful exchange, the supplied PAT replaces the OAuth token in the final Authorization header. Without OAuth M2M credentials or a PAT, optional Databricks SDK authentication remains available. These deployment-owned credentials and profile selection are not request-isolated. Do not change those sources between tenants in a shared process; use request-specific PATs with OAuth M2M credentials unset, or separate processes for distinct workload identities.
 
