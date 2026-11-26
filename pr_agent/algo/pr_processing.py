@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import traceback
+from collections import Counter
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -1219,25 +1220,72 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     ))
 
 
+def _legacy_metadata_pr_paths(git_provider) -> set[str]:
+    """Collect paths only from a complete, unfiltered inventory with rename details."""
+    try:
+        paths = set()
+        for entry in git_provider.get_verdict_diff_files() or []:
+            if isinstance(entry, dict):
+                current, previous = entry.get("new_path"), entry.get("old_path")
+                renamed = entry.get("renamed_file", False)
+            else:
+                current = getattr(entry, "filename", None)
+                previous = getattr(entry, "previous_filename", None)
+                renamed = getattr(entry, "status", None) == "renamed"
+            names = {path for path in (current, previous) if isinstance(path, str) and path and path != "/dev/null"}
+            if not names or (renamed and len(names) != 2):
+                return set()
+            paths.update(names)
+        return paths
+    except Exception as e:
+        get_logger().warning(f"Failed to list full PR paths for legacy AI metadata: {e}")
+        return set()
+
+
 def add_ai_metadata_to_diff_files(git_provider, pr_description_files):
     """
     Adds AI metadata to the diff files based on the PR description files (FilePatchInfo.ai_file_summary).
     """
     try:
+        # Diff objects can be cached across reviews; discard any prior summaries.
+        diff_files = git_provider.get_diff_files() or []
+        for file in diff_files:
+            file.ai_file_summary = None
         if not pr_description_files:
             get_logger().warning("PR description files are empty.")
             return
-        available_files = {pr_file['full_file_name'].strip(): pr_file for pr_file in pr_description_files}
-        diff_files = git_provider.get_diff_files()
+        # Prefer exact current-format rows over lossy legacy rows. Duplicate
+        # identities within either format are ambiguous, not last-write-wins.
+        current_files, legacy_files = {}, {}
+        for metadata in pr_description_files:
+            filename = metadata["full_file_name"]
+            rows = legacy_files if metadata.get("_legacy_filename") else current_files
+            rows[filename] = None if filename in rows else metadata
+        available_files = {**legacy_files, **current_files}
+        # A scoped or destination-only inventory can hide a legacy collision.
+        # Require complete diff details; never fall back to get_pr_file_paths().
+        description_counts = Counter(row["full_file_name"].strip() for row in pr_description_files)
+        full_paths = _legacy_metadata_pr_paths(git_provider) if legacy_files else set()
+        diff_counts = Counter(path.strip() for path in full_paths)
+        # Also reject a collision in the scoped diff (e.g. commit-review paths).
+        scoped_counts = Counter(file.filename.strip() for file in diff_files)
         found_any_match = False
         for file in diff_files:
-            filename = file.filename.strip()
-            if filename in available_files:
-                file.ai_file_summary = available_files[filename]
-                found_any_match = True
+            filename = file.filename
+            metadata = available_files.get(filename)
+            if metadata is None:
+                continue
+            if metadata.get("_legacy_filename") and (
+                filename not in full_paths
+                or description_counts[filename.strip()] != 1
+                or diff_counts[filename.strip()] != 1
+                or scoped_counts[filename.strip()] != 1
+            ):
+                continue
+            file.ai_file_summary = metadata
+            found_any_match = True
         if not found_any_match:
-            get_logger().error("Failed to find any matching files between PR description and diff files.",
-                               artifact={"pr_description_files": pr_description_files})
+            get_logger().info("No unambiguous AI metadata matched the current diff.")
     except Exception as e:
         get_logger().error(f"Failed to add AI metadata to diff files: {e}",
                            artifact={"traceback": traceback.format_exc()})
