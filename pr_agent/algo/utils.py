@@ -991,7 +991,7 @@ def _looks_like_more_answer(tail: str) -> bool:
         return False
 
 
-def drop_sign_off_after_wrapper_fence(text: str) -> str:
+def drop_sign_off_after_wrapper_fence(text: str, fence: str = '```') -> str:
     """Drop a closing remark the model added after the wrapper's closing fence.
 
     The prompts ask for YAML "and nothing else", but the model sometimes signs off
@@ -1001,10 +1001,14 @@ def drop_sign_off_after_wrapper_fence(text: str) -> str:
     No existing fallback recovers it. The one that extracts a fenced block needs
     both fences, but most prompts end with an open fence for the model to continue
     from, so the reply carries only the closing one.
+
+    *fence* is the wrapper's opening fence; its closing fence is a line of at least as
+    many backticks.
     """
     lines = text.split('\n')
     for i in range(len(lines) - 1, -1, -1):
-        if lines[i].rstrip() != '```':
+        line = lines[i].rstrip()
+        if not line.startswith(fence) or line.strip('`'):
             continue
         tail = '\n'.join(lines[i + 1:])
         if not tail.strip():
@@ -1247,7 +1251,7 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
         # "yaml_config" is not truncated. A bare removeprefix('yaml') would shorten it to "_config".
         unfenced = re.sub(r'^yaml(?:[ \t]*\r?\n|\Z)', '', response_text, count=1)
     response_text = unfenced.rstrip()
-    response_text = drop_sign_off_after_wrapper_fence(response_text)
+    response_text = drop_sign_off_after_wrapper_fence(response_text, opening_fence or '```')
     if opening_fence:
         response_text = re.sub(rf'(?m)^{re.escape(opening_fence)}`*[ \t]*\Z', '', response_text)
     elif response_text.split('\n')[-1] == '```':
