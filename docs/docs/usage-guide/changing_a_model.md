@@ -250,17 +250,17 @@ key = "..." # your Groq API key
 
 ### SambaNova
 
-To use MiniMax-M3 model with SambaNova, for example, set:
+To use an available model on SambaCloud, set:
 
 ```toml
 [config] # in configuration.toml
-model = "sambanova/MiniMax-M3"
-fallback_models = ["sambanova/MiniMax-M2.7"]
+model = "sambanova/<model-id>"
+fallback_models = []
 [sambanova] # in .secrets.toml
-key = ... # your SambaNova api key
+key = "..." # your SambaNova api key
 ```
 
-(you can obtain a SambaNova key from [here](https://cloud.sambanova.ai/apis))
+Replace `<model-id>` with an available chat model ID from the [SambaCloud model catalog](https://docs.sambanova.ai/docs/en/models/sambacloud-models), keeping the `sambanova/` prefix. If neither PR-Agent nor LiteLLM can resolve the model's input-token limit, set `config.custom_model_max_tokens` to its verified positive input-token limit. The empty fallback list disables fallback models; if you configure any, use models available through their respective providers and configure the required credentials and endpoints. You can obtain a SambaNova key from [here](https://cloud.sambanova.ai/apis).
 
 ### xAI
 
