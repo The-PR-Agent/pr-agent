@@ -2333,8 +2333,16 @@ def test_github_action_output_uses_computed_merge_verdict():
     reviewer.review_chunk_count = 1
     reviewer.review_failed_chunk_count = 0
     checks = [{"name": "CI status", "passed": False, "details": "failed"}]
+    snapshots = []
+
+    def snapshot_action_output(data, key_name):
+        snapshots.append(copy.deepcopy(data))
+
     with (
-        patch("pr_agent.commands.pr_reviewer.github_action_output") as action_output,
+        patch(
+            "pr_agent.commands.pr_reviewer.github_action_output",
+            side_effect=snapshot_action_output,
+        ) as action_output,
         patch(
             "pr_agent.commands.pr_reviewer.compute_merge_verdict",
             return_value={"recommendation": "needs_review", "checks": checks, "decided_by": ["CI status"]},
@@ -2344,7 +2352,7 @@ def test_github_action_output_uses_computed_merge_verdict():
         reviewer._prepare_pr_review()
 
     action_output.assert_called_once()
-    review = action_output.call_args.args[0]["review"]
+    review = snapshots[0]["review"]
     assert review["merge_recommendation"] == "needs_review"
     assert review["merge_recommendation_checks"] == checks
 
