@@ -1212,6 +1212,12 @@ class TestBackticksInsideFencedDiff:
         text = f"```diff\n{self.DIFF_BODY}"
         assert dispatch._extract_diff(text) == text
 
+    def test_long_backtick_run_is_scanned_in_linear_time(self):
+        import time
+        start = time.perf_counter()
+        assert _diff_prose("`" * 100_000) == "`" * 100_000
+        assert time.perf_counter() - start < 0.5
+
 
 class TestExtendedHeaderNotLeaked:
     RENAME_DIFF = ("diff --git a/a.py b/improve.py\n"

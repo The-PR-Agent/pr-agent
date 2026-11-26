@@ -176,7 +176,16 @@ def _looks_like_diff(text: str) -> bool:
     return bool(_DIFF_FENCE_RE.search(text) or _DIFF_HEADER_RE.search(text) or _UNIFIED_HUNK_RE.search(text))
 
 
-_DIFF_FENCE_OPEN_RE = re.compile(r"(`{3,})[ \t]*diff[ \t]*$", re.IGNORECASE)
+def _diff_fence_opening(line: str) -> tuple[str, str] | None:
+    """Split a line ending in a ```diff fence into (text before the fence, the backticks)."""
+    head = line.rstrip()
+    if head[-4:].lower() != "diff":
+        return None
+    head = head[:-4].rstrip(" \t")
+    before = head.rstrip("`")
+    if len(head) - len(before) < 3:
+        return None
+    return before, head[len(before):]
 
 
 def _split_fenced_diffs(text: str) -> tuple[list[str], str]:
@@ -190,9 +199,9 @@ def _split_fenced_diffs(text: str) -> tuple[list[str], str]:
     body, fence, before_fence = None, "", ""
     for line in text.splitlines(keepends=True):
         if body is None:
-            opening = _DIFF_FENCE_OPEN_RE.search(line.rstrip("\r\n"))
+            opening = _diff_fence_opening(line)
             if opening:
-                fence, before_fence, body = opening.group(1), line[: opening.start()], [line]
+                (before_fence, fence), body = opening, [line]
             else:
                 prose.append(line)
         elif (closing := line.rstrip()).startswith(fence) and not closing.strip("`"):
