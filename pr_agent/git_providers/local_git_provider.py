@@ -1,3 +1,6 @@
+import os
+import stat
+from collections import deque
 from pathlib import Path
 
 from git import IndexObject, Repo, Submodule
@@ -7,6 +10,7 @@ from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
 from pr_agent.algo.file_filter import filter_ignored_with_status
 from pr_agent.algo.git_patch_processing import count_patch_lines
 from pr_agent.algo.language_handler import partition_files_by_language_filter
+from pr_agent.algo.review_json_output import same_output_file
 from pr_agent.algo.run_output import append_run_details
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import _find_repository_root, get_settings
@@ -169,18 +173,78 @@ class LocalGitProvider(GitProvider):
         return [file.filename for file in self.get_diff_files()]
 
     def publish_description(self, pr_title: str, pr_body: str):
-        with open(self.description_path, "w", encoding="utf-8") as file:
-            title = self.get_pr_title() if pr_title is None else pr_title
-            file.write(title + '\n' + pr_body)
+        title = self.get_pr_title() if pr_title is None else pr_title
+        self._write_output(self.description_path, f"{title}\n{pr_body}")
+
+    def validate_description_json_path(self, path: str) -> None:
+        if same_output_file(self.description_path, path):
+            raise ValueError("--json-output and local.description_path must use different files")
+
+    def publish_description_comment(self, body: str, *, persistent: bool) -> None:
+        self._write_output(self.description_path, body)
+
+    def _resolve_output_directory(self, directory: Path) -> Path:
+        current = Path(directory.anchor)
+        parts = deque(directory.parts[1:])
+        links_remaining = 40
+
+        while parts:
+            part = parts.popleft()
+            if part == "..":
+                current = current.parent
+                continue
+
+            candidate = current / part
+            if not (candidate.is_symlink() or candidate.is_junction()):
+                if not candidate.is_dir():
+                    raise ValueError(f"Local Git output directory does not exist or is not a directory: {candidate}")
+                current = candidate
+                continue
+
+            inside_checkout = current.is_relative_to(self.repo_path)
+            if not inside_checkout:
+                inside_checkout = any(folder.samefile(self.repo_path) for folder in (current, *current.parents))
+            if inside_checkout:
+                raise ValueError(f"Local Git output path must not use a linked directory in the checkout: {candidate}")
+            if links_remaining == 0:
+                raise ValueError(f"Too many links in Local Git output directory: {directory}")
+            links_remaining -= 1
+            target = current / candidate.readlink()
+            if not target.is_absolute():
+                raise ValueError(f"Invalid link target in Local Git output directory: {candidate}")
+            current = Path(target.anchor)
+            parts.extendleft(reversed(target.parts[1:]))
+
+        return current
+
+    def _write_output(self, path: str | Path, body: str) -> None:
+        destination = Path(path).absolute()
+        destination = self._resolve_output_directory(destination.parent) / destination.name
+        flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        try:
+            previous = destination.lstat()
+        except FileNotFoundError:
+            previous = None
+            flags |= os.O_CREAT | os.O_EXCL
+        if previous is not None and (not stat.S_ISREG(previous.st_mode) or previous.st_nlink > 1):
+            raise ValueError(f"Local Git output path must be a regular file with a single link: {path}")
+
+        # Open without truncation. Keep the existing file's access controls and allow mounted output files.
+        with os.fdopen(os.open(destination, flags, 0o600), "w", encoding="utf-8") as output:
+            opened = os.fstat(output.fileno())
+            if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+                raise ValueError(f"Local Git output path must be a regular file with a single link: {path}")
+            if previous is not None and not os.path.samestat(previous, opened):
+                raise ValueError(f"Local Git output path changed before it could be opened: {path}")
+            output.write(body)
+            output.truncate()
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         # Temporary comments (e.g. "Preparing suggestions...") have no place to live
         # locally and would otherwise clobber the persisted review.md; skip them.
         if is_temporary:
             return
-        with open(self.review_path, "w", encoding="utf-8") as file:
-            # Write the string to the file
-            file.write(pr_comment)
+        self._write_output(self.review_path, pr_comment)
 
     def publish_command_failure(self, command: str, message: str):
         # Write the failure to the command's own file so it does not clobber review.md.
@@ -189,8 +253,7 @@ class LocalGitProvider(GitProvider):
             "improve": self.improve_path,
             "add_docs": self.improve_path,
         }.get(command, self.review_path)
-        with open(path, "w", encoding="utf-8") as file:
-            file.write(message)
+        self._write_output(path, message)
 
     def supports_comment_publish_confirmation(self) -> bool:
         return False
@@ -234,8 +297,7 @@ class LocalGitProvider(GitProvider):
         pr_body += artifact_footer
         if not sections:
             pr_body = append_run_details(pr_body, self)
-        with open(self.improve_path, "w", encoding="utf-8") as file:
-            file.write(pr_body)
+        self._write_output(self.improve_path, pr_body)
         return True
 
     def publish_labels(self, labels):

@@ -25,6 +25,7 @@ from pr_agent.algo.review_json_output import (
     hosted_markdown_config_error,
     hosted_markdown_export,
     review_json_output_path,
+    same_output_file,
 )
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.run_output import get_version
@@ -151,20 +152,8 @@ def _validate_output_options(parser, args, diff_mode):
             )
         if not diff_mode and (not args.pr_url or args.issue_url):
             parser.error("--json-output requires --pr_url, --stdin, or --diff-file")
-    if output is not None and json_output is not None:
-        try:
-            same_destination = os.path.normcase(os.path.realpath(output)) == os.path.normcase(
-                os.path.realpath(json_output)
-            )
-        except (OSError, ValueError):
-            same_destination = False  # Invalid paths will be handled by the output write.
-        if not same_destination:
-            try:
-                same_destination = os.path.samefile(output, json_output)
-            except (OSError, ValueError):
-                pass  # Missing or invalid paths cannot be compared as existing files.
-        if same_destination:
-            parser.error("--output and --json-output must use different files")
+    if output is not None and json_output is not None and same_output_file(output, json_output):
+        parser.error("--output and --json-output must use different files")
 
 
 def _encode_plain_diff_context_args(args):
