@@ -41,9 +41,19 @@ _DEFAULT_PR_COMMANDS_BY_PROVIDER = {
 _MISSING = object()
 
 
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _ignore_patterns(value):
-    """Keep a scalar ignore setting as one pattern rather than its characters."""
-    return normalize_setting_list(value)
+    """Keep a scalar ignore setting as one pattern rather than its characters.
+
+    An environment value such as CONFIG__IGNORE_PR_LABELS=123 arrives as a number, so numbers
+    (including zero) are kept as their text, like config.include_pr_labels.
+    """
+    if _is_number(value):
+        return [str(value)]
+    return [str(pattern) if _is_number(pattern) else pattern for pattern in normalize_setting_list(value)]
 
 
 def _matches_any(patterns, string, budget, setting) -> bool:

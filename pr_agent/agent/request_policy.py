@@ -27,7 +27,12 @@ class RequestOutcome(Enum):
 
 def enforce_request_policy(pr_url, provider=None) -> bool:
     # Keep the existing matching semantics as the single policy implementation.
-    from pr_agent.servers.utils import get_include_pr_labels, host_settings_unavailable, should_process_pr_logic
+    from pr_agent.servers.utils import (
+        _ignore_patterns,
+        get_include_pr_labels,
+        host_settings_unavailable,
+        should_process_pr_logic,
+    )
 
     # Repository loading can replay the frozen Host payload after webhook admission.
     if get_settings().get("CONFIG.IS_AUTO_COMMAND", False) is True and host_settings_unavailable():
@@ -35,7 +40,9 @@ def enforce_request_policy(pr_url, provider=None) -> bool:
         return False
 
     include_pr_labels = get_include_pr_labels()
-    required = {field for field, rule in RULE_FIELDS.items() if get_settings().get(f"config.{rule}", [])}
+    # Read each rule as should_process_pr_logic does, so a numeric value such as 0 still requires its metadata.
+    required = {field for field, rule in RULE_FIELDS.items()
+                if _ignore_patterns(get_settings().get(f"config.{rule}", []))}
     if include_pr_labels:
         required.add("labels")
     if not required:

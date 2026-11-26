@@ -508,6 +508,31 @@ def test_scalar_ignore_setting_is_one_pattern(providers, ignore_settings, settin
     _assert_all(providers, _fields(**non_matching), True, f"{setting} does not match", only_with_labels=labels_only)
 
 
+@pytest.mark.parametrize(
+    "setting, matching, non_matching",
+    [
+        ("CONFIG.IGNORE_REPOSITORIES", {"repo_full_name": "org/2024"}, {"repo_full_name": "org/repo"}),
+        ("CONFIG.IGNORE_PR_AUTHORS", {"sender": "user2024"}, {"sender": "alice"}),
+        ("CONFIG.IGNORE_PR_TITLE", {"title": "Release 2024"}, {"title": "Add cache"}),
+        ("CONFIG.IGNORE_PR_LABELS", {"labels": ("2024",)}, {"labels": ("ready",)}),
+        ("CONFIG.IGNORE_PR_SOURCE_BRANCHES", {"source_branch": "release/2024"}, {"source_branch": "feature/cache"}),
+        ("CONFIG.IGNORE_PR_TARGET_BRANCHES", {"target_branch": "2024"}, {"target_branch": "main"}),
+    ],
+)
+@pytest.mark.parametrize("value", [2024, [2024]])
+def test_numeric_ignore_setting_is_matched_as_text(ignore_settings, setting, matching, non_matching, value):
+    """An environment value such as CONFIG__IGNORE_PR_LABELS=2024 arrives as an int, not a string."""
+    ignore_settings.set(setting, value)
+    assert shared_should_process_pr_logic(**_fields(**matching)) is False
+    assert shared_should_process_pr_logic(**_fields(**non_matching)) is True
+
+
+def test_zero_ignore_label_is_not_dropped(ignore_settings):
+    ignore_settings.set("CONFIG.IGNORE_PR_LABELS", 0)
+    assert shared_should_process_pr_logic(labels=["0"]) is False
+    assert shared_should_process_pr_logic(labels=["ready"]) is True
+
+
 @pytest.mark.parametrize("setting", IGNORE_KEYS)
 def test_empty_scalar_ignore_setting_does_not_filter_any_pr(providers, ignore_settings, setting):
     ignore_settings.set(setting, "")
