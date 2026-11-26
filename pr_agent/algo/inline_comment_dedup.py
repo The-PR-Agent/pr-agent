@@ -60,7 +60,7 @@ TEXT_FIX_INFO = "text fix"
 _LEAD_RE = re.compile(r"^\*\*Suggestion:\*\*\s*", re.IGNORECASE)
 _TAG_RE = re.compile(r"\[[^\]]+?,\s*importance:\s*\d+\]", re.IGNORECASE)
 _WS_RE = re.compile(r"\s+")
-_DIFF_BLOCK_RE = re.compile(r"```diff[^\n]*\n(.*?)```", re.DOTALL)
+_DIFF_OPEN_RE = re.compile(r"^ {0,3}(`{3,})diff[^\n]*\n", re.MULTILINE)
 
 
 def has_marker(body: str) -> bool:
@@ -143,9 +143,13 @@ def extract_suggestion_code(body: str) -> str | None:
     block = next(iter_suggestion_blocks(body), None)
     if block is not None and block[2] is not None:
         return block[2].strip("\n")
-    diff_match = _DIFF_BLOCK_RE.search(body)
-    if diff_match:
-        return _reconstruct_improved_code(diff_match.group(1))
+    opener = _DIFF_OPEN_RE.search(body)
+    if opener:
+        closer = re.compile(
+            rf"^ {{0,3}}{opener.group(1)}`*[ \t]*\r?$", re.MULTILINE
+        ).search(body, opener.end())
+        if closer:
+            return _reconstruct_improved_code(body[opener.end():closer.start()])
     return None
 
 
