@@ -766,8 +766,8 @@ GitHub and GitLab approves the exact commit it reviewed only when all of these h
 - the computed merge recommendation is `no_concerns_found`;
 - the model returned both a merge recommendation and a risk level, so `require_merge_recommendation` and
   `require_risk_assessment` must be enabled;
-- the review covered the whole pull request: not an incremental review, no file left out or cut short to fit the
-  model's context, and no part of the diff failed;
+- the review covered the whole pull request: not an incremental review, no file left out by the ignore rules or the
+  file-type filter, no file left out or cut short to fit the model's context, and no part of the diff failed;
 - the review completed and its finding state could be updated.
 
 Each `/review` run withdraws the approval PR-Agent gave when it starts, and approves again only when it ends with all

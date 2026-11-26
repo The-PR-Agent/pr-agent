@@ -1,6 +1,7 @@
 """PRReviewer reconciles the auto-approval once per /review run (issue #4698)."""
 
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -280,3 +281,80 @@ async def test_cancelled_publish_does_not_approve(monkeypatch, approval_on):
 
     provider.auto_approve.assert_not_called()
     assert provider.revoke_auto_approval.call_count == 2
+
+
+def _model_file(filename="app.py"):
+    return FilePatchInfo(base_file="", head_file="", patch="@@ -0,0 +1 @@\n+value = 1", filename=filename,
+                         edit_type=EDIT_TYPE.MODIFIED, num_plus_lines=1, num_minus_lines=0)
+
+
+def _gitlab_change(new_path, old_path=None, **flags):
+    return {"new_path": new_path, "old_path": old_path or new_path, "diff": "@@ -0,0 +1 @@\n+value = 1\n",
+            "new_file": False, "deleted_file": False, "renamed_file": False, **flags}
+
+
+@pytest.mark.parametrize(
+    ("model_files", "verdict_files", "approves"),
+    [
+        pytest.param([_model_file()], [_model_file()], True, id="every-file-read"),
+        pytest.param([_model_file()], [_model_file(), _model_file("vendor/lib.py")], False, id="github-ignored-file"),
+        pytest.param([_model_file()], [_model_file(), _model_file("bun.lock")], False, id="github-filtered-type"),
+        pytest.param([], [_model_file("vendor/lib.py")], False, id="github-every-file-ignored"),
+        pytest.param(None, [_model_file()], False, id="model-diff-unavailable"),
+        pytest.param([_model_file()], [_gitlab_change("app.py")], True, id="gitlab-every-file-read"),
+        pytest.param([_model_file()], [_gitlab_change("app.py"), _gitlab_change("vendor/lib.py")], False,
+                     id="gitlab-ignored-file"),
+        pytest.param([_model_file("new.py")], [_gitlab_change("new.py", "old.py", renamed_file=True)], True,
+                     id="gitlab-rename-read"),
+        pytest.param([_model_file("vendor/lib.py")], [_model_file("vendor/lib.py"), _model_file("vendor\\lib.py")],
+                     False, id="backslash-twin"),
+        pytest.param([_model_file("vendor/lib.py")], [_model_file("vendor/lib.py"), _model_file("vendor/lib.py ")],
+                     False, id="trailing-space-twin"),
+        pytest.param([replace(_model_file("new.py"), old_filename="old.py")],
+                     [replace(_model_file("new.py"), old_filename="old.py"), _model_file("old.py")], False,
+                     id="github-recreated-at-renamed-path"),
+        pytest.param([replace(_model_file("new.py"), old_filename="old.py")],
+                     [_gitlab_change("new.py", "old.py", renamed_file=True), _gitlab_change("old.py", new_file=True)],
+                     False, id="gitlab-recreated-at-renamed-path"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_files_the_model_never_read_block_approval(monkeypatch, approval_on, model_files, verdict_files,
+                                                         approves):
+    settings = get_settings()
+    monkeypatch.setitem(settings.config, "is_auto_command", True)
+    monkeypatch.setitem(settings, "data", {})
+    monkeypatch.setitem(settings.pr_reviewer, "require_merge_recommendation", True)
+    monkeypatch.setitem(settings.pr_reviewer, "max_changed_lines", 100)
+    monkeypatch.setitem(settings.pr_reviewer, "persistent_comment", False)
+    monkeypatch.setitem(settings.pr_reviewer, "publish_output_no_suggestions", True)
+    monkeypatch.setitem(settings.pr_reviewer, "publish_merge_recommendation_status", False)
+    monkeypatch.setitem(settings.pr_reviewer, "require_ticket_analysis_review", False)
+
+    provider = MagicMock()
+    provider.get_files.return_value = ["app.py"]
+    provider.get_pr_file_paths.return_value = ["app.py"]
+    provider.get_filtered_diff_file_names.return_value = []
+    provider.get_diff_files.return_value = model_files
+    provider.get_verdict_diff_files.return_value = verdict_files
+    provider.get_head_ci_status.return_value = "passed"
+    provider.is_head_stale_against_base.return_value = False
+    provider.are_all_authors_human.return_value = True
+    provider.should_publish_review_as_thread.return_value = False
+    provider.auto_approve.return_value = True
+    provider.revoke_auto_approval.return_value = True
+    reviewer = _reviewer(verdict=None, model_fields=(None, None), provider=provider)
+    reviewer.vars = {"require_merge_recommendation": True}
+    reviewer.remaining_files_list = []
+
+    async def reply(*args, **kwargs):
+        reviewer.prediction = (
+            "review:\n  merge_recommendation: no_concerns_found\n  risk_level: low\n  key_issues_to_review: []\n"
+        )
+
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", reply)
+
+    await reviewer.run()
+
+    assert reviewer._review_done
+    assert provider.auto_approve.called is approves

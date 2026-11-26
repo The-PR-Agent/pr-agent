@@ -231,6 +231,20 @@ _STATE_BLOCK_REVIEW_DATA = "review_data"
 _STATE_BLOCK_SIZE = "state_size"
 
 
+def _changed_file_path(file) -> str | None:
+    """Return a changed-file entry's current path exactly as the provider gives it:
+    `filename` on GitHub-style objects, `new_path` on GitLab change dicts."""
+    path = file.get("new_path") if isinstance(file, dict) else getattr(file, "filename", None)
+    return path if isinstance(path, str) and path else None
+
+
+def _count_unread_files(model_files, complete_files) -> int:
+    """Count the files of the complete PR diff whose current path is absent from the diff the model read,
+    such as files removed by the ignore rules or the file-type filter. An entry without a path counts as unread."""
+    read_paths = {path for file in model_files or [] if (path := _changed_file_path(file))}
+    return sum(1 for file in complete_files if _changed_file_path(file) not in read_paths)
+
+
 def _is_structural_reach_key(key) -> bool:
     """Whether a review key would render like the deterministic structural reach row, whatever its separators."""
     return re.sub(r"[^a-z0-9]", "", str(key).lower()) == "structuralreach"
@@ -834,6 +848,7 @@ class PRReviewer:
         self._structured_review_data = None
         self._merge_recommendation_status = None
         self._approval_model_fields = (None, None)
+        self._approval_unread_file_count = 0
         self._review_done = self._review_degraded = self._review_labels_degraded = (
             self._review_output_touched
         ) = self._review_published = False
@@ -2044,6 +2059,8 @@ class PRReviewer:
                 get_logger().warning(f"Could not retrieve the complete PR diff for merge recommendation: {error}")
                 verdict_diff_files = None
             risk_diff_files = verdict_diff_files
+            if verdict_diff_files is not None:
+                self._approval_unread_file_count = _count_unread_files(diff_files, verdict_diff_files)
             if self._prepare_cancelled():
                 return ""
         else:
@@ -2771,7 +2788,8 @@ class PRReviewer:
             model_risk_level=model_risk_level,
             is_incremental=self.incremental.is_incremental,
             unreviewed_file_count=len(getattr(self, "remaining_files_list", []) or [])
-            + len(getattr(self, "partial_files_list", []) or []),
+            + len(getattr(self, "partial_files_list", []) or [])
+            + getattr(self, "_approval_unread_file_count", 0),
             failed_chunk_count=getattr(self, "review_failed_chunk_count", 0),
             partial_review_error=partial_review_error,
             state_blocked=getattr(self, "_review_state_blocked", False),
