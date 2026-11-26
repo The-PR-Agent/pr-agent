@@ -217,41 +217,17 @@ def key_issue_body_with_markers(body: str, body_fp: str, location_fp: str,
 
 
 def iter_existing_inline_comment_bodies(git_provider) -> Iterator[str]:
-    """Yield the body of every existing comment on the current PR/MR.
+    """Yield existing comment bodies through the provider's deduplication capability.
 
-    Providers with a persistent comment-body capability are handled through
-    that interface. The remaining legacy providers use their provider-specific
-    APIs; unsupported providers raise NotImplementedError so the store can
-    degrade to within-run dedup only.
+    Unsupported providers raise NotImplementedError so the store can degrade
+    to within-run dedup only.
     """
     persistent_bodies = getattr(git_provider, "get_persistent_comment_bodies", None)
-    if callable(persistent_bodies):
-        yield from persistent_bodies()
-        return
-
-    provider_name = type(git_provider).__name__
-    if provider_name == "GithubProvider":
-        for comment in git_provider.pr.get_comments():
-            yield getattr(comment, "body", "") or ""
-    elif provider_name == "GitLabProvider":
-        for discussion in git_provider.mr.discussions.list(get_all=True):
-            attrs = getattr(discussion, "attributes", None) or {}
-            for note in attrs.get("notes", []) or []:
-                if isinstance(note, dict):
-                    yield note.get("body", "") or ""
-        # gitlab.publish_code_suggestions_as_review queues suggestions as draft notes
-        # (invisible in the discussions listing above until published). Scan
-        # them too, so a marker from a draft that's still pending - e.g. because a
-        # prior run's bulk-publish failed - is still seen, instead of being re-posted
-        # as a duplicate once it (or a fresh copy) is eventually published.
-        for draft in git_provider.mr.draft_notes.list(get_all=True):
-            yield getattr(draft, "note", "") or ""
-    elif provider_name == "AzureDevopsProvider":
-        yield from git_provider.get_persistent_comment_bodies()
-    else:
+    if not callable(persistent_bodies):
         raise NotImplementedError(
-            f"inline-comment dedup not implemented for {provider_name}"
+            f"inline-comment dedup not implemented for {type(git_provider).__name__}"
         )
+    yield from persistent_bodies()
 
 
 def can_verify_inline_comment_publication(git_provider) -> bool:
