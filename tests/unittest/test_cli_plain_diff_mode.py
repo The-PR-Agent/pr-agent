@@ -222,8 +222,9 @@ def test_undecodable_diff_fails_fast(input_mode, tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr("pr_agent.cli._cli_settings_scope", fail_if_entered)
 
-    with pytest.raises(SystemExit, match="2"):
+    with pytest.raises(SystemExit) as exc_info:
         run(inargs=[*input_args, "review"])
+    assert exc_info.value.code == 2
     assert expected in capsys.readouterr().err
 
 
