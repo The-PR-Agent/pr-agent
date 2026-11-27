@@ -415,6 +415,8 @@ jobs:
           OTEL__ENVIRONMENT: production
           OTEL__OTLP_ENDPOINT: ${{ vars.GRAFANA_OTLP_ENDPOINT }}
           OTEL__OTLP_HEADERS: ${{ vars.GRAFANA_OTLP_ENDPOINT != '' && format('Authorization=Basic {0}', secrets.GRAFANA_OTLP_AUTH) || '' }}
+          # This repository is public, so the PR URL and identity on command spans expose nothing private.
+          OTEL__INCLUDE_PR_URL: 'true'
           LITELLM__SUCCESS_CALLBACK: ${{ vars.GRAFANA_OTLP_ENDPOINT != '' && '["otel"]' || '' }}
           LITELLM__FAILURE_CALLBACK: ${{ vars.GRAFANA_OTLP_ENDPOINT != '' && '["otel"]' || '' }}
           # Keep prompts and completions (PR code and diffs) out of the exported spans.
@@ -424,3 +426,5 @@ jobs:
           OTEL_EXPORTER_OTLP_HEADERS: ${{ vars.GRAFANA_OTLP_ENDPOINT != '' && format('Authorization=Basic {0}', secrets.GRAFANA_OTLP_AUTH) || '' }}
           OTEL_SERVICE_NAME: pr-agent
           LITELLM_OTEL_INTEGRATION_ENABLE_METRICS: 'true'
+          # Tag both telemetry layers with this workflow run so a trace links back to its Actions run.
+          OTEL_RESOURCE_ATTRIBUTES: ${{ format('cicd.pipeline.run.id={0},cicd.pipeline.run.url.full={1}/{2}/actions/runs/{0}', github.run_id, github.server_url, github.repository) }}
