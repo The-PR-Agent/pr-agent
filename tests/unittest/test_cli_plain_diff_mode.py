@@ -2,7 +2,7 @@ import builtins
 import io
 import json
 import os
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from git import Repo
@@ -15,7 +15,9 @@ from pr_agent.algo.review_json_output import (
     hosted_markdown_config_error,
     hosted_markdown_export,
 )
+from pr_agent.algo.types import FilePatchInfo
 from pr_agent.cli import _resolve_output_option, commands, run, set_parser
+from pr_agent.commands.pr_description import PRDescription
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
 
@@ -396,7 +398,140 @@ def test_hosted_review_writes_markdown_without_publishing(command, monkeypatch, 
     assert get_settings().config.publish_output is True
 
 
-@pytest.mark.parametrize("command", ["ask", "describe", "generate_labels"])
+@pytest.mark.parametrize(
+    ("command", "use_markers", "failure", "enable_description"),
+    [
+        ("describe", False, None, True),
+        ("describe_pr", True, None, True),
+        ("describe", False, "chunk", True),
+        ("describe", False, "unreadable", True),
+        ("describe", False, "empty", True),
+        ("describe", False, "missing_description", True),
+        ("describe_pr", True, "blank_description", True),
+        ("describe_pr", True, "scalar_description", True),
+        ("describe", False, "blank_title", True),
+        ("describe", False, "scalar_title", True),
+        ("describe", False, None, False),
+    ],
+)
+def test_hosted_description_exports_rendered_markdown_without_publishing(
+    command, use_markers, failure, enable_description, monkeypatch, tmp_path,
+):
+    provider = MagicMock()
+    provider.is_supported.return_value = True
+    provider.get_line_link.return_value = "https://github.com/example/repo/pull/1/files"
+    provider.get_diff_files.return_value = [
+        FilePatchInfo(
+            "line2", "line2-changed", _DIFF, "foo.py",
+            num_plus_lines=1, num_minus_lines=1,
+            content_fetch_failed=failure == "unreadable",
+        )
+    ]
+    description = PRDescription.__new__(PRDescription)
+    description.git_provider = provider
+    description.pr_id = "1"
+    description.vars = {"title": "Original title"}
+    description.keys_fix = []
+    description.user_description = (
+        "Manual introduction\n\npr_agent:summary\n\npr_agent:walkthrough" if use_markers else ""
+    )
+    description.variables = {}
+    description.prediction = None
+
+    def repo_settings_override(_):
+        settings = get_settings()
+        settings.set("config.git_provider", "github")
+        settings.set("config.publish_output", True)
+        settings.set("config.publish_output_progress", True)
+        settings.set("config.output_run_details", False)
+        settings.set("config.output_relevant_configurations", False)
+        settings.set("pr_description.generate_ai_title", not use_markers)
+        settings.set("pr_description.use_description_markers", use_markers)
+        settings.set("pr_description.include_generated_by_header", False)
+        settings.set("pr_description.enable_pr_description", enable_description)
+        settings.set("pr_description.enable_semantic_files_types", True)
+        settings.set("pr_description.enable_help_text", False)
+        settings.set("pr_description.enable_help_comment", False)
+        settings.set("pr_description.publish_labels", True)
+
+    async def make_command(self, command_cls, pr_url, args=None, **kwargs):
+        assert command_cls is PRDescription
+        assert get_settings().config.publish_output is False
+        return description
+
+    async def fake_retry(*args, **kwargs):
+        # Use the real description run and renderer, but no external model call.
+        assert description._chunk_progress_reporter(2) is None
+        summary = "description: Update the second line.\n"
+        if failure == "missing_description" or not enable_description:
+            summary = ""
+        elif failure == "blank_description":
+            summary = "description: '   '\n"
+        elif failure == "scalar_description":
+            summary = "description: 123\n"
+        title = "title: Update foo.py\n"
+        if failure == "blank_title":
+            title = "title: '   '\n"
+        elif failure == "scalar_title":
+            title = "title: 123\n"
+        description.prediction = None if failure == "empty" else (
+            f"{title}type: [Enhancement]\n"
+            f"{summary}"
+            "pr_files:\n"
+            "  - filename: foo.py\n"
+            "    changes_title: Update line\n"
+            "    changes_summary: Replace line2.\n"
+            "    label: Enhancement\n"
+        )
+        description.description_failed_chunk_count = int(failure == "chunk")
+
+    monkeypatch.setattr("pr_agent.agent.pr_agent.apply_repo_settings", repo_settings_override)
+    monkeypatch.setattr("pr_agent.agent.pr_agent.enforce_request_policy", lambda _: True)
+    monkeypatch.setattr("pr_agent.agent.pr_agent.PRAgent._create_command", make_command)
+    monkeypatch.setattr("pr_agent.commands.pr_description.retry_with_fallback_models", fake_retry)
+    monkeypatch.setattr("pr_agent.commands.pr_description.extract_and_cache_pr_tickets", AsyncMock())
+    push_outputs = AsyncMock()
+    monkeypatch.setattr("pr_agent.commands.pr_description.push_outputs_async", push_outputs)
+    output = tmp_path / "description.md"
+    output.write_text("previous description", encoding="utf-8")
+    json_output = tmp_path / "description.json"
+    args = ["--pr_url", "https://github.com/example/repo/pull/1", "--output", str(output)]
+    invalid_title = failure in ("blank_title", "scalar_title")
+    if not failure or invalid_title:
+        args += ["--json-output", str(json_output)]
+    if invalid_title:
+        json_output.write_text('{"title": "previous title"}', encoding="utf-8")
+
+    result = run(inargs=[*args, command, "--config.publish_output=true"])
+
+    if failure:
+        assert result == 1
+        assert output.read_text(encoding="utf-8") == "previous description"
+        if invalid_title:
+            assert json_output.read_text(encoding="utf-8") == '{"title": "previous title"}'
+    else:
+        assert result is None
+        markdown = output.read_text(encoding="utf-8")
+        title = "Original title" if use_markers else "Update foo.py"
+        assert markdown.startswith(f"## Title\n\n{title}\n\n")
+        assert ("Update the second line." in markdown) == enable_description
+        assert "foo.py" in markdown
+        assert "+1/-1" in markdown
+        if use_markers:
+            assert "Manual introduction" in markdown
+            assert "pr_agent:summary" not in markdown
+            assert "pr_agent:walkthrough" not in markdown
+        assert json.loads(json_output.read_text(encoding="utf-8"))["title"] == "Update foo.py"
+
+    provider.publish_comment.assert_not_called()
+    provider.publish_persistent_comment.assert_not_called()
+    provider.publish_description.assert_not_called()
+    provider.publish_labels.assert_not_called()
+    provider.update_check_run_progress.assert_not_called()
+    push_outputs.assert_not_awaited()
+
+
+@pytest.mark.parametrize("command", ["ask", "generate_labels"])
 def test_hosted_markdown_rejects_other_commands(command, monkeypatch, capsys):
     _fail_if_agent_constructed(monkeypatch)
 

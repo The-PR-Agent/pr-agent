@@ -27,7 +27,12 @@ from pr_agent.algo.pr_processing import (
     retry_with_fallback_models,
 )
 from pr_agent.algo.repo_context import build_repo_context
-from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
+from pr_agent.algo.review_json_output import (
+    hosted_markdown_artifact,
+    hosted_markdown_export,
+    review_json_output_path,
+    write_review_json_output,
+)
 from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details, record_command_failure
 from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
 from pr_agent.algo.setting_utils import _as_bool_setting
@@ -258,6 +263,23 @@ class PRDescription:
 
             if self.prediction:
                 self._prepare_data()
+                if hosted_markdown_export.get() and get_settings().pr_description.get("enable_pr_description", True):
+                    summary = self.data.get("description")
+                    if isinstance(summary, list) and all(isinstance(item, str) for item in summary):
+                        summary = " ".join(summary)
+                    if not isinstance(summary, str) or not summary.strip():
+                        get_logger().warning("Hosted Markdown export requires a nonempty enabled description")
+                        record_command_failure()
+                        return None
+                if hosted_markdown_export.get():
+                    # Select the same title as the renderers before writing either artifact.
+                    export_title = self.vars["title"]
+                    if get_settings().pr_description.generate_ai_title:
+                        export_title = self.data.get("title", export_title)
+                    if not isinstance(export_title, str) or not export_title.strip():
+                        get_logger().warning("Hosted Markdown export requires a nonempty title")
+                        record_command_failure()
+                        return None
                 try:
                     self._write_json_output(self.data)
                 except (OSError, TypeError, ValueError):
@@ -421,6 +443,12 @@ class PRDescription:
             else:
                 get_logger().info('PR description, but not published since publish_output is False.')
                 get_settings().data = {"artifact": pr_body}
+                if (
+                    hosted_markdown_export.get()
+                    and not self.description_failed_chunk_count
+                    and not self._description_degraded
+                ):
+                    hosted_markdown_artifact.set(f"## Title\n\n{pr_title.strip()}\n\n___\n{pr_body}")
                 return None
         except Exception as e:
             get_logger().error(f"Error generating PR description {self.pr_id}: {e}",
@@ -977,7 +1005,7 @@ class PRDescription:
         # write with no information, so skip the reporter like /improve does.
         # A missing comment falls through: create() then serves the check-run
         # sink alone, which is the only progress channel automatic commands have.
-        if total < 2 or not settings.config.get("publish_output_progress", True):
+        if hosted_markdown_export.get() or total < 2 or not settings.config.get("publish_output_progress", True):
             return None
         return ChunkProgressReporter.create(
             self.git_provider,

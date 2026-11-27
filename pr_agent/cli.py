@@ -141,7 +141,7 @@ def _validate_output_options(parser, args, diff_mode):
                 pr_url = None
             if args.issue_url or not pr_url or pr_url.scheme not in ("http", "https") or not pr_url.netloc:
                 parser.error("--output requires plain-diff mode or a hosted --pr_url")
-            if command not in _JSON_REVIEW_COMMANDS:
+            if command not in _JSON_REVIEW_COMMANDS | _JSON_DESCRIBE_COMMANDS:
                 parser.error(f"--output with --pr_url is not supported for command '{command}'")
 
     if json_output is not None:
@@ -229,7 +229,7 @@ def set_parser():
     parser.add_argument("--stdin", action="store_true", default=False,
                         help="Read a unified diff from stdin (plain-diff local mode)")
     parser.add_argument("--output", dest="output", type=str, default=None,
-                        help=("Write Plain Diff Markdown or an unpublished hosted PR review "
+                        help=("Write Plain Diff Markdown or an unpublished hosted PR review or description "
                               "to this file (place before the command)"))
     parser.add_argument("--json-output", dest="json_output", type=str, default=None,
                         help=("Write supported command results and token usage to this JSON file "
@@ -333,7 +333,7 @@ def run(inargs=None, args=None):
             command_args = _encode_plain_diff_context_args(args.rest) if diff_mode else list(args.rest)
             if hosted_markdown_output:
                 # Repo settings and user arguments are applied inside PRAgent. The final
-                # override keeps the review unpublished regardless of their values.
+                # override keeps the command unpublished regardless of their values.
                 command_args.append("--config.publish_output=false")
             if args.issue_url:
                 result = await PRAgent().handle_request(args.issue_url, [command] + command_args)
@@ -382,13 +382,13 @@ def run(inargs=None, args=None):
             return 1
         if hosted_markdown_output:
             if recorded_failure:
-                get_logger().error("Hosted review reported an error; Markdown output was not written")
+                get_logger().error("Hosted command reported an error; Markdown output was not written")
                 return 1
             if result is not True or not isinstance(artifact, str) or not artifact.strip():
-                get_logger().error("Hosted review did not produce a successful Markdown artifact")
+                get_logger().error("Hosted command did not produce a successful Markdown artifact")
                 return 1
             if args.json_output is not None:
-                # A JSON file created during review may alias the Markdown path only now.
+                # A JSON file created during the command may alias the Markdown path only now.
                 try:
                     same_destination = os.path.samefile(args.output, args.json_output)
                 except (OSError, ValueError):
@@ -414,7 +414,7 @@ def run(inargs=None, args=None):
                     os.chmod(temporary_output, existing_mode)
                 os.replace(temporary_output, output_path)
             except (OSError, UnicodeError, ValueError) as e:
-                get_logger().error(f"Failed to write review to {args.output}: {e}")
+                get_logger().error(f"Failed to write Markdown to {args.output}: {e}")
                 return 1
             finally:
                 if temporary_output is not None:

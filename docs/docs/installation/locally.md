@@ -193,21 +193,24 @@ This does not change how interactive PR comments are parsed.
 
    *Note: the `similar_issue` command needs extra dependencies that a bare `uv sync` does not install. Install them with `uv sync --group similar-issue` before running it.*
 
-### Save a hosted PR review without publishing
+### Save a hosted PR review or description without publishing
 
-To inspect a real GitHub PR or GitLab MR locally, save the review as Markdown
-without posting comments, labels, or approvals to the hosting platform:
+To inspect a real GitHub PR or GitLab MR locally, save the review or description as Markdown
+without posting comments, updating the PR title or description, changing labels, or approving the PR:
 
 ```bash
 uv run pr-agent --pr_url https://github.com/owner/repo/pull/123 --output review.md review
+uv run pr-agent --pr_url https://github.com/owner/repo/pull/123 --output description.md describe
 ```
 
 The `--output` option must appear before the command. It works with `review`,
-`review_pr`, `improve`, and `improve_code` (`improve` runs `review`). The command
-runs a single full-PR review even when per-commit review is configured. It
-still requires the normal Git provider and model credentials and makes the
-usual read-only API and model requests. It creates the Markdown file only after
-a completed review with valid repository settings; missing results, invalid
+`review_pr`, `improve`, `improve_code` (`improve` runs `review`), `describe`,
+and `describe_pr`. Review exports run a single full-PR review even when per-commit
+review is configured. Description exports include the selected title and rendered
+body, honoring the normal description settings and markers. Both require the normal
+Git provider and model credentials and make the usual read-only API and model
+requests. The Markdown file is written only after a completed result with valid
+repository settings; missing or degraded descriptions, missing reviews, invalid
 settings, or file-write failures return a nonzero exit without replacing an
 existing Markdown file. Plain-diff commands retain their existing `--output`
 behavior; other hosted commands do not accept this option.
