@@ -27,6 +27,7 @@ _SETTINGS_KEYS = [
     "plain_diff.content",
     "plain_diff.output_path",
     "plain_diff.json_output_path",
+    "plain_diff.context_ref",
     "config.git_provider",
     "config.publish_output",
     "config.propagate_command_errors",
@@ -121,6 +122,27 @@ def _valid_input_args(input_mode, monkeypatch, tmp_path):
     diff_file = tmp_path / "changes.diff"
     diff_file.write_text(_DIFF, encoding="utf-8")
     return ["--diff-file", str(diff_file)]
+
+
+def test_plain_diff_invalid_context_ref_fails_before_review(monkeypatch, tmp_path):
+    from importlib import import_module
+
+    Repo.init(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    diff_args = _valid_input_args("file", monkeypatch, tmp_path)
+    constructed = []
+
+    class NeverReview:
+        def __init__(self, *args, **kwargs):
+            constructed.append(True)
+
+        async def run(self):
+            return None
+
+    monkeypatch.setitem(import_module("pr_agent.agent.pr_agent").command2class, "review", NeverReview)
+
+    assert run(inargs=[*diff_args, "review", "--plain_diff.context_ref=missing-ref"]) == 1
+    assert not constructed
 
 
 def _fail_if_agent_constructed(monkeypatch):

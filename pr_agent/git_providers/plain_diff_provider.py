@@ -1,6 +1,8 @@
 import os
+import posixpath
 import re
 import sys
+from contextvars import ContextVar
 
 from unidiff.errors import UnidiffParseError
 
@@ -17,6 +19,7 @@ from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
 
 _DEFAULT_PR_TITLE = "Local diff review"
+plain_diff_local_context_enabled: ContextVar[bool] = ContextVar("plain_diff_local_context_enabled", default=False)
 
 _OUTPUT_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f]")
 
@@ -67,8 +70,57 @@ class PlainDiffGitProvider(GitProvider):
         # apply_repo_settings, so re-assert it here: stdout/--output is plain-diff mode's
         # only output channel, and it must never be silently suppressed.
         get_settings().set("config.publish_output", True)
+        self._repo_context_repo = None
+        self._repo_context_commit = None
+        self._repo_context_ref = None
         self.diff_files = None
         self.pr = PullRequestMimic(_DEFAULT_PR_TITLE, self.get_diff_files())
+
+    def _get_repo_context_commit(self):
+        # Command arguments are applied after request-policy checks, which can
+        # construct and cache this provider. Resolve the ref when context is read.
+        context_ref = get_settings().get("plain_diff.context_ref")
+        if context_ref is not None:
+            if not plain_diff_local_context_enabled.get():
+                raise ValueError("plain_diff.context_ref is only available in local CLI mode")
+            if not isinstance(context_ref, str) or not context_ref.strip():
+                # Converting a parsed number back to text may select a different
+                # Git tag (e.g. 1.10 -> 1.1 or 00123 -> 123).
+                raise ValueError("plain_diff.context_ref must be a non-empty Git ref string; quote numeric tags")
+            if self._repo_context_commit is not None and context_ref == self._repo_context_commit.hexsha:
+                self._repo_context_ref = context_ref
+                return self._repo_context_commit
+            if context_ref != self._repo_context_ref:
+                # Discover the nearest repository, including bare repositories nested
+                # inside another checkout, rather than selecting the outer .git.
+                # Ordinary Plain Diff commands do not require a local Git executable.
+                try:
+                    from git import Repo
+                    from git.exc import BadName, BadObject, GitError
+                except ImportError as error:
+                    raise ValueError("plain_diff.context_ref requires a working local Git installation") from error
+
+                repo = None
+                try:
+                    repo = Repo(os.getcwd(), search_parent_directories=True)
+                    commit = repo.commit(context_ref.strip())
+                except (BadName, BadObject, GitError, ImportError, ValueError, OSError, IndexError, KeyError,
+                        NotImplementedError) as error:
+                    if repo is not None:
+                        repo.close()
+                    raise ValueError(f"plain_diff.context_ref is not an available commit: {context_ref}") from error
+                if self._repo_context_repo is not None:
+                    self._repo_context_repo.close()
+                self._repo_context_repo = repo
+                self._repo_context_commit = commit
+                self._repo_context_ref = context_ref
+            return self._repo_context_commit
+        if self._repo_context_repo is not None:
+            self._repo_context_repo.close()
+            self._repo_context_repo = None
+            self._repo_context_commit = None
+            self._repo_context_ref = None
+        return None
 
     def get_diff_files(self) -> list[FilePatchInfo]:
         if self.diff_files is not None:
@@ -129,6 +181,39 @@ class PlainDiffGitProvider(GitProvider):
 
     def get_files(self) -> list[str]:
         return [f.filename for f in self.get_diff_files()]
+
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> str | None:
+        commit = self._get_repo_context_commit()
+        return commit.hexsha if commit is not None else None
+
+    @staticmethod
+    def normalize_repo_context_files(context_files: list) -> list:
+        """Canonicalize local file entries for import deduplication in Plain Diff only."""
+        def normalize(entry):
+            if isinstance(entry, str):
+                path = entry.strip()
+                if path and not path.startswith("/") and ".." not in path.split("/"):
+                    normalized = posixpath.normpath(path)
+                    # Keep './ Rules.md': the shared parser strips leading spaces.
+                    return path if normalized[0].isspace() else normalized
+            return entry
+
+        return [
+            [normalize(path) for path in entry] if isinstance(entry, list) else normalize(entry)
+            for entry in context_files
+        ]
+
+    def get_repo_file_content(self, file_path: str, from_default_branch: bool = False) -> str:
+        commit = self._get_repo_context_commit()
+        if commit is None or not file_path or file_path.startswith("/") or ".." in file_path.split("/"):
+            return ""
+        try:
+            blob = commit.tree / posixpath.normpath(file_path)
+        except KeyError:
+            return ""
+        if blob.type != "blob" or blob.mode == 0o120000:
+            return ""
+        return blob.data_stream.read().decode("utf-8", errors="replace")
 
     def get_incremental_commits(self, incremental):
         # A standalone diff has no commit history, so incremental review (-i) is
