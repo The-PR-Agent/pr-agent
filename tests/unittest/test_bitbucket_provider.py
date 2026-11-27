@@ -646,6 +646,67 @@ Binary files /dev/null and b/src/generated.py differ
         assert diff_file.patch == ""
         assert diff_file.edit_type == edit_type
 
+    def test_get_diff_files_real_content_read_failure_marks_unreadable(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.diff_files = None
+        provider.headers = {"Authorization": "Bearer token"}
+        provider.pr = MagicMock()
+
+        diffstat = MagicMock()
+        diffstat.new.path = diffstat.old.path = "src/example.py"
+        diffstat.old.get_data.return_value = {"self": {"href": "https://api.bitbucket.org/base"}}
+        diffstat.new.get_data.return_value = {"self": {"href": "https://api.bitbucket.org/head"}}
+        diffstat.data = {"status": "modified", "lines_added": 1, "lines_removed": 1}
+        provider.pr.diffstat.return_value = [diffstat]
+        provider.pr.diff.return_value = (
+            "diff --git a/src/example.py b/src/example.py\n"
+            "--- a/src/example.py\n+++ b/src/example.py\n@@ -1 +1 @@\n-old\n+new\n"
+        )
+
+        settings = MagicMock()
+        settings.get.return_value = False
+        with (
+            patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", return_value=[diffstat]),
+            patch("pr_agent.git_providers.bitbucket_provider.get_settings", return_value=settings),
+            patch(
+                "pr_agent.git_providers.bitbucket_provider.requests.request",
+                side_effect=RequestsConnectionError("connection refused"),
+            ),
+        ):
+            diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.content_fetch_failed is True
+        assert diff_file.base_file == ""
+        assert diff_file.head_file == ""
+        assert diff_file.patch == ""
+
+    def test_get_diff_files_marks_content_fetch_failure_unreadable(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.diff_files = None
+        provider.pr = MagicMock()
+
+        diffstat = MagicMock()
+        diffstat.new.path = diffstat.old.path = "src/example.py"
+        diffstat.data = {"status": "modified", "lines_added": 1, "lines_removed": 1}
+        provider.pr.diffstat.return_value = [diffstat]
+        provider.pr.diff.return_value = (
+            "diff --git a/src/example.py b/src/example.py\n"
+            "--- a/src/example.py\n+++ b/src/example.py\n@@ -1 +1 @@\n-old\n+new\n"
+        )
+        provider._get_pr_file_content = MagicMock(side_effect=RuntimeError("boom"))
+
+        settings = MagicMock()
+        settings.get.return_value = False
+        with (
+            patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", return_value=[diffstat]),
+            patch("pr_agent.git_providers.bitbucket_provider.get_settings", return_value=settings),
+        ):
+            diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.content_fetch_failed is True
+        assert diff_file.base_file == ""
+        assert diff_file.head_file == ""
+
     def test_get_diff_files_warns_for_nonempty_change_without_hunks(self):
         raw_diff = """diff --git a/src/example.py b/src/example.py
 index 1111111..2222222 100644

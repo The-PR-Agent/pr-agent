@@ -520,6 +520,7 @@ class BitbucketProvider(GitProvider):
                 invalid_files_names.append(file_path)
                 continue
 
+            content_fetch_failed = False
             try:
                 counter_valid += 1
                 if get_settings().get("bitbucket_app.avoid_full_files", False):
@@ -528,11 +529,12 @@ class BitbucketProvider(GitProvider):
                 elif counter_valid < MAX_FILES_ALLOWED_FULL // 2:  # factor 2 because bitbucket has limited API calls
                     if diff.old.get_data("links"):
                         original_file_content_str = self._get_pr_file_content(
-                            diff.old.get_data("links")['self']['href'])
+                            diff.old.get_data("links")['self']['href'], raise_on_error=True)
                     else:
                         original_file_content_str = ""
                     if diff.new.get_data("links"):
-                        new_file_content_str = self._get_pr_file_content(diff.new.get_data("links")['self']['href'])
+                        new_file_content_str = self._get_pr_file_content(
+                            diff.new.get_data("links")['self']['href'], raise_on_error=True)
                     else:
                         new_file_content_str = ""
                 else:
@@ -545,6 +547,7 @@ class BitbucketProvider(GitProvider):
                 get_logger().exception(f"Error - bitbucket failed to get file content, error: {e}")
                 original_file_content_str = ""
                 new_file_content_str = ""
+                content_fetch_failed = True
 
             # Bitbucket's diffstat carries the authoritative per-file counts, so prefer it over
             # counting the patch, field by field. The raw diff can carry no textual hunk, or a
@@ -564,11 +567,12 @@ class BitbucketProvider(GitProvider):
             file_patch_canonic_structure = FilePatchInfo(
                 original_file_content_str,
                 new_file_content_str,
-                diff_split[index],
+                "" if content_fetch_failed else diff_split[index],
                 file_path,
                 old_filename=old_filename,
                 num_plus_lines=lines_added,
                 num_minus_lines=lines_removed,
+                content_fetch_failed=content_fetch_failed,
             )
 
             if diff.data['status'] == 'added':
@@ -969,7 +973,7 @@ class BitbucketProvider(GitProvider):
             "POST", url, headers=headers, data=data, files=files, timeout=get_http_request_timeout())
         response.raise_for_status()
 
-    def _get_pr_file_content(self, remote_link: str):
+    def _get_pr_file_content(self, remote_link: str, *, raise_on_error: bool = False):
         try:
             response = requests.request("GET", remote_link, headers=self.headers, timeout=get_http_request_timeout())
             if response.status_code == 404:  # not found
@@ -981,6 +985,8 @@ class BitbucketProvider(GitProvider):
             if isinstance(error, requests.RequestException):
                 get_logger().warning(
                     f"Failed to read {remote_link!r} ({type(error).__name__}); treating it as an empty file")
+            if raise_on_error:
+                raise
             return ""
 
     def get_commit_messages(self) -> str:
