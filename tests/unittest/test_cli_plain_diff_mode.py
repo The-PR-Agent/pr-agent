@@ -202,6 +202,31 @@ def test_missing_diff_file_fails_fast(tmp_path, monkeypatch, capsys):
     assert "Could not read --diff-file" in err
 
 
+@pytest.mark.parametrize("input_mode", ["stdin", "file"])
+def test_undecodable_diff_fails_fast(input_mode, tmp_path, monkeypatch, capsys):
+    """Diff bytes that are not valid UTF-8 must exit 2 via parser.error with a
+    clear message, not crash with an uncaught UnicodeDecodeError traceback."""
+    undecodable = b"diff --git a/a b/a\n+caf\xe9\n"
+    if input_mode == "stdin":
+        monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(undecodable), encoding="utf-8"))
+        input_args = ["--stdin"]
+        expected = "Could not decode --stdin"
+    else:
+        diff_file = tmp_path / "latin1.diff"
+        diff_file.write_bytes(undecodable)
+        input_args = ["--diff-file", str(diff_file)]
+        expected = "is not valid UTF-8 text"
+
+    def fail_if_entered():
+        pytest.fail("undecodable diff errors must not enter the settings scope")
+
+    monkeypatch.setattr("pr_agent.cli._cli_settings_scope", fail_if_entered)
+
+    with pytest.raises(SystemExit, match="2"):
+        run(inargs=[*input_args, "review"])
+    assert expected in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("command", [
     "review", "review_pr", "improve", "improve_code", "describe", "describe_pr", "generate_labels",
     "ask", "ask_question",
