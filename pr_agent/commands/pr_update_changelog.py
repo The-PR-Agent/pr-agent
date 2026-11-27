@@ -15,7 +15,8 @@ from pr_agent.algo.pr_processing import (
     retry_with_fallback_models,
     run_diff_preparation,
 )
-from pr_agent.algo.run_details import init_run_details
+from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
+from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure
 from pr_agent.algo.run_output import append_run_details, push_outputs_async, show_relevant_configurations
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.token_budget import AttemptTokenBudget, prepare_model_token_limits
@@ -148,6 +149,8 @@ class PRUpdateChangelog:
                 if changelog_read_error is not None:
                     self._publish_changelog_read_error_fallback()
                     raise changelog_read_error
+                if review_json_output_path.get():
+                    record_command_failure()
                 return
 
             new_file_content, answer = self._prepare_changelog_update()
@@ -156,6 +159,25 @@ class PRUpdateChangelog:
                 self._publish_changelog_read_error_fallback(answer)
                 raise changelog_read_error
 
+            entry = strip_wrapping_code_fence(self.prediction.strip()).strip()
+            if review_json_output_path.get():
+                if not entry:
+                    record_command_failure()
+                else:
+                    details = get_run_details()
+                    usage = {}
+                    if details is not None and details.has_token_usage:
+                        usage = {
+                            "prompt_tokens": details.prompt_tokens,
+                            "completion_tokens": details.completion_tokens,
+                            "total_tokens": details.total_tokens,
+                        }
+                    try:
+                        write_review_json_output({"path": self.changelog_path, "entry": entry, "usage": usage})
+                    except (OSError, TypeError, ValueError):
+                        # A missing requested artifact must not count as a successful CLI run.
+                        record_command_failure()
+
             # Output the relevant configurations if enabled
             if get_settings().get('config', {}).get('output_relevant_configurations', False):
                 answer += show_relevant_configurations(relevant_section='pr_update_changelog')
@@ -163,7 +185,6 @@ class PRUpdateChangelog:
             get_logger().debug("PR output", artifact=answer)
 
             if get_settings().config.publish_output:
-                entry = strip_wrapping_code_fence(self.prediction.strip()).strip()
                 await push_outputs_async(
                     "update_changelog",
                     payload={"path": self.changelog_path, "entry": entry},

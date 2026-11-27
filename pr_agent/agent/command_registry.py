@@ -44,7 +44,7 @@ class CommandSpec:
     check_run: str | None = None
     takes_comment_id: bool = False
     plain_diff_markdown: bool = False
-    json_output: str | None = None  # "review" | "describe" | "labels" | "ask"
+    json_output: str | None = None  # "review" | "describe" | "labels" | "ask" | "changelog"
 
 
 COMMAND_SPECS: dict[str, CommandSpec] = {
@@ -76,7 +76,7 @@ COMMAND_SPECS: dict[str, CommandSpec] = {
     "ask": CommandSpec(PRQuestions, takes_comment_id=True, plain_diff_markdown=True, json_output="ask"),
     "ask_question": CommandSpec(PRQuestions, takes_comment_id=True, plain_diff_markdown=True, json_output="ask"),
     "ask_line": CommandSpec(PR_LineQuestions),
-    "update_changelog": CommandSpec(PRUpdateChangelog),
+    "update_changelog": CommandSpec(PRUpdateChangelog, json_output="changelog"),
     "config": CommandSpec(PRConfig, plain_diff_markdown=True),
     "settings": CommandSpec(PRConfig, plain_diff_markdown=True),
     "help": CommandSpec(PRHelpMessage, plain_diff_markdown=True),

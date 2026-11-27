@@ -30,7 +30,7 @@ python -m pr_agent.cli --diff-file changes.diff --output review.md review
 | `--stdin` | Read a unified diff from stdin |
 | `--diff-file <path>` | Read a unified diff from a file |
 | `--output <path>` | Write Markdown produced by a compatible Plain Diff command to a file in addition to stdout |
-| `--json-output <path>` | Write structured results and token usage for `review`, `describe`, `ask`, or `generate_labels` (including aliases; `improve` runs `review`; also available with `--pr_url`) |
+| `--json-output <path>` | Write structured results and token usage for `review`, `describe`, `ask`, `generate_labels`, or `update_changelog` (including aliases; `improve` runs `review`; also available with `--pr_url`) |
 
 `--stdin` and `--diff-file` are mutually exclusive. At least one must be provided to
 enter plain-diff mode; omitting both falls back to the normal `--pr_url` flow.
@@ -43,6 +43,7 @@ You can also save structured results from a local description or label run:
 ```bash
 python -m pr_agent.cli --diff-file changes.diff --json-output description.json describe
 python -m pr_agent.cli --diff-file changes.diff --json-output labels.json generate_labels
+python -m pr_agent.cli --diff-file changes.diff --json-output changelog.json update_changelog
 ```
 
 These files contain the parsed model result and a `usage` object, while the normal
@@ -58,6 +59,8 @@ not existing human-applied PR labels.
 `generate_labels` also works with raw diffs and can write its filtered labels as JSON.
 `update_changelog` can generate a changelog draft to stdout (`--output` is not supported for it),
 but cannot read or update an existing repository changelog file in this mode.
+With `--json-output`, it also writes the generated `entry`, configured changelog
+`path`, and `usage` token counts as a draft.
 Because there is no hosting
 platform to push to, `review` writes its findings, including any fixes, as a single markdown
 document to stdout (and to `--output`, if given), with each fix as a text block in the

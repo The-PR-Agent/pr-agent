@@ -54,6 +54,9 @@ _JSON_LABEL_COMMANDS = frozenset(
 _JSON_ASK_COMMANDS = frozenset(
     name for name, spec in COMMAND_SPECS.items() if spec.json_output == "ask"
 )
+_JSON_CHANGELOG_COMMANDS = frozenset(
+    name for name, spec in COMMAND_SPECS.items() if spec.json_output == "changelog"
+)
 _OUTPUT_OPTIONS = ("--output", "--json-output")
 # Options that select what to work on, with a correct invocation to show when one follows the command.
 _TARGET_OPTION_EXAMPLES = {
@@ -145,10 +148,11 @@ def _validate_output_options(parser, args, diff_mode):
                 parser.error(f"--output with --pr_url is not supported for command '{command}'")
 
     if json_output is not None:
-        pr_commands = _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS | _JSON_ASK_COMMANDS
+        pr_commands = _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS | _JSON_ASK_COMMANDS | _JSON_CHANGELOG_COMMANDS
         if command not in _JSON_REVIEW_COMMANDS | pr_commands:
             parser.error(
-                "--json-output is only supported for review, improve, describe, generate_labels, or ask commands"
+                "--json-output is only supported for review, improve, describe, generate_labels, ask, "
+                "or update_changelog commands"
             )
         if not diff_mode and (not args.pr_url or args.issue_url):
             parser.error("--json-output requires --pr_url, --stdin, or --diff-file")
@@ -310,7 +314,9 @@ def run(inargs=None, args=None):
             # Plain-diff reviews (and /improve, which runs /review) write through their provider;
             # describe, labels, and ask use the shared JSON writer in both modes.
             command_json_output = getattr(args, "json_output", None) if (
-                not diff_mode or command in _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS | _JSON_ASK_COMMANDS
+                not diff_mode or command in (
+                    _JSON_DESCRIBE_COMMANDS | _JSON_LABEL_COMMANDS | _JSON_ASK_COMMANDS | _JSON_CHANGELOG_COMMANDS
+                )
             ) else None
             output_token = review_json_output_path.set(command_json_output)
             hosted_token = hosted_markdown_export.set(hosted_markdown_output)
@@ -368,7 +374,10 @@ def run(inargs=None, args=None):
         ask_json_required = bool(
             getattr(args, "json_output", None) is not None and command in _JSON_ASK_COMMANDS
         )
-        json_artifact_required = label_json_required or ask_json_required or bool(
+        changelog_json_required = bool(
+            getattr(args, "json_output", None) is not None and command in _JSON_CHANGELOG_COMMANDS
+        )
+        json_artifact_required = label_json_required or ask_json_required or changelog_json_required or bool(
             diff_mode and getattr(args, "json_output", None) is not None
             and command in _JSON_REVIEW_COMMANDS | _JSON_DESCRIBE_COMMANDS
         )

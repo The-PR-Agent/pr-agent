@@ -19,6 +19,24 @@ Host operators can also opt in to forwarding the newly generated entry to the ex
 [push outputs](../usage-guide/push_outputs.md) destinations by selecting `update_changelog` in
 `push_outputs.commands`. These notifications contain a draft, not confirmation of a repository write.
 
+### CLI JSON draft
+
+Use `--json-output` to produce a machine-readable changelog entry for release
+automation without parsing PR comments:
+
+```bash
+python -m pr_agent.cli --pr_url https://github.com/OWNER/REPO/pull/123 \
+  --json-output changelog.json update_changelog --config.publish_output=false
+```
+
+The JSON contains the configured changelog `path`, the new Markdown `entry`,
+and `usage` token counts (or `{}` if unavailable). It is a draft, not evidence
+that a repository file was written. The option also works with `--stdin` and
+`--diff-file`; a raw diff cannot provide the existing changelog content.
+
+If the requested artifact cannot be produced, the CLI exits unsuccessfully.
+Without this option, publication and output-sink behavior are unchanged.
+
 ## Example usage
 
 <img src="/img/update_changelog_comment.png" alt="update_changelog_comment" width="768" />

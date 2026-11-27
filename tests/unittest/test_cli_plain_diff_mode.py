@@ -230,7 +230,7 @@ def test_undecodable_diff_fails_fast(input_mode, tmp_path, monkeypatch, capsys):
 
 @pytest.mark.parametrize("command", [
     "review", "review_pr", "improve", "improve_code", "describe", "describe_pr", "generate_labels",
-    "ask", "ask_question",
+    "ask", "ask_question", "update_changelog",
 ])
 def test_json_output_accepts_pr_review(command, monkeypatch, tmp_path):
     from pr_agent.algo.review_json_output import review_json_output_path
@@ -250,7 +250,7 @@ def test_json_output_accepts_pr_review(command, monkeypatch, tmp_path):
     assert review_json_output_path.get() is None
 
 
-@pytest.mark.parametrize("command", ["describe", "describe_pr", "ask", "ask_question"])
+@pytest.mark.parametrize("command", ["describe", "describe_pr", "ask", "ask_question", "update_changelog"])
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])
 def test_json_output_accepts_plain_diff_command_aliases(command, input_mode, monkeypatch, tmp_path):
     from pr_agent.algo.review_json_output import review_json_output_path
@@ -284,11 +284,15 @@ def test_json_output_rejects_non_review_pr_command(monkeypatch, capsys):
     with pytest.raises(SystemExit, match="2"):
         run(inargs=["--pr_url", "https://example/pr/1", "--json-output", "out.json", "config"])
     error = capsys.readouterr().err
-    assert "--json-output is only supported for review, improve, describe, generate_labels, or ask commands" in error
+    assert (
+        "--json-output is only supported for review, improve, describe, "
+        "generate_labels, ask, or update_changelog commands"
+    ) in error
 
 
+@pytest.mark.parametrize("command", ["ask", "update_changelog"])
 @pytest.mark.parametrize("result", [False, RequestOutcome.SKIPPED])
-def test_ask_json_output_propagates_failed_or_skipped_command(result, monkeypatch, tmp_path):
+def test_json_output_propagates_failed_or_skipped_command(command, result, monkeypatch, tmp_path):
     class FakeAgent:
         async def handle_request(self, target, request, notify=None):
             return result
@@ -296,8 +300,28 @@ def test_ask_json_output_propagates_failed_or_skipped_command(result, monkeypatc
     monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
     output = tmp_path / "answer.json"
 
-    assert run(inargs=["--pr_url", "https://example/pr/1", "--json-output", str(output), "ask"]) == 1
+    assert run(inargs=["--pr_url", "https://example/pr/1", "--json-output", str(output), command]) == 1
     assert not output.exists()
+
+
+def test_plain_diff_changelog_json_uses_real_command_dispatch(monkeypatch, tmp_path):
+    input_args = _valid_input_args("file", monkeypatch, tmp_path)
+
+    async def prepare_prediction(self, _model):
+        self.prediction = "```markdown\n### Added\n- Local diff changelog\n```"
+
+    monkeypatch.setattr("pr_agent.commands.pr_update_changelog.PRUpdateChangelog._prepare_prediction",
+                        prepare_prediction)
+    monkeypatch.setattr("pr_agent.commands.pr_update_changelog.retry_with_fallback_models",
+                        lambda callback, model_type: callback("test-model"))
+    output = tmp_path / "changelog.json"
+
+    assert run(inargs=[*input_args, "--json-output", str(output), "update_changelog"]) is None
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        "path": "CHANGELOG.md",
+        "entry": "### Added\n- Local diff changelog",
+        "usage": {},
+    }
 
 
 @pytest.mark.parametrize("command", ["review", "review_pr", "describe", "improve", "ask", "ask_question"])
@@ -1060,7 +1084,7 @@ def test_json_output_accepts_review_aliases(command, input_mode, monkeypatch, tm
 
 
 @pytest.mark.parametrize("command", [
-    *(name for name in _NON_MARKDOWN_COMMANDS if name != "generate_labels"),
+    *(name for name in _NON_MARKDOWN_COMMANDS if name not in ("generate_labels", "update_changelog")),
     "config", "settings", "help",
 ])
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])
@@ -1074,7 +1098,10 @@ def test_json_output_rejects_non_review_commands_before_read(
 
     assert exc_info.value.code == 2
     error = capsys.readouterr().err
-    assert "--json-output is only supported for review, improve, describe, generate_labels, or ask commands" in error
+    assert (
+        "--json-output is only supported for review, improve, describe, "
+        "generate_labels, ask, or update_changelog commands"
+    ) in error
 
 
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])
