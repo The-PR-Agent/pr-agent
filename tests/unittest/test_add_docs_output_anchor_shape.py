@@ -9,6 +9,7 @@ from pr_agent.algo.git_patch_processing import RE_HUNK_HEADER
 from pr_agent.algo.pr_processing import FallbackEligibleError
 from pr_agent.commands.pr_add_docs import PRAddDocs
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
+from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 
@@ -139,3 +140,76 @@ def test_push_inline_docs_renders_diff_block_for_bitbucket_before_placement():
     assert len(published) == 1
     assert "```suggestion" not in published[0]["body"]
     assert "```diff\n+    # increment input\n     y = x + 1\n```" in published[0]["body"]
+
+
+@pytest.mark.parametrize("label", ["app.py", "app.py "])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_add_docs_skips_ambiguous_model_filename(label, reverse):
+    command = object.__new__(PRAddDocs)
+    command.git_provider = MagicMock()
+    files = [
+        SimpleNamespace(filename="app.py ", head_file="def spaced():\n    pass\n"),
+        SimpleNamespace(filename="app.py", head_file="def plain():\n    pass\n"),
+    ]
+    command.git_provider.diff_files = list(reversed(files)) if reverse else files
+
+    assert command.push_inline_docs({"Code Documentation": [{
+        "relevant file": label, "relevant line": 1, "doc placement": "after",
+        "documentation": '"""Explain the function."""',
+    }]}) is None
+
+    command.git_provider.publish_code_suggestions.assert_not_called()
+
+
+@pytest.mark.parametrize("label", ["app.py", "app.py "])
+def test_add_docs_unique_whitespace_path_preserves_anchor_and_payload(label):
+    command = object.__new__(PRAddDocs)
+    command.git_provider = MagicMock()
+    command.git_provider.diff_files = [
+        SimpleNamespace(filename="app.py ", head_file="def spaced():\n    pass\n"),
+    ]
+    command.git_provider.publish_code_suggestions.return_value = True
+
+    assert command.push_inline_docs({"Code Documentation": [{
+        "relevant file": label, "relevant line": 1, "doc placement": "after",
+        "documentation": '"""Explain the function."""',
+    }]}) is True
+
+    payload = command.git_provider.publish_code_suggestions.call_args.args[0][0]
+    assert payload["relevant_file"] == "app.py "
+    assert payload["original_suggestion"]["relevant_file"] == "app.py "
+    assert payload["original_suggestion"]["existing_code"] == "def spaced():"
+    assert payload["original_suggestion"]["improved_code"] == (
+        'def spaced():\n    """Explain the function."""'
+    )
+
+
+def test_add_docs_does_not_publish_missing_or_incomplete_source():
+    command = object.__new__(PRAddDocs)
+    command.git_provider = MagicMock()
+    command.git_provider.diff_files = [
+        SimpleNamespace(filename="app.py", head_file="def plain():\n    pass\n",
+                        head_file_is_complete=False),
+    ]
+
+    for label in ("missing.py", "app.py"):
+        assert command.push_inline_docs({"Code Documentation": [{
+            "relevant file": label, "relevant line": 1, "doc placement": "after",
+            "documentation": '"""Explain the function."""',
+        }]}) is None
+    command.git_provider.publish_code_suggestions.assert_not_called()
+
+
+def test_add_docs_propagates_incomplete_diff_inventory():
+    command = object.__new__(PRAddDocs)
+    command.git_provider = MagicMock()
+    command.git_provider.diff_files = None
+    command.git_provider.get_diff_files.side_effect = IncompleteProviderPullRequestFilesError("incomplete")
+
+    with pytest.raises(IncompleteProviderPullRequestFilesError):
+        command.push_inline_docs({"Code Documentation": [{
+            "relevant file": "app.py", "relevant line": 1, "doc placement": "after",
+            "documentation": '"""Explain the function."""',
+        }]})
+
+    command.git_provider.publish_code_suggestions.assert_not_called()
