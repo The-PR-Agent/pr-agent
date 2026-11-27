@@ -493,7 +493,7 @@ def convert_to_markdown_v2(output_data: dict,
                             for field in ('relevant_file', 'issue_header', 'issue_content')
                         ):
                             continue
-                        relevant_file = issue.get('relevant_file', '').strip()
+                        relevant_file = issue.get('relevant_file', '')
                         issue_header = issue.get('issue_header', '').strip()
                         if issue_header.lower() == 'possible bug':
                             issue_header = t('review.possible_issue')  # Make the header less frightening
@@ -504,10 +504,15 @@ def convert_to_markdown_v2(output_data: dict,
                         start_line = _as_line(issue.get('start_line')) or 0
                         end_line = _as_line(issue.get('end_line')) or start_line
                         valid_lines = 0 < start_line <= end_line
-                        if git_provider and valid_lines:
-                            reference_link = git_provider.get_line_link(relevant_file, start_line, end_line)
-                        else:
-                            reference_link = None
+                        reference_link = None
+                        if git_provider and valid_lines and relevant_file:
+                            # Model labels may have lost significant surrounding whitespace.
+                            # Never attach evidence to an ambiguous filename.
+                            matching_paths = {file.filename for file in _snippet_file_candidates(files, relevant_file)}
+                            if len(matching_paths) <= 1:
+                                relevant_file = next(iter(matching_paths), relevant_file.strip())
+                                if relevant_file:
+                                    reference_link = git_provider.get_line_link(relevant_file, start_line, end_line)
 
                         if gfm_supported:
                             if reference_link is not None and len(reference_link) > 0:
@@ -594,43 +599,51 @@ def _extract_line_range(content: str, start_line: int, end_line: int) -> str:
     return "\n".join(split_diff_lines(content[offset:stop]))
 
 
+def _snippet_file_candidates(files, relevant_file):
+    """Return diff records that could correspond to a whitespace-normalized label."""
+    if not isinstance(relevant_file, str) or not relevant_file:
+        return []
+    key = relevant_file.strip()
+    return [file for file in (files or []) if file.filename and file.filename.strip() == key]
+
+
 def extract_relevant_lines_str(end_line, files, relevant_file, start_line, dedent=False) -> str:
-    """
-    Finds 'relevant_file' in 'files', and extracts the lines from 'start_line' to 'end_line' str from the file content.
-    """
+    """Extract source lines by exact path, with a unique whitespace alias as a fallback."""
     try:
         relevant_lines_str = ""
-        if files:
-            files = set_file_languages(files)
-            for file in files:
-                if file.filename.strip() == relevant_file:
-                    if not file.head_file:
-                        # as a fallback, extract relevant lines directly from patch
-                        patch = file.patch
-                        get_logger().info(
-                            f"No content found in file: '{file.filename}' for 'extract_relevant_lines_str'. "
-                            f"Using patch instead")
-                        _, selected_lines = extract_hunk_lines_from_patch(
-                            patch, file.filename, start_line, end_line,side="right")
-                        if not selected_lines:
-                            get_logger().error(f"Failed to extract relevant lines from patch: {file.filename}")
-                            return ""
-                        # filter out '-' lines
-                        relevant_lines_str = ""
-                        for line in split_diff_lines(selected_lines):
-                            if line.startswith('-'):
-                                continue
-                            relevant_lines_str += line[1:] + '\n'
-                    else:
-                        relevant_lines_str = _extract_line_range(file.head_file, start_line, end_line)
+        candidates = _snippet_file_candidates(files, relevant_file)
+        exact = [file for file in candidates if file.filename == relevant_file]
+        matches = exact or candidates
+        if len(matches) != 1:
+            return ""
+        file = matches[0]
+        set_file_languages(files)
+        if not file.head_file:
+            # as a fallback, extract relevant lines directly from patch
+            patch = file.patch
+            get_logger().info(
+                f"No content found in file: '{file.filename}' for 'extract_relevant_lines_str'. "
+                f"Using patch instead")
+            _, selected_lines = extract_hunk_lines_from_patch(
+                patch, file.filename, start_line, end_line,side="right")
+            if not selected_lines:
+                get_logger().error(f"Failed to extract relevant lines from patch: {file.filename}")
+                return ""
+            # filter out '-' lines
+            relevant_lines_str = ""
+            for line in split_diff_lines(selected_lines):
+                if line.startswith('-'):
+                    continue
+                relevant_lines_str += line[1:] + '\n'
+        else:
+            relevant_lines_str = _extract_line_range(file.head_file, start_line, end_line)
 
-                    if dedent and relevant_lines_str:
-                        # Remove the longest leading string of spaces and tabs common to all lines.
-                        relevant_lines_str = textwrap.dedent(relevant_lines_str)
-                    if relevant_lines_str:
-                        fence = _get_fence(relevant_lines_str)
-                        relevant_lines_str = f"{fence}{file.language}\n{relevant_lines_str}\n{fence}"
-                    break
+        if dedent and relevant_lines_str:
+            # Remove the longest leading string of spaces and tabs common to all lines.
+            relevant_lines_str = textwrap.dedent(relevant_lines_str)
+        if relevant_lines_str:
+            fence = _get_fence(relevant_lines_str)
+            relevant_lines_str = f"{fence}{file.language}\n{relevant_lines_str}\n{fence}"
 
         return relevant_lines_str
     except Exception as e:

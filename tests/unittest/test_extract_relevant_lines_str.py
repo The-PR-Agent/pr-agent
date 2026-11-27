@@ -446,3 +446,101 @@ class TestConvertToMarkdownV2ThreeIssues:
         assert "~~~markdown\n" in result
         # No <pre> blocks anywhere — fenced syntax only
         assert "<pre>" not in result
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_snippet_prefers_exact_filename_over_whitespace_alias(reverse):
+    files = [_make_file("src/a.py ", "spaced\n"), _make_file("src/a.py", "plain\n")]
+    if reverse:
+        files.reverse()
+
+    assert extract_relevant_lines_str(1, files, "src/a.py", 1) == "```python\nplain\n```"
+    assert extract_relevant_lines_str(1, files, "src/a.py ", 1) == "```python\nspaced\n```"
+    assert extract_relevant_lines_str(1, files, " src/a.py", 1) == ""
+
+
+@pytest.mark.parametrize("gfm_supported", [True, False])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_review_ambiguous_filename_keeps_finding_without_source_evidence(gfm_supported, reverse):
+    files = [_make_file("src/a.py ", "spaced\n"), _make_file("src/a.py", "plain\n")]
+    if reverse:
+        files.reverse()
+    provider = Mock()
+    provider.get_line_link.return_value = "https://example.com/wrong"
+    data = {"review": {"key_issues_to_review": [{
+        "relevant_file": "src/a.py",
+        "issue_header": "Check result",
+        "issue_content": "Handle a missing result.",
+        "start_line": 1,
+        "end_line": 1,
+    }]}}
+
+    result = convert_to_markdown_v2(data, gfm_supported=gfm_supported, git_provider=provider, files=files)
+
+    assert "Handle a missing result." in result
+    assert "https://example.com/wrong" not in result
+    assert "spaced\n" not in result
+    assert "plain\n" not in result
+    provider.get_line_link.assert_not_called()
+
+
+@pytest.mark.parametrize("label", ["src/a.py", "src/a.py "])
+def test_review_unique_whitespace_filename_links_to_the_same_file_as_snippet(label):
+    files = [_make_file("src/a.py ", "expected\n")]
+    provider = Mock()
+    provider.get_line_link.return_value = "https://example.com/src/a.py%20"
+    data = {"review": {"key_issues_to_review": [{
+        "relevant_file": label,
+        "issue_header": "Check result",
+        "issue_content": "Handle a missing result.",
+        "start_line": 1,
+        "end_line": 1,
+    }]}}
+
+    result = convert_to_markdown_v2(data, gfm_supported=True, git_provider=provider, files=files)
+
+    provider.get_line_link.assert_called_once_with("src/a.py ", 1, 1)
+    assert "https://example.com/src/a.py%20" in result
+    assert "```python\nexpected\n```" in result
+
+
+def test_review_duplicate_records_keep_link_without_choosing_conflicting_source():
+    files = [_make_file("src/a.py", "first\n"), _make_file("src/a.py", "second\n")]
+    provider = Mock()
+    provider.get_line_link.return_value = "https://example.com/src/a.py"
+    data = {"review": {"key_issues_to_review": [{
+        "relevant_file": "src/a.py",
+        "issue_header": "Check result",
+        "issue_content": "Handle a missing result.",
+        "start_line": 1,
+        "end_line": 1,
+    }]}}
+
+    result = convert_to_markdown_v2(data, gfm_supported=True, git_provider=provider, files=files)
+
+    provider.get_line_link.assert_called_once_with("src/a.py", 1, 1)
+    assert "https://example.com/src/a.py" in result
+    assert "first\n" not in result
+    assert "second\n" not in result
+
+
+@pytest.mark.parametrize(("with_provider", "start_line"), [(False, 1), (True, 0)])
+def test_review_skips_filename_lookup_without_linkable_location(monkeypatch, with_provider, start_line):
+    lookup = Mock(side_effect=AssertionError("No source lookup needed"))
+    monkeypatch.setattr("pr_agent.algo.utils._snippet_file_candidates", lookup)
+    provider = Mock() if with_provider else None
+    data = {"review": {"key_issues_to_review": [{
+        "relevant_file": "src/a.py",
+        "issue_header": "Check result",
+        "issue_content": "Handle a missing result.",
+        "start_line": start_line,
+        "end_line": 1,
+    }]}}
+
+    result = convert_to_markdown_v2(data, gfm_supported=True, git_provider=provider,
+                                    files=[_make_file("src/a.py", "source\n")])
+
+    assert "Handle a missing result." in result
+    lookup.assert_not_called()
+    if provider is not None:
+        provider.get_line_link.assert_not_called()
