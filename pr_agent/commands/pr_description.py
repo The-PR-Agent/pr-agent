@@ -116,6 +116,7 @@ class PRDescription:
     COLLAPSIBLE_FILE_LIST_THRESHOLD = 8
     description_failed_chunk_count = 0
     _description_degraded = False
+    _description_has_uncovered_files = False
     _description_output_touched = False
 
     def __init__(self, pr_url: str, args: list = None,
@@ -209,6 +210,12 @@ class PRDescription:
                 and not self.description_failed_chunk_count
                 and not self._description_degraded
             )
+            if (run_clean and self._description_output_touched
+                    and not self._description_has_uncovered_files
+                    and not get_settings().pr_description.get("use_description_markers", False)):
+                details = get_run_details()
+                if details is not None:
+                    details.webhook_delivery_completed = True
             return result
         finally:
             if guard is not None:
@@ -223,6 +230,7 @@ class PRDescription:
         init_run_details()
         self.progress_response = None
         self._description_degraded = False
+        self._description_has_uncovered_files = False
         self._description_output_touched = False
         try:
             get_logger().info(f"Generating a PR description for pr_id: {self.pr_id}")
@@ -454,6 +462,7 @@ class PRDescription:
         self.description_failed_chunk_count = 0
         self.description_failed_files = []
         self._description_degraded = False
+        self._description_has_uncovered_files = False
         previous_progress = getattr(self, "_chunk_progress", None)
         if previous_progress is not None:
             # A fallback-model retry starts over, whatever path it takes next; restore the
@@ -925,6 +934,8 @@ class PRDescription:
 
             # merge the two dictionaries
             if counter_extra_files > 0:
+                if self._file_summaries_requested():
+                    self._description_has_uncovered_files = True
                 get_logger().info(f"Adding {counter_extra_files} unprocessed extra files to table prediction")
                 extended = False
                 prediction_extra_dict = load_yaml(prediction_extra, keys_fix_yaml=self.keys_fix)

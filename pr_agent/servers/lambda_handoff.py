@@ -23,8 +23,8 @@ fails for either reason, the caller falls back to processing the webhook
 inline, which restores the previous behaviour — a slow acknowledgement and a
 timed-out delivery — so a verified webhook is never dropped.
 
-The delivery and event UUIDs are carried across the hand-off so the existing
-webhook dedup keys keep working for redeliveries.
+Delivery identifiers are carried across the hand-off for process-local retry
+suppression where enabled. GitLab event UUIDs are retained only for tracing.
 """
 
 import asyncio
@@ -39,11 +39,10 @@ from pr_agent.log import get_logger
 
 HANDOFF_EVENT_KEY = "pr_agent_lambda_handoff"
 
-# Headers the second invocation needs. The delivery and event UUIDs keep the
-# existing webhook dedup keys working across the hand-off. Credentials must
-# not be retained in async events or their failure destinations.
+# Headers the second invocation needs. GitLab's event UUID is not a retry ID.
+# Credentials must not be retained in async events or their failure destinations.
 _GITHUB_HANDOFF_HEADERS = ("x-github-event", "x-github-delivery")
-_GITLAB_HANDOFF_HEADERS = ("x-gitlab-event-uuid",)
+_GITLAB_HANDOFF_HEADERS = ("x-gitlab-event-uuid", "webhook-id", "idempotency-key", "x-gitlab-instance")
 
 
 def handoff_enabled() -> bool:
@@ -102,7 +101,8 @@ async def try_handoff(provider: str, body, headers, *, gitlab_secret_name: str |
     """
     event = build_handoff_event(provider, body, headers, gitlab_secret_name=gitlab_secret_name)
     headers_carried = event[HANDOFF_EVENT_KEY]["headers"]
-    delivery = headers_carried.get("x-github-delivery") or headers_carried.get("x-gitlab-event-uuid")
+    delivery = (headers_carried.get("x-github-delivery") or headers_carried.get("webhook-id")
+                or headers_carried.get("idempotency-key") or headers_carried.get("x-gitlab-event-uuid"))
     try:
         await asyncio.to_thread(_invoke_self_async, event)
     except Exception as e:
@@ -182,12 +182,17 @@ async def _run_gitlab_handoff(handoff: dict) -> dict:
     body = handoff["body"]
     headers = handoff.get("headers") or {}
     get_logger().info("Processing a handed-off GitLab webhook",
-                      artifact={"delivery": headers.get("x-gitlab-event-uuid")})
+                      artifact={"delivery": (headers.get("webhook-id") or headers.get("idempotency-key")
+                                             or headers.get("x-gitlab-event-uuid"))})
     with safe_request_cycle_context({}):
         # Only IAM-authorized direct invocations carry this envelope. The public
         # webhook already authenticated it; restore credentials by reference.
         context["settings"] = copy.deepcopy(global_settings)
         log_context = {"server_type": "gitlab_app"}
         await gitlab_webhook.restore_gitlab_handoff_auth(handoff.get("gitlab_auth"), log_context, body=body)
-        await gitlab_webhook.process_gitlab_event(body, log_context)
+        await gitlab_webhook.process_verified_gitlab_delivery(
+            body, log_context,
+            delivery_id=gitlab_webhook.gitlab_delivery_id(headers),
+            instance=headers.get("x-gitlab-instance"),
+        )
     return {}

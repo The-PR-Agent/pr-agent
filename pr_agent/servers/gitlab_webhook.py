@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import time
 from datetime import datetime
 
 import uvicorn
@@ -19,10 +20,10 @@ from starlette_context.middleware import RawContextMiddleware
 from pr_agent.agent.command_registry import command_takes_comment_id
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
-from pr_agent.algo.run_details import command_failed, init_run_details
+from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting, _as_ssl_verify_setting, normalize_setting_list
 from pr_agent.algo.utils import encode_user_text_arg
-from pr_agent.config_loader import get_bot_display_name, get_settings, global_settings
+from pr_agent.config_loader import get_bot_display_name, get_settings, global_settings, safe_request_cycle_context
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.git_providers.request_timeout import get_http_request_timeout, refresh_session_request_timeout
 from pr_agent.git_providers.utils import apply_host_settings, apply_repo_settings
@@ -31,6 +32,7 @@ from pr_agent.secret_providers import get_secret_provider, validate_secret_provi
 from pr_agent.servers import lambda_handoff
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
+    DefaultDictWithTimeout,
     auto_feedback_disabled,
     dedupe_review_commands,
     get_include_pr_labels,
@@ -48,6 +50,13 @@ from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_me
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
 router = APIRouter()
+
+# Process-local only, like the GitHub App delivery guard. A retry after an unsuccessful
+# command must remain possible, and a duplicate must not prolong the retention window.
+_WEBHOOK_DELIVERY_TTL = 300
+_completed_webhook_deliveries = DefaultDictWithTimeout(
+    float, ttl=_WEBHOOK_DELIVERY_TTL, update_key_time_on_get=False,
+)
 
 # A new MR can be unreadable for a moment after its webhook fires, so the first lookup answers 404.
 NEW_MR_LOOKUP_RETRY_DELAYS = (1, 2, 4)
@@ -113,6 +122,7 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
         else dedupe_review_commands(normalize_setting_list(get_settings().get(f"gitlab.{commands_conf}", {})))
     )
     get_settings().set("config.is_auto_command", True)
+    completed = bool(commands)
     for command in commands:
         try:
             # Reset diff state between auto commands: a non-empty diff or an incremental
@@ -125,10 +135,30 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
             new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):
-                if await agent.handle_request(api_url, new_command) is RequestOutcome.SKIPPED:
-                    return RequestOutcome.SKIPPED
+                init_run_details()
+                result = await agent.handle_request(api_url, new_command)
+                if result is RequestOutcome.SKIPPED:
+                    return result
+                if not _command_completed_for_delivery(result):
+                    completed = False
         except Exception as e:
+            completed = False
             get_logger().error(f"Failed to perform command {command}: {e}")
+    return completed
+
+
+def _command_completed_for_delivery(result) -> bool:
+    """Cache only positively completed ordinary review/describe runs, not arbitrary command exits."""
+    details = get_run_details()
+    if result is not True or command_failed() or details is None or not details.webhook_delivery_completed:
+        return False
+    # These optional side effects have independent success semantics; leave resends eligible.
+    settings = get_settings()
+    return not any(_as_bool_setting(settings.get(key, False)) for key in (
+        "CONFIG.ENABLE_AUTO_APPROVAL",
+        "PR_REVIEWER.PUBLISH_MERGE_RECOMMENDATION_STATUS",
+        "PUSH_OUTPUTS.ENABLE",
+    ))
 
 
 def is_bot_user(data) -> bool:
@@ -445,6 +475,88 @@ async def restore_gitlab_handoff_auth(auth: dict | None, log_context: dict, *, b
         await _load_gitlab_host_credentials(body)
     if not get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None):
         raise RuntimeError("No GitLab API credential available for the hand-off")
+    context["gitlab_webhook_secret_name"] = secret_name
+
+
+def gitlab_delivery_id(headers) -> str | None:
+    """Use the retry-stable GitLab message ID, never the recursive event UUID."""
+    message_id = headers.get("webhook-id")
+    legacy_id = headers.get("idempotency-key")
+    if message_id and legacy_id and message_id != legacy_id:
+        get_logger().warning("Conflicting GitLab delivery IDs; leaving the webhook unsuppressed")
+        return None
+    delivery_id = message_id or legacy_id
+    return delivery_id if isinstance(delivery_id, str) and delivery_id.strip() and len(delivery_id) <= 128 else None
+
+
+async def process_verified_gitlab_delivery(data: dict, log_context: dict, *,
+                                           delivery_id: str | None, instance: str | None):
+    """Suppress completed or active retries in this worker after webhook authentication.
+
+    The HTTP route acknowledges before this work runs. Neither its background tasks
+    nor Lambda invocations share durable state; this is not an exactly-once guarantee.
+    """
+    project = data.get("project")
+    project_id = project.get("id") if isinstance(project, dict) else None
+    if project_id is None:
+        project_id = data.get("project_id")
+    gitlab_instance = instance or get_settings().get("GITLAB.URL", "")
+    if (not delivery_id or not isinstance(project_id, (int, str))
+            or isinstance(project_id, bool) or not str(project_id).strip()
+            or not isinstance(gitlab_instance, str) or not gitlab_instance):
+        return await process_gitlab_event(data, log_context)
+
+    # Plain notes never dispatch commands; avoid fetching optional host settings for them.
+    if (data.get("object_kind") == "note" and "merge_request" in data
+            and isinstance(data.get("object_attributes"), dict)
+            and not is_command_comment(data["object_attributes"].get("note"))):
+        return await process_gitlab_event(data, log_context)
+
+    enabled = _as_bool_setting(get_settings().get("gitlab.webhook_delivery_deduplication", False))
+    # Read the host-only flag before dispatch without changing the settings used
+    # by the standard Host-first webhook exclusion and repository-loading flow.
+    if (get_settings().get("CONFIG.EXTRA_CONFIG_URL")
+            and not (context.exists() and context.get("extra_config_source_seen"))):
+        try:
+            has_context = context.exists()
+            outer_payloads = context.setdefault("extra_config_payloads", {}) if has_context else None
+            # Do not let an optional failed probe poison the authoritative Host load.
+            probe_payloads = dict(outer_payloads) if outer_payloads is not None else {}
+            with safe_request_cycle_context({
+                "settings": copy.deepcopy(get_settings()),
+                "authenticated_provider_settings": context.get("authenticated_provider_settings", {})
+                if has_context else {},
+                "extra_config_payloads": probe_payloads,
+            }):
+                # Freeze the trusted source, reusing cached bytes without a temporary file.
+                pin_host_settings_source_for_webhook()
+                await asyncio.to_thread(apply_host_settings)
+                enabled = _as_bool_setting(get_settings().get("gitlab.webhook_delivery_deduplication", False))
+            if outer_payloads is not None:
+                # Successful downloads can be reused; failed probes must remain isolated.
+                outer_payloads.update({name: payload for name, payload in probe_payloads.items()
+                                       if isinstance(payload, bytes)})
+        except Exception as error:
+            get_logger().warning(f"Could not load GitLab delivery settings: {type(error).__name__}")
+            return await process_gitlab_event(data, log_context)
+    if not enabled:
+        return await process_gitlab_event(data, log_context)
+
+    # An instance's project IDs are local to that instance. Secret-provider names
+    # separate authenticated tenants without recording tokens or repository paths.
+    secret_name = context.get("gitlab_webhook_secret_name") if context.exists() else None
+    key = "gitlab-webhook-delivery:" + hashlib.sha256(json.dumps(
+        [gitlab_instance.rstrip("/"), str(project_id), secret_name, delivery_id],
+        separators=(",", ":"),
+    ).encode()).hexdigest()
+    async with push_trigger_slot(key, allow_backlog=False, ttl=_WEBHOOK_DELIVERY_TTL) as proceed:
+        if not proceed or _completed_webhook_deliveries.setdefault(key, 0.0) > time.monotonic():
+            return None
+        succeeded = await process_gitlab_event(data, log_context)
+        # Only an explicitly successful command is complete; skipped/no-op events can be retried.
+        if succeeded is True and not log_context.get("gitlab_approval_revocation_failed"):
+            _completed_webhook_deliveries[key] = time.monotonic() + _WEBHOOK_DELIVERY_TTL
+    return None
 
 
 @router.post("/webhook")
@@ -466,13 +578,18 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
         # Not a Lambda deployment, or the hand-off failed: process the webhook in a
         # background task, after the response is sent. Under Lambda (Mangum) the
         # hand-off above replaces this task with a second invocation (#4748).
-        background_tasks.add_task(process_gitlab_event, request_json, log_context)
+        headers = getattr(request, "headers", {})
+        background_tasks.add_task(
+            process_verified_gitlab_delivery, request_json, log_context,
+            delivery_id=gitlab_delivery_id(headers),
+            instance=headers.get("X-Gitlab-Instance"),
+        )
     end_time = datetime.now()
     get_logger().info(f"Processing time: {end_time - start_time}")
     return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"}))
 
 
-def revoke_auto_approval_on_push(data: dict) -> None:
+def revoke_auto_approval_on_push(data: dict) -> bool | None:
     """Dismiss PR-Agent's approval when a push or retarget changes what it approved.
 
     A retarget is an update with no ``oldrev``; only code changes carry one. Call this
@@ -480,18 +597,18 @@ def revoke_auto_approval_on_push(data: dict) -> None:
     given for just because the push came from a bot or the MR is ignored.
     """
     if data.get("object_kind") != "merge_request":
-        return
+        return None
     object_attributes = data.get("object_attributes")
     if not isinstance(object_attributes, dict):
-        return
+        return None
     if object_attributes.get("action") != "update":
-        return
+        return None
     if object_attributes.get("oldrev"):
         why = "new commits were pushed"
     elif isinstance(data.get("changes"), dict) and "target_branch" in data["changes"]:
         why = "the target branch changed"
     else:
-        return
+        return None
     mr_url = object_attributes.get("url")
     # The gates are host-only, so read them after the trusted host layer and before any repository override.
     try:
@@ -501,17 +618,20 @@ def revoke_auto_approval_on_push(data: dict) -> None:
     config = get_settings().config
     if not mr_url or not _as_bool_setting(
             config.get("enable_auto_approval", False), setting_name="config.enable_auto_approval"):
-        return
+        return None
     # A dry run writes nothing, dismissals included.
     if not _as_bool_setting(config.get("publish_output", True), default=True):
-        return
+        return None
     try:
         if not get_git_provider_with_context(mr_url).revoke_auto_approval(
             f"{get_bot_display_name()} withdrew its approval: {why}."
         ):
             get_logger().error(f"Could not confirm that PR-Agent's approvals were dismissed after: {why}")
+            return False
     except Exception as e:
         get_logger().exception(f"Failed to dismiss PR-Agent approvals after: {why}, error: {e}")
+        return False
+    return None
 
 
 async def process_gitlab_event(data: dict, log_context: dict):
@@ -532,7 +652,8 @@ async def process_gitlab_event(data: dict, log_context: dict):
                     and (attributes.get("oldrev") or (isinstance(changes, dict) and "target_branch" in changes))):
                 await load_host_settings_for_webhook()
     finally:
-        revoke_auto_approval_on_push(data)
+        if revoke_auto_approval_on_push(data) is False:
+            log_context["gitlab_approval_revocation_failed"] = True
     actor = data.get("user") or {}
     if not isinstance(actor, dict):
         actor = {}
@@ -594,7 +715,7 @@ async def process_gitlab_event(data: dict, log_context: dict):
             url = object_attributes.get('url')
             get_logger().info(f"New merge request: {url}")
             await apply_new_mr_repo_settings(url)
-            await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
+            return await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
 
         # for draft to ready triggered merge requests, before the push case: one update can be both
         elif object_attributes.get('action') == 'update' and is_draft_ready(data):
@@ -610,11 +731,12 @@ async def process_gitlab_event(data: dict, log_context: dict):
                     get_logger().debug(f'A push event has been received: {url}')
                     async with push_trigger_slot(url, allow_backlog=True, ttl=300) as proceed:
                         if proceed:
-                            await _perform_commands_gitlab("push_commands", PRAgent(), url, log_context, data)
+                            return await _perform_commands_gitlab("push_commands", PRAgent(), url, log_context, data)
+                        return False  # No command ran; a later retry must remain eligible.
                 else:
                     get_logger().info(f"Skipping draft-ready commands because draft feedback is enabled: {url}")
                 return
-            await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
+            return await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
 
         # for push event triggered merge requests
         elif object_attributes.get('action') == 'update' and object_attributes.get('oldrev'):
@@ -632,7 +754,8 @@ async def process_gitlab_event(data: dict, log_context: dict):
             get_logger().debug(f'A push event has been received: {url}')
             async with push_trigger_slot(url, allow_backlog=True, ttl=300) as proceed:
                 if proceed:
-                    await _perform_commands_gitlab("push_commands", PRAgent(), url, log_context, data)
+                    return await _perform_commands_gitlab("push_commands", PRAgent(), url, log_context, data)
+                return False  # The push backlog was full, so this delivery did not run.
 
         # for reviewer assignment triggered merge requests
         elif object_attributes.get('action') == 'update' and not object_attributes.get('oldrev'):
@@ -671,7 +794,7 @@ async def process_gitlab_event(data: dict, log_context: dict):
                     return JSONResponse(status_code=status.HTTP_200_OK,
                                         content=jsonable_encoder({"message": "success"}))
                 get_logger().info(f"Bot was assigned as reviewer on MR: {url}")
-                await _perform_commands_gitlab("reviewer_commands", PRAgent(), url, log_context, data)
+                return await _perform_commands_gitlab("reviewer_commands", PRAgent(), url, log_context, data)
 
     elif data.get('object_kind') == 'note' and data.get('event_type') == 'note': # comment on MR
         if 'merge_request' in data:
@@ -714,14 +837,22 @@ async def process_gitlab_event(data: dict, log_context: dict):
             result = await handle_request(
                 url, body, log_context, sender_id, notify=notify_start_reaction)
             if result is RequestOutcome.SKIPPED or not dispatched:
-                return
+                return None
             # `propagate_command_errors` is off, so a command that failed internally still returns
             # normally. Reading that as success would tick a comment whose command never ran.
             # `bool()` rather than `result is not False`, so a `None` reads as failure here the
             # same way it does in `pr_reviewer` and the GitHub App
             # Offload outcome HTTP requests while preserving request-scoped settings.
-            await asyncio.to_thread(
-                provider.react_to_outcome, comment_id, bool(result) and not command_failed())
+            completed = _command_completed_for_delivery(result)
+            try:
+                await asyncio.to_thread(
+                    provider.react_to_outcome, comment_id, bool(result) and not command_failed())
+            except Exception as error:
+                if not completed or not _as_bool_setting(
+                        get_settings().get("gitlab.webhook_delivery_deduplication", False)):
+                    raise
+                get_logger().warning(f"Failed to react to GitLab command outcome: {type(error).__name__}")
+            return completed
 
 
 def handle_file_question(body, data, mr_url):

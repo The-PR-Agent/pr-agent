@@ -63,7 +63,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # The trusted Host may disable the App-mode override, but repository files
     # must not switch authentication away from the verified installation.
     "github_app": frozenset({"override_deployment_type"}),
-    "gitlab": frozenset({"auth_type", "ssl_verify"}),
+    "gitlab": frozenset({"auth_type", "ssl_verify", "webhook_delivery_deduplication"}),
     "huggingface": frozenset({"api_base"}),
     # Jira lookups use the host's Atlassian credentials, so the reviewed repository must not
     # choose the site or account they authenticate as, or widen the project allowlist they may read.

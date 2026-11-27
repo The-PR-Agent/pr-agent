@@ -131,10 +131,6 @@ _ALLOWLIST = {
     # [push_outputs] read as cfg = get_settings().get("push_outputs", {}) or {}
     (
         "push_outputs",
-        "enable",
-    ): "cfg.get(\"enable\", False) in pr_agent/algo/run_output.py",
-    (
-        "push_outputs",
         "channels",
     ): "cfg.get(\"channels\", []) in pr_agent/algo/run_output.py",
     (
