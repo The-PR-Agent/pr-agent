@@ -286,6 +286,7 @@ class PRAddDocs:
 
     def push_inline_docs(self, data):
         docs = []
+        diff_files = None
 
         if not data['Code Documentation']:
             self.git_provider.publish_command_failure(
@@ -297,7 +298,9 @@ class PRAddDocs:
             try:
                 if get_verbosity_level() >= 2 and not getattr(self, "_attempt_uses_repo_context", False):
                     get_logger().info(f"add_docs: {d}")
-                relevant_file = d['relevant file'].strip()
+                relevant_file = d['relevant file']
+                if not isinstance(relevant_file, str) or not relevant_file.strip():
+                    continue
                 relevant_line = _as_line(d['relevant line'])  # absolute position
                 if relevant_line is None:
                     continue
@@ -306,8 +309,19 @@ class PRAddDocs:
                 if doc_placement not in {"before", "after"}:
                     continue
                 if documentation:
+                    if diff_files is None:
+                        diff_files = self.git_provider.diff_files or self.git_provider.get_diff_files()
+                    # A model label may have lost whitespace that is significant in a Git path.
+                    matches = [
+                        file for file in (diff_files or [])
+                        if file.filename and file.filename.strip() == relevant_file.strip()
+                    ]
+                    if len(matches) != 1:
+                        continue
+                    source_file = matches[0]
+                    relevant_file = source_file.filename
                     new_code_snippet = self.dedent_code(relevant_file, relevant_line, documentation, doc_placement,
-                                                        add_original_line=True)
+                                                        add_original_line=True, source_file=source_file)
                     if new_code_snippet is None:
                         continue
 
@@ -334,6 +348,8 @@ class PRAddDocs:
                             "label": "documentation",
                         },
                     })
+            except IncompleteProviderPullRequestFilesError:
+                raise
             except Exception:
                 if get_verbosity_level() >= 2 and not getattr(self, "_attempt_uses_repo_context", False):
                     get_logger().info(f"Could not parse code docs: {d}")
@@ -364,13 +380,15 @@ class PRAddDocs:
         return None
 
     def dedent_code(self, relevant_file, relevant_lines_start, new_code_snippet, doc_placement="after",
-                    add_original_line=False):
+                    add_original_line=False, *, source_file=None):
         try:  # Find the source line that supplies the indentation.
-            self.diff_files = self.git_provider.diff_files or self.git_provider.get_diff_files()
+            files = [source_file] if source_file is not None else (
+                self.git_provider.diff_files or self.git_provider.get_diff_files()
+            )
             original_initial_line = None
             file_lines = []
-            for file in self.diff_files:
-                if file.filename.strip() == relevant_file:
+            for file in files:
+                if file.filename == relevant_file:
                     if add_original_line and not getattr(file, "head_file_is_complete", True):
                         return None
                     file_lines = split_diff_lines(file.head_file) if file.head_file else []
