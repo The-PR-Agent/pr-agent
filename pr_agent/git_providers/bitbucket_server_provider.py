@@ -18,6 +18,12 @@ from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
 from .git_provider import GitProvider, cache_languages, get_git_ssl_env
 
+# Official Bitbucket Server API: Comment.getText() is
+# @RequiredString(size=32768) — "the raw text of the comment (limited to 32k)".
+# The REST API reports validation failures as HTTP 400, so an overlong review
+# would fail the whole publish rather than being truncated server-side.
+MAX_PR_COMMENT_BITBUCKET_SERVER_LENGTH = 32768
+
 # Official Bitbucket Server API: PullRequest.getDescription() is
 # @OptionalString(size=32768) — "limit to 32k". REST validation returns HTTP 400,
 # so an overlong /describe body would fail the whole publish.
@@ -47,6 +53,10 @@ class BitbucketServerProvider(GitProvider):
         self.diff_files = None
         self._pr_changes = None
         self.bitbucket_pull_request_api_url = pr_url
+        # The reviewer reserves the hidden state marker inside max_comment_chars
+        # (see PRReviewer._review_comment_max_chars). Without this, a long review
+        # is truncated at the tail by publish_comment and the marker is lost.
+        self.max_comment_chars = MAX_PR_COMMENT_BITBUCKET_SERVER_LENGTH
         self.bearer_token = get_settings().get("BITBUCKET_SERVER.BEARER_TOKEN", None)
         # Get username and password from settings
         username = get_settings().get("BITBUCKET_SERVER.USERNAME", None)
@@ -399,6 +409,7 @@ class BitbucketServerProvider(GitProvider):
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False, as_thread: bool = False):
         if not is_temporary:
+            pr_comment = self.limit_output_characters(pr_comment, MAX_PR_COMMENT_BITBUCKET_SERVER_LENGTH)
             return self.bitbucket_client.add_pull_request_comment(
                 self.workspace_slug, self.repo_slug, self.pr_num, pr_comment
             )
@@ -411,6 +422,7 @@ class BitbucketServerProvider(GitProvider):
         return True
 
     def edit_comment(self, comment, body: str) -> bool:
+        body = self.limit_output_characters(body, MAX_PR_COMMENT_BITBUCKET_SERVER_LENGTH)
         try:
             self.bitbucket_client.update_pull_request_comment(
                 self.workspace_slug,
@@ -511,6 +523,7 @@ class BitbucketServerProvider(GitProvider):
                                    "to publish an inline comment")
                 return False
             relevant_file, relevant_line_in_file = comment["path"], comment["position"]
+        body = self.limit_output_characters(body, MAX_PR_COMMENT_BITBUCKET_SERVER_LENGTH)
         payload = {
             "text": body,
             "severity": "NORMAL",
