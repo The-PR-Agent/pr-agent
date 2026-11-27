@@ -56,6 +56,15 @@ def test_a_wrapped_block_scalar_keeps_its_trailing_newline():
     assert load_yaml(wrapped)["response"] == "hello\n"
 
 
+def test_strip_a_dangling_tilde_closing_fence():
+    assert load_yaml("key: value\n~~~") == {"key": "value"}
+    assert load_yaml("response: |\n  hello\n~~~")["response"] == "hello\n"
+
+
+def test_strip_a_dangling_longer_backtick_closing_fence():
+    assert load_yaml("key: value\n````") == {"key": "value"}
+
+
 def test_an_unfenced_response_parses_unchanged():
     """Keep the ordinary unfenced case working."""
     assert load_yaml("response: |\n  hello\n")["response"].strip() == "hello"
