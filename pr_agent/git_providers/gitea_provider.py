@@ -1398,11 +1398,28 @@ class RepoApi(giteapy.RepositoryApi):
         )
 
     def list_all_comments(self, owner: str, repo: str, index: int):
-        return self.issue.issue_get_comments(
-            owner=owner,
-            repo=repo,
-            index=index
-        )
+        """Get every issue-comment page while preserving the SDK Comment objects."""
+        comments = []
+        page = 1
+        while True:
+            # giteapy 1.0.8's issue_get_comments wrapper omits page/limit parameters.
+            page_comments = self.api_client.call_api(
+                "/repos/{owner}/{repo}/issues/{index}/comments",
+                "GET",
+                path_params={"owner": owner, "repo": repo, "index": index},
+                query_params=[("page", page), ("limit", 50)],
+                response_type="list[Comment]",
+                _return_http_data_only=True,
+                auth_settings=["AccessToken", "AuthorizationHeaderToken", "BasicAuth",
+                               "SudoHeader", "SudoParam", "Token"],
+            )
+            if not isinstance(page_comments, list):
+                raise RuntimeError("Failed to get comments: invalid Gitea comments page")
+            # The server can cap pages below our limit, so a short page is not the end.
+            if not page_comments:
+                return comments
+            comments.extend(page_comments)
+            page += 1
 
     def list_pull_review_comment_bodies(self, owner: str, repo: str, pr_number: int) -> list[str]:
         """Get the body of every review comment on the pull request.
