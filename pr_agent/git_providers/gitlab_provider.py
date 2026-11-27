@@ -65,7 +65,6 @@ from ..algo.utils import load_large_diff
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import (
-    MAX_FILES_ALLOWED_FULL,
     CodeSuggestionThread,
     ConcurrentFileUpdateError,
     FileContentSnapshot,
@@ -76,6 +75,7 @@ from .git_provider import (
     commit_patch_fingerprint,
     get_cached_global_settings,
     get_config_branch,
+    get_max_full_content_files,
     redact_credentials,
 )
 from .request_timeout import get_http_request_timeout, refresh_session_request_timeout
@@ -1262,12 +1262,13 @@ class GitLabProvider(GitProvider):
             return {}
 
         reads = []
+        full_content_limit = get_max_full_content_files()
         valid_count = 0
         for diff in diffs:
             if not is_valid_file(diff['new_path']):
                 continue
             valid_count += 1
-            if valid_count >= MAX_FILES_ALLOWED_FULL:
+            if valid_count > full_content_limit:
                 break
             if not diff['diff'] or diff.get("_submodule_child"):
                 continue
@@ -1564,6 +1565,7 @@ class GitLabProvider(GitProvider):
 
         diff_files = []
         invalid_files_names = []
+        full_content_limit = get_max_full_content_files()
         counter_valid = 0
         for diff in diffs:
             if not is_valid_file(diff['new_path']):
@@ -1573,7 +1575,7 @@ class GitLabProvider(GitProvider):
             # allow only a limited number of files to be fully loaded. We can manage the rest with diffs only
             counter_valid += 1
             content_fetch_failed = False
-            if (counter_valid < MAX_FILES_ALLOWED_FULL and not diff.get("_submodule_child")) or not diff['diff']:
+            if (counter_valid <= full_content_limit and not diff.get("_submodule_child")) or not diff['diff']:
                 # Missing GitLab patches require every applicable content read. Treat an
                 # unexpected 404 as a failed read, or an empty side would invent changes.
                 strict_options = {"propagate_errors": True, "missing_is_error": True} if not diff['diff'] else {}
@@ -1604,7 +1606,7 @@ class GitLabProvider(GitProvider):
                     new_file_content_str = ''
                     content_fetch_failed = True
             else:
-                if counter_valid == MAX_FILES_ALLOWED_FULL:
+                if counter_valid == full_content_limit + 1:
                     get_logger().info("Too many files in PR, will avoid loading full content for rest of files")
                 original_file_content_str = ''
                 new_file_content_str = ''

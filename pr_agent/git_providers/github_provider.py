@@ -60,7 +60,6 @@ from ..config_loader import get_settings
 from ..log import get_logger
 from ..servers.utils import RateLimitExceeded
 from .git_provider import (
-    MAX_FILES_ALLOWED_FULL,
     CodeSuggestionThread,
     ConcurrentFileUpdateError,
     FileContentSnapshot,
@@ -72,6 +71,7 @@ from .git_provider import (
     cache_languages,
     commit_patch_fingerprint,
     get_config_branch,
+    get_max_full_content_files,
     redact_credentials,
 )
 
@@ -727,6 +727,7 @@ class GithubProvider(GitProvider):
                 # Read the contents below in a few batched requests; this also resolves the merge base they need.
                 merge_base_commit = self._prefetch_diff_file_contents(files)
 
+            full_content_limit = get_max_full_content_files()
             counter_valid = 0
             for file in files:
                 if not is_valid_file(file.filename):
@@ -750,9 +751,9 @@ class GithubProvider(GitProvider):
                     # allow only a limited number of files to be fully loaded. We can manage the rest with diffs only
                     counter_valid += 1
                     avoid_load = False
-                    if counter_valid >= MAX_FILES_ALLOWED_FULL and patch and not self.incremental.is_incremental:
+                    if counter_valid > full_content_limit and patch and not self.incremental.is_incremental:
                         avoid_load = True
-                        if counter_valid == MAX_FILES_ALLOWED_FULL:
+                        if counter_valid == full_content_limit + 1:
                             get_logger().info("Too many files in PR, will avoid loading full content for rest of files")
 
                     pr_level_status = not (self.incremental.is_incremental and self.unreviewed_files_map)
@@ -857,17 +858,18 @@ class GithubProvider(GitProvider):
 
         Mirror the loop: read the head content unless the file was removed and the merge-base content (under
         the previous name for a rename) unless it was added, and skip the valid files that carry a patch from
-        the MAX_FILES_ALLOWED_FULL-th on. Return the merge base resolved on the way, so the caller resolves it
+        after the configured limit. Return the merge base resolved on the way, so the caller resolves it
         only once.
         """
         merge_base_commit = None
         reads = []
+        full_content_limit = get_max_full_content_files()
         counter_valid = 0
         for file in files:
             if not is_valid_file(file.filename):
                 continue
             counter_valid += 1
-            if counter_valid >= MAX_FILES_ALLOWED_FULL and file.patch:
+            if counter_valid > full_content_limit and file.patch:
                 continue
             if file.status != "removed":
                 reads.append((self.pr.head.sha, file.filename))

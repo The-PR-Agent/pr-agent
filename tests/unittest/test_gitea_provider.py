@@ -2359,7 +2359,7 @@ class TestGiteaRepoIgnoreRules:
         repo_api = mock_repo_api_cls.return_value
 
         with request_cycle_context({}), patch(
-            "pr_agent.git_providers.gitea_provider.MAX_FILES_ALLOWED_FULL", 2
+            "pr_agent.git_providers.gitea_provider.get_max_full_content_files", return_value=1
         ):
             context["settings"] = copy.deepcopy(global_settings)
             context["settings"].ignore.glob = []

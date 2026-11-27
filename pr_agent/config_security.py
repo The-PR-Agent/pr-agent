@@ -207,6 +207,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
         "enable_custom_labels",
         "fallback_models",
         "include_pr_labels",
+        "max_full_content_files",
         "num_retries",
         "output_relevant_configurations",
         "reasoning_effort",

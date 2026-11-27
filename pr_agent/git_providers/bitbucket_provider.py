@@ -21,11 +21,11 @@ from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
 from .diff_parsing import to_hunk_only_patch
 from .git_provider import (
-    MAX_FILES_ALLOWED_FULL,
     FileContentSnapshot,
     GitProvider,
     IncompleteBitbucketPullRequestFilesError,
     cache_languages,
+    get_max_full_content_files,
     redact_credentials,
 )
 from .request_timeout import get_http_request_timeout
@@ -512,6 +512,7 @@ class BitbucketProvider(GitProvider):
 
         invalid_files_names = []
         diff_files = []
+        full_content_limit = get_max_full_content_files() // 2  # Preserve Bitbucket's lower API budget.
         counter_valid = 0
         # get full files
         for index, diff in enumerate(diffs):
@@ -525,7 +526,7 @@ class BitbucketProvider(GitProvider):
                 if get_settings().get("bitbucket_app.avoid_full_files", False):
                     original_file_content_str = ""
                     new_file_content_str = ""
-                elif counter_valid < MAX_FILES_ALLOWED_FULL // 2:  # factor 2 because bitbucket has limited API calls
+                elif counter_valid <= full_content_limit:
                     if diff.old.get_data("links"):
                         original_file_content_str = self._get_pr_file_content(
                             diff.old.get_data("links")['self']['href'])
@@ -536,7 +537,7 @@ class BitbucketProvider(GitProvider):
                     else:
                         new_file_content_str = ""
                 else:
-                    if counter_valid == MAX_FILES_ALLOWED_FULL // 2:
+                    if counter_valid == full_content_limit + 1:
                         get_logger().info(
                             "Bitbucket too many files in PR, will avoid loading full content for rest of files")
                     original_file_content_str = ""

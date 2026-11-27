@@ -71,7 +71,26 @@ def format_persistent_update_notice(name: str, comment_url: str, commit: str) ->
     return f"**[Persistent {name}]({comment_url})** updated to latest commit {commit}"
 
 
-MAX_FILES_ALLOWED_FULL = 50
+DEFAULT_MAX_FULL_CONTENT_FILES = 49
+MAX_FULL_CONTENT_FILES_HARD_LIMIT = 200
+
+
+def get_max_full_content_files() -> int:
+    """Bound optional full-file reads while preserving mandatory patch reconstruction.
+
+    The default matches the historical 49-file cutoff. The configured limit
+    counts eligible file positions, not API requests or bytes transferred.
+    """
+    limit = get_settings().get("CONFIG.MAX_FULL_CONTENT_FILES", DEFAULT_MAX_FULL_CONTENT_FILES)
+    if isinstance(limit, str):
+        value = limit.strip()
+        if re.fullmatch(r"[0-9]{1,3}", value):
+            limit = int(value)
+    if type(limit) is int and 0 <= limit <= MAX_FULL_CONTENT_FILES_HARD_LIMIT:
+        return limit
+    get_logger().warning("Invalid config.max_full_content_files; using default of 49")
+    return DEFAULT_MAX_FULL_CONTENT_FILES
+
 
 DISCUSSION_CONTEXT_MAX_REPLIES = 10
 DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS = 750

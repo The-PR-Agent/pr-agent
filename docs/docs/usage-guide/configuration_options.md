@@ -26,6 +26,32 @@ If you set `config.output_relevant_configurations` to True, each command will al
 
 
 
+## Full-file content loading limit
+
+For ordinary reviews, GitHub, GitLab, and Gitea normally read full content for the first
+49 eligible changed-file positions and use patches for later files. Bitbucket Cloud
+normally reads 24, reflecting its lower API budget. Operators can adjust the quota
+in host configuration or the repository root's trusted `.pr_agent.toml`:
+
+```toml
+[config]
+max_full_content_files = 100
+```
+
+The accepted range is 0-200; invalid values fall back to 49. Setting 0 disables
+optional full-content reads, but files with missing patches may still require
+content to reconstruct reliable diffs. Bitbucket Cloud uses half this quota
+to conserve API requests. PR command arguments and per-directory configuration
+cannot change it.
+
+Increasing the quota may add API requests, transferred bytes, latency, and memory
+usage. It does not guarantee more model-visible context, which is independently
+limited by token budgeting and diff pruning. Lower limits can also make features
+requiring full source (such as some `/add_docs` inline output and whole-file Python
+syntax validation for committable fixes) unavailable on patch-only files. Other
+providers do not use this setting. Adaptive token-aware fetching requires separate
+design and evaluation.
+
 ## Local configuration file
 
 `Platforms supported: GitHub, GitLab, Bitbucket Cloud, Bitbucket Server, Azure DevOps, Gitea, Gerrit, CodeCommit`
