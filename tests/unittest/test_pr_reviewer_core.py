@@ -3544,3 +3544,62 @@ def test_fix_keeps_git_line_numbers_around_unicode_separators(committable_on):
     comment = _published_comment(reviewer.git_provider)
     assert "```suggestion\nc = 4\n```" in comment["body"]
     assert comment["original_suggestion"]["existing_code"] == "c = 3"
+
+
+@pytest.mark.parametrize("label", ["app.py", "app.py "])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_inline_key_issue_with_ambiguous_filename_stays_in_summary(label, reverse):
+    issue = _key_issue(relevant_file=label)
+    reviewer, data = _reviewer_with_findings(issue)
+    files = reviewer.git_provider.get_diff_files.return_value
+    files.append(FilePatchInfo(
+        base_file="", head_file="other\nsource\nlines\n", patch="", filename="app.py ",
+    ))
+    if reverse:
+        files.reverse()
+
+    result = reviewer._publish_key_issues_as_inline_comments(data)
+
+    reviewer.git_provider.publish_code_suggestions.assert_not_called()
+    assert result["review"]["key_issues_to_review"] == [issue]
+
+
+@pytest.mark.parametrize("label", ["app.py", "app.py "])
+def test_inline_key_issue_uses_unique_actual_filename(label):
+    reviewer, data = _reviewer_with_findings(_key_issue(relevant_file=label))
+    reviewer.git_provider.get_diff_files.return_value[0].filename = "app.py "
+
+    result = reviewer._publish_key_issues_as_inline_comments(data)
+
+    assert _published_comment(reviewer.git_provider)["relevant_file"] == "app.py "
+    assert "key_issues_to_review" not in result["review"]
+
+
+def test_inline_key_issue_legacy_path_fallback_still_works():
+    issue = _key_issue(path="app.py")
+    issue.pop("relevant_file")
+    reviewer, data = _reviewer_with_findings(issue)
+
+    result = reviewer._publish_key_issues_as_inline_comments(data)
+
+    assert _published_comment(reviewer.git_provider)["relevant_file"] == "app.py"
+    assert "key_issues_to_review" not in result["review"]
+
+
+@pytest.mark.parametrize(("improved_code", "committable"), [("x =", False), ("x += 2", True)])
+def test_inline_python_fix_preserves_syntax_check_and_exact_path(committable_on, improved_code, committable):
+    issue = _key_issue(relevant_file="app.py ", start_line=2, end_line=2,
+                       existing_code="x += 1", improved_code=improved_code)
+    reviewer, data = _reviewer_with_findings(issue, head_file="x = 1\nx += 1\nprint(x)\n")
+    reviewer.git_provider.get_diff_files.return_value[0].filename = "app.py "
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert comment["relevant_file"] == "app.py "
+    assert ("```suggestion" in comment["body"]) is committable
+    if committable:
+        assert comment["original_suggestion"]["relevant_file"] == "app.py "
+    else:
+        assert "```text fix" in comment["body"]
+        assert "original_suggestion" not in comment
