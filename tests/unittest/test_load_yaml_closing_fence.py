@@ -56,6 +56,25 @@ def test_a_wrapped_block_scalar_keeps_its_trailing_newline():
     assert load_yaml(wrapped)["response"] == "hello\n"
 
 
+def test_recover_an_unlabelled_tilde_yaml_block_amid_prose():
+    wrapped = "Here is the answer:\n~~~\nkey: value\n~~~"
+
+    assert load_yaml(wrapped) == {"key": "value"}
+
+
+def test_recover_a_tilde_yaml_block_amid_prose():
+    wrapped = "Here is the answer:\n~~~yaml\nkey: value\n~~~"
+
+    assert load_yaml(wrapped) == {"key": "value"}
+
+
+def test_ignore_a_shorter_fence_inside_a_four_backtick_prose_block():
+    wrapped = ("Here:\n````yaml\nresponse: |\n  ```python\n  print(1)\n  ```\n````\n"
+               "Hope this helps!")
+
+    assert load_yaml(wrapped)["response"].strip() == "```python\nprint(1)\n```"
+
+
 def test_an_unfenced_response_parses_unchanged():
     """Keep the ordinary unfenced case working."""
     assert load_yaml("response: |\n  hello\n")["response"].strip() == "hello"

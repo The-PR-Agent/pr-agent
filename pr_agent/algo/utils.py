@@ -1120,6 +1120,29 @@ class _YamlScanWindow:
         return self.stream.read(remaining if size < 0 else min(size, remaining))
 
 
+def _fence_run(stripped: str) -> tuple[str, int] | None:
+    """Return (fence character, run length) for a standalone fence line, else None."""
+    if len(stripped) < 3 or stripped[0] not in "`~":
+        return None
+    char = stripped[0]
+    run = len(stripped) - len(stripped.lstrip(char))
+    if run < 3 or stripped[run:].strip():
+        return None
+    return char, run
+
+
+def _labelled_yaml_fence(stripped: str) -> tuple[str, int] | None:
+    """Return (fence character, run length) for an opening ```yaml / ~~~yaml line."""
+    if len(stripped) < 3 or stripped[0] not in "`~":
+        return None
+    char = stripped[0]
+    run = len(stripped) - len(stripped.lstrip(char))
+    label = stripped[run:].strip().lower()
+    if run < 3 or not (label == "yaml" or label == "yml" or label.startswith(("yaml ", "yml "))):
+        return None
+    return char, run
+
+
 def _extract_labelled_yaml_block(response_text: str) -> str | None:
     """Extract the last nonempty mapping in a labelled YAML fence amid prose."""
     lines = response_text.split('\n')
@@ -1135,14 +1158,18 @@ def _extract_labelled_yaml_block(response_text: str) -> str | None:
     n = len(lines)
     while i < n:
         line = lines[i]
-        stripped = line.strip()
-        if not (stripped.startswith('```yaml') or stripped.startswith('```yml')):
+        opener = _labelled_yaml_fence(line.strip())
+        if opener is None:
             i += 1
             continue
+        fence_char, fence_len = opener
 
         scan_offset = min(text_end, offsets[i] + len(line) + 1)
         first_fence = i + 1
-        while first_fence < n and lines[first_fence].strip() != '```':
+        while first_fence < n:
+            close = _fence_run(lines[first_fence].strip())
+            if close is not None and close[0] == fence_char and close[1] >= fence_len:
+                break
             first_fence += 1
         if first_fence < n:
             window_end = min(text_end, offsets[first_fence] + len(lines[first_fence]) + 1)
@@ -1177,12 +1204,14 @@ def _extract_labelled_yaml_block(response_text: str) -> str | None:
                     span_index += 1
                 in_scalar = (span_index < len(scalar_spans)
                              and scalar_spans[span_index][0] < offsets[j] < scalar_spans[span_index][1])
-                if j_stripped.startswith('```') and j_stripped != '```':
+                close = _fence_run(j_stripped)
+                if close is not None and close[0] == fence_char and close[1] >= fence_len:
+                    if fence_depth > 1 or not in_scalar:
+                        fence_depth -= 1
+                        if fence_depth == 0:
+                            break
+                elif close is None and j_stripped.startswith(fence_char * fence_len):
                     fence_depth += 1
-                elif j_stripped == '```' and (fence_depth > 1 or not in_scalar):
-                    fence_depth -= 1
-                    if fence_depth == 0:
-                        break
                 j += 1
             if j < n and offsets[j] < window_end and fence_depth == 0:
                 break
@@ -1393,13 +1422,14 @@ def try_fix_yaml(response_text: str,
         get_logger().debug("YAML spacing fallback failed; trying the next recovery method")
 
     # second fallback - try to extract only range from first ```yaml to the last ```
-    snippet_pattern = r'```[ \t]*(?:(?i:yaml|yml)[ \t]*)?\r?\n([\s\S]*?)```(?=\s*$|")'
+    snippet_pattern = (r'(?P<fence>`{3,}|~{3,})[ \t]*(?:(?i:yaml|yml)[ \t]*)?\r?\n'
+                       r'(?P<snippet>[\s\S]*?)(?P=fence)(?=\s*$|")')
     snippet = re.search(snippet_pattern, '\n'.join(response_text_lines_copy))
     if not snippet:
         snippet = re.search(snippet_pattern, response_text_original) # before we removed the "```"
     if snippet:
         # group(1) is the snippet body, without the ``` fences or the optional yaml/yml language identifier
-        snippet_text = snippet.group(1)
+        snippet_text = snippet.group('snippet')
         try:
             data = _parse_yaml(snippet_text)
             if data is not None:
