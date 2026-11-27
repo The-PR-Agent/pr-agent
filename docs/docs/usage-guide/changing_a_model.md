@@ -194,14 +194,20 @@ Verify the effective context with `ollama ps` and set `custom_model_max_tokens` 
 
 Qwen3.8 enables thinking by default. The example explicitly registers the tagged model for `reasoning_effort` forwarding even when LiteLLM lacks matching metadata; `"none"` maps to Ollama's [`think: false`](https://docs.ollama.com/capabilities/thinking). If you enable thinking, allow additional time and output-token headroom.
 
-:::note[Local models vs commercial models]
-PR-Agent is compatible with almost any AI model, but analyzing complex code repositories and pull requests requires a model specifically optimized for code analysis.
+:::note[Evaluating local and hosted models]
+PR-Agent can use many AI models, but complex code analysis requires reliable instruction following,
+structured output, and sufficient context for the prompts and pull-request diffs.
 
-Commercial models such as GPT-5, Claude Sonnet, and Gemini have demonstrated robust capabilities in generating structured output for code analysis tasks with large input. In contrast, most open-source models currently available (as of January 2025) face challenges with these complex tasks.
+Earlier PR-Agent testing found that the local models tested were better suited to experimentation
+and learning (particularly the `ask` command) than to production-level code analysis. These findings
+reflect the models available at the time (January 2025), not every newer model or deployment.
 
-Based on our testing, local open-source models are suitable for experimentation and learning purposes (mainly for the `ask` command), but they are not suitable for production-level code analysis tasks.
-
-Hence, for production workflows and real-world usage, we recommend using commercial models.
+For production workflows, use a model that has demonstrated reliable results on your workload.
+Hosted commercial models such as GPT-5, Claude Sonnet, and Gemini are established options. Before
+using a local model in production, evaluate it on representative pull requests with the intended
+PR-Agent commands. Check the quality and correctness of findings, structured-output reliability,
+effective context budget, and latency. Local deployment also requires sufficient memory and compute;
+model size, quantization, and serving configuration can affect the results.
 :::
 
 ### Hugging Face
