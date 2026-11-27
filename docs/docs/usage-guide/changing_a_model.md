@@ -236,7 +236,7 @@ model = "replicate/meta/meta-llama-3-8b-instruct"
 fallback_models=[]
 custom_model_max_tokens=8000 # Set an explicit limit because the locked LiteLLM version has no metadata for this model.
 [replicate] # in .secrets.toml
-key = ...
+key = "..."
 ```
 
 (you can obtain a Replicate API token from [here](https://replicate.com/account/api-tokens))
@@ -599,7 +599,7 @@ and fill up your key
 
 ```toml
 [deepseek] # in .secrets.toml
-key = ...
+key = "..."
 ```
 
 (you can obtain a deepseek-v4 key from [here](https://platform.deepseek.com/api_keys))
@@ -668,7 +668,7 @@ and fill up your key
 
 ```toml
 [zai] # in .secrets.toml
-key = ...
+key = "..."
 ```
 
 (you can obtain a Z.AI API key from [here](https://z.ai/))
@@ -687,7 +687,7 @@ and fill up your key
 
 ```toml
 [moonshot] # in .secrets.toml
-key = ...
+key = "..."
 ```
 
 (you can obtain a Moonshot API key from [here](https://platform.moonshot.ai/))
@@ -708,7 +708,7 @@ and fill up your key
 
 ```toml
 [dashscope] # in .secrets.toml
-key = ...
+key = "..."
 ```
 
 (you can obtain a DashScope API key from [here](https://dashscope.console.aliyun.com/))
@@ -727,7 +727,7 @@ and fill up your key
 
 ```toml
 [xiaomi_mimo] # in .secrets.toml
-key = ...
+key = "..."
 ```
 
 (you can obtain a Xiaomi MiMo API key from [here](https://platform.xiaomimimo.com/#/docs))
@@ -751,7 +751,7 @@ and fill up your key
 
 ```toml
 [opencode_go] # in .secrets.toml
-key = ...
+key = "..."
 ```
 
 You can also set the `OPENCODE_API_KEY` (or `OPENCODE_GO_API_KEY`) environment variable instead.
@@ -769,7 +769,7 @@ To use DeepSeek model with DeepInfra, for example, set:
 model = "deepinfra/deepseek-ai/DeepSeek-R1-Distill-Llama-70B"
 fallback_models = ["deepinfra/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"]
 [deepinfra] # in .secrets.toml
-key = ... # your DeepInfra api key
+key = "..." # your DeepInfra api key
 ```
 
 (you can obtain a DeepInfra key from [here](https://deepinfra.com/dash/api_keys))
@@ -937,11 +937,11 @@ If the relevant model doesn't appear [here](https://github.com/the-pr-agent/pr-a
    fallback_models=[]
    ```
 
-2. Set the maximal tokens for the model:
+2. Set the model or endpoint's supported input-token limit (replace the example value below):
 
    ```toml
    [config]
-   custom_model_max_tokens= ...
+   custom_model_max_tokens = 32000 # example; use the model or endpoint's supported input-token limit
    ```
 
 3. Go to [litellm documentation](https://litellm.vercel.app/docs/proxy/quick_start#supported-llms), find the model you want to use, and set the relevant environment variables.
