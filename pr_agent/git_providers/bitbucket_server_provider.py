@@ -53,6 +53,10 @@ class BitbucketServerProvider(GitProvider):
         self.diff_files = None
         self._pr_changes = None
         self.bitbucket_pull_request_api_url = pr_url
+        # The reviewer reserves the hidden state marker inside max_comment_chars
+        # (see PRReviewer._review_comment_max_chars). Without this, a long review
+        # is truncated at the tail by publish_comment and the marker is lost.
+        self.max_comment_chars = MAX_PR_COMMENT_BITBUCKET_SERVER_LENGTH
         self.bearer_token = get_settings().get("BITBUCKET_SERVER.BEARER_TOKEN", None)
         # Get username and password from settings
         username = get_settings().get("BITBUCKET_SERVER.USERNAME", None)
