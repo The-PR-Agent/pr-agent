@@ -2,6 +2,7 @@ import fnmatch
 import re
 from collections.abc import Mapping
 
+from pr_agent.algo.user_regex import UserRegexBudget, compile_user_regex
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -10,6 +11,17 @@ _MAX_ENUMERATED_GLOBSTARS = 6
 _MAX_IGNORE_GLOB_VARIANT_REGEXES = 256
 _MAX_EXPANDED_GLOB_LENGTH = 256
 _MAX_GLOB_LENGTH = 1024
+
+
+class _TimedIgnoreRegex:
+    """An ``ignore.regex`` pattern matched within the filter pass's time budget."""
+
+    def __init__(self, pattern, budget):
+        self.pattern = pattern
+        self.budget = budget
+
+    def match(self, string):
+        return self.budget.run(self.pattern, "match", string, "ignore.regex")
 
 
 def filter_ignored(files, platform = 'github'):
@@ -26,6 +38,8 @@ def filter_ignored_with_status(files, platform='github'):
     try:
         # load regex patterns, and translate glob patterns to regex
         patterns, regex_complete = _setting_as_list(get_settings().ignore.regex, 'ignore.regex')
+        user_pattern_count = len(patterns)
+        regex_budget = UserRegexBudget()
         glob_setting = get_settings().ignore.glob
         if isinstance(glob_setting, str):  # --ignore.glob=[.*utils.py], --ignore.glob=.*utils.py
             glob_setting = split_glob_patterns(glob_setting)
@@ -54,7 +68,7 @@ def filter_ignored_with_status(files, platform='github'):
 
         # compile all valid patterns
         compiled_patterns = []
-        for r in patterns:
+        for index, r in enumerate(patterns):
             if not isinstance(r, str):
                 complete = False
                 get_logger().warning(
@@ -62,7 +76,10 @@ def filter_ignored_with_status(files, platform='github'):
                     artifact={"type": type(r).__name__})
                 continue
             try:
-                compiled_patterns.append(re.compile(r))
+                if index < user_pattern_count:
+                    compiled_patterns.append(_TimedIgnoreRegex(compile_user_regex(r), regex_budget))
+                else:
+                    compiled_patterns.append(re.compile(r))
             except re.error as e:
                 complete = False
                 get_logger().warning(
@@ -119,6 +136,8 @@ def filter_ignored_with_status(files, platform='github'):
                         f'{len(files)} changed file(s) are being sent to the model.',
                         artifact={'platform': platform, 'file_count': len(files)})
                     break
+        if regex_budget.timed_out:
+            complete = False
 
 
     except Exception as e:

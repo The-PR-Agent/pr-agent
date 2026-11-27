@@ -91,6 +91,24 @@ def test_extract_suggestion_code_diff_keeps_context_and_drops_removed_lines():
     assert d.extract_suggestion_code(body) == "def shared(x):\ndef shared(x, y):"
 
 
+def test_extract_suggestion_code_reads_four_backtick_diff_with_inner_fence():
+    body = "````diff\n+```js\n+const x = 1\n+```\n````"
+    assert d.extract_suggestion_code(body) == "```js\nconst x = 1\n```"
+
+
+def test_extract_suggestion_code_requires_a_standalone_closing_fence():
+    body = "````diff\n+```js\n+const x = 1\n+```\n````"
+    assert d.extract_suggestion_code(body) == "```js\nconst x = 1\n```"
+
+
+def test_extract_suggestion_code_ignores_a_long_backtick_run_without_diff():
+    assert d.extract_suggestion_code("`" * 5000 + " no diff") is None
+
+
+def test_extract_suggestion_code_ignores_repeated_unclosed_openers():
+    assert d.extract_suggestion_code("```diff\n" * 8000) is None
+
+
 def test_extract_suggestion_code_returns_none_for_empty_diff_block():
     assert d.extract_suggestion_code("prose\n```diff\n```") is None
 

@@ -2,6 +2,8 @@ import asyncio
 import copy
 import math
 import multiprocessing
+import re
+import shlex
 import traceback
 from collections import deque
 from contextlib import contextmanager
@@ -9,7 +11,7 @@ from datetime import UTC, datetime
 
 import aiohttp
 
-from pr_agent.agent.pr_agent import PRAgent
+from pr_agent.agent.pr_agent import PRAgent, commands
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
@@ -267,6 +269,43 @@ def process_comment_sync(pr_url, rest_of_comment, comment_id):
         get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
 
+_LEADING_COMMAND_WHITESPACE = re.compile(r"\s*")
+
+
+def _find_command_mention(comment_body: str, pattern: re.Pattern, user_tag: str) -> re.Match | None:
+    """Select a mention without changing legacy exact-case precedence."""
+    matches = list(pattern.finditer(comment_body))
+    if not matches:
+        return None
+    for match in matches:
+        if match.group(0) == user_tag:
+            return match
+
+    for index, match in enumerate(matches):
+        start = _LEADING_COMMAND_WHITESPACE.match(comment_body, match.end()).end()
+        if index + 1 < len(matches):
+            # If the next mention's '@' is inside the first token, the token
+            # cannot be a registered command, even if a quote closes later.
+            # Otherwise the first token ends before that mention. Each probe
+            # spans only a disjoint gap, so repeated mentions remain linear.
+            end = matches[index + 1].start()
+            request = comment_body[start:end] + "@"
+        else:
+            request = comment_body[start:].rstrip()
+        lexer = shlex.shlex(request, posix=True)
+        lexer.whitespace_split = True
+        lexer.quotes = '"'
+        lexer.commenters = ''
+        try:
+            action = next(lexer, None)
+        except ValueError:
+            continue
+        if action and action.lstrip("/").lower() in commands:
+            # Later bare words in prose must not start a new command.
+            if index == 0 or action.startswith("/"):
+                return match
+    return None
+
 async def is_valid_notification(
     notification, headers, handled_ids, session, user_id, added_handled_ids=None
 ):
@@ -289,6 +328,10 @@ async def is_valid_notification(
                 async with session.get(latest_comment, headers=headers) as comment_response:
                     check_prev_comments = False
                     user_tag = "@" + user_id
+                    mention_pattern = re.compile(
+                        r"(?<![a-z0-9_-])" + re.escape(user_tag) + r"(?![a-z0-9_-])",
+                        re.IGNORECASE | re.ASCII,
+                    )
                     if comment_response.status == 200:
                         comment = await comment_response.json()
                         latest_comment_id = comment.get('id')
@@ -301,14 +344,18 @@ async def is_valid_notification(
                                 if added_handled_ids is not None:
                                     added_handled_ids.add(comment['id'])
                         if 'user' in comment and 'login' in comment['user']:
-                            if comment['user']['login'] == user_id:
+                            if comment['user']['login'].casefold() == user_id.casefold():
                                 get_logger().debug("comment['user']['login'] == user_id")
                                 check_prev_comments = True
                         comment_body = comment.get('body', '')
+                        mention = (
+                            _find_command_mention(comment_body, mention_pattern, user_tag)
+                            if comment_body else None
+                        )
                         if not comment_body:
                             get_logger().debug("no comment_body")
                             check_prev_comments = True
-                        elif user_tag not in comment_body:
+                        elif mention is None:
                             get_logger().debug("user_tag not in comment_body")
                             check_prev_comments = True
                         else:
@@ -316,7 +363,7 @@ async def is_valid_notification(
                                               artifact={"comment": comment_body})
 
                         if not check_prev_comments:
-                            return True, handled_ids, comment, comment_body, pr_url, user_tag
+                            return True, handled_ids, comment, comment_body[mention.start():], pr_url, mention.group(0)
                         else: # we could not find the user tag in the latest comment. Check previous comments
                             # get all comments in the PR
                             requests_url = _pr_comments_url(pr_url)
@@ -339,12 +386,13 @@ async def is_valid_notification(
                                 return False, handled_ids
                             for comment in comments[:POLLING_COMMENT_SCAN_LIMIT]:
                                 if 'user' in comment and 'login' in comment['user']:
-                                    if comment['user']['login'] == user_id:
+                                    if comment['user']['login'].casefold() == user_id.casefold():
                                         continue
                                 comment_body = comment.get('body', '')
                                 if not comment_body:
                                     continue
-                                if user_tag in comment_body:
+                                mention = _find_command_mention(comment_body, mention_pattern, user_tag)
+                                if mention is not None:
                                     if 'id' in comment:
                                         # Allow mentions added to the latest comment between the two API reads.
                                         if comment['id'] in handled_ids and comment['id'] != latest_comment_id:
@@ -355,7 +403,10 @@ async def is_valid_notification(
                                     get_logger().info("found user tag in previous comments")
                                     get_logger().info(f"Polling, pr_url: {pr_url}",
                                                       artifact={"comment": comment_body})
-                                    return True, handled_ids, comment, comment_body, pr_url, user_tag
+                                    return (
+                                        True, handled_ids, comment,
+                                        comment_body[mention.start():], pr_url, mention.group(0),
+                                    )
 
                             get_logger().warning(f"Failed to fetch comments for PR: {pr_url}",
                                                     artifact={"comments": comments})
@@ -514,7 +565,7 @@ async def polling_loop():
                                 # Add to the task queue
                                 get_logger().info(
                                     f"Adding comment processing to task queue for PR, {pr_url},"
-                                    f" comment_body: {comment_body}")
+                                    f" comment_body: {comment.get('body', comment_body)}")
                                 task_queue.append((process_comment_sync, (pr_url, rest_of_comment, comment_id)))
                                 get_logger().info(f"Queued comment processing for PR: {pr_url}")
                             else:

@@ -8,7 +8,8 @@ from starlette_context import context
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import get_artifact_context
-from pr_agent.algo.comment_identity import format_pr_questions_header
+from pr_agent.algo.comment_identity import escape_hidden_markers, format_pr_questions_header
+from pr_agent.algo.git_patch_processing import quote_diff_filename
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
@@ -56,7 +57,8 @@ FILE_QUESTION_BUDGET_NOTE = (
 
 def _sanitize_slash_commands(text: str) -> str:
     # make sure no line starts with "/", so the published comment cannot trigger quick actions
-    sanitized = text.replace("\n/", "\n /").replace("\r/", "\r /")
+    # and no line is a hidden marker, so it cannot pass for another PR-Agent comment
+    sanitized = escape_hidden_markers(text).replace("\n/", "\n /").replace("\r/", "\r /")
     if sanitized.startswith("/"):
         sanitized = " " + sanitized
     return sanitized
@@ -68,7 +70,7 @@ def _get_question_diff(git_provider, *args, **kwargs):
         return get_pr_diff(git_provider, *args, **kwargs)
     diff_files = git_provider.get_diff_files()
     patch = next((file.patch for file in diff_files if file.filename == file_name), "")
-    return f"## File: '{file_name}'\n\n{patch}" if patch and patch.strip() else ""
+    return f"## File: {quote_diff_filename(file_name)}\n\n{patch}" if patch and patch.strip() else ""
 
 
 class PRQuestions:

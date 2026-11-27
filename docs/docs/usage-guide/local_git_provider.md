@@ -29,6 +29,7 @@ Before running a command:
 - Run it from inside the Git repository that contains the proposed change.
 - Keep the working tree clean. Check it with `git status --short`; the command compares committed `HEAD` content.
 - Make sure the target branch exists locally, for example with `git branch --list main`.
+- In a shallow checkout, fetch enough history for `git merge-base HEAD <target-branch>` to return a commit.
 - Configure the LLM provider required by your setup. A hosted Git provider token is not required for this mode.
 
 ## Basic usage
@@ -57,7 +58,7 @@ Replace `main` with the local branch to use as the target.
 By default, the commands write files in the repository root:
 
 - The `/review` command writes `review.md`.
-- The `/describe` command writes `description.md`.
+- The `/describe` command writes `description.md`, even when `pr_description.publish_description_as_comment` is enabled.
 
 The local provider writes these files instead of publishing the result to a hosted pull/merge request.
 
@@ -81,6 +82,13 @@ python -m pr_agent.cli --pr_url main --extra_config_url "$HOME/.config/pr-agent/
 When using relative custom paths, run PR-Agent from the repository root as shown above.
 
 Create any parent directories for custom paths before running the command.
+If `/describe` also writes `--json-output`, choose a different file from `local.description_path`.
+For all Local Git Markdown outputs, including command failure messages, use a regular output file with a single
+link and a directory that is not redirected within the checkout. On POSIX, new files are created with at most
+owner read/write permissions (`0600`).
+An existing file is updated in place, retaining its access controls.
+Destination checks run before writing; an I/O error after writing starts can leave a partial description.
+Keep the checkout and its output directories stable during a run. Give concurrent jobs separate checkouts and output paths.
 
 ## Limitations
 

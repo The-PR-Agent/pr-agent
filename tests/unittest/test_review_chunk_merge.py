@@ -462,9 +462,55 @@ def test_a_jira_key_keeps_its_project_identity():
         "https://tracker.example/browse/ABC-12", "XYZ-12"]
 
 
-def test_a_shared_trailing_number_does_not_merge_unrelated_tickets():
+@pytest.mark.parametrize("second", [
+    "https://acme.atlassian.net/browse/XYZ-12",
+    "https://linear.app/acme/issue/XYZ-12/fix-race",
+])
+def test_named_tickets_with_the_same_number_merge_by_full_key(second):
+    first = "https://acme.atlassian.net/browse/ABC-12"
+    related = [{"ticket_id": "ABC-12", "ticket_url": first},
+               {"ticket_id": "XYZ-12", "ticket_url": second}]
+    merged = merge_review_chunks([
+        _chunk(ticket_compliance_check=[
+            _ticket_entry(first, "- A"), _ticket_entry("xyz-12", "- B"),
+        ]),
+        _chunk(ticket_compliance_check=[
+            _ticket_entry("ABC-12", "", "- A"), _ticket_entry(second, "- C"),
+        ]),
+    ], related_tickets=related)
+
+    assert merged["review"]["ticket_compliance_check"] == [
+        _ticket_entry(first, "- A", "- A"), _ticket_entry(second, "- B\n- C"),
+    ]
+
+
+def test_ambiguous_named_ticket_key_is_not_rewritten():
     related = [
-        {"ticket_id": 12, "ticket_url": "https://github.com/acme/widgets/issues/12"},
+        {"ticket_id": "ABC-12", "ticket_url": "https://acme.atlassian.net/browse/ABC-12"},
+        {"ticket_id": "ABC-12", "ticket_url": "https://linear.app/acme/issue/ABC-12/fix-race"},
+    ]
+    merged = merge_review_chunks([
+        _chunk(ticket_compliance_check=[_ticket_entry("ABC-12", "- A")]),
+    ], related_tickets=related)
+
+    assert merged["review"]["ticket_compliance_check"][0]["ticket_url"] == "ABC-12"
+
+
+def test_repeated_named_ticket_record_is_not_ambiguous():
+    url = "https://linear.app/acme/issue/ABC-12/fix-race"
+    ticket = {"ticket_id": "ABC-12", "ticket_url": url}
+    merged = merge_review_chunks([
+        _chunk(ticket_compliance_check=[_ticket_entry("ABC-12", "- A")]),
+        _chunk(ticket_compliance_check=[_ticket_entry(url, "- B")]),
+    ], related_tickets=[ticket, dict(ticket)])
+
+    assert merged["review"]["ticket_compliance_check"] == [_ticket_entry(url, "- A\n- B")]
+
+
+@pytest.mark.parametrize("first_id", [12, "#12"])
+def test_a_shared_trailing_number_does_not_merge_unrelated_tickets(first_id):
+    related = [
+        {"ticket_id": first_id, "ticket_url": "https://github.com/acme/widgets/issues/12"},
         {"ticket_id": 12, "ticket_url": "https://github.com/acme/gadgets/issues/12"},
     ]
     merged = merge_review_chunks([

@@ -399,6 +399,77 @@ def test_run_without_a_target_does_not_enter_settings_scope(monkeypatch, capsys)
     assert "usage:" in capsys.readouterr().out
 
 
+_MISPLACED_PR_URL = "--pr_url must appear before the command (for example: --pr_url=<URL> review)"
+_MISPLACED_ISSUE_URL = "--issue_url must appear before the command (for example: --issue_url=<URL> similar_issue)"
+_MISPLACED_STDIN = "--stdin must appear before the command (for example: --stdin review)"
+_MISPLACED_DIFF_FILE = "--diff-file must appear before the command (for example: --diff-file=<path> review)"
+
+
+@pytest.mark.parametrize(
+    ("inargs", "message"),
+    [
+        (["review", "--pr_url=https://example.com/org/repo/pull/1"], _MISPLACED_PR_URL),
+        (["review", "--pr_url", "https://example.com/org/repo/pull/1"], _MISPLACED_PR_URL),
+        (["similar_issue", "--issue_url=https://example.com/org/repo/issues/1"], _MISPLACED_ISSUE_URL),
+        (["review", "--stdin"], _MISPLACED_STDIN),
+        (["review", "--diff-file=changes.diff"], _MISPLACED_DIFF_FILE),
+        (
+            ["review", "--pr_reviewer.extra_instructions=x", "--pr_url=https://example.com/org/repo/pull/1"],
+            _MISPLACED_PR_URL,
+        ),
+        # An abbreviation argparse accepts before the command is recognised after it too.
+        (["review", "--pr", "https://example.com/org/repo/pull/1"], _MISPLACED_PR_URL),
+        # The first misplaced target option is the one reported.
+        (["review", "--stdin", "--pr_url=https://example.com/org/repo/pull/1"], _MISPLACED_STDIN),
+    ],
+)
+def test_run_rejects_target_option_after_command(monkeypatch, capsys, inargs, message):
+    def fail_if_entered():
+        pytest.fail("a misplaced target option must not enter the mutation scope")
+
+    async def fail_if_dispatched(*_args, **_kwargs):
+        pytest.fail("a misplaced target option must not dispatch a request")
+
+    monkeypatch.setattr(cli, "_cli_settings_scope", fail_if_entered)
+    monkeypatch.setattr(
+        cli,
+        "PRAgent",
+        lambda: SimpleNamespace(handle_request=fail_if_dispatched),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.run(inargs=inargs)
+
+    assert exc_info.value.code == 2
+    assert f"error: {message}\n" in capsys.readouterr().err
+
+
+def test_run_forwards_target_option_text_after_correct_target(monkeypatch):
+    seen = []
+
+    async def recording_handle_request(target, request, notify=None):
+        seen.append((target, request))
+        return True
+
+    monkeypatch.setattr(
+        cli,
+        "PRAgent",
+        lambda: SimpleNamespace(handle_request=recording_handle_request),
+    )
+    monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
+    monkeypatch.setattr(cli, "litellm_callbacks_registered", lambda: False)
+
+    status = cli.run(
+        inargs=["--pr_url=https://example.com/org/repo/pull/1", "ask", "why", "--pr_url", "matters"]
+    )
+
+    assert status is None
+    assert len(seen) == 1
+    target, request = seen[0]
+    assert target == "https://example.com/org/repo/pull/1"
+    assert request == ["ask", "why", "--pr_url", "matters"]
+
+
 @pytest.mark.parametrize("raised", [RuntimeError, KeyboardInterrupt])
 def test_run_restores_outer_context_when_dispatch_raises(monkeypatch, raised):
     outer_settings = copy.deepcopy(global_settings)
@@ -571,3 +642,26 @@ def test_process_entrypoints_preserve_argparse_status(
             completed.stdout,
             completed.stderr,
         )
+
+
+def test_process_entrypoints_reject_target_option_after_command(
+    argparse_entrypoints,
+    controlled_process_env,
+):
+    for entrypoint in argparse_entrypoints:
+        completed = subprocess.run(
+            [*entrypoint, "review", "--pr_url=https://example.com/org/repo/pull/1"],
+            cwd=Path(__file__).parents[2],
+            env=controlled_process_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+        assert completed.returncode == 2, (
+            entrypoint,
+            completed.stdout,
+            completed.stderr,
+        )
+        assert f"error: {_MISPLACED_PR_URL}" in completed.stderr, (entrypoint, completed.stderr)

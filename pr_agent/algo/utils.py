@@ -1012,7 +1012,7 @@ def _looks_like_more_answer(tail: str) -> bool:
         return False
 
 
-def drop_sign_off_after_wrapper_fence(text: str) -> str:
+def drop_sign_off_after_wrapper_fence(text: str, fence: str = '```') -> str:
     """Drop a closing remark the model added after the wrapper's closing fence.
 
     The prompts ask for YAML "and nothing else", but the model sometimes signs off
@@ -1022,10 +1022,14 @@ def drop_sign_off_after_wrapper_fence(text: str) -> str:
     No existing fallback recovers it. The one that extracts a fenced block needs
     both fences, but most prompts end with an open fence for the model to continue
     from, so the reply carries only the closing one.
+
+    *fence* is the wrapper's opening fence; its closing fence is a line of at least as
+    many backticks.
     """
     lines = text.split('\n')
     for i in range(len(lines) - 1, -1, -1):
-        if lines[i].rstrip() != '```':
+        line = lines[i].rstrip()
+        if not line.startswith(fence) or line.strip('`'):
             continue
         tail = '\n'.join(lines[i + 1:])
         if not tail.strip():
@@ -1256,14 +1260,22 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
     # the label and the blanks that follow it share a single optional group: two separate
     # blank runs would let the engine try every way of splitting a long run of blanks
     # when the fence is not followed by a line break, which backtracks quadratically
-    unfenced = re.sub(r'^```[ \t]*(?:(?i:yaml|yml)[ \t]*)?(?=\r?\n)', '', response_text)
+    opening_fence = ""
+    fence_match = re.match(r'^(?P<fence>`{3,})[ \t]*(?:(?i:yaml|yml)[ \t]*)?(?=\r?\n)', response_text)
+    if fence_match:
+        opening_fence = fence_match.group("fence")
+        unfenced = response_text[fence_match.end():]
+    else:
+        unfenced = response_text
     if unfenced == response_text:
         # Strip an unfenced "yaml" label only when it is a complete line, so a key such as
         # "yaml_config" is not truncated. A bare removeprefix('yaml') would shorten it to "_config".
         unfenced = re.sub(r'^yaml(?:[ \t]*\r?\n|\Z)', '', response_text, count=1)
     response_text = unfenced.rstrip()
-    response_text = drop_sign_off_after_wrapper_fence(response_text)
-    if response_text.split('\n')[-1] == '```':
+    response_text = drop_sign_off_after_wrapper_fence(response_text, opening_fence or '```')
+    if opening_fence:
+        response_text = re.sub(rf'(?m)^{re.escape(opening_fence)}`*[ \t]*\Z', '', response_text)
+    elif response_text.split('\n')[-1] == '```':
         response_text = response_text.removesuffix('```')
     response_text = sanitize_yaml_control_chars(response_text)
     response_text_original_sanitized = sanitize_yaml_control_chars(response_text_original, log=False)
@@ -2170,12 +2182,15 @@ def process_description(description_full: str) -> tuple[str, list]:
                         elif not long_summary.startswith('*'):
                             long_summary = f"* {long_summary}"
 
-                        files.append({
+                        file_metadata = {
                             'short_file_name': short_filename,
                             'full_file_name': long_filename,
                             'short_summary': short_summary,
                             'long_summary': long_summary
-                        })
+                        }
+                        if not escaped:
+                            file_metadata["_legacy_filename"] = True
+                        files.append(file_metadata)
                     elif '<code>...</code>' in file_data:
                         pass # PR with many files. some did not get analyzed
                     else:

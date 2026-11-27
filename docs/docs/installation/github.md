@@ -322,12 +322,13 @@ To use local models via Ollama:
 
 ```yaml
       env:
-        OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Set the model to a local Ollama model
-        config.model: "ollama/qwen2.5-coder:32b"
+        config.model: "ollama/qwen3.8:27b"
         config.fallback_models: '[]'
-        config.custom_model_max_tokens: "128000"
+        config.reasoning_effort: "none"
+        config.additional_reasoning_effort_models: '["ollama/qwen3.8:27b"]'
+        config.custom_model_max_tokens: "32768" # match the Ollama server context for this example
         # Ollama configuration
         OLLAMA.API_BASE: "http://<ollama-host-reachable-from-container>:11434"
         # Command configuration
@@ -337,6 +338,8 @@ To use local models via Ollama:
 ```
 
 **Note:** Ollama must be reachable from the action's Docker container. `localhost` inside that container refers to the container itself, not the runner host. If Ollama runs on a self-hosted runner, configure a host address and Ollama network binding that the action container can reach.
+
+For a local Ollama endpoint, no `OPENAI_KEY` is needed. Follow the [Ollama model configuration guide](../usage-guide/changing_a_model.md#ollama) for the thinking controls and to size the server context and adjust `config.custom_model_max_tokens` accordingly.
 
 ##### Using Amazon Bedrock
 

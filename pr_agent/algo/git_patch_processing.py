@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import traceback
 from codecs import BOM_UTF16_BE, BOM_UTF16_LE
@@ -23,6 +24,17 @@ def split_diff_lines(text: str) -> list[str]:
     if lines and lines[-1] == "":
         lines.pop()
     return [line.removesuffix("\r") for line in lines]
+
+
+def quote_diff_filename(filename: str) -> str:
+    """Render printable paths verbatim and non-printable paths as JSON strings."""
+    # The single-quoted form is an opaque label, not a Python string literal.
+    # Keep it unchanged for printable paths, including quotes and backslashes.
+    if filename.isprintable():
+        return f"'{filename}'"
+    # A distinct delimiter separates escaped labels from literal printable paths.
+    encoded = json.dumps(filename, ensure_ascii=False)
+    return "".join(char if char.isprintable() else json.dumps(char)[1:-1] for char in encoded)
 
 
 def count_patch_lines(patch: str) -> tuple[int, int]:
@@ -438,9 +450,9 @@ __old hunk__
     if file:
         # if the file was deleted, return a message indicating that the file was deleted
         if hasattr(file, 'edit_type') and file.edit_type == EDIT_TYPE.DELETED:
-            return f"\n\n## File '{file.filename.strip()}' was deleted\n"
+            return f"\n\n## File {quote_diff_filename(file.filename)} was deleted\n"
 
-        patch_with_lines_str = f"\n\n## File: '{file.filename.strip()}'\n"
+        patch_with_lines_str = f"\n\n## File: {quote_diff_filename(file.filename)}\n"
     else:
         patch_with_lines_str = ""
 
@@ -548,7 +560,7 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
         except (ValueError, TypeError):
             get_logger().warning(f"Ignoring invalid line_end {line_end!r} for '{file_name}'")
             line_end = -1
-        patch_with_lines_str = f"\n\n## File: '{file_name.strip()}'\n\n"
+        patch_with_lines_str = f"\n\n## File: {quote_diff_filename(file_name)}\n\n"
         selected_lines = ""
         patch_lines = split_diff_lines(patch)
         side_lower = (side or "").lower()

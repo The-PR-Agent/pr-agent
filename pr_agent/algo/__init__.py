@@ -327,12 +327,6 @@ MAX_TOKENS = {
     'gemini/gemini-4-carbon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'gemini/gemini-4-hydrogen': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'gemini/gemini-4-neon': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
-    # -- Bedrock Claude ----------------------------------------------------
-    'bedrock/anthropic.claude-sonnet-4-20250514-v1:0': 200000,
-    # -- Bedrock Claude (cross-region) -------------------------------------
-    "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
-    "bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
-    "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
     # -- Non-Claude models -------------------------------------------------
     "bedrock_mantle/xai.grok-4.3": 1000000,
     # 1M context, but may be limited by config.max_model_tokens

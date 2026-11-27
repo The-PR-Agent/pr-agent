@@ -13,8 +13,9 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import get_artifact_context
 from pr_agent.algo.code_fence import strip_wrapping_code_fence
-from pr_agent.algo.comment_identity import PRDescriptionHeader, PRDescriptionIdentity
+from pr_agent.algo.comment_identity import PRDescriptionHeader
 from pr_agent.algo.language_handler import filter_bad_extensions
+from pr_agent.algo.markdown_span import _markdown_code_span
 from pr_agent.algo.output_models import PRDescriptionAssembled
 from pr_agent.algo.output_sinks import _push_outputs_consumes_payload
 from pr_agent.algo.pr_processing import (
@@ -41,6 +42,9 @@ from pr_agent.algo.utils import (
     load_yaml,
     set_custom_labels,
 )
+from pr_agent.algo.utils import (
+    replace_code_tags as escape_and_replace_code_tags,
+)
 from pr_agent.commands.progress_comment import ChunkProgressReporter
 from pr_agent.commands.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
@@ -54,6 +58,45 @@ from pr_agent.servers.help import HelpMessage
 
 MAX_DESCRIPTION_COVERAGE_FILES = 50
 DESCRIBE_PROGRESS_COMMENT = "Preparing PR description..."
+
+
+def _description_filename_key(filename: str) -> str:
+    return filename.strip().lower().strip("/")
+
+
+def _ambiguous_description_filenames(filenames: list[str]) -> set[str]:
+    normalized_paths = {}
+    for filename in filenames:
+        normalized_paths.setdefault(_description_filename_key(filename), set()).add(filename)
+    return {normalized for normalized, paths in normalized_paths.items() if len(paths) > 1}
+
+
+def _resolve_description_filename(
+        filename: str, expected_filenames: list[str], known_filenames: set[str],
+        ambiguous_filenames: set[str]) -> str | None:
+    if filename in expected_filenames:
+        return filename
+    if filename in known_filenames:
+        return None
+    if filename.endswith("\r\n"):
+        filename_without_newline = filename[:-2]
+    elif filename.endswith(("\n", "\r")):
+        filename_without_newline = filename[:-1]
+    else:
+        filename_without_newline = filename
+    if filename_without_newline != filename:
+        if filename_without_newline in expected_filenames:
+            return filename_without_newline
+        if filename_without_newline in known_filenames:
+            return None
+    normalized_filename = _description_filename_key(filename_without_newline)
+    if normalized_filename in ambiguous_filenames:
+        return None
+    matches = {
+        expected_filename for expected_filename in expected_filenames
+        if _description_filename_key(expected_filename) == normalized_filename
+    }
+    return matches.pop() if len(matches) == 1 else None
 
 
 def _build_unprocessed_files_block(file_list: list, label: str, max_files: int = 50) -> str:
@@ -183,6 +226,9 @@ class PRDescription:
         self._description_output_touched = False
         try:
             get_logger().info(f"Generating a PR description for pr_id: {self.pr_id}")
+            json_path = review_json_output_path.get() if get_settings().config.publish_output else None
+            if json_path:
+                self.git_provider.validate_description_json_path(json_path)
             relevant_configs = {'pr_description': dict(get_settings().pr_description),
                                 'config': dict(get_settings().config)}
             get_logger().debug("Relevant configs", artifact=relevant_configs)
@@ -220,6 +266,10 @@ class PRDescription:
                         raise
                     # Keep Markdown available even when a requested JSON file cannot be written.
                     record_command_failure()
+                else:
+                    if json_path:
+                        # The filesystem may recognize equivalent names only after the JSON file exists.
+                        self.git_provider.validate_description_json_path(json_path)
             else:
                 get_logger().warning(f"Empty prediction, PR: {self.pr_id}")
                 # A skipped Plain Diff description cannot satisfy an explicit
@@ -326,19 +376,10 @@ class PRDescription:
                 if get_settings().pr_description.publish_description_as_comment:
                     full_markdown_description = f"## Title\n\n{pr_title.strip()}\n\n___\n{pr_body}"
                     self._description_output_touched = True
-                    if get_settings().pr_description.publish_description_as_comment_persistent:
-                        self.git_provider.publish_persistent_comment(
-                            full_markdown_description,
-                            initial_header="## Title",
-                            update_header=True,
-                            name="describe",
-                            final_update_message=False,
-                            identity_marker=PRDescriptionIdentity.PERSISTENT.value,
-                            legacy_initial_header="## Title",
-                            require_agent_authorship=True,
-                        )
-                    else:
-                        self.git_provider.publish_comment(full_markdown_description)
+                    self.git_provider.publish_description_comment(
+                        full_markdown_description,
+                        persistent=get_settings().pr_description.publish_description_as_comment_persistent,
+                    )
                 else:
                     # Pass None when the title is not AI-generated so the provider
                     # leaves it untouched, avoiding reverting a manual edit (#2474).
@@ -527,6 +568,14 @@ class PRDescription:
             # get the files prediction for each patch
             chunk_pairs = list(zip(patches_compressed_list, files_in_patches_list, strict=True))
             chunk_diffs = ["\n".join(patches) for patches, _files_in_patch in chunk_pairs]
+            known_filenames = list(dict.fromkeys([
+                *file_dict,
+                *(filename for _patches, files_in_patch in chunk_pairs for filename in files_in_patch),
+                *remaining_files_list,
+                *deleted_files_list,
+            ]))
+            ambiguous_chunk_filenames = _ambiguous_description_filenames(known_filenames)
+            known_filename_set = set(known_filenames)
             # Chunks an earlier model attempt described: a fallback re-sends only the others, as /review does.
             described_chunks = getattr(self, "_described_chunks", None)
             if described_chunks is None:
@@ -573,6 +622,7 @@ class PRDescription:
             chunk_models = []
             chunk_errors = []
             failed_files = []
+            incomplete_chunk_count = 0
             for i, (result, (_patches, files_in_patch)) in enumerate(zip(results, chunk_pairs, strict=True)):
                 if isinstance(result, Exception):
                     chunk_errors.append(result)
@@ -596,15 +646,34 @@ class PRDescription:
                 required_fields = ['filename', 'changes_title', 'label']
                 if self.vars.get('include_file_summary_changes', True):
                     required_fields.append('changes_summary')
-                described_files = {
-                    file_description['filename'].strip()
-                    for file_description in (file_descriptions if isinstance(file_descriptions, list) else [])
-                    if isinstance(file_description, dict) and
-                    all(isinstance(file_description.get(field), str) and file_description[field].strip()
-                        for field in required_fields)
-                }
-                if described_files:
-                    file_description_chunks.append(file_descriptions)
+                valid_file_descriptions = []
+                described_files = set()
+                for file_description in (file_descriptions if isinstance(file_descriptions, list) else []):
+                    if not isinstance(file_description, dict) or not all(
+                        isinstance(file_description.get(field), str) and file_description[field].strip()
+                        for field in required_fields
+                    ):
+                        continue
+                    matched_filename = _resolve_description_filename(
+                        file_description['filename'], files_in_patch, known_filename_set,
+                        ambiguous_chunk_filenames,
+                    )
+                    if matched_filename is None or matched_filename in described_files:
+                        continue
+                    if matched_filename != file_description['filename']:
+                        file_description = {**file_description, 'filename': matched_filename}
+                    valid_file_descriptions.append(file_description)
+                    described_files.add(matched_filename)
+                if valid_file_descriptions:
+                    file_description_chunks.append(valid_file_descriptions)
+                    missing_files = [filename for filename in files_in_patch if filename not in described_files]
+                    if missing_files:
+                        incomplete_chunk_count += 1
+                        failed_files.extend(missing_files)
+                        get_logger().warning(
+                            f"Description chunk {i + 1} omitted valid descriptions for some files",
+                            artifact={"missing_files": missing_files},
+                        )
                     # Reuse only a chunk that described every file in it: a fallback may complete the others.
                     described = described_chunks.get(chunk_diffs[i])
                     if described is None and described_files.issuperset(files_in_patch):
@@ -618,7 +687,9 @@ class PRDescription:
                         artifact={"files": files_in_patch},
                     )
 
-            self.description_failed_chunk_count = len(chunk_pairs) - len(file_description_chunks)
+            self.description_failed_chunk_count = (
+                len(chunk_pairs) - len(file_description_chunks) + incomplete_chunk_count
+            )
             self.description_failed_files = list(dict.fromkeys(failed_files))
             progress = getattr(self, "_chunk_progress", None)
             if progress is not None and self.description_failed_chunk_count > 0:
@@ -741,13 +812,14 @@ class PRDescription:
         total_chunk_count = getattr(self, "description_total_chunk_count", failed_chunk_count)
         footer = (
             f"\n\n⚠️ **Description coverage:** {failed_chunk_count} of {total_chunk_count} "
-            "file-description chunks failed; the description above is based on the successful chunks only."
+            "file-description chunks failed or were incomplete; detailed summaries are unavailable for some "
+            "changed files."
         )
         failed_files = getattr(self, "description_failed_files", [])
         if failed_files:
             displayed_files = failed_files[:MAX_DESCRIPTION_COVERAGE_FILES]
-            footer += "\n\nFiles from failed chunks may not be covered:\n" + "\n".join(
-                f"- `{filename}`" for filename in displayed_files
+            footer += "\n\nFiles from failed or incomplete chunks may not be covered:\n" + "\n".join(
+                f"- {_markdown_code_span(filename)}" for filename in displayed_files
             )
             remaining_count = len(failed_files) - len(displayed_files)
             if remaining_count:
@@ -764,19 +836,57 @@ class PRDescription:
                 original_prediction_dict = {"pr_files": original_prediction_loaded}
             else:
                 original_prediction_dict = original_prediction_loaded
-            if original_prediction_dict:
-                files = original_prediction_dict.get('pr_files', [])
-                filenames_predicted = [file.get('filename', '').strip() for file in files if isinstance(file, dict)]
-            else:
-                filenames_predicted = []
+            predicted_filenames_changed = False
+            if original_prediction_dict and not isinstance(original_prediction_dict.get("pr_files"), list):
+                original_prediction_dict["pr_files"] = []
+                predicted_filenames_changed = True
 
             # extend the prediction with additional files not included in the original prediction
             pr_files = self.git_provider.get_diff_files()
+            diff_filenames = [file.filename for file in pr_files]
+            known_filename_set = set(diff_filenames)
+            ambiguous_diff_filenames = _ambiguous_description_filenames(diff_filenames)
+            filenames_predicted = set()
+            required_fields = ['filename', 'changes_title', 'label']
+            if self.vars.get('include_file_summary_changes', True):
+                required_fields.append('changes_summary')
+            reconciled_file_records = []
+            predicted_records_degraded = False
+            for file_record in original_prediction_dict.get("pr_files", []) if original_prediction_dict else []:
+                if not isinstance(file_record, dict):
+                    predicted_filenames_changed = True
+                    predicted_records_degraded = True
+                    continue
+                if not all(
+                    isinstance(file_record.get(field), str) and file_record[field].strip()
+                    for field in required_fields
+                ):
+                    predicted_filenames_changed = True
+                    predicted_records_degraded = True
+                    continue
+                filename = file_record['filename']
+                matched_filename = _resolve_description_filename(
+                    filename, diff_filenames, known_filename_set, ambiguous_diff_filenames,
+                )
+                if matched_filename is None:
+                    predicted_filenames_changed = True
+                    predicted_records_degraded = True
+                    continue
+                if matched_filename in filenames_predicted:
+                    predicted_filenames_changed = True
+                    continue
+                filenames_predicted.add(matched_filename)
+                if matched_filename != filename:
+                    file_record = {**file_record, 'filename': matched_filename}
+                    predicted_filenames_changed = True
+                reconciled_file_records.append(file_record)
+            if original_prediction_dict:
+                original_prediction_dict["pr_files"] = reconciled_file_records
+            if predicted_records_degraded and self._file_summaries_requested():
+                self._description_degraded = True
             prediction_extra = "pr_files:"
-            extra_file_summary = ""
             overflow_summary = ""
             if self.vars.get("include_file_summary_changes", True):
-                extra_file_summary = "  changes_summary: |\n    No detailed description available."
                 overflow_summary = "  changes_summary: |\n    Additional changed files are omitted from this table."
             MAX_EXTRA_FILES_TO_OUTPUT = 100
             counter_extra_files = 0
@@ -800,15 +910,17 @@ class PRDescription:
                     get_logger().debug(f"Too many remaining files, clipping to {MAX_EXTRA_FILES_TO_OUTPUT}")
                     break
 
-                extra_file_yaml = f"""\
-- filename: |
-    {file.filename}
-  changes_title: |
-    ...
-  label: |
-    additional files
-{extra_file_summary}
-"""
+                extra_file_yaml = yaml.safe_dump(
+                    [{
+                        "filename": file.filename,
+                        "changes_title": "...",
+                        "label": "additional files",
+                        **({"changes_summary": "No detailed description available."}
+                           if self.vars.get("include_file_summary_changes", True) else {}),
+                    }],
+                    sort_keys=False,
+                    allow_unicode=True,
+                ).strip()
                 prediction_extra = prediction_extra + "\n" + extra_file_yaml.strip()
 
             # merge the two dictionaries
@@ -829,6 +941,14 @@ class PRDescription:
                             prediction = yaml.dump(original_prediction_dict["pr_files"])
                         extended = True
                 if (not extended or not any(filenames_predicted)) and self._file_summaries_requested():
+                    self._description_degraded = True
+            elif predicted_filenames_changed:
+                new_yaml = yaml.dump(original_prediction_dict)
+                if load_yaml(new_yaml, keys_fix_yaml=self.keys_fix):
+                    prediction = new_yaml
+                    if isinstance(original_prediction_loaded, list):
+                        prediction = yaml.dump(original_prediction_dict["pr_files"])
+                elif self._file_summaries_requested():
                     self._description_degraded = True
 
             return prediction
@@ -1581,13 +1701,19 @@ def insert_br_after_x_chars(text: str, x=70, *, entity_aware=False):
             return len(html.unescape(re.sub("<[^>]+>", "", value)))
         return count_chars_without_html(value)
 
+    if entity_aware:
+        # replace odd instances of ` with <code> and even instances of ` with </code>
+        text = replace_code_tags(text)
+    else:
+        # Plain text: escape it before adding <code> tags, so `List<str>` is not dropped as an unknown HTML tag.
+        # This runs before the short-text return, so short descriptions are escaped too.
+        text = escape_and_replace_code_tags(text)
+        entity_aware = True
+
     if display_length(text) < x:
         return text
 
     is_list = text.lstrip().startswith(("- ", "* "))
-
-    # replace odd instances of ` with <code> and even instances of ` with </code>
-    text = replace_code_tags(text)
 
     # convert list items to <li> only if the text is identified as a list
     if is_list:

@@ -394,10 +394,14 @@ async def authenticate_gitlab_webhook(request: Request, log_context: dict):
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
                                 content=jsonable_encoder({"message": "unauthorized"}))
     if not get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None):
-        # Authentication can be the first reader of external host settings.
-        # Pin the source before that read changes EXTRA_CONFIG_URL.
-        pin_host_settings_source_for_webhook()
-        await asyncio.to_thread(apply_host_settings)
+        # The webhook credential has been verified. Classify the event before
+        # choosing strict frozen loading; manual notes retain best-effort loading.
+        try:
+            event_data = await request.json()
+        except ValueError:
+            # Preserve the missing-API-token rejection for malformed JSON bodies.
+            event_data = {}
+        await _load_gitlab_host_credentials(event_data)
     gitlab_token = get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
     if not gitlab_token:
         get_logger().error("No gitlab token found")
@@ -407,7 +411,15 @@ async def authenticate_gitlab_webhook(request: Request, log_context: dict):
     return None
 
 
-async def restore_gitlab_handoff_auth(auth: dict | None, log_context: dict):
+async def _load_gitlab_host_credentials(data: dict):
+    """Use frozen Host settings only for automatic merge-request events."""
+    if isinstance(data, dict) and data.get("object_kind") == "merge_request":
+        # Pin before a successful Host load can change EXTRA_CONFIG_URL.
+        pin_host_settings_source_for_webhook()
+    await asyncio.to_thread(apply_host_settings)
+
+
+async def restore_gitlab_handoff_auth(auth: dict | None, log_context: dict, *, body: dict):
     """Restore API credentials for an IAM-authorized, already authenticated hand-off."""
     if not isinstance(auth, dict) or "secret_name" not in auth:
         raise ValueError("Missing GitLab hand-off authentication outcome")
@@ -430,8 +442,7 @@ async def restore_gitlab_handoff_auth(auth: dict | None, log_context: dict):
         context["authenticated_provider_settings"] = {"gitlab.personal_access_token": gitlab_token}
         log_context["token_id"] = secret_dict.get("token_name", secret_dict.get("id", "unknown"))
     if not get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None):
-        pin_host_settings_source_for_webhook()
-        await asyncio.to_thread(apply_host_settings)
+        await _load_gitlab_host_credentials(body)
     if not get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None):
         raise RuntimeError("No GitLab API credential available for the hand-off")
 
@@ -511,8 +522,7 @@ async def process_gitlab_event(data: dict, log_context: dict):
     """
     get_logger().info("GitLab data", artifact=payload_log_summary(data, ("object_kind",)))
     if data.get("object_kind") != "merge_request" and context.exists():
-        # Authentication may pin the source before the event type is known.
-        # Keep manual note commands' existing host-loading behavior unchanged.
+        # Manual commands must not inherit a frozen automatic Host source.
         context.pop("automatic_host_settings_source", None)
     try:
         if data.get("object_kind") == "merge_request":

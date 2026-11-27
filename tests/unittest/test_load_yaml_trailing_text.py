@@ -32,6 +32,14 @@ def test_a_sign_off_is_not_folded_into_a_block_scalar():
     assert load_yaml(wrapped)["response"].strip() == "hello"
 
 
+def test_a_sign_off_after_a_longer_wrapper_fence_is_dropped():
+    """A wrapper of four backticks keeps an inner code block intact, and its closing
+    fence is as long, so the sign-off after it must be found the same way."""
+    wrapped = "````yaml\nresponse: |\n  ```python\n  print(1)\n  ```\n````" + SIGN_OFF
+
+    assert load_yaml(wrapped)["response"].strip() == "```python\nprint(1)\n```"
+
+
 def test_an_answer_following_a_fenced_example_is_not_truncated():
     """Dropping text after that fence would leave a plain scalar, so the
     response must be left alone for the fallbacks to handle."""

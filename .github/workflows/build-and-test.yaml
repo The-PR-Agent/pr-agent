@@ -54,7 +54,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        run: pipx install uv==0.13.8
+        run: pipx install uv==0.13.10
 
       - name: Install test dependencies and verified grammars
         id: hardening-dependencies
@@ -106,9 +106,9 @@ jobs:
           fi
 
       - id: uv
-        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d  # v10.4.0
         with:
-          version: '0.13.8'
+          version: '0.13.10'
           resolution-strategy: lowest
 
       - name: Check uv.lock
@@ -231,7 +231,7 @@ jobs:
       # itself, so setup-python is not needed either.
       - id: uv
         name: Install uv
-        run: pipx install uv==0.13.8
+        run: pipx install uv==0.13.10
 
       - id: test
         name: Test on Python ${{ matrix.python-version }}

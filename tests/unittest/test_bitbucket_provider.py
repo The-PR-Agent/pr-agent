@@ -16,6 +16,7 @@ from requests.utils import get_encoding_from_headers
 from pr_agent.algo.comment_identity import (
     PRReviewHeader,
     PRReviewIdentity,
+    hidden_marker_forms,
 )
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import global_settings
@@ -2106,6 +2107,8 @@ class TestBitbucketServerProvider:
             legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
         )
         first_body = provider.bitbucket_client.add_pull_request_comment.call_args.args[3]
+        html_marker, *_, markdown_marker = hidden_marker_forms(PRReviewIdentity.REGULAR.value)
+        assert first_body == f"{header}\n\n{markdown_marker}\n\nfirst review"
         provider.bitbucket_client.get_pull_requests_activities.return_value = [
             self._comment_activity(first_body),
         ]
@@ -2124,13 +2127,18 @@ class TestBitbucketServerProvider:
         update_args = provider.bitbucket_client.update_pull_request_comment.call_args.args
         assert update_args[:4] == ("AAA", "my-repo", 1, 7)
         assert update_args[5] == 3
-        assert PRReviewIdentity.REGULAR.value in update_args[4]
+        assert markdown_marker in update_args[4]
+        assert html_marker not in update_args[4]
         assert "second review" in update_args[4]
 
-    def test_persistent_review_migrates_legacy_heading_to_stable_identity(self):
+    @pytest.mark.parametrize("previous_body", [
+        "## PR Reviewer Guide 🔍\n\nprevious review",
+        f"## Custom Review 🔍\n\n{PRReviewIdentity.REGULAR.value}\n\nprevious review",
+    ], ids=["legacy-heading", "html-marker"])
+    def test_persistent_review_migrates_to_markdown_identity(self, previous_body):
         provider = self._persistent_provider()
         provider.bitbucket_client.get_pull_requests_activities.return_value = [
-            self._comment_activity("## PR Reviewer Guide 🔍\n\nprevious review"),
+            self._comment_activity(previous_body),
         ]
 
         provider.publish_persistent_comment(
@@ -2142,9 +2150,15 @@ class TestBitbucketServerProvider:
         )
 
         provider.bitbucket_client.add_pull_request_comment.assert_not_called()
-        updated_body = provider.bitbucket_client.update_pull_request_comment.call_args.args[4]
-        assert updated_body.startswith("## Team Review 🔍\n\n")
-        assert PRReviewIdentity.REGULAR.value in updated_body
+        provider.bitbucket_client.update_pull_request_comment.assert_called_once()
+        project, repo, pr_id, comment_id, updated_body, version = (
+            provider.bitbucket_client.update_pull_request_comment.call_args.args
+        )
+        html_marker, *_, markdown_marker = hidden_marker_forms(PRReviewIdentity.REGULAR.value)
+        assert (project, repo, pr_id, comment_id, version) == ("AAA", "my-repo", 1, 7, 3)
+        assert updated_body.startswith(f"## Team Review 🔍\n\n{markdown_marker}\n\n")
+        assert html_marker not in updated_body
+        assert updated_body.endswith("\n\nnew review")
 
     def test_edit_comment_retries_once_with_refreshed_version_after_conflict(self):
         provider = self._persistent_provider()

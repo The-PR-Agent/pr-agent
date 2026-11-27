@@ -28,7 +28,13 @@ from pr_agent.git_providers.azuredevops_provider import AZURE_AGENT_RESPONSE_MAR
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.request_body_limit import create_server_app
-from pr_agent.servers.utils import auto_feedback_disabled, basic_auth_matches, dedupe_review_commands, get_pr_commands
+from pr_agent.servers.utils import (
+    auto_feedback_disabled,
+    basic_auth_matches,
+    dedupe_review_commands,
+    get_pr_commands,
+    preload_host_settings_for_new_automatic_event,
+)
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
@@ -218,6 +224,10 @@ def authorize(credentials: HTTPBasicCredentials = Depends(security)):  # noqa: B
 
 
 async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: str, log_context: dict):
+    # RawContextMiddleware preserves request context through Starlette BackgroundTasks.
+    if not await preload_host_settings_for_new_automatic_event():
+        get_logger().warning("Request ignored: host settings could not be loaded", **log_context)
+        return
     apply_repo_settings(api_url)
     # auto commands for PR, and auto feedback is disabled
     if auto_feedback_disabled():

@@ -73,6 +73,8 @@ def cli_mode_settings(monkeypatch):
         "OPENROUTER_API_BASE", "OPENROUTER_API_KEY", "OR_API_KEY",
         "OPENAI_API_KEY", "OPENAI_KEY", "CLOUDFLARE_API_BASE", "CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID",
         "GROQ_API_BASE", "GROQ_API_KEY", "DATABRICKS_API_BASE", "DATABRICKS_API_KEY",
+        "DATABRICKS_HOST", "DATABRICKS_TOKEN", "DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET",
+        "DATABRICKS_AUTH_TYPE",
         "AZURE_API_BASE", "AZURE_OPENAI_ENDPOINT", "AZURE_API_KEY", "AZURE_OPENAI_API_KEY",
         "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_API_BASE", "ANTHROPIC_BASE_URL",
@@ -1201,6 +1203,141 @@ def test_anthropic_token_requires_absent_native_key(
 
     monkeypatch.setattr(LiteLLMAIHandler, "chat_completion", fake_completion)
     assert cli.run(inargs=["doctor"]) == (0 if expected_ok else 1)
+
+
+@pytest.mark.parametrize("auth_type", (None, "pat", "oauth-m2m"))
+async def test_databricks_sdk_environment_auth_reaches_native_validator(monkeypatch, cli_mode_settings, auth_type):
+    from importlib.machinery import ModuleSpec
+    from types import ModuleType, SimpleNamespace
+    from unittest.mock import Mock
+
+    import litellm
+    from litellm.llms.databricks.common_utils import DatabricksBase
+
+    from pr_agent.algo.ai_handlers import litellm_ai_handler
+
+    host = "https://sdk-host.example"
+    model = "databricks/endpoint"
+    cli_mode_settings.set("config.model", model)
+    monkeypatch.setenv("DATABRICKS_HOST", host)
+    if auth_type is not None:
+        monkeypatch.setenv("DATABRICKS_AUTH_TYPE", auth_type)
+    if auth_type != "oauth-m2m":
+        monkeypatch.setenv("DATABRICKS_TOKEN", "sdk-token")
+    else:
+        monkeypatch.setenv("DATABRICKS_CLIENT_ID", "sdk-client")
+        monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "sdk-secret")
+
+    # Stub only the optional SDK boundary. Its native LiteLLM validator and the
+    # real handler's request-local guard must still produce the correct route.
+    sdk = ModuleType("databricks.sdk")
+    sdk.__spec__ = ModuleSpec("databricks.sdk", loader=None)
+    authenticate = Mock(return_value={"Authorization": "Bearer sdk-token"})
+    sdk.WorkspaceClient = Mock(return_value=SimpleNamespace(
+        config=SimpleNamespace(host=host, authenticate=authenticate),
+    ))
+    sdk.useragent = SimpleNamespace(with_partner=Mock())
+    package = ModuleType("databricks")
+    package.__path__ = []
+    package.sdk = sdk
+    monkeypatch.setitem(sys.modules, "databricks", package)
+    monkeypatch.setitem(sys.modules, "databricks.sdk", sdk)
+    monkeypatch.setattr(litellm, "api_key", "foreign-global-key")
+    monkeypatch.setattr(litellm, "api_base", None)
+    monkeypatch.setattr(litellm, "headers", None)
+    validator = DatabricksBase.databricks_validate_environment
+    monkeypatch.setattr(
+        DatabricksBase, "databricks_validate_environment",
+        getattr(validator, "_pr_agent_original_databricks_validate_environment", validator),
+    )
+
+    handler = litellm_ai_handler.LiteLLMAIHandler()
+    assert handler._captured_api_key("databricks") is None
+    assert doctor._active_provider(model, handler) == "databricks"
+    assert doctor._check_provider_key(handler, "databricks")[0]
+    assert doctor.missing_provider_key_env_vars() is None
+    sdk.WorkspaceClient.assert_not_called()
+
+    async def complete(**kwargs):
+        assert kwargs["api_key"] == DUMMY_LITELLM_API_KEY
+        endpoint, headers = DatabricksBase().databricks_validate_environment(
+            api_key=kwargs["api_key"], api_base=kwargs.get("api_base"),
+            endpoint_type="chat_completions", custom_endpoint=False, headers=kwargs.get("headers"),
+        )
+        assert endpoint == host + "/serving-endpoints/chat/completions"
+        assert headers["Authorization"] == "Bearer sdk-token"
+
+    await handler.probe_completion(model, _completion=complete)
+    sdk.WorkspaceClient.assert_called_once_with()
+    authenticate.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    ("environment", "sdk_available", "model", "key", "expected_ok"),
+    [
+        ({"DATABRICKS_TOKEN": "sdk-token"}, True, "databricks/endpoint", None, False),
+        ({"DATABRICKS_HOST": "https://sdk-host.example"}, True, "databricks/endpoint", None, False),
+        (
+            {"DATABRICKS_HOST": "https://sdk-host.example", "DATABRICKS_TOKEN": "sdk-token"},
+            False, "databricks/endpoint", None, False,
+        ),
+        (
+            {"DATABRICKS_HOST": "https://sdk-host.example", "DATABRICKS_TOKEN": DUMMY_LITELLM_API_KEY},
+            True, "databricks/endpoint", None, False,
+        ),
+        (
+            {"DATABRICKS_HOST": "https://sdk-host.example", "DATABRICKS_CLIENT_ID": "sdk-client"},
+            True, "databricks/endpoint", None, False,
+        ),
+        (
+            {
+                "DATABRICKS_HOST": "https://sdk-host.example", "DATABRICKS_TOKEN": "sdk-token",
+                "DATABRICKS_AUTH_TYPE": "oauth-m2m",
+            },
+            True, "databricks/endpoint", None, False,
+        ),
+        (
+            {"DATABRICKS_HOST": "https://sdk-host.example", "DATABRICKS_TOKEN": "sdk-token"},
+            True, "databricks/endpoint", DUMMY_LITELLM_API_KEY, False,
+        ),
+        (
+            {"DATABRICKS_HOST": "https://sdk-host.example", "DATABRICKS_TOKEN": "sdk-token"},
+            True, "anthropic/claude-3-5-sonnet-20241022", None, False,
+        ),
+        (
+            {
+                "DATABRICKS_HOST": "https://sdk-host.example", "DATABRICKS_TOKEN": "sdk-token",
+                "DATABRICKS_CLIENT_ID": "sdk-client", "DATABRICKS_CLIENT_SECRET": "sdk-secret",
+            },
+            True, "databricks/endpoint", None, False,
+        ),
+        (
+            {
+                "DATABRICKS_HOST": "https://sdk-host.example", "DATABRICKS_TOKEN": DUMMY_LITELLM_API_KEY,
+                "DATABRICKS_CLIENT_ID": "sdk-client", "DATABRICKS_CLIENT_SECRET": "sdk-secret",
+                "DATABRICKS_AUTH_TYPE": "oauth-m2m",
+            },
+            True, "databricks/endpoint", None, True,
+        ),
+        ({}, False, "databricks/endpoint", "native-key", True),
+    ],
+)
+def test_databricks_sdk_preflight_preserves_native_key_requirements(
+    monkeypatch, cli_mode_settings, environment, sdk_available, model, key, expected_ok,
+):
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+
+    def find_sdk_spec(name):
+        assert name == "databricks.sdk"
+        return object() if sdk_available else None
+
+    monkeypatch.setattr(doctor, "find_spec", find_sdk_spec)
+    cli_mode_settings.set("config.model", model)
+    handler = _install_handler(monkeypatch, key=key)
+    assert (doctor.missing_provider_key_env_vars() is None) is expected_ok
+    assert cli.run(inargs=["doctor"]) == (0 if expected_ok else 1)
+    assert handler.ping_calls == [model]
 
 
 def test_unresolvable_model_id_defers_to_the_ping(cli_mode_settings, monkeypatch):

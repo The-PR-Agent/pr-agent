@@ -246,6 +246,18 @@ def test_scan_file_diff_removed_functions(line, expected_cat):
     assert any(item["category"] == expected_cat for item in findings), f"Failed for {line}"
 
 
+@pytest.mark.parametrize(
+    ("patch", "expected_categories"),
+    [
+        ("@@ -1 +1 @@\n+const sql = \"safe\u2028DROP TABLE users;\";", ["destructive_sql"]),
+        ("@@ -1 +1 @@\n+const s = \"x\u2028-def calculate_discount(price, user):", []),
+    ],
+)
+def test_scan_file_diff_uses_git_line_boundaries(patch, expected_categories):
+    findings = dr.scan_file_diff(_file("service.js", patch))
+    assert [item["category"] for item in findings] == expected_categories
+
+
 def test_scan_file_diff_removed_config_defaults():
     patch = "@@ -1,2 +1,2 @@\n-timeout = 30\n+timeout = 60"
     f = _file("settings.toml", patch)

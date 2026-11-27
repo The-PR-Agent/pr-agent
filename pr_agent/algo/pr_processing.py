@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import traceback
+from collections import Counter
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 
 import openai
 
+from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.git_patch_processing import (
     decouple_and_convert_to_hunks_with_lines_numbers,
     extend_patch,
     handle_patch_deletions,
+    quote_diff_filename,
 )
 from pr_agent.algo.language_handler import (
     AUTO_GENERATED_FILES_EXACT,
@@ -65,8 +68,10 @@ def _append_metadata_section(
     max_tokens: int,
     token_handler: TokenHandler,
     whole_lines: bool = False,
+    fits_request: Callable[[str], bool] | None = None,
+    metadata_filenames: list[str] | None = None,
 ) -> tuple[str, int, str]:
-    """Append metadata within the input budget, optionally keeping every line complete."""
+    """Append bounded metadata, retaining whole filename entries when supplied."""
     if not section:
         return final_diff, curr_token, section
 
@@ -79,10 +84,11 @@ def _append_metadata_section(
 
     if whole_lines:
         # Split only metadata delimiters; other line separators can belong to filenames.
-        lines = section.removesuffix("\n").split("\n")
+        lines = section.removesuffix("\n").split("\n", 2 if metadata_filenames is not None else -1)
         # Omit headings without filenames.
         if len(lines) > 2:
-            heading, filenames = lines[:2], lines[2:]
+            heading = lines[:2]
+            filenames = lines[2:] if metadata_filenames is None else metadata_filenames
             result = (final_diff, curr_token, "")
 
             def fits(prefix: list[str]) -> bool:
@@ -92,7 +98,7 @@ def _append_metadata_section(
                 candidate_tokens = token_handler.prompt_tokens + _count_raw_and_stripped_tokens(
                     token_handler, candidate
                 )
-                if candidate_tokens <= max_tokens:
+                if candidate_tokens <= max_tokens and (fits_request is None or fits_request(candidate)):
                     result = (candidate, candidate_tokens, clipped_section)
                     return True
                 return False
@@ -108,7 +114,7 @@ def _append_metadata_section(
         if clipped_section:
             candidate = final_diff + separator + clipped_section
             candidate_tokens = token_handler.prompt_tokens + _count_raw_and_stripped_tokens(token_handler, candidate)
-            if candidate_tokens <= max_tokens:
+            if candidate_tokens <= max_tokens and (fits_request is None or fits_request(candidate)):
                 return candidate, candidate_tokens, clipped_section
 
     return final_diff, curr_token, ""
@@ -135,14 +141,17 @@ def _prioritized_filtered_files(filtered_files: list | tuple) -> list[str]:
     )
 
 
+def _filtered_file_entries(filtered_files: list | tuple) -> list[str]:
+    entries = _prioritized_filtered_files(filtered_files)[:MAX_FILTERED_FILES_TO_PROMPT]
+    if len(filtered_files) > MAX_FILTERED_FILES_TO_PROMPT:
+        entries.append(f"... and {len(filtered_files) - MAX_FILTERED_FILES_TO_PROMPT} more")
+    return entries
+
+
 def _filtered_file_section(filtered_files: list | tuple) -> str:
     if not filtered_files:
         return ""
-    ordered = _prioritized_filtered_files(filtered_files)
-    section = FILTERED_FILES_ + "\n" + "\n".join(ordered[:MAX_FILTERED_FILES_TO_PROMPT])
-    if len(filtered_files) > MAX_FILTERED_FILES_TO_PROMPT:
-        section += f"\n... and {len(filtered_files) - MAX_FILTERED_FILES_TO_PROMPT} more"
-    return section
+    return FILTERED_FILES_ + "\n" + "\n".join(_filtered_file_entries(filtered_files))
 
 
 def _find_verified_fitting_prefix_length(items, max_length: int, fits: Callable[[list], bool]) -> int:
@@ -190,6 +199,8 @@ class PreparedPRDiff:
     add_line_numbers_to_hunks: bool = False
     token_handler: TokenHandler | None = None
     attempt_budget: AttemptTokenBudget | None = None
+    # Deletions omitted from this diff, regardless of room for a filename notice.
+    deleted_files_list: list[str] | None = None
 
 
 def cap_and_log_extra_lines(value, direction) -> int:
@@ -216,7 +227,10 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 return_remaining_files=False,
                 return_prepared=False,
                 output_token_reserve: Callable[[str, int], int] | None = None,
-                excluded_extensions: list | None = None):
+                excluded_extensions: list | None = None,
+                *, defer_file_notices: bool = False):
+    # The reviewer can attach optional notices after validating the rendered request.
+    defer_file_notices = return_prepared and defer_file_notices
     budget = AttemptTokenBudget.for_attempt(
         model, token_handler, output_token_reserve=output_token_reserve
     )
@@ -245,6 +259,20 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
 
     # get pr languages
     pr_languages = sort_files_by_main_languages(git_provider.get_languages(), diff_files)
+    notice_only_deleted_files = []
+    if defer_file_notices:
+        # The line-number renderer substitutes a notice for every deleted file,
+        # even when the provider has supplied a patch. Keep those out of source packing.
+        notice_only = [file for language in pr_languages for file in language["files"]
+                       if file.edit_type == EDIT_TYPE.DELETED and (add_line_numbers_to_hunks or not file.patch)]
+        if notice_only:
+            # Providers may retain patchless deletions even when path rules exclude them.
+            notice_only_deleted_files = [file.filename for file in filter_ignored(notice_only, platform="plain_diff")]
+            notice_only_ids = {id(file) for file in notice_only}
+            pr_languages = [
+                {**language, "files": [file for file in language["files"] if id(file) not in notice_only_ids]}
+                for language in pr_languages
+            ]
     if pr_languages:
         try:
             get_logger().info(f"PR main language: {pr_languages[0]['language']}")
@@ -256,7 +284,7 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
         pr_languages, token_handler, add_line_numbers_to_hunks,
         patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE, patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER,
         # Retain per-file counts when filtered-file metadata may force repacking.
-        skip_file_tokens_below=None if filtered_files else soft_token_budget,
+        skip_file_tokens_below=None if filtered_files and not defer_file_notices else soft_token_budget,
         overflow_token_budget=soft_token_budget)
 
     # Return early only when no files produced a patch (as opposed to patches released on overflow).
@@ -264,7 +292,8 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
         if return_prepared:
             return PreparedPRDiff("", [], model=model,
                                   add_line_numbers_to_hunks=add_line_numbers_to_hunks,
-                                  token_handler=token_handler, attempt_budget=budget)
+                                  token_handler=token_handler, attempt_budget=budget,
+                                  deleted_files_list=notice_only_deleted_files)
         return ""
 
     if total_tokens - token_handler.prompt_tokens < soft_token_budget:
@@ -272,7 +301,7 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                           f"returning full diff.")
         full_diff = "\n".join(patches_extended)
         full_diff_is_usable = True
-        if filtered_files:
+        if filtered_files and not defer_file_notices:
             full_diff_with_metadata, _, included_section = _append_metadata_section(
                 full_diff,
                 token_handler.prompt_tokens + token_handler.count_tokens(full_diff),
@@ -293,7 +322,8 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
             if return_prepared:
                 return PreparedPRDiff(full_diff, [], model=model,
                                       add_line_numbers_to_hunks=add_line_numbers_to_hunks,
-                                      token_handler=token_handler, attempt_budget=budget)
+                                      token_handler=token_handler, attempt_budget=budget,
+                                      deleted_files_list=notice_only_deleted_files)
             return full_diff
 
     # Release the discarded full diff before constructing compressed patches.
@@ -329,16 +359,20 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
     curr_token = token_handler.prompt_tokens + token_handler.count_tokens(final_diff)
     delta_tokens = 10
     added_list_str = modified_list_str = deleted_list_str = ""
+    deleted_notice_files = list(dict.fromkeys([*deleted_files_list, *notice_only_deleted_files]))
     unprocessed_files = []
-    # generate the added, modified, and deleted files lists
-    if (max_tokens - curr_token) > delta_tokens:
+    # Record omissions independently of whether their notices can fit.
+    has_metadata_room = (max_tokens - curr_token) > delta_tokens
+    if has_metadata_room or return_prepared:
         included_files = set(files_in_patch)
-        if deleted_files_list:
-            deleted_list_str = DELETED_FILES_ + "\n" + "\n".join(deleted_files_list)
         for filename, file_values in file_dict.items():
             if filename in included_files:
                 continue
-            if file_values['edit_type'] == EDIT_TYPE.ADDED:
+            if file_values['edit_type'] == EDIT_TYPE.DELETED:
+                deleted_notice_files.append(filename)
+            elif not has_metadata_room:
+                continue
+            elif file_values['edit_type'] == EDIT_TYPE.ADDED:
                 unprocessed_files.append(filename)
                 if not added_list_str:
                     added_list_str = ADDED_FILES_ + f"\n{filename}"
@@ -350,13 +384,9 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                     modified_list_str = MORE_MODIFIED_FILES_ + f"\n{filename}"
                 else:
                     modified_list_str = modified_list_str + f"\n{filename}"
-            elif file_values['edit_type'] == EDIT_TYPE.DELETED:
-                # the file was deleted, so no need to add it to unprocessed files
-                # unprocessed_files.append(filename)
-                if not deleted_list_str:
-                    deleted_list_str = DELETED_FILES_ + f"\n{filename}"
-                else:
-                    deleted_list_str = deleted_list_str + f"\n{filename}"
+    deleted_notice_files = list(dict.fromkeys(deleted_notice_files))
+    if has_metadata_room and deleted_notice_files and not defer_file_notices:
+        deleted_list_str = DELETED_FILES_ + "\n" + "\n".join(deleted_notice_files)
 
     # prune the added, modified, and deleted files lists, and add them to the final diff
     final_diff, curr_token, added_list_str = _append_metadata_section(
@@ -365,12 +395,13 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
     final_diff, curr_token, modified_list_str = _append_metadata_section(
         final_diff, curr_token, modified_list_str, max_tokens, token_handler, whole_lines=True
     )
-    final_diff, curr_token, deleted_list_str = _append_metadata_section(
-        final_diff, curr_token, deleted_list_str, max_tokens, token_handler, whole_lines=True
-    )
-    final_diff, curr_token, filtered_list_str = _append_metadata_section(
-        final_diff, curr_token, _filtered_file_section(filtered_files), max_tokens, token_handler, whole_lines=True
-    )
+    if not defer_file_notices:
+        final_diff, curr_token, deleted_list_str = _append_metadata_section(
+            final_diff, curr_token, deleted_list_str, max_tokens, token_handler, whole_lines=True
+        )
+        final_diff, curr_token, _ = _append_metadata_section(
+            final_diff, curr_token, _filtered_file_section(filtered_files), max_tokens, token_handler, whole_lines=True
+        )
 
     get_logger().debug(f"After pruning, added_list_str: {added_list_str}, modified_list_str: {modified_list_str}, "
                        f"deleted_list_str: {deleted_list_str}")
@@ -389,6 +420,7 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
             add_line_numbers_to_hunks=add_line_numbers_to_hunks,
             token_handler=token_handler,
             attempt_budget=budget,
+            deleted_files_list=deleted_notice_files,
         )
     if not return_remaining_files:
         return final_diff
@@ -618,7 +650,7 @@ def _unreadable_file_notice(file) -> str:
     explicitly keeps the failure visible so it can flag the file for manual review.
     """
     return (
-        f"\n\n## File: '{file.filename.strip()}'\n\n"
+        f"\n\n## File: {quote_diff_filename(file.filename)}\n\n"
         f"> **This file could not be read.** PR-Agent failed to fetch its contents, so no diff "
         f"is available and nothing in it was reviewed. Do not assume this file is correct, "
         f"unchanged, or free of issues: flag it for manual review.\n"
@@ -700,7 +732,8 @@ def pr_generate_extended_diff(pr_languages: list,
                     full_extended_patch = decouple_and_convert_to_hunks_with_lines_numbers(extended_patch, file)
                 else:
                     extended_patch = extended_patch.replace('\n@@ ', '\n\n@@ ') # add extra line before each hunk
-                    full_extended_patch = f"\n\n## File: '{file.filename.strip()}'\n\n{extended_patch.strip("\r\n")}\n"
+                    file_label = quote_diff_filename(file.filename)
+                    full_extended_patch = f"\n\n## File: {file_label}\n\n{extended_patch.strip("\r\n")}\n"
 
                 # add AI-summary metadata to the patch
                 if file.ai_file_summary and get_settings().get("config.enable_ai_metadata", False):
@@ -860,7 +893,7 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, soft_token_bud
 
         if patch:
             if not convert_hunks_to_line_numbers:
-                patch_final = f"\n\n## File: '{filename.strip()}'\n\n{patch.strip("\r\n")}\n"
+                patch_final = f"\n\n## File: {quote_diff_filename(filename)}\n\n{patch.strip("\r\n")}\n"
             else:
                 patch_final = "\n\n" + patch.strip("\r\n")
             if rendered_patch_token_cache is not None and filename in rendered_patch_token_cache:
@@ -1167,7 +1200,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         if add_line_numbers:
             patch = decouple_and_convert_to_hunks_with_lines_numbers(patch, file)
         else:
-            patch = f"\n\n## File: '{file.filename.strip()}'\n\n{patch.strip("\r\n")}\n"
+            patch = f"\n\n## File: {quote_diff_filename(file.filename)}\n\n{patch.strip("\r\n")}\n"
 
         # add AI-summary metadata to the patch
         if file.ai_file_summary and get_settings().get("config.enable_ai_metadata", False):
@@ -1189,25 +1222,72 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     ))
 
 
+def _legacy_metadata_pr_paths(git_provider) -> set[str]:
+    """Collect paths only from a complete, unfiltered inventory with rename details."""
+    try:
+        paths = set()
+        for entry in git_provider.get_verdict_diff_files() or []:
+            if isinstance(entry, dict):
+                current, previous = entry.get("new_path"), entry.get("old_path")
+                renamed = entry.get("renamed_file", False)
+            else:
+                current = getattr(entry, "filename", None)
+                previous = getattr(entry, "previous_filename", None)
+                renamed = getattr(entry, "status", None) == "renamed"
+            names = {path for path in (current, previous) if isinstance(path, str) and path and path != "/dev/null"}
+            if not names or (renamed and len(names) != 2):
+                return set()
+            paths.update(names)
+        return paths
+    except Exception as e:
+        get_logger().warning(f"Failed to list full PR paths for legacy AI metadata: {e}")
+        return set()
+
+
 def add_ai_metadata_to_diff_files(git_provider, pr_description_files):
     """
     Adds AI metadata to the diff files based on the PR description files (FilePatchInfo.ai_file_summary).
     """
     try:
+        # Diff objects can be cached across reviews; discard any prior summaries.
+        diff_files = git_provider.get_diff_files() or []
+        for file in diff_files:
+            file.ai_file_summary = None
         if not pr_description_files:
             get_logger().warning("PR description files are empty.")
             return
-        available_files = {pr_file['full_file_name'].strip(): pr_file for pr_file in pr_description_files}
-        diff_files = git_provider.get_diff_files()
+        # Prefer exact current-format rows over lossy legacy rows. Duplicate
+        # identities within either format are ambiguous, not last-write-wins.
+        current_files, legacy_files = {}, {}
+        for metadata in pr_description_files:
+            filename = metadata["full_file_name"]
+            rows = legacy_files if metadata.get("_legacy_filename") else current_files
+            rows[filename] = None if filename in rows else metadata
+        available_files = {**legacy_files, **current_files}
+        # A scoped or destination-only inventory can hide a legacy collision.
+        # Require complete diff details; never fall back to get_pr_file_paths().
+        description_counts = Counter(row["full_file_name"].strip() for row in pr_description_files)
+        full_paths = _legacy_metadata_pr_paths(git_provider) if legacy_files else set()
+        diff_counts = Counter(path.strip() for path in full_paths)
+        # Also reject a collision in the scoped diff (e.g. commit-review paths).
+        scoped_counts = Counter(file.filename.strip() for file in diff_files)
         found_any_match = False
         for file in diff_files:
-            filename = file.filename.strip()
-            if filename in available_files:
-                file.ai_file_summary = available_files[filename]
-                found_any_match = True
+            filename = file.filename
+            metadata = available_files.get(filename)
+            if metadata is None:
+                continue
+            if metadata.get("_legacy_filename") and (
+                filename not in full_paths
+                or description_counts[filename.strip()] != 1
+                or diff_counts[filename.strip()] != 1
+                or scoped_counts[filename.strip()] != 1
+            ):
+                continue
+            file.ai_file_summary = metadata
+            found_any_match = True
         if not found_any_match:
-            get_logger().error("Failed to find any matching files between PR description and diff files.",
-                               artifact={"pr_description_files": pr_description_files})
+            get_logger().info("No unambiguous AI metadata matched the current diff.")
     except Exception as e:
         get_logger().error(f"Failed to add AI metadata to diff files: {e}",
                            artifact={"traceback": traceback.format_exc()})
@@ -1218,10 +1298,13 @@ def add_ai_summary_top_patch(file, full_extended_patch):
         # below every instance of '## File: ...' in the patch, add the ai-summary metadata
         full_extended_patch_lines = full_extended_patch.split("\n")
         for i, line in enumerate(full_extended_patch_lines):
-            if line.startswith("## File:") or line.startswith("## file:"):
-                full_extended_patch_lines.insert(
-                    i + 1, f"### AI-generated changes summary:\n{file.ai_file_summary['long_summary']}"
+            if line.startswith(("## File:", "## file:")):
+                # Metadata is prose, not an authoritative file boundary.
+                summary = "\n".join(
+                    "> " + line if line.startswith(("## File:", "## file:")) else line
+                    for line in file.ai_file_summary["long_summary"].split("\n")
                 )
+                full_extended_patch_lines.insert(i + 1, f"### AI-generated changes summary:\n{summary}")
                 full_extended_patch = "\n".join(full_extended_patch_lines)
                 return full_extended_patch
 

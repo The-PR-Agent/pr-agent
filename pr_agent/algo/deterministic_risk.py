@@ -16,6 +16,7 @@ from typing import Any
 
 import regex
 
+from pr_agent.algo.git_patch_processing import split_diff_lines
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
@@ -341,7 +342,7 @@ def scan_file_diff(
         filename.endswith(ext) for ext in (".toml", ".yaml", ".yml", ".json", ".ini", ".env")
     )
 
-    for raw_line in patch.splitlines():
+    for raw_line in split_diff_lines(patch):
         if not raw_line or len(raw_line) < 2:
             continue
         prefix = raw_line[0]

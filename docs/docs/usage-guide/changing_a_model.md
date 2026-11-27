@@ -177,18 +177,22 @@ E.g. to use a new model locally via Ollama, set in `.secrets.toml` or in a confi
 
 ```toml
 [config]
-model = "ollama/qwen2.5-coder:32b"
+model = "ollama/qwen3.8:27b"
 fallback_models=[]
-custom_model_max_tokens=64000 # set the maximal input tokens for the model
+reasoning_effort = "none" # disable thinking for this example
+additional_reasoning_effort_models = ["ollama/qwen3.8:27b"]
+custom_model_max_tokens=32768 # match the Ollama server's effective context window
 duplicate_prompt_examples=true # will duplicate the examples in the prompt, to help the model to generate structured output
 
 [ollama]
 api_base = "http://localhost:11434" # or whatever port you're running Ollama on
 ```
 
-Ollama's context window may be too small for PR-Agent prompts and pull-request diffs. Set `OLLAMA_CONTEXT_LENGTH` to suit your model and available memory; for example, `OLLAMA_CONTEXT_LENGTH=64000 ollama serve` sets a 64K window matching the example configuration above. This example follows [Ollama's context-length recommendation for coding and agent workloads](https://docs.ollama.com/context-length), not an Ollama default.
+Ollama's context window may be too small for PR-Agent prompts and pull-request diffs. Set `OLLAMA_CONTEXT_LENGTH` to suit your model and available memory. For the [`qwen3.8:27b` tag](https://ollama.com/library/qwen3.8:27b) used above, start the server with `OLLAMA_CONTEXT_LENGTH=32768 ollama serve` to match the example's 32K budget rather than assuming the tag's full 256K context is available. [Ollama's context-length guide](https://docs.ollama.com/context-length) recommends at least 64K for coding and agent workloads when the model and available memory allow it.
 
-Please note that the `custom_model_max_tokens` setting should be configured in accordance with the `OLLAMA_CONTEXT_LENGTH`. Failure to do so may result in unexpected model output.
+Verify the effective context with `ollama ps` and set `custom_model_max_tokens` no higher than that context or the model's supported limit.
+
+Qwen3.8 enables thinking by default. The example explicitly registers the tagged model for `reasoning_effort` forwarding even when LiteLLM lacks matching metadata; `"none"` maps to Ollama's [`think: false`](https://docs.ollama.com/capabilities/thinking). If you enable thinking, allow additional time and output-token headroom.
 
 :::note[Local models vs commercial models]
 PR-Agent is compatible with almost any AI model, but analyzing complex code repositories and pull requests requires a model specifically optimized for code analysis.
@@ -202,18 +206,23 @@ Hence, for production workflows and real-world usage, we recommend using commerc
 
 ### Hugging Face
 
-To use a new model with Hugging Face Inference Endpoints, for example, set:
+To use a model deployed with Hugging Face Inference Endpoints, such as [Gemma 4 12B IT](https://huggingface.co/google/gemma-4-12B-it), set:
 
 ```toml
 [config] # in configuration.toml
-model = "huggingface/meta-llama/Llama-2-7b-chat-hf"
+model = "huggingface/google/gemma-4-12B-it"
 fallback_models=[]
-custom_model_max_tokens=... # set the maximal input tokens for the model
+reasoning_effort = "none" # avoid requesting thinking when forwarded
+custom_model_max_tokens=32768 # example; use your deployed endpoint's supported input-token limit
 
 [huggingface] # in .secrets.toml
-key = ... # your Hugging Face api key
-api_base = ... # the base url for your Hugging Face inference endpoint
+key = "..." # your Hugging Face API key
+api_base = "..." # the base URL for your Hugging Face inference endpoint
 ```
+
+Deploy the selected model first (see the [verified Inference Endpoints deployment recipe](https://endpoints.huggingface.co/new/google/gemma-4-12B-it)), accept its access terms if required, and adjust `custom_model_max_tokens` to the endpoint's supported input-token limit, not its total context window.
+
+Gemma 4's [vLLM reasoning mode](https://docs.vllm.ai/en/latest/features/reasoning_outputs/) is opt-in by default. PR-Agent only forwards `reasoning_effort` when reasoning support is recognized or explicitly configured; `"none"` avoids enabling thinking if the parameter is forwarded.
 
 (you can obtain a Hugging Face access token from [here](https://huggingface.co/settings/tokens))
 
@@ -250,17 +259,17 @@ key = "..." # your Groq API key
 
 ### SambaNova
 
-To use MiniMax-M3 model with SambaNova, for example, set:
+To use an available model on SambaCloud, set:
 
 ```toml
 [config] # in configuration.toml
-model = "sambanova/MiniMax-M3"
-fallback_models = ["sambanova/MiniMax-M2.7"]
+model = "sambanova/<model-id>"
+fallback_models = []
 [sambanova] # in .secrets.toml
-key = ... # your SambaNova api key
+key = "..." # your SambaNova api key
 ```
 
-(you can obtain a SambaNova key from [here](https://cloud.sambanova.ai/apis))
+Replace `<model-id>` with an available chat model ID from the [SambaCloud model catalog](https://docs.sambanova.ai/docs/en/models/sambacloud-models), keeping the `sambanova/` prefix. If neither PR-Agent nor LiteLLM can resolve the model's input-token limit, set `config.custom_model_max_tokens` to its verified positive input-token limit. The empty fallback list disables fallback models; if you configure any, use models available through their respective providers and configure the required credentials and endpoints. You can obtain a SambaNova key from [here](https://cloud.sambanova.ai/apis).
 
 ### xAI
 
@@ -799,14 +808,14 @@ To use a model hosted on Databricks (e.g. an Azure Databricks serving endpoint),
 
 ```toml
 [config] # in configuration.toml
-model = "databricks/databricks-claude-sonnet-4"
+model = "databricks/<endpoint-name>"
 fallback_models = []
 [databricks] # in .secrets.toml
 api_key = "..." # your Databricks personal access token (PAT)
 api_base = "https://adb-xxxx.azuredatabricks.net/serving-endpoints" # your workspace serving-endpoints URL
 ```
 
-The model name after the `databricks/` prefix is the name of your serving endpoint. See LiteLLM's [Databricks provider docs](https://docs.litellm.ai/docs/providers/databricks) for details.
+Replace `<endpoint-name>` with the name of an available chat model serving endpoint in your workspace. For Databricks-hosted models, consult the model catalog for your cloud ([Azure](https://learn.microsoft.com/en-us/azure/databricks/machine-learning/foundation-model-apis/supported-models), [AWS](https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/supported-models), or [Google Cloud](https://docs.databricks.com/gcp/en/machine-learning/foundation-model-apis/supported-models)) and confirm that the model can be queried through a serving endpoint in your workspace. If neither PR-Agent nor LiteLLM can resolve the endpoint's input-token limit, set `config.custom_model_max_tokens` to its verified positive input-token limit. See LiteLLM's [Databricks provider docs](https://docs.litellm.ai/docs/providers/databricks) for details.
 
 The configured PAT and endpoint are captured per handler. When both `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET` are set, LiteLLM performs an OAuth M2M exchange even if a PAT is supplied. An exchange failure can abort the request; after a successful exchange, the supplied PAT replaces the OAuth token in the final Authorization header. Without OAuth M2M credentials or a PAT, optional Databricks SDK authentication remains available. These deployment-owned credentials and profile selection are not request-isolated. Do not change those sources between tenants in a shared process; use request-specific PATs with OAuth M2M credentials unset, or separate processes for distinct workload identities.
 
@@ -900,11 +909,13 @@ Models under an active GitHub Copilot subscription are available through litellm
 
 ```toml
 [config]
-model = "github_copilot/gpt-4o"
-fallback_models = ["github_copilot/gpt-4.1"]
+model = "github_copilot/<model-id>"
+fallback_models = []
 ```
 
-The GitHub identity behind the model needs an active Copilot subscription. LiteLLM resolves token budgets for these models automatically, so `custom_model_max_tokens` is not required. PR-Agent still caps the effective window at `config.max_model_tokens`; raise that setting only if it is below the selected model's supported input limit.
+Replace `<model-id>` with a model ID supported by the [LiteLLM GitHub Copilot provider](https://docs.litellm.ai/docs/providers/github_copilot) and available for your [Copilot plan and model policies](https://docs.github.com/en/copilot/reference/ai-models/supported-models). Optionally list other available `github_copilot/` model IDs in `fallback_models`.
+
+The GitHub identity behind the model needs an active Copilot subscription. LiteLLM resolves token budgets for models with known metadata automatically, so `custom_model_max_tokens` is not required for those models. PR-Agent still caps the effective window at `config.max_model_tokens`; raise that setting only if it is below the selected model's supported input limit.
 
 Authentication uses the [GitHub Copilot provider](https://docs.litellm.ai/docs/providers/github_copilot) flow:
 

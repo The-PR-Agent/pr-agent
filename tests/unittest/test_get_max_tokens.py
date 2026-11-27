@@ -1276,13 +1276,12 @@ class TestGetMaxTokens:
 
         assert get_max_tokens("fake-provider/fake-model-xyz") == 8000
 
-    @pytest.mark.parametrize("model, documented_input_tokens", [
-        ("cohere/command-r-plus-08-2024", None),
-        ("github_copilot/gpt-4o", 64000),
-        ("github_copilot/gpt-4.1", 128000),
+    @pytest.mark.parametrize("model", [
+        "cohere/command-r-plus-08-2024",
+        "github_copilot/gpt-5.3-codex",
     ])
-    def test_litellm_fallback_uses_real_registry(self, monkeypatch, model, documented_input_tokens):
-        """Verify registry fallback and Copilot input limits in changing_a_model.md."""
+    def test_litellm_fallback_uses_real_registry(self, monkeypatch, model):
+        """Verify fallback to real LiteLLM registry metadata for unlisted models."""
 
         assert model not in MAX_TOKENS
 
@@ -1291,10 +1290,6 @@ class TestGetMaxTokens:
 
         assert isinstance(expected_max_input_tokens, int)
         assert expected_max_input_tokens > 0
-        if documented_input_tokens is not None:
-            assert expected_max_input_tokens == documented_input_tokens, (
-                f"Review {model} input limits in docs/docs/usage-guide/changing_a_model.md"
-            )
 
         fake_settings = type("", (), {
             "config": type("", (), {
@@ -1605,10 +1600,6 @@ class TestNoLiteLLMDuplicates:
         "bedrock/converse/moonshotai.kimi-k3",
         "bedrock/converse/us.moonshotai.kimi-k3",
         "bedrock/converse/global.moonshotai.kimi-k3",
-        "bedrock/anthropic.claude-sonnet-4-20250514-v1:0",
-        "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
-        "bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0",
-        "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0",
     }
 
     # Models pinned in MAX_TOKENS because LiteLLM's bundled backup cost map (used

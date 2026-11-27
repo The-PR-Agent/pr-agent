@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from atlassian.bitbucket import Bitbucket
 from requests.exceptions import ReadTimeout, RequestException
 from starlette_context import request_cycle_context
 
@@ -30,6 +31,7 @@ from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.commands.pr_reviewer import PRReviewer, _code_lines, _review_failure_comment
 from pr_agent.config_loader import get_settings, safe_request_cycle_context
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
 from pr_agent.git_providers.git_provider import (
     GitProvider,
     IncompleteBitbucketPullRequestFilesError,
@@ -316,6 +318,8 @@ async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_r
         add_line_numbers_to_hunks=True,
         disable_extra_lines=False,
         return_remaining_files=True,
+        return_prepared=True,
+        defer_file_notices=True,
     )
     assert reviewer.patches_diff == "diff"
     assert reviewer.remaining_files_list == ["src/one.py", "docs/two.md"]
@@ -2308,6 +2312,55 @@ async def test_run_does_not_publish_an_empty_review(
     git_provider.remove_comment.assert_called_once_with(progress_comment)
 
 
+def test_github_action_output_uses_computed_merge_verdict():
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = MagicMock()
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.get_verdict_diff_files.return_value = []
+    reviewer.git_provider.get_pr_file_paths.return_value = ["src/app.py"]
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.git_provider.publish_structured_review = None
+    reviewer.pr_url = "https://example/pr/1"
+    reviewer.token_handler = MagicMock()
+    reviewer.remaining_files_list = []
+    reviewer.partial_files_list = []
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {"require_merge_recommendation": True}
+    reviewer.prediction = (
+        "review:\n"
+        "  merge_recommendation: no_concerns_found\n"
+        "  risk_level: low\n"
+        "  key_issues_to_review: []\n"
+    )
+    reviewer.prediction_data = None
+    reviewer.review_chunk_count = 1
+    reviewer.review_failed_chunk_count = 0
+    checks = [{"name": "CI status", "passed": False, "details": "failed"}]
+    snapshots = []
+
+    def snapshot_action_output(data, key_name):
+        snapshots.append(copy.deepcopy(data))
+
+    with (
+        patch(
+            "pr_agent.commands.pr_reviewer.github_action_output",
+            side_effect=snapshot_action_output,
+        ) as action_output,
+        patch(
+            "pr_agent.commands.pr_reviewer.compute_merge_verdict",
+            return_value={"recommendation": "needs_review", "checks": checks, "decided_by": ["CI status"]},
+        ),
+        patch("pr_agent.commands.pr_reviewer.convert_to_markdown_v2", return_value="review"),
+    ):
+        reviewer._prepare_pr_review()
+
+    action_output.assert_called_once()
+    review = snapshots[0]["review"]
+    assert review["merge_recommendation"] == "needs_review"
+    assert review["merge_recommendation_checks"] == checks
+
+
 @pytest.mark.asyncio
 async def test_run_publishes_failure_result_when_progress_comment_has_no_handle(monkeypatch):
     from pr_agent.commands import pr_reviewer as pr_reviewer_module
@@ -2968,6 +3021,41 @@ async def test_nonpersistent_review_adds_identity_for_incremental_capable_provid
     ]
     assert len(published_review) == 1
     assert expected_identity in published_review[0].args[0]
+
+
+@pytest.mark.parametrize("persistent", [True, False], ids=["persistent", "nonpersistent"])
+async def test_bitbucket_server_publishes_review_with_markdown_identity(monkeypatch, persistent):
+    from pr_agent.commands import pr_reviewer as pr_reviewer_module
+
+    client = MagicMock(spec=Bitbucket)
+    client.url = "https://git.example.com"
+    client.get.return_value = {"version": "10.2.8"}
+    client.get_pull_request.return_value = {"fromRef": {"latestCommit": "head"}}
+    client.get_pull_requests_changes.return_value = [{"path": {"toString": "example.py"}, "type": "ADD"}]
+    client.get_content_of_file.return_value = "value = 1\n"
+    client.get_pull_requests_activities.return_value = []
+    provider = BitbucketServerProvider(
+        f"{client.url}/projects/PROJ/repos/repo/pull-requests/1", bitbucket_client=client,
+    )
+    reviewer = _make_prediction_reviewer(provider)
+    reviewer.vars = {}
+    header = "## PR Reviewer Guide 🔍"
+    reviewer._prepare_pr_review = lambda: f"{header}\n\nSome findings"
+
+    async def fake_retry(*args, **kwargs):
+        reviewer.prediction = _VALID_PREDICTION
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", fake_retry)
+    settings = get_settings()
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.config, "propagate_command_errors", True)
+    monkeypatch.setitem(settings.pr_reviewer, "persistent_comment", persistent)
+
+    await reviewer.run()
+
+    marker = "[pr-agent:review:full]: https://github.com/The-PR-Agent/pr-agent"
+    client.add_pull_request_comment.assert_called_once_with("PROJ", "repo", 1, f"{header}\n\n{marker}\n\nSome findings")
 
 
 async def _render_review_capturing_push(reviewer, publish_output):

@@ -361,13 +361,14 @@ def _ticket_number(value: Any) -> str:
 
 
 def _ticket_url_index(related_tickets: list[Any] | None) -> tuple:
-    """Map each related ticket's URL text and trailing number to its canonical URL.
+    """Map related-ticket URLs, full tracker keys and trailing numbers to canonical URLs.
 
-    A number that two tickets share is dropped, so a bare `#12` never merges unrelated tickets
-    from different repositories. The canonical URL is what the review links to.
+    Shared numbers are dropped and shared full keys are marked ambiguous. Full keys come
+    from ticket_id rather than URL path segments, which may contain a title slug.
     """
     by_url: dict = {}
     by_number: dict = {}
+    by_key: dict[str, str | None] = {}
     ambiguous_numbers = set()
     for ticket in related_tickets or []:
         if not isinstance(ticket, dict):
@@ -376,7 +377,12 @@ def _ticket_url_index(related_tickets: list[Any] | None) -> tuple:
         if not url:
             continue
         by_url.setdefault(_normalize_text(url), url)
-        number = _ticket_number(ticket.get("ticket_id")) or _ticket_number(url)
+        ticket_id = ticket.get("ticket_id")
+        key = ticket_id.strip().casefold() if isinstance(ticket_id, str) else ""
+        if key and not re.fullmatch(r"#?\d+", key):
+            if by_key.setdefault(key, url) != url:
+                by_key[key] = None
+        number = _ticket_number(ticket_id) or _ticket_number(url)
         if not number:
             continue
         existing = by_number.get(number)
@@ -386,7 +392,7 @@ def _ticket_url_index(related_tickets: list[Any] | None) -> tuple:
             by_number[number] = url
     for number in ambiguous_numbers:
         by_number.pop(number, None)
-    return by_url, by_number
+    return by_url, by_number, by_key
 
 
 def _canonical_ticket_url(raw_url: Any, ticket_index: tuple) -> str:
@@ -394,17 +400,15 @@ def _canonical_ticket_url(raw_url: Any, ticket_index: tuple) -> str:
     text = str(raw_url if raw_url is not None else "").strip()
     if not text:
         return ""
-    by_url, by_number = ticket_index
+    by_url, by_number, by_key = ticket_index
     if _normalize_text(text) in by_url:
         return by_url[_normalize_text(text)]
+    if text.casefold() in by_key:
+        return by_key[text.casefold()] or text
     number = _ticket_number(text)
     if number and number in by_number:
         canonical_url = by_number[number]
         if re.fullmatch(r"#?\d+", text):
-            return canonical_url
-        # A full URL or a named tracker ID identifies its own ticket, even when its
-        # numeric suffix happens to match a related ticket in another repository.
-        if text.casefold() == canonical_url.rstrip("/").rsplit("/", 1)[-1].casefold():
             return canonical_url
         try:
             source, target = urlsplit(text), urlsplit(canonical_url)
@@ -420,7 +424,7 @@ def _canonical_ticket_url(raw_url: Any, ticket_index: tuple) -> str:
     return text
 
 
-def _merge_ticket_compliance(values: list[Any], ticket_index: tuple = ({}, {})) -> list:
+def _merge_ticket_compliance(values: list[Any], ticket_index: tuple = ({}, {}, {})) -> list:
     """One entry per ticket; its bullet lists are unioned across the chunks that saw it.
 
     Each chunk's `ticket_url` is resolved against the related tickets first, so the same

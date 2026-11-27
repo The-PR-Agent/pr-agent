@@ -188,6 +188,6 @@ async def _run_gitlab_handoff(handoff: dict) -> dict:
         # webhook already authenticated it; restore credentials by reference.
         context["settings"] = copy.deepcopy(global_settings)
         log_context = {"server_type": "gitlab_app"}
-        await gitlab_webhook.restore_gitlab_handoff_auth(handoff.get("gitlab_auth"), log_context)
+        await gitlab_webhook.restore_gitlab_handoff_auth(handoff.get("gitlab_auth"), log_context, body=body)
         await gitlab_webhook.process_gitlab_event(body, log_context)
     return {}

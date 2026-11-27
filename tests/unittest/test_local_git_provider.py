@@ -1,6 +1,16 @@
+import json
+import os
+import stat
+from copy import deepcopy
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import git
 import pytest
 
+from pr_agent import cli
+from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.algo.git_patch_processing import count_patch_lines
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import EDIT_TYPE
@@ -147,6 +157,29 @@ def test_get_files_returns_new_path_for_renamed_file(tmp_path):
     provider.target_branch_name = target_branch_name
 
     assert provider.get_files() == ["new.py"]
+
+
+def test_shallow_checkout_requires_history_for_local_comparison(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    repo = _make_repo(source, ["app.py"])
+    target = repo.active_branch.name
+    repo.git.checkout("-b", "feature")
+    (source / "app.py").write_text("changed = True\n")
+    repo.index.add(["app.py"])
+    repo.index.commit("Change app.py")
+
+    checkout = git.Repo.clone_from(source.as_uri(), tmp_path / "checkout", depth=1, no_single_branch=True)
+    checkout.create_head(target, f"origin/{target}")
+    monkeypatch.chdir(checkout.working_tree_dir)
+    snapshot = snapshot_settings(["pr_reviewer.inline_code_comments"])
+    try:
+        with pytest.raises(ValueError, match="No merge base"):
+            LocalGitProvider(target)
+
+        checkout.git.fetch("--unshallow")
+        assert LocalGitProvider(target).get_files() == ["app.py"]
+    finally:
+        restore_settings(snapshot)
 
 
 def test_local_diff_applies_ignore_rules_to_files_and_patches(tmp_path):
@@ -316,13 +349,21 @@ def test_get_diff_files_marks_non_utf8_file_unreadable_and_keeps_utf8_sibling(tm
     assert provider.diff_files is diff_files
 
 
-def test_publish_code_suggestions_writes_improve_file(tmp_path):
+@pytest.fixture
+def local_output_provider(tmp_path):
+    provider = object.__new__(LocalGitProvider)
+    provider.repo_path = tmp_path
+    provider.description_path = tmp_path / "description.md"
+    provider.review_path = tmp_path / "review.md"
+    provider.improve_path = tmp_path / "improve.md"
+    return provider
+
+
+def test_publish_code_suggestions_writes_improve_file(local_output_provider):
     # /improve has no hosted PR to attach inline comments to, so the suggestions
     # built for inline publishing are rendered to improve.md, mirroring how
     # /review and /describe persist their output locally.
-    improve_path = tmp_path / "improve.md"
-    provider = object.__new__(LocalGitProvider)  # bypass heavy __init__
-    provider.improve_path = improve_path
+    provider = local_output_provider
 
     code_suggestions = [
         {"body": "**Suggestion:** rename x\n```suggestion\ny = 1\n```",
@@ -332,7 +373,7 @@ def test_publish_code_suggestions_writes_improve_file(tmp_path):
     ]
 
     assert provider.publish_code_suggestions(code_suggestions) is True
-    content = improve_path.read_text()
+    content = provider.improve_path.read_text()
     # each suggestion's file, line range and rendered body make it into the file.
     assert "### a.py [3-5]" in content
     assert "### b.py [7]" in content  # single-line range collapses to one number
@@ -340,36 +381,28 @@ def test_publish_code_suggestions_writes_improve_file(tmp_path):
     assert "add guard" in content
 
 
-def test_publish_code_suggestions_no_suggestions(tmp_path):
-    improve_path = tmp_path / "improve.md"
-    provider = object.__new__(LocalGitProvider)
-    provider.improve_path = improve_path
-
+def test_publish_code_suggestions_no_suggestions(local_output_provider):
+    provider = local_output_provider
     assert provider.publish_code_suggestions([]) is True
-    assert "No code suggestions found" in improve_path.read_text()
+    assert "No code suggestions found" in provider.improve_path.read_text()
 
 
-def test_publish_code_suggestions_artifact_includes_partial_coverage(tmp_path):
-    improve_path = tmp_path / "improve.md"
-    provider = object.__new__(LocalGitProvider)
-    provider.improve_path = improve_path
-
+def test_publish_code_suggestions_artifact_includes_partial_coverage(local_output_provider):
+    provider = local_output_provider
     assert provider.publish_code_suggestions_artifact(
         [],
         artifact_footer="\n\n⚠️ **Suggestion coverage:** 1 of 2 analysis chunks failed.",
         no_suggestions_message="No code suggestions found in the successfully analyzed chunks.",
     ) is True
 
-    content = improve_path.read_text()
+    content = provider.improve_path.read_text()
     assert "No code suggestions found in the successfully analyzed chunks." in content
     assert "1 of 2 analysis chunks failed" in content
 
 
-def test_publish_code_suggestions_uses_custom_heading_without_identity(tmp_path):
+def test_publish_code_suggestions_uses_custom_heading_without_identity(local_output_provider):
     snapshot = snapshot_settings(["pr_code_suggestions.suggestions_heading"])
-    improve_path = tmp_path / "improve.md"
-    provider = object.__new__(LocalGitProvider)
-    provider.improve_path = improve_path
+    provider = local_output_provider
     try:
         get_settings().set("pr_code_suggestions.suggestions_heading", "Team Suggestions")
 
@@ -377,17 +410,16 @@ def test_publish_code_suggestions_uses_custom_heading_without_identity(tmp_path)
     finally:
         restore_settings(snapshot)
 
-    content = improve_path.read_text()
+    content = provider.improve_path.read_text()
     assert content.startswith("# Team Suggestions ✨\n\n")
     assert "<!-- pr-agent:improve" not in content
 
 
-def test_publish_comment_skips_temporary(tmp_path):
+def test_publish_comment_skips_temporary(local_output_provider):
     # Temporary progress comments ("Preparing suggestions...") must not clobber
     # the persisted review.md; only real output is written.
-    review_path = tmp_path / "review.md"
-    provider = object.__new__(LocalGitProvider)
-    provider.review_path = review_path
+    provider = local_output_provider
+    review_path = provider.review_path
 
     provider.publish_comment("Preparing suggestions...", is_temporary=True)
     assert not review_path.exists()
@@ -396,35 +428,205 @@ def test_publish_comment_skips_temporary(tmp_path):
     assert review_path.read_text() == "real review body"
 
 
-def test_publish_description_writes_utf8_regardless_of_locale(tmp_path, monkeypatch):
-    # Simulate a Windows cp1252 locale so an open() without an explicit encoding
+def test_publish_description_writes_utf8_regardless_of_locale(local_output_provider, monkeypatch):
+    # Simulate a Windows cp1252 locale so an fdopen() without an explicit encoding
     # fails on the emoji that /describe output carries (e.g. the usage guide header).
+    fdopen = os.fdopen
+
     def cp1252_default_open(file, mode="r", *args, **kwargs):
         if "b" not in mode:
             kwargs.setdefault("encoding", "cp1252")
-        return open(file, mode, *args, **kwargs)
+        return fdopen(file, mode, *args, **kwargs)
 
-    monkeypatch.setattr("pr_agent.git_providers.local_git_provider.open", cp1252_default_open, raising=False)
-    description_path = tmp_path / "description.md"
-    provider = object.__new__(LocalGitProvider)
-    provider.description_path = description_path
-
+    monkeypatch.setattr(os, "fdopen", cp1252_default_open)
+    provider = local_output_provider
     provider.publish_description("my-branch", "✨ Describe command usage guide")
-    assert description_path.read_text(encoding="utf-8") == "my-branch\n✨ Describe command usage guide"
+    assert provider.description_path.read_text(encoding="utf-8") == "my-branch\n✨ Describe command usage guide"
+
+
+@pytest.fixture
+def local_describe_cli(tmp_path, monkeypatch):
+    from pr_agent.config_loader import safe_request_cycle_context
+
+    repo = _make_repo(tmp_path, ["a.py"])
+    repo.create_head("target")
+    (tmp_path / "a.py").write_text("y\n")
+    repo.index.add(["a.py"])
+    repo.index.commit("Change the return value")
+    monkeypatch.chdir(tmp_path)
+
+    (tmp_path / "review.md").write_text("Previous review\n")
+    response = "type: [Enhancement]\ntitle: Update the result\ndescription: Return the new value."
+    handler = SimpleNamespace(chat_completion=AsyncMock(return_value=(response, "stop")))
+    monkeypatch.setattr(cli, "PRAgent", lambda: PRAgent(ai_handler=lambda: handler))
+    monkeypatch.delenv("PR_AGENT_EXTRA_CONFIG_URL", raising=False)
+    get_settings().as_dict()
+    with safe_request_cycle_context({"settings": deepcopy(get_settings())}):
+        settings = get_settings()
+        settings.set("config.git_provider", "local")
+        settings.set("config.extra_config_url", "")
+        settings.set("config.publish_output", True)
+        settings.set("push_outputs.enable", False)
+        settings.set("local.description_path", str(tmp_path / "summary.md"))
+        settings.set("local.review_path", str(tmp_path / "review.md"))
+        settings.set("pr_description.publish_description_as_comment", True)
+        yield handler
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_describe_as_comment_keeps_local_review_file(tmp_path, local_describe_cli, persistent):
+    get_settings().set("pr_description.publish_description_as_comment_persistent", persistent)
+    assert cli.run(["--pr_url", "target", "--json-output", "summary.json", "describe"]) is None
+
+    assert (tmp_path / "review.md").read_text() == "Previous review\n"
+    assert json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))["title"] == "Update the result"
+    description = (tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert description.startswith("## Title\n\n")
+    assert "Return the new value." in description
+
+
+def test_describe_rejects_overlapping_outputs_before_writing(tmp_path, local_describe_cli):
+    (tmp_path / "summary.md").write_text("Previous description\n")
+    assert cli.run(["--pr_url", "target", "--json-output", "summary.md", "describe"]) == 1
+    assert (tmp_path / "summary.md").read_text() == "Previous description\n"
+    assert (tmp_path / "review.md").read_text() == "Previous review\n"
+    local_describe_cli.chat_completion.assert_not_awaited()
+
+
+def test_describe_keeps_json_when_alias_is_detected_after_creation(tmp_path, monkeypatch, local_describe_cli):
+    result = tmp_path / "Summary.md"
+    monkeypatch.setattr("pr_agent.git_providers.local_git_provider.same_output_file",
+                        lambda markdown, json_path: Path(json_path).exists())
+    assert cli.run(["--pr_url", "target", "--json-output", str(result), "describe"]) == 1
+    assert json.loads(result.read_text(encoding="utf-8"))["title"] == "Update the result"
+    assert (tmp_path / "review.md").read_text() == "Previous review\n"
+
+
+def test_description_comment_preserves_existing_output_file(tmp_path):
+    provider = object.__new__(LocalGitProvider)
+    provider.repo_path = tmp_path
+    provider.description_path = tmp_path / "description.md"
+    provider.description_path.write_text("a longer previous description\n")
+    previous = provider.description_path.stat()
+    provider.publish_description_comment("new\n", persistent=True)
+    assert provider.description_path.read_text() == "new\n"
+    assert os.path.samestat(previous, provider.description_path.stat())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX permission bits")
+@pytest.mark.parametrize(
+    ("method", "args", "output_attr"),
+    [
+        pytest.param("publish_description", ("title", "body"), "description_path", id="description"),
+        pytest.param("publish_description_comment", ("body",), "description_path", id="description-comment"),
+        pytest.param("publish_comment", ("body",), "review_path", id="review"),
+        pytest.param("publish_command_failure", ("describe", "failure"), "description_path", id="failure"),
+        pytest.param("publish_code_suggestions", ([],), "improve_path", id="suggestions"),
+    ],
+)
+def test_local_output_limits_permissions_only_on_creation(local_output_provider, method, args, output_attr):
+    provider = local_output_provider
+    path = getattr(provider, output_attr)
+    publish = getattr(provider, method)
+    kwargs = {"persistent": False} if method == "publish_description_comment" else {}
+    old_umask = os.umask(0o027)
+    try:
+        publish(*args, **kwargs)
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+    path.chmod(0o640)
+    publish(*args, **kwargs)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+def test_description_comment_refuses_changed_output_before_writing(tmp_path, monkeypatch):
+    provider = object.__new__(LocalGitProvider)
+    provider.repo_path = tmp_path
+    provider.description_path = tmp_path / "description.md"
+    provider.description_path.write_text("previous\n")
+    monkeypatch.setattr(os.path, "samestat", lambda _before, _after: False)
+    with pytest.raises(ValueError, match="changed"):
+        provider.publish_description_comment("new\n", persistent=True)
+    assert provider.description_path.read_text() == "previous\n"
+
+
+@pytest.mark.parametrize(("mode", "links"), [(stat.S_IFLNK, 1), (stat.S_IFREG, 2)])
+def test_description_comment_refuses_unsuitable_output_before_open(tmp_path, monkeypatch, mode, links):
+    provider = object.__new__(LocalGitProvider)
+    provider.repo_path = tmp_path
+    provider.description_path = tmp_path / "summary.md"
+    lstat = Path.lstat
+    monkeypatch.setattr(Path, "lstat", lambda path: SimpleNamespace(st_mode=mode, st_nlink=links)
+                        if path == provider.description_path else lstat(path))
+
+    with pytest.raises(ValueError, match="regular file"):
+        provider.publish_description_comment("new\n", persistent=False)
+    assert not provider.description_path.exists()
+
+
+@pytest.mark.parametrize("in_checkout", [False, True])
+def test_description_comment_checks_directory_links_inside_checkout_only(tmp_path, monkeypatch, in_checkout):
+    provider = object.__new__(LocalGitProvider)
+    provider.repo_path = tmp_path / "checkout"
+    provider.repo_path.mkdir()
+    monkeypatch.chdir(provider.repo_path)
+    parent = Path("artifacts") if in_checkout else Path("../artifacts")
+    parent.mkdir()
+    provider.description_path = parent / "summary.md"
+    alias = parent.resolve()
+    monkeypatch.setattr(Path, "is_symlink", lambda directory: directory == alias)
+    target = tmp_path / "output"
+    target.mkdir()
+    monkeypatch.setattr(Path, "readlink", lambda directory: target)
+
+    if in_checkout:
+        with pytest.raises(ValueError, match="linked directory"):
+            provider.publish_description_comment("new\n", persistent=False)
+        assert not provider.description_path.exists()
+    else:
+        provider.publish_description_comment("new\n", persistent=False)
+        assert (target / "summary.md").read_text() == "new\n"
+
+
+def test_local_output_directory_checks_link_targets(local_output_provider, monkeypatch, tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    local_output_provider.repo_path = checkout
+    external = tmp_path / "external"
+    external.mkdir()
+    links = {tmp_path / "alias": checkout / "artifacts", checkout / "artifacts": external}
+    monkeypatch.setattr(Path, "is_symlink", lambda path: path in links)
+    monkeypatch.setattr(Path, "readlink", lambda path: links[path])
+
+    with pytest.raises(ValueError, match="linked directory in the checkout"):
+        local_output_provider._resolve_output_directory(tmp_path / "alias")
+
+
+def test_local_output_directory_uses_checkout_identity(local_output_provider, monkeypatch, tmp_path):
+    checkout = tmp_path / "checkout"
+    alternate = tmp_path / "alternate-spelling"
+    checkout.mkdir()
+    alternate.mkdir()
+    local_output_provider.repo_path = checkout
+    link = alternate / "artifacts"
+    monkeypatch.setattr(Path, "is_symlink", lambda path: path == link)
+    monkeypatch.setattr(Path, "samefile", lambda path, other: path == alternate and other == checkout)
+
+    with pytest.raises(ValueError, match="linked directory in the checkout"):
+        local_output_provider._resolve_output_directory(link)
 
 
 @pytest.mark.parametrize(
     "command, output_attr",
     [("improve", "improve_path"), ("describe", "description_path"), ("add_docs", "improve_path")],
 )
-def test_publish_command_failure_keeps_review_file(tmp_path, command, output_attr):
+def test_publish_command_failure_keeps_review_file(local_output_provider, command, output_attr):
     # A failed /improve, /describe or /add_docs must not overwrite the persisted /review result.
-    review_path = tmp_path / "review.md"
+    provider = local_output_provider
+    review_path = provider.review_path
     review_path.write_text("previous review")
-    provider = object.__new__(LocalGitProvider)
-    provider.review_path = review_path
-    provider.improve_path = tmp_path / "improve.md"
-    provider.description_path = tmp_path / "description.md"
 
     provider.publish_command_failure(command, "Failed")
 
@@ -432,13 +634,10 @@ def test_publish_command_failure_keeps_review_file(tmp_path, command, output_att
     assert getattr(provider, output_attr).read_text() == "Failed"
 
 
-def test_add_docs_empty_result_keeps_review_file(tmp_path):
-    review_path = tmp_path / "review.md"
+def test_add_docs_empty_result_keeps_review_file(local_output_provider):
+    provider = local_output_provider
+    review_path = provider.review_path
     review_path.write_text("previous review")
-    provider = object.__new__(LocalGitProvider)
-    provider.review_path = review_path
-    provider.improve_path = tmp_path / "improve.md"
-    provider.description_path = tmp_path / "description.md"
     command = PRAddDocs.__new__(PRAddDocs)
     command.git_provider = provider
 
