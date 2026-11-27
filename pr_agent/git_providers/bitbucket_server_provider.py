@@ -18,6 +18,11 @@ from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
 from .git_provider import GitProvider, cache_languages, get_git_ssl_env
 
+# Official Bitbucket Server API: PullRequest.getDescription() is
+# @OptionalString(size=32768) — "limit to 32k". REST validation returns HTTP 400,
+# so an overlong /describe body would fail the whole publish.
+MAX_PR_DESCRIPTION_BITBUCKET_SERVER_LENGTH = 32768
+
 
 class BitbucketServerProvider(GitProvider):
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
@@ -721,6 +726,9 @@ class BitbucketServerProvider(GitProvider):
             # re-fetch to preserve a title edited during the describe run.
             pr = self._get_pr()
             self.pr = pr
+        description = self.limit_description_characters(
+            description, MAX_PR_DESCRIPTION_BITBUCKET_SERVER_LENGTH
+        )
         payload = {
             "version": pr.version,
             "description": description,
