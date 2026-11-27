@@ -162,6 +162,33 @@ def test_a_padded_reference_is_compared_by_its_value():
     assert result == f" a {padded}65; b &#0000; c &#x0000; d"
 
 
+@pytest.mark.parametrize("text", [
+    "&#82&#8203;38;",  # a reference inside a reference
+    "&#x20&#x200B;2E;",
+    "&l&#8203;rm;",  # a name around one
+    "&#8&#8203;203;",  # two deep: the first drop leaves &#8203;
+    "&#8&#8203;&#8203;203;",
+    "&#82&#8&#8203;203;38;",  # two in a row, both completed by one drop
+    "&#82\u200b38;",  # the character itself in between
+    "&NegativeVeryTh&#8203;inSpace;",
+    "&#" + "0" * 5000 + "&#8203;8238;",  # leading zeros are part of the reference
+])
+def test_a_reference_nested_inside_another_is_followed_to_its_end(text):
+    assert firewall_model_output(f"a {text} b", context="escaped") == "a  b"
+
+
+def test_what_a_drop_joins_is_kept_when_it_is_no_such_reference():
+    assert firewall_model_output("a &#12&#8203;34; b &#12&#8203;34&#8203;56; c", context="escaped") == (
+        "a &#1234; b &#123456; c"
+    )
+
+
+def test_the_joiners_stay_because_words_and_emoji_are_written_with_them():
+    for text in ("می\u200cخواهم", "\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466",
+                 "a\u200cb", "&#8204;", "&#x200D;", "&zwnj;", "&zwj;"):
+        assert firewall_model_output(text, context="escaped") == text
+
+
 def test_direction_marks_and_their_entities_are_removed():
     result = firewall_model_output("marks \u200e\u200f here and &#8207; plus &#x200F; too")
 
@@ -398,6 +425,15 @@ def test_a_first_line_that_reads_differently_under_the_templates_branches_loses_
     assert firewall_model_output("see `a`\n\n```\n" + IMAGE + "\n```", after="maybe").endswith(IMAGE + "\n```")
 
 
+def test_a_first_line_is_judged_as_the_renderer_gets_it():
+    # A zero-width space keeps "*" from being a list marker as the line stands. Published without it
+    # the line is "*", and under the branch with a blank line before the field the indented line is a
+    # paragraph inside that item, where under the other branch it reads as indented code.
+    for body, payload in (("\u200b*\n    \n    [x](http://e.x)", "[x](http://e.x)"),
+                          ("\u200b*\n     \n    ![t](http://e.x/p.png)", "![t](http://e.x/p.png)")):
+        assert _live(firewall_model_output(body, after="maybe"), payload) == []
+
+
 def test_another_fields_open_backtick_leaves_the_first_paragraph_without_a_code_span():
     body = f"` {IMAGE}`\n\n`{BEACON}`"
 
@@ -540,6 +576,23 @@ def test_a_long_numeric_reference_is_left_as_it_is():
     assert firewall_model_output(hostile) == "a &#" + "9" * 5000 + "; b  c"
 
 
+def test_a_nested_reference_is_followed_in_one_read():
+    # A pass per layer would be one pass per "&#8" here.
+    hostile = "&#8" * 6000 + "&#8203;" + "203;" * 6000
+    started = perf_counter()
+
+    assert firewall_model_output(hostile) == ""
+    assert perf_counter() - started < 5.0
+
+
+def test_a_zero_padded_reference_is_not_read_again_at_every_drop():
+    hostile = "&#" + "0" * 100000 + "&#8203;8" * 5000
+    started = perf_counter()
+
+    assert firewall_model_output(hostile) == "&#" + "0" * 100000 + "8" * 5000
+    assert perf_counter() - started < 5.0
+
+
 def test_a_second_pass_is_a_no_op_when_block_structure_is_unchanged():
     composite = "\n".join([
         f"prose with {BEACON} and {MARKER}",
@@ -565,6 +618,7 @@ def _review() -> dict:
     return {
         "security_concerns": f"Concern: the comment ships {BEACON} and reads {MARKER}.",
         "risk_level": f"medium {TAG}",
+        "merge_recommendation": f"needs_review {TAG}",
         "key_issues_to_review": [{
             "relevant_file": "app.py",
             "start_line": 4,
@@ -619,7 +673,8 @@ def test_reviewer_firewalls_every_model_prose_field(gfm):
     estimate = review["contribution_time_cost_estimate"]
     # A tag is dead in every place: escaped where the template writes markdown, encoded
     # where it writes an HTML block of its own, up to the field's first blank line.
-    for field in (review["risk_level"], summary, priority, split["title"], estimate["average_case"]):
+    for field in (review["risk_level"], review["merge_recommendation"], summary, priority, split["title"],
+                  estimate["average_case"]):
         assert _live(field, TAG) == []
     escaped_beacon = r"!\[x\](https\://evil\.example/pixel?pr=1)"
     # On GitHub an image syntax inside those HTML blocks is raw text, which is inert;

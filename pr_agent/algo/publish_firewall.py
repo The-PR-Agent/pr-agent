@@ -41,7 +41,10 @@ rules:
    references that decode to them (``&#8238;``, ``&lrm;``), and so are the two
    control characters that are whitespace to some of the renderer's rules and
    not to others. A carriage return is read as the line end the renderer takes
-   it for.
+   it for. A reference can sit inside another, ``&#82&#8203;38;`` reading
+   ``&#8238;`` once the inner one is gone, so what a removal joins is read
+   again. The zero-width joiner and non-joiner stay, being part of words and
+   emoji.
 
 Which rules can matter depends on where the template renders the field, so the
 caller names that place (``context``) and what precedes the field's first line
@@ -140,25 +143,36 @@ CONTEXTS = frozenset({"markdown", "html_block", "html_inline", "escaped_block", 
 # What may precede a field's first line on its own line.
 AFTER = frozenset({"blank", "markup", "item", "maybe"})
 
-# Bidi embedding/override/isolate controls and direction marks, zero-width chars,
-# BOM, word joiner; and the two control characters that are whitespace to some
-# of the renderer's rules and not to others (a line feed is one after a list
-# marker, and plain text to the scanners), so that a rule cannot be picked by
-# putting one of them in.
+# Bidi embedding/override/isolate controls and direction marks, the zero-width
+# space, BOM and word joiner; and the two control characters that are whitespace
+# to some of the renderer's rules and not to others (a line feed is one after a
+# list marker, and plain text to the scanners), so that a rule cannot be picked
+# by putting one of them in. The zero-width joiner and non-joiner are left
+# alone: Persian, Indic scripts and emoji sequences are written with them.
 _INVISIBLE_CODEPOINTS = frozenset(
-    (0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0x2060, 0xFEFF,
+    (0x200B, 0x200E, 0x200F, 0x2060, 0xFEFF,
      0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069)
 )
-_INVISIBLE_CHARACTERS = re.compile("[\v\f\u200b\u200c\u200d\u200e\u200f\u2060\ufeff\u202a-\u202e\u2066-\u2069]")
+_INVISIBLE_CHARACTERS = re.compile("[\v\f\u200b\u200e\u200f\u2060\ufeff\u202a-\u202e\u2066-\u2069]")
 # The same characters written as character references. GitHub renders &#8238; as
 # the bidi override itself, and a browser decodes the numeric forms without the
 # closing semicolon too, so that semicolon is optional here. The names are the
 # ones HTML defines for this set.
-_CHARACTER_REFERENCE = re.compile(
-    r"&#([xX][0-9a-fA-F]+|[0-9]+);?"
-    r"|&(?:NegativeMediumSpace|NegativeThickSpace|NegativeThinSpace|NegativeVeryThinSpace"
-    r"|NoBreak|ZeroWidthSpace|lrm|rlm|zwj|zwnj);"
+_INVISIBLE_NAMES = (
+    "NegativeMediumSpace", "NegativeThickSpace", "NegativeThinSpace", "NegativeVeryThinSpace",
+    "NoBreak", "ZeroWidthSpace", "lrm", "rlm",
 )
+_CHARACTER_REFERENCE = re.compile(
+    rf"&#(?P<value>[xX][0-9a-fA-F]+|[0-9]+);?|&(?:{'|'.join(_INVISIBLE_NAMES)});"
+)
+_INVISIBLE_ITEM = re.compile(f"{_INVISIBLE_CHARACTERS.pattern}|{_CHARACTER_REFERENCE.pattern}")
+# A reference that a drop joins, "&l" and "rm;" around one, begins at most this
+# far before the drop and ends at most this far after it. The longest is a name.
+_LONGEST_REFERENCE = max(len(f"&{name};") for name in _INVISIBLE_NAMES)
+_DECIMAL_DIGITS = frozenset("0123456789")
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+# The digits a numeric reference without its ";" can run on with, decimal and hexadecimal.
+_DIGITS = (re.compile("[0-9]+"), re.compile("[0-9a-fA-F]+"))
 
 # Block starts, each tested on a line with its container prefixes removed.
 _ATX_HEADING = re.compile(r"#{1,6}(?:[ \t]|$)")
@@ -255,24 +269,155 @@ def _strip_html_comments(segment: str, *, neutralize: bool = True) -> str:
     return joined.replace("<!--", "<\\!--") if neutralize else joined
 
 
+def _decodes_invisible(significant: str, hexadecimal: bool) -> bool:
+    """Whether a reference with these digits that count decodes to an invisible character.
+
+    Six of them are kept and no such character needs more than five, so a long
+    reference is known to be none of them without being read whole.
+    """
+    return bool(significant) and len(significant) <= (4 if hexadecimal else 5) and (
+        int(significant, 16) if hexadecimal else int(significant)
+    ) in _INVISIBLE_CODEPOINTS
+
+
+def _is_invisible(match: re.Match) -> bool:
+    """Whether what ``_INVISIBLE_ITEM`` matched goes: a character, a name, or a numeric reference to one."""
+    value = match.group("value")
+    if value is None:
+        return True
+    hexadecimal = value[0] in "xX"
+    return _decodes_invisible((value[1:] if hexadecimal else value).lstrip("0")[:6], hexadecimal)
+
+
+def _references_ending(text: str, base: int) -> tuple:
+    """The numeric references without a ";" that end ``text``, the last one first.
+
+    ``base`` is where ``text`` begins in the text around it. Each entry is as
+    ``_strip_invisible`` keeps it: where the reference begins, whether it is
+    hexadecimal, and its digits that count.
+    """
+    found = []
+    end = len(text)
+    while True:
+        start = end
+        while start and text[start - 1] in _DECIMAL_DIGITS:
+            start -= 1
+        hexadecimal, width = False, 2
+        if start == end or start < 2 or text[start - 2:start] != "&#":
+            start = end
+            while start and text[start - 1] in _HEX_DIGITS:
+                start -= 1
+            hexadecimal, width = True, 3
+            if start == end or start < 3 or text[start - 3:start - 1] != "&#" or text[start - 1] not in "xX":
+                break
+        start -= width
+        found.append((base + start, hexadecimal, text[start + width:end].lstrip("0")[:6]))
+        end = start
+    return (found[0], found[1:]) if found else (None, [])
+
+
 def _strip_invisible(segment: str) -> str:
-    """Drop invisible characters and the character references that decode to them."""
-    segment = _INVISIBLE_CHARACTERS.sub("", segment)
+    """Drop invisible characters and the character references that decode to them.
 
-    def drop_if_invisible(match):
-        digits = match.group(1)
-        if digits is None:
-            return ""
-        hexadecimal = digits[0] in "xX"
-        # Leading zeros do not change the value: &#0008238; is &#8238;.
-        value = (digits[1:] if hexadecimal else digits).lstrip("0") or "0"
-        if len(value) > (4 if hexadecimal else 5):
-            # Larger than any of these characters, 0xFEFF at most. ``int`` refuses longer decimal strings anyway.
-            return match.group()
-        codepoint = int(value, 16) if hexadecimal else int(value)
-        return "" if codepoint in _INVISIBLE_CODEPOINTS else match.group()
+    A reference can sit inside another: "&#82&#8203;38;" reads "&#8238;" once
+    the inner one is gone, and a name can too, "&l&#8203;rm;". The text is read
+    once from left to right, and a drop joins what stood on either side of it.
+    A name is short, so the last kept characters are read again with what
+    follows. A numeric reference is as long as its leading zeros, so the one
+    that ends the kept text, if there is one, is remembered, and what follows
+    a drop is read as more of its digits.
+    """
+    kept: list[str] = []  # the characters that stand, one each, so that a drop can step back over the last ones
+    running = None  # (where it begins in ``kept``, hexadecimal, digits that count): a numeric reference
+    #   without its ";" that ends the kept text, since what comes next can be more of its digits
+    behind = []  # the same for the ones it stands directly in front of, nearest last
+    head = ""  # kept characters read again together with what follows a drop
+    pos = 0
 
-    return _CHARACTER_REFERENCE.sub(drop_if_invisible, segment)
+    def resolve() -> None:
+        """Read what follows a drop together with what stood before it."""
+        nonlocal running, behind, head, pos
+        while running is not None:
+            start, hexadecimal, significant = running
+            before = pos
+            run = _DIGITS[hexadecimal].match(segment, pos)
+            end = run.end() if run else pos
+            terminated = segment[end:end + 1] == ";"
+            # A leading zero counts for nothing until a digit that counts has been seen.
+            digits = run.group() if run else ""
+            significant = (significant + (digits if significant else digits.lstrip("0")))[:6]
+            pos = end + terminated
+            if _decodes_invisible(significant, hexadecimal):
+                del kept[start:]  # the reference goes whole, and the one behind it can run on now
+                running = behind.pop() if behind else None
+            else:
+                kept.extend(segment[before:pos])  # what was read is part of the reference, and it stays
+                if terminated:
+                    running, behind = None, []
+                else:
+                    running = (start, hexadecimal, significant)
+                return
+
+        back = min(len(kept), _LONGEST_REFERENCE - 1)
+        tail = "".join(kept[len(kept) - back:])
+        if "&" in tail:  # a reference begins with one
+            del kept[len(kept) - back:]
+            head = tail
+
+    while True:
+        if head:
+            reach = _LONGEST_REFERENCE
+            while True:
+                end = min(len(segment), pos + reach)
+                window = head + segment[pos:end]
+                drop = None
+                reads_on = False
+                covered = len(head)  # how far one that is kept reads into what follows the head
+                for match in _INVISIBLE_ITEM.finditer(window):
+                    if match.start() >= len(head):
+                        break  # nothing is dropped that begins in the head
+                    if match.end() == len(window) and end < len(segment):
+                        reads_on = True  # it may read differently with what follows
+                        break
+                    covered = max(covered, match.end())
+                    if _is_invisible(match):
+                        drop = match
+                        break
+                if not reads_on:
+                    break
+                reach *= 2
+            if drop is None:
+                kept.extend(window[:covered])
+                running, behind = _references_ending(window[:covered], len(kept) - covered)
+                pos += covered - len(head)
+                head = ""
+            else:
+                back = max(0, drop.start() - (_LONGEST_REFERENCE - 1))
+                kept.extend(head[:back])
+                before = len(head)
+                head = window[back:drop.start()] + window[drop.end():before]
+                pos += max(0, drop.end() - before)
+            continue
+        match = _INVISIBLE_ITEM.search(segment, pos)
+        if match is None:
+            return "".join([*kept, segment[pos:]])
+        if match.start() > pos:
+            kept.extend(segment[pos:match.start()])
+            running, behind = None, []  # plain text ends every reference
+        pos = match.end()
+        if _is_invisible(match):
+            resolve()
+            continue
+        kept.extend(match.group())
+        if match.group()[-1] == ";":
+            running, behind = None, []
+        else:
+            value = match.group("value")
+            hexadecimal = value[0] in "xX"
+            if running is not None:
+                behind.append(running)
+            digits = value[1:] if hexadecimal else value
+            running = (len(kept) - len(match.group()), hexadecimal, digits.lstrip("0")[:6])
 
 
 def _opening_fence(line: str, start: int = 0):
@@ -1242,7 +1387,9 @@ def firewall_model_output(
             # The template writes a list marker before the field: let the rules
             # see the line the renderer sees, and take the marker off again.
             lines = ["- " + lines[0], *lines[1:]]
-        doubt = after == "maybe" and not _reads_alike(lines[0])
+        # The first line is judged as the renderer gets it: an invisible character can be
+        # all that keeps a list marker or a fence from starting a block.
+        doubt = after == "maybe" and not _reads_alike(_strip_invisible(lines[0]))
         result = _firewall_markdown(
             lines,
             continued=continued or doubt,
