@@ -1254,8 +1254,10 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
     response_text = drop_sign_off_after_wrapper_fence(response_text, opening_fence or '```')
     if opening_fence:
         response_text = re.sub(rf'(?m)^{re.escape(opening_fence)}`*[ \t]*\Z', '', response_text)
-    elif response_text.split('\n')[-1] == '```':
-        response_text = response_text.removesuffix('```')
+    else:
+        last_line = response_text.split('\n')[-1]
+        if len(last_line) >= 3 and last_line == last_line[0] * len(last_line) and last_line[0] in "`~":
+            response_text = response_text.removesuffix(last_line)
     response_text = sanitize_yaml_control_chars(response_text)
     response_text_original_sanitized = sanitize_yaml_control_chars(response_text_original, log=False)
     try:
