@@ -89,6 +89,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
         "extra_risky_shapes", "max_changed_lines", "publish_error_details", "require_artifact_findings",
         "sensitive_paths", "structural_reach_input_file",
     }),
+    "sarvam": frozenset({"api_base"}),
     # List the sibling repositories whose files and GitHub tickets a consuming repo
     # (or a comment command) may select into model context. A repo's .pr_agent.toml alone must
     # not be able to name an arbitrary same-owner private sibling: the actor check bounds who

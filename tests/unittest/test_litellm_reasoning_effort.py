@@ -1957,6 +1957,30 @@ class TestLiteLLMReasoningEffortGrok:
         assert handler._resolve_reasoning_effort(model, configured) == expected
 
     @pytest.mark.parametrize(
+        ("model", "configured", "expected"),
+        [
+            # Sarvam's GLM models accept only low/high/max.
+            ("sarvam/glm5.3", "none", "low"),
+            ("sarvam/glm5.3", "minimal", "low"),
+            ("sarvam/glm5.3", "low", "low"),
+            ("sarvam/glm5.3", "medium", "high"),
+            ("sarvam/glm5.3-flash", "medium", "high"),
+            ("sarvam/glm5.3-flash", "high", "high"),
+            ("sarvam/glm5.3-flash", "xhigh", "max"),
+            ("sarvam/glm5.3-flash", "max", "max"),
+            # Sarvam's other models accept every level.
+            ("sarvam/sarvam-105b", "medium", "medium"),
+            ("sarvam/deepseekv4.1-flash-1017", "none", "none"),
+            ("sarvam/gemma4", "xhigh", "xhigh"),
+            # The mapping is specific to Sarvam's GLM route.
+            ("zai/glm-5.2", "medium", "medium"),
+        ],
+    )
+    def test_resolve_reasoning_effort_maps_sarvam_glm_levels(self, model, configured, expected):
+        handler = object.__new__(LiteLLMAIHandler)
+        assert handler._resolve_reasoning_effort(model, configured) == expected
+
+    @pytest.mark.parametrize(
         ("model", "effort"),
         [
             ("grok-4.5", "low"),

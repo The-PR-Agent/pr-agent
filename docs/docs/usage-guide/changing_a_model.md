@@ -760,6 +760,33 @@ You can also set the `OPENCODE_API_KEY` (or `OPENCODE_GO_API_KEY`) environment v
 On large PRs, `deepseek-v4.1-flash` and `deepseek-v4-pro` have been seen streaming reasoning for over 10 minutes without returning an answer, so the request ends in `litellm.Timeout`. Using a different model such as `opencode_go/glm-5.3-flash`, or setting `reasoning_effort = "none"` in the `[config]` section, avoids it.
 :::
 
+### Sarvam AI
+
+To use [Sarvam AI](https://docs.sarvam.ai/api/token-factory/models) models, for example, set:
+
+```toml
+[config] # in configuration.toml
+model = "sarvam/sarvam-105b"
+fallback_models=["sarvam/glm5.3-flash"]
+```
+
+and fill up your key
+
+```toml
+[sarvam] # in .secrets.toml
+key = ...
+```
+
+(you can obtain a Sarvam API key from [here](https://indus.sarvam.ai/key-management))
+
+You can also set the `SARVAM_API_KEY` environment variable instead. The configured key takes precedence over the environment variable.
+
+PR-Agent sends Sarvam requests to `https://api.sarvam.ai/v2`, which serves every Sarvam chat model. To use a different endpoint, add `api_base` under `[sarvam]` or set `SARVAM_API_BASE`.
+
+Other available models include `sarvam/sarvam-105b-conversations`, `sarvam/glm5.3`, `sarvam/glm5.3-flash`, `sarvam/gemma4`, `sarvam/deepseekv4.1-flash-1017` and `sarvam/deepseekv4.1-flash-1017-interactive`. See the [model list](https://docs.sarvam.ai/api/token-factory/models) for details.
+
+PR-Agent sends `config.reasoning_effort` to Sarvam models. The GLM models accept only `"low"`, `"high"` and `"max"`, so PR-Agent sends the closest of those (the default `"medium"` becomes `"high"`). See [adjusting the thinking level](https://docs.sarvam.ai/api/token-factory/how-to/adjust-the-models-thinking-level).
+
 ### DeepInfra
 
 To use DeepSeek model with DeepInfra, for example, set:
