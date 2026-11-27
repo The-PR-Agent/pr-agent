@@ -1429,8 +1429,10 @@ class PRReviewer:
                 ):
                     if isinstance(ticket.get(prose_key), str):
                         ticket[prose_key] = firewall_model_output(ticket[prose_key])
-        if isinstance(review.get("risk_level"), str):
-            review["risk_level"] = firewall_model_output(review["risk_level"], context=block, after=joined)
+        for prose_key in ("risk_level", "merge_recommendation"):
+            # The template renders each after its own label on the same line.
+            if isinstance(review.get(prose_key), str):
+                review[prose_key] = firewall_model_output(review[prose_key], context=block, after=joined)
         priority_files = review.get("review_priority_files")
         if isinstance(priority_files, list):
             review["review_priority_files"] = [
