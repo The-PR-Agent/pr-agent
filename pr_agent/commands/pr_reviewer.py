@@ -2515,7 +2515,7 @@ class PRReviewer:
 
         finding = replace(
             finding,
-            path=file.filename.strip(),
+            path=file.filename,
             line_start=start_line,
             line_end=end_line,
         )
@@ -2545,7 +2545,7 @@ class PRReviewer:
                 else:
                     improved_code = dedent_code_for_file(file, start_line, improved_code)
             if is_applicable and python_syntax_is_valid(
-                    finding.path, file, start_line, end_line, improved_code) is not False:
+                    finding.path.strip(), file, start_line, end_line, improved_code) is not False:
                 fence = get_suggestion_fence(improved_code)
                 body += f"\n\n{fence}suggestion\n{improved_code}\n{fence}"
                 original_suggestion = {
@@ -2590,12 +2590,17 @@ class PRReviewer:
             return data
 
         diff_files = {}
+        ambiguous_paths = set()
         for file in self.git_provider.get_diff_files() or []:
             if not file.filename:
                 continue
-            path = file.filename.strip()
+            path = file.filename.strip().lstrip("/")
+            if path in diff_files and diff_files[path].filename != file.filename:
+                ambiguous_paths.add(path)
             diff_files[path] = file
-            diff_files.setdefault(path.lstrip("/"), file)
+        # Model labels cannot distinguish paths that share a normalized key.
+        for path in ambiguous_paths:
+            diff_files.pop(path, None)
         store = get_inline_comment_store(self.git_provider)
         store.load()
         if store.load_failed:
