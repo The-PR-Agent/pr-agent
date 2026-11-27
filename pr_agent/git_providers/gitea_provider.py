@@ -233,6 +233,7 @@ class GiteaProvider(GitProvider):
 
     def reset_diff_cache_for_command(self) -> None:
         """Refresh the PR and discard revision-bound state before another automatic command."""
+        self._file_link_snapshot = None
         super().reset_diff_cache_for_command()
         if not self.enabled_pr:
             return
@@ -938,9 +939,70 @@ class GiteaProvider(GitProvider):
 
         self.filtered_diff_file_names = invalid_files_names
         self.diff_files = diff_files
+        # This snapshot is checked against the raw diff by __add_file_diff().
+        # Keep its source and revision even if publishing refreshes self.pr.
+        head = getattr(getattr(self, "pr", None), "head", None)
+        repo_name = getattr(getattr(head, "repo", None), "full_name", None)
+        branch_ref = getattr(head, "ref", None)
+        previous_sha = (
+            getattr(self.incremental, "last_seen_commit_sha", None)
+            if self.incremental.is_incremental and self.unreviewed_files_map else None
+        )
+        self._file_link_snapshot = (
+            self.sha, self.merge_base, repo_name, branch_ref, previous_sha
+        )
         return diff_files
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
+        reviewed_files = getattr(self, "diff_files", None)
+        snapshot = getattr(self, "_file_link_snapshot", None)
+        if reviewed_files is not None and snapshot is not None:
+            head_sha, base_sha, head_repo, head_ref, previous_sha = snapshot
+            path = relevant_file.strip("/") if isinstance(relevant_file, str) else ""
+            if not path:
+                return self.get_pr_url()
+            matches = [file for file in reviewed_files
+                       if getattr(file, "filename", "").strip("/") == path]
+            if not matches:
+                matches = [file for file in reviewed_files
+                           if isinstance(getattr(file, "old_filename", None), str)
+                           and file.old_filename.strip("/") == path]
+            if not matches:
+                matches = [file for file in reviewed_files
+                           if any(isinstance(getattr(file, key, None), str)
+                                  and getattr(file, key).strip("/").lower() == path.lower()
+                                  for key in ("filename", "old_filename"))]
+            if len(matches) != 1:
+                return self.get_pr_url()
+            item = matches[0]
+            deleted = item.edit_type == EDIT_TYPE.DELETED
+            target_repo = f"{self.owner}/{self.repo}"
+            if deleted and previous_sha:
+                revision, repository = previous_sha, head_repo
+            elif deleted:
+                revision, repository = base_sha, target_repo
+            else:
+                revision, repository = head_sha, head_repo
+                if isinstance(head_ref, str) and head_ref.startswith("refs/pull/"):
+                    repository = target_repo  # AGit has no independent source fork.
+            if (not isinstance(revision, str) or not revision
+                    or not isinstance(repository, str) or repository.count("/") != 1
+                    or not all(repository.split("/"))):
+                return self.get_pr_url()
+            owner, name = repository.split("/")
+            filename = item.old_filename if deleted and item.old_filename else item.filename
+            link = (f"{self.base_url_html}/{quote(owner, safe='')}/{quote(name, safe='')}"
+                    f"/src/commit/{quote(revision, safe='')}/{quote(filename, safe='/')}")
+            start, end = self._normalize_line_range(relevant_line_start, relevant_line_end)
+            if start != -1:
+                link += f"#L{start}-L{end}" if end else f"#L{start}"
+            return link
+
+        # Before reading a fork's diff, a branch link into the target is wrong.
+        head = getattr(getattr(self, "pr", None), "head", None)
+        source_repo = getattr(getattr(head, "repo", None), "full_name", None)
+        if isinstance(source_repo, str) and source_repo != f"{self.owner}/{self.repo}":
+            return self.get_pr_url()
         encoded_file = quote(relevant_file, safe="/")
         branch = self.get_pr_branch()
         if branch.startswith("refs/pull/"):
