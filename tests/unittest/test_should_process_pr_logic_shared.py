@@ -141,10 +141,11 @@ def providers(gitlab_webhook_module):
 
 @pytest.fixture
 def ignore_settings():
-    snapshot = snapshot_settings(IGNORE_KEYS)
+    snapshot = snapshot_settings((*IGNORE_KEYS, "CONFIG.INCLUDE_PR_LABELS_MATCH_ALL"))
     settings = get_settings()
     for key in IGNORE_KEYS:
         settings.set(key, [])
+    settings.set("CONFIG.INCLUDE_PR_LABELS_MATCH_ALL", False)
     yield settings
     restore_settings(snapshot)
 
@@ -355,6 +356,33 @@ def test_include_labels_requires_at_least_one_matching_label(providers, ignore_s
                 "one selected label", only_with_labels=True)
     _assert_all(providers, _fields(labels=("other",)), False, "no selected label")
     _assert_all(providers, _fields(), False, "no labels")
+
+
+@pytest.mark.parametrize(("match_all", "labels", "allowed"), [
+    (False, ("ai-review",), True),
+    ("false", ("ai-review",), True),
+    (True, ("ai-review",), False),
+    ("true", ("ready-for-review",), False),
+    (True, ("ai-review", "ready-for-review"), True),
+    (True, (), False),
+])
+def test_include_labels_can_require_all(providers, ignore_settings, match_all, labels, allowed):
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", ["ai-review", "ready-for-review"])
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS_MATCH_ALL", match_all)
+    _assert_all(providers, _fields(labels=labels), allowed, "all selected labels", only_with_labels=True)
+
+
+def test_all_label_mode_without_allowlist_does_not_restrict_prs(ignore_settings):
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS_MATCH_ALL", True)
+    assert shared_should_process_pr_logic(labels=[]) is True
+
+
+def test_all_label_mode_still_respects_exclusions(providers, ignore_settings):
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS", ["ai-review", "ready-for-review"])
+    ignore_settings.set("CONFIG.INCLUDE_PR_LABELS_MATCH_ALL", True)
+    ignore_settings.set("CONFIG.IGNORE_PR_LABELS", ["skip"])
+    _assert_all(providers, _fields(labels=("ai-review", "ready-for-review", "skip")), False,
+                "ignored label overrides all-match", only_with_labels=True)
 
 
 def test_ignore_labels_still_override_include_labels(providers, ignore_settings):

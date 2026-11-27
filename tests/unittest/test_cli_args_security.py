@@ -236,6 +236,10 @@ ALLOWED_ARGS_SINGLE = [
 
 
 HOST_ONLY_ARGS = [
+    # This optional PR eligibility gate, like the label list, is not a comment-controlled policy.
+    "--config.include_pr_labels_match_all=false",
+    "--config__include_pr_labels_match_all=false",
+    '--config={include_pr_labels_match_all: false}',
     "--pr_questions.use_ticket_context=true",
     "--config.enable_custom_labels=true",
     "--config__enable_custom_labels=true",
@@ -362,6 +366,7 @@ def test_validate_user_args_all_allowed_together():
         "--github.webhook_secret=secret",
         "--openai__key=secret",
         "--push_outputs=enabled",
+        "--config.include_pr_labels_match_all=false",
     ],
 )
 async def test_handle_request_uses_real_validator_to_block_forbidden(monkeypatch, forbidden):
