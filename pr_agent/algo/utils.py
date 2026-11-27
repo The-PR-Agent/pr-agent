@@ -1003,12 +1003,12 @@ def drop_sign_off_after_wrapper_fence(text: str, fence: str = '```') -> str:
     from, so the reply carries only the closing one.
 
     *fence* is the wrapper's opening fence; its closing fence is a line of at least as
-    many backticks.
+    many fence characters (backticks or tildes).
     """
     lines = text.split('\n')
     for i in range(len(lines) - 1, -1, -1):
         line = lines[i].rstrip()
-        if not line.startswith(fence) or line.strip('`'):
+        if not line.startswith(fence) or line.strip(fence[0]):
             continue
         tail = '\n'.join(lines[i + 1:])
         if not tail.strip():
@@ -1240,7 +1240,7 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
     # blank runs would let the engine try every way of splitting a long run of blanks
     # when the fence is not followed by a line break, which backtracks quadratically
     opening_fence = ""
-    fence_match = re.match(r'^(?P<fence>`{3,})[ \t]*(?:(?i:yaml|yml)[ \t]*)?(?=\r?\n)', response_text)
+    fence_match = re.match(r'^(?P<fence>(?:`{3,}|~{3,}))[ \t]*(?:(?i:yaml|yml)[ \t]*)?(?=\r?\n)', response_text)
     if fence_match:
         opening_fence = fence_match.group("fence")
         unfenced = response_text[fence_match.end():]
@@ -1253,7 +1253,8 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
     response_text = unfenced.rstrip()
     response_text = drop_sign_off_after_wrapper_fence(response_text, opening_fence or '```')
     if opening_fence:
-        response_text = re.sub(rf'(?m)^{re.escape(opening_fence)}`*[ \t]*\Z', '', response_text)
+        fence_char = re.escape(opening_fence[0])
+        response_text = re.sub(rf'(?m)^{re.escape(opening_fence)}{fence_char}*[ \t]*\Z', '', response_text)
     elif response_text.split('\n')[-1] == '```':
         response_text = response_text.removesuffix('```')
     response_text = sanitize_yaml_control_chars(response_text)
