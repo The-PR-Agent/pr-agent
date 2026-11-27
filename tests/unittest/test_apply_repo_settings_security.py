@@ -613,6 +613,7 @@ def test_restore_settings_sections_removes_section_created_after_snapshot():
         ("moonshot", "api_base"),
         ("databricks", "api_base"),
         ("openrouter", "api_base"),
+        ("sarvam", "api_base"),
         ("linear", "api_token"),
     ],
 )
