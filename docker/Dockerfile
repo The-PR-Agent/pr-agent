@@ -85,8 +85,9 @@ COPY .github/workflows/pr-agent-review.yaml .github/workflows/pr-agent-review.ya
 COPY docker/Dockerfile docker/Dockerfile
 COPY docker/Dockerfile.lambda docker/Dockerfile.lambda
 COPY docker/mosaico docker/mosaico
-# Loaded by its unit test.
+# Loaded by their unit tests.
 COPY scripts/structural_reach_producer.py scripts/structural_reach_producer.py
+COPY scripts/review_eval/*.py scripts/review_eval/
 # Read by the docs guards: the URL checker, the pages that link into the docs site,
 # and the packaging inputs that must ship every /help page suffix. Kept last so a
 # README edit only rebuilds these final layers.

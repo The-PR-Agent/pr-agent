@@ -1,0 +1,105 @@
+"""Run pr-agent's /review once on a local checkout of a reviewed commit, with the PR's own title and description.
+
+Started by run_eval.py in a fresh process per run (Dynaconf settings must not leak between runs), with the current
+directory at the reviewed commit and PYTHONPATH at the pr-agent code under test. The local git provider writes the
+review to REVIEW_EVAL_RUN_DIR/final.md; status.json records the model calls, token usage and finish reasons.
+
+Env: REVIEW_EVAL_RUN_DIR, REVIEW_EVAL_CASE (JSON file with title, branch, description, tickets),
+REVIEW_EVAL_TARGET_BRANCH (a local branch at the PR's merge base).
+"""
+import asyncio
+import json
+import os
+import pathlib
+import sys
+import traceback
+
+RUN = pathlib.Path(os.environ["REVIEW_EVAL_RUN_DIR"])
+CASE = json.loads(pathlib.Path(os.environ["REVIEW_EVAL_CASE"]).read_text())
+os.environ.update({
+    "CONFIG__GIT_PROVIDER": "local",
+    "CONFIG__PUBLISH_OUTPUT": "true",
+    "CONFIG__USE_REPO_SETTINGS_FILE": "false",
+    "LOCAL__REVIEW_PATH": str(RUN / "final.md"),
+})
+
+from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler  # noqa: E402
+from pr_agent.algo.review_json_output import review_json_output_path  # noqa: E402
+from pr_agent.algo.run_details import command_failed, init_run_details  # noqa: E402
+from pr_agent.commands import ticket_pr_compliance_check  # noqa: E402
+from pr_agent.commands.pr_reviewer import PRReviewer  # noqa: E402
+from pr_agent.git_providers.local_git_provider import LocalGitProvider  # noqa: E402
+
+usage, finish = [], []
+_record = LiteLLMAIHandler._record_completion_metadata
+_chat = LiteLLMAIHandler.chat_completion
+
+
+def record(response, model=None, display_model=None):
+    u = response.get("usage") if isinstance(response, dict) else getattr(response, "usage", None)
+
+    def field(name):
+        return (u.get(name) if isinstance(u, dict) else getattr(u, name, None)) or 0
+
+    usage.append({"input": field("prompt_tokens"), "output": field("completion_tokens")})
+    return _record(response, model, display_model)
+
+
+async def chat(self, model, system, user, temperature=0.2, img_path=None):
+    text, reason = await _chat(self, model, system, user, temperature, img_path)
+    finish.append(reason)
+    return text, reason
+
+
+async def tickets(git_provider):
+    return [dict(t) for t in CASE["tickets"]]
+
+
+LiteLLMAIHandler._record_completion_metadata = staticmethod(record)
+LiteLLMAIHandler.chat_completion = chat
+# The local provider would use the commit sha as the title and commit messages as the description; a review sees
+# the PR's real intent, so replay it as it was when the PR was opened.
+LocalGitProvider.get_pr_title = lambda self: CASE["title"]
+LocalGitProvider.get_pr_branch = lambda self: CASE["branch"]
+LocalGitProvider.get_pr_description_full = lambda self: CASE["description"]
+ticket_pr_compliance_check.extract_tickets = tickets
+
+
+ENDPOINT_SETTINGS = ("openai.api_base", "anthropic.api_base", "litellm.api_base", "litellm.base_url",
+                     "azure_ad.api_base", "openai.api_type")
+
+
+async def main():
+    from pr_agent.config_loader import get_settings
+    settings = get_settings()
+    # The key must only reach the provider's default endpoint, whatever a replayed or overlaid file contains.
+    redirect = [k for k in ENDPOINT_SETTINGS if settings.get(k)]
+    if redirect:
+        return f"refusing to run: endpoint settings are set ({', '.join(redirect)})"
+    init_run_details()  # PRReviewer swallows model errors and records them here, as the CLI expects
+    review_json_output_path.set(str(RUN / "review.json"))  # the parsed findings, with file and lines
+    try:
+        reviewer = PRReviewer(os.environ["REVIEW_EVAL_TARGET_BRANCH"])
+        await reviewer.run()
+        if command_failed():
+            return "the review recorded a failure (see stderr_tail)"
+        # Large-PR chunking can publish a partial review without recording a failure; a retry can complete it.
+        if getattr(reviewer, "review_failed_chunk_count", 0):
+            return f"{reviewer.review_failed_chunk_count} review chunk(s) failed"
+        return None
+    except Exception:  # noqa: BLE001  recorded in status.json so the run counts as failed
+        text = traceback.format_exc()
+        for name, value in os.environ.items():  # status.json is uploaded: never let a provider error echo a key
+            if name.endswith(("KEY", "TOKEN")) and len(value) >= 8:
+                text = text.replace(value, "[redacted]")
+        return text[-4000:]  # cut after redacting, so a key split by the cut cannot leak
+
+
+for stale in ("final.md", "review.json"):
+    (RUN / stale).unlink(missing_ok=True)
+error = asyncio.run(main())
+# The structured export is the result; final.md is absent when a review with no findings is not published.
+(RUN / "status.json").write_text(json.dumps({
+    "ok": error is None and (RUN / "review.json").exists(),
+    "error": error, "usage": usage, "finish": finish}))
+sys.exit(0)
