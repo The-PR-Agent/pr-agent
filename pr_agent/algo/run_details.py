@@ -67,6 +67,8 @@ class RunDetails:
     # default, returned normally anyway. Without this a caller cannot tell a run that published
     # nothing because it failed from one that had nothing to say.
     command_failed: bool = False
+    # Only a command with a positively confirmed, non-degraded result opts into delivery caching.
+    webhook_delivery_completed: bool = False
 
     @property
     def duration_seconds(self) -> float:

@@ -411,6 +411,7 @@ See [GitLab](../usage-guide/automations_and_usage.md#gitlab-webhook).
 | Key | Default | Description |
 | --- | --- | --- |
 | `url` | "https://gitlab.com" |  |
+| `webhook_delivery_deduplication` | false | Host-only opt-in (true/false): 300s process-local GitLab delivery deduplication; see GitLab installation docs. |
 | `expand_submodule_diffs` | false | Submodule targets must also be listed in config.repo_context_sibling_repos. |
 | `feedback_on_draft_pr` | false |  |
 | `publish_review_as_thread` | false | Post the /review summary as a resolvable thread (discussion) instead of a plain note. |

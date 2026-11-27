@@ -194,6 +194,14 @@ For all supported filters, see [Ignoring automatic commands in PRs](../usage-gui
 
 10. The webhook server runs under gunicorn with multiple worker processes. See [Sizing a self-hosted webhook server](./index.md#sizing-a-self-hosted-webhook-server) for the `GUNICORN_WORKERS` / `GUNICORN_MAX_WORKERS` knobs and memory guidance — worth reading before setting a memory limit.
 
+### Optional webhook delivery deduplication
+
+Set `GITLAB__WEBHOOK_DELIVERY_DEDUPLICATION=true` to suppress repeated deliveries within **one worker process**. GitLab 19.0+ supplies `webhook-id`; GitLab 17.4–18.x supplies `Idempotency-Key`. Both are stable across retries. Older servers without either header retain normal processing. The event UUID is not used, because distinct recursive events can share it.
+
+An active delivery is suppressed while its first attempt runs; the duplicate is not queued. After an ordinary full review or description publishes a clean result, retries (including manual **Resend Request**) are suppressed for 300 seconds, provided every command in the delivery completed this way. Incremental/per-commit reviews, reviews reporting omitted or partially analyzed files (including deletion-only notices), descriptions with placeholder file summaries or marker mode enabled, skipped or incomplete work, other commands, and runs with auto-approval, merge-recommendation status publication or external output sinks enabled remain eligible for resends after execution. A partially completed batch may repeat successful commands on retry. The setting is off by default.
+
+This is a best-effort optimization, **not exactly-once processing**. State is lost on restart and is not shared across gunicorn workers, replicas, or different Lambda execution environments; a warm Lambda environment may reuse its local cache. A webhook is acknowledged before its background commands complete; an error after HTTP 200 does not itself trigger a GitLab retry. Partial side effects may still be repeated after a failed command. Deployments requiring cross-worker guarantees need an external durable queue or shared state.
+
 ## Deploy as a Lambda Function
 
 Note that since AWS Lambda env vars cannot have "." in the name, you can replace each "." in an env variable with "__".<br>

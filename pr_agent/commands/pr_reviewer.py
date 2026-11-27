@@ -491,8 +491,9 @@ class PRReviewer:
             await self._run_per_commit()
             return
         guard = None
+        incremental = getattr(getattr(self, "incremental", None), "is_incremental", True)
         # Incremental review already reviews only what is new.
-        if skip_unchanged_diff_configured() and not self.incremental.is_incremental:
+        if skip_unchanged_diff_configured() and not incremental:
             guard = UnchangedDiffGuard("review", self.git_provider)
         if guard is not None and await asyncio.to_thread(guard.should_skip):
             return
@@ -500,6 +501,12 @@ class PRReviewer:
         try:
             await self._run_review()
             run_clean = self._review_done and not self._review_degraded and not command_failed()
+            # Empty/filtered, incremental and per-commit reviews do not opt into completion caching.
+            if (run_clean and self._review_output_touched and not incremental
+                    and not getattr(self, "remaining_files_list", ()) and not self.partial_files_list):
+                details = get_run_details()
+                if details is not None:
+                    details.webhook_delivery_completed = True
         finally:
             if guard is not None:
                 if run_clean:

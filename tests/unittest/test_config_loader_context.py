@@ -77,7 +77,8 @@ async def test_lambda_handoff_resets_request_context_when_handler_raises(monkeyp
 
         fake_gitlab_webhook = SimpleNamespace(
             restore_gitlab_handoff_auth=AsyncMock(),
-            process_gitlab_event=fail_gitlab,
+            process_verified_gitlab_delivery=fail_gitlab,
+            gitlab_delivery_id=lambda headers: None,
         )
         monkeypatch.setitem(sys.modules, "pr_agent.servers.gitlab_webhook", fake_gitlab_webhook)
         monkeypatch.setattr(servers_pkg, "gitlab_webhook", fake_gitlab_webhook, raising=False)

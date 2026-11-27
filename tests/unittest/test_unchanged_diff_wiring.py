@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pr_agent.algo.run_details import command_failed, init_run_details, record_command_failure
+from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details, record_command_failure
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.commands import pr_description as pr_description_module
 from pr_agent.commands import pr_reviewer as pr_reviewer_module
@@ -556,3 +556,94 @@ async def test_degraded_describe_runs_are_not_recorded(
     assert describer.git_provider.publish_description.called is (mode != "label_publish_exception")
     assert guards[0].recorded is expected_recorded
     assert guards[0].invalidated is expected_invalidated
+
+
+@pytest.mark.parametrize("mode, expected", [
+    ("clean", True), ("degraded", False), ("skipped", False), ("empty", False),
+    ("failed", False), ("incremental", False), ("incremental_fallback", False), ("per_commit", False),
+    ("missing_incremental", False), ("omitted", False), ("partial", False),
+])
+async def test_review_delivery_completion_is_opt_in(guards, monkeypatch, mode, expected):
+    details = init_run_details()
+    reviewer = _reviewer(incremental=mode in {"incremental", "incremental_fallback"})
+    if mode == "missing_incremental":
+        del reviewer.incremental
+    monkeypatch.setitem(get_settings().pr_reviewer, "per_commit_review", mode == "per_commit")
+
+    async def run_review():
+        reviewer._review_done = True
+        reviewer._review_output_touched = mode != "empty"
+        reviewer._review_degraded = mode == "degraded"
+        reviewer.remaining_files_list = ["omitted.py"] if mode == "omitted" else []
+        reviewer.partial_files_list = ["partial.py"] if mode == "partial" else []
+        if mode == "incremental_fallback":
+            reviewer.incremental.is_incremental = False
+        if mode == "failed":
+            record_command_failure()
+
+    with patch("pr_agent.commands.pr_reviewer.UnchangedDiffGuard", _guard_factory(mode == "skipped")), \
+            patch.object(reviewer, "_run_review", side_effect=run_review), \
+            patch.object(reviewer, "_run_per_commit", new_callable=AsyncMock):
+        await reviewer.run()
+
+    assert details.webhook_delivery_completed is expected
+    assert get_run_details() is details
+
+
+@pytest.mark.parametrize("mode, expected", [
+    ("clean", True), ("degraded", False), ("skipped", False), ("empty", False), ("failed", False),
+    ("markers", False),
+])
+async def test_describe_delivery_completion_is_opt_in(guards, monkeypatch, mode, expected):
+    details = init_run_details()
+    describer = _describer()
+    monkeypatch.setitem(get_settings().pr_description, "use_description_markers", mode == "markers")
+
+    async def run_describe():
+        describer._description_output_touched = mode != "empty"
+        describer._description_degraded = mode == "degraded"
+        if mode == "failed":
+            record_command_failure()
+        return None if mode == "empty" else ""
+
+    with patch("pr_agent.commands.pr_description.UnchangedDiffGuard", _guard_factory(mode == "skipped")), \
+            patch.object(describer, "_run_describe", side_effect=run_describe):
+        await describer.run()
+
+    assert details.webhook_delivery_completed is expected
+
+
+@pytest.mark.parametrize("uncovered", [False, True])
+async def test_describe_delivery_completion_requires_file_coverage(guards, monkeypatch, uncovered):
+    details = init_run_details()
+    describer = _describer()
+    describer.keys_fix = ["filename:", "changes_title:", "changes_summary:"]
+    describer.vars = {"include_file_summary_changes": True}
+    describer.pr_id = 1
+    monkeypatch.setitem(get_settings().pr_description, "enable_semantic_files_types", True)
+    monkeypatch.setitem(get_settings().pr_description, "use_description_markers", False)
+    files = [FilePatchInfo("a", "b", "@@ -1 +1 @@\n-a\n+b\n", "a.py")]
+    if uncovered:
+        files.append(FilePatchInfo("a", "b", "@@ -1 +1 @@\n-a\n+b\n", "b.py"))
+    describer.git_provider.get_diff_files.return_value = files
+    prediction = (
+        "pr_files:\n"
+        "  - filename: a.py\n"
+        "    changes_title: Title\n"
+        "    changes_summary: Summary\n"
+        "    label: bug\n"
+    )
+
+    async def run_describe():
+        result = await describer.extend_uncovered_files(prediction)
+        assert ("No detailed description available." in result) is uncovered
+        describer._description_output_touched = True
+        return ""
+
+    with patch("pr_agent.commands.pr_description.UnchangedDiffGuard", _guard_factory(False)), \
+            patch.object(describer, "_run_describe", side_effect=run_describe):
+        await describer.run()
+
+    assert details.webhook_delivery_completed is not uncovered
+    assert guards[0].recorded
+    assert not command_failed()
