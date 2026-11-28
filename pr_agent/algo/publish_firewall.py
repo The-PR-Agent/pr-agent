@@ -909,6 +909,8 @@ def _url_escapes(segment: str, spans: list[tuple[int, int]]) -> list[int]:
     is skipped rather than rescanned, which keeps a token made of glued URLs
     linear. The search is on a lowercase copy of the ASCII letters only, since
     ``"İ".lower()`` is two characters and one would move every URL after it.
+    A URL counts after a digit as well: GitHub links it there, and that link
+    takes a backslash before a ``<`` with it.
     """
     lowered = "".join(character.lower() if character.isascii() else character for character in segment)
     starts = []
@@ -916,7 +918,7 @@ def _url_escapes(segment: str, spans: list[tuple[int, int]]) -> list[int]:
         found = lowered.find(prefix)
         while found != -1:
             before = segment[found - 1] if found else ""
-            if before == "" or (
+            if before == "" or before.isdigit() or (
                 before not in _WORD_CHARACTERS and not (stopped_by_punctuation and before in "-./:")
             ):
                 starts.append(found)

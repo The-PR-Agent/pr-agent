@@ -84,6 +84,16 @@ def test_a_dotted_capital_i_does_not_move_the_urls_out_of_reach():
     assert result == "İ https\\://evil\\.example/x and www\\.evil\\.example/track"
 
 
+def test_a_url_after_a_digit_is_an_autolink():
+    # GitHub links "http://" after a digit, and that link takes a backslash before a "<" with it,
+    # so the tag after it is live unless the URL is broken first. A letter still keeps it text.
+    tagged = "1http://e.com<img src=x onerror=alert(1)>"
+
+    assert firewall_model_output("1http://evil.example/x") == "1http\\://evil\\.example/x"
+    assert firewall_model_output(tagged) == "1http\\://e\\.com\\<img src=x onerror=alert(1)>"
+    assert firewall_model_output("xhttp://evil.example/x") == "xhttp://evil.example/x"
+
+
 def test_raw_tags_are_escaped():
     line = "the comment embeds <img src=x> and </details> markup"
 
