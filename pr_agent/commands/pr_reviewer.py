@@ -68,6 +68,7 @@ from pr_agent.algo.pr_processing import (
     run_diff_preparation,
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
+from pr_agent.algo.prompt_hygiene import sanitize_prompt_text
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.review_finding_state import (
     append_review_state,
@@ -415,9 +416,9 @@ class PRReviewer:
         commit_messages_begin, commit_messages_end = prompt_boundary_markers("COMMIT_MESSAGES")
         commit_message_begin, commit_message_end = prompt_boundary_markers("COMMIT_MESSAGE")
         self.vars = {
-            "title": self.git_provider.pr.title,
+            "title": sanitize_prompt_text(self.git_provider.pr.title),
             "branch": self.git_provider.get_pr_branch(),
-            "description": self.pr_description,
+            "description": sanitize_prompt_text(self.pr_description),
             "language": self.main_language,
             "diff": "",  # empty diff for initial calculation
             "num_pr_files": self.git_provider.get_num_of_files(),
@@ -446,7 +447,8 @@ class PRReviewer:
             "repo_context": build_repo_context(self.git_provider),
             "previous_findings": previous_findings,
             "commit_messages_str": (
-                "" if self._deferred_commit_messages else self.git_provider.get_commit_messages()
+                "" if self._deferred_commit_messages
+                else sanitize_prompt_text(self.git_provider.get_commit_messages())
             ),
             "commit_messages_begin": commit_messages_begin,
             "commit_messages_end": commit_messages_end,

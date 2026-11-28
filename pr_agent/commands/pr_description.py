@@ -26,6 +26,7 @@ from pr_agent.algo.pr_processing import (
     get_pr_diff_multiple_patchs,
     retry_with_fallback_models,
 )
+from pr_agent.algo.prompt_hygiene import sanitize_prompt_text
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
 from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details, record_command_failure
@@ -152,16 +153,16 @@ class PRDescription:
             and self.git_provider.is_supported("gfm_markdown")
         )
         self.vars = {
-            "title": self.git_provider.pr.title,
+            "title": sanitize_prompt_text(self.git_provider.pr.title),
             "branch": self.git_provider.get_pr_branch(),
-            "description": self.git_provider.get_pr_description(full=False),
+            "description": sanitize_prompt_text(self.git_provider.get_pr_description(full=False)),
             "language": self.main_pr_language,
             "diff": "",  # empty diff for initial calculation
             "extra_instructions": get_settings().pr_description.extra_instructions,
             "artifact_context": get_artifact_context("pr_description"),
             "skills_context": get_skills_context(),
             "repo_context": build_repo_context(self.git_provider),
-            "commit_messages_str": self.git_provider.get_commit_messages(),
+            "commit_messages_str": sanitize_prompt_text(self.git_provider.get_commit_messages()),
             "enable_custom_labels": get_settings().config.enable_custom_labels,
             "custom_labels_class": "",  # will be filled if necessary in 'set_custom_labels' function
             "enable_semantic_files_types": get_settings().pr_description.enable_semantic_files_types,
