@@ -12,6 +12,19 @@ It can be invoked manually by commenting on any PR:
 /ask "..."
 ```
 
+A top-level PR comment can include a fenced code block. `/ask` preserves its line breaks and indentation in
+the question sent to the model and in the posted answer. Place command options outside the block.
+
+````text
+/ask When does finish() run?
+
+```python
+if ready:
+    process()
+finish()
+```
+````
+
 ## CLI JSON output
 
 The CLI can write a single JSON file containing the question, answer, and available token usage:
