@@ -57,7 +57,8 @@ env:
 
 ## Triggers
 
-- `synchronize` (new pushes) is skipped by default. Add it to
+- To process new pushes, add `synchronize` to the workflow's
+  `on.pull_request.types` list. Then add it to
   `github_action_config.pr_actions`, or enable
   `github_action_config.handle_push_trigger` for `push_commands`.
 - With both `opened` and `review_requested` enabled, the initial
