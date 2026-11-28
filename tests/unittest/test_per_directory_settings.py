@@ -822,6 +822,38 @@ skip_comments = true
         assert settings.pr_reviewer.max_changed_lines == 250
         assert settings.pr_reviewer.sensitive_paths == ["host-controlled/**"]
 
+    def test_merge_verdict_check_toggles_stay_host_controlled(self, per_dir_settings, monkeypatch):
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": (
+                    b"[pr_reviewer]\n"
+                    b"enable_merge_verdict_ci_check = false\n"
+                    b"enable_merge_verdict_staleness_check = false\n"
+                    b"enable_merge_verdict_authors_check = false\n"
+                    b"enable_merge_verdict_risk_check = false\n"
+                    b"enable_merge_verdict_changed_lines_check = false\n"
+                    b"num_max_findings = 4\n"
+                )},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        settings = get_settings()
+        for key in (
+            "enable_merge_verdict_ci_check",
+            "enable_merge_verdict_staleness_check",
+            "enable_merge_verdict_authors_check",
+            "enable_merge_verdict_risk_check",
+            "enable_merge_verdict_changed_lines_check",
+        ):
+            assert settings.pr_reviewer.get(key) is True
+        # The nested file itself was applied: only the host-only keys were dropped.
+        assert settings.pr_reviewer.num_max_findings == 4
+
     def test_custom_risk_shapes_stay_host_controlled_per_directory(self, per_dir_settings, monkeypatch):
         settings = get_settings()
         settings.pr_reviewer.extra_risky_shapes = ["HOST_RISK"]

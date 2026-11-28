@@ -744,6 +744,11 @@ evaluated, the verdict fails closed. The review includes each check and its resu
 - `pr_reviewer.max_changed_lines`: host-only changed-line cap for `no_concerns_found`. Counts added and removed
   lines.
 - `pr_reviewer.extra_risky_shapes`: host-only custom regex patterns scanned in added and removed diff lines.
+- `pr_reviewer.enable_merge_verdict_ci_check`, `enable_merge_verdict_staleness_check`,
+  `enable_merge_verdict_authors_check`, `enable_merge_verdict_risk_check`,
+  `enable_merge_verdict_changed_lines_check`: host-only booleans (default `true`) that disable the matching
+  deterministic check; a disabled check is omitted from the verdict. Set them in host configuration or environment,
+  not in a repository's `.pr_agent.toml` (root or per-directory) and not in a comment argument.
 - `publish_merge_recommendation_status`: publishes the verdict for the exact reviewed head SHA. GitHub uses the
   `PR Agent - Review` check run; GitLab uses a commit status.
 

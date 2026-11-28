@@ -356,6 +356,19 @@ def test_repo_settings_cannot_weaken_merge_verdict_risk_limits(monkeypatch, sett
     assert is_repo_host_only_key("pr_reviewer", "sensitive_paths")
 
 
+@pytest.mark.parametrize("key", [
+    "enable_merge_verdict_ci_check",
+    "enable_merge_verdict_staleness_check",
+    "enable_merge_verdict_authors_check",
+    "enable_merge_verdict_risk_check",
+    "enable_merge_verdict_changed_lines_check",
+])
+def test_merge_verdict_check_toggles_are_host_only(key):
+    assert is_repo_host_only_key("pr_reviewer", key)
+    assert key in PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION["pr_reviewer"]
+    assert CliArgs.validate_user_args([f"--pr_reviewer.{key}=false"])[0] is False
+
+
 def test_repo_settings_cannot_configure_extra_risky_shapes(monkeypatch, settings_snapshot):
     provider = FakeGitProvider(repo_settings_bytes=b'[pr_reviewer]\nextra_risky_shapes = ["CUSTOM_RISK"]\n')
     _install_provider(monkeypatch, provider)

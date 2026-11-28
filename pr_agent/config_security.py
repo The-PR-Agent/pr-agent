@@ -85,7 +85,15 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # require_artifact_findings quotes CI output into the public review, so only the host turns it on.
     # Verdict bounds and sensitive-path patterns must come from host configuration: repo files
     # must not weaken the checks that gate a no_concerns_found recommendation.
+    # The per-check merge-verdict toggles belong to the operator for the same reason: disabling
+    # enable_merge_verdict_risk_check drops the .github/workflows/** sensitive-path veto, so a
+    # repository that could set them could approve its own failing gate.
     "pr_reviewer": frozenset({
+        "enable_merge_verdict_authors_check",
+        "enable_merge_verdict_changed_lines_check",
+        "enable_merge_verdict_ci_check",
+        "enable_merge_verdict_risk_check",
+        "enable_merge_verdict_staleness_check",
         "extra_risky_shapes", "max_changed_lines", "publish_error_details", "require_artifact_findings",
         "sensitive_paths", "structural_reach_input_file",
     }),
@@ -226,8 +234,15 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
     # PR comments must not enable ticket reads performed with the operator's credentials.
     "pr_questions": frozenset({"resolve_threads", "use_ticket_context"}),
     # A commenter must not choose which host file the structural-reach row reads, or turn on quoting of CI output.
+    # A commenter must also not disable a merge-verdict check for the run that decides its own PR; the host
+    # (configuration or environment) sets these.
     "pr_reviewer": frozenset({
         "enable_large_pr_chunking",
+        "enable_merge_verdict_authors_check",
+        "enable_merge_verdict_changed_lines_check",
+        "enable_merge_verdict_ci_check",
+        "enable_merge_verdict_risk_check",
+        "enable_merge_verdict_staleness_check",
         "enable_risk_checks",
         "extra_risky_shapes",
         "max_changed_lines",
@@ -261,9 +276,14 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
 # Similarly, budget/call-count controls (max_number_of_calls, max_ai_calls, parallel_calls,
 # enable_large_pr_chunking, per_commit_review, max_commits_per_review, enable_large_pr_handling,
 # async_ai_calls) are restricted so a nested file cannot multiply AI calls independently of the host-trusted defaults.
+# The merge-verdict check toggles are restricted here too: a nested file must not switch off a
+# deterministic gate its own pull request cannot satisfy.
 PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
     "pr_reviewer": frozenset({
         "enable_large_pr_chunking", "max_number_of_calls", "per_commit_review", "max_commits_per_review",
+        "enable_merge_verdict_authors_check", "enable_merge_verdict_changed_lines_check",
+        "enable_merge_verdict_ci_check", "enable_merge_verdict_risk_check",
+        "enable_merge_verdict_staleness_check",
         "inline_key_issues", "enable_review_labels_security",
         "enable_review_labels_effort", "require_estimate_effort_to_review",
         "require_security_review", "require_ticket_analysis_review", "max_previous_findings_chars",
