@@ -54,6 +54,9 @@ ADO_APP_CLIENT_DEFAULT_ID = "499b84ac-1321-427f-aa17-267ca6975798/.default"
 AZURE_AGENT_RESPONSE_MARKER = "<!-- pr-agent-response -->"
 AZURE_AGENT_PROGRESS_MARKER = "<!-- pr-agent-progress -->"
 MAX_PR_DESCRIPTION_AZURE_LENGTH = 4000-1
+# Official createComment docs: "Comments can be up to 150,000 characters."
+# An overlong comment is rejected, so the review is not published.
+MAX_PR_COMMENT_AZURE_LENGTH = 150_000
 _FALLBACK_SUGGESTION_PATH_RE = re.compile(
     r"^`(?P<path>[^`]+)` \(lines (?P<start>\d+)-(?P<end>\d+)\)",
     re.MULTILINE,
@@ -531,6 +534,7 @@ class AzureDevopsProvider(GitProvider):
 
     def edit_comment(self, comment: Comment, body: str):
         try:
+            body = self.limit_output_characters(body, MAX_PR_COMMENT_AZURE_LENGTH)
             self.azure_devops_client.update_comment(
                 repository_id=self.repo_slug,
                 pull_request_id=self.pr_num,
@@ -1247,6 +1251,7 @@ class AzureDevopsProvider(GitProvider):
         if is_temporary and not get_settings().config.publish_output_progress:
             get_logger().debug(f"Skipping publish_comment for temporary comment: {pr_comment}")
             return None
+        pr_comment = self.limit_output_characters(pr_comment, MAX_PR_COMMENT_AZURE_LENGTH)
         comment = Comment(content=pr_comment)
 
         status = get_settings().azure_devops.get("default_comment_status", "closed")
