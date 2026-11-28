@@ -18,7 +18,8 @@ from github.GithubObject import GithubObject
 from github.Issue import Issue
 from github.PullRequest import PullRequest
 from jwt.exceptions import PyJWTError
-from requests.exceptions import RequestException
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import RequestException, Timeout
 from starlette_context import context
 from starlette_context.errors import ContextDoesNotExistError
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, stop_never
@@ -83,6 +84,11 @@ _GRAPHQL_MIN_BLOBS = 3
 _SYMLINK_MODE = 0o120000
 # GitHub rejects a pull request title longer than this (HTTP 422).
 MAX_PR_TITLE_GITHUB_LENGTH = 256
+# A webhook handler's first request reads the pull request, and nothing redelivers the event if it fails, so a
+# transient 5xx or connection error on that read is retried with this backoff unless `github.api_retries`
+# already retries every request.
+_PR_LOOKUP_RETRY_DELAYS = (1, 2, 4)
+_pr_lookup_sleep = time.sleep
 
 
 def _graphql_error_types(response) -> list:
@@ -408,7 +414,7 @@ class GithubProvider(GitProvider):
             self._inline_comment_store = None
             self._languages = None
         self.repo, self.pr_num = repo, pr_num
-        self.pr = self._get_pr()
+        self.pr = self._get_pr_retrying_transient_errors()
         # The commits loaded for the previous PR object do not describe this one.
         self.pr_commits = None
 
@@ -2499,6 +2505,24 @@ class GithubProvider(GitProvider):
             self.repo_obj = self.github_client.get_repo(self.repo)
             return self.repo_obj
 
+
+    def _get_pr_retrying_transient_errors(self):
+        delays = () if get_settings().get("github.api_retries", 0) else _PR_LOOKUP_RETRY_DELAYS
+        attempts = len(delays) + 1
+        for attempt, delay in enumerate((*delays, None), start=1):
+            try:
+                return self._get_pr()
+            except (GithubException, RequestsConnectionError, Timeout) as e:
+                status = getattr(e, "status", None)
+                transient = not isinstance(e, GithubException) or (isinstance(status, int) and status >= 500)
+                if delay is None or not transient:
+                    raise
+                reason = f"HTTP {status}" if status is not None else type(e).__name__
+                get_logger().warning(
+                    f"Reading PR {self.repo}#{self.pr_num} failed with {reason} "
+                    f"(attempt {attempt}/{attempts}), retrying in {delay}s"
+                )
+                _pr_lookup_sleep(delay)
 
     def _get_pr(self):
         if self._has_current_repo_obj():

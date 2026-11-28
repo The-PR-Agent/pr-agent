@@ -363,7 +363,7 @@ See [GitHub](../installation/github.md#run-as-a-github-app).
 | `ratelimit_retries` | 5 | Host-only total attempts for retryable GitHub diff collection failures, including rate limits and transient API errors. Integer-valued floats and integer strings are accepted. Zero returns None without collecting a diff. A negative integer attempt limit retries indefinitely. Boolean, non-finite, non-integral float, and unparseable values fall back to 5 with a warning. |
 | `seconds_between_requests` | 0 | seconds between API requests; 0 = no pacing (1.59 behaviour) |
 | `seconds_between_writes` | 0 | seconds between write calls; 0 = no pacing (1.59 behaviour) |
-| `api_retries` | 0 | max retries per request with backoff; 0 = no retries (1.59 behaviour) |
+| `api_retries` | 0 | max retries per request with backoff; 0 = no retries (1.59 behaviour), but the first PR read retries a 5xx or connection error 3 times |
 | `polling_request_timeout` | 10 | total seconds for comment-history fallback; positive values capped at 60 |
 | `polling_repositories` | [] | Host-only allowlist of GitHub repositories ("owner/repo") whose mention notifications polling may process. Empty disables all polling notifications. Repository settings and comment arguments cannot change this list |
 | `base_url` | "https://api.github.com" |  |
